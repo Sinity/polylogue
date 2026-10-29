@@ -33,7 +33,58 @@ impl<'a> Compiler<'a> {
                 // Several words in one AND must occur in the same message.
                 let mut parts = vec![];
                 let mut words = vec![];
+                let native_bounds = if scope.unit != Unit::ToolCalls {
+                    fields::native_window(scope.unit, true, &scope.a).filter(|lower| {
+                        fields::native_window(scope.unit, false, &scope.a).is_some_and(|upper| {
+                            lower.bytes == upper.bytes && lower.storage == upper.storage
+                        })
+                    })
+                } else {
+                    None
+                };
+                let mut conjuncts = vec![];
+                if native_bounds.is_some() {
+                    fn flatten<'b>(conditions: &'b [Condition], output: &mut Vec<&'b Condition>) {
+                        for condition in conditions {
+                            if let ConditionKind::And { conditions } = &condition.kind {
+                                flatten(conditions, output);
+                            } else {
+                                output.push(condition);
+                            }
+                        }
+                    }
+                    flatten(all, &mut conjuncts);
+                } else {
+                    conjuncts.extend(all);
+                }
+                let all = conjuncts;
+                let combine_bounds = native_bounds.is_some()
+                    && all
+                        .iter()
+                        .any(|x| matches!(x.kind, ConditionKind::Since { .. }))
+                    && all
+                        .iter()
+                        .any(|x| matches!(x.kind, ConditionKind::Until { .. }));
+                let mut since = None;
+                let mut until = None;
                 for x in all {
+                    if combine_bounds {
+                        match &x.kind {
+                            ConditionKind::Since { value, .. } => {
+                                let at = self.time("since", value_text(value)?, x.span)?.start();
+                                since = Some(since.map_or(at, |old: jiff::Timestamp| old.max(at)));
+                                continue;
+                            }
+                            ConditionKind::Until { value, .. } => {
+                                let at = self
+                                    .time("until", value_text(value)?, x.span)?
+                                    .until_bound();
+                                until = Some(until.map_or(at, |old: jiff::Timestamp| old.min(at)));
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     match &x.kind {
                         ConditionKind::Text { text, mode }
                             if !self.is_reference(x) && text_unit(scope.unit) =>
@@ -46,6 +97,12 @@ impl<'a> Compiler<'a> {
                         }
                         _ => parts.push(self.cond(x, scope, top)?),
                     }
+                }
+                if combine_bounds {
+                    parts.push(self.native_time_test(
+                        &native_bounds.expect("combined direct native bounds"),
+                        time::NativePredicate::Overlap { since, until },
+                    ));
                 }
                 if !words.is_empty() {
                     parts.push(self.text(&words, scope, Index::Prose, top)?);
@@ -526,7 +583,112 @@ impl<'a> Compiler<'a> {
                 def.sql.and_then(|e| e.reference()),
             );
         }
+        if def.kind == Kind::Time
+            && let Some(native) = fields::native_time(def.unit, def.name, &a)
+        {
+            return self.native_time_condition(def.name, &native, op, span);
+        }
         self.typed(def, &expr, op, span)
+    }
+
+    pub(super) fn native_time_test(
+        &mut self,
+        native: &fields::NativeTime,
+        predicate: time::NativePredicate,
+    ) -> String {
+        let broad = predicate.candidates(&native.cache);
+        let encoded = serde_json::to_string(&predicate).expect("typed time predicates serialize");
+        let parameter = self.text_param(&encoded);
+        let exact = format!(
+            "pl_time_test({}, '{}', {parameter})",
+            native.bytes,
+            native.storage.code()
+        );
+        if broad == "1" {
+            exact
+        } else {
+            format!(
+                "(({broad} OR NOT pl_time_is_point({}, '{}')) AND {exact})",
+                native.bytes,
+                native.storage.code()
+            )
+        }
+    }
+
+    fn native_time_condition(
+        &mut self,
+        field: &str,
+        native: &fields::NativeTime,
+        op: FieldOp<'_>,
+        span: Span,
+    ) -> Result<String, QueryError> {
+        use query_language::time::{TimeCondition as C, TimeRange};
+        use time::NativePredicate as P;
+        let compare = |value: Time, op: Op| -> Result<P, QueryError> {
+            let (condition, invert) = match (op, value) {
+                (Op::Eq | Op::Ne, Time::Instant { at }) => (C::Equal { at }, op == Op::Ne),
+                (Op::Eq | Op::Ne, Time::Span { start, end }) => (
+                    C::Within {
+                        range: TimeRange { start, end },
+                    },
+                    op == Op::Ne,
+                ),
+                (Op::Gt, Time::Instant { at }) => (C::After { at }, false),
+                (Op::Gt, Time::Span { end, .. }) => (C::AtOrAfter { at: end }, false),
+                (Op::Ge, value) => (C::AtOrAfter { at: value.start() }, false),
+                (Op::Lt, value) => (C::Before { at: value.start() }, false),
+                (Op::Le, Time::Instant { at }) => (C::AtOrBefore { at }, false),
+                (Op::Le, Time::Span { end, .. }) => (C::Before { at: end }, false),
+                _ => return Err(not_built("this time comparison operator")),
+            };
+            Ok(P::Compare { condition, invert })
+        };
+        let predicate = match op {
+            FieldOp::Match(Value::Any) => return Ok("1".into()),
+            FieldOp::Match(Value::Unknown) => {
+                return Ok(format!("NOT ({})", self.native_time_test(native, P::Known)));
+            }
+            FieldOp::Match(Value::Scalar {
+                text,
+                quoted: false,
+            }) if text.eq_ignore_ascii_case("unknown") => {
+                return Ok(format!("NOT ({})", self.native_time_test(native, P::Known)));
+            }
+            FieldOp::Match(Value::Scalar { text, .. }) => {
+                compare(self.time(field, text, span)?, Op::Eq)?
+            }
+            FieldOp::Compare(op, text) => compare(self.time(field, text, span)?, op)?,
+            FieldOp::Between(from, to) => {
+                let a = self.time(field, from, span)?;
+                let b = self.time(field, to, span)?;
+                if matches!(b, Time::Instant { at } if at == jiff::Timestamp::MAX) {
+                    return Ok(self.native_time_test(
+                        native,
+                        P::Compare {
+                            condition: C::AtOrAfter { at: a.start() },
+                            invert: false,
+                        },
+                    ));
+                }
+                let end = match b {
+                    Time::Instant { at } => at
+                        .checked_add(jiff::SignedDuration::from_nanos(1))
+                        .map_err(|error| QueryError::Invalid {
+                            message: error.to_string(),
+                            position: span.start,
+                        })?,
+                    Time::Span { end, .. } => end,
+                };
+                let range = TimeRange::new(a.start(), end)
+                    .map_err(|error| QueryError::language(error, self.text))?;
+                P::Compare {
+                    condition: C::Within { range },
+                    invert: false,
+                }
+            }
+            _ => return Err(not_built("this time field condition")),
+        };
+        Ok(self.native_time_test(native, predicate))
     }
 
     pub(super) fn show(

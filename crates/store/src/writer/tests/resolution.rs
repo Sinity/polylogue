@@ -1,4 +1,5 @@
 use super::*;
+mod native_time;
 use std::sync::{Arc, Barrier, mpsc::channel};
 
 #[test]

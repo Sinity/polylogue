@@ -80,6 +80,66 @@ impl Field {
         self.sql.map(|e| e.render(a, now))
     }
 }
+/// Canonical native evidence behind a temporal field. The integer cache is
+/// used only for broad candidates; the blob decides the exact predicate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeTimeStorage {
+    Tuple,
+    Event,
+    Document,
+}
+impl NativeTimeStorage {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Tuple => "tuple",
+            Self::Event => "event",
+            Self::Document => "document",
+        }
+    }
+    pub(crate) fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "tuple" => Some(Self::Tuple),
+            "event" => Some(Self::Event),
+            "document" => Some(Self::Document),
+            _ => None,
+        }
+    }
+}
+pub(crate) struct NativeTime {
+    pub cache: String,
+    pub bytes: String,
+    pub storage: NativeTimeStorage,
+}
+pub(crate) fn native_time(unit: Unit, field: &str, a: &Aliases) -> Option<NativeTime> {
+    let (cache, bytes, storage) = match (unit, field) {
+        (Messages | Blocks, "at") => ("{m}.at", "{m}.at_time", NativeTimeStorage::Tuple),
+        (ToolCalls, "at") => ("{t}.at", "{m}.at_time", NativeTimeStorage::Tuple),
+        (Sessions, "started") => (
+            "{s}.started_at",
+            "{s}.started_time",
+            NativeTimeStorage::Tuple,
+        ),
+        (Events, "at") => ("{r}.at", "{r}.fields", NativeTimeStorage::Event),
+        (Documents, "source_time") => {
+            ("{r}.source_time", "{r}.fields", NativeTimeStorage::Document)
+        }
+        _ => return None,
+    };
+    Some(NativeTime {
+        cache: a.expand(cache),
+        bytes: a.expand(bytes),
+        storage,
+    })
+}
+pub(crate) fn native_window(unit: Unit, since: bool, a: &Aliases) -> Option<NativeTime> {
+    let field = if unit == Sessions && !since {
+        "started"
+    } else {
+        polylogue_query::units::spec(unit).main_time?
+    };
+    native_time(unit, field, a)
+}
+
 /// One value of a `has:` field and the condition it stands for, over the
 /// row's alias (`s` for sessions, `m` for messages).
 pub struct Has {
