@@ -87,7 +87,6 @@ pub(crate) struct RawMetadata {
     pub generation: SourceGeneration,
     pub range: polylogue_store::primary::RawRange,
     pub predecessor: Option<String>,
-    pub basis: Option<polylogue_store::primary::SourceBasis>,
 }
 
 impl Spool {
@@ -114,7 +113,6 @@ impl Spool {
             generation,
             range,
             predecessor: input.raw_predecessor,
-            basis: input.basis,
         }))
     }
 
@@ -166,7 +164,6 @@ impl Spool {
         &self,
         identity: &str,
         generation: &SourceGeneration,
-        basis: &Option<polylogue_store::primary::SourceBasis>,
         through: u64,
     ) -> Result<Vec<String>> {
         self.ensure_indexes()?;
@@ -175,7 +172,7 @@ impl Spool {
             if entry.predecessor.as_deref() != Some(identity) {
                 return invalid("raw successor index has another predecessor");
             }
-            Ok(&entry.basis == basis)
+            Ok(true)
         })
     }
 

@@ -4,13 +4,13 @@ pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
     AcquisitionReceipt, AcquisitionRoute, CaptureDisposition, CaptureEmitter, CaptureMembers,
-    CaptureMode, CapturePlan, CaptureReceipt, RawCustodyReceipt,
-    ConfirmedSource, PendingCheckpoint, PendingGroupPage, PendingSource, RawRange, SourceBasis,
-    SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
+    CaptureMode, CapturePlan, CaptureReceipt, ConfirmedSource, PendingCheckpoint, PendingGroupPage,
+    PendingSource, RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
+    SourceStatus, SourceSubject,
 };
 pub mod products;
-pub mod replay;
 pub mod raw_acquisition;
+pub mod replay;
 pub use raw_acquisition::{
     DatabaseSnapshotToken, FileSnapshot, FileTime, RawAcquisitionCursor, RawAcquisitionProof,
     RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
@@ -121,12 +121,6 @@ pub trait Sinex: Send + Sync {
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
-    ) -> Result<()>;
-    /// Visits only matching named products already retained in durable custody.
-    fn visit_named_products(
-        &self,
-        selector: &NamedProductSelector,
-        visit: &mut dyn FnMut(&Product) -> Result<()>,
     ) -> Result<()>;
     fn visit_pending_blobs(
         &self,

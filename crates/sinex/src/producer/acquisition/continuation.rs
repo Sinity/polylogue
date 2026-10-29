@@ -66,10 +66,9 @@ impl Sinex {
                 roots.into_iter().next().expect("one root")
             }
         };
-        let Some(anchor_header) = self.queue()?.raw_metadata(&anchor)? else {
+        if self.queue()?.raw_metadata(&anchor)?.is_none() {
             return Ok(None);
-        };
-        let basis = anchor_header.basis;
+        }
         let scratch = self.config.store.join("polylogue-staging");
         std::fs::create_dir_all(&scratch)?;
         let mut reversed = ReverseRefs {
@@ -83,7 +82,6 @@ impl Sinex {
                 return Ok(None);
             };
             if &header.generation != generation
-                || header.basis != basis
                 || header.order > through
                 || newer.is_some_and(|(order, start)| {
                     header.order >= order || header.range.end != start
@@ -121,9 +119,7 @@ impl Sinex {
         }
         current = anchor;
         loop {
-            let children = self
-                .queue()?
-                .raw_children(&current, generation, &basis, through)?;
+            let children = self.queue()?.raw_children(&current, generation, through)?;
             if children.len() > 1 {
                 return Ok(None);
             }
