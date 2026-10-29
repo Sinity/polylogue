@@ -136,9 +136,6 @@ fn exact_attachment_output_is_available_to_agents_without_terminal_stdout() {
     for agent in [false, true] {
         std::fs::write(&target, b"previous complete output").unwrap();
         let mut child = command(&fixture.env());
-        for (key, value) in fixture.env() {
-            child.env(key, value);
-        }
         if agent {
             child.env("CODEX_SESSION_ID", "synthetic-harness");
         }

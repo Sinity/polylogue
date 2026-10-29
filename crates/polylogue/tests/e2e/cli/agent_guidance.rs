@@ -88,7 +88,6 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("archive");
-        let home = dir.path().join("home");
         std::fs::create_dir(&archive).unwrap();
         let listener = UnixListener::bind(polylogue_store::Archive::at(&archive).socket()).unwrap();
         let server = std::thread::spawn(move || {

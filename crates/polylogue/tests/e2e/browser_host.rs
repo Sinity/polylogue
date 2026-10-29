@@ -121,8 +121,6 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         }
     }
     let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    let archive = dir.path().join("archive");
     let state = dir.path().join("state");
     let command = || {
         let mut command = crate::command(dir.path());

@@ -91,6 +91,9 @@ mod tests {
             &root.path().join("home"),
             &root.path().join("config"),
         );
+        let selected = fixture.command();
+        let args: Vec<_> = selected.get_args().collect();
+        assert_eq!(args, [std::ffi::OsStr::new("--archive"), fixture.archive.as_os_str(), std::ffi::OsStr::new("--config"), fixture.config.join("polylogue/polylogue.toml").as_os_str()]);
         let mut command = std::process::Command::new("env");
         command
             .env("HOME", "/synthetic/foreign-home")
