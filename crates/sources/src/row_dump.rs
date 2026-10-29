@@ -6,7 +6,7 @@ use crate::{Record, RecordOutcome, Records};
 use polylogue_model::Json;
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u64 = 1;
+pub const VERSION: u32 = 1;
 
 pub fn open() -> Parse {
     Parse::Lines(Box::new(RowDump))

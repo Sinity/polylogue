@@ -222,7 +222,12 @@ pub struct LinkPrefix {
 impl OriginSpec {
     /// Stable, ordered tuple of module names and versions.
     pub fn reading_version(&self) -> String {
-        self.modules
+        let modules = if self.support == Support::NoParser && self.capture == Capture::RowDump {
+            modules!(crate::row_dump::VERSION)
+        } else {
+            self.modules
+        };
+        modules
             .iter()
             .map(|m| format!("{}={}", m.name, m.version))
             .collect::<Vec<_>>()
