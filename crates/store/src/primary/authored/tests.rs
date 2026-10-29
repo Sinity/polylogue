@@ -53,7 +53,9 @@ fn prepare_with(
         r,
         |visit| {
             for p in pending {
-                visit(p)?;
+                visit(&polylogue_model::authored::PendingAuthored::Live {
+                    prepared: p.clone(),
+                })?;
             }
             Ok(())
         },

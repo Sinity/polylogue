@@ -39,6 +39,27 @@ pub struct PreparedRequest {
     pub effect: AuthoredEffect,
 }
 
+/// A durable authored operation waiting for confirmation keeps its authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub enum PendingAuthored {
+    Live {
+        prepared: PreparedRequest,
+    },
+    Restore {
+        prepared: PreparedRequest,
+        claims: Vec<ImportAttribution>,
+        current: ImportAttribution,
+    },
+}
+impl PendingAuthored {
+    pub fn prepared(&self) -> &PreparedRequest {
+        match self {
+            Self::Live { prepared } | Self::Restore { prepared, .. } => prepared,
+        }
+    }
+}
+
 /// A request may insert several linked records; empty effects still preserve
 /// an entity-deduplicated request's identity and original outcome.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
