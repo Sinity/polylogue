@@ -101,7 +101,8 @@ fn conflicting_environment_identities_without_a_harness_ancestor_stay_unattribut
 
 #[test]
 fn concurrent_request_identity_distinguishes_the_accepting_channel() {
-    let registry = hooks::Registry::default();
+    let directory = tempfile::tempdir().unwrap();
+    let registry = hooks::Registry::new(directory.path().to_owned());
     let evidence = CallerEvidence {
         controlling_terminal: true,
         ..Default::default()
