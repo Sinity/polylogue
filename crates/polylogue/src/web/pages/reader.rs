@@ -88,7 +88,7 @@ pub(crate) fn session(
             .as_str()
             .unwrap_or("Tool version unknown"))
     );
-    for view in polylogue_render::View::NAMES {
+    for view in polylogue_model::read::View::NAMES {
         let options = ReadQuery {
             view: Some((*view).into()),
             ..p.clone()
