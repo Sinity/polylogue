@@ -88,10 +88,20 @@ impl PartialEq for ReplayBinding {
 pub struct ExecutionBinding {
     pub replay: ReplayBinding,
     pub query_options: QueryExecutionOptions,
-    pub read: crate::read::ReadBegin,
-    pub delivery: crate::read::ReadDelivery,
+    pub presentation: ExecutionPresentation,
     /// The original trusted transport envelope. Internal calls may have none.
     pub accepted_request: Option<serde_json::Value>,
+}
+
+/// A query execution has no fabricated read header or document options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExecutionPresentation {
+    Query,
+    Read {
+        begin: Box<crate::read::ReadBegin>,
+        delivery: crate::read::ReadDelivery,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
