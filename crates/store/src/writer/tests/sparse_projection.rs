@@ -43,6 +43,9 @@ fn write(w: &TestArchive, mut batch: Batch) {
     if matches!(batch.change, Change::First) {
         let bytes = vec![b' '; batch.length as usize];
         let prepared = w.archive.prepare_bytes(bytes.as_slice()).unwrap();
+        if batch.input.arrival_rank >= 2 {
+            batch.input.id = prepared.hash().to_string();
+        }
         let mut captured = batch.clone();
         captured.parse.clear();
         let stored = w.writer.store_bytes(prepared, captured).unwrap();
