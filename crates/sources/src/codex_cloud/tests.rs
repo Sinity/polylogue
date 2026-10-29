@@ -110,3 +110,17 @@ fn native_capture_accounts_the_payload_once_and_leaves_unused_dom_turns_visible(
         "cloud"
     );
 }
+
+#[test]
+fn a_literal_branch_named_none_is_a_branch_not_a_missing_value() {
+    let bytes=br#"[{"id":"task_e_branch","turns":[{"id":"task_e_branch~assttrn_e_one","role":"assistant","branch":"None","external_pull_request_id":"None","output_items":[]}]}]"#;
+    let step =
+        crate::export::fixture::parse(&mut open(Path::new("codex.json")).unwrap(), bytes).unwrap();
+    assert_eq!(step.output.sessions[0].git_branch.as_deref(), Some("None"));
+    assert!(
+        !step.output.messages[0]
+            .message
+            .attrs
+            .contains_key("external_pull_request_id")
+    );
+}

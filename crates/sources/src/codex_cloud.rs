@@ -205,7 +205,7 @@ impl ExportParser for Cloud {
             if let Some(instructions) = str_of(turn, "custom_instructions") {
                 session.instructions = Some(instructions.into());
             }
-            if let Some(branch) = clean(turn, "branch").or_else(|| clean(turn, "branch_name")) {
+            if let Some(branch) = str_of(turn, "branch").or_else(|| str_of(turn, "branch_name")) {
                 session.git_branch = Some(branch.into());
             }
             let mut attrs = turn.as_object().cloned().unwrap_or_default();
@@ -277,11 +277,5 @@ impl ExportParser for Cloud {
         Ok(())
     }
 }
-fn clean<'a>(value: &'a Json, key: &str) -> Option<&'a str> {
-    str_of(value, key)
-        .map(str::trim)
-        .filter(|value| !matches!(value.to_ascii_lowercase().as_str(), "none" | "null" | ""))
-}
-
 #[cfg(test)]
 mod tests;
