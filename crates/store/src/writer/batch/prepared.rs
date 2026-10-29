@@ -19,6 +19,19 @@ impl PreparedRows {
         if !self.released {
             return Err(StoreError::Invalid("reading rows were not prepared".into()));
         }
+        for (&index, identity) in &output.imported_events {
+            if index >= output.events.len() {
+                return Err(StoreError::Invalid("imported identity has no event".into()));
+            }
+            identity
+                .validate()
+                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        }
+        for (&index, &order) in &output.message_order {
+            if index >= output.messages.len() || i64::try_from(order).is_err() {
+                return Err(StoreError::Invalid("invalid imported message order".into()));
+            }
+        }
         if self.messages.len() != output.messages.len()
             || self.documents.len() != output.documents.len()
             || self
@@ -140,5 +153,29 @@ impl ParseStep {
         for event in &mut self.output.events {
             event.data = Json::Null;
         }
+    }
+}
+
+impl ParseStep {
+    pub(in crate::writer) fn message_position(&self, index: usize) -> Result<Option<i64>> {
+        let order =
+            match self.output.message_order.get(&index) {
+                Some(&order) => Some(order),
+                None => match self.order_from {
+                    Some(from) => Some(from.checked_add(index as u64).ok_or_else(|| {
+                        StoreError::Invalid("message reading order overflow".into())
+                    })?),
+                    None => self.repeats_whole_conversations.then_some(index as u64),
+                },
+            };
+        order
+            .map(|order| {
+                i64::try_from(order).map_err(|_| {
+                    StoreError::Invalid(
+                        "message reading order is outside the stored integer range".into(),
+                    )
+                })
+            })
+            .transpose()
     }
 }

@@ -558,3 +558,59 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
     assert_eq!(state, ("no_parser_yet".into(), 140, None));
     tx.commit().unwrap();
 }
+
+#[test]
+fn imported_message_order_is_independent_of_local_byte_ranges() {
+    let w = test_archive();
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    let mut input = batch(
+        "bundle",
+        2,
+        0,
+        vec![
+            row(
+                10,
+                text_message(
+                    "late-commit",
+                    "s",
+                    Role::Assistant,
+                    "first",
+                    Some("end_turn"),
+                ),
+            ),
+            row(
+                20,
+                text_message("early-commit", "s", Role::User, "second", None),
+            ),
+        ],
+        &["s"],
+    );
+    input.parse[0].order_from = Some(100);
+    input.parse[0].output.message_order.extend([(0, 1), (1, 0)]);
+    write_test_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
+    let rows = tx
+        .prepare("SELECT id,seq,source_start FROM message ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("claude-code:early-commit".into(), 0, 20),
+            ("claude-code:late-commit".into(), 1, 10)
+        ]
+    );
+    let mut invalid = input.clone();
+    invalid.parse[0].output.message_order.insert(0, u64::MAX);
+    assert!(write_test_rows(&tx, &invalid, &invalid.parse[0], 1, 2, None).is_err());
+    tx.commit().unwrap();
+}

@@ -342,9 +342,8 @@ impl<'a> Projection<'a> {
                     None=>index.query_row("SELECT coalesce((SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3),'main')",params![session,input,chain],|r|r.get::<_,String>(0))?=="main",
                 };
             choices.message_mains.push(main);
-            let (seq, position) = match step.order_from {
-                Some(from) => ((from + i as u64) as i64, 0),
-                None if step.repeats_whole_conversations => (i as i64, 0),
+            let (seq, position) = match step.message_position(i)? {
+                Some(order) => (order, 0),
                 None => {
                     let n = positions.entry(row.offset).or_default();
                     let p = *n;
