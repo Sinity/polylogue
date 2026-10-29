@@ -3,9 +3,10 @@ pub(crate) const SCHEMA: &str = "
 CREATE TABLE primary_fact (
  event TEXT PRIMARY KEY, admitted INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
- product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT
+ product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT, session TEXT
 ) STRICT;
 CREATE INDEX primary_fact_chain ON primary_fact(input,chain,admitted,event);
+CREATE INDEX primary_fact_session ON primary_fact(session,kind,state,admitted);
 CREATE TABLE primary_pending (
  n INTEGER PRIMARY KEY, position INTEGER NOT NULL, event TEXT NOT NULL,
  change TEXT NOT NULL, product BLOB, source_order INTEGER NOT NULL,
@@ -123,6 +124,7 @@ struct Fact {
     start: Option<i64>,
     end: Option<i64>,
     version: Option<String>,
+    session: Option<String>,
 }
 impl Fact {
     fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -140,10 +142,11 @@ impl Fact {
             start: row.get(10)?,
             end: row.get(11)?,
             version: row.get(12)?,
+            session: row.get(13)?,
         })
     }
     fn insert(&self, index: &Connection, table: &str) -> Result<()> {
-        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version])?;
+        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session])?;
         Ok(())
     }
     fn product(&self) -> Result<Option<Product>> {
@@ -181,6 +184,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_) => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
+        Product::WorkSnapshot { .. } => (None, None, reference, "derived"),
         _ => unreachable!(),
     }
 }
@@ -229,6 +233,14 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
+                let session = match &product {
+                    Product::Session { facts, .. } => Some(facts.id.to_string()),
+                    Product::Message { facts, .. } => Some(facts.message.session.to_string()),
+                    Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
+                    Product::Background { facts, .. } => Some(facts.session.to_string()),
+                    Product::WorkSnapshot { snapshot } => Some(snapshot.session.id.to_string()),
+                    _ => None,
+                };
                 let reading = product.reading();
                 let start = reading
                     .map(|r| i64::try_from(r.start))
@@ -261,6 +273,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     start,
                     end,
                     version,
+                    session,
                 })
             }
             ConfirmedChange::Archived => old.map(|mut fact| {
@@ -528,10 +541,12 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
         }
         _ => (None, None, None),
     };
-    let length = i64::try_from(material.length)
-        .map_err(|_| StoreError::Invalid("material length exceeds the source catalog range".into()))?;
-    let stored = i64::try_from(extent.len)
-        .map_err(|_| StoreError::Invalid("extent length exceeds the source catalog range".into()))?;
+    let length = i64::try_from(material.length).map_err(|_| {
+        StoreError::Invalid("material length exceeds the source catalog range".into())
+    })?;
+    let stored = i64::try_from(extent.len).map_err(|_| {
+        StoreError::Invalid("extent length exceeds the source catalog range".into())
+    })?;
     tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![material.id,event,input,chain,offset,length,&material.hash.0[..]])?;
     tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],length,stored,extent.encode()])?;
     Ok(())
@@ -539,8 +554,7 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
 
 fn unsigned_column(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(column)?;
-    u64::try_from(value)
-        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
 }
 
 fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
