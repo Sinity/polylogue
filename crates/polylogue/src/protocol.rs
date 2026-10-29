@@ -43,11 +43,22 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
     (FailureKind::StaleCursor, &["stale_cursor"]),
     (
         FailureKind::NotYetAvailable,
-        &["not_built", "not_yet_available"],
+        &[
+            "not_built",
+            "not_yet_available",
+            "primary_context_missing",
+            "primary_context_pending",
+            "primary_context_stale",
+        ],
     ),
     (
         FailureKind::Refused,
-        &["refused", "operator_required", "rejected"],
+        &[
+            "refused",
+            "operator_required",
+            "rejected",
+            "primary_context_refused",
+        ],
     ),
     (
         FailureKind::NotFound,
@@ -91,9 +102,31 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
             "import",
             "embed",
             "sinex_unavailable",
+            "primary_context_unavailable",
+            "primary_context_invalid",
         ],
     ),
 ];
+
+#[cfg(feature = "sinex")]
+pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> crate::daemon::Response {
+    use polylogue_sinex::ContextFailureKind as Kind;
+    let code = match problem.kind {
+        Kind::Missing => "primary_context_missing",
+        Kind::Pending => "primary_context_pending",
+        Kind::Unavailable => "primary_context_unavailable",
+        Kind::Refused => "primary_context_refused",
+        Kind::Stale => "primary_context_stale",
+        Kind::Invalid => "primary_context_invalid",
+    };
+    crate::daemon::Response::Error {
+        kind: code.into(),
+        message: problem.reason,
+        detail: Some(
+            serde_json::json!({"retryable":matches!(problem.kind,Kind::Missing|Kind::Pending|Kind::Unavailable|Kind::Stale),"hint":problem.last_known_identity.map(|identity|format!("last observed owner settings: {identity}"))}),
+        ),
+    }
+}
 
 pub fn kind(code: &str) -> FailureKind {
     FAILURE_CLASSES

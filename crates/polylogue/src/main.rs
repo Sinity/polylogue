@@ -17,6 +17,7 @@ mod explain;
 mod hook;
 mod manual;
 mod mcp;
+mod operation;
 mod protocol;
 mod resume;
 mod row_numbers;

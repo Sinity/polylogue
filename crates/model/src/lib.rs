@@ -18,6 +18,7 @@ mod clock;
 pub mod currency;
 pub use clock::WallClock;
 pub mod command;
+pub mod context;
 mod delivery;
 mod document;
 mod event;
