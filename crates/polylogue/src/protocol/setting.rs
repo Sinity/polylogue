@@ -14,7 +14,7 @@ pub struct Arguments {
 #[serde(untagged)]
 pub enum Answer {
     Catalog(Vec<polylogue_model::settings::Current>),
-    Current(polylogue_model::settings::Current),
+    Current(Box<polylogue_model::settings::Current>),
     Receipt(polylogue_model::user::UserOutcome),
 }
 

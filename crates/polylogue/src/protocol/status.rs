@@ -135,7 +135,7 @@ pub struct Vectors {
 pub enum Primary {
     Observed {
         #[serde(flatten)]
-        producer: polylogue_sinex::Status,
+        producer: Box<polylogue_sinex::Status>,
         applied_position: Option<i64>,
         lag_positions: Option<i64>,
         position_error: Option<String>,

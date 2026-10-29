@@ -88,7 +88,7 @@ pub struct Explanation {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Answer {
-    Rows(Rows),
+    Rows(Box<Rows>),
     PagedMeasure(PagedMeasure),
     Measure(Measure),
 }

@@ -83,7 +83,7 @@ fn primary(
                 .zip(applied_position)
                 .and_then(|(owner, applied)| owner.checked_sub(applied).filter(|lag| *lag >= 0));
             Primary::Observed {
-                producer,
+                producer: Box::new(producer),
                 applied_position,
                 lag_positions,
                 position_error,

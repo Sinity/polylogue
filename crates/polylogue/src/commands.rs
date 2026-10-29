@@ -110,6 +110,10 @@ pub type StreamProducer = fn(
     &mut dyn std::io::Write,
 ) -> Option<Result<(), crate::daemon::Response>>;
 
+pub type TypedRequestBuilder =
+    fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>;
+pub type OutputHandler = fn(&Values, &Value, &crate::config::Startup, bool) -> ExitCode;
+
 #[derive(Clone, Copy)]
 pub enum Action {
     /// Sent to the daemon as the request this builds.
@@ -140,7 +144,7 @@ pub struct Command {
     >,
     pub typed_schemas: Option<fn() -> (Value, Value)>,
     pub typed_mcp_schema: Option<fn() -> Value>,
-    pub build_typed: Option<fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>>,
+    pub build_typed: Option<TypedRequestBuilder>,
     /// The command-line words (`note add`); the MCP tool joins them with
     /// `_`, the HTTP route with `/`.
     pub name: &'static str,
@@ -159,7 +163,7 @@ pub struct Command {
     pub print: fn(&Value) -> String,
     /// What the command line does with the answer in place of printing it
     /// (`export` writes a file, `continue --exec` runs the plan).
-    pub output: Option<fn(&Values, &Value, &crate::config::Startup, bool) -> ExitCode>,
+    pub output: Option<OutputHandler>,
 }
 
 impl Command {
