@@ -115,3 +115,88 @@ fn event_identity_keeps_every_claim_and_validates_exact_reference_and_time() {
     record.reference = "event:another".into();
     assert_eq!(record.validate(), Err(BundleError::EventReferenceMismatch));
 }
+
+fn message_record() -> MessageRecord {
+    let message: Message = serde_json::from_value(serde_json::json!({
+        "id":"codex:message", "session":"codex:session", "role":"assistant",
+        "blocks":[{"type":"text","text":"first"},{"type":"text","text":"second"}]
+    }))
+    .unwrap();
+    MessageRecord {
+        reference: "message:codex:message".into(),
+        commit: 1,
+        order: 0,
+        source_version: message.content_hash().unwrap(),
+        block_count: 2,
+        block_ordinals: vec![0, 1],
+        message,
+    }
+}
+
+#[test]
+fn sparse_message_round_trip_keeps_original_block_refs_and_source_identity() {
+    let full = message_record();
+    let mut partial = full.clone();
+    partial.message.blocks.remove(0);
+    partial.block_ordinals.remove(0);
+    assert!(partial.validate().is_ok());
+    let restored: MessageRecord =
+        serde_json::from_slice(&serde_json::to_vec(&partial).unwrap()).unwrap();
+    assert_eq!(restored, partial);
+    assert_eq!(restored.block_ordinals, vec![1]);
+    assert_eq!(restored.source_version, full.source_version);
+    assert_eq!(restored.block_count, 2);
+}
+
+#[test]
+fn compatible_sparse_observations_union_without_downgrading_full_content() {
+    let full = message_record();
+    let mut first = full.clone();
+    first.message.blocks.pop();
+    first.block_ordinals.pop();
+    let mut second = full.clone();
+    second.message.blocks.remove(0);
+    second.block_ordinals.remove(0);
+    let (message, projection) = first
+        .projection()
+        .merge(&first.message, &second.projection(), &second.message)
+        .unwrap()
+        .unwrap();
+    assert_eq!(message, full.message);
+    assert_eq!(projection, full.projection());
+    let merged = full
+        .projection()
+        .merge(&full.message, &first.projection(), &first.message)
+        .unwrap()
+        .unwrap();
+    assert_eq!(merged, (full.message.clone(), full.projection()));
+    let repeated = projection
+        .merge(&message, &projection, &message)
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated, (message, projection));
+}
+
+#[test]
+fn overlapping_conflicting_content_is_not_equal_or_an_implicit_new_version() {
+    let full = message_record();
+    let mut conflict = full.clone();
+    conflict.message.blocks[0] = crate::Block::Text {
+        text: "different".into(),
+    };
+    assert_eq!(
+        full.projection()
+            .merge(&full.message, &conflict.projection(), &conflict.message),
+        Err(BundleError::ProjectionConflict)
+    );
+    conflict.source_version = conflict.message.content_hash().unwrap();
+    assert_eq!(
+        full.projection()
+            .merge(&full.message, &conflict.projection(), &conflict.message)
+            .unwrap(),
+        None
+    );
+    let mut invalid = full;
+    invalid.block_ordinals = vec![1, 1];
+    assert_eq!(invalid.validate(), Err(BundleError::InvalidBlockSelection));
+}
