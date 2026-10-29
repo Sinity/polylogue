@@ -10,10 +10,20 @@ pub(super) struct Identity {
 }
 
 pub(super) fn serialize<S: Serializer>(input: &InputKey, serializer: S) -> Result<S::Ok, S::Error> {
-    Identity { id: input.id.clone(), format: input.format.clone() }.serialize(serializer)
+    Identity {
+        id: input.id.clone(),
+        format: input.format.clone(),
+    }
+    .serialize(serializer)
 }
 
-pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<InputKey, D::Error> {
+pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<InputKey, D::Error> {
     let Identity { id, format } = Identity::deserialize(deserializer)?;
-    Ok(InputKey { id, format, arrival_rank: 0 })
+    Ok(InputKey {
+        id,
+        format,
+        arrival_rank: 0,
+    })
 }

@@ -4,7 +4,7 @@ use polylogue_model::{
     authorship::{CallerEvidence, Channel, compute_authorship},
     query_objects::{
         ExecutionBinding, ExecutionPresentation, QueryExecutionOptions, QueryObject, QueryRun,
-        QueryRunOutcome, ReplayBinding, RunOutcome,
+        QueryRunOutcome, ReplayBinding, RunBinding, RunOutcome,
     },
 };
 use polylogue_store::primary::NamedProductSelector;
@@ -53,7 +53,7 @@ fn phases() -> Vec<(String, Product)> {
             },
             None,
         ),
-        binding: ExecutionBinding {
+        binding: RunBinding::Original { execution: Box::new(ExecutionBinding {
             replay: ReplayBinding {
                 bound_ast: object.identity_ast.clone(),
                 source_outputs: vec![],
@@ -81,15 +81,17 @@ fn phases() -> Vec<(String, Product)> {
             accepted_request: Some(
                 json!({"operation":"query","id":"synthetic-caller".repeat(5000)}),
             ),
-        },
+        }), },
     };
     let outcome = QueryRunOutcome {
         run: run.id.clone(),
-        binding_hash: run.binding.hash().unwrap(),
+        binding_hash: run.binding_hash().unwrap(),
+        run_hash: run.record_hash().unwrap(),
         at: run.at,
         outcome: RunOutcome::Ok,
         count: Some(5),
         exact: true,
+        next: None,
     };
     vec![
         (

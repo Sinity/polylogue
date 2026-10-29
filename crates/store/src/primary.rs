@@ -4,13 +4,13 @@ pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
     AcquisitionReceipt, AcquisitionRoute, CaptureDisposition, CaptureEmitter, CaptureMembers,
-    CaptureMode, CapturePlan, CaptureReceipt, RawCustodyReceipt,
-    ConfirmedSource, PendingCheckpoint, PendingGroupPage, PendingSource, RawRange, SourceBasis,
-    SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
+    CaptureMode, CapturePlan, CaptureReceipt, ConfirmedSource, PendingCheckpoint, PendingGroupPage,
+    PendingSource, RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
+    SourceStatus, SourceSubject,
 };
 pub mod products;
-pub mod replay;
 pub mod raw_acquisition;
+pub mod replay;
 pub use raw_acquisition::{
     DatabaseSnapshotToken, FileSnapshot, FileTime, RawAcquisitionCursor, RawAcquisitionProof,
     RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
