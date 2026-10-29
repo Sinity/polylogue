@@ -182,3 +182,24 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
 }
+
+#[test]
+fn failure_to_persist_owner_control_blocks_current_reads_without_claiming_durability() {
+    let root = tempfile::tempdir().unwrap();
+    let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
+    let mut index = cache(&archive);
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
+    index.execute_batch("CREATE TRIGGER stop_control BEFORE INSERT ON meta WHEN new.key='confirmed_scope_pending' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
+    assert!(reset(&mut index, &archive, &resolver, "changed").is_err());
+    assert!(matches!(
+        archive.read_scope.token(),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert!(require_readable(&index).is_ok());
+    assert_eq!(current(&index).unwrap(), None);
+    assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
+    index.execute_batch("DROP TRIGGER stop_control").unwrap();
+    assert!(reset(&mut index, &archive, &resolver, "changed").unwrap());
+    assert!(archive.read_scope.token().is_ok());
+}
