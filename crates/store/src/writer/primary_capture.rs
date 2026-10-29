@@ -94,12 +94,12 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
             ));
         }
     }
-    if let Some(blob) = &batch.new_blob {
-        if blob.size > batch.length {
-            return Err(StoreError::Invalid(
-                "captured bytes exceed their source endpoint".into(),
-            ));
-        }
+    if let Some(blob) = &batch.new_blob
+        && blob.size > batch.length
+    {
+        return Err(StoreError::Invalid(
+            "captured bytes exceed their source endpoint".into(),
+        ));
     }
     Ok(())
 }
@@ -437,7 +437,8 @@ impl Inner {
         let mut ready_revisions = BTreeMap::<String, Revision>::new();
         let mut ready_extents = Vec::<(String, crate::input_rows::Extent, Material)>::new();
         for member in &members {
-            match &member.captured {
+            let captured = sinex.capture(&member.identity)?;
+            match &captured {
                 Capture::Blob { hash, length } => {
                     let material = member.material.as_ref().expect("ready material");
                     if material.hash != *hash || material.length != *length {
@@ -511,16 +512,16 @@ impl Inner {
                     } else {
                         None
                     };
-                    if rows.extent.is_none() {
-                        if let Some(material) = &member.material {
-                            writes.push(ProductWrite {
-                                product: Product::Blob(material.clone()),
-                                location: member.anchor.clone(),
-                                parents: Vec::new(),
-                                machine: rows.observation.as_ref().map(|o| o.machine.clone()),
-                                output_index: writes.len() as u64,
-                            });
-                        }
+                    if rows.extent.is_none()
+                        && let Some(material) = &member.material
+                    {
+                        writes.push(ProductWrite {
+                            product: Product::Blob(material.clone()),
+                            location: member.anchor.clone(),
+                            parents: Vec::new(),
+                            machine: rows.observation.as_ref().map(|o| o.machine.clone()),
+                            output_index: writes.len() as u64,
+                        });
                     }
                     writes.push(ProductWrite {
                         machine: rows.observation.as_ref().map(|o| o.machine.clone()),
