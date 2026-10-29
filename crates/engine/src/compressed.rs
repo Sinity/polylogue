@@ -184,6 +184,45 @@ impl Engine {
                     0
                 }
         };
+        let observed_receipt = if same || historical.is_some() {
+            let mut stream = decoded(&source, compressed)?;
+            let mut hash = blake3::Hasher::new();
+            let mut observed_length = 0u64;
+            let mut buffer = [0; 65536];
+            loop {
+                let read = stream.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hash.update(&buffer[..read]);
+                observed_length += read as u64;
+            }
+            if observed_length != length
+                || FileFacts::of(&source.metadata()?) != facts
+                || FileFacts::of(&std::fs::metadata(path)?) != facts
+            {
+                return Err(std::io::Error::other(
+                    "source changed during equal rollout observation",
+                )
+                .into());
+            }
+            Some(
+                self.acquisition_context(
+                    path,
+                    "codex",
+                    polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                )
+                .finish(
+                    polylogue_store::primary::RawRange {
+                        start: 0,
+                        end: length,
+                    },
+                    polylogue_model::BlobHash(*hash.finalize().as_bytes()),
+                ),
+            )
+        } else {
+            None
+        };
         let added = if same || historical.is_some() {
             0
         } else {
@@ -252,6 +291,13 @@ impl Engine {
                 prepared
             },
         ));
+        if let Some(receipt) = observed_receipt {
+            group
+                .last_mut()
+                .expect("transcript batch")
+                .batch
+                .acquisition = Some(receipt);
+        }
         self.writer
             .sender()?
             .store_group(group, Arc::clone(&self.blobs))?
