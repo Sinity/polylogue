@@ -232,3 +232,16 @@ fn a_skipped_start_uses_the_first_valid_instant_and_a_skipped_date_is_empty() {
         "2011-12-29"
     );
 }
+
+#[test]
+fn calendar_labels_keep_iso_years_before_the_common_era() {
+    let day = day("UTC", "00:00:00");
+    let at = "-0400-02-29T12:00:00Z"
+        .parse::<Timestamp>()
+        .unwrap()
+        .as_millisecond();
+    assert_eq!(day_label(&day, at).unwrap(), "-0400-02-29");
+    assert_eq!(month_label(&day, at).unwrap(), "-0400-02");
+    // Gregorian weekdays repeat every 400 years: this is the Tuesday of ISO week 9.
+    assert_eq!(week_label(&day, at).unwrap(), "-0400-W09");
+}
