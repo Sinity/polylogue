@@ -316,3 +316,81 @@ fn result_output_schemas_require_the_canonical_kept_columns() {
         actual
     );
 }
+
+#[test]
+fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
+    let archive = WriterArchive::new();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let expected;
+    {
+        let reader = pool.reader().unwrap();
+        let options = polylogue_query::Options {
+            clock: Clock::new(
+                "2026-10-29T12:00:00.123456789Z".parse().unwrap(),
+                DaySetting::new(
+                    jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                    jiff::civil::time(4, 0, 0, 0),
+                )
+                .unwrap(),
+            ),
+            origins: vec![],
+            command_words: vec![],
+            page_size: Some(20),
+            random_seed: Some(91),
+            embeddings: false,
+            self_session: None,
+            saved: BTreeMap::new(),
+            fields: vec![],
+            kept: BTreeMap::new(),
+            chat_pages: vec![],
+        };
+        let text = "sessions since:7d";
+        let selection = reader.prepare_selection(text, &options).unwrap();
+        let object = selection.query_object().unwrap();
+        archive.writer.query_object(object.clone()).unwrap();
+        let mut count = 0;
+        reader
+            .visit_selection::<crate::selection::SelectionError>(&selection, None, None, |_| {
+                count += 1;
+                Ok(std::ops::ControlFlow::Continue(()))
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+        let context = selection.cursor_context();
+        assert!(!context.resolved_times.is_empty());
+        let mut execution = run(
+            &object,
+            "actual-execution",
+            1,
+            reader.change_position().unwrap(),
+        );
+        execution.at = Timestamp::from_unix_ns(options.clock.now.as_nanosecond()).unwrap();
+        execution.count = Some(count);
+        execution.replay.bound_ast = selection.bound_query().query().clone();
+        execution.replay.context = CursorContext {
+            question: context.question,
+            clock: context.clock.wire(),
+            resolved_times: context.resolved_times.clone(),
+            random_seed: context.random_seed,
+            read_positions: context.read_positions.clone(),
+            versions: context.versions.clone(),
+        };
+        execution.replay.scope_fingerprint = reader.query_scope_fingerprint().unwrap();
+        execution.replay.original_text = text.into();
+        archive
+            .writer
+            .record_query_run(execution.clone())
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap();
+        expected = execution;
+    }
+    let stored = pool
+        .reader()
+        .unwrap()
+        .query_run(&expected.id, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.value, expected);
+}
