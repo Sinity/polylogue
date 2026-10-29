@@ -227,6 +227,7 @@ fn seed_restart(dir: &Path) {
         }
         let (blob, file) = archive.prepare_blob(&bytes).unwrap();
         let batch = Batch {
+            required_disposition: None,
             input: input.clone(),
             change: if from == 0 {
                 Change::First

@@ -251,6 +251,7 @@ impl Engine {
             let st = self.inputs.get_mut(&path).expect("known input");
             st.facts = None;
             let batch = polylogue_store::Batch {
+                required_disposition: None,
                 input: InputKey {
                     id: st.input_id.clone(),
                     format: st.origin.name.into(),
