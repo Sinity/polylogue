@@ -6,7 +6,6 @@ mod stored_names;
 
 pub mod atomic_write;
 pub mod authored;
-pub mod authorship;
 pub mod batch;
 mod block;
 pub mod bundle;

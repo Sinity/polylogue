@@ -7,6 +7,7 @@
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
 //! - `segments/`: every input blob, in append-only shared frame segments.
 
+mod admission;
 pub mod archive;
 pub mod assets;
 pub mod backfill_jobs;
@@ -14,7 +15,6 @@ pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
 pub mod completion;
-mod admission;
 mod container_members;
 pub mod context;
 pub mod coverage;
@@ -39,6 +39,7 @@ mod repo_lookup;
 pub mod schema;
 pub mod schema_inputs;
 pub mod search;
+pub mod selection;
 pub mod session_export;
 mod session_row;
 pub(crate) mod source;
@@ -65,6 +66,7 @@ pub use context::{
 };
 pub use read::{
     BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
+    scope::ReadScopeToken,
 };
 pub use writer::{
     Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
@@ -116,6 +118,8 @@ pub enum StoreError {
     ReadPoolClosed,
     #[error("read pool is full while this thread holds a reader; reuse or release it")]
     ReadPoolNested,
+    #[error("the access scope changed while this read was in progress")]
+    ScopeChanged,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
     #[error("request {0} was already used for different content")]

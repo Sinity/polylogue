@@ -9,6 +9,7 @@ pub mod compile;
 pub mod explain;
 pub mod fields;
 pub mod parse;
+pub mod plan;
 pub mod time;
 pub mod units;
 

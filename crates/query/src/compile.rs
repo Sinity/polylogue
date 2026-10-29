@@ -59,6 +59,58 @@ pub struct Options {
     pub chat_pages: Vec<ChatPage>,
 }
 
+impl Options {
+    /// Declared parameter names use the same AST visitor as execution binding.
+    pub fn definition_parameters(&self, text: &str) -> Result<Vec<String>, QueryError> {
+        definition_parameters(text, &self.catalog())
+    }
+    /// The execution registry plus immutable kept output types for this read.
+    pub fn catalog(&self) -> query_language::catalog::Catalog {
+        source::catalog(self)
+    }
+
+    /// Source field types for completion and binding, without executing SQL.
+    /// A relation keeps its native fields; a shaped result exposes its columns.
+    pub fn output_schema(
+        &self,
+        text: &str,
+    ) -> Result<query_language::catalog::OutputSchema, QueryError> {
+        let (query, _) = source::expand(text, self)?;
+        let catalog = self.catalog();
+        if query.stages.is_empty() && query.attach.is_empty() {
+            if let Source::Unit { unit, .. } = &query.source {
+                let declaration = catalog
+                    .unit(unit)
+                    .ok_or_else(|| not_built("this output unit"))?;
+                return Ok(query_language::catalog::OutputSchema {
+                    unit: Some(declaration.name.clone()),
+                    fields: declaration.fields.clone(),
+                    main_time: declaration.main_time.clone(),
+                });
+            }
+            if let Some(schema) = catalog.source_output(&query.source) {
+                return Ok(schema.clone());
+            }
+        }
+        let program = compile(text, self)?;
+        Ok(source::schema(
+            &catalog,
+            program.unit.name(),
+            &program.columns,
+        ))
+    }
+}
+
+/// Parameter metadata shares execution's AST visitor and never scans DSL text.
+pub fn definition_parameters(text: &str, catalog: &query_language::catalog::Catalog) -> Result<Vec<String>, QueryError> {
+    let mut query=crate::parse::with_catalog(text,catalog)?;
+    saved::Parameters::names(&mut query)
+}
+/// Output types for immutable kept columns, with no execution clock or I/O.
+pub fn columns_schema(catalog: &query_language::catalog::Catalog, unit: &str, columns: &[Column]) -> query_language::catalog::OutputSchema {
+    source::schema(catalog,unit,columns)
+}
+
 /// A saved query's definition: the text of one revision of a
 /// `saved_query` note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
