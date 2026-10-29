@@ -32,6 +32,7 @@ fn checkpoint_value() -> Checkpoint {
         evaluator: Evaluator::new(0, vec![], Policy::default(), &CalendarFixture).unwrap(),
         rules: vec![],
         rule_sources: Default::default(),
+        rule_revisions: Default::default(),
         host: None,
         notifications: None,
         outlet_attempts: Default::default(),

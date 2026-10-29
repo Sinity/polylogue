@@ -20,13 +20,18 @@ pub(super) fn active(
     rule.validate(configuration).map_err(|e| e.to_string())?;
     let id = format!("authored:{}", note.first_note);
     let previous = checkpoint.rules.iter().find(|r| r.version.id == id);
-    let revision = if checkpoint.rule_sources.get(&id) == Some(&note.id) {
-        previous.map(|r| r.version.revision).unwrap_or(1)
+    let revision = if checkpoint.rule_sources.get(&id) == Some(&note.id) && previous.is_some() {
+        previous.expect("active revision checked").version.revision
     } else {
-        previous
-            .map_or(Some(1), |r| r.version.revision.checked_add(1))
+        checkpoint
+            .rule_revisions
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
             .ok_or("rule adoption ordinal overflow")?
     };
+
     let author = if note.author == Author::Operator {
         shared_signals::Author::Operator
     } else {

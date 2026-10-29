@@ -19,6 +19,8 @@ pub struct Checkpoint {
     /// Source revision identities for the local monotone adoption ordinal.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rule_sources: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rule_revisions: BTreeMap<String, u64>,
     /// Present only for the standalone host deliverer. Primary uses Forward.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostPolicy>,

@@ -119,13 +119,13 @@ async fn connect(d: &Daemon) -> Option<zbus::Connection> {
     }
 }
 
-fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, String> {
+fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held> {
     if update.released.is_some() {
         return Err(
             "notification ownership transfer requires the confirmed producer outbox".into(),
         );
     }
-    let clock = d.query_clock().map_err(|e| e.to_string())?;
+    let clock = d.query_clock().map_err(Held::from)?;
     let previous = load(d)?;
     let prior = previous
         .as_ref()
@@ -143,7 +143,7 @@ fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Strin
         .cloned()
         .map(|receipt| Event::Desktop { receipt })
         .collect();
-    persist(d, prior, checkpoint, vec![], events).map(|(_, confirmed)| confirmed)
+    Ok(persist(d, prior, checkpoint, vec![], events)?.1)
 }
 
 pub(super) async fn run(d: Arc<Daemon>, stop: &std::sync::mpsc::Receiver<()>) {
@@ -188,13 +188,13 @@ pub(super) async fn run(d: Arc<Daemon>, stop: &std::sync::mpsc::Receiver<()>) {
           match persist_update(&d,&update) {
            Ok(true)=>{let _=update.persisted.send(());}
            Ok(false)=>held(&d,"notification receipt is pending canonical confirmation"),
-           Err(error)=>held(&d,&error),
+           Err(error)=>report(&d,error),
           }
          }
          _=interval.tick()=>{
           match tick(&d){
            Ok(notices)=>{for notice in notices {let _=requests.send(NotificationRequest::Deliver(Box::new(notice)));}}
-           Err(error)=>held(&d,&error),
+           Err(error)=>report(&d,error),
           }
          }
         }

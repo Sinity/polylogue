@@ -34,6 +34,39 @@ fn held(d: &Daemon, reason: &str) {
     }
 }
 
+#[derive(serde::Serialize)]
+struct Held {
+    reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<command_surface::Answer<()>>,
+}
+impl From<String> for Held {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            detail: None,
+        }
+    }
+}
+impl From<&str> for Held {
+    fn from(reason: &str) -> Self {
+        reason.to_owned().into()
+    }
+}
+impl From<crate::daemon::Response> for Held {
+    fn from(response: crate::daemon::Response) -> Self {
+        Self {
+            reason: "owner context is unavailable".into(),
+            detail: Some(response.answer().map(|_| ())),
+        }
+    }
+}
+fn report(d: &Daemon, hold: Held) {
+    if let Ok(mut status) = d.signals.lock() {
+        *status = json!({"held":[hold]});
+    }
+}
+
 fn initial(d: &Daemon, clock: &query_language::time::Clock) -> Result<Checkpoint, String> {
     let calendar = DayCalendar::new(clock.day.clone());
     let host = if d.archive.is_primary() {
@@ -63,6 +96,7 @@ fn initial(d: &Daemon, clock: &query_language::time::Clock) -> Result<Checkpoint
         .map_err(|e| e.to_string())?,
         rules: vec![],
         rule_sources: BTreeMap::new(),
+        rule_revisions: BTreeMap::new(),
         host,
         notifications: None,
         outlet_attempts: BTreeMap::new(),
@@ -102,10 +136,8 @@ fn persist(
     Ok((id, !outcome.pending))
 }
 
-fn tick(d: &Daemon) -> Result<Vec<shared_signals::notifications::Notice>, String> {
-    let clock = d
-        .query_clock()
-        .map_err(|e| format!("owner context unavailable: {e}"))?;
+fn tick(d: &Daemon) -> Result<Vec<shared_signals::notifications::Notice>, Held> {
+    let clock = d.query_clock().map_err(Held::from)?;
     let now = clock.now.as_millisecond();
     let calendar = DayCalendar::new(clock.day.clone());
     let previous = load(d)?;
@@ -133,9 +165,12 @@ fn tick(d: &Daemon) -> Result<Vec<shared_signals::notifications::Notice>, String
                 if !checkpoint.rules.iter().any(|old| old == &rule) {
                     checkpoint
                         .evaluator
-                        .replace_rule(rule.clone(), now, &calendar)
+                        .replace_rule(rule.clone(), &calendar)
                         .map_err(|e| e.to_string())?;
                 }
+                checkpoint
+                    .rule_revisions
+                    .insert(rule.version.id.clone(), rule.version.revision);
                 checkpoint
                     .rule_sources
                     .insert(rule.version.id.clone(), note.id.clone());
