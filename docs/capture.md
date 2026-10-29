@@ -104,8 +104,9 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
   ```
 
   - `proc` is the **process identity**: `harness_pid` is the hook's parent (the harness runs the hook directly), `harness_start` the process start time, `boot_id` the kernel's boot ID. PID reuse and reboots never let a new process inherit an old session.
-  - `inherited` records another harness's session variables present in the environment (a Codex run launched from a Claude Code shell). It is launch evidence for delegation, never the child's identity. No other environment variable is read or stored.
+  - `inherited` records another harness's session variables present in the environment (a Codex run launched from a Claude Code shell). It is launch evidence for delegation, never the child's identity. The native terminal adapter variables described below are also recorded when present.
   - Hermes's `conversation_history` is left out of the line, because its transcript is read from `state.db`.
+- **Native work context.** At session start, the hook observes Git's common directory, root commits, current revision and branch, and the repository named in `remote.origin.url`, using one shared 50 ms budget. An unavailable or timed-out observation is recorded as unknown with its reason. A source cwd selects where Git observes these facts; it does not identify the repository. When Kitty supplies its native process and window variables, the hook records that adapter key with host, boot and parent-process identity. Structured task and pull-request references supplied by a harness remain in the payload; prompts, goal prose and shell commands do not supply objective identities.
 - **A hook event belongs to its session and never creates one.** The daemon reads spool files like any growing file; a hook line keeps its identity across re-storage.
 - **Hooks complete transcripts** where the transcript is short of the truth: `PreCompact` gives the pre-compaction context, `PostToolUse` restores a truncated tool result (the order is inline, then sidecar, then hook), `UserPromptSubmit` gives exact paste bodies.
 

@@ -112,3 +112,28 @@ fn each_invocation_carries_its_own_time_and_process() {
     assert_eq!(first.data["tool_name"], "Bash");
     assert_ne!(first.data, second.data);
 }
+
+#[test]
+fn native_work_evidence_keeps_its_exact_hook_record_range_and_unknowns() {
+    let git =
+        json!({"common_dir":"/synthetic/.git","root_commits":["abc"],"head":"def","branch":null});
+    let terminal = json!({"host":"synthetic","adapter":"kitty","process_id":22,"window_id":"4","parent_process_id":1,"boot_id":"boot"});
+    let input = lines(&[
+        json!({"event_id":"native-one","event":"SessionStart","provider":"codex","session_id":"session","at_ns":"1000000",
+        "git_identity":git,"terminal_identity":terminal,"boot_id":"boot","repository":"https://example.test/project.git",
+        "native_unavailable":["optional observation unavailable"],
+        "payload":{"objectives":[{"kind":"task","reference":"demo-1","repository":"https://example.test/project.git"}]}}),
+    ]);
+    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let event = &step.output.events[0];
+    assert_eq!(event.range, Some((0, input.len() as u64 - 1)));
+    assert_eq!(event.data["git_identity"], git);
+    assert_eq!(event.data["terminal_identity"], terminal);
+    assert_eq!(event.data["objectives"][0]["reference"], "demo-1");
+    assert_eq!(event.data["boot_id"], "boot");
+    assert_eq!(
+        event.data["native_unavailable"],
+        json!(["optional observation unavailable"])
+    );
+    assert!(step.output.sessions.is_empty());
+}
