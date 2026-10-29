@@ -27,3 +27,8 @@ These filenames are planned destinations, not existing pages.
 | `derived.md` | derivation declarations: construct, unit, denominator, validity, evidence |
 | `assertion-kinds.md` | assertion kinds: key, value shape, link roles |
 | `sinex-kinds.md` | the `polylogue.*` kinds Polylogue registers with Sinex |
+
+The [Polylogue bundle v1 schema](polylogue-bundle-v1.schema.json) is generated
+from `model::bundle::Record`. Regenerate it with
+`cargo run -p polylogue-model --example bundle_schema -- docs/reference/polylogue-bundle-v1.schema.json`.
+The model tests check that the published schema matches the current wire types.

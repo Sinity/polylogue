@@ -1,0 +1,3975 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Record",
+  "description": "A stream starts with exactly one manifest. All remaining values are\nindependently staged and validated before the receiving archive writes.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/Manifest"
+        },
+        "record": {
+          "type": "string",
+          "const": "manifest"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/SessionRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "session"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/MessageRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "message"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/InputEventRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "event"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/LinkRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "link"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/DocumentRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "document"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/AuthoredRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "authored"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/VariantRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "variant"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/VariantPartRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "variant_part"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/BlobRecord"
+        },
+        "record": {
+          "type": "string",
+          "const": "blob"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "data"
+      ]
+    }
+  ],
+  "$defs": {
+    "ApiError": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "The harness's label (`rate_limit`, `invalid_request`).",
+          "type": "string"
+        },
+        "status": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "Attachment": {
+      "type": "object",
+      "properties": {
+        "blob": {
+          "description": "The bytes, when they were inline or found on disk and stored.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BlobHash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "direction": {
+          "$ref": "#/$defs/AttachmentDirection"
+        },
+        "media_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_id": {
+          "description": "The source's own ID for the file (ChatGPT `file-…`), by which an\nexport's separately stored bytes are found.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "direction"
+      ]
+    },
+    "AttachmentDirection": {
+      "description": "Whether the attachment went to the model or came from it.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "input",
+            "output"
+          ]
+        },
+        {
+          "description": "The source records the media without establishing model delivery or authorship.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "Attribution": {
+      "description": "Which agent, skill, plugin or MCP tool the work was done for.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mcp_server": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mcp_tool": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plugin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skill": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Author": {
+      "type": "string"
+    },
+    "AuthoredEffect": {
+      "description": "A request may insert several linked records; empty effects still preserve\nan entity-deduplicated request's identity and original outcome.",
+      "type": "object",
+      "properties": {
+        "backfills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BackfillChange"
+          }
+        },
+        "chats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatChange"
+          }
+        },
+        "deliveries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeliveryChange"
+          }
+        },
+        "kept_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/KeptResult"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NoteRevision"
+          }
+        },
+        "settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Setting"
+          }
+        },
+        "variants": {
+          "$ref": "#/$defs/VariantEffect"
+        },
+        "withdrawals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Withdrawal"
+          }
+        }
+      },
+      "required": [
+        "variants",
+        "notes",
+        "withdrawals",
+        "settings",
+        "kept_results",
+        "deliveries",
+        "chats",
+        "backfills"
+      ]
+    },
+    "AuthoredRecord": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "imports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ImportAttribution"
+          }
+        },
+        "prepared": {
+          "$ref": "#/$defs/PreparedRequest"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "prepared"
+      ]
+    },
+    "BackfillChange": {
+      "type": "object",
+      "properties": {
+        "added_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BackfillEvent"
+          }
+        },
+        "job": {
+          "$ref": "#/$defs/BackfillJob"
+        }
+      },
+      "required": [
+        "job",
+        "added_events"
+      ]
+    },
+    "BackfillCounts": {
+      "description": "Conversations a job has handled so far.",
+      "type": "object",
+      "properties": {
+        "captured": {
+          "description": "Captured and stored.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "failed": {
+          "description": "Could not be captured.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "listed": {
+          "description": "Listed by the provider.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unchanged": {
+          "description": "Already in the archive as the provider has them.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "listed",
+        "captured",
+        "unchanged",
+        "failed"
+      ]
+    },
+    "BackfillEvent": {
+      "description": "One thing that happened to a backfill job.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "counts": {
+          "$ref": "#/$defs/BackfillCounts"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "position": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "at",
+        "kind",
+        "counts"
+      ]
+    },
+    "BackfillJob": {
+      "description": "A stored backfill job with everything that happened to it.",
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BackfillEvent"
+          }
+        },
+        "execution": {
+          "$ref": "#/$defs/ExecutionEligibility"
+        },
+        "id": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "since": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "created_at",
+        "execution",
+        "events"
+      ]
+    },
+    "BackfillReport": {
+      "description": "What the extension instance holding a job reports.",
+      "type": "object",
+      "properties": {
+        "counts": {
+          "$ref": "#/$defs/BackfillCounts"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`progress`, `finished` or `failed`.",
+          "type": "string"
+        },
+        "position": {
+          "description": "Where in the provider's conversation list to continue.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "counts"
+      ]
+    },
+    "BlobHash": {
+      "type": "string"
+    },
+    "BlobRecord": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "$ref": "#/$defs/FileDescriptor"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "file"
+      ]
+    },
+    "Block": {
+      "description": "One part of a message's content, in the order the source wrote it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "redacted": {
+              "type": "boolean"
+            },
+            "signature": {
+              "description": "Present when the provider sent the reasoning encrypted or\nredacted; the text is then absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "thinking"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "description": "What the call does, decided by the origin's parser from its own\ntool names.",
+              "$ref": "#/$defs/ToolAction",
+              "default": "other"
+            },
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "command": {
+              "description": "The shell command, when the call runs one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "input": true,
+            "path": {
+              "description": "The file the call reads or edits, when it names one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run_by_script": {
+              "description": "A command a script call ran, recorded without a call of its own:\nthe script's call is then not counted beside its commands.",
+              "type": "boolean"
+            },
+            "tool": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_call"
+            }
+          },
+          "required": [
+            "type",
+            "input"
+          ]
+        },
+        {
+          "description": "A tool's result. It lives in the message that carried it and points\nat its call by `call_id`; the call may be in an earlier message.",
+          "type": "object",
+          "properties": {
+            "attachments": {
+              "description": "Images or files the tool returned (screenshots, rendered pages).",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Attachment"
+              }
+            },
+            "call_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "data": {
+              "description": "Structured result data the source attached beside the text."
+            },
+            "outcome": {
+              "$ref": "#/$defs/ToolOutcome"
+            },
+            "output": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reported_duration_ms": {
+              "description": "Elapsed time explicitly reported by the harness, distinct from timestamp differences.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "tool_result"
+            }
+          },
+          "required": [
+            "type",
+            "outcome"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "image"
+            }
+          },
+          "$ref": "#/$defs/Attachment",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "file"
+            }
+          },
+          "$ref": "#/$defs/Attachment",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "A block kind this origin's parser does not read yet. Kept whole.",
+          "type": "object",
+          "properties": {
+            "data": true,
+            "type": {
+              "type": "string",
+              "const": "other"
+            },
+            "type_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "type_name",
+            "data"
+          ]
+        }
+      ]
+    },
+    "ChangePosition": {
+      "type": "object",
+      "properties": {
+        "archive": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "generation": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "generation",
+        "index",
+        "archive"
+      ]
+    },
+    "ChatAction": {
+      "description": "A stored chat action with everything that happened to it.",
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatAttachment"
+          }
+        },
+        "created_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatEvent"
+          }
+        },
+        "execution": {
+          "$ref": "#/$defs/ExecutionEligibility"
+        },
+        "id": {
+          "type": "string"
+        },
+        "needs_approval": {
+          "type": "boolean"
+        },
+        "request": true,
+        "request_hash": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "request_key": {
+          "type": "string"
+        },
+        "stage_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "request_key",
+        "request_hash",
+        "request",
+        "stage_only",
+        "needs_approval",
+        "created_at",
+        "execution",
+        "attachments",
+        "events"
+      ]
+    },
+    "ChatAttachment": {
+      "description": "A file attached to a chat action.",
+      "type": "object",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "id": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "blob",
+        "name",
+        "media_type",
+        "size"
+      ]
+    },
+    "ChatChange": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ChatAction"
+        },
+        "added_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatEvent"
+          }
+        }
+      },
+      "required": [
+        "action",
+        "added_events"
+      ]
+    },
+    "ChatEvent": {
+      "description": "One thing that happened to a chat action.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "by": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "receipt": true,
+        "request": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "at",
+        "kind",
+        "phase"
+      ]
+    },
+    "Counts": {
+      "type": "object",
+      "properties": {
+        "authored": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "blobs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "documents": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "events": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "links": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "messages": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessions": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "variant_parts": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "variants": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sessions",
+        "messages",
+        "documents",
+        "events",
+        "links",
+        "authored",
+        "variants",
+        "variant_parts",
+        "blobs"
+      ]
+    },
+    "Coverage": {
+      "description": "Aggregated omission counts stay bounded by the finite target kinds/views.\nIndividual omitted references remain ordinary streamed Omission items.",
+      "type": "object",
+      "properties": {
+        "accepted_views": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/View"
+          }
+        },
+        "omitted": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "target": {
+          "$ref": "#/$defs/TargetKind"
+        },
+        "view": {
+          "$ref": "#/$defs/View"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "view",
+        "omitted",
+        "accepted_views"
+      ]
+    },
+    "CurrencyState": {
+      "type": "string",
+      "enum": [
+        "current",
+        "behind",
+        "unknown",
+        "unavailable"
+      ]
+    },
+    "Delivery": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "type": "string"
+        },
+        "left_out": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LeftOut"
+          }
+        },
+        "recipient_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recipient_kind": {
+          "type": "string"
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sender": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "recipient_kind",
+        "sender",
+        "event",
+        "text",
+        "refs"
+      ]
+    },
+    "DeliveryChange": {
+      "type": "object",
+      "properties": {
+        "added_events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeliveryEvent"
+          }
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryRecord"
+        }
+      },
+      "required": [
+        "delivery",
+        "added_events"
+      ]
+    },
+    "DeliveryEvent": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request": {
+          "type": "string"
+        },
+        "what": {
+          "$ref": "#/$defs/DeliveryOutcome"
+        }
+      },
+      "required": [
+        "request",
+        "what",
+        "at"
+      ]
+    },
+    "DeliveryOutcome": {
+      "description": "What happened to a delivery after it was prepared.",
+      "type": "string",
+      "enum": [
+        "delivered",
+        "failed",
+        "not_sent",
+        "used"
+      ]
+    },
+    "DeliveryRecord": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeliveryEvent"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "prepared": {
+          "$ref": "#/$defs/Delivery"
+        }
+      },
+      "required": [
+        "id",
+        "prepared",
+        "at",
+        "events"
+      ]
+    },
+    "Document": {
+      "type": "object",
+      "properties": {
+        "authorship": {
+          "$ref": "#/$defs/DocumentAuthorship",
+          "default": "unknown"
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Block"
+          }
+        },
+        "id": {
+          "$ref": "#/$defs/DocumentId"
+        },
+        "metadata": {
+          "description": "Source descriptors. Projected text is held only in blocks."
+        },
+        "purpose": {
+          "$ref": "#/$defs/DocumentPurpose"
+        },
+        "source_time": {
+          "description": "The provider's time for the source record, not an inferred writing time.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_time_precision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Precision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_time_quality": {
+          "$ref": "#/$defs/TimeQuality",
+          "default": "unknown"
+        },
+        "source_time_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "purpose",
+        "blocks"
+      ]
+    },
+    "DocumentAuthorship": {
+      "description": "A purpose, project creator or upload does not by itself establish a writer.",
+      "type": "string",
+      "enum": [
+        "unknown",
+        "human",
+        "model",
+        "harness"
+      ]
+    },
+    "DocumentId": {
+      "type": "string"
+    },
+    "DocumentPurpose": {
+      "type": "string",
+      "enum": [
+        "instruction",
+        "context",
+        "memory",
+        "transcript"
+      ]
+    },
+    "DocumentRecord": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "document": {
+          "$ref": "#/$defs/Document"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "document"
+      ]
+    },
+    "ErrorReason": {
+      "oneOf": [
+        {
+          "description": "Refused by a permission rule, mode or the user; the source's own label.",
+          "type": "object",
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "denied"
+            }
+          },
+          "required": [
+            "kind",
+            "detail"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "interrupted"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "timed_out"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "detail": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "kind": {
+              "type": "string",
+              "const": "exit_code"
+            }
+          },
+          "required": [
+            "kind",
+            "detail"
+          ]
+        }
+      ]
+    },
+    "Event": {
+      "description": "A recorded fact from an input, optionally tied to a conversation.\nWithout a conversation, it belongs to its input and record range.",
+      "type": "object",
+      "properties": {
+        "after": {
+          "description": "The message the event follows, when the source places it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at_precision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Precision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at_quality": {
+          "$ref": "#/$defs/TimeQuality",
+          "default": "unknown"
+        },
+        "at_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "description": "Native fields kept as written, or the typed data of a normalized\nobservation (`observations`). A native event is used as written."
+        },
+        "kind": {
+          "description": "Plain snake_case name: `compaction`, `permission_mode`, `hook_run`.",
+          "type": "string"
+        },
+        "range": {
+          "description": "The byte range of the record the event came from, in its input. It\nplaces the event among the input's messages and cites its bytes.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          ]
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "data"
+      ]
+    },
+    "EventSourceClaim": {
+      "description": "One original source claim carried through a bundle. The receiving\narchive keeps its actual local bundle input and chain separately.",
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "source_chain": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "source_end": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source_start": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input",
+        "source",
+        "source_chain"
+      ]
+    },
+    "ExecutionEligibility": {
+      "type": "string",
+      "enum": [
+        "live",
+        "historical"
+      ]
+    },
+    "Expansion": {
+      "type": "string",
+      "enum": [
+        "none",
+        "collapsed",
+        "full"
+      ]
+    },
+    "FileDescriptor": {
+      "type": "object",
+      "properties": {
+        "hash": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "path": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "hash",
+        "size"
+      ]
+    },
+    "Flags": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/Format"
+        },
+        "read": {
+          "$ref": "#/$defs/ReadOptions"
+        },
+        "with_blobs": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "with_blobs",
+        "read"
+      ]
+    },
+    "Format": {
+      "type": "string",
+      "enum": [
+        "json",
+        "jsonl",
+        "markdown",
+        "html"
+      ]
+    },
+    "ImportAttribution": {
+      "description": "Computed from the local bundle ingress and authenticated importing channel.",
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Author"
+        },
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "chain": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "input": {
+          "type": "string"
+        },
+        "machine": {
+          "description": "The receiving machine, computed by the import boundary.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "machine",
+        "input",
+        "chain",
+        "actor",
+        "at"
+      ]
+    },
+    "ImportedEventIdentity": {
+      "description": "A stable event identity and all original claims for the selected\nsource reading. Equal imports union claims rather than dropping one.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventSourceClaim"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sources"
+      ]
+    },
+    "IndexCurrency": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "standalone"
+            }
+          },
+          "required": [
+            "mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "applied_position": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lag_positions": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "mode": {
+              "type": "string",
+              "const": "primary"
+            },
+            "owner_position": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "owner_position_seconds_ago": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "reachable": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/CurrencyState"
+            }
+          },
+          "required": [
+            "mode",
+            "state"
+          ]
+        }
+      ]
+    },
+    "InputEventRecord": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "event": {
+          "$ref": "#/$defs/Event"
+        },
+        "identity": {
+          "$ref": "#/$defs/ImportedEventIdentity"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "identity",
+        "event"
+      ]
+    },
+    "KeptResult": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "type": "string"
+        },
+        "ran_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "read_at": {
+          "type": "string"
+        },
+        "rows_json": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "query",
+        "ran_at",
+        "read_at",
+        "rows_json"
+      ]
+    },
+    "LeftOut": {
+      "description": "A reference or section a delivery did not include, and why.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "what": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "what",
+        "reason"
+      ]
+    },
+    "Link": {
+      "description": "A relationship between two sessions, from an explicit marker in the\nsource, never from guessing.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "The parent's message the child branched from or was spawned by.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "call_id": {
+          "description": "The tool call in the parent that spawned the child.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "child": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "evidence": {
+          "description": "The source field that states the link, for display and audit.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/LinkKind"
+        },
+        "parent": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "kind",
+        "parent",
+        "child",
+        "evidence"
+      ]
+    },
+    "LinkKind": {
+      "oneOf": [
+        {
+          "description": "A fork: the child shares the parent's messages up to `at`, then\ndiverges. The child stores only its own tail.",
+          "type": "string",
+          "const": "fork"
+        },
+        {
+          "description": "A session spawned by a tool call in the parent (a subagent).",
+          "type": "string",
+          "const": "spawn"
+        },
+        {
+          "description": "The same work continued in a new session (after compaction or a\nresume).",
+          "type": "string",
+          "const": "continuation"
+        },
+        {
+          "description": "The child's file repeats messages the parent originated; they are\nstored once, in the parent.",
+          "type": "string",
+          "const": "copy"
+        }
+      ]
+    },
+    "LinkRecord": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "link": {
+          "$ref": "#/$defs/Link"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "link"
+      ]
+    },
+    "Manifest": {
+      "description": "The primary manifest stays small. A directory package names a streamed\ninventory, rather than collecting all members in the manifest.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "caught_up": {
+          "type": "boolean"
+        },
+        "counts": {
+          "$ref": "#/$defs/Counts"
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Coverage"
+          }
+        },
+        "currency": {
+          "$ref": "#/$defs/IndexCurrency"
+        },
+        "enabled_variants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "flags": {
+          "$ref": "#/$defs/Flags"
+        },
+        "format": {
+          "type": "string"
+        },
+        "incomplete": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "inventory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "type": "string"
+        },
+        "query_text": {
+          "type": "string"
+        },
+        "ran_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "read_at": {
+          "$ref": "#/$defs/ChangePosition"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "version",
+        "query",
+        "query_text",
+        "ran_at",
+        "read_at",
+        "caught_up",
+        "currency",
+        "counts",
+        "flags",
+        "enabled_variants",
+        "author"
+      ]
+    },
+    "Message": {
+      "description": "One message, stored once, in the session where it originated.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at_precision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Precision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at_quality": {
+          "$ref": "#/$defs/TimeQuality",
+          "default": "unknown"
+        },
+        "at_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attrs": {
+          "description": "Provider fields indexed as given, including nested citations and content details.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Block"
+          }
+        },
+        "duration_ms": {
+          "description": "How long the response took, as the tool reported it.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "$ref": "#/$defs/MessageId"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent": {
+          "description": "The message this one replies to, when the source records it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "production": {
+          "description": "How the harness produced the message, beyond its content.",
+          "$ref": "#/$defs/Production"
+        },
+        "prompt_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reported_cost_usd": {
+          "description": "Cost the tool itself reported for this response, as written.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "stop_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "id",
+        "session",
+        "role",
+        "blocks"
+      ]
+    },
+    "MessageId": {
+      "type": "string"
+    },
+    "MessageRecord": {
+      "type": "object",
+      "properties": {
+        "block_count": {
+          "description": "Original source cardinality; absent positions are unavailable or omitted.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "block_ordinals": {
+          "description": "Original source positions aligned to `message.blocks`.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "message": {
+          "$ref": "#/$defs/Message"
+        },
+        "order": {
+          "description": "Reading position within the physical session, independent of commit\norder and of the receiving bundle's actual local byte extents.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ref": {
+          "type": "string"
+        },
+        "source_version": {
+          "description": "Identity of the complete source value, unchanged by view projection.",
+          "$ref": "#/$defs/BlobHash"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "order",
+        "source_version",
+        "block_count",
+        "block_ordinals",
+        "message"
+      ]
+    },
+    "NewBackfillJob": {
+      "description": "A new backfill job, as the writer stores it.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "provider": {
+          "description": "The web chat, by the extension's name for it.",
+          "type": "string"
+        },
+        "since": {
+          "description": "Only conversations the provider changed at or after this time (ms).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "provider"
+      ]
+    },
+    "NewChatAction": {
+      "description": "A new chat action, as the writer stores it.",
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatAttachment"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "needs_approval": {
+          "type": "boolean"
+        },
+        "request": true,
+        "request_hash": {
+          "description": "BLAKE3 of the request's JSON.",
+          "$ref": "#/$defs/BlobHash"
+        },
+        "request_key": {
+          "description": "The request's idempotency key: a resent request is the same action.",
+          "type": "string"
+        },
+        "stage_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "request_key",
+        "request_hash",
+        "request",
+        "stage_only",
+        "needs_approval",
+        "attachments"
+      ]
+    },
+    "NewNote": {
+      "description": "A note to write. The writing request's ID becomes the note's ID.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/NoteKind"
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/Relation"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "revises": {
+          "description": "The note this one revises; the new note joins its family.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Reference"
+          }
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "author",
+        "targets"
+      ]
+    },
+    "NewVariant": {
+      "description": "A rendition submitted through the authored write path. Provenance is\ncomputed by the accepting surface before constructing this value.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_lang": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/VariantKind"
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NewVariantPart"
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "source_hash": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "to_lang": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "via": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "source_hash",
+        "kind",
+        "author",
+        "via",
+        "parts"
+      ]
+    },
+    "NewVariantPart": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "of": {
+          "type": "string"
+        },
+        "of_hash": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "relation": {
+          "$ref": "#/$defs/VariantRelation"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "of",
+        "of_hash",
+        "relation",
+        "body"
+      ]
+    },
+    "Note": {
+      "description": "A stored note.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "first_note": {
+          "description": "The first note of its revisions; its own ID for a first note.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/NoteKind"
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "$ref": "#/$defs/Relation"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Reference"
+          }
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "first_note",
+        "kind",
+        "author",
+        "created_at",
+        "targets"
+      ]
+    },
+    "NoteKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "note",
+            "title",
+            "decision",
+            "claim",
+            "lesson",
+            "blocker",
+            "question",
+            "finding",
+            "judgment",
+            "outcome",
+            "hidden",
+            "correction",
+            "handoff",
+            "goal",
+            "problem",
+            "forecast",
+            "saved_query",
+            "ping"
+          ]
+        },
+        {
+          "description": "`key` is the tag; `value` optionally carries membership, affinity\nand confidence as JSON.",
+          "type": "string",
+          "const": "tag"
+        },
+        {
+          "description": "A watch with a delivery rule.",
+          "type": "string",
+          "const": "signal"
+        }
+      ]
+    },
+    "NoteRevision": {
+      "type": "object",
+      "properties": {
+        "machine": {
+          "type": "string"
+        },
+        "note": {
+          "$ref": "#/$defs/Note"
+        },
+        "revises": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "note",
+        "machine",
+        "revises"
+      ]
+    },
+    "Precision": {
+      "description": "Precision is carried separately from the represented half-open period.",
+      "type": "string",
+      "enum": [
+        "instant",
+        "second",
+        "minute",
+        "day",
+        "month",
+        "year",
+        "bounded"
+      ]
+    },
+    "PreparedRequest": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/AuthoredEffect"
+        },
+        "outcome": {
+          "$ref": "#/$defs/UserOutcome"
+        },
+        "request": {
+          "$ref": "#/$defs/UserRequest"
+        }
+      },
+      "required": [
+        "request",
+        "outcome",
+        "effect"
+      ]
+    },
+    "Production": {
+      "description": "What the harness recorded about producing a message: the settings it\nran with, who asked for it, and the API's own diagnostics. Measurement\nreads these; none of it is content.",
+      "type": "object",
+      "properties": {
+        "advisor_model": {
+          "description": "The model consulted as an advisor for this response.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_error": {
+          "description": "The API error this message reports, instead of a response.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attribution": {
+          "$ref": "#/$defs/Attribution"
+        },
+        "cache_miss": {
+          "description": "Why the prompt cache missed, as the API reported it, with the\ntokens it cost."
+        },
+        "effort": {
+          "description": "Reasoning effort the request asked for (`low`, `medium`, `high`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "first_token_ms": {
+          "description": "Time to the first token of the response.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "iterations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "permission": {
+          "description": "The permission decision for the tool call this message answers:\ndecision, its source and the kind of reason."
+        },
+        "phase": {
+          "description": "Provider response channel, such as commentary or final.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quota": {
+          "description": "The subscription's quota state the tool reported with this\nresponse: which windows, how used, when they reset.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuotaReading"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "refusal": {
+          "description": "The refusal category and explanation, when the model refused."
+        },
+        "request": {
+          "description": "The harness's ID for the API request that produced this message,\nwhich its request records carry.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_id": {
+          "description": "The model API's own ID for the request (Anthropic `requestId`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_model": {
+          "description": "The model the request named, when the one that answered differs\n(a fallback) or carries a variant suffix.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "response_boundary_unknown": {
+          "description": "These recorded items have no evidenced model-response grouping.\nNone is an absent update; a supplied false remains distinct.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "server_tool_use": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServerToolUse"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "thinking_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "turn_origin": {
+          "description": "What started the turn, when not a person at the terminal (`sdk`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "PromptKind": {
+      "description": "A user prompt's category. `Harness` also marks runtime-written notices\ncarried under another native role; the other kinds remain user categories.\nThis keeps harness material out of counts of what a person or model wrote.",
+      "oneOf": [
+        {
+          "description": "Prose a person typed.",
+          "type": "string",
+          "const": "prose"
+        },
+        {
+          "description": "A slash command, shell escape or memory line.",
+          "type": "string",
+          "const": "command"
+        },
+        {
+          "description": "Text the harness wrote: tool results, interruption notices, local\ncommand output, injected reminders or assistant-shaped runtime notices.",
+          "type": "string",
+          "const": "harness"
+        },
+        {
+          "description": "Text another model wrote as this session's prompt: a subagent's\ntask, a coordinator's follow-up, a peer agent's message.",
+          "type": "string",
+          "const": "model"
+        }
+      ]
+    },
+    "QuotaReading": {
+      "description": "The subscription quota a tool reported with a response, read from its\nown wire format by the origin's parser.",
+      "type": "object",
+      "properties": {
+        "credits": {
+          "description": "Prepaid credits left, as the tool wrote the number.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QuotaWindow"
+          }
+        }
+      }
+    },
+    "QuotaWindow": {
+      "description": "The state of one limit as the tool reported it with a response.",
+      "type": "object",
+      "properties": {
+        "from_first_response": {
+          "description": "The window starts with the first response after the previous one\nended, not on a fixed schedule.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "The tool's name for the limit (`codex`, `five_hour`, `seven_day`).",
+          "type": "string"
+        },
+        "minutes": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "resets_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "description": "The tool's own word for the state (`allowed`, `rejected`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "used_percent": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "limit",
+        "minutes"
+      ]
+    },
+    "ReadOptions": {
+      "description": "Absent expansions distinguish defaults from explicit unsupported options.",
+      "type": "object",
+      "properties": {
+        "assertions": {
+          "type": "boolean",
+          "default": true
+        },
+        "branches": {
+          "type": "boolean",
+          "default": false
+        },
+        "for_others": {
+          "type": "boolean",
+          "default": false
+        },
+        "harness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expansion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inherited": {
+          "type": "boolean",
+          "default": false
+        },
+        "output_lines": {
+          "description": "Head and tail lines of expanded tool output. Zero keeps the complete output.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 100,
+          "minimum": 0
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expansion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expansion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "turns": {
+          "type": "boolean",
+          "default": false
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "view": {
+          "$ref": "#/$defs/View",
+          "default": "transcript"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Reference": {
+      "type": "string"
+    },
+    "Relation": {
+      "description": "How one note relates to something else.",
+      "type": "string",
+      "enum": [
+        "answers",
+        "challenges",
+        "derived_from",
+        "blocks",
+        "corrects",
+        "member_of"
+      ]
+    },
+    "Role": {
+      "type": "string",
+      "enum": [
+        "user",
+        "assistant",
+        "system"
+      ]
+    },
+    "ServerToolUse": {
+      "description": "Server tools are billed separately from model tokens.",
+      "type": "object",
+      "properties": {
+        "web_fetch_requests": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "web_search_requests": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    },
+    "Session": {
+      "description": "A session's own facts. Counts and times derived from its messages live\nin the index, not here.",
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "description": "Working directories in the order the session used them. A later\ncorrection from the tool (Claude Code `relocated`) is appended.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "git_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "instructions": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/SessionKind"
+        },
+        "mode": {
+          "description": "How the harness ran the session, when not interactively (Claude\nCode `bg` for a background session).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "description": "The repository the session worked in, as the tool names it (a\nremote URL), when it records one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_precision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Precision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_quality": {
+          "$ref": "#/$defs/TimeQuality",
+          "default": "unknown"
+        },
+        "started_until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Title"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool_version": {
+          "description": "Version of the tool that wrote the session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ]
+    },
+    "SessionId": {
+      "type": "string"
+    },
+    "SessionKind": {
+      "oneOf": [
+        {
+          "description": "A conversation or agent run the operator started.",
+          "type": "string",
+          "const": "main"
+        },
+        {
+          "description": "A session another session spawned (a Claude Code subagent).",
+          "type": "string",
+          "const": "subagent"
+        },
+        {
+          "description": "A side conversation kept inside its parent's file.",
+          "type": "string",
+          "const": "sidechain"
+        },
+        {
+          "description": "The model call that compacted another session's history (a Claude\nCode `agent-acompact` file): the summarize prompt and the summary.",
+          "type": "string",
+          "const": "compaction"
+        }
+      ]
+    },
+    "SessionRecord": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ref": {
+          "type": "string"
+        },
+        "session": {
+          "$ref": "#/$defs/Session"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "session"
+      ]
+    },
+    "Setting": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "set_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "machine",
+        "key",
+        "value",
+        "author",
+        "set_at"
+      ]
+    },
+    "TargetKind": {
+      "type": "string",
+      "enum": [
+        "session",
+        "message",
+        "block",
+        "document",
+        "event",
+        "authored",
+        "query"
+      ]
+    },
+    "TimeQuality": {
+      "description": "Where an event time came from. Producers classify their own evidence;\nquality never substitutes for precision or invents an unknown instant.",
+      "type": "string",
+      "enum": [
+        "intrinsic",
+        "captured",
+        "file_mtime",
+        "operator",
+        "unknown"
+      ]
+    },
+    "Timestamp": {
+      "description": "A point in time as a source stated it. Unknown times are `None` at the\nuse site, never a zero or a guess.",
+      "type": "string"
+    },
+    "Title": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/TitleSource"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "source"
+      ]
+    },
+    "TitleSource": {
+      "description": "Where a title came from, highest precedence first.",
+      "oneOf": [
+        {
+          "description": "The operator renamed it.",
+          "type": "string",
+          "const": "custom"
+        },
+        {
+          "description": "The tool generated it.",
+          "type": "string",
+          "const": "generated"
+        },
+        {
+          "description": "The tool's summary line.",
+          "type": "string",
+          "const": "summary"
+        },
+        {
+          "description": "The agent's name, for a spawned session.",
+          "type": "string",
+          "const": "agent_name"
+        },
+        {
+          "description": "The imported file's name, used when no recorded title is available.",
+          "type": "string",
+          "const": "file_name"
+        }
+      ]
+    },
+    "ToolAction": {
+      "description": "What a tool call does. Each origin's parser maps its own tool names to\none of these; everything after the parser reads only the action.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "file_read",
+            "file_write",
+            "file_edit",
+            "web",
+            "other"
+          ]
+        },
+        {
+          "description": "Runs a shell command; `command` holds it.",
+          "type": "string",
+          "const": "shell"
+        },
+        {
+          "description": "Runs code in a sandbox (a Python cell, a code-mode script).",
+          "type": "string",
+          "const": "code"
+        },
+        {
+          "description": "Searches files, symbols or tools.",
+          "type": "string",
+          "const": "search"
+        },
+        {
+          "description": "Starts another agent.",
+          "type": "string",
+          "const": "subagent"
+        },
+        {
+          "description": "A tool an MCP server provides.",
+          "type": "string",
+          "const": "mcp"
+        }
+      ]
+    },
+    "ToolOutcome": {
+      "description": "How a tool call ended. Kinds never collapse into one success figure.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ok"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "error"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ErrorReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The call was made and no result ever arrived.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "no_result"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "A result exists but its status cannot be read.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unknown"
+            },
+            "reason": {
+              "$ref": "#/$defs/UnknownReason"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "UnknownReason": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "status_field_unreadable"
+          ]
+        },
+        {
+          "description": "Started in the background; completion has not been seen yet.",
+          "type": "string",
+          "const": "running_in_background"
+        }
+      ]
+    },
+    "Usage": {
+      "description": "Token counts for one model response or recorded usage observation, by kind: uncached input, cached\ninput, output and reasoning, plus cache writes. A count the source did\nnot report is `None`, never 0.",
+      "type": "object",
+      "properties": {
+        "cache_write": {
+          "description": "Input tokens written to a cache, billed apart from plain input.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cache_write_1h": {
+          "description": "The part of `cache_write` written with a one-hour lifetime, which is\nbilled at a higher rate than the default five-minute writes.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_input": {
+          "description": "Input tokens read from a cache.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "input": {
+          "description": "Input tokens not served from a cache.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reasoning": {
+          "description": "Reasoning tokens, when the source reports them apart from output.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "service_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "speed": {
+          "description": "A generation mode priced differently from the standard one, as the\ntool records it (`fast`, `standard`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "UserOutcome": {
+      "description": "What a user write created, or found already created by the same\nrequest.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The note, delivery or setting row the request wrote.",
+          "type": "string"
+        },
+        "pending": {
+          "type": "boolean",
+          "default": false
+        },
+        "repeat": {
+          "description": "The request had already been written; nothing changed.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "repeat"
+      ]
+    },
+    "UserRequest": {
+      "description": "One user write with the request that carries it.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "id": {
+          "type": "string"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "write": {
+          "$ref": "#/$defs/UserWrite"
+        }
+      },
+      "required": [
+        "id",
+        "machine",
+        "at",
+        "write"
+      ]
+    },
+    "UserWrite": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "variant": {
+              "$ref": "#/$defs/NewVariant"
+            },
+            "write": {
+              "type": "string",
+              "const": "variant"
+            }
+          },
+          "required": [
+            "write",
+            "variant"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "note": {
+              "$ref": "#/$defs/NewNote"
+            },
+            "write": {
+              "type": "string",
+              "const": "add_note"
+            }
+          },
+          "required": [
+            "write",
+            "note"
+          ]
+        },
+        {
+          "description": "A saved query whose previous revision is resolved by name.",
+          "type": "object",
+          "properties": {
+            "note": {
+              "$ref": "#/$defs/NewNote"
+            },
+            "write": {
+              "type": "string",
+              "const": "save_query"
+            }
+          },
+          "required": [
+            "write",
+            "note"
+          ]
+        },
+        {
+          "description": "The query intent and its resolved targets, kept together for retries and replay.",
+          "type": "object",
+          "properties": {
+            "note": {
+              "$ref": "#/$defs/NewNote"
+            },
+            "query": {
+              "type": "string"
+            },
+            "write": {
+              "type": "string",
+              "const": "annotate_query"
+            }
+          },
+          "required": [
+            "write",
+            "query",
+            "note"
+          ]
+        },
+        {
+          "description": "Withdraws a note family: the newest revision and every older one.",
+          "type": "object",
+          "properties": {
+            "author": {
+              "$ref": "#/$defs/Author"
+            },
+            "note": {
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "write": {
+              "type": "string",
+              "const": "withdraw"
+            }
+          },
+          "required": [
+            "write",
+            "note",
+            "author"
+          ]
+        },
+        {
+          "description": "Context prepared for a recipient, with its exact text.",
+          "type": "object",
+          "properties": {
+            "write": {
+              "type": "string",
+              "const": "deliver"
+            }
+          },
+          "$ref": "#/$defs/Delivery",
+          "required": [
+            "write"
+          ]
+        },
+        {
+          "description": "Advice already printed by a hook, recorded with its delivered outcome.",
+          "type": "object",
+          "properties": {
+            "write": {
+              "type": "string",
+              "const": "delivered_advice"
+            }
+          },
+          "$ref": "#/$defs/Delivery",
+          "required": [
+            "write"
+          ]
+        },
+        {
+          "description": "What happened to a prepared delivery.",
+          "type": "object",
+          "properties": {
+            "delivery": {
+              "type": "string"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "what": {
+              "$ref": "#/$defs/DeliveryOutcome"
+            },
+            "write": {
+              "type": "string",
+              "const": "delivery_event"
+            }
+          },
+          "required": [
+            "write",
+            "delivery",
+            "what"
+          ]
+        },
+        {
+          "description": "The exact rows a query returned, kept to be read back as\n`result:<id>`.",
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "query": {
+              "type": "string"
+            },
+            "read_at": {
+              "description": "What the query read: its resolved time, as JSON.",
+              "type": "string"
+            },
+            "rows_json": {
+              "description": "The stored rows, match rows and their columns, as JSON.",
+              "type": "string"
+            },
+            "write": {
+              "type": "string",
+              "const": "keep_result"
+            }
+          },
+          "required": [
+            "write",
+            "query",
+            "rows_json",
+            "read_at"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "author": {
+              "$ref": "#/$defs/Author"
+            },
+            "key": {
+              "type": "string"
+            },
+            "machine": {
+              "description": "`None` for an archive-wide key, otherwise this machine.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "value": {
+              "type": "string"
+            },
+            "write": {
+              "type": "string",
+              "const": "set_setting"
+            }
+          },
+          "required": [
+            "write",
+            "key",
+            "value",
+            "author"
+          ]
+        },
+        {
+          "description": "A chat action the operator queued; a resent request finds the\naction it made.",
+          "type": "object",
+          "properties": {
+            "write": {
+              "type": "string",
+              "const": "chat_enqueue"
+            }
+          },
+          "$ref": "#/$defs/NewChatAction",
+          "required": [
+            "write"
+          ]
+        },
+        {
+          "description": "The extension instance `by` takes the oldest queued chat action;\n`NotFound` when none is queued or another is out.",
+          "type": "object",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "write": {
+              "type": "string",
+              "const": "chat_claim"
+            }
+          },
+          "required": [
+            "write",
+            "by"
+          ]
+        },
+        {
+          "description": "What the instance holding a chat action's claim reports.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "by": {
+              "type": "string"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "phase": {
+              "type": "string"
+            },
+            "receipt": true,
+            "write": {
+              "type": "string",
+              "const": "chat_report"
+            }
+          },
+          "required": [
+            "write",
+            "action",
+            "by",
+            "outcome",
+            "phase"
+          ]
+        },
+        {
+          "description": "The operator approves or declines a held submit.",
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "approve": {
+              "type": "boolean"
+            },
+            "by": {
+              "type": "string"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "write": {
+              "type": "string",
+              "const": "chat_decide"
+            }
+          },
+          "required": [
+            "write",
+            "action",
+            "approve",
+            "by"
+          ]
+        },
+        {
+          "description": "The operator starts a backfill job; the provider's job that has not\nended is found instead of a second one.",
+          "type": "object",
+          "properties": {
+            "write": {
+              "type": "string",
+              "const": "backfill_start"
+            }
+          },
+          "$ref": "#/$defs/NewBackfillJob",
+          "required": [
+            "write"
+          ]
+        },
+        {
+          "description": "The extension instance `by` takes the job it holds or the oldest\nwaiting one; `NotFound` when there is none.",
+          "type": "object",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "write": {
+              "type": "string",
+              "const": "backfill_claim"
+            }
+          },
+          "required": [
+            "write",
+            "by"
+          ]
+        },
+        {
+          "description": "What the instance holding a backfill job's claim reports.",
+          "type": "object",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "job": {
+              "type": "string"
+            },
+            "report": {
+              "$ref": "#/$defs/BackfillReport"
+            },
+            "write": {
+              "type": "string",
+              "const": "backfill_report"
+            }
+          },
+          "required": [
+            "write",
+            "job",
+            "by",
+            "report"
+          ]
+        },
+        {
+          "description": "The operator stops a backfill job.",
+          "type": "object",
+          "properties": {
+            "job": {
+              "type": "string"
+            },
+            "write": {
+              "type": "string",
+              "const": "backfill_cancel"
+            }
+          },
+          "required": [
+            "write",
+            "job"
+          ]
+        }
+      ]
+    },
+    "Variant": {
+      "description": "One revision. Parts stream independently so a rendition of a large\nsession never requires a session-sized collection.",
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "from_lang": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/VariantKind"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "source_hash": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "to_lang": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "via": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "root",
+        "source",
+        "source_hash",
+        "kind",
+        "author",
+        "via",
+        "machine",
+        "created_at",
+        "commit_seq"
+      ]
+    },
+    "VariantEffect": {
+      "description": "Exact authored records carried by preparation and confirmation.",
+      "type": "object",
+      "properties": {
+        "variant_parts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VariantPart"
+          }
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Variant"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "variants",
+        "variant_parts"
+      ]
+    },
+    "VariantKind": {
+      "type": "string",
+      "enum": [
+        "translation",
+        "transliteration",
+        "simplification",
+        "summary"
+      ]
+    },
+    "VariantPart": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "n": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "of": {
+          "type": "string"
+        },
+        "of_hash": {
+          "$ref": "#/$defs/BlobHash"
+        },
+        "relation": {
+          "$ref": "#/$defs/VariantRelation"
+        },
+        "variant": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "variant",
+        "n",
+        "of",
+        "of_hash",
+        "relation",
+        "body"
+      ]
+    },
+    "VariantPartRecord": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "imports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ImportAttribution"
+          }
+        },
+        "part": {
+          "$ref": "#/$defs/VariantPart"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "part"
+      ]
+    },
+    "VariantRecord": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "imports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ImportAttribution"
+          }
+        },
+        "ref": {
+          "type": "string"
+        },
+        "variant": {
+          "$ref": "#/$defs/Variant"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ref",
+        "commit",
+        "variant"
+      ]
+    },
+    "VariantRelation": {
+      "type": "string",
+      "enum": [
+        "translates",
+        "transliterates",
+        "simplifies",
+        "summarizes",
+        "omits",
+        "expands",
+        "reorders"
+      ]
+    },
+    "View": {
+      "type": "string",
+      "enum": [
+        "transcript",
+        "dialogue",
+        "summary",
+        "context",
+        "links",
+        "changes",
+        "live",
+        "raw"
+      ]
+    },
+    "Withdrawal": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/Author"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "first_note": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "withdraws": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "first_note",
+        "machine",
+        "author",
+        "created_at",
+        "withdraws"
+      ]
+    }
+  }
+}
