@@ -105,21 +105,18 @@ impl Field {
 pub(crate) enum NativeTimeStorage {
     Tuple,
     Event,
-    Document,
 }
 impl NativeTimeStorage {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Tuple => "tuple",
             Self::Event => "event",
-            Self::Document => "document",
         }
     }
     pub(crate) fn from_code(code: &str) -> Option<Self> {
         match code {
             "tuple" => Some(Self::Tuple),
             "event" => Some(Self::Event),
-            "document" => Some(Self::Document),
             _ => None,
         }
     }
@@ -169,9 +166,11 @@ pub(crate) fn native_time(unit: Unit, field: &str, a: &Aliases) -> Option<Native
             NativeTimeStorage::Tuple,
         ),
         (Events, "at") => ("{r}.at", "{r}.fields", NativeTimeStorage::Event),
-        (Documents, "source_time") => {
-            ("{r}.source_time", "{r}.fields", NativeTimeStorage::Document)
-        }
+        (Documents, "source_time") => (
+            "{r}.source_time",
+            "(SELECT {r}_time.time FROM document_source {r}_time WHERE {r}_time.document_pk={r}.pk AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain AND {r}_time.shown=1)",
+            NativeTimeStorage::Tuple,
+        ),
         _ => return None,
     };
     Some(NativeTime {

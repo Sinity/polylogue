@@ -3,7 +3,7 @@ use crate::query::{
     fields::{NativeTimeAttribute, NativeTimeStorage},
     time::NativePredicate,
 };
-use polylogue_model::{Document, Event, Precision, TimeEvidence, Timestamp};
+use polylogue_model::{Event, Precision, TimeEvidence, Timestamp};
 use query_language::semantics::Truth;
 use query_language::time::{Time, TimeValue};
 use rusqlite::{Connection, functions::FunctionFlags};
@@ -23,11 +23,6 @@ fn evidence(
         NativeTimeStorage::Event => {
             let event: Event = serde_json::from_slice(&crate::encoding::unpack_bytes(bytes)?)?;
             (event.at, event.time_evidence())
-        }
-        NativeTimeStorage::Document => {
-            let document: Document =
-                serde_json::from_slice(&crate::encoding::unpack_bytes(bytes)?)?;
-            (document.source_time, document.time_evidence())
         }
     };
     value.1.validate(value.0)?;
