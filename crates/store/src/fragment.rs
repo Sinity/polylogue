@@ -147,7 +147,6 @@ pub(crate) fn retract(conn: &Connection, input: i64, chain: i64) -> Result<()> {
         "DELETE FROM text_fragment_source WHERE input_pk=?1 AND chain=?2",
         params![input, chain],
     )?;
-    conn.execute("DELETE FROM text_fragment WHERE NOT EXISTS(SELECT 1 FROM text_fragment_source s WHERE s.hash=text_fragment.hash)",[])?;
     Ok(())
 }
 

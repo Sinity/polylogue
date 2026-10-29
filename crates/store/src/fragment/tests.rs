@@ -116,6 +116,11 @@ fn fragment_preparation_binds_actual_ranges_and_never_uses_sender_commit() {
 #[test]
 fn fragment_conflicts_remain_distinct_claims_and_retraction_is_per_source() {
     let conn = database();
+    conn.execute(
+        "INSERT INTO input_ref VALUES(2,'other-input','polylogue-bundle')",
+        [],
+    )
+    .unwrap();
     let version = BlobHash::of(b"canonical version");
     for text in ["alpha", "other"] {
         let output = output(record(0, text, Some(5), version));
@@ -129,6 +134,10 @@ fn fragment_conflicts_remain_distinct_claims_and_retraction_is_per_source() {
         .unwrap()
         .apply(&conn, 1, 2, 9, Some(200))
         .unwrap();
+    PreparedFragments::prepare(&output)
+        .unwrap()
+        .apply(&conn, 2, 1, 9, Some(300))
+        .unwrap();
     retract(&conn, 1, 1).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM text_fragment", [], |r| r
@@ -137,12 +146,25 @@ fn fragment_conflicts_remain_distinct_claims_and_retraction_is_per_source() {
         1
     );
     assert_eq!(
-        conn.query_row("SELECT chain FROM text_fragment_source", [], |r| r
+        conn.query_row("SELECT count(*) FROM text_fragment_source", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         2
     );
     retract(&conn, 1, 2).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM text_fragment", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT input_pk FROM text_fragment_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    retract(&conn, 2, 1).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM text_fragment", [], |r| r
             .get::<_, i64>(0))

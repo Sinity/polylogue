@@ -18,4 +18,8 @@ CREATE TABLE text_fragment_source (
   admitted INTEGER CHECK(admitted>0),
   PRIMARY KEY(hash,input_pk,chain,start,end)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX text_fragment_reading ON text_fragment_source(input_pk,chain);
+CREATE INDEX text_fragment_reading ON text_fragment_source(input_pk,chain,hash);
+CREATE TRIGGER text_fragment_source_removed AFTER DELETE ON text_fragment_source BEGIN
+  DELETE FROM text_fragment WHERE hash=OLD.hash
+    AND NOT EXISTS(SELECT 1 FROM text_fragment_source WHERE hash=OLD.hash);
+END;
