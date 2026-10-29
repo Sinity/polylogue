@@ -10,9 +10,10 @@ impl Inner {
                 "confirmed facts require a primary cache".into(),
             ));
         }
-        let before = crate::primary::projection::position(&self.index)?;
+        let before = crate::primary::projection::checkpoint(&self.index)?;
         let position = crate::primary::projection::apply(&mut self.index, &self.resolver, events)?;
-        if position != before {
+        if crate::primary::projection::checkpoint(&self.index)? != before {
+            self.commits.committed();
             self.derive_due = true;
             self.search.wake();
             self.report.transactions += 1;

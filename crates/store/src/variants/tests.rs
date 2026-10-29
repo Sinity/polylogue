@@ -131,7 +131,6 @@ fn variant_text_is_a_separate_derived_index_and_tracks_canonical_lifecycle() {
     index
         .execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
-    index.execute_batch(SCHEMA).unwrap();
     apply(&index, &effect, 7).unwrap();
     project(&index).unwrap();
     project(&index).unwrap();
@@ -165,4 +164,64 @@ fn variant_text_is_a_separate_derived_index_and_tracks_canonical_lifecycle() {
             .unwrap(),
         0
     );
+}
+#[test]
+fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
+    let archive = crate::fixture::writer::WriterArchive::new();
+    let first = request("first", None, "uniqueword");
+    archive.writer.user(first).unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let variant = reader.variant("first").unwrap().unwrap();
+    assert_eq!(variant.author, Author::Agent(None));
+    assert_eq!(variant.via, "mcp");
+    let enabled = vec!["translation:pl".into()];
+    assert_eq!(
+        reader
+            .enabled_variant("message:codex:source", BlobHash([1; 32]), &enabled)
+            .unwrap()
+            .unwrap()
+            .id,
+        "first"
+    );
+    assert!(
+        reader
+            .enabled_variant("message:codex:source", BlobHash([9; 32]), &enabled)
+            .unwrap()
+            .is_none()
+    );
+    let mut bodies = Vec::new();
+    reader
+        .visit_variant_parts("first", |part| {
+            bodies.push(part.body);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(bodies, ["uniqueword"]);
+    let mut hits = Vec::new();
+    reader
+        .visit_variant_search("uniqueword", Some("pl"), |hit| {
+            hits.push(hit.part.body);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(hits, ["uniqueword"]);
+    let mut hits = 0;
+    reader
+        .visit_variant_search("uniqueword", Some("en"), |_| {
+            hits += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(hits, 0);
+    drop(reader);
+    archive
+        .writer
+        .user(request("second-root", None, "otherword"))
+        .unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(matches!(
+        reader.enabled_variant("message:codex:source", BlobHash([1; 32]), &enabled),
+        Err(StoreError::Ambiguous { .. })
+    ));
 }

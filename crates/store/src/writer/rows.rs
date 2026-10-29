@@ -5,7 +5,8 @@ use super::*;
 use crate::first_build::FirstBuild;
 use crate::versions::VersionKind;
 
-mod assertions;
+mod checkpoint;
+mod events_links;
 mod retract;
 pub(super) use retract::prune_sessions;
 
@@ -95,7 +96,8 @@ fn apply_rows(
     }
     let input_pk = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk;
     validate_range(b, p)?;
-    if !confirmed && !admit_step(tx, input_pk, chain, p)? {
+    let previous_checkpoint = checkpoint::read(tx, input_pk, chain)?;
+    if !confirmed && !admit_step(previous_checkpoint.as_ref(), p)? {
         return Ok(0);
     }
     tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
@@ -104,11 +106,26 @@ fn apply_rows(
     }
     let rows = RowWriter {
         tx,
+        checkpoint: checkpoint::Update::new(
+            b,
+            p,
+            previous_checkpoint.as_ref(),
+            counter,
+            confirmed,
+            receipt,
+        )?,
+        source_admitted: if confirmed {
+            None
+        } else {
+            receipt
+                .or(p.receipt.as_ref())
+                .map(|r| r.sequence)
+                .filter(|n| *n > 0)
+        },
         input_pk,
         chain,
         rank: i64::from(b.input.arrival_rank),
         counter,
-        packed: &p.prepared.texts,
         first_build,
         keys,
         choices,
@@ -116,9 +133,40 @@ fn apply_rows(
     if p.reset {
         rows.retract()?;
     }
+    let native_admission = if confirmed {
+        None
+    } else {
+        receipt
+            .map(|receipt| {
+                u64::try_from(receipt.sequence)
+                    .map_err(|_| StoreError::Invalid("negative source admission".into()))
+            })
+            .transpose()?
+    };
+    for version in choices.message_versions.values() {
+        crate::versions::store_message(
+            tx,
+            &version.message,
+            &version.prepared,
+            crate::versions::TextRows {
+                packed: &p.prepared.texts,
+                first_build,
+                keys,
+            },
+            version.replace,
+            version.admitted.or(native_admission),
+        )?;
+    }
     let mut sessions: HashMap<String, i64> = HashMap::new();
-    for s in &p.output.sessions {
-        let (pk, _) = rows.upsert_session(s)?;
+    for (i, s) in p.output.sessions.iter().enumerate() {
+        let admitted = p
+            .output
+            .session_receipts
+            .get(&i)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        let (pk, _) = rows.upsert_session(s, admitted)?;
         sessions.insert(s.id.to_string(), pk);
     }
     let source = crate::documents::Source {
@@ -139,7 +187,14 @@ fn apply_rows(
             continue;
         }
         let prepared = &p.prepared.documents[i];
-        crate::documents::write(tx, &source, row, prepared)?;
+        let admitted = p
+            .output
+            .document_receipts
+            .get(&i)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        crate::documents::write(tx, &source, row, prepared, admitted)?;
     }
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
@@ -187,7 +242,14 @@ fn apply_rows(
         rows.write_event(i)?;
     }
     for (i, l) in p.output.links.iter().enumerate() {
-        rows.write_link(l, i)?;
+        let admitted = p
+            .output
+            .link_receipts
+            .get(&i)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        rows.write_link(l, i, admitted)?;
     }
     for l in &p.output.repo_lookups {
         crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain, counter)?;
@@ -296,23 +358,14 @@ fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
 
 /// A continuing reading can only extend its committed prefix. Explicit resets
 /// replace a complete reading, including row dumps whose accounting starts later.
-fn admit_step(tx: &Transaction<'_>, input: i64, chain: i64, step: &ParseStep) -> Result<bool> {
+fn admit_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Result<bool> {
     if step.reset {
         return Ok(true);
     }
-    let previous: Option<(u64, String)> = tx
-        .query_row(
-            "SELECT parsed_upto, reading_version FROM parse_state WHERE input_pk=?1 AND chain=?2",
-            params![input, chain],
-            |row| Ok((row.get::<_, i64>(0)? as u64, row.get(1)?)),
-        )
-        .optional()?;
-    let cursor = previous.as_ref().map_or(0, |(cursor, _)| *cursor);
+    let cursor = previous.map_or(0, checkpoint::Stored::cursor);
     if step.start < cursor
         && step.parsed_upto <= cursor
-        && previous
-            .as_ref()
-            .is_some_and(|(_, version)| version == &step.reading_version)
+        && previous.is_some_and(|prior| prior.version() == step.reading_version)
     {
         return Ok(false);
     }
@@ -334,12 +387,13 @@ struct StoredBlock<'a> {
 }
 
 pub(super) struct RowWriter<'a, 't> {
+    checkpoint: checkpoint::Update,
+    source_admitted: Option<i64>,
     tx: &'a Transaction<'t>,
     input_pk: i64,
     chain: i64,
     rank: i64,
     counter: i64,
-    packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`Writer::start`]): search entries,
     /// trigram entries and secondary indexes are built once, in bulk, when
     /// it ends ([`Inner::build_deferred`]), and rows are found by natural
@@ -414,7 +468,7 @@ impl RowWriter<'_, '_> {
     /// session's own columns are derived from every input's facts
     /// (derive/session.rs), so no arrival order decides them. Pending links
     /// naming the session as their child are resolved here.
-    fn upsert_session(&self, s: &Session) -> Result<(i64, bool)> {
+    fn upsert_session(&self, s: &Session, admitted: Option<i64>) -> Result<(i64, bool)> {
         let pk = self.session_row(&s.id, false)?;
         let merged = self
             .choices
@@ -423,10 +477,10 @@ impl RowWriter<'_, '_> {
             .ok_or_else(|| StoreError::Invalid("unresolved session facts".into()))?;
         self.tx
             .prepare_cached(
-                "INSERT INTO session_record(session_pk, input_pk, chain, facts) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts",
+                "INSERT INTO session_record(session_pk, input_pk, chain, facts, admitted) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts, admitted=coalesce(max(session_record.admitted,excluded.admitted),session_record.admitted,excluded.admitted)",
             )?
-            .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?])?;
+            .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?, admitted])?;
         let main = merged.kind == polylogue_model::SessionKind::Main;
         self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
         self.tx
@@ -469,19 +523,6 @@ impl RowWriter<'_, '_> {
         let id = m.id.to_string();
         let pk = self.message_pk(&id)?;
         let new = pk.is_none();
-        crate::versions::store(
-            self.tx,
-            VersionKind::Message,
-            &prepared.hash,
-            &prepared.body,
-            &m.blocks,
-            &prepared.texts,
-            crate::versions::TextRows {
-                packed: self.packed,
-                first_build: self.first_build,
-                keys: self.keys,
-            },
-        )?;
         let v = Version {
             time: prepared.time.clone(),
             input_pk: self.input_pk,
@@ -824,6 +865,7 @@ impl RowWriter<'_, '_> {
                 "prepared message differs from its parsed blocks".into(),
             ));
         }
+        prepared.projection.validate(m.blocks.len())?;
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()
@@ -840,7 +882,14 @@ impl RowWriter<'_, '_> {
                 data: data.as_deref(),
                 text_id,
             };
-            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
+            self.insert_block(
+                message_pk,
+                session_pk,
+                (idx as i64, prepared.projection.block_ordinals[idx]),
+                block,
+                stored,
+                ms(m.at),
+            )?;
         }
         Ok(())
     }
@@ -849,7 +898,7 @@ impl RowWriter<'_, '_> {
         &self,
         message_pk: i64,
         session_pk: i64,
-        idx: i64,
+        position: (i64, u64),
         block: &Block,
         StoredBlock {
             body,
@@ -858,6 +907,7 @@ impl RowWriter<'_, '_> {
         }: StoredBlock<'_>,
         at: Option<i64>,
     ) -> Result<()> {
+        let (idx, ordinal) = position;
         let bit = if matches!(block, Block::ToolResult { .. }) {
             2
         } else {
@@ -891,8 +941,8 @@ impl RowWriter<'_, '_> {
             .prepare_cached(
                 "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
                      blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                     other_type, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                     other_type, data, ordinal)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             )?
             .execute(params![
                 message_pk,
@@ -912,6 +962,7 @@ impl RowWriter<'_, '_> {
                 i64::from(encrypted),
                 other_type,
                 data,
+                ordinal.to_string(),
             ])?;
         let block_pk = self.tx.last_insert_rowid();
 
@@ -1056,63 +1107,16 @@ impl RowWriter<'_, '_> {
         self.store_event_value(index)
     }
 
-    fn write_link(&self, l: &Link, index: usize) -> Result<()> {
-        self.store_link(l, index)
+    fn write_link(&self, l: &Link, index: usize, admitted: Option<i64>) -> Result<()> {
+        self.store_link(l, index, admitted)
     }
 
     /// Parse position and record counts for the chain, committed with the rows
     /// they cover. A step from offset 0 replaces the chain's counts; a
     /// continuing step adds to them.
     fn write_parse_state(&self, b: &Batch, p: &ParseStep) -> Result<()> {
+        self.checkpoint.write(self.tx, self.input_pk, self.chain)?;
         let a = &p.counts;
-        let used: u64 = a.used.values().sum();
-        let skipped: u64 = a.skipped.values().sum();
-        let unreadable: u64 = a.unreadable.values().sum();
-        let status = if p.source_prefix_missing {
-            "partial"
-        } else if p.at_end && p.parsed_upto < b.length {
-            "waiting"
-        } else if p.no_parser_yet {
-            "no_parser_yet"
-        } else if p.parsed_upto >= b.length {
-            "done"
-        } else if p.at_end {
-            "waiting"
-        } else {
-            "parsing"
-        };
-        let detail = (status == "waiting").then(|| b.length.to_string());
-        let whole = p.reset;
-        let sql = if whole {
-            "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail, reading_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(input_pk, chain) DO UPDATE SET
-                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail, reading_version=excluded.reading_version,
-                 records = excluded.records, used = excluded.used,
-                 skipped = excluded.skipped, unreadable = excluded.unreadable"
-        } else {
-            "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail, reading_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(input_pk, chain) DO UPDATE SET
-                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail, reading_version=excluded.reading_version,
-                 records = records + excluded.records, used = used + excluded.used,
-                 skipped = skipped + excluded.skipped,
-                 unreadable = unreadable + excluded.unreadable"
-        };
-        self.tx.prepare_cached(sql)?.execute(params![
-            self.input_pk,
-            self.chain,
-            status,
-            p.parsed_upto as i64,
-            a.records as i64,
-            used as i64,
-            skipped as i64,
-            unreadable as i64,
-            detail,
-            p.reading_version.as_str(),
-        ])?;
         let groups = [
             ("skipped:", &a.skipped, 1),
             ("unreadable:", &a.unreadable, 0),

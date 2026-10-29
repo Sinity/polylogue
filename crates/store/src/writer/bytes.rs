@@ -248,6 +248,7 @@ pub(super) fn check_import_format(
 
 /// The observation a step records, checked against what the archive
 /// already holds for the input.
+#[cfg(test)]
 pub(super) fn observation(
     tx: &Connection,
     b: &Batch,

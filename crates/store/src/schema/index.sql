@@ -172,7 +172,7 @@ CREATE TABLE block (
   pk                INTEGER PRIMARY KEY,
   message_pk        INTEGER NOT NULL,
   session_pk        INTEGER NOT NULL,       -- the message's session, enforced by the composite key below
-  idx               INTEGER,                -- position in the message's content list; id = message id:idx
+  idx               INTEGER,                -- compact position among the stored blocks, used for ordering
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
   body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
@@ -188,7 +188,8 @@ CREATE TABLE block (
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
   data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
-                                            --   out of body and last, so a text read never reads or decodes it
+                                            --   out of body, so a text read never reads or decodes it
+  ordinal           TEXT,                   -- original u64 source position; NULL means native dense idx
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
@@ -346,6 +347,7 @@ CREATE TABLE parse_state (
   used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
   skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
   unreadable        INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
+  commit_seq INTEGER CHECK(commit_seq > 0), -- actual committed parse checkpoint, never a read position
   PRIMARY KEY (input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work
@@ -464,6 +466,7 @@ CREATE TABLE session_record (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   facts             TEXT NOT NULL,
+  admitted INTEGER CHECK(admitted > 0),
   PRIMARY KEY (session_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_record_input ON session_record(input_pk);   -- foreign-key check
@@ -547,6 +550,7 @@ CREATE TABLE document_source (
   time BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   version_hash BLOB NOT NULL REFERENCES document_version(version_hash),
   shown INTEGER NOT NULL DEFAULT 0,
+  admitted INTEGER CHECK(admitted > 0),
   PRIMARY KEY(document_pk,input_pk,chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_source_input ON document_source(input_pk,chain);
@@ -616,6 +620,11 @@ CREATE TABLE message_version (
   version_hash BLOB PRIMARY KEY,
   body BLOB NOT NULL
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE message_projection (
+  version_hash BLOB PRIMARY KEY REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  layout BLOB NOT NULL, -- original u64 block count and aligned original ordinals
+  admitted INTEGER CHECK(admitted > 0) -- latest immutable admission contributing these facts
+) STRICT, WITHOUT ROWID;
 CREATE TABLE message_version_text (
   version_hash BLOB NOT NULL REFERENCES message_version(version_hash) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
@@ -655,6 +664,7 @@ CREATE TABLE event_source (
   at INTEGER,
   fields BLOB NOT NULL,
   imported_provenance TEXT NOT NULL CHECK(json_valid(imported_provenance)),
+  admitted INTEGER CHECK(admitted > 0),
   PRIMARY KEY(event_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX event_source_input ON event_source(input_pk, chain);
@@ -669,6 +679,7 @@ CREATE TABLE link_source (
   chain INTEGER NOT NULL,
   value_pk INTEGER NOT NULL REFERENCES link_value(pk),
   arrival_rank INTEGER NOT NULL,
+  admitted INTEGER CHECK(admitted > 0),
   PRIMARY KEY(link_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX link_source_input ON link_source(input_pk, chain);

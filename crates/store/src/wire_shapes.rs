@@ -345,10 +345,10 @@ pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Resu
         last_end: step.parsed_upto,
         last_hash: hash,
     };
-    if let Some(old) = &previous {
-        if !reset {
-            reading.unreadable = add(old.unreadable, reading.unreadable)?;
-        }
+    if let Some(old) = &previous
+        && !reset
+    {
+        reading.unreadable = add(old.unreadable, reading.unreadable)?;
     }
     // A missing prefix is incomplete even if this suffix reached EOF.
     if previous.is_none() && step.start != 0 && !step.reset {

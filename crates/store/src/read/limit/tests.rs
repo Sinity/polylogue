@@ -40,8 +40,23 @@ fn cancelling_a_running_statement_frees_its_only_slot() {
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
     let limit = ReadLimit::new(Duration::from_secs(30), Default::default());
     std::thread::scope(|scope| {
-        let worker = scope.spawn(|| limit.scope(|| pool.reader().unwrap().query(SLOW, &[])));
-        started(&limit);
+        let (ready, acquired) = channel();
+        let worker_limit = &limit;
+        let worker_pool = &pool;
+        let worker = scope.spawn(move || {
+            worker_limit.scope(|| {
+                let reader = worker_pool.reader()?;
+                reader.query("SELECT 1", &[])?;
+                ready.send(worker_limit.sqlite_steps()).unwrap();
+                reader.query(SLOW, &[])
+            })
+        });
+        let before_query = acquired.recv().unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while limit.sqlite_steps() == before_query {
+            assert!(Instant::now() < until, "SLOW query never reached SQLite");
+            std::thread::yield_now();
+        }
         let start = Instant::now();
         limit.cancellation.cancel();
         assert!(matches!(

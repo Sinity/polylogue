@@ -509,6 +509,12 @@ fn plan(index: &Connection) -> Result<Plan> {
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(0)?;
             let product: Product = unpacked(&bytes)?;
+            let admitted = unsigned_column(row, 2)?;
+            if admitted == 0 {
+                return Err(StoreError::Invalid(
+                    "a canonical product has no positive admission receipt".into(),
+                ));
+            }
             let reading = product.reading().expect("parsed fact has reading").clone();
             if current.as_ref().is_some_and(|old| old != &reading) {
                 let old = current.take().expect("reading exists");
@@ -522,7 +528,13 @@ fn plan(index: &Connection) -> Result<Plan> {
             current = Some(reading.clone());
             length = length.max(reading.parsed_upto);
             match product {
-                Product::Session { facts, .. } => pending.output.sessions.push(facts),
+                Product::Session { facts, .. } => {
+                    pending
+                        .output
+                        .session_receipts
+                        .insert(pending.output.sessions.len(), admitted);
+                    pending.output.sessions.push(facts);
+                }
                 Product::Message {
                     facts,
                     order,
@@ -542,10 +554,18 @@ fn plan(index: &Connection) -> Result<Plan> {
                             .insert(pending.output.messages.len(), order);
                     }
                     attachments(&facts.message.blocks, &mut needed);
+                    pending
+                        .output
+                        .message_receipts
+                        .insert(pending.output.messages.len(), admitted);
                     pending.output.messages.push(*facts);
                 }
                 Product::Document { facts, .. } => {
                     attachments(&facts.document.blocks, &mut needed);
+                    pending
+                        .output
+                        .document_receipts
+                        .insert(pending.output.documents.len(), admitted);
                     pending.output.documents.push(facts);
                 }
                 Product::Event {
@@ -554,6 +574,10 @@ fn plan(index: &Connection) -> Result<Plan> {
                     imported,
                     ..
                 } => {
+                    pending
+                        .output
+                        .event_receipts
+                        .insert(pending.output.events.len(), admitted);
                     pending
                         .output
                         .event_ids
@@ -566,7 +590,13 @@ fn plan(index: &Connection) -> Result<Plan> {
                     }
                     pending.output.events.push(facts);
                 }
-                Product::Link { facts, .. } => pending.output.links.push(facts),
+                Product::Link { facts, .. } => {
+                    pending
+                        .output
+                        .link_receipts
+                        .insert(pending.output.links.len(), admitted);
+                    pending.output.links.push(facts);
+                }
                 Product::Background { facts, .. } => pending.output.background.push(facts),
                 Product::Repository { facts, .. } => pending.output.repo_lookups.push(facts),
                 Product::ParseProgress {
@@ -789,6 +819,7 @@ pub(crate) fn apply(
             }
         }
         crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
+        crate::variants::project(&tx)?;
         tx.execute(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
             [],

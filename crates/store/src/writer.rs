@@ -115,6 +115,7 @@ struct WriterQueue {
     bulk: Arc<Mutex<Option<SyncSender<Msg>>>>,
     users: Arc<Mutex<Option<SyncSender<UserMsg>>>>,
     resolver: Arc<resolve::Resolver>,
+    commits: crate::completion::CommitEvents,
 }
 
 type UserMsg = (
@@ -130,11 +131,13 @@ impl WriterQueue {
         bulk: SyncSender<Msg>,
         users: SyncSender<UserMsg>,
         resolver: Arc<resolve::Resolver>,
+        commits: crate::completion::CommitEvents,
     ) -> Self {
         Self {
             bulk: Arc::new(Mutex::new(Some(bulk))),
             users: Arc::new(Mutex::new(Some(users))),
             resolver,
+            commits,
         }
     }
 
@@ -327,7 +330,9 @@ impl Writer {
             None
         };
         let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
+        let commits = crate::completion::CommitEvents::default();
         let mut inner = Inner {
+            commits: commits.clone(),
             resolver: Arc::clone(&resolver),
             segment,
             archive: archive_conn,
@@ -353,7 +358,7 @@ impl Writer {
             .name("polylogue-writer".into())
             .spawn(move || inner.run(&rx, &users_rx))?;
         Ok(Self {
-            tx: Some(WriterQueue::new(tx, users, Arc::clone(&resolver))),
+            tx: Some(WriterQueue::new(tx, users, Arc::clone(&resolver), commits)),
             handle: Some(handle),
             started_empty: empty,
             resolver,
@@ -402,8 +407,6 @@ impl Writer {
         Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
     }
 
-    /// Writes one user request (a note, delivery or setting) and waits for
-    /// it to commit. It goes ahead of batches still queued.
     /// Restores an original authored effect without resolving its intent again.
     pub fn restore_authored(
         &self,
@@ -421,6 +424,8 @@ impl Writer {
         )
     }
 
+    /// Writes one user request and waits for its source commit.
+    /// It goes ahead of batches still queued.
     pub fn user(
         &self,
         request: polylogue_model::user::UserRequest,
@@ -524,6 +529,10 @@ impl Drop for Writer {
 pub struct WriterSender(WriterQueue);
 
 impl WriterSender {
+    pub fn completion_commits(&self) -> crate::completion::CommitSubscription {
+        self.0.commits.subscribe()
+    }
+
     pub fn store_group(
         &self,
         group: Vec<crate::staging::PreparedBatch>,
@@ -598,7 +607,7 @@ impl WriterSender {
         Ok(wait)
     }
 
-    /// As [`Writer::user`].
+    /// As [`Writer::restore_authored`].
     pub fn restore_authored(
         &self,
         prepared: polylogue_model::authored::PreparedRequest,
@@ -615,6 +624,7 @@ impl WriterSender {
         )
     }
 
+    /// As [`Writer::user`].
     pub fn user(
         &self,
         request: polylogue_model::user::UserRequest,
@@ -671,6 +681,7 @@ fn user_via(
 }
 
 struct Inner {
+    commits: crate::completion::CommitEvents,
     resolver: Arc<resolve::Resolver>,
     segment: Option<hashed_blobs::SegmentWriter>,
     archive: Connection,
@@ -860,7 +871,11 @@ impl Inner {
                 self.report.errors.push(format!("derive: {e}"));
             }
             for (staged, reply) in assets.drain(..) {
+                let before = self.index.total_changes();
                 let result = crate::assets::install(&mut self.index, &self.archive, *staged);
+                if result.is_ok() && self.index.total_changes() != before {
+                    self.commits.committed();
+                }
                 self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
@@ -897,6 +912,7 @@ impl Inner {
         bump_counter(&tx)?;
         crate::coverage::apply(&tx, &coverage)?;
         crate::write_lock::commit(tx)?;
+        self.commits.committed();
         self.report.transactions += 1;
         Ok(())
     }
@@ -906,6 +922,7 @@ impl Inner {
     /// stale, so the scan for stale sessions, which reads every session for
     /// every derivation, is skipped.
     fn derive(&mut self) -> Result<u64> {
+        self.project_variant_text()?;
         // Changes only when another connection commits.
         let version = |index: &Connection| -> Result<i64> {
             Ok(index.pragma_query_value(None, "data_version", |r| r.get(0))?)
@@ -930,7 +947,7 @@ impl Inner {
                 .execute("DELETE FROM meta WHERE key='reparse_deletions'", [])?;
         }
         let derived = crate::timing::time(crate::timing::Stage::Derive, || {
-            crate::derive::run(&mut self.index)
+            crate::derive::run(&mut self.index, Some(&self.commits))
         })?;
         self.derive_due = false;
         self.derived_version = Some(version(&self.index)?);
@@ -948,6 +965,7 @@ impl Inner {
         self.index.pragma_update(None, "synchronous", "normal")?;
         self.first_build = None;
         self.search.ready();
+        self.commits.committed();
         Ok(())
     }
 
@@ -1062,6 +1080,7 @@ impl Inner {
             tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
                 params!["segments/current.hb",synced.end as i64])?;
             crate::write_lock::commit(tx)?;
+            self.commits.committed();
             Ok(())
         })();
         if let Err(error) = result {
@@ -1108,7 +1127,9 @@ impl Inner {
             tx.rollback()?;
         } else {
             crate::write_lock::commit(tx)?;
+            self.commits.committed();
         }
+        self.project_variant_text()?;
         Ok(outcome)
     }
 
@@ -1150,6 +1171,7 @@ impl Inner {
             }
             crate::fault::check("write.archive_commit", "")?;
             crate::write_lock::commit(atx)?;
+            self.commits.committed();
             crate::fault::check("write.between_commits", "")?;
         }
 
@@ -1186,6 +1208,7 @@ impl Inner {
         }
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
+        self.commits.committed();
         self.derive_due = true;
         self.search.wake();
         self.report.batches += stats.0;
