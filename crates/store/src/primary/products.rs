@@ -165,6 +165,13 @@ pub struct CapturedInput {
     /// Original acquired interval, independent of tentative source coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_range: Option<super::RawRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<super::SourceGeneration>,
+    /// Actual validated source EOF, independent of group-header exhaustion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_predecessor: Option<String>,
     /// None is legacy unknown evidence, never a freshly observed source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<super::SourceBasis>,
