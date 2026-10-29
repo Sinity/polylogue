@@ -97,7 +97,7 @@ fn declarations(
 fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
     Ok(match subject {
         "derived" => polylogue_model::derived::all().into_iter().map(|p|json!(p)).collect(),
-        "syntax" => vec![json!({"syntax": SYNTAX, "stages": polylogue_query::syntax::STAGES, "aggregates": polylogue_query::syntax::AGGREGATES, "keywords": polylogue_query::syntax::KEYWORDS})],
+        "syntax" => vec![json!({"syntax": SYNTAX, "stages": polylogue_query::catalog::STAGES.iter().map(|s| s.completion).collect::<Vec<_>>(), "aggregates": polylogue_query::catalog::AGGREGATES, "keywords": polylogue_query::catalog::KEY_FUNCTIONS})],
         "units" => units::UNITS.iter().map(|u| json!({
             "name": u.name, "singular": u.singular,
             "columns": u.columns.iter().map(|c| c.0).collect::<Vec<_>>(),
@@ -108,7 +108,7 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
             "unit": f.unit, "name": f.name, "kind": f.kind, "values": f.values, "help": f.help,
             "construct": fields::construct(f),
         })).collect(),
-        "operators" => polylogue_query::ast::Op::TABLE.iter().map(|(op, _)| json!({"name": op.name(), "operation": op})).collect(),
+        "operators" => [polylogue_query::ast::Op::Eq, polylogue_query::ast::Op::Ne, polylogue_query::ast::Op::Lt, polylogue_query::ast::Op::Le, polylogue_query::ast::Op::Gt, polylogue_query::ast::Op::Ge, polylogue_query::ast::Op::Contains, polylogue_query::ast::Op::Prefix].into_iter().map(|op| json!({"name": op.symbol(), "operation": op})).collect(),
         "capabilities" => {
             let mut entries: Vec<_> = COMMANDS.iter().map(|c| json!({
                 "kind": "command", "name": c.name, "help": c.help,

@@ -135,11 +135,11 @@ fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
     assert_eq!(completions(&data, "repo:\"two")[0].0, "repo:\"two words\"");
     let value = &completions(&data, "repo:path")[0].0;
     let parsed = polylogue_query::parse(value).unwrap();
-    let polylogue_query::ast::Source::Sessions { cond } = parsed.source else {
+    let polylogue_query::ast::Source::Unit { condition: Some(cond), .. } = parsed.source else {
         panic!()
     };
-    let polylogue_query::ast::CondKind::Match {
-        value: polylogue_query::ast::Value::One { text, .. },
+    let polylogue_query::ast::ConditionKind::Match {
+        value: polylogue_query::ast::Value::Scalar { text, .. },
         ..
     } = cond.kind
     else {

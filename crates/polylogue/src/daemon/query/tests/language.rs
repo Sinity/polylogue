@@ -1,6 +1,6 @@
 //! Query-language behavior over the archive built through the real loop.
 use polylogue_model::LogicalDay;
-use polylogue_query::{Clock, Options, Param, QueryError, compile};
+use polylogue_query::{Options, Param, QueryError, compile};
 use polylogue_store::{Reader, SqlValue};
 use polylogue_testkit::{Morrow, Set, short};
 use serde_json::{Value, json};
@@ -8,10 +8,10 @@ use std::collections::BTreeSet;
 
 fn options() -> Options {
     Options {
-        clock: Clock::new(
+        clock: polylogue_query::time::clock(
             1_791_453_600_000,
             LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        ),
+        ).unwrap(),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|origin| origin.name.to_owned())

@@ -49,8 +49,9 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
         query_language::catalog::Unit {
             name: spec.name.into(), aliases: vec![spec.singular.into()],
             sequence_unit: Some("tool_calls".into()), fields: declarations,
-            identity: spec.identity.iter().map(|s| (*s).into()).collect(),
-            main_time: Some(spec.time.into()),
+            identity: spec.identity.iter().filter_map(|sql| column_name(spec, sql)).map(str::to_owned).collect(),
+            default_order: column_name(spec, spec.time).into_iter().map(str::to_owned).collect(),
+            main_time: column_name(spec, spec.time).map(str::to_owned),
             ..query_language::catalog::Unit::default()
         }
     }).collect();
@@ -62,4 +63,11 @@ pub use query_language::catalog::{STAGES, AGGREGATES, KEY_FUNCTIONS};
 pub use query_language::complete::{Completion, CompletionKind};
 pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completion> {
     query_language::complete::complete(text, position, catalog)
+}
+
+fn column_name<'a>(unit: &'a units::UnitSpec, sql: &str) -> Option<&'a str> {
+    unit.columns.iter().find_map(|(name, expr, _)| match expr {
+        fields::Expr::Template(template) | fields::Expr::Reference(template, _) if *template == sql => Some(*name),
+        _ => None,
+    })
 }
