@@ -146,7 +146,8 @@ pub fn span_bodies(
     let mut offsets = TextBodyOffsets::default();
     let mut pieces = Vec::new();
     let mut total = 0;
-    for (index, len) in body_lengths.into_iter().enumerate() {
+    let mut index = 0u64;
+    for len in body_lengths {
         let body = offsets.push(len)?;
         if index != 0 {
             let begin = span.start.max(total);
@@ -154,7 +155,7 @@ pub fn span_bodies(
             let insertion = span.is_empty() && span.start > total && span.start < body.start;
             if begin < end || insertion {
                 pieces.push(TextSpanPiece::Separator {
-                    after_body: index as u64 - 1,
+                    after_body: index - 1,
                     start: (begin - total) as u8,
                     end: (end - total) as u8,
                 });
@@ -165,12 +166,13 @@ pub fn span_bodies(
         let insertion = span.is_empty() && span.start >= body.start && span.start <= body.end;
         if begin < end || insertion {
             pieces.push(TextSpanPiece::Body {
-                body_index: index as u64,
+                body_index: index,
                 start: begin - body.start,
                 end: end - body.start,
             });
         }
         total = body.end;
+        index = index.checked_add(1).ok_or(SpanError::Overflow)?;
     }
     if span.end > total {
         return Err(SpanError::OutOfRange);

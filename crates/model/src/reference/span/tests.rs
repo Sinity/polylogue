@@ -41,7 +41,7 @@ fn original_body_offsets_preserve_empty_bodies_and_separator_positions() {
     assert_eq!(offsets.push(5).unwrap(), 2..7);
     assert_eq!(offsets.push(0).unwrap(), 9..9);
     let mut span = SpanBounds::new(SpanUnit::Utf16, 0, 5).unwrap();
-    for chunk in ["", TEXT_BODY_SEPARATOR, "a💡ż", TEXT_BODY_SEPARATOR, ""] {
+    for chunk in ["", TEXT_BODY_SEPARATOR, "a💡", TEXT_BODY_SEPARATOR, ""] {
         span.push(chunk).unwrap();
     }
     assert_eq!(span.finish().unwrap(), 0..7);

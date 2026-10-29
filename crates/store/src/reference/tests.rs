@@ -299,7 +299,8 @@ fn document_spans_share_original_body_offsets_without_loading_structured_results
             } else {
                 Authorization::Allow
             }
-        }));
+        }))
+        .unwrap();
     assert_eq!(
         text(&reader, "document:claude-ai:document").as_deref(),
         Some("a💡\n\nż\n\n尾")
