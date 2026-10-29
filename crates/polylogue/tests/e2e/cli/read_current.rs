@@ -61,7 +61,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     for record in values {
         if let polylogue_model::bundle::Record::Message(record) = record {
             record.validate().unwrap();
-            assert_eq!(record.message.blocks, vec![polylogue_model::Block::text(expected)]);
+            assert_eq!(record.message.blocks, vec![polylogue_model::Block::Text { text: expected.into() }]);
             messages += 1;
         }
     }
