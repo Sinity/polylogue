@@ -99,7 +99,7 @@ impl crate::primary::Sinex for OfflineProducer {
         &self,
         _: &str,
         _: &str,
-        _: &mut dyn FnMut(&mut dyn FnMut(ProductWrite) -> Result<()>) -> Result<()>,
+        _: &mut crate::primary::ReadingProducts<'_>,
     ) -> Result<crate::primary::PreparedWrite> {
         Self::unavailable()
     }
@@ -149,7 +149,7 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn prepare_request(
         &self,
-        _: &polylogue_model::authored::PendingAuthored,
+        _: &polylogue_model::authored::PreparedRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
         Self::unavailable()
     }
@@ -233,7 +233,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
                 .unwrap(),
             0
         );
-        assert!(!archive.archive_db().exists());
+        assert!(!archive.root.join("archive.db").exists());
     }
     // The ordinary reopen has neither the source preparation nor a provider
     // file available. The producer's immutable capture contains both facts.

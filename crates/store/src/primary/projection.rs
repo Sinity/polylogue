@@ -789,6 +789,7 @@ pub(crate) fn apply(
             }
         }
         crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
+        crate::variants::project(&tx)?;
         tx.execute(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
             [],

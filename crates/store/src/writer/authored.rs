@@ -45,12 +45,44 @@ fn observed(conn: &Connection, restoration: &Restoration) -> Result<bool> {
 }
 
 impl Inner {
-    pub(super) fn restore_authored(&mut self, restoration: Restoration) -> Result<UserOutcome> {
+    pub(super) fn project_variant_text(&mut self) -> Result<()> {
+        let before = self.index.total_changes();
+        let tx = self.index.transaction()?;
+        crate::variants::project(&tx)?;
+        if tx.total_changes() != before {
+            bump_counter(&tx)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn restore_authored(&mut self, mut restoration: Restoration) -> Result<UserOutcome> {
         if let Some(sinex) = self.sinex.as_ref().map(Arc::clone) {
             let mut outcome = restoration.prepared.outcome.clone();
             if observed(&self.index, &restoration)? {
                 outcome.repeat = true;
                 return Ok(outcome);
+            }
+            let mut original = None;
+            sinex.visit_pending_requests(&mut |pending| {
+                if let polylogue_model::authored::PendingAuthored::Restore {
+                    prepared,
+                    claims,
+                    current,
+                } = pending
+                    && prepared == &restoration.prepared
+                    && claims == &restoration.claims
+                    && current.input == restoration.current.input
+                    && current.chain == restoration.current.chain
+                    && current.machine == restoration.current.machine
+                    && current.actor == restoration.current.actor
+                {
+                    original = Some(current.clone());
+                }
+                Ok(())
+            })?;
+            if let Some(original) = original {
+                restoration.current = original;
             }
             let product = crate::primary::Product::RestoredRequest {
                 prepared: restoration.prepared.clone(),
@@ -78,20 +110,14 @@ impl Inner {
             }
             return Ok(outcome);
         }
+        if observed(&self.archive, &restoration)? {
+            self.project_variant_text()?;
+            let mut outcome = restoration.prepared.outcome;
+            outcome.repeat = true;
+            return Ok(outcome);
+        }
         let tx = self.archive.transaction()?;
-        let known =
-            crate::primary::authored::known_request(&tx, &restoration.prepared.request)?.is_some();
-        let counter = if known {
-            tx.query_row(
-                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(0)
-        } else {
-            bump_counter(&tx)?
-        };
+        let counter = bump_counter(&tx)?;
         let outcome = crate::primary::authored::restore(
             &tx,
             &restoration.prepared,
@@ -101,6 +127,11 @@ impl Inner {
         )?;
         // Repeated content can still add a newly observed import provenance.
         crate::write_lock::commit(tx)?;
+        self.project_variant_text()?;
+        self.derive_due = true;
         Ok(outcome)
     }
 }
+
+#[cfg(test)]
+mod tests;
