@@ -552,6 +552,65 @@ impl Startup {
         })
     }
 }
+#[cfg(test)]
+impl Config {
+    /// A fixture configuration from explicit engine inputs. It never captures
+    /// environment, opens deployment files or connects a notification bus.
+    pub(crate) fn for_test(engine: &polylogue_engine::Config, archive: &Path) -> Arc<Self> {
+        assert!(engine.home.is_absolute() && archive.is_absolute());
+        let state = engine.home.join(".local/state");
+        let paths = Paths {
+            home: engine.home.clone(),
+            config: engine.home.join(".config"),
+            data: engine.home.join(".local/share"),
+            cache: engine.home.join(".cache"),
+            runtime: state.join("runtime"),
+            check_history: state.join("devkit/history.sqlite"),
+            state,
+        };
+        Arc::new(Self {
+            paths,
+            archive: archive.into(),
+            http: HttpConfig {
+                listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+                token: None,
+            },
+            identity: Identity {
+                machine: engine.machine.clone(),
+                host: engine.host.clone(),
+            },
+            requests: polylogue_model::user::RequestMetadata::new(
+                engine.machine.clone(),
+                engine.clock.clone(),
+            ),
+            signals: SignalDeployment::default(),
+            notification_bus_address: None,
+            embedding_credentials: crate::embeddings::Credentials::new(None),
+            standalone_day: Some(
+                DaySetting::new(
+                    jiff::tz::TimeZone::UTC,
+                    jiff::civil::Time::constant(4, 0, 0, 0),
+                )
+                .expect("named fixture day"),
+            ),
+            #[cfg(feature = "sinex")]
+            primary_auth: polylogue_sinex::Authentication::Anonymous,
+        })
+    }
+}
+#[cfg(test)]
+impl Startup {
+    pub(crate) fn for_test(engine: polylogue_engine::Config, archive: &Path) -> Self {
+        Self {
+            config: Config::for_test(&engine, archive),
+            clock: engine.clock.clone(),
+            engine,
+            mode: crate::daemon::service::ArchiveMode::Standalone,
+            output: OutputConfig::new(false, false, true),
+        }
+    }
+}
+
 #[cfg(feature = "sinex")]
 pub(crate) fn load_mode(
     path: &Path,
