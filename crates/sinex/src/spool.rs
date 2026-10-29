@@ -1642,9 +1642,6 @@ pub(crate) fn capture_header(capture: &Capture) -> Capture {
                 arrival_rank: input.arrival_rank,
                 parsed: Vec::new(),
                 raw_range: input.raw_range,
-                generation: input.generation.clone(),
-                raw_total: input.raw_total,
-                raw_predecessor: input.raw_predecessor.clone(),
                 basis: input.basis.clone(),
             }))
         }
