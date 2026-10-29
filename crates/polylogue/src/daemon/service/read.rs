@@ -132,7 +132,8 @@ fn prepared<T>(
     ) -> Result<T, Response>,
 ) -> Result<T, Response> {
     options.validate().map_err(|e| error("bad_request", e))?;
-    let now = super::now_ms();
+    let clock=d.query_clock()?;
+    let ran_at:Timestamp=clock.now.into();
     crate::daemon::query::with_ranking(reader, &d.warm, |embeddings, near| {
         let ask = crate::daemon::query::Ask {
             text: target,
@@ -140,14 +141,13 @@ fn prepared<T>(
             page_size: None,
             why: false,
             session: None,
-            now,
-            day: None,
+            clock:clock.clone(),
             embeddings,
             near: Some(near),
             fields: &[],
         };
         let mut compile =
-            crate::daemon::query::options(reader, &ask, now, uuid::Uuid::now_v7().as_u128() as u64)
+            crate::daemon::query::options(reader, &ask, uuid::Uuid::now_v7().as_u128() as u64)
                 .map_err(|e| Response::Error {
                     kind: e.kind,
                     message: e.message,
@@ -171,8 +171,7 @@ fn prepared<T>(
         let snapshot = ReadSnapshot {
             query: format!("query:{}", selection.question_id()),
             query_text: target.into(),
-            ran_at: Timestamp::from_unix_ms(now)
-                .ok_or_else(|| error("internal", "invalid reading clock"))?,
+            ran_at,
             caught_up: position.index == position.archive,
             read_at: position,
             currency: d.currency(reader).map_err(|e| store_error(&e))?,
