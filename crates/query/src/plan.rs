@@ -72,16 +72,14 @@ fn prepare_inner(
                 if let Source::Saved { condition, .. } = &mut source.source {
                     *condition = None;
                 }
-                let source_text = query_language::format::render_query(&source, &catalog)
+                let source_text = query_language::format::format_query(&source, &catalog)
                     .map_err(|e| QueryError::language(e, text))?;
                 let schema = options.output_schema(&source_text)?;
                 let source = OutputSource::Saved {
                     name: name.clone(),
                     arguments: arguments.clone(),
                 };
-                if !catalog.source_outputs.iter().any(|output| {
-                    query_language::catalog::same_output_source(&source, &output.source)
-                }) {
+                if catalog.source_output(&query.source).is_none() {
                     catalog.source_outputs.push(SourceOutput { source, schema });
                 }
             }
