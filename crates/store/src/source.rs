@@ -79,6 +79,16 @@ pub(crate) enum Source {
     Cache,
 }
 impl Source {
+    pub(crate) fn of(conn: &Connection) -> Result<Self> {
+        Ok(if conn.query_row("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name='source_input')",[],|row|row.get::<_,bool>(0))? { Self::Cache } else { Self::Ledger })
+    }
+    pub(crate) fn prefix(self) -> &'static str {
+        match self {
+            Self::Ledger => "",
+            Self::Cache => "source_",
+        }
+    }
+
     pub(crate) fn sql(self, sql: &str) -> String {
         sql.replace(
             "@source.",
