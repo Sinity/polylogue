@@ -116,7 +116,7 @@ pub enum RunOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRun {
-    pub id: String,
+    pub id: crate::RunId,
     pub question: QuestionId,
     pub at: Timestamp,
     pub read_at: ChangePosition,
@@ -129,7 +129,7 @@ pub struct QueryRun {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRunOutcome {
-    pub run: String,
+    pub run: crate::RunId,
     pub binding_hash: crate::BlobHash,
     pub at: Timestamp,
     pub outcome: RunOutcome,
