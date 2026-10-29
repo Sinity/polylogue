@@ -67,6 +67,24 @@ pub enum SourceGeneration {
     Database { stream: RawStream, snapshot: DatabaseSnapshotToken, window: RawRange },
 }
 
+/// Optional original body identity selects one immutable acquisition chain.
+/// Without it the owner must prove there is exactly one original root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawAcquisitionQuery {
+    pub generation: SourceGeneration,
+    pub root: Option<String>,
+}
+impl RawAcquisitionQuery {
+    pub fn validate(&self) -> Result<()> {
+        self.generation.validate()?;
+        if self.root.as_ref().is_some_and(String::is_empty) {
+            return Err(StoreError::Invalid("raw acquisition root is empty".into()));
+        }
+        Ok(())
+    }
+}
+
 impl SourceGeneration {
     pub fn stream(&self) -> &RawStream {
         match self { Self::File { stream, .. } | Self::Database { stream, .. } => stream }
@@ -130,6 +148,7 @@ pub struct RawAcquisitionCursor {
     range: RawRange,
     known_total: Option<u64>,
     last_body: String,
+    first_body: String,
     #[serde(default)]
     disposition: Option<CaptureDisposition>,
 }
@@ -138,6 +157,7 @@ impl RawAcquisitionCursor {
     pub fn generation(&self) -> &SourceGeneration { &self.generation }
     pub fn range(&self) -> RawRange { self.range }
     pub fn known_total(&self) -> Option<u64> { self.known_total }
+    pub fn first_body(&self) -> &str { &self.first_body }
     pub fn last_body(&self) -> &str { &self.last_body }
     /// Prepared describes private custody only, never logical source acceptance.
     pub fn disposition(&self) -> Option<CaptureDisposition> { self.disposition }
@@ -154,6 +174,7 @@ pub struct RawAcquisitionProof {
     range: RawRange,
     total: Option<u64>,
     disposition: Option<CaptureDisposition>,
+    first_body: Option<String>,
     last: Option<(RawRange, BlobHash, String, Option<String>)>,
     valid: bool,
 }
@@ -162,7 +183,7 @@ impl RawAcquisitionProof {
     pub fn new(generation: SourceGeneration) -> Result<Self> {
         generation.validate()?;
         let start = generation.window().start;
-        Ok(Self { generation, range: RawRange { start, end: start }, total: None, disposition: Some(CaptureDisposition::Prepared), last: None, valid: true })
+        Ok(Self { generation, range: RawRange { start, end: start }, total: None, disposition: Some(CaptureDisposition::Prepared), first_body: None, last: None, valid: true })
     }
     pub fn push(&mut self, body: RawBodyRange) -> Result<()> {
         if body.body.is_empty() || body.range.length()? != body.decoded_length {
@@ -208,6 +229,9 @@ impl RawAcquisitionProof {
         }
         if body.range.start != self.range.end { self.valid = false; }
         if !self.valid { return Ok(()); }
+        if self.first_body.is_none() {
+            self.first_body = Some(body.body.clone());
+        }
         self.range.end = body.range.end;
         self.total = body.known_total.or(self.total);
         self.last = Some((body.range, body.hash, body.body, body.predecessor));
@@ -215,8 +239,9 @@ impl RawAcquisitionProof {
     }
     pub fn finish(self) -> Option<RawAcquisitionCursor> {
         let (_, _, last_body, _) = self.last?;
+        let first_body = self.first_body?;
         self.valid.then_some(RawAcquisitionCursor {
-            generation:self.generation,range:self.range,known_total:self.total,last_body,disposition:self.disposition,
+            generation:self.generation,range:self.range,known_total:self.total,last_body,first_body,disposition:self.disposition,
         })
     }
 }
