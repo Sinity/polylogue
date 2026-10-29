@@ -1425,3 +1425,55 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
         );
     }
 }
+
+#[test]
+fn record_visitors_stop_before_decoding_later_session_payloads() {
+    use std::ops::ControlFlow;
+    let w = test_archive();
+    let mut input = batch("visitor-source", 0, 0, Vec::new(), &["visitor-session"]);
+    for ordinal in 0..2 {
+        input.parse[0].output.events.push(Event {
+            session: Some(sid("visitor-session")),
+            kind: format!("event-{ordinal}"),
+            at: None,
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: Some((ordinal, ordinal + 1)),
+            data: serde_json::json!({"ordinal":ordinal}),
+        });
+        input.parse[0].output.links.push(Link {
+            kind: LinkKind::Spawn,
+            parent: sid("visitor-session"),
+            child: sid(&format!("child-{ordinal}")),
+            at: None,
+            call_id: None,
+            evidence: "explicit-child".into(),
+        });
+    }
+    let wire = serde_json::to_vec(&input.parse[0].output).unwrap();
+    commit_event_bytes(&w, input, &wire);
+    let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    conn.execute("UPDATE event SET fields=x'00' WHERE pk=(SELECT pk FROM event ORDER BY seq,id LIMIT 1 OFFSET 1)",[]).unwrap();
+    let reads = ReadPool::open(&w.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let mut events = 0;
+    reader
+        .visit_event_records(&sid("visitor-session"), |_| {
+            events += 1;
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(events, 1);
+    assert!(reader.event_records(&sid("visitor-session")).is_err());
+    let mut links = 0;
+    reader
+        .visit_links(&sid("visitor-session"), |_| {
+            links += 1;
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(links, 1);
+    assert_eq!(reader.links(&sid("visitor-session")).unwrap().len(), 2);
+}
