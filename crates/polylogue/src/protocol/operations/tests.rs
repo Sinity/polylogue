@@ -165,3 +165,42 @@ fn canonical_socket_rejects_another_operations_arguments_before_execution() {
     assert!(matches!(answer, Answer::Error { .. }));
     assert_eq!(answer.http_status(), Some(400));
 }
+
+#[test]
+fn typed_schema_selection_refuses_conflicting_origin_controls_on_the_socket() {
+    let daemon = crate::test_daemon::start("typed schema selection");
+    let answer = crate::client::call_ready(
+        &daemon.daemon.archive,
+        &command_surface::Request {
+            operation: "schema infer".into(),
+            arguments: json!({"origin":"claude-code", "all":true}),
+            request_id: "schema-selection-wire".into(),
+            deadline: command_surface::Deadline::None,
+        },
+    )
+    .unwrap();
+    assert_eq!(answer.http_status(), Some(400));
+    assert!(matches!(answer, Answer::Error { .. }));
+}
+
+#[test]
+fn local_schema_output_path_stays_out_of_the_typed_request() {
+    let command = crate::commands::command("schema infer").unwrap();
+    let values = Values::from_json(
+        command,
+        Surface::Cli,
+        json!({"all":true,"output":"/synthetic/schema.json"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    let call = request(
+        command,
+        values,
+        "schema-local-output".into(),
+        command_surface::Deadline::None,
+    );
+    assert!(call.arguments.get("output").is_none());
+    assert!(serde_json::from_value::<crate::protocol::schema::Infer>(call.arguments).is_ok());
+}

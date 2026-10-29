@@ -3,6 +3,7 @@ pub mod caller;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;
+pub mod schema;
 pub mod status;
 pub mod stream;
 pub mod wire;

@@ -2,7 +2,7 @@ use super::{Field, RULE_VERSION, Schema, Selection, Table};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
     Added,
@@ -10,7 +10,7 @@ pub enum ChangeKind {
     Types,
     Required,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Change {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table: Option<String>,
@@ -19,7 +19,7 @@ pub struct Change {
     pub before: Option<Field>,
     pub after: Option<Field>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Sample {
     pub origin: String,
     pub sample: bool,
@@ -40,13 +40,13 @@ impl From<&Schema> for Sample {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TableChange {
     pub table: String,
     pub before: Option<Table>,
     pub after: Option<Table>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Diff {
     pub rule_version: u32,
     pub before: Sample,

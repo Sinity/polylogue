@@ -43,6 +43,17 @@ pub fn diff(_: &Command, values: &Values, json: bool) -> ExitCode {
 }
 
 pub fn output(values: &Values, value: &serde_json::Value, json: bool) -> ExitCode {
+    if json && values.text("output").is_none() {
+        let answer = crate::protocol::answer(value.clone());
+        println!(
+            "{}",
+            polylogue_render::terminal::json(
+                &serde_json::to_value(&answer).expect("answer serializes"),
+                false
+            )
+        );
+        return ExitCode::from(answer.exit_code());
+    }
     run(values, json, || Ok(value.clone()))
 }
 

@@ -436,8 +436,10 @@ fn query_help() -> &'static str {
 }
 
 const WRITTEN: &[Command] = &[
-    Command {
+    typed_command!(SchemaInferCommand, crate::protocol::schema::Infer, crate::daemon::schema::Inference, {
         name: "schema infer",
+        reason: "Observe stored wire structure that parsed query rows cannot reconstruct",
+        latency: command_surface::LatencyClass::Local,
         help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
@@ -476,9 +478,11 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         http: true,
         ..CLI
-    },
-    Command {
+    }),
+    typed_command!(SchemaUnreadCommand, crate::protocol::schema::Unread, polylogue_store::wire_shapes::Report, {
         name: "schema unread",
+        reason: "Expose stored wire paths outside the parser coverage",
+        latency: command_surface::LatencyClass::Read,
         help: "Show stored wire paths neither read nor kept, with drift and coverage",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
@@ -497,7 +501,7 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "schema diff",
         help: "Compare explicit inferred schema files recursively, with sample differences labeled",

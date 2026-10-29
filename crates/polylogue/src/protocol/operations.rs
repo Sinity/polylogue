@@ -228,7 +228,18 @@ pub fn request(
 ) -> command_surface::RunnableRequest {
     command_surface::Request {
         operation: command.name.into(),
-        arguments: Value::Object(arguments.0),
+        arguments: Value::Object(
+            arguments
+                .0
+                .into_iter()
+                .filter(|(name, _)| {
+                    command
+                        .args
+                        .iter()
+                        .any(|argument| argument.name == name && !argument.cli_only)
+                })
+                .collect(),
+        ),
         request_id,
         deadline,
     }

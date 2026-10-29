@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Infer {
     pub origin: Option<String>,
     #[serde(default)]
@@ -51,7 +51,7 @@ impl Infer {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SelectionSummary {
     pub origin: Option<String>,
     pub explicit_inputs: bool,
@@ -63,7 +63,7 @@ pub struct SelectionSummary {
     pub selected_bytes: u64,
     pub read_bytes: u64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Inference {
     pub selection: SelectionSummary,
     pub origins: BTreeMap<String, Schema>,
