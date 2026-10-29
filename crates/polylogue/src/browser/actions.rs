@@ -9,8 +9,8 @@
 //! capture.
 
 use polylogue_model::BlobHash;
-use polylogue_model::user::{ChatAttachment, NewChatAction};
 use polylogue_model::user::{CHAT_CLAIM_MS, ChatAction, ChatStatus};
+use polylogue_model::user::{ChatAttachment, NewChatAction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;

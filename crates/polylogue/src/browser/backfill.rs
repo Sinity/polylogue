@@ -4,7 +4,7 @@
 
 use super::actions::Refused;
 use polylogue_model::user::NewBackfillJob;
-use polylogue_model::user::{BackfillJob, BACKFILL_CLAIM_MS};
+use polylogue_model::user::{BACKFILL_CLAIM_MS, BackfillJob};
 use serde_json::{Value, json};
 
 /// The providers whose conversation lists the extension can page through,

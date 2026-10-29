@@ -9,7 +9,11 @@ use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
-pub const ARCHIVE: &str = include_str!("schema/archive.sql");
+pub const ARCHIVE: &str = concat!(
+    include_str!("schema/archive.sql"),
+    "\n",
+    include_str!("schema/variants.sql")
+);
 pub const INDEX: &str = include_str!("schema/index.sql");
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");

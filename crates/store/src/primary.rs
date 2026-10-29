@@ -6,6 +6,7 @@
 //! after Sinex acknowledged what it describes, so the local register
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
 //! what Sinex holds ([`load`]). `polylogue-sinex` implements [`Sinex`].
+pub mod authored;
 pub mod products;
 pub(crate) mod projection;
 pub use products::{
