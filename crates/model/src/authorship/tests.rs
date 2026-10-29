@@ -43,10 +43,15 @@ fn computed_authorship_preserves_channel_and_observed_identity() {
             .to_string(),
         "agent:gemini-cli"
     );
-    assert_eq!(
-        compute_authorship(Channel::Web, &harness, None).author,
-        Author::Operator
-    );
+    for via in [Channel::Web, Channel::Extension, Channel::Desktop] {
+        assert_eq!(
+            compute_authorship(via, &harness, None),
+            Authorship {
+                author: Author::Operator,
+                via
+            }
+        );
+    }
 }
 #[test]
 fn hook_refinement_requires_the_recorded_parent_and_tool_call() {

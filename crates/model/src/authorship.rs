@@ -82,12 +82,13 @@ pub enum Channel {
     Cli,
     Web,
     Extension,
+    Desktop,
     Hook,
     Markup,
     Import,
     Daemon,
 }
-stored_names!(Channel {Mcp=>"mcp",Cli=>"cli",Web=>"web",Extension=>"extension",Hook=>"hook",Markup=>"markup",Import=>"import",Daemon=>"daemon"});
+stored_names!(Channel {Mcp=>"mcp",Cli=>"cli",Web=>"web",Extension=>"extension",Desktop=>"desktop",Hook=>"hook",Markup=>"markup",Import=>"import",Daemon=>"daemon"});
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -124,7 +125,7 @@ pub fn compute_authorship(
     caller: &CallerEvidence,
     hook: Option<&HookIdentity>,
 ) -> Authorship {
-    let author = if matches!(via, Channel::Web | Channel::Extension) {
+    let author = if matches!(via, Channel::Web | Channel::Extension | Channel::Desktop) {
         Author::Operator
     } else {
         let hook = hook.filter(|hook| {

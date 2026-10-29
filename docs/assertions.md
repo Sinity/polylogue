@@ -130,7 +130,7 @@ Every authored record in Polylogue (assertions, variants, withdrawals, judgments
   - `agent`, when the agent channel or a historical record establishes an agent but neither its harness nor its session is known;
   - `script:<unit>`, a named non-interactive program, named by its cgroup unit (a systemd unit or a scope);
   - `unattributed`, when there is no evidence either way.
-- **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `hook`, `markup`, `import` or `daemon`. There is no evidence blob and no confidence score.
+- **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `desktop`, `hook`, `markup`, `import` or `daemon`. There is no evidence blob and no confidence score.
 
 **No surface accepts an author from the caller.** A request that names an author is refused as `invalid`. A `--session` option or `session` argument names a subject or a recipient, never the author.
 
@@ -144,6 +144,7 @@ The client process gathers its identity and sends it as `caller` in the request 
 | **CLI**, the second channel | Harness identities come from the environment (`CLAUDE_CODE_SESSION_ID` with `CLAUDE_PID`; `CODEX_THREAD_ID` with `CODEX_TOOL_CALL_ID`; `HERMES_SESSION_ID`; `GEMINI_CLI=1`, which has no session). With several present, the nearest harness ancestor in the process tree wins; with several and no harness ancestor, `unattributed`. A Claude identity is refined to a subagent when the spool holds exactly one open `PreToolUse` Bash event from that `CLAUDE_PID` whose command runs `polylogue`; otherwise the main session stands, which is correct as the root of the work. With no harness identity, a controlling terminal gives `operator`; no terminal gives `script:<unit>` when the process's cgroup names a unit, else `unattributed`. |
 | **Web UI and HTTP API** | `operator`, `via: web`, with no inspection of the browser. The web UI is the operator's channel; agents are directed to MCP. |
 | **Browser extension** | `operator`, `via: extension`, for acts in the extension's own UI. Acts it performs for a request (a chat send, a backfill) carry the requester's author from the request record ([extension.md](extension.md#authorship-from-the-extension)). |
+| **Desktop notifications** | `operator`, `via: desktop`, for acts reported by the trusted desktop notification adapter; a rule cannot supply this channel. |
 | **Hooks** | records a hook writes for a session are `agent:<that session>` or `daemon`, never `operator` |
 | **Markup** | the author of the message the marker is in (see Markup) |
 | **Import of user state** | each record keeps its stored author |
