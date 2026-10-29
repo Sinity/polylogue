@@ -281,7 +281,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
                 crate::primary::SourceSelector {
                     origin: "codex".into(),
                     machine: "machine".into(),
-                    path_bytes: b"/home/op/session".to_vec(),
+                    path_bytes: b"/home/op/offline".to_vec(),
                 },
                 "synthetic:1",
             )
