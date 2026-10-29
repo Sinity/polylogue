@@ -141,7 +141,6 @@ fn context_uses_the_configured_archive_socket_and_clock() {
         assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
         let response = Response::Ok {
             data: json!({"delivery":"context-1", "prepared":{"empty":false,"text":"configured archive"}}),
-            references: Default::default(),
         };
         writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
     });
@@ -294,7 +293,6 @@ fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
                         assert_eq!(budget, ADVICE_BUDGET);
                         Some(Response::Ok {
                             data: json!({"delivery":"advice:one", "prepared":{"empty":false, "text":"try this"}}),
-                            references: Default::default(),
                         })
                     }
                     Request::AdviceDelivered {
@@ -309,7 +307,7 @@ fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
                     _ => panic!("unexpected request"),
                 }
             },
-            |_, _, text| {
+            |_, _, text, _| {
                 assert_eq!(text, "try this");
                 output_called.set(true);
                 printed
@@ -326,7 +324,7 @@ fn hermes_tool_events_do_not_request_or_print_advice() {
         &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
         &startup(),
         |_, _| panic!("a Hermes tool event requested advice"),
-        |_, _, _| panic!("a Hermes tool event printed advice"),
+        |_, _, _, _| panic!("a Hermes tool event printed advice"),
     );
 }
 
@@ -434,5 +432,94 @@ fn decoded_hook_context_has_visible_terminal_controls() {
             _ => &value["hookSpecificOutput"]["additionalContext"],
         };
         assert_eq!(context, &polylogue_render::terminal::escape(text));
+    }
+}
+
+#[test]
+fn successful_native_context_output_produces_a_distinct_parsable_emission_receipt() {
+    for printed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let startup = startup();
+        let payload = json!({"session_id":"emission-session","cwd":"/synthetic/project"});
+        let native = json!({"boot_id":"synthetic-boot"});
+        let invocation = append_to_spool(
+            dir.path(),
+            Harness::ClaudeCode,
+            "SessionStart",
+            &payload,
+            &native,
+            &startup,
+        )
+        .unwrap();
+        let recorder = EmissionRecorder {
+            dir: dir.path(),
+            harness: Harness::ClaudeCode,
+            event: "SessionStart",
+            invocation: Some(&invocation),
+            session: session_of(Harness::ClaudeCode, &payload, &startup),
+            native: &native,
+            startup: &startup,
+        };
+        let emitted = recorder.emit(
+            &["first-receipt".into(), "second:receipt".into()],
+            "context text is not an attribution marker",
+            |harness, event, text| {
+                assert_eq!(harness, Harness::ClaudeCode);
+                assert_eq!(event, "SessionStart");
+                assert_eq!(text, "context text is not an attribution marker");
+                let path = std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                assert_eq!(
+                    std::fs::read_to_string(path).unwrap().lines().count(),
+                    1,
+                    "emission was recorded before output succeeded"
+                );
+                printed
+            },
+        );
+        assert_eq!(emitted, printed);
+        let path = std::fs::read_dir(dir.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(polylogue_sources::hook_spool::open(&path).is_some());
+        let step = polylogue_sources::parse::run(
+            &polylogue_sources::hook_spool::HookSpool,
+            &mut polylogue_sources::hook_spool::ParserState::default(),
+            &bytes,
+            0,
+        )
+        .unwrap();
+        assert_eq!(step.output.events.len(), if printed { 2 } else { 1 });
+        assert!(step.output.messages.is_empty());
+        let claims = step
+            .output
+            .events
+            .iter()
+            .filter_map(polylogue_sources::hook_spool::context_emission)
+            .collect::<Vec<_>>();
+        if printed {
+            assert_eq!(claims.len(), 1);
+            assert_eq!(claims[0].invocation, invocation);
+            assert_eq!(
+                claims[0].session.to_string(),
+                "claude-code:emission-session"
+            );
+            assert_eq!(claims[0].hook_event, "SessionStart");
+            assert_eq!(
+                claims[0].deliveries,
+                ["delivery:first-receipt", "delivery:second:receipt"]
+            );
+            assert_ne!(step.output.events[1].data["event_id"], invocation);
+        } else {
+            assert!(claims.is_empty());
+        }
     }
 }

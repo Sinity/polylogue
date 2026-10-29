@@ -111,7 +111,27 @@ pub fn append_to_spool(
     payload: &Value,
     native: &Value,
     startup: &Startup,
-) -> std::io::Result<()> {
+) -> std::io::Result<String> {
+    append_record(
+        dir,
+        harness,
+        event,
+        payload,
+        native,
+        session_of(harness, payload, startup),
+        startup,
+    )
+}
+
+fn append_record(
+    dir: &Path,
+    harness: Harness,
+    event: &str,
+    payload: &Value,
+    native: &Value,
+    session: Option<SessionId>,
+    startup: &Startup,
+) -> std::io::Result<String> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
     let caller = crate::protocol::caller::evidence();
@@ -126,6 +146,7 @@ pub fn append_to_spool(
         .unwrap_or_else(std::os::unix::process::parent_id);
     let at = startup.clock.now();
     let ns = at.as_nanosecond();
+    let event_id = request_id(at)?;
     let mut payload = payload.clone();
     // Hermes sends the whole conversation with every turn; its transcript
     // is read from its own database.
@@ -133,7 +154,7 @@ pub fn append_to_spool(
         extra.remove("conversation_history");
     }
     let mut line = json!({
-        "event_id": request_id(at)?,
+        "event_id": event_id,
         "at_ns": ns.to_string(),
         "event": event,
         "harness_pid": process,
@@ -145,7 +166,7 @@ pub fn append_to_spool(
             line[key] = value.clone();
         }
     }
-    if let Some(session) = session_of(harness, &line["payload"], startup) {
+    if let Some(session) = session {
         line["session_id"] = json!(session.native().to_string());
     }
     let mut line = serde_json::to_vec(&line)?;
@@ -157,7 +178,64 @@ pub fn append_to_spool(
         .append(true)
         .mode(0o600)
         .open(dir.join(format!("{process}.ndjson")))?;
-    f.write_all(&line)
+    f.write_all(&line)?;
+    Ok(event_id)
+}
+
+/// A receipt records a successful native output, separate from transcript attribution.
+struct EmissionRecorder<'a> {
+    dir: &'a Path,
+    harness: Harness,
+    event: &'a str,
+    invocation: Option<&'a str>,
+    session: Option<SessionId>,
+    native: &'a Value,
+    startup: &'a Startup,
+}
+impl EmissionRecorder<'_> {
+    fn emit(
+        &self,
+        deliveries: &[String],
+        text: &str,
+        output: impl FnOnce(Harness, &str, &str) -> bool,
+    ) -> bool {
+        if !output(self.harness, self.event, text) {
+            return false;
+        }
+        if let (Some(invocation), Some(session)) = (self.invocation, self.session.as_ref()) {
+            let emission = polylogue_model::HookContextEmission {
+                invocation: invocation.into(),
+                session: session.clone(),
+                hook_event: self.event.into(),
+                deliveries: deliveries
+                    .iter()
+                    .map(|id| polylogue_model::Reference::Delivery(id.clone()).to_string())
+                    .collect(),
+            };
+            let record = serde_json::to_value(emission)
+                .map_err(std::io::Error::other)
+                .and_then(|payload| {
+                    append_record(
+                        self.dir,
+                        self.harness,
+                        "HookContextEmitted",
+                        &payload,
+                        self.native,
+                        Some(session.clone()),
+                        self.startup,
+                    )
+                });
+            if let Err(error) = record {
+                eprintln!(
+                    "{}",
+                    polylogue_render::terminal::escape(&format!(
+                        "polylogue hook: could not record emitted context: {error}"
+                    ))
+                );
+            }
+        }
+        true
+    }
 }
 
 fn request_id(at: jiff::Timestamp) -> std::io::Result<String> {
@@ -442,7 +520,7 @@ fn tool_advice(
     payload: &Value,
     startup: &Startup,
     mut send: impl FnMut(&Request, Duration) -> Option<Response>,
-    output: impl FnOnce(Harness, &str, &str) -> bool,
+    output: impl FnOnce(Harness, &str, &str, &str) -> bool,
 ) {
     if !matches!(harness, Harness::ClaudeCode | Harness::Codex) {
         return;
@@ -476,7 +554,7 @@ fn tool_advice(
     else {
         return;
     };
-    if output(harness, "PreToolUse", text) {
+    if output(harness, "PreToolUse", text, id) {
         let _ = send(
             &Request::AdviceDelivered {
                 request_id: id.to_owned(),
@@ -498,34 +576,44 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         &payload,
         &native::Environment::observe(&startup.config.identity.host, &startup.hook),
     );
-    if let Err(e) = append_to_spool(
-        &startup
-            .engine
-            .spool_dir(polylogue_sources::hook_spool::ORIGIN),
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let invocation = match append_to_spool(&spool, harness, event, &payload, &native, startup) {
+        Ok(invocation) => Some(invocation),
+        Err(error) => {
+            eprintln!(
+                "{}",
+                polylogue_render::terminal::escape(&format!(
+                    "polylogue hook: could not record {event}: {error}"
+                ))
+            );
+            None
+        }
+    };
+    let recorder = EmissionRecorder {
+        dir: &spool,
         harness,
         event,
-        &payload,
-        &native,
+        invocation: invocation.as_deref(),
+        session: session_of(harness, &payload, startup),
+        native: &native,
         startup,
-    ) {
-        // The harness must not fail because the spool cannot be written.
-        eprintln!(
-            "{}",
-            polylogue_render::terminal::escape(&format!(
-                "polylogue hook: could not record {event}: {e}"
-            ))
-        );
-    }
+    };
     if event == "PreToolUse" {
         tool_advice(
             harness,
             &payload,
             startup,
             |request, budget| ask_daemon(startup, request, budget),
-            emit,
+            |_, _, text, id| recorder.emit(&[id.to_owned()], text, emit),
         );
     } else if let Some((deliveries, text)) = respond(harness, event, &payload, startup)
-        && emit(harness, event, &text)
+        && recorder.emit(
+            &deliveries.split(',').map(str::to_owned).collect::<Vec<_>>(),
+            &text,
+            emit,
+        )
     {
         for d in deliveries.split(',') {
             delivered(startup, d, CONTEXT_BUDGET);
