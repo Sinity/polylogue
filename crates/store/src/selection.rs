@@ -154,7 +154,7 @@ impl Reader<'_> {
         let mut program = polylogue_query::compile(&text, &options)?;
         self.validate_selection(&program)?;
         let identity_text = if direct.is_some() {
-            format!("{} {}", program.unit.name(), target)
+            format!("{} where {}", program.unit.name(), target)
         } else {
             target.to_owned()
         };
@@ -449,19 +449,22 @@ fn sql_value(value: &Value) -> SqlValue {
 fn reference_query(reference: &Reference) -> Result<String, SelectionError> {
     Ok(match reference {
         Reference::Session(id) => format!(
-            "sessions session:{}",
+            "sessions where session:{}",
             polylogue_query::quoted(&id.to_string())
         ),
         Reference::Message(id)
         | Reference::Block { message: id, .. }
         | Reference::MessageRange { first: id, .. } => format!(
-            "messages message:{}",
+            "messages where message:{}",
             polylogue_query::quoted(&id.to_string())
         ),
         Reference::Document(id) => {
-            format!("documents id:{}", polylogue_query::quoted(&id.to_string()))
+            format!(
+                "documents where id:{}",
+                polylogue_query::quoted(&id.to_string())
+            )
         }
-        Reference::Event(id) => format!("events id:{}", polylogue_query::quoted(id)),
+        Reference::Event(id) => format!("events where id:{}", polylogue_query::quoted(id)),
         Reference::Span { container, .. } => reference_query(container)?,
         _ => return Err(invalid("invalid_query", "reference has no readable row")),
     })
