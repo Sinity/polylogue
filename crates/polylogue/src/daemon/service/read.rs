@@ -116,7 +116,7 @@ fn prepared<T>(
                 error("not_yet_available", "read execution custody is unavailable")
             })?;
             let versions = operation.cursor_versions();
-            let id = RunId::new_v4();
+            let id = crate::operation::new_run_id();
             let (selection, binding, root, start, budget_override) = match request {
                 Request::Read {
                     target,

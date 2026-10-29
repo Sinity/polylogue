@@ -140,3 +140,18 @@ fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() 
             .is_none()
     );
 }
+
+#[test]
+fn server_run_ids_are_random_v4_and_independent_of_captured_time() {
+    let at = Timestamp::from_unix_ms(-100).unwrap();
+    let invocation = Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"));
+    let first = new_run_id();
+    let second = new_run_id();
+    assert_ne!(first, second);
+    for run in [first, second] {
+        let id = uuid::Uuid::parse_str(run.as_str()).unwrap();
+        assert_eq!(id.get_version_num(), 4);
+        assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
+    }
+    assert_eq!(invocation.at, at);
+}

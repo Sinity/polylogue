@@ -10,6 +10,12 @@ use query_language::time::{Clock, DaySetting};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// Server run identity is entropy, independent of the captured invocation time.
+pub(crate) fn new_run_id() -> polylogue_model::RunId {
+    polylogue_model::RunId::parse(&uuid::Uuid::new_v4().hyphenated().to_string())
+        .expect("generated UUID is a canonical run identity")
+}
+
 /// Clock-free writes capture this once without requiring an owner's logical day.
 #[derive(Clone)]
 pub struct Invocation {

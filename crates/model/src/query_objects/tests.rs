@@ -108,7 +108,7 @@ fn page_action_identity_is_stable_but_current_position_and_envelope_have_indepen
     };
     let root_hash = BlobHash::of(b"original acknowledged execution");
     let page = QueryRun {
-        id: RunId::new_v4(),
+        id: RunId::parse("7f564f3c-0d2b-4d43-91ae-c07dd4e521d9").unwrap(),
         question: QuestionId([1; 32]),
         at: Timestamp::from_unix_ms(-100).unwrap(),
         read_at: ChangePosition {

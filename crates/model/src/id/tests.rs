@@ -54,12 +54,8 @@ fn native_run_ids_preserve_one_uuid_spelling() {
 }
 
 #[test]
-fn server_run_ids_use_random_uuid_v4_without_an_execution_clock() {
-    let run = RunId::new_v4();
-    let uuid = uuid::Uuid::parse_str(run.as_str()).unwrap();
-    assert_eq!(uuid.get_version_num(), 4);
-    assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
-    assert_eq!(RunId::parse(run.as_str()).unwrap(), run);
+fn canonical_v4_run_ids_roundtrip_as_opaque_identities() {
+    let run = RunId::parse("7f564f3c-0d2b-4d43-91ae-c07dd4e521d9").unwrap();
     assert_eq!(
         serde_json::from_value::<RunId>(serde_json::to_value(&run).unwrap()).unwrap(),
         run
