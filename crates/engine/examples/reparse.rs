@@ -38,7 +38,7 @@ fn main() {
     let mut selected = None;
     if mode == "reparse" {
         let reads = ReadPool::open(&archive).unwrap();
-        let rows=reads.reader().unwrap().query("SELECT i.format,coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0) AS bytes FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk GROUP BY i.format ORDER BY bytes DESC,i.format",&[]).unwrap();
+        let rows=reads.reader().unwrap().query("SELECT i.format,coalesce(sum((SELECT max(length) FROM source_revision r WHERE r.input=i.id AND r.chain=p.chain)),0) AS bytes FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk GROUP BY i.format ORDER BY bytes DESC,i.format",&[]).unwrap();
         let origin = rows[0]["format"].as_str().unwrap().to_owned();
         drop(reads);
         let (chains, bytes) = polylogue_store::fixture::older_reading(&archive, &origin).unwrap();

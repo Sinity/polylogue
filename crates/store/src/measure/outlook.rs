@@ -126,7 +126,7 @@ fn plans(
     machine: &str,
     now: i64,
 ) -> Result<Vec<(i64, Option<Plan>)>> {
-    let rows=reader.conn()?.prepare("SELECT id,machine,set_at,value FROM a.setting WHERE key=?1 AND machine IN (?2,'*') AND set_at<=?3 ORDER BY set_at,id")?.query_map(params![format!("plan.{provider}"),machine,now],|r|Ok(Setting{id:r.get(0)?,machine:r.get(1)?,at:r.get(2)?,value:r.get(3)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows=reader.conn()?.prepare("SELECT id,machine,set_at,value FROM source_setting WHERE key=?1 AND machine IN (?2,'*') AND set_at<=?3 ORDER BY set_at,id")?.query_map(params![format!("plan.{provider}"),machine,now],|r|Ok(Setting{id:r.get(0)?,machine:r.get(1)?,at:r.get(2)?,value:r.get(3)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let times: BTreeSet<_> = rows.iter().map(|r| r.at).collect();
     let mut result = vec![];
     let mut previous = None;

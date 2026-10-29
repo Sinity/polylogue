@@ -156,15 +156,15 @@ impl Reader<'_> {
             .optional()?
             .unwrap_or(0);
         let through: i64 = conn.query_row(
-            "SELECT COALESCE(max(rowid),0) FROM a.observation",
+            "SELECT COALESCE(max(rowid),0) FROM source_observation",
             [],
             |r| r.get(0),
         )?;
         // A ZIP is the source of its members, not one of the attachments among them.
         let mut originals =
             std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-        let mut roots=conn.prepare("SELECT DISTINCT c.zip_input,json_extract(o.details_json,'$.import.import_id') FROM a.observation o
-            JOIN a.observation_zip c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
+        let mut roots=conn.prepare("SELECT DISTINCT c.zip_input,json_extract(o.details_json,'$.import.import_id') FROM source_observation o
+            JOIN source_observation_zip c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
         for row in roots.query_map([after, through], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {
@@ -172,7 +172,7 @@ impl Reader<'_> {
             originals.entry(input).or_default().insert(import_id);
         }
         let mut stmt = conn.prepare(
-            "SELECT o.id,o.input,o.details_json FROM a.observation o
+            "SELECT o.id,o.input,o.details_json FROM source_observation o
             WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL",
         )?;
         let mut out = Vec::new();
@@ -217,7 +217,7 @@ impl Reader<'_> {
             "SELECT DISTINCT m.input,m.sidecar,s.version,s.source_version FROM import_member m
             LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
             WHERE m.sidecar IS NOT NULL
-              AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
+              AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
             ORDER BY m.input,m.sidecar",
         )?;
         let mut pending = Vec::new();

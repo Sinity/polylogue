@@ -87,7 +87,13 @@ pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
 /// Takes the lock shared for a reader's first read; the caller drops the
 /// returned file once its read transaction has started. `wait` runs the
 /// reader's stop and interrupt checks while a writer holds the lock.
-pub(crate) fn wait_shared(archive: &Archive, mut wait: impl FnMut() -> Result<()>) -> Result<File> {
+pub(crate) fn wait_shared(
+    archive: &Archive,
+    mut wait: impl FnMut() -> Result<()>,
+) -> Result<Option<File>> {
+    if archive.is_primary() {
+        return Ok(None);
+    }
     let file = OpenOptions::new().read(true).open(archive.archive_db())?;
     let key = identity(&file)?;
     if HELD.with(|held| held.get() == Some(key)) {
@@ -97,7 +103,7 @@ pub(crate) fn wait_shared(archive: &Archive, mut wait: impl FnMut() -> Result<()
     }
     loop {
         match file.try_lock_shared() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(Some(file)),
             Err(TryLockError::WouldBlock) => wait()?,
             Err(TryLockError::Error(error)) if error.kind() == std::io::ErrorKind::Interrupted => {
                 wait()?

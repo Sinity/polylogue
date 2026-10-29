@@ -100,7 +100,7 @@ impl Reader<'_> {
         };
         let mut scopes = conn.prepare(
             "SELECT DISTINCT own.import_id FROM message_source ms
-            JOIN input_ref ir ON ir.pk=ms.input_pk JOIN a.input i ON i.id=ir.id
+            JOIN input_ref ir ON ir.pk=ms.input_pk JOIN source_input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
             WHERE ms.message_pk=?1 AND ms.version_hash=?2 ORDER BY own.import_id",
         )?;
@@ -114,7 +114,7 @@ impl Reader<'_> {
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT m.input,m.member FROM import_member m
                 WHERE m.import_id=?1 AND m.source_id=?2
-                  AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
+                  AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
                 ORDER BY m.input,m.member",
             )?;
             for scope in &scopes {
@@ -144,7 +144,7 @@ impl Reader<'_> {
                         JOIN import_asset_metadata x ON x.input=m.input AND x.sidecar=m.sidecar
                         JOIN import_asset_sidecar s ON s.input=x.input AND s.sidecar=x.sidecar AND s.error IS NULL
                         WHERE m.import_id=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
-                          AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
+                          AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
                         ORDER BY m.input,x.ordinal")?;
                     for row in meta.query_map(params![scope, source_id], |r| {
                         Ok((

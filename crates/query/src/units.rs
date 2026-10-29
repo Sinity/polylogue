@@ -668,7 +668,7 @@ pub static UNITS: &[UnitSpec] = &[
         unit: Unit::Notes,
         name: "notes",
         singular: "note",
-        from: Expr::Template("a.note {r}"),
+        from: Expr::Template("source_note {r}"),
         key: "{r}.rowid",
         identity: &["{r}.id"],
         columns: &[
@@ -682,7 +682,7 @@ pub static UNITS: &[UnitSpec] = &[
             (
                 "target",
                 T(
-                    "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM a.note_target nt WHERE nt.note_id = {r}.id ORDER BY nt.ref))",
+                    "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_note_target nt WHERE nt.note_id = {r}.id ORDER BY nt.ref))",
                 ),
                 Text,
             ),
@@ -695,7 +695,7 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: false,
         session_pk: "{r}.session_pk",
         session_scope: Some(
-            "EXISTS (SELECT 1 FROM a.note_target snt JOIN session ss ON 'session:' || ss.id = snt.ref \
+            "EXISTS (SELECT 1 FROM source_note_target snt JOIN session ss ON 'session:' || ss.id = snt.ref \
              WHERE snt.note_id = {r}.id AND ss.pk IN ({sessions}))",
         ),
         search: Search::Substring("{r}.value"),
@@ -813,7 +813,7 @@ pub static UNITS: &[UnitSpec] = &[
         unit: Unit::Deliveries,
         name: "deliveries",
         singular: "delivery",
-        from: Expr::Template("a.delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id"),
+        from: Expr::Template("source_delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id"),
         key: "{r}.rowid",
         identity: &["{r}.id"],
         columns: &[
@@ -886,7 +886,7 @@ pub static UNITS: &[UnitSpec] = &[
                cs.live_changed AS live_changed, NULL AS note_kind FROM session cs \
              UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL \
                FROM removed_session rs \
-             UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind FROM a.note cn \
+             UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind FROM source_note cn \
 ) {r}",
         ),
         key: "({r}.kind || ':' || {r}.ref)",
