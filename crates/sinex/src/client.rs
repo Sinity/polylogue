@@ -311,7 +311,24 @@ impl Client {
                 length: prepared.frame_length,
             })?
         };
-        let acknowledgment = self.transmit(&prepared.identity, body).await?;
+        let acknowledgment = match self.transmit(&prepared.identity, body).await {
+            Ok(receipt) => receipt,
+            Err(Error::ReceiptConflict {
+                frame,
+                offered_hash,
+                receipt,
+            }) => {
+                self.spool
+                    .lock()
+                    .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+                    .record_conflict(&frame, &offered_hash, &receipt)?;
+                return Err(Error::Refused {
+                    name: frame,
+                    reason: "the owner recorded different immutable contents".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         self.spool
             .lock()
             .map_err(|_| Error::Invalid("producer spool panicked".into()))?
@@ -365,7 +382,47 @@ impl Client {
             ACKNOWLEDGMENT_WAIT,
         )
         .await
-        .map_err(|error| Error::Unreachable(error.to_string()))
+        .map_err(submit_error)
+    }
+}
+
+fn submit_error(error: sinex_transport::producer::SubmitError) -> Error {
+    match error {
+        sinex_transport::producer::SubmitError::ReceiptConflict {
+            frame,
+            offered_hash,
+            receipt,
+        } => Error::ReceiptConflict {
+            frame,
+            offered_hash,
+            receipt,
+        },
+        other => Error::Unreachable(other.to_string()),
+    }
+}
+
+pub(crate) fn adopt_receipt(
+    spool: &crate::spool::Spool,
+    prepared: &crate::spool::Prepared,
+    receipt: Acknowledgment,
+) -> Result<Acknowledgment> {
+    match verified_receipt(prepared, receipt) {
+        Ok(receipt) => {
+            spool.acknowledge(receipt.clone())?;
+            Ok(receipt)
+        }
+        Err(Error::ReceiptConflict {
+            frame,
+            offered_hash,
+            receipt,
+        }) => {
+            spool.record_conflict(&frame, &offered_hash, &receipt)?;
+            Err(Error::Refused {
+                name: frame,
+                reason: "the owner recorded different immutable contents".into(),
+            })
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -385,10 +442,7 @@ pub(crate) fn verified_receipt(
             "recorded receipt changed its operation identity".into(),
         ));
     }
-    sinex_transport::producer::check_receipt(&frame, receipt).map_err(|error| Error::Refused {
-        name: prepared.identity.clone(),
-        reason: error.to_string(),
-    })
+    sinex_transport::producer::check_receipt(&frame, receipt).map_err(submit_error)
 }
 
 pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> {

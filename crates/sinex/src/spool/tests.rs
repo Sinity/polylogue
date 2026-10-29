@@ -1058,3 +1058,60 @@ fn plaintext_predecessor_operations_require_an_explicit_preserved_transition() {
     assert!(Spool::open(directory.path(), "host").is_err());
     assert!(path.join("frame.json").exists());
 }
+
+#[test]
+fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let spool = Spool::open(root.path(), "host").unwrap();
+    let bytes = b"actual newly offered provider bytes";
+    let frame = material("same-frame", bytes);
+    let prepared = spool.prepare_material(frame, bytes.as_slice()).unwrap();
+    let prior_frame = material("same-frame", b"previous different provider bytes");
+    let mut receipt = ack("same-frame", false, Some(9));
+    receipt.outcome = serde_json::json!({"frame_content_hash":sinex_transport::producer::content_hash(&prior_frame).unwrap()});
+    assert!(matches!(
+        crate::client::adopt_receipt(&spool, &prepared, receipt.clone()),
+        Err(Error::Refused { .. })
+    ));
+    let terminal = spool.get("same-frame").unwrap().unwrap();
+    assert!(!terminal.acknowledged);
+    assert!(terminal.refused);
+    assert_eq!(terminal.commit_seq, None);
+    assert!(spool.acknowledgment("same-frame").unwrap().is_none());
+    assert_eq!(
+        spool.conflict_receipt("same-frame").unwrap(),
+        Some(receipt.clone())
+    );
+    drop(spool);
+    let spool = Spool::open(root.path(), "host").unwrap();
+    spool.retire(i64::MAX).unwrap();
+    let retained = spool.get("same-frame").unwrap().unwrap();
+    assert!(retained.refused && !retained.acknowledged);
+    let mut observed = Vec::new();
+    spool
+        .body("same-frame")
+        .unwrap()
+        .read_to_end(&mut observed)
+        .unwrap();
+    assert_eq!(observed, bytes);
+    spool
+        .record_conflict("same-frame", &prepared.frame_hash, &receipt)
+        .unwrap();
+    assert_eq!(spool.conflict_receipt("same-frame").unwrap(), Some(receipt));
+}
+
+#[test]
+fn conflict_evidence_for_another_frame_cannot_change_private_disposition() {
+    let root = tempfile::tempdir().unwrap();
+    let spool = Spool::open(root.path(), "host").unwrap();
+    let prepared = spool.prepare(events("owned", "frozen bytes")).unwrap();
+    let receipt = ack("foreign", false, Some(2));
+    assert!(
+        spool
+            .record_conflict("owned", &prepared.frame_hash, &receipt)
+            .is_err()
+    );
+    let unchanged = spool.get("owned").unwrap().unwrap();
+    assert!(!unchanged.acknowledged && !unchanged.refused);
+    assert!(spool.conflict_receipt("owned").unwrap().is_none());
+}

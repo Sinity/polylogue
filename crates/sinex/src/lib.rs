@@ -29,6 +29,12 @@ pub enum Error {
     Unreachable(String),
     #[error("Sinex refused {name}: {reason}")]
     Refused { name: String, reason: String },
+    #[error("Sinex recorded different logical bytes for {frame}")]
+    ReceiptConflict {
+        frame: String,
+        offered_hash: String,
+        receipt: Box<sinex_protocol::Acknowledgment>,
+    },
     #[error("historical event {event} was erased at {position}")]
     Erased { event: String, position: i64 },
     #[error("{0}")]
@@ -403,7 +409,7 @@ impl polylogue_store::primary::Sinex for Sinex {
                     spool::Kind::Events | spool::Kind::ReplaySequence
                 ) && receipt.refusal.is_none()
                     && receipt.commit_seq.is_some();
-                queue.acknowledge(client::verified_receipt(&entry, receipt)?)?;
+                client::adopt_receipt(&queue, &entry, receipt)?;
             }
         }
         if admitted {

@@ -152,6 +152,8 @@ struct Receipt {
     payload: Bytes,
     commit_seq: Option<i64>,
     refused: bool,
+    #[serde(default)]
+    conflict: Option<String>,
 }
 
 /// Only pending operations live here. Ordered and capture-membership indexes
@@ -331,7 +333,7 @@ impl Spool {
             )?;
         }
         if let Some(receipt) = self.receipt(identity)? {
-            prepared.acknowledged = true;
+            prepared.acknowledged = receipt.conflict.is_none();
             prepared.commit_seq = receipt.commit_seq;
             prepared.refused = receipt.refused;
         }
@@ -409,6 +411,10 @@ impl Spool {
         let Some(receipt) = self.receipt(identity)? else {
             return Ok(None);
         };
+        if receipt.conflict.is_some() {
+            self.conflict_receipt(identity)?;
+            return Ok(None);
+        }
         let acknowledgment: Acknowledgment = decode_json(verified_encoded(
             &self.operation(identity)?.join("ack/payload.zst"),
             receipt.payload.descriptor()?,
@@ -893,6 +899,7 @@ impl Spool {
                 payload,
                 commit_seq: acknowledgment.commit_seq,
                 refused: acknowledgment.refusal.is_some(),
+                conflict: None,
             },
         )?;
         sync(temporary.path())?;
@@ -902,6 +909,67 @@ impl Spool {
         boundary("ack_published");
         self.retirement_dirty.set(true);
         Ok(())
+    }
+
+    /// Conflict evidence retains the owner's prior receipt without acknowledging
+    /// the offered body. It uses the operation's existing atomic receipt directory.
+    pub fn record_conflict(
+        &self,
+        identity: &str,
+        offered_hash: &str,
+        receipt: &Acknowledgment,
+    ) -> Result<()> {
+        let prepared = self.required(identity)?;
+        validate_conflict(&prepared, offered_hash, receipt)?;
+        if let Some(old) = self.conflict_receipt(identity)? {
+            if encoded_hash(&old)? != encoded_hash(receipt)? {
+                return invalid("conflicting receipt evidence changed");
+            }
+            return Ok(());
+        }
+        if self.receipt(identity)?.is_some() {
+            return invalid("an acknowledged immutable operation cannot change disposition");
+        }
+        let directory = self.operation(identity)?;
+        let temporary = tempfile::Builder::new()
+            .prefix(".ack-preparing-")
+            .tempdir_in(&directory)?;
+        let payload = write_encoded_json(&temporary.path().join("payload.zst"), receipt)?;
+        write_checked(
+            &temporary.path().join("receipt.json"),
+            &Receipt {
+                payload,
+                commit_seq: None,
+                refused: true,
+                conflict: Some(offered_hash.into()),
+            },
+        )?;
+        sync(temporary.path())?;
+        boundary("ack_synced");
+        fs::rename(temporary.path(), directory.join("ack"))?;
+        sync(&directory)?;
+        boundary("ack_published");
+        self.retirement_dirty.set(true);
+        Ok(())
+    }
+
+    pub fn conflict_receipt(&self, identity: &str) -> Result<Option<Acknowledgment>> {
+        let Some(summary) = self.receipt(identity)? else {
+            return Ok(None);
+        };
+        let Some(offered) = summary.conflict else {
+            return Ok(None);
+        };
+        let prepared = self.required(identity)?;
+        let receipt: Acknowledgment = decode_json(verified_encoded(
+            &self.operation(identity)?.join("ack/payload.zst"),
+            summary.payload.descriptor()?,
+        )?)?;
+        validate_conflict(&prepared, &offered, &receipt)?;
+        if summary.commit_seq.is_some() || !summary.refused {
+            return invalid("conflict evidence claims acceptance");
+        }
+        Ok(Some(receipt))
     }
 
     pub fn retire(&self, applied: i64) -> Result<()> {
@@ -1638,6 +1706,16 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
         acknowledgment.commit_seq,
         acknowledgment.refusal.is_some(),
     )
+}
+fn validate_conflict(prepared: &Prepared, offered: &str, receipt: &Acknowledgment) -> Result<()> {
+    if receipt.frame != prepared.identity
+        || offered != prepared.frame_hash
+        || receipt.number.is_none_or(|number| number <= 0)
+        || receipt.content_hash() == Some(offered)
+    {
+        return invalid("conflict evidence does not bind this exact offered operation");
+    }
+    Ok(())
 }
 fn validate_ack_header(
     prepared: &Prepared,
