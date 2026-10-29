@@ -444,3 +444,40 @@ fn not_requested_retracts_an_offered_write_proof_without_losing_full_projection_
     assert_eq!(state.certified_position(), Some(20));
     assert_eq!(state.publication, None);
 }
+
+#[test]
+fn renewed_write_stamp_preserves_the_first_frozen_proof_for_the_same_applied_basis() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    initialize(&index);
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let offer = |stamp: &str| {
+        control(ReplayControl::Coverage {
+            coverage: RawInputCoverage::Complete {
+                proof: RawInputProof {
+                    stamp: stamp.into(),
+                    position: 20,
+                    policy_epoch: 7,
+                    scope: "scope".into(),
+                },
+            },
+        })
+    };
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            native_input(),
+            complete(),
+            offer("first-owner-proof"),
+            offer("renewed-staged-proof"),
+        ],
+    )
+    .unwrap();
+    apply(&mut index, &resolver, &[offer("renewed-applied-proof")]).unwrap();
+    assert_eq!(
+        replay_state(&index).unwrap().publication.unwrap().stamp,
+        "first-owner-proof"
+    );
+}
