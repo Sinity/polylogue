@@ -542,6 +542,7 @@ pub(crate) fn prepare_usage(
     text: &str,
     context: std::sync::Arc<crate::operation::Context>,
     embeddings: bool,
+    ranking_identity: Option<String>,
 ) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
     let text = format!("{text} | measure usage");
     let ask = Ask {
@@ -552,7 +553,7 @@ pub(crate) fn prepare_usage(
         session: None,
         context,
         embeddings,
-        ranking_identity: None,
+        ranking_identity,
         near: None,
         fields: &[],
     };
@@ -594,6 +595,7 @@ pub(crate) fn usage_selection(
     text: &str,
     context: std::sync::Arc<crate::operation::Context>,
     embeddings: bool,
+    ranking_identity: Option<String>,
     near: Option<&NearFn<'_>>,
 ) -> Result<
     (
@@ -602,7 +604,7 @@ pub(crate) fn usage_selection(
     ),
     Failure,
 > {
-    let (plan, options) = prepare_usage(reader, text, context, embeddings)?;
+    let (plan, options) = prepare_usage(reader, text, context, embeddings, ranking_identity)?;
     let program = polylogue_store::query::lower(&plan, &options)?;
     Ok((select_usage(reader, &program, near)?, plan.question_id()))
 }

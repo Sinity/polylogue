@@ -317,6 +317,7 @@ pub fn timeline(
 
 pub struct Cost<'a> {
     pub embeddings: bool,
+    pub ranking_identity: Option<String>,
     pub near: Option<&'a query::NearFn<'a>>,
     pub month: Option<&'a str>,
     pub query: &'a str,
@@ -335,6 +336,7 @@ pub fn cost(
 ) -> Result<Value, Failure> {
     let Cost {
         embeddings,
+        ranking_identity,
         near,
         month,
         query: scope,
@@ -345,8 +347,13 @@ pub fn cost(
         cursor,
         page_size: size,
     } = options;
-    let (plan, mut query_options) =
-        query::prepare_usage(reader, scope, Arc::clone(owner), embeddings)?;
+    let (plan, mut query_options) = query::prepare_usage(
+        reader,
+        scope,
+        Arc::clone(owner),
+        embeddings,
+        ranking_identity.clone(),
+    )?;
     let mut paging = paging(
         reader,
         owner,
@@ -359,7 +366,13 @@ pub fn cost(
             undated,
             unknown_model
         ]),
-        &json!(["cost", month, embeddings, plan.definitions()]),
+        &json!([
+            "cost",
+            month,
+            embeddings,
+            ranking_identity,
+            plan.definitions()
+        ]),
     )?;
     let clock = paging.operation.clock.clone();
     query_options.clock = clock.clone();

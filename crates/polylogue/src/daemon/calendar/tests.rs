@@ -37,6 +37,7 @@ fn setup(root: &std::path::Path) -> Fixture {
 fn options<'a>(date: Option<&'a str>, cursor: Option<&'a str>) -> Cost<'a> {
     Cost {
         embeddings: false,
+        ranking_identity: None,
         near: None,
         month: None,
         query: "sessions",

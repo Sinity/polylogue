@@ -296,6 +296,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
         text,
         fixture_context(OCT1, "UTC", 0),
         true,
+        Some("synthetic-provider:vectors".into()),
         Some(&near),
     )
     .unwrap();
@@ -310,9 +311,16 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
         Some(vec![selected[0]["pk"].as_i64().unwrap()])
     );
     assert_eq!(
-        usage_selection(&reader, text, fixture_context(OCT1, "UTC", 0), true, None)
-            .unwrap_err()
-            .kind,
+        usage_selection(
+            &reader,
+            text,
+            fixture_context(OCT1, "UTC", 0),
+            true,
+            None,
+            None
+        )
+        .unwrap_err()
+        .kind,
         "embed"
     );
 }
