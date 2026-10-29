@@ -85,12 +85,50 @@ pub struct NativeEvidence {
 pub struct WorkSnapshot {
     pub reducer_version: u32,
     pub position: i64,
-    pub session: crate::Session,
+    pub session_id: SessionId,
+    pub session: Option<crate::Session>,
+    pub retired: bool,
     pub messages: Vec<WorkMessage>,
     pub calls: Vec<ToolCallProduct>,
     pub turns: Vec<TurnProduct>,
     pub sources: Vec<ReadingSource>,
     pub native: Vec<NativeEvidence>,
+}
+
+impl WorkSnapshot {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.position < 0 {
+            return Err("snapshot position is negative");
+        }
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.id != self.session_id)
+        {
+            return Err("snapshot session metadata has another identity");
+        }
+        if self.retired
+            && (self.session.is_some()
+                || !self.messages.is_empty()
+                || !self.calls.is_empty()
+                || !self.turns.is_empty()
+                || !self.native.is_empty())
+        {
+            return Err("retired snapshot contains source facts");
+        }
+        if self
+            .calls
+            .iter()
+            .any(|call| call.session != self.session_id)
+            || self
+                .turns
+                .iter()
+                .any(|turn| turn.session != self.session_id)
+        {
+            return Err("snapshot member belongs to another session");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

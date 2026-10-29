@@ -46,13 +46,7 @@ pub(crate) fn key(product: &Product, occurrence: u64) -> Result<String> {
         Product::Session { facts, .. } => json!([facts.id]),
         Product::Message { facts, .. } => json!([facts.message.id, facts.offset]),
         Product::Document { facts, .. } => json!([facts.document.id, facts.offset]),
-        Product::Event { facts, .. } => json!([
-            facts.session,
-            facts.kind,
-            facts.after,
-            facts.range,
-            occurrence
-        ]),
+        Product::Event { id, .. } => json!([id]),
         Product::Link { facts, .. } => json!([facts.kind, facts.parent, facts.child]),
         Product::Background { facts, .. } => json!([facts.session, facts.task_id]),
         Product::Repository { facts, .. } => json!([facts.path]),
@@ -60,7 +54,7 @@ pub(crate) fn key(product: &Product, occurrence: u64) -> Result<String> {
         Product::Request(request) => json!([request.request.id]),
         Product::Coverage(coverage) => json!([coverage.machine]),
         Product::WorkSnapshot { snapshot } => {
-            json!([snapshot.session.id, snapshot.reducer_version])
+            json!([snapshot.session_id, snapshot.reducer_version])
         }
     };
     let source = product
@@ -194,8 +188,8 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         }
         Product::Coverage(_) => json!({}),
         Product::WorkSnapshot { snapshot } => json!({
-            "session":snapshot.session.id,"reducer_version":snapshot.reducer_version,"source_position":snapshot.position,
-            "complete":true,"repo":snapshot.session.repo,"branch":snapshot.session.git_branch,"kind":snapshot.session.kind,"mode":snapshot.session.mode,
+            "session":snapshot.session_id,"reducer_version":snapshot.reducer_version,"source_position":snapshot.position,
+            "complete":true,"repo":snapshot.session.as_ref().and_then(|session|session.repo.as_ref()),"branch":snapshot.session.as_ref().and_then(|session|session.git_branch.as_ref()),"kind":snapshot.session.as_ref().map(|session|session.kind),"mode":snapshot.session.as_ref().and_then(|session|session.mode.as_ref()),
             "machine":Value::Null,"objectives":[],"git_identity":Value::Null,"terminal":Value::Null,"boot_id":Value::Null,
             "native_sources":[],"native_unavailable":[],
         }),
@@ -214,7 +208,10 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
             Error::Invalid(format!("confirmed {event_type} has no complete facts"))
         })?)?;
     if let Product::WorkSnapshot { snapshot } = &product {
-        if payload.get("session") != Some(&serde_json::to_value(&snapshot.session.id)?)
+        snapshot
+            .validate()
+            .map_err(|error| Error::Invalid(error.into()))?;
+        if payload.get("session") != Some(&serde_json::to_value(&snapshot.session_id)?)
             || payload.get("reducer_version").and_then(Value::as_u64)
                 != Some(snapshot.reducer_version as u64)
             || payload.get("source_position").and_then(Value::as_i64) != Some(snapshot.position)
@@ -242,7 +239,7 @@ struct WorkSnapshotMetadata {
     complete: bool,
     repo: Option<String>,
     branch: Option<String>,
-    kind: polylogue_model::SessionKind,
+    kind: Option<polylogue_model::SessionKind>,
     mode: Option<String>,
     machine: Option<String>,
     objectives: Vec<crate::kinds::Objective>,
@@ -428,7 +425,7 @@ pub(crate) fn events(
             let mut source = write.location.clone();
             let session = match &write.product {
                 Product::Session { facts, .. } => Some(facts),
-                Product::WorkSnapshot { snapshot } => Some(&snapshot.session),
+                Product::WorkSnapshot { snapshot } => snapshot.session.as_ref(),
                 _ => None,
             };
             if let Some(facts) = session {
