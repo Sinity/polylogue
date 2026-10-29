@@ -33,6 +33,7 @@ pub mod notes;
 mod ordered_blocks;
 pub mod primary;
 pub mod read;
+pub mod reference;
 mod repo_lookup;
 pub mod schema;
 pub mod schema_inputs;
@@ -141,6 +142,8 @@ pub enum StoreError {
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+    #[error("text of {reference} is unavailable: {reason}")]
+    ReferenceUnavailable { reference: String, reason: String },
 }
 
 impl From<rusqlite::Error> for StoreError {

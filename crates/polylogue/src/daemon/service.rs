@@ -56,6 +56,7 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::Conflict(_) => error("conflict", e),
         StoreError::Stale { .. } => error("stale", e),
         StoreError::Ambiguous { .. } => error("ambiguous", e),
+        StoreError::ReferenceUnavailable { .. } => error("not_yet_available", e),
         StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
         StoreError::ReadCancelled => error("cancelled", e),
         StoreError::ReadPoolClosed => error("daemon_stopping", e),

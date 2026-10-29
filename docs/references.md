@@ -47,3 +47,21 @@ Surfaces also accept shorter forms that resolve to one of the above before anyth
 - **name-ambiguity-refused**: a page name carried by two current roots is refused as `ambiguous`, listing both roots.
 - **exact-revision-stored**: a judgment or `revises` link written against the current revision stores `@<rev>`, and still names that revision after a newer one is written.
 - **no-row-numbers**: no stored or printed reference contains a database row number (checked over every stored reference in the Morrow archive).
+
+## Recorded text and spans
+
+The store's reference-text stream reads original source bodies before view
+filtering, masking or variant substitution. A physical session uses the same
+original message and block order as its source reader; a block address uses
+its original stored ordinal. Recorded text, thinking text and textual tool
+results are joined by two LF characters between bodies. Empty recorded text
+stays present. Tool arguments and other structured metadata are separate
+from this plain-text stream. Missing targets, unavailable text and accessible
+empty text stay distinct.
+
+Text hashes are BLAKE3 of those UTF-8 chunks. They are separate from a
+message's canonical JSON source-version hash. Spans use half-open bounds
+`[a,b)` within this text, including separators. Byte and UTF-16 bounds must
+fall on a complete Unicode character boundary; code-point bounds count
+Unicode scalar values. Out-of-range or split-character bounds are refused
+before any span text is emitted.
