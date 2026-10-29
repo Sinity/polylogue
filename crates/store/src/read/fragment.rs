@@ -381,18 +381,20 @@ impl Reader<'_> {
 
     /// Emits only an available range, after validating coverage and conflicts.
     /// Memory holds at most two captured records; adjacent text is not collected.
+    /// Break stops delivery successfully. Availability validation covers the
+    /// requested range first; callers requesting a prefix pass its exact bounds.
     pub fn visit_fragment_text(
         &self,
         container: &Reference,
         version: Option<&TextSourceVersion>,
         start: u64,
         end: u64,
-        mut visit: impl FnMut(&str) -> Result<()>,
+        mut visit: impl FnMut(&str) -> Result<ControlFlow<()>>,
     ) -> Result<FragmentAvailability> {
         let availability = self.fragment_availability(container, version, start, end)?;
         match &availability {
             FragmentAvailability::Canonical { .. } => {
-                self.visit_reference_text(
+                self.visit_reference_text_while(
                     &Reference::Span {
                         container: Box::new(container.clone()),
                         unit: SpanUnit::Bytes,
@@ -433,8 +435,11 @@ impl Reader<'_> {
                         .ok_or_else(|| {
                             crate::fragment::invalid(TextFragmentError::CharacterBoundary)
                         })?;
-                    visit(text)?;
+                    let flow = visit(text)?;
                     cursor = next;
+                    if flow.is_break() {
+                        break;
+                    }
                     if cursor == end {
                         break;
                     }

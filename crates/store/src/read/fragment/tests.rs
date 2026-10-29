@@ -101,7 +101,7 @@ fn read(
     let availability = reader
         .visit_fragment_text(&container, version, start, end, |slice| {
             text.push_str(slice);
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         })
         .unwrap();
     (availability, text)
@@ -174,7 +174,7 @@ fn fragment_only_utf8_union_preserves_unknown_outside_and_never_attests_a_full_h
                 3,
                 |_| {
                     emitted = true;
-                    Ok(())
+                    Ok(ControlFlow::Continue(()))
                 }
             )
             .is_err()
@@ -490,7 +490,7 @@ fn matching_full_document_attests_fragments_without_using_a_message_container() 
     let available = reader
         .visit_fragment_text(&container, None, 0, 3, |chunk| {
             text.push_str(chunk);
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         })
         .unwrap();
     assert!(matches!(
@@ -680,4 +680,50 @@ fn fragment_claim_ordinal_skips_poisoned_prefix_before_decoding() {
             .visit_fragment_claims_from_ordinal(&owner, None, ordinal, |_| panic!("past claim end"))
             .unwrap();
     }
+}
+
+#[test]
+fn fragment_text_delivery_stops_successfully_and_preserves_consumer_errors() {
+    let mut w = WriterArchive::new();
+    let version = BlobHash::of(b"unavailable source");
+    capture(&mut w, "left", record(0, "hé", Some(6), version), Some(130));
+    capture(
+        &mut w,
+        "right",
+        record(3, "llo", Some(6), version),
+        Some(140),
+    );
+    let owner = Reference::parse("message:claude-code:s-m").unwrap();
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    {
+        let reader = pool.reader().unwrap();
+        let mut pieces = Vec::new();
+        let available = reader
+            .visit_fragment_text(&owner, None, 0, 6, |text| {
+                pieces.push(text.to_string());
+                Ok(ControlFlow::Break(()))
+            })
+            .unwrap();
+        assert!(matches!(available, FragmentAvailability::Declared { .. }));
+        assert_eq!(pieces, vec!["hé"]);
+        assert!(
+            matches!(reader.visit_fragment_text(&owner,None,0,6,|_|Err(StoreError::Invalid("consumer refusal".into()))),Err(StoreError::Invalid(reason)) if reason=="consumer refusal")
+        );
+    }
+    let mut full = source();
+    full.blocks = vec![
+        Block::Text { text: "hé".into() },
+        Block::Text { text: "llo".into() },
+    ];
+    w.write("s", vec![full]);
+    let reader = pool.reader().unwrap();
+    let mut pieces = Vec::new();
+    let available = reader
+        .visit_fragment_text(&owner, None, 0, 8, |text| {
+            pieces.push(text.to_string());
+            Ok(ControlFlow::Break(()))
+        })
+        .unwrap();
+    assert!(matches!(available, FragmentAvailability::Canonical { .. }));
+    assert_eq!(pieces, vec!["hé"]);
 }
