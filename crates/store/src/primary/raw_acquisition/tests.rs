@@ -113,3 +113,13 @@ fn contiguous_coordinates_without_the_actual_predecessor_do_not_prove_custody() 
         assert!(proof.finish().is_none());
     }
 }
+
+#[test]
+fn provider_window_end_before_opened_file_size_is_not_eof() {
+    let mut generation = generation();
+    let SourceGeneration::File { observed, .. } = &mut generation else { unreachable!() };
+    observed.size = 20;
+    let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
+    proof.push(body(&generation, 0, 10)).unwrap();
+    assert!(proof.finish().is_none());
+}
