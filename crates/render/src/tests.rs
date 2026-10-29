@@ -2564,6 +2564,31 @@ fn before_footer_trim_evicts_earliest_output_and_regenerates_its_lower_anchor() 
     }
     assert_eq!(page.first_position().unwrap().item, 0);
     assert_eq!(page.upper_position(), Some(&upper));
+    let earlier_row = SelectionLocator {
+        row: selection().row - 1,
+        ..selection()
+    };
+    assert_eq!(
+        page.push_at(earlier_row, 0, text("earlier row")).unwrap(),
+        pager::Push::Full
+    );
+    let initial_lower = *page.first_position().unwrap();
+    assert_eq!(page.position(), Some(&initial_lower));
+    let mut initial_footer = large_footer(Some(&initial_lower)).unwrap();
+    initial_footer.position = Some(initial_lower);
+    initial_footer.shown = 3;
+    initial_footer.estimator = Some(TOKEN_ESTIMATOR.into());
+    let untrimmed = ReadDocument {
+        header: header(),
+        items: (0..3)
+            .map(|n| text(&format!("{n}{}", "a".repeat(350))))
+            .collect(),
+        footer: initial_footer,
+    };
+    assert!(
+        encode(&untrimmed, Format::Json).len() > limits.bytes.get(),
+        "fixture must require footer trimming"
+    );
     let mut attempts = 0;
     let doc = page
         .finish_with(|lower| {
