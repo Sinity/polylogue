@@ -172,7 +172,7 @@ CREATE TABLE block (
   pk                INTEGER PRIMARY KEY,
   message_pk        INTEGER NOT NULL,
   session_pk        INTEGER NOT NULL,       -- the message's session, enforced by the composite key below
-  idx               INTEGER,                -- position in the message's content list; id = message id:idx
+  idx               INTEGER,                -- compact position among the stored blocks, used for ordering
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
   body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
@@ -188,7 +188,8 @@ CREATE TABLE block (
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
   data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
-                                            --   out of body and last, so a text read never reads or decodes it
+                                            --   out of body, so a text read never reads or decodes it
+  ordinal           TEXT,                   -- original u64 source position; NULL means native dense idx
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
@@ -615,6 +616,10 @@ CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_coun
 CREATE TABLE message_version (
   version_hash BLOB PRIMARY KEY,
   body BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE message_projection (
+  version_hash BLOB PRIMARY KEY REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  layout BLOB NOT NULL -- original u64 block count and aligned original ordinals
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE message_version_text (
   version_hash BLOB NOT NULL REFERENCES message_version(version_hash) ON DELETE CASCADE,
