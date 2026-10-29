@@ -49,6 +49,8 @@ pub(crate) struct Prepared {
     pub body: Option<Bytes>,
     pub material: Option<Material>,
     pub capture: Option<Capture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured: Option<Bytes>,
     pub request: bool,
     pub group: Option<Group>,
     #[serde(skip)]
@@ -156,6 +158,9 @@ impl Spool {
         if let Some(body) = &prepared.body {
             check_length(&directory.join("body"), body.length)?;
         }
+        if let Some(captured) = &prepared.captured {
+            check_length(&directory.join("captured.json"), captured.length)?;
+        }
         if let Some(receipt) = read_checked::<Receipt>(&directory.join("receipt.json"))? {
             check_length(&directory.join("ack.json"), receipt.length)?;
             prepared.acknowledged = true;
@@ -245,14 +250,47 @@ impl Spool {
         if matches!(&frame, Ingress::Material { .. }) {
             return invalid("material must have its immutable body prepared before sending");
         }
-        self.prepare_operation(frame, None::<std::io::Empty>, None)
+        self.prepare_operation(frame, None::<std::io::Empty>, None, None)
     }
 
     pub fn prepare_material(&self, frame: Ingress, bytes: impl Read) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame has captured bytes");
         }
-        self.prepare_operation(frame, Some(bytes), None)
+        self.prepare_operation(frame, Some(bytes), None, None)
+    }
+
+    /// Complete parser facts share the material's atomic publication, but
+    /// remain outside queue metadata and the raw provider manifest.
+    pub fn prepare_capture(
+        &self,
+        frame: Ingress,
+        bytes: impl Read,
+        capture: &Capture,
+    ) -> Result<Prepared> {
+        if !matches!(&frame, Ingress::Material { .. }) {
+            return invalid("only a material frame can own a capture");
+        }
+        self.prepare_operation(frame, Some(bytes), None, Some(capture))
+    }
+
+    pub fn capture(&self, identity: &str) -> Result<Capture> {
+        let prepared = self.required(identity)?;
+        if let Some(captured) = prepared.captured {
+            let capture: Capture = decode_json(verified(
+                &self.operation(identity).join("captured.json"),
+                &captured.blob,
+                captured.length,
+            )?)?;
+            if prepared.capture.as_ref() != Some(&capture_header(&capture)) {
+                return invalid("capture sidecar differs from its queue header");
+            }
+            Ok(capture)
+        } else {
+            prepared
+                .capture
+                .ok_or_else(|| Error::Invalid("operation has no captured facts".into()))
+        }
     }
 
     /// One publication owns the complete immutable capture set. Per-capture
@@ -286,7 +324,12 @@ impl Spool {
                 }
             }
         }
-        self.prepare_operation(frame, None::<std::io::Empty>, Some((&captures, group_hash)))
+        self.prepare_operation(
+            frame,
+            None::<std::io::Empty>,
+            Some((&captures, group_hash)),
+            None,
+        )
     }
 
     pub fn group_for(&self, captures: &[String]) -> Result<Option<Prepared>> {
@@ -581,8 +624,9 @@ impl Spool {
     fn prepare_operation<R: Read>(
         &self,
         frame: Ingress,
-        body: Option<R>,
+        mut body: Option<R>,
         captures: Option<(&[&str], String)>,
+        full_capture: Option<&Capture>,
     ) -> Result<Prepared> {
         self.ensure_indexes()?;
         let identity = frame.frame().to_owned();
@@ -604,6 +648,25 @@ impl Spool {
             {
                 return invalid("prepared identity changed its capture group");
             }
+            if let Some(input) = body.as_mut() {
+                let mut output = HashWriter::new(std::io::sink());
+                std::io::copy(input, &mut output)?;
+                let (blob, length) = output.finish();
+                if previous.body.as_ref() != Some(&Bytes { blob, length }) {
+                    return invalid("prepared identity changed immutable body contents");
+                }
+            }
+            let desired_capture = full_capture.map(encoded_hash).transpose()?;
+            if previous
+                .captured
+                .as_ref()
+                .map(|bytes| (bytes.blob.as_str(), bytes.length))
+                != desired_capture
+                    .as_ref()
+                    .map(|(blob, length)| (blob.as_str(), *length))
+            {
+                return invalid("prepared identity changed immutable captured facts");
+            }
             return Ok(previous);
         }
         let prefix = format!(".preparing-{}-", hash(identity.as_bytes()));
@@ -611,7 +674,19 @@ impl Spool {
             .prefix(&prefix)
             .tempdir_in(self.root.join("operations"))?;
         let (frame_hash, frame_length) = write_json(&temporary.path().join("frame.json"), &frame)?;
-        let (kind, material, capture, request) = describe(&frame)?;
+        let (kind, material, mut capture, request) = describe(&frame)?;
+        let captured = full_capture
+            .map(|full| -> Result<Bytes> {
+                let header = capture_header(full);
+                if capture.as_ref() != Some(&header) {
+                    return invalid("capture header differs from its material manifest");
+                }
+                capture = Some(header);
+                let (blob, length) = write_json(&temporary.path().join("captured.json"), full)?;
+                boundary("capture_synced");
+                Ok(Bytes { blob, length })
+            })
+            .transpose()?;
         let body = if let Some(mut input) = body {
             let descriptor = material
                 .as_ref()
@@ -661,6 +736,7 @@ impl Spool {
             body,
             material,
             capture,
+            captured,
             request,
             group,
             acknowledged: false,
@@ -790,7 +866,37 @@ impl Spool {
     }
 }
 
+fn capture_header(capture: &Capture) -> Capture {
+    match capture {
+        Capture::Input(input) => Capture::Input(polylogue_store::primary::CapturedInput {
+            input: input.input.clone(),
+            rows: input.rows.clone(),
+            index: input.index,
+            previous: input.previous.clone(),
+            hash: input.hash,
+            length: input.length,
+            group: input.group.clone(),
+            arrival_rank: input.arrival_rank,
+            parsed: Vec::new(),
+        }),
+        Capture::Blob { hash, length } => Capture::Blob {
+            hash: *hash,
+            length: *length,
+        },
+    }
+}
+
 fn describe(frame: &Ingress) -> Result<(Kind, Option<Material>, Option<Capture>, bool)> {
+    if let Ingress::Material { material, .. } = frame {
+        if let Some(value) = material.manifest.details.get("polylogue_capture") {
+            let capture: Capture = serde_json::from_value(value.clone())?;
+            if capture != capture_header(&capture) {
+                return invalid(
+                    "raw material manifest must keep parser facts in the private capture sidecar",
+                );
+            }
+        }
+    }
     Ok(match frame {
         Ingress::Material { material, .. } => (
             Kind::Material,

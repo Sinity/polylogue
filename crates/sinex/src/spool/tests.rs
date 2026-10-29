@@ -46,7 +46,7 @@ fn material_with(identity: &str, blob: String, length: u64) -> Ingress {
 
 fn ack(identity: &str, material: bool, position: Option<i64>) -> Acknowledgment {
     serde_json::from_value(serde_json::json!({
-        "frame":identity, "material":material.then(||crate::material_id(identity)),"material_extents":[],
+        "number":1, "frame":identity, "material":material.then(||crate::material_id(identity)),"material_extents":[],
         "admitted":[],"outcome":{},"refusal":null,"commit_seq":position
     })).unwrap()
 }
@@ -252,7 +252,17 @@ fn crash_worker() {
     };
     let spool = Spool::open(Path::new(&root), "host").unwrap();
     let stage = std::env::var("POLYLOGUE_SPOOL_CRASH").unwrap();
-    if stage == "discard_member_retired" {
+    if stage == "capture_synced" {
+        let bytes = b"original source";
+        let capture = parsed_capture(bytes, "synthetic answer");
+        spool
+            .prepare_capture(
+                capture_frame("captured", bytes, &capture),
+                bytes.as_slice(),
+                &capture,
+            )
+            .unwrap();
+    } else if stage == "discard_member_retired" {
         spool
             .prepare_material(
                 material("private", b"private bytes"),
@@ -539,4 +549,110 @@ fn replay_capture_group_retains_its_material_until_applied() {
     assert!(spool.get("raw").unwrap().is_some());
     spool.retire(21).unwrap();
     assert!(all(&spool, 1).is_empty());
+}
+
+fn parsed_capture(bytes: &[u8], text: &str) -> Capture {
+    let mut output = polylogue_model::Output::default();
+    output.messages.push(serde_json::from_value(serde_json::json!({
+        "offset":0,"end":bytes.len(),"message":{"id":"codex:message","session":"codex:session","role":"assistant","attrs":{},"blocks":[{"type":"text","text":text}]}
+    })).unwrap());
+    let step = polylogue_store::ParseStep::new(
+        output,
+        polylogue_model::RecordCounts::default(),
+        0..bytes.len() as u64,
+        true,
+    );
+    let parsed = vec![polylogue_store::primary::CapturedReading::from_step(&step).unwrap()];
+    Capture::Input(serde_json::from_value(serde_json::json!({
+        "input":{"origin":"codex","path":"/fixture/session.jsonl","host":"fixture-host"},
+        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":polylogue_model::BlobHash::of(bytes)}},
+        "index":0,"previous":null,"hash":polylogue_model::BlobHash::of(bytes),"length":bytes.len(),"group":null,"arrival_rank":1,"parsed":parsed
+    })).unwrap())
+}
+
+fn capture_frame(identity: &str, bytes: &[u8], capture: &Capture) -> Ingress {
+    let mut frame = material(identity, bytes);
+    if let Ingress::Material { material, .. } = &mut frame {
+        material.manifest.details.insert(
+            "polylogue_capture".into(),
+            serde_json::to_value(capture_header(capture)).unwrap(),
+        );
+    }
+    frame
+}
+
+#[test]
+fn complete_parser_facts_are_immutable_sidecars_and_queue_headers_stay_small() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let bytes = b"original source";
+    let capture = parsed_capture(bytes, &"synthetic answer ".repeat(100_000));
+    let frame = capture_frame("captured", bytes, &capture);
+    let mut invalid = capture_frame("invalid", bytes, &capture);
+    if let Ingress::Material { material, .. } = &mut invalid {
+        material.manifest.details.insert(
+            "polylogue_capture".into(),
+            serde_json::to_value(&capture).unwrap(),
+        );
+    }
+    assert!(
+        spool
+            .prepare_capture(invalid, bytes.as_slice(), &capture)
+            .is_err()
+    );
+    let prepared = spool
+        .prepare_capture(frame.clone(), bytes.as_slice(), &capture)
+        .unwrap();
+    assert!(serde_json::to_vec(&prepared).unwrap().len() < 4096);
+    assert!(prepared.captured.as_ref().unwrap().length > 1_000_000);
+    assert_eq!(prepared.capture, Some(capture_header(&capture)));
+    assert_eq!(spool.capture("captured").unwrap(), capture);
+    spool
+        .prepare_capture(frame.clone(), bytes.as_slice(), &capture)
+        .unwrap();
+    let changed = parsed_capture(bytes, "changed facts");
+    assert!(
+        spool
+            .prepare_capture(frame.clone(), bytes.as_slice(), &changed)
+            .is_err()
+    );
+    assert!(
+        spool
+            .prepare_capture(frame.clone(), b"different source".as_slice(), &capture)
+            .is_err()
+    );
+    drop(spool);
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    assert_eq!(spool.capture("captured").unwrap(), capture);
+    spool.acknowledge(ack("captured", true, None)).unwrap();
+    assert_eq!(spool.pending_after(None, 1).unwrap().len(), 1);
+    assert_eq!(spool.capture("captured").unwrap(), capture);
+    let path = spool.operation("captured").join("captured.json");
+    let mut content = fs::read(&path).unwrap();
+    content[0] ^= 1;
+    fs::write(path, content).unwrap();
+    assert!(spool.capture("captured").is_err());
+}
+
+#[test]
+fn capture_sidecar_and_body_publish_together_after_process_death() {
+    let directory = tempfile::tempdir().unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
+        .env("POLYLOGUE_SPOOL_CRASH_ROOT", directory.path())
+        .env("POLYLOGUE_SPOOL_CRASH", "capture_synced")
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(77));
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    assert!(spool.pending_after(None, 1).unwrap().is_empty());
+    spool
+        .discard_confirmed(&["captured".into()], 10, 10)
+        .unwrap();
+    assert!(
+        fs::read_dir(spool.root.join("operations"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
 }
