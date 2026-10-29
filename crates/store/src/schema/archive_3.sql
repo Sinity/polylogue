@@ -19,6 +19,7 @@ CREATE INDEX query_edge_uses ON query_edge(uses,query);
 CREATE TABLE query_run (
     id TEXT PRIMARY KEY,
     binding_hash TEXT NOT NULL CHECK(length(binding_hash)=64),
+    run_hash TEXT NOT NULL CHECK(length(run_hash)=64),
     query TEXT,
     at TEXT,
     read_at TEXT,
