@@ -18,6 +18,7 @@ use std::{
 
 pub(crate) struct Publisher {
     stop: Arc<AtomicBool>,
+    expected_exit: Arc<AtomicBool>,
     wake: Option<SyncSender<()>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -28,11 +29,14 @@ impl Publisher {
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
+        let expected_exit = Arc::new(AtomicBool::new(false));
+        let completed = Arc::clone(&expected_exit);
         let wake = subscription.as_ref().map(CommitSubscription::wake_handle);
         let thread = std::thread::Builder::new()
             .name("polylogue-completion".into())
             .spawn(move || {
-                let mut publisher = State::new(daemon.archive.is_primary());
+                let mut publisher =
+                    State::new(daemon.archive.is_primary(), daemon.config.requests.clone());
                 let mut last_error = None;
                 loop {
                     if stopped.load(Ordering::Acquire) {
@@ -69,15 +73,28 @@ impl Publisher {
                                 return;
                             }
                         }
-                        None => return,
+                        None => {
+                            completed.store(true, Ordering::Release);
+                            return;
+                        }
                     }
                 }
             })?;
         Ok(Self {
             stop,
+            expected_exit,
             wake,
             thread: Some(thread),
         })
+    }
+
+    /// A finite publisher without a subscription returns after its snapshot.
+    /// Every other unrequested worker exit, including a panic, is a failure.
+    pub(crate) fn worker_failure(&self) -> Option<&'static str> {
+        (self.thread.as_ref().is_some_and(JoinHandle::is_finished)
+            && !self.stop.load(Ordering::Acquire)
+            && !self.expected_exit.load(Ordering::Acquire))
+            .then_some("completion worker terminated")
     }
 }
 impl Drop for Publisher {
@@ -99,9 +116,13 @@ pub(super) struct State {
     definitions: BTreeMap<String, completion::Saved>,
     kept: BTreeMap<String, polylogue_query::Kept>,
     requires_confirmed: bool,
+    requests: polylogue_model::user::RequestMetadata,
 }
 impl State {
-    pub(super) fn new(requires_confirmed: bool) -> Self {
+    pub(super) fn new(
+        requires_confirmed: bool,
+        requests: polylogue_model::user::RequestMetadata,
+    ) -> Self {
         Self {
             writer: None,
             position: None,
@@ -109,6 +130,7 @@ impl State {
             definitions: BTreeMap::new(),
             kept: BTreeMap::new(),
             requires_confirmed,
+            requests,
         }
     }
     pub(super) fn refresh(
@@ -153,7 +175,7 @@ impl State {
         let metadata = Metadata {
             archive: archive.into(),
             position: position.clone(),
-            written_at: polylogue_store::user_writes::now().unix_ms(),
+            written_at: self.requests.now().unix_ms(),
         };
         let pointer = completion::CatalogPointer::new(path.to_owned());
         let generation_path = pointer.generation_path(&position.generation);
@@ -282,9 +304,8 @@ impl State {
             keys.sort();
             keys.dedup();
         }
-        let machine = polylogue_store::user_writes::machine_id();
         for key in keys {
-            let value = reader.setting(&key, &machine)?;
+            let value = reader.setting(&key, self.requests.machine())?;
             writer.put_setting(&completion::Setting {
                 key: key.clone(),
                 value: serde_json::to_value(value)?,
