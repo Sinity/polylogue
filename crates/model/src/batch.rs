@@ -108,6 +108,8 @@ pub struct MessageRow {
 pub struct BackgroundUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_at: Option<crate::Timestamp>,
+    #[serde(default)]
+    pub result_at_evidence: crate::TimeEvidence,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_duration_ms: Option<u64>,
     pub session: SessionId,
