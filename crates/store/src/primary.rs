@@ -6,6 +6,12 @@
 //! after Sinex acknowledged what it describes, so the local register
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
 //! what Sinex holds ([`load`]). `polylogue-sinex` implements [`Sinex`].
+pub mod products;
+pub use products::{
+    CapturedInput, Confirmed, ConfirmedChange, Material, PreparedInput, PreparedWrite, Product,
+    Reading,
+};
+
 use crate::input_rows::InputRows;
 use crate::{ReadPool, Result, StoreError};
 use polylogue_model::BlobHash;
