@@ -12,7 +12,7 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
             &["s"],
         );
         first.parse[0].output.sessions[0].tool_version = Some("previous version".into());
-        w.writer.send(first).unwrap();
+        w.store_reading(first, Some(&SOURCE_RECORD)).unwrap();
         w.writer.derive().unwrap();
         assert!(w.writer.flush().unwrap().errors.is_empty());
         let conn = crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP)
@@ -30,7 +30,7 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
             &["s"],
         );
         assert!(
-            w.writer.send(next.clone()).is_err(),
+            w.store_reading(next.clone(), Some(&SOURCE_RECORD)).is_err(),
             "malformed stored facts must refuse, not become absent: {corrupt}"
         );
         assert!(w.writer.flush().unwrap().errors.is_empty());
@@ -43,7 +43,7 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
         assert_eq!(texts(&w, "s"), ["kept"]);
         conn.execute("UPDATE session_record SET facts=?1", [saved])
             .unwrap();
-        w.writer.send(next).unwrap();
+        w.store_reading(next, Some(&SOURCE_RECORD)).unwrap();
         assert!(w.writer.flush().unwrap().errors.is_empty());
         assert_eq!(texts(&w, "s"), ["kept", "new"]);
         let reads = ReadPool::open(&w.archive).unwrap();

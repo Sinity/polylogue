@@ -7,6 +7,7 @@
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
 //! - `segments/`: every input blob, in append-only shared frame segments.
 
+mod admission;
 pub mod archive;
 pub mod assets;
 pub mod backfill_jobs;
@@ -14,7 +15,6 @@ pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
 pub mod completion;
-mod admission;
 mod container_members;
 pub mod context;
 pub mod coverage;
@@ -65,7 +65,7 @@ pub use context::{
 };
 pub use read::{
     BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
-    scope::ReadScopeToken,
+    scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use writer::{
     Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
