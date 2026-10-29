@@ -2,20 +2,29 @@ use super::*;
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 
 fn all(reader: &Reader<'_>, selection: &str, options: &str) -> Vec<Value> {
-    reader
-        .query(
-            &query(
-                selection,
-                "SELECT pk AS _pk FROM session WHERE kind='main' AND stub=0",
-                options,
-                "UTC",
-                0,
-            )
-            .unwrap(),
-            &[],
+    let clock = query_language::time::Clock::new(
+        "2026-10-07T10:00:00Z".parse().unwrap(),
+        query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::midnight(),
         )
-        .unwrap()
+        .unwrap(),
+    );
+    reader.with_clock(&clock, || {
+        reader
+            .query(
+                &query(
+                    selection,
+                    "SELECT pk AS _pk FROM session WHERE kind='main' AND stub=0",
+                    options,
+                )
+                .unwrap(),
+                &[],
+            )
+            .unwrap()
+    })
 }
+
 fn find<'a>(rows: &'a [Value], family: &str, value: Option<&str>) -> &'a Value {
     rows.iter()
         .find(|r| r["family"] == family && r["value"].as_str() == value)
@@ -126,16 +135,7 @@ fn empty_selection_keeps_global_counts_and_unknowns() {
     assert_eq!(find(&rows, "origins", Some("codex"))["selected_count"], 0);
     assert_eq!(find(&rows, "repositories", None)["global_count"], 1);
     assert!(rows.iter().all(|r| r["lift"].is_null()));
-    assert!(
-        query(
-            "SELECT 1 AS _pk",
-            "SELECT 1 AS _pk",
-            "unsupported",
-            "UTC",
-            0
-        )
-        .is_err()
-    );
+    assert!(query("SELECT 1 AS _pk", "SELECT 1 AS _pk", "unsupported").is_err());
 }
 
 #[test]
