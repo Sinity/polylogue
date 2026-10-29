@@ -836,7 +836,7 @@ impl Reader<'_> {
                 r.get::<_, i64>(18)?,
                 r.get::<_, Option<Vec<u8>>>(19)?,
                 r.get::<_, Option<Vec<u8>>>(20)?,
-                r.get::<_, usize>(21)?,
+                r.get::<_, i64>(21)?,
             ))
         })?;
         for row in rows {
@@ -950,7 +950,11 @@ impl Reader<'_> {
                         if visible {
                             message.blocks.len()
                         } else {
-                            legacy_blocks
+                            usize::try_from(legacy_blocks).map_err(|_| {
+                                StoreError::Invalid(
+                                    "a message has an invalid stored block count".into(),
+                                )
+                            })?
                         },
                     )?;
                     if visible {
