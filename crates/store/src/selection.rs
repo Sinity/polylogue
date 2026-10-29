@@ -64,14 +64,16 @@ fn invalid(kind: &'static str, message: impl Into<String>) -> SelectionError {
 /// Provider work is injected; preparing or visiting never selects a provider.
 pub type NearFn<'a> = dyn Fn(&str) -> Result<Arc<crate::vectors::Similarity>, String> + 'a;
 
-pub struct PreparedSelection {
+pub struct PreparedSelection<'read> {
+    reader: usize,
+    pinned: std::marker::PhantomData<&'read ()>,
     plan: Plan,
     program: Program,
     scope: ReadScopeToken,
     context: CursorContext,
     direct: Option<Reference>,
 }
-impl PreparedSelection {
+impl PreparedSelection<'_> {
     pub fn question_id(&self) -> QuestionId {
         self.plan.question_id()
     }
@@ -101,29 +103,50 @@ pub struct SelectionRow {
 impl Reader<'_> {
     /// Resolve names and references once against this pinned read. Incoming
     /// saved/kept maps are replaced with the authoritative Reader snapshot.
-    pub fn prepare_selection(
-        &self,
+    pub fn prepare_selection<'read>(
+        &'read self,
         target: &str,
         options: &Options,
-    ) -> Result<PreparedSelection, SelectionError> {
+    ) -> Result<PreparedSelection<'read>, SelectionError> {
         self.check()?;
         let scope = self.scope_token();
         scope.check()?;
         let mut options = options.clone();
         options.saved = self.selection_saved_queries()?;
         options.kept = self.selection_kept_results()?;
-        let direct = Reference::parse(target).ok().filter(|reference| {
-            matches!(
-                reference,
-                Reference::Session(_)
-                    | Reference::Message(_)
-                    | Reference::MessageRange { .. }
-                    | Reference::Block { .. }
-                    | Reference::Document(_)
-                    | Reference::Event(_)
-                    | Reference::Span { .. }
-            )
-        });
+        let direct_syntax = polylogue_query::parse::with_catalog(target, &options.catalog())
+            .is_ok_and(|query| {
+                query.stages.is_empty()
+                    && query.attach.is_empty()
+                    && matches!(
+                        query.source,
+                        polylogue_query::ast::Source::Unit {
+                            condition: Some(polylogue_query::ast::Condition {
+                                kind: ConditionKind::Match { .. } | ConditionKind::Reference { .. },
+                                ..
+                            }),
+                            ..
+                        }
+                    )
+            });
+        let direct = direct_syntax
+            .then(|| Reference::parse(target))
+            .transpose()
+            .ok()
+            .flatten()
+            .ok()
+            .filter(|reference| {
+                matches!(
+                    reference,
+                    Reference::Session(_)
+                        | Reference::Message(_)
+                        | Reference::MessageRange { .. }
+                        | Reference::Block { .. }
+                        | Reference::Document(_)
+                        | Reference::Event(_)
+                        | Reference::Span { .. }
+                )
+            });
         let text = direct
             .as_ref()
             .map(reference_query)
@@ -167,6 +190,8 @@ impl Reader<'_> {
         };
         scope.check()?;
         Ok(PreparedSelection {
+            reader: std::ptr::from_ref(self).cast::<()>() as usize,
+            pinned: std::marker::PhantomData,
             plan,
             program,
             scope,
@@ -179,7 +204,7 @@ impl Reader<'_> {
     /// no previous body or complete answer is materialized to seek a page.
     pub fn visit_selection<E>(
         &self,
-        selection: &PreparedSelection,
+        selection: &PreparedSelection<'_>,
         after: Option<&OrderPosition>,
         near: Option<&NearFn<'_>>,
         mut visit: impl FnMut(SelectionRow) -> Result<ControlFlow<()>, E>,
@@ -194,7 +219,9 @@ impl Reader<'_> {
                 .map_err(SelectionError::from)
                 .map_err(E::from)?;
             let current = self.scope_token();
-            if !selection.scope.same(&current) {
+            if !selection.scope.same(&current)
+                || selection.reader != std::ptr::from_ref(self).cast::<()>() as usize
+            {
                 return Err(E::from(invalid(
                     "scope_changed",
                     "selection belongs to another access scope",
