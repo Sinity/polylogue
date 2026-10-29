@@ -1,7 +1,7 @@
 //! Full product facts exchanged with the confirmed-stream adapter.
 use crate::input_rows::InputRows;
 use crate::writer::InputKey;
-use polylogue_model::user::UserRequest;
+use polylogue_model::authored::PreparedRequest;
 use polylogue_model::{
     BackgroundUpdate, BlobHash, DocumentRow, Event, Link, MessageRow, RecordCounts, RepoLookup,
     Session,
@@ -75,7 +75,7 @@ pub enum Product {
         counts: RecordCounts,
         reset: bool,
     },
-    Request(UserRequest),
+    Request(PreparedRequest),
     Coverage(polylogue_model::capture::Coverage),
 }
 

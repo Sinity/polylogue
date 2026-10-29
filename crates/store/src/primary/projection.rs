@@ -156,7 +156,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Session { facts, .. } => Some(format!("session:{}", facts.id)),
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
-        Product::Request(request) => Some(format!("request:{}", request.id)),
+        Product::Request(request) => Some(format!("request:{}", request.request.id)),
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         _ => None,
     };
@@ -572,11 +572,19 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
-fn requests(_tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
-    if plan.requests {
-        return Err(StoreError::Invalid(
-            "canonical authored effects are not wired".into(),
-        ));
+fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
+    if !plan.requests {
+        return Ok(());
+    }
+    super::authored::clear(tx)?;
+    let mut q=tx.prepare("SELECT product,admitted FROM primary_next WHERE state='live' AND kind='request' ORDER BY admitted,source_order,event")?;
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        let bytes: Vec<u8> = row.get(0)?;
+        let admitted: i64 = row.get(1)?;
+        if let Product::Request(prepared) = unpacked(&bytes)? {
+            super::authored::apply(tx, &prepared, admitted)?;
+        }
     }
     Ok(())
 }
