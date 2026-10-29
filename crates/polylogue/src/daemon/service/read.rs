@@ -222,7 +222,10 @@ fn visit(
                         }
                         pending = None;
                     }
-                    let anchor = record.reference().ok_or_else(|| error("internal", "canonical reading has no reference"))?.to_owned();
+                    let anchor = record
+                        .reference()
+                        .ok_or_else(|| error("internal", "canonical reading has no reference"))?
+                        .to_owned();
                     let Some(record) = output::project(record, options, &evidence, mixed, footer)?
                     else {
                         return Ok(true);
@@ -233,7 +236,10 @@ fn visit(
         } else {
             // This is a transfer anchor for a prepared result row, independent
             // of the source reference displayed by its presentation items.
-            let anchor = format!("row:{}", blake3::hash(row.position.row_identity.as_bytes()).to_hex());
+            let anchor = format!(
+                "row:{}",
+                blake3::hash(row.position.row_identity.as_bytes()).to_hex()
+            );
             if let Some(position) = &pending {
                 if position.reference != anchor {
                     return Err(error("stale_cursor", "the continued result row changed"));
@@ -338,7 +344,9 @@ pub(super) fn page(
                 |record, before, reference| {
                     for (ordinal, part) in record.parts().iter().enumerate() {
                         if let ReadPart::Item(item) = part {
-                            anchors.entry(reference.clone()).or_insert_with(|| before.clone());
+                            anchors
+                                .entry(reference.clone())
+                                .or_insert_with(|| before.clone());
                             if pager
                                 .push_at(&reference, ordinal as u64, item.clone())
                                 .map_err(|e| error("bad_request", e))?
@@ -353,50 +361,62 @@ pub(super) fn page(
             );
             scope.check().map_err(|e| store_error(&e))?;
             visited?;
-            let document = pager.finish_with(|position| {
-                let mut page_footer = footer.clone();
-                if let Some(position) = position {
-                    let next_call = (|| -> Result<ReadyCall, Response> {
-                let token = seal(
-                    reader,
-                    context(selection, options)?,
-                    Resume {
-                        before: anchors.get(&position.reference).cloned().ok_or_else(|| error("internal", "reading continuation has no selection position"))?,
-                        position: position.clone(),
-                    },
-                )?;
-                let mut next = request.clone();
-                if let Request::Read { cursor, .. } = &mut next {
-                    *cursor = Some(token);
-                }
-                let arguments = crate::protocol::read::Arguments::from_request(&next)
-                    .map_err(|e| error("internal", e))?;
-                let call = command_surface::Request {
-                    operation: crate::commands::command("read")
-                        .ok_or_else(|| error("internal", "read operation missing"))?
-                        .name
-                        .into(),
-                    arguments: serde_json::to_value(arguments).map_err(|e| error("internal", e))?,
-                    request_id: uuid::Uuid::now_v7().to_string(),
-                    deadline: command_surface::Deadline::Default,
-                };
-                d.ready_call(&call).map_err(|e| Response::Error {
-                    kind: e.code.clone().unwrap_or_else(|| {
-                        serde_json::to_value(e.kind)
-                            .expect("closed failure kind serializes")
-                            .as_str()
-                            .expect("failure kind is a string")
-                            .to_owned()
-                    }),
-                    message: e.message.clone(),
-                    detail: serde_json::to_value(e).ok(),
+            let document = pager
+                .finish_with(|position| {
+                    let mut page_footer = footer.clone();
+                    if let Some(position) = position {
+                        let next_call = (|| -> Result<ReadyCall, Response> {
+                            let token = seal(
+                                reader,
+                                context(selection, options)?,
+                                Resume {
+                                    before: anchors.get(&position.reference).cloned().ok_or_else(
+                                        || {
+                                            error(
+                                                "internal",
+                                                "reading continuation has no selection position",
+                                            )
+                                        },
+                                    )?,
+                                    position: position.clone(),
+                                },
+                            )?;
+                            let mut next = request.clone();
+                            if let Request::Read { cursor, .. } = &mut next {
+                                *cursor = Some(token);
+                            }
+                            let arguments = crate::protocol::read::Arguments::from_request(&next)
+                                .map_err(|e| error("internal", e))?;
+                            let call = command_surface::Request {
+                                operation: crate::commands::command("read")
+                                    .ok_or_else(|| error("internal", "read operation missing"))?
+                                    .name
+                                    .into(),
+                                arguments: serde_json::to_value(arguments)
+                                    .map_err(|e| error("internal", e))?,
+                                request_id: uuid::Uuid::now_v7().to_string(),
+                                deadline: command_surface::Deadline::Default,
+                            };
+                            d.ready_call(&call).map_err(|e| Response::Error {
+                                kind: e.code.clone().unwrap_or_else(|| {
+                                    serde_json::to_value(e.kind)
+                                        .expect("closed failure kind serializes")
+                                        .as_str()
+                                        .expect("failure kind is a string")
+                                        .to_owned()
+                                }),
+                                message: e.message.clone(),
+                                detail: serde_json::to_value(e).ok(),
+                            })
+                        })()
+                        .map_err(|e| {
+                            polylogue_render::pager::PageError::Serialization(format!("{e:?}"))
+                        })?;
+                        page_footer.next = Some(next_call);
+                    }
+                    Ok(page_footer)
                 })
-
-                    })().map_err(|e| polylogue_render::pager::PageError::Serialization(format!("{e:?}")))?;
-                    page_footer.next = Some(next_call);
-                }
-                Ok(page_footer)
-            }).map_err(|e| error("bad_request", e))?;
+                .map_err(|e| error("bad_request", e))?;
             scope.check().map_err(|e| store_error(&e))?;
             Ok(ReadPage {
                 snapshot: ReadPageSnapshot::from(&snapshot),
