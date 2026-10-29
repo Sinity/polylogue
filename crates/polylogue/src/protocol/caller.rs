@@ -26,6 +26,7 @@ pub struct Accepted {
     pub authorship: Authorship,
     pub cancellation: polylogue_store::read::limit::ReadCancellation,
     pub working_directory: Option<PathBuf>,
+    pub invocation: Option<crate::operation::Invocation>,
 }
 
 pub fn accept(
@@ -39,6 +40,7 @@ pub fn accept(
         authorship: polylogue_model::authorship::compute_authorship(via, evidence, hook.as_ref()),
         cancellation,
         working_directory: None,
+        invocation: None,
     }
 }
 

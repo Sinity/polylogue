@@ -60,16 +60,13 @@ fn expired_requests_never_start_any_read_operation() {
     let requests = [
         Request::Status,
         Request::Read {
-            target: crate::daemon::ReadTarget::Session(
-                polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-            ),
-            view: "full".into(),
+            target: "session:claude-code:s1".into(),
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Page,
             format: "json".into(),
-            with_parents: false,
             budget: None,
             cursor: None,
-            selection: None,
-            slices: false,
+            with_blobs: false,
         },
         Request::Context {
             request_id: "synthetic-recall".into(),
@@ -154,11 +151,15 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
 }
 
 #[test]
-fn export_has_no_default_deadline_and_explicit_deadlines_still_apply() {
-    let request = Request::Export {
-        targets: vec![],
+fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
+    let request = Request::Read {
+        target: "sessions".into(),
+        options: polylogue_model::read::ReadOptions::default(),
+        delivery: polylogue_model::read::ReadDelivery::Stream,
         format: "json".into(),
-        user_state: true,
+        budget: None,
+        cursor: None,
+        with_blobs: false,
     };
     let limit = limit_for(&request, None, Default::default());
     assert!(limit.check().is_ok());
@@ -167,10 +168,10 @@ fn export_has_no_default_deadline_and_explicit_deadlines_still_apply() {
     let response = run(
         request,
         &limit_for(&Request::Status, Some(0), Default::default()),
-        |_| panic!("expired export started"),
+        |_| panic!("expired streamed read started"),
     );
     assert!(
-        matches!(response, Response::Error { kind, detail: Some(detail), .. } if kind == "deadline_exceeded" && detail["stage"] == "export")
+        matches!(response, Response::Error { kind, detail: Some(detail), .. } if kind == "deadline_exceeded" && detail["stage"] == "read")
     );
 }
 

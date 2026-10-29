@@ -57,7 +57,7 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     let result = cost(
         &r,
         options(Some("2024-03-30"), None),
-        &fixture_clock("04:00:00", 0),
+        &fixture_context("04:00:00", 0),
     )
     .unwrap();
     assert_eq!(result["usage"]["data"]["known_response_messages"], 2);
@@ -73,7 +73,7 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     let second = cost(
         &r,
         options(Some("2024-03-30"), Some(next)),
-        &fixture_clock("04:00:00", 10_000_000),
+        &fixture_context("04:00:00", 10_000_000),
     )
     .unwrap();
     assert_eq!(second["responses"]["rows"][0]["id"], "codex:c");
@@ -82,14 +82,14 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
         cost(
             &r,
             options(Some("2024-03-31"), Some(next)),
-            &fixture_clock("04:00:00", 0)
+            &fixture_context("04:00:00", 0)
         )
         .is_err()
     );
     let mut undated = options(None, None);
     undated.undated = true;
     undated.unknown_model = true;
-    let result = cost(&r, undated, &fixture_clock("04:00:00", 0)).unwrap();
+    let result = cost(&r, undated, &fixture_context("04:00:00", 0)).unwrap();
     assert_eq!(result["usage"]["data"]["known_response_messages"], 2);
     assert_eq!(result["responses"]["rows"][0]["id"], "codex:unknown");
 }
@@ -110,7 +110,7 @@ fn owner_day_binds_timeline_continuation_and_leap_days_remain_real() {
                 cursor: None,
                 page_size: Some(1),
             },
-            &fixture_clock("04:00:00", 0),
+            &fixture_context("04:00:00", 0),
         )
         .unwrap();
         result["activity"]["next"].as_str().unwrap().to_owned()
@@ -126,7 +126,7 @@ fn owner_day_binds_timeline_continuation_and_leap_days_remain_real() {
                 cursor: Some(&cursor),
                 page_size: Some(1)
             },
-            &fixture_clock("00:00:00", 0)
+            &fixture_context("00:00:00", 0)
         )
         .is_err()
     );
@@ -139,7 +139,7 @@ fn owner_day_binds_timeline_continuation_and_leap_days_remain_real() {
             cursor: None,
             page_size: Some(1),
         },
-        &fixture_clock("04:00:00", 0),
+        &fixture_context("04:00:00", 0),
     )
     .unwrap();
     assert_eq!(leap["calendar"].as_array().unwrap().len(), 29);
@@ -153,7 +153,7 @@ fn owner_day_binds_timeline_continuation_and_leap_days_remain_real() {
                 cursor: None,
                 page_size: Some(1)
             },
-            &fixture_clock("04:00:00", 0)
+            &fixture_context("04:00:00", 0)
         )
         .is_err()
     );
@@ -173,7 +173,7 @@ fn invalid_period_is_refused_before_semantic_selection_runs() {
     request.embeddings = true;
     request.near = Some(&near);
     assert_eq!(
-        cost(&reader, request, &fixture_clock("04:00:00", 0))
+        cost(&reader, request, &fixture_context("04:00:00", 0))
             .unwrap_err()
             .kind,
         "bad_request"
@@ -192,7 +192,7 @@ fn all_time_model_drilldown_reaches_every_dated_and_undated_response() {
     loop {
         let mut request = options(None, next.as_deref());
         request.model = Some("test");
-        let result = cost(&reader, request, &fixture_clock("04:00:00", 0)).unwrap();
+        let result = cost(&reader, request, &fixture_context("04:00:00", 0)).unwrap();
         assert_eq!(result["unplaced"]["count"], 2);
         count.get_or_insert(
             result["usage"]["data"]["by_model"]
@@ -256,22 +256,26 @@ fn unrepresentable_price_totals_leave_response_records_readable() {
     let reader = pool.reader().unwrap();
     let mut request = options(Some("2024-03-30"), None);
     request.page_size = Some(50);
-    let result = cost(&reader, request, &fixture_clock("04:00:00", 0)).unwrap();
+    let result = cost(&reader, request, &fixture_context("04:00:00", 0)).unwrap();
     assert_eq!(result["responses"]["rows"].as_array().unwrap().len(), 2);
     assert_eq!(result["usage"]["error"], "store");
     assert!(result["days"].is_null());
     assert_eq!(result["days_error"]["error"], "store");
 }
 
-fn fixture_clock(start: &str, now: i64) -> Clock {
-    Clock::new(
-        jiff::Timestamp::from_millisecond(now).unwrap(),
+fn fixture_context(start: &str, now: i64) -> Arc<Context> {
+    Arc::new(Context::standalone(
+        crate::operation::Invocation::new(
+            jiff::Timestamp::from_millisecond(now).unwrap().into(),
+            "synthetic-machine".into(),
+            Context::worker_authorship("calendar-fixture"),
+        ),
         query_language::time::DaySetting::new(
             jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
             start.parse().unwrap(),
         )
         .unwrap(),
-    )
+    ))
 }
 
 #[test]
@@ -280,8 +284,8 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
     let fixture = setup(temp.path());
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let mut owner = fixture_clock("04:00:00", 0);
-    owner.now = "2024-03-30T12:00:00.123456789Z".parse().unwrap();
+    let mut owner = fixture_context("04:00:00", 0);
+    Arc::make_mut(&mut owner).clock.now = "2024-03-30T12:00:00.123456789Z".parse().unwrap();
     fn request(cursor: Option<&str>) -> Timeline<'_> {
         Timeline {
             date: Some("2024-03-30"),
@@ -293,8 +297,13 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
     }
     let first = timeline(&reader, request(None), &owner).unwrap();
     let cursor = first["activity"]["next"].as_str().unwrap();
-    let mut later = owner.clone();
-    later.now = "2026-10-07T00:00:00Z".parse().unwrap();
+    let later = fixture_context(
+        "04:00:00",
+        "2026-10-07T00:00:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_millisecond(),
+    );
     let context = paging(
         &reader,
         &later,
@@ -311,9 +320,14 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
     );
     let next = timeline(&reader, request(Some(cursor)), &later).unwrap();
     assert_eq!(next["activity"]["rows"][0]["id"], "codex:c");
+    assert_eq!(next["context"]["ran_at"], "2026-10-07T00:00:00Z");
+    assert_eq!(
+        next["context"]["clock"]["now"],
+        "2024-03-30T12:00:00.123456789Z"
+    );
     let mut changed = owner.clone();
-    changed.day = query_language::time::DaySetting::new(
-        owner.day.zone().clone(),
+    Arc::make_mut(&mut changed).clock.day = query_language::time::DaySetting::new(
+        owner.clock.day.zone().clone(),
         "04:00:00.000000001".parse().unwrap(),
     )
     .unwrap();
@@ -339,4 +353,35 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
             .message
             .contains("question")
     );
+}
+
+#[test]
+fn signed_calendar_cursor_requires_current_owner_binding_before_clock_replay() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = setup(temp.path());
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let owner = fixture_context("04:00:00", 0);
+    let semantic = json!(["timeline", Some("2024-03-30"), false, false]);
+    let binding = json!(["timeline"]);
+    let mut page = paging(&reader, &owner, None, &semantic, &binding).unwrap();
+    page.context
+        .versions
+        .insert("operation_context".into(), "obsolete-owner-revision".into());
+    let after = json!({"at":0,"kind":"message","id":"synthetic"});
+    let cursor = page
+        .seal
+        .seal(&Continuation {
+            context: page.context,
+            after: OrderPosition {
+                row_identity: after.to_string(),
+                values: vec![after],
+            },
+        })
+        .unwrap();
+    let failure = match paging(&reader, &owner, Some(cursor.as_str()), &semantic, &binding) {
+        Ok(_) => panic!("a correctly sealed obsolete owner binding must be stale"),
+        Err(error) => error,
+    };
+    assert_eq!(failure.kind, "stale_cursor");
 }

@@ -34,10 +34,9 @@ pub(super) struct Paging<'a> {
     pub context: CursorContext,
 }
 
+#[cfg(test)]
 pub(super) fn identity(text: &str, options: &Options) -> Result<QuestionId, Failure> {
-    let catalog = polylogue_query::catalog::catalog(&options.origins, &options.command_words);
-    let query = polylogue_query::parse::with_catalog(text, &catalog)?;
-    query_language::identity::question_id(&query, &catalog, &BTreeMap::new()).map_err(failure)
+    Ok(polylogue_query::compile(text, options)?.question_id())
 }
 
 pub(super) fn open(
@@ -201,45 +200,6 @@ pub(super) fn after_row(
         .seal(&continuation)
         .map(|cursor| cursor.as_str().to_owned())
         .map_err(failure)
-}
-
-#[derive(Serialize)]
-struct Question<'a> {
-    program: Value,
-    session: &'a Option<String>,
-    fields: &'a [String],
-    embeddings: bool,
-    why: bool,
-    day: &'a query_language::time::DaySetting,
-    vector_writes: Option<u64>,
-}
-/// Execution context identity for derived selection caches, separate from a
-/// semantic question ID and from an authenticated continuation.
-pub(super) fn question(program: &Program, options: &Options, why: bool) -> Result<String, Failure> {
-    let failed = |_: serde_json::Error| invalid("the query context cannot be encoded");
-    let mut compiled = serde_json::to_value(program).map_err(failed)?;
-    // Presentation and execution-only count plans do not change selection.
-
-    if let Some(fields) = compiled.as_object_mut() {
-        for field in ["page_size", "query", "row_count_sql", "row_membership_sql"] {
-            fields.remove(field);
-        }
-    }
-    let binding = Question {
-        program: compiled,
-        session: &options.self_session,
-        fields: &options.fields,
-        embeddings: options.embeddings,
-        why,
-        day: &options.clock.day,
-        vector_writes: program
-            .near
-            .is_some()
-            .then(polylogue_store::vectors::writes),
-    };
-    let mut digest = blake3::Hasher::new();
-    serde_json::to_writer(&mut digest, &binding).map_err(failed)?;
-    Ok(digest.finalize().to_hex().to_string())
 }
 
 #[cfg(test)]

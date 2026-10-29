@@ -71,6 +71,10 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         channel,
                         cancellation.clone(),
                     );
+                    accepted.invocation = Some(
+                        d.invocation(&accepted.authorship)
+                            .with_accepted_request(Some(Arc::new(request.clone()))),
+                    );
                     accepted.working_directory =
                         crate::protocol::caller::working_directory(&out).ok();
                     if let Some(command) = crate::commands::command(&request.operation)
@@ -106,14 +110,20 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                                     .map_or_else(|| polylogue_store::read::limit::ReadLimit::without_deadline(cancellation.clone()), |duration| polylogue_store::read::limit::ReadLimit::new(duration, cancellation.clone()));
                                 let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
                                 let produced = limit.scope(|| match limit.check() {
-                                    Ok(()) => crate::protocol::stream::produce_limited(
-                                        &internal,
-                                        d,
-                                        &accepted.authorship,
-                                        &mut out,
-                                        &limit,
-                                    )
-                                    .expect("stream command owns its request"),
+                                    Ok(()) => {
+                                        let invocation = accepted
+                                            .invocation
+                                            .clone()
+                                            .expect("canonical request captures admission");
+                                        d.resolve_operation_context(invocation).and_then(
+                                            |operation| {
+                                                crate::protocol::stream::produce_limited(
+                                                    &internal, d, &operation, &mut out, &limit,
+                                                )
+                                                .expect("stream command owns its request")
+                                            },
+                                        )
+                                    }
                                     Err(error) => Err(service::store_error(&error)),
                                 });
                                 if let Err(response) = produced {
@@ -203,15 +213,19 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             None
         };
         let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
-        let produced = limit.scope(|| {
-            crate::protocol::stream::produce_limited(
-                &request,
-                d,
-                &accepted.authorship,
-                &mut out,
-                &limit,
-            )
-        });
+        let produced = if request.streaming() {
+            Some(limit.scope(|| {
+                d.operation_context(&accepted.authorship)
+                    .and_then(|operation| {
+                        crate::protocol::stream::produce_limited(
+                            &request, d, &operation, &mut out, &limit,
+                        )
+                        .expect("stream command owns its request")
+                    })
+            }))
+        } else {
+            None
+        };
         if let Some(result) = produced {
             if let Err(response) = result {
                 let _ = crate::protocol::stream::error(&mut out, &response);

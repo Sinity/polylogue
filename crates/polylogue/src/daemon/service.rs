@@ -27,7 +27,6 @@ pub struct Daemon {
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
-    feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
@@ -54,7 +53,12 @@ impl Daemon {
         &self,
         authorship: &polylogue_model::authorship::Authorship,
     ) -> Result<Arc<crate::operation::Context>, Response> {
-        let invocation = self.invocation(authorship);
+        self.resolve_operation_context(self.invocation(authorship))
+    }
+    pub(crate) fn resolve_operation_context(
+        &self,
+        invocation: crate::operation::Invocation,
+    ) -> Result<Arc<crate::operation::Context>, Response> {
         let context = match &self.mode {
             ModeState::Standalone => crate::operation::Context::standalone(
                 invocation,
@@ -246,15 +250,11 @@ fn context(
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        let clock = match d.query_clock() {
-            Ok(clock) => clock,
-            Err(response) => return response,
-        };
         let result = briefing::prepare(
             &reader,
             ask,
             &request_id,
-            &clock,
+            operation,
             near,
             &d.config.paths.check_history,
         );
@@ -382,14 +382,14 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
-    _authorship: &polylogue_model::authorship::Authorship,
+    operation: &Arc<crate::operation::Context>,
     output: &mut dyn std::io::Write,
 ) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {
         return None;
     };
     Some(accepting(d).and_then(|()| {
-        let mut file = d.feeds.read(d, since.as_deref())?;
+        let mut file = feeds::read(d, since.as_deref(), operation)?;
         std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
         Ok(())
     }))
@@ -421,6 +421,15 @@ pub fn handle_with_caller(
     limit: &polylogue_store::read::limit::ReadLimit,
     authorship: &polylogue_model::authorship::Authorship,
 ) -> Response {
+    handle_with_invocation(request, d, limit, &d.invocation(authorship))
+}
+
+pub(crate) fn handle_with_invocation(
+    request: Request,
+    d: &Daemon,
+    limit: &polylogue_store::read::limit::ReadLimit,
+    invocation: &crate::operation::Invocation,
+) -> Response {
     #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(crate::test_daemon::ReadObservation {
@@ -428,9 +437,8 @@ pub fn handle_with_caller(
             owner: std::thread::current().id(),
         });
     }
-    let invocation = d.invocation(authorship);
     super::execution::run(request, limit, |request| {
-        handle_inner(request, d, &invocation)
+        handle_inner(request, d, invocation)
     })
 }
 
@@ -1077,15 +1085,29 @@ fn handle_inner(
             Err(e) => store_error(&e),
         },
         Request::Setting {
-            request_id,
+            request_id: _,
             key,
             value: None,
-            machine: _,
+            machine,
         } => {
-            let _ = request_id;
-            match reader.setting(&key, d.config.requests.machine()) {
-                Ok(v) => ok(serde_json::json!({ "key": key, "value": v })),
-                Err(e) => store_error(&e),
+            let selected = machine.as_deref().unwrap_or(&invocation.machine);
+            if let Some(key) = key {
+                if let Err(error) = polylogue_model::settings::target_machine(
+                    &key,
+                    machine.as_deref(),
+                    &invocation.machine,
+                ) {
+                    return self::error("bad_value", error);
+                }
+                match reader.setting_current(&key, selected) {
+                    Ok(current) => ok(current),
+                    Err(error) => store_error(&error),
+                }
+            } else {
+                match reader.settings_catalog(selected) {
+                    Ok(catalog) => ok(catalog),
+                    Err(error) => store_error(&error),
+                }
             }
         }
         Request::Setting {
@@ -1094,6 +1116,9 @@ fn handle_inner(
             value: Some(value),
             machine,
         } => {
+            let Some(key) = key else {
+                return error("bad_request", "a value requires a setting key");
+            };
             drop(reader);
             write(
                 d,
@@ -1102,7 +1127,7 @@ fn handle_inner(
                 UserWrite::SetSetting {
                     key,
                     value,
-                    machine: machine.then(|| d.config.requests.machine().to_owned()),
+                    machine,
                 },
             )
         }
@@ -1423,7 +1448,6 @@ pub fn start(
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
-        feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
         writes,
         mode,

@@ -109,7 +109,7 @@ pub enum Cli {
 pub type StreamProducer = fn(
     &Request,
     &crate::daemon::service::Daemon,
-    &polylogue_model::authorship::Authorship,
+    &std::sync::Arc<crate::operation::Context>,
     &mut dyn std::io::Write,
 ) -> Option<Result<(), crate::daemon::Response>>;
 
@@ -167,11 +167,10 @@ pub struct Command {
 
 impl Command {
     pub fn mcp_name(&self) -> String {
-        let words = self.name.replace(' ', "_");
         if self.register.is_some() {
-            format!("polylogue_{words}")
+            format!("polylogue_{}", self.cli_words().join("_"))
         } else {
-            words
+            self.name.replace(' ', "_")
         }
     }
 
@@ -598,6 +597,7 @@ const WRITTEN: &[Command] = &[
             command_surface::FailureKind::BadRequest, command_surface::FailureKind::Ambiguous,
             command_surface::FailureKind::StaleCursor, command_surface::FailureKind::NotYetAvailable,
             command_surface::FailureKind::NotFound, command_surface::FailureKind::Conflict,
+            command_surface::FailureKind::Refused, command_surface::FailureKind::NotRunning,
             command_surface::FailureKind::Io, command_surface::FailureKind::Timeout,
             command_surface::FailureKind::Cancelled,
         ],
@@ -632,14 +632,18 @@ const WRITTEN: &[Command] = &[
         action: Action::ConfiguredLocal(local::daemon),
         ..CLI
     },
-    Command {
+    typed_command!(ImportOperation, crate::protocol::import::Arguments, crate::protocol::import::Answer, {
         name: "import",
-        help: "Store files, including the files in directories and export ZIPs, and parse those in a known format. The answer lists paths `imported`, `already_stored` and `unrecognized`; an unrecognized file is stored too. A Polylogue export's user state is replayed, counted as `user_state.applied` and `user_state.present`",
-        args: &[pos_opt("paths", Kind::List, "Files or directories")],
+        help: "Store explicit files, directories and bundles through the daemon. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts. Primary authored restores awaiting confirmation are pending",
+        reason: "Capture explicitly selected source bytes and restore frozen authored records",
+        latency: command_surface::LatencyClass::Aggregate,
+        args: &[pos_opt("paths", Kind::List, "Files or directories on the daemon host; relative paths require a native caller working directory")],
         action: Action::Request(requests::import),
+        mcp: true,
+        http: true,
         writes: true,
         ..CLI
-    },
+    }),
     typed_command!(ListOperation, crate::protocol::query_aliases::List, crate::protocol::query::Answer, {
         name: "list",
         help: "Sessions matching a query, newest first",
@@ -945,23 +949,22 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         ..CLI
     },
-    Command {
+    typed_command!(SettingOperation, crate::protocol::setting::Arguments, crate::protocol::setting::Answer, {
         name: "setting",
-        help: "Read or set a setting: `briefing.session_start off`, `briefing.budget 2000`, `notify.command`, `day.zone Europe/Warsaw` and `day.logical_start 04:00` (the logical day that dates, `today` and `group by day` use)",
+        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.*, plan.* and price.*. Standalone attention settings are local; primary attention names its Sinex owner",
+        reason: "Inspect declared runtime settings and author changes at their declared scope",
+        latency: command_surface::LatencyClass::Local,
         args: &[
-            pos("key", Kind::Text, "The setting"),
-            pos_opt(
-                "value",
-                Kind::Text,
-                "The new value; without it, the current one",
-            ),
-            opt("machine", Kind::Bool, "Only on this machine"),
+            pos_opt("key", Kind::Text, "The setting; without it, list catalog, defaults, scopes and values"),
+            pos_opt("value", Kind::Text, "The new value; without it, read the current value"),
+            opt("machine", Kind::Text, "A named host for host-scoped settings; default: the accepting machine"),
         ],
         action: Action::Request(requests::setting),
+        mcp: true,
         http: true,
         writes: true,
         ..CLI
-    },
+    }),
     Command {
         name: "work",
         help: "The work graph: goals, attempts, verifications and artifacts, by a query over the `work` unit (`polylogue work kind:attempt state:open`)",

@@ -1315,11 +1315,11 @@ fn fixture_context(
 ) -> std::sync::Arc<crate::operation::Context> {
     let clock = fixture_clock(now, zone, start_minutes);
     std::sync::Arc::new(crate::operation::Context::standalone(
-        crate::operation::Invocation {
-            at: clock.now.into(),
-            machine: "synthetic-query-machine".into(),
-            authorship: crate::operation::Context::worker_authorship("query-fixture"),
-        },
+        crate::operation::Invocation::new(
+            clock.now.into(),
+            "synthetic-query-machine".into(),
+            crate::operation::Context::worker_authorship("query-fixture"),
+        ),
         clock.day,
     ))
 }

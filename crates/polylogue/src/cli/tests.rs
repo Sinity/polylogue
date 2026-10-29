@@ -43,7 +43,7 @@ fn manual_is_an_offline_topic() {
     let matches = command()
         .try_get_matches_from(["polylogue", "manual"])
         .unwrap();
-    assert_eq!(run(&matches), std::process::ExitCode::SUCCESS);
+    assert_eq!(run_local(&matches), Some(std::process::ExitCode::SUCCESS));
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn raw_cli_arguments_replace_required_positionals() {
 }
 
 #[test]
-fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
+fn clients_send_deadlines_only_for_reads_and_explicit_stream_limits() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::time::Duration;
@@ -134,19 +134,27 @@ fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
     for (request, timeout, expected) in [
         (Request::Status, None, true),
         (
-            Request::Export {
-                targets: vec![],
+            Request::Read {
+                target: "sessions".into(),
+                options: polylogue_model::read::ReadOptions::default(),
+                delivery: polylogue_model::read::ReadDelivery::Stream,
                 format: "json".into(),
-                user_state: true,
+                budget: None,
+                cursor: None,
+                with_blobs: false,
             },
             None,
             false,
         ),
         (
-            Request::Export {
-                targets: vec![],
+            Request::Read {
+                target: "sessions".into(),
+                options: polylogue_model::read::ReadOptions::default(),
+                delivery: polylogue_model::read::ReadDelivery::Stream,
                 format: "json".into(),
-                user_state: true,
+                budget: None,
+                cursor: None,
+                with_blobs: false,
             },
             Some(Duration::from_secs(120)),
             true,

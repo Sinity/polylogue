@@ -284,7 +284,7 @@ fn tool_annotations_follow_the_command_table() {
         let json = serde_json::to_value(tool).unwrap();
         assert_eq!(json["annotations"]["readOnlyHint"], !command.writes);
     }
-    for name in ["polylogue_query", "polylogue_read", "polylogue_status"] {
+    for name in ["polylogue_find", "polylogue_read", "polylogue_status"] {
         let tool = tools.iter().find(|t| t["name"] == name).unwrap();
         assert_eq!(tool["annotations"]["readOnlyHint"], true);
     }
@@ -354,7 +354,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
     );
     let legacy = call_with_limit(
         &daemon.daemon.archive,
-        "polylogue_query",
+        "polylogue_find",
         args(json!({"query":"sessions"})),
         None,
         &Default::default(),
@@ -366,7 +366,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
     );
     let tool = tools()
         .into_iter()
-        .find(|tool| tool["name"] == "polylogue_query")
+        .find(|tool| tool["name"] == "polylogue_find")
         .unwrap();
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     assert!(tool["inputSchema"]["properties"].get("arguments").is_some());

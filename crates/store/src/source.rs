@@ -83,6 +83,17 @@ pub(crate) enum Source {
     Cache,
 }
 impl Source {
+    pub(crate) fn reading(conn: &Connection) -> Result<Self> {
+        if conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name='source_input')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            Ok(Self::Cache)
+        } else {
+            Self::of(conn)
+        }
+    }
     pub(crate) fn of(conn: &Connection) -> Result<Self> {
         Ok(if conn.query_row("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name='source_input')",[],|row|row.get::<_,bool>(0))? { Self::Cache } else { Self::Ledger })
     }

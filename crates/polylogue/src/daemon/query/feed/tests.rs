@@ -206,5 +206,10 @@ fn prepare(
     now: i64,
     file: File,
 ) -> Result<File, Failure> {
-    prepare_with(reader, since, now, file)
+    prepare_with(
+        reader,
+        since,
+        &super::super::tests::fixture_clock(now, "UTC", 0),
+        file,
+    )
 }

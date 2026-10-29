@@ -89,10 +89,15 @@ pub fn attachment(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn import(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let base = caller.cwd.clone().unwrap_or_default();
+    let paths = v.list("paths").into_iter().map(|path| {
+        let path = PathBuf::from(path);
+        if path.is_absolute() { Ok(path) }
+        else { caller.cwd.as_ref().map(|base| base.join(path)).ok_or_else(||
+            "relative import paths require a native caller working directory; supply an absolute path".to_string()) }
+    }).collect::<Result<Vec<_>, String>>()?;
     Ok(Request::Import {
         request_id: v.request_id(),
-        paths: v.list("paths").into_iter().map(|p| base.join(p)).collect(),
+        paths,
     })
 }
 
@@ -359,11 +364,15 @@ pub fn recall(_: &Command, v: &Values, caller: &Caller) -> Built {
 /// A read without a value, a write with one.
 pub fn setting(_: &Command, v: &Values, _: &Caller) -> Built {
     let value = v.text("value");
+    let key = v.text("key");
+    if value.is_some() && key.is_none() {
+        return Err("a value requires a setting key".into());
+    }
     Ok(Request::Setting {
         request_id: value.as_ref().map(|_| v.request_id()),
-        key: v.text("key").unwrap_or_default(),
+        key,
         value,
-        machine: v.flag("machine"),
+        machine: v.text("machine"),
     })
 }
 

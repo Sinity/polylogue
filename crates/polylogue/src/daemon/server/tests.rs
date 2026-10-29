@@ -1,5 +1,6 @@
 use super::*;
 use crate::daemon::Response;
+use polylogue_store::Archive;
 
 #[test]
 fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
@@ -47,9 +48,9 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let request = Request::Setting {
         request_id: None,
-        key: "lifecycle-test".into(),
-        value: Some("written".into()),
-        machine: false,
+        key: Some("browser.actions".into()),
+        value: Some("on".into()),
+        machine: None,
     };
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
     let mut response = String::new();
@@ -65,10 +66,10 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
         reads
             .reader()
             .unwrap()
-            .setting("lifecycle-test", "")
+            .setting("browser.actions", "")
             .unwrap()
             .as_deref(),
-        Some("written")
+        Some("on")
     );
 }
 

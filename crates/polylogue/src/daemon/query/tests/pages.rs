@@ -55,29 +55,37 @@ fn count_execution_plans_do_not_change_page_cursor_binding() {
     let first = run_q(&w, request).unwrap();
     let mut request = ask("messages where parser");
     request.page_size = Some(1);
-    let cursor = Cursor::decode(first["next"].as_str().unwrap()).unwrap();
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let opts = options(&reader, &request, cursor.now, cursor.seed).unwrap();
+    let mut opts = options(&reader, &request, 1).unwrap();
+    let question = reader
+        .prepare_query_plan(request.text, &opts)
+        .unwrap()
+        .question_id();
+    let seal = CursorSeal::new(reader.cursor_key().unwrap());
+    let cursor = page::open(
+        first["next"].as_str().unwrap(),
+        &seal,
+        question,
+        &reader.change_position().unwrap(),
+        reader.index_identity().unwrap(),
+        &opts,
+    )
+    .unwrap();
+    opts.clock = cursor.context.clock.clone();
+    opts.random_seed = Some(cursor.context.random_seed);
     let mut program = polylogue_store::query::compile(request.text, &opts).unwrap();
-    assert!(
-        cursor
-            .check(&program, &page::question(&program, &opts, false).unwrap())
-            .is_ok()
-    );
+    page::check(&cursor, &program, &opts, false).unwrap();
     program.row_count_sql = None;
     program.row_membership_sql = None;
-    assert!(
-        cursor
-            .check(&program, &page::question(&program, &opts, false).unwrap())
-            .is_ok()
-    );
+    page::check(&cursor, &program, &opts, false).unwrap();
+    // Execution-plan spelling does not define semantic query identity.
     program.sql = format!("SELECT * FROM ({}) WHERE 0", program.sql);
-    assert!(
-        cursor
-            .check(&program, &page::question(&program, &opts, false).unwrap())
-            .is_err()
-    );
+    page::check(&cursor, &program, &opts, false).unwrap();
+    let other = reader
+        .prepare_query_plan("messages where parser | limit 1", &opts)
+        .unwrap();
+    assert_ne!(question, other.question_id());
 }
 
 #[test]

@@ -142,7 +142,7 @@ async fn answer(
                             polylogue_store::read::limit::ReadLimit::without_deadline(cancellation)
                         }
                     };
-                    return stream(web, internal, produce, Some(limit)).await;
+                    return stream(web, internal, produce, Some(limit), Some(request)).await;
                 }
                 Err(failure) => {
                     return json_answer(
@@ -163,11 +163,16 @@ async fn answer(
         };
         let table = &web.operations;
         let limit = super::request_limit();
-        let accepted = crate::protocol::caller::accept(
+        let mut accepted = crate::protocol::caller::accept(
             &web.daemon.callers,
             &Default::default(),
             polylogue_model::authorship::Channel::Web,
             limit.cancellation,
+        );
+        accepted.invocation = Some(
+            web.daemon
+                .invocation(&accepted.authorship)
+                .with_accepted_request(Some(Arc::new(request.clone()))),
         );
         let scope = accepted.authorship.author.to_string();
         let trusted = command_surface::Caller::authenticated(scope, accepted);
@@ -226,7 +231,7 @@ async fn answer(
         Input::Ready(_) => Err("this operation does not accept a typed envelope".into()),
     }) {
         Ok(request) => match c.action {
-            Action::Stream { produce, .. } => stream(web, request, produce, None).await,
+            Action::Stream { produce, .. } => stream(web, request, produce, None, None).await,
             _ => json_answer(web, ask(web, request).await),
         },
         Err(message) => json_answer(web, crate::daemon::service::error("bad_request", message)),
@@ -240,6 +245,7 @@ async fn stream(
     request: crate::daemon::Request,
     produce: crate::commands::StreamProducer,
     limit: Option<polylogue_store::read::limit::ReadLimit>,
+    accepted_request: Option<command_surface::RunnableRequest>,
 ) -> HttpResponse {
     let worker = Arc::clone(web);
     let limit = limit.unwrap_or_else(super::request_limit);
@@ -250,6 +256,10 @@ async fn stream(
         polylogue_model::authorship::Channel::Web,
         cancellation.clone(),
     );
+    let invocation = web
+        .daemon
+        .invocation(&accepted.authorship)
+        .with_accepted_request(accepted_request.map(Arc::new));
     let (output, input) = tokio::io::duplex(64 * 1024);
     let (ready, first) = tokio::sync::oneshot::channel();
     let runtime = tokio::runtime::Handle::current();
@@ -261,14 +271,12 @@ async fn stream(
             ready: Some(ready),
         };
         let mut guarded = crate::protocol::stream::GuardedWriter::new(&mut output, limit.clone());
-        let result = limit.scope(|| {
-            produce(
-                &worker_request,
-                &worker.daemon,
-                &accepted.authorship,
-                &mut guarded,
-            )
-        });
+        let result = limit.scope(
+            || match worker.daemon.resolve_operation_context(invocation) {
+                Ok(operation) => produce(&worker_request, &worker.daemon, &operation, &mut guarded),
+                Err(response) => Some(Err(response)),
+            },
+        );
         let result = match guarded.failure() {
             Some(failure) => Some(Err(failure)),
             None => result,

@@ -2,11 +2,13 @@
 pub mod attachment;
 pub mod caller;
 pub mod complete;
+pub mod import;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;
 pub mod read;
 pub mod schema;
+pub mod setting;
 pub mod status;
 pub mod stream;
 pub mod wire;

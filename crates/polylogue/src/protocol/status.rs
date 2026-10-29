@@ -146,3 +146,6 @@ pub enum Primary {
         error: String,
     },
 }
+
+#[cfg(test)]
+mod tests;

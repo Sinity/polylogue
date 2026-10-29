@@ -1,5 +1,6 @@
 //! Shared logical-day composition for timeline, day and cost clients.
 use super::query::{self, Failure};
+use crate::operation::Context;
 use polylogue_store::{Reader, timeline};
 use query_language::cursor::{
     Continuation, CursorContext, CursorSeal, OrderPosition, SealedCursor,
@@ -9,6 +10,7 @@ use query_language::time::Clock;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 fn invalid(message: impl Into<String>) -> Failure {
     Failure {
@@ -48,16 +50,18 @@ fn fingerprint(domain: &str, value: &impl Serialize) -> Result<blake3::Hash, Fai
 struct Paging {
     seal: CursorSeal,
     context: CursorContext,
+    operation: Arc<Context>,
     after: Option<timeline::Position>,
     resuming: bool,
 }
 fn paging(
     reader: &Reader<'_>,
-    owner: &Clock,
+    owner: &Arc<Context>,
     cursor: Option<&str>,
     semantic: &Value,
     binding: &Value,
 ) -> Result<Paging, Failure> {
+    let owner_versions = owner.cursor_versions();
     let question = QuestionId(*fingerprint("question", semantic)?.as_bytes());
     let binding = fingerprint("binding", binding)?.to_hex().to_string();
     let position = reader.change_position()?;
@@ -70,8 +74,8 @@ fn paging(
                 &SealedCursor::from_wire(text),
                 question,
                 |name| {
-                    if name == owner.day.zone_name() {
-                        Ok(owner.day.zone().clone())
+                    if name == owner.clock.day.zone_name() {
+                        Ok(owner.clock.day.zone().clone())
                     } else {
                         Err(query_language::Error::new(
                             query_language::ErrorKind::StaleCursor,
@@ -81,7 +85,10 @@ fn paging(
                     }
                 },
                 |context| {
-                    context.clock.day == owner.day
+                    context.clock.day == owner.clock.day
+                        && owner_versions
+                            .iter()
+                            .all(|(key, value)| context.versions.get(key) == Some(value))
                         && context.versions.get("domain").map(String::as_str) == Some("calendar-v1")
                         && context.versions.get("binding") == Some(&binding)
                         && context.read_positions.get("generation") == Some(&position.generation)
@@ -121,7 +128,7 @@ fn paging(
         None => (
             CursorContext {
                 question,
-                clock: owner.clone(),
+                clock: owner.clock.clone(),
                 resolved_times: vec![],
                 random_seed: 0,
                 read_positions: BTreeMap::from([
@@ -130,15 +137,28 @@ fn paging(
                     ("index".into(), position.index.to_string()),
                     ("archive".into(), position.archive.to_string()),
                 ]),
-                versions: BTreeMap::from([
-                    ("domain".into(), "calendar-v1".into()),
-                    ("binding".into(), binding),
-                ]),
+                versions: owner_versions
+                    .into_iter()
+                    .chain([
+                        ("domain".into(), "calendar-v1".into()),
+                        ("binding".into(), binding),
+                    ])
+                    .collect(),
             },
             None,
         ),
     };
+    let operation = Arc::new(
+        owner
+            .replay_clock(context.clock.clone())
+            .map_err(|_| Failure {
+                kind: "stale_cursor".into(),
+                message: "the canonical calendar context changed; run without the cursor".into(),
+                detail: None,
+            })?,
+    );
     Ok(Paging {
+        operation,
         seal,
         context,
         after,
@@ -230,7 +250,7 @@ pub struct Timeline<'a> {
 pub fn timeline(
     reader: &Reader<'_>,
     options: Timeline<'_>,
-    owner: &Clock,
+    owner: &Arc<Context>,
 ) -> Result<Value, Failure> {
     let Timeline {
         date: text,
@@ -246,7 +266,7 @@ pub fn timeline(
         &json!(["timeline", text, across_years, undated]),
         &json!(["timeline"]),
     )?;
-    let clock = paging.context.clock.clone();
+    let clock = paging.operation.clock.clone();
     let day = &clock.day;
     let date = date(text, &clock)?;
     resolved(&mut paging, vec![resolve(text.unwrap_or("today"), &clock)?])?;
@@ -291,7 +311,7 @@ pub fn timeline(
         }
     };
     Ok(
-        json!({"date":date.to_string(),"previous":date.yesterday().ok().map(|d|d.to_string()),"following":date.tomorrow().ok().map(|d|d.to_string()),"previous_month":date.first_of_month().yesterday().ok().map(|d|d.first_of_month().to_string()),"following_month":date.last_of_month().tomorrow().ok().map(|d|d.to_string()),"day":day,"since":since,"until":until,"activity":activity,"cursor":cursor,"calendar":calendar,"usage":usage,"across_years":across_years,"undated":undated}),
+        json!({"context":paging.operation.provenance(),"date":date.to_string(),"previous":date.yesterday().ok().map(|d|d.to_string()),"following":date.tomorrow().ok().map(|d|d.to_string()),"previous_month":date.first_of_month().yesterday().ok().map(|d|d.first_of_month().to_string()),"following_month":date.last_of_month().tomorrow().ok().map(|d|d.to_string()),"day":day,"since":since,"until":until,"activity":activity,"cursor":cursor,"calendar":calendar,"usage":usage,"across_years":across_years,"undated":undated}),
     )
 }
 
@@ -308,7 +328,11 @@ pub struct Cost<'a> {
     pub page_size: Option<u64>,
 }
 
-pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Value, Failure> {
+pub fn cost(
+    reader: &Reader<'_>,
+    options: Cost<'_>,
+    owner: &Arc<Context>,
+) -> Result<Value, Failure> {
     let Cost {
         embeddings,
         near,
@@ -321,7 +345,8 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Val
         cursor,
         page_size: size,
     } = options;
-    let (plan, mut query_options) = query::prepare_usage(reader, scope, owner, embeddings)?;
+    let (plan, mut query_options) =
+        query::prepare_usage(reader, scope, Arc::clone(owner), embeddings)?;
     let mut paging = paging(
         reader,
         owner,
@@ -336,7 +361,7 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Val
         ]),
         &json!(["cost", month, embeddings, plan.definitions()]),
     )?;
-    let clock = paging.context.clock.clone();
+    let clock = paging.operation.clock.clone();
     query_options.clock = clock.clone();
     let day = &clock.day;
     let now = clock.now.as_millisecond();
@@ -409,7 +434,7 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Val
         Err(error) => json!({"error":error.kind,"message":error.message}),
     };
     Ok(
-        json!({"unplaced":unplaced,"quota":quota,"usage":report,"responses":responses,"days":days,"days_error":days_error,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"day":day,"since":selection.since,"until":selection.until}),
+        json!({"context":paging.operation.provenance(),"unplaced":unplaced,"quota":quota,"usage":report,"responses":responses,"days":days,"days_error":days_error,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"day":day,"since":selection.since,"until":selection.until}),
     )
 }
 
