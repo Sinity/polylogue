@@ -82,6 +82,18 @@ impl PartialEq for ReplayBinding {
     }
 }
 
+/// Complete accepted inputs retained before an execution exposes continuation calls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionBinding {
+    pub replay: ReplayBinding,
+    pub query_options: QueryExecutionOptions,
+    pub read: crate::read::ReadBegin,
+    pub delivery: crate::read::ReadDelivery,
+    /// The original trusted transport envelope. Internal calls may have none.
+    pub accepted_request: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunOutcome {
