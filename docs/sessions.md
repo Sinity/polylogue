@@ -28,7 +28,7 @@ Who wrote a message is separate from its role, in two closed sets and no third f
 | `prompt_kind` (user-role rows) | `prose`, `command` (a typed slash command), `injected_context` (hook output, skill text, a delivered brief), `compaction_summary`, `harness` (other prompts the harness wrote), `model` (a prompt a model wrote, such as a delegated task) |
 
 - The user role is not the human: harnesses and models write user-role rows too, and the two columns say which. A human prompt and a typed command are counted apart.
-- An `injected_context` row carries the delivery reference when its text matches a recorded delivery ([agents.md](agents.md#deliveries)).
+- An `injected_context` row carries an attributable delivery reference ([agents.md](agents.md#deliveries)). Native hook-field evidence cites the original message version, block ordinal, input, record byte range and JSON pointer. It travels outside the canonical message, so adding evidence never changes its content hash or source version. A parser's field claim becomes an observation only through native source admission; imported declarations remain declarations. An ordinary harness prompt or tool result is not injection evidence. Without an exact native field or producer-reference link, attribution is unknown; text, names and claimed flags do not supply that link.
 - Ruling, 2026-06-29, against a third authorship field: "some weird stopgap … the solution is not MORE complexity" (cc:51696878-0e44-4543-ab23-92abe9fe5c19:9c8d7182-aaac-4e0b-9606-1b3afa2e2c83).
 
 ## Times
