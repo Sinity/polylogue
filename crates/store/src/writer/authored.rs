@@ -101,6 +101,10 @@ impl Inner {
         )?;
         // Repeated content can still add a newly observed import provenance.
         crate::write_lock::commit(tx)?;
+        let tx = self.index.transaction()?;
+        crate::variants::project(&tx)?;
+        tx.commit()?;
+        self.derive_due = true;
         Ok(outcome)
     }
 }

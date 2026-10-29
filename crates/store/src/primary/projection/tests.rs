@@ -3,6 +3,7 @@ use super::*;
 fn cache(path: &std::path::Path) -> Connection {
     let index = Connection::open(path).unwrap();
     index.execute_batch(crate::schema::INDEX).unwrap();
+    index.execute_batch(crate::variants::SCHEMA).unwrap();
     index
         .execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
