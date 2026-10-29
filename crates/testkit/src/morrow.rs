@@ -176,7 +176,8 @@ impl Morrow {
         let stored = r
             .stored_chain(&input.input_id, chain, input.stored)
             .map_err(|e| e.to_string())?;
-        let store = hashed_blobs::Store::open(self.root.clone(), vec![], 0o600)
+        let store = polylogue_store::Archive::at(&self.root)
+            .blobs()
             .map_err(|e| e.to_string())?;
         stored
             .read_range(&store, 0, input.stored)

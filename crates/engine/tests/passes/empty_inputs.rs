@@ -96,7 +96,7 @@ fn empty_live_inputs_keep_observations_and_later_appends_without_empty_extents()
     let inputs = reader.known_inputs(&e.config.machine).unwrap();
     assert_eq!(inputs.len(), 1);
     let input = &inputs[0];
-    let store = hashed_blobs::Store::open(w.root.clone(), vec![], 0o600).unwrap();
+    let store = polylogue_store::Archive::at(&w.root).blobs().unwrap();
     assert_eq!(
         reader
             .stored_chain(&input.input_id, 1, first.len() as u64)

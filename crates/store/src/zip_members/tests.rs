@@ -1,10 +1,9 @@
 use super::*;
-use crate::blobs::Stored;
 use crate::staging::PreparedBatch;
 use crate::writer::{InFlight, InputKey};
 use crate::{Archive, Change, ImportMember, NewBlob, Observation, Writer};
 use polylogue_model::BlobHash;
-use std::sync::{Arc, Barrier};
+use std::sync::Arc;
 
 const ORIGINAL: &[u8] = b"synthetic container byte representation";
 const MEMBER: &[u8] = b"synthetic independently stored member";
@@ -43,7 +42,6 @@ fn stage(
         new_blob: Some(NewBlob {
             hash: prepared.hash(),
             size: prepared.len(),
-            stored: Stored::File { stored_size: 0 },
         }),
         blobs: vec![],
         length: prepared.len(),
@@ -91,7 +89,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(archive.blobs().unwrap());
     for import_id in ["one", "two"] {
         let outcomes = writer
             .sender()
@@ -129,14 +127,14 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
 }
 
 #[cfg(feature = "faults")]
-mod pending;
+mod durability;
 
 #[test]
 fn a_container_in_one_import_can_be_a_real_member_in_another() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(archive.blobs().unwrap());
     let inner = BlobHash::of(ORIGINAL).to_string();
     let outer = b"synthetic outer container representation";
     let outer_id = BlobHash::of(outer).to_string();

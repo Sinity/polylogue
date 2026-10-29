@@ -7,10 +7,18 @@ fn stats(source: &Imported) -> hashed_blobs::VerificationStats {
     }
 }
 
+fn commit_blob(engine: &crate::Engine, bytes: impl std::io::Read) -> polylogue_model::BlobHash {
+    let file = engine.archive.prepare_bytes(bytes).unwrap();
+    let blob = polylogue_store::NewBlob {
+        hash: file.hash(),
+        size: file.len(),
+    };
+    engine.writer.store_blob(blob, Some(file)).unwrap()
+}
+
 #[test]
 fn stored_bytes_are_opened_at_their_first_read() {
     let home = polylogue_testkit::ClaudeHome::new();
-    // Larger than the inline limit, so the bytes are a blob file.
     let body = "synthetic stored body ".repeat(10_000);
     home.append(
         "large.jsonl",
@@ -32,13 +40,12 @@ fn stored_bytes_are_opened_at_their_first_read() {
         .unwrap()
         .stored_chain(&input, chain, length as u64)
         .unwrap();
-    let hex = hashed_blobs::Hash(stored.single_file_blob().expect("a blob file").0).hex();
-    let file = home
-        .root
-        .join("blobs")
-        .join(&hex[..2])
-        .join(format!("{hex}.zst"));
-    let aside = home.root.join("aside.zst");
+    let hash = stored
+        .single_file_blob()
+        .expect("one complete segment blob");
+    let extent = blobs.extent(&hashed_blobs::Hash(hash.0)).unwrap();
+    let file = home.root.join(&extent.segment);
+    let aside = home.root.join("aside.hb");
     std::fs::rename(&file, &aside).unwrap();
     // A plan holds no open file: making one succeeds, reading it fails.
     let mut missing = Imported::from_chain(stored.clone(), std::sync::Arc::clone(&blobs));
@@ -60,19 +67,14 @@ fn detects_a_changed_tail() {
 }
 
 #[test]
-fn imported_ranges_verify_once_and_decode_once_even_with_an_oversized_frame() {
-    use polylogue_model::BlobHash;
-    let dir = tempfile::tempdir().unwrap();
+fn imported_ranges_decode_each_checked_frame_once_and_release_consumed_chunks() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
     let size = 10 * 1024 * 1024;
-    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600)
-        .unwrap()
-        .with_frame_size(size);
-    let hash = store
-        .put(std::io::repeat(b'x').take(size as u64), 1)
-        .unwrap();
-    let mut source = Imported::open(&store, BlobHash(hash.0), size as u64).unwrap();
+    let hash = commit_blob(&engine, std::io::repeat(b'x').take(size as u64));
+    let mut source = Imported::open(&engine.blobs, hash, size as u64).unwrap();
     let verified = stats(&source);
-    assert_eq!(verified.decoded_bytes, size as u64);
+    assert_eq!(verified.decoded_bytes, 0);
     let chunk = 1024;
     for start in (0..size).step_by(chunk) {
         let end = (start + chunk).min(size);
@@ -85,33 +87,34 @@ fn imported_ranges_verify_once_and_decode_once_even_with_an_oversized_frame() {
         assert!(source.pending.capacity() <= chunk);
     }
     let stats = stats(&source);
-    assert_eq!(stats.decoded_bytes, 2 * size as u64);
-    assert_eq!(stats.frames, verified.frames + 1);
-    assert!(stats.compressed_bytes <= 2 * verified.compressed_bytes);
+    assert_eq!(stats.decoded_bytes, size as u64);
+    assert_eq!(
+        stats.frames,
+        size.div_ceil(hashed_blobs::DEFAULT_FRAME) as u64
+    );
 }
 
 #[test]
 fn imported_ranges_keep_only_the_incomplete_record_overlap() {
-    use polylogue_model::BlobHash;
-    let dir = tempfile::tempdir().unwrap();
-    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap();
-    let hash = store.put(&b"complete\npartial\n"[..], 1).unwrap();
-    let mut source = Imported::open(&store, BlobHash(hash.0), 17).unwrap();
+    let home = polylogue_testkit::ClaudeHome::new();
+    let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+    let hash = commit_blob(&engine, b"complete\npartial\n".as_slice());
+    let mut source = Imported::open(&engine.blobs, hash, 17).unwrap();
     assert_eq!(source.read_range(0, 12).unwrap(), b"complete\npar");
     source.consume(9);
     assert_eq!(source.pending, b"par");
     assert_eq!(source.read_range(9, 17).unwrap(), b"partial\n");
     source.consume(17);
     assert!(source.pending.is_empty());
-    assert_eq!(stats(&source).decoded_bytes, 34);
+    assert_eq!(stats(&source).decoded_bytes, 17);
 }
 
 #[test]
 fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap();
-    let hash = store.put(&b"0123456789abcdef"[..], 1).unwrap();
-    let mut source = Imported::open(&store, polylogue_model::BlobHash(hash.0), 16).unwrap();
+    let home = polylogue_testkit::ClaudeHome::new();
+    let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+    let hash = commit_blob(&engine, b"0123456789abcdef".as_slice());
+    let mut source = Imported::open(&engine.blobs, hash, 16).unwrap();
     assert_eq!(source.read_range(0, 14).unwrap(), b"0123456789abcd");
     source.consume(0);
     assert_eq!(source.read_range(0, 14).unwrap(), b"0123456789abcd");
@@ -119,30 +122,34 @@ fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
     assert_eq!(source.read_range(4, 8).unwrap(), b"4567");
     source.consume(8);
     assert_eq!(source.read_range(8, 16).unwrap(), b"89abcdef");
-    assert_eq!(stats(&source).decoded_bytes, 32);
+    assert_eq!(stats(&source).decoded_bytes, 16);
 }
 
 #[test]
-fn export_scanning_uses_one_forward_decode_after_verification() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600)
-        .unwrap()
-        .with_frame_size(4 << 20);
+fn export_scanning_uses_one_forward_pass_over_checked_frames() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
     let mut bytes = b"[{}".to_vec();
     for _ in 0..10_000 {
         bytes.extend_from_slice(b",{\"padding\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}");
     }
     bytes.push(b']');
-    let hash = store.put(&bytes[..], 1).unwrap();
-    let mut source = store
-        .read_plain(&hash, Some(bytes.len() as u64), || Ok(()))
+    let hash = commit_blob(&engine, bytes.as_slice());
+    let mut source = engine
+        .blobs
+        .read_plain(
+            &hashed_blobs::Hash(hash.0),
+            Some(bytes.len() as u64),
+            || Ok(()),
+        )
         .unwrap();
     let verified = source.stats();
     let scan = polylogue_sources::export::scan(&mut source, |_, _| Ok(())).unwrap();
     assert_eq!(scan.elements, 10_001);
     assert!(scan.peak_element_bytes < 256);
     let stats = source.stats();
-    assert_eq!(stats.decoded_bytes, 2 * bytes.len() as u64);
+    assert_eq!(verified.decoded_bytes, 0);
+    assert_eq!(stats.decoded_bytes, bytes.len() as u64);
     assert_eq!(stats.frames, verified.frames + 1);
 }
 

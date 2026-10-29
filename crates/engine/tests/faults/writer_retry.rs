@@ -16,7 +16,7 @@ fn exactly_stored(w: &ClaudeHome, file: &str) {
     let chain = r
         .stored_chain(&known.input_id, known.chain.unwrap(), known.stored)
         .unwrap();
-    let store = Arc::new(hashed_blobs::Store::open(w.root.clone(), vec![], 0o600).unwrap());
+    let store = Arc::new(polylogue_store::Archive::at(&w.root).blobs().unwrap());
     let mut actual = Vec::new();
     chain.reader(store).read_to_end(&mut actual).unwrap();
     assert_eq!(actual, expected);

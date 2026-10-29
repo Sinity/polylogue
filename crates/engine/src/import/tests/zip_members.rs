@@ -105,14 +105,12 @@ fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
                 "{table}"
             );
         }
-        assert!(
-            !engine
-                .blobs
-                .contains(&hashed_blobs::Hash(*blake3::hash(&original).as_bytes()))
-        );
-        assert!(!engine.blobs.contains(&hashed_blobs::Hash(
-            *blake3::hash(b"first member").as_bytes()
-        )));
+        for bytes in [original.as_slice(), b"first member".as_slice()] {
+            assert!(matches!(
+                engine.blobs.extent(&hashed_blobs::Hash::of(bytes)),
+                Err(polylogue_store::StoreError::NotFound(_))
+            ));
+        }
     }
 }
 
