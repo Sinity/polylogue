@@ -87,6 +87,8 @@ pub(crate) struct Prepared {
     pub capture: Option<Capture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub captured: Option<Bytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<Control>,
     pub request: bool,
     pub group: Option<Group>,
     #[serde(skip)]
@@ -95,6 +97,19 @@ pub(crate) struct Prepared {
     pub commit_seq: Option<i64>,
     #[serde(skip)]
     pub refused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Control {
+    pub reading_version: String,
+    pub parsed_upto: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Acquisition {
+    identity: String,
+    intent: String,
+    count: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -164,8 +179,24 @@ impl Spool {
         Ok(spool)
     }
 
-    fn operation(&self, identity: &str) -> PathBuf {
-        self.root.join("operations").join(hash(identity.as_bytes()))
+    fn operation(&self, identity: &str) -> Result<PathBuf> {
+        let name = hash(identity.as_bytes());
+        let direct = self.root.join("operations").join(&name);
+        if direct.try_exists()? {
+            return Ok(direct);
+        }
+        let Some(batch) = read_json::<String>(&self.index("locations", &name))? else {
+            return Ok(direct);
+        };
+        if !hex_name(&batch) {
+            return invalid("invalid acquisition location index");
+        }
+        Ok(self
+            .root
+            .join("operations")
+            .join(batch)
+            .join("operations")
+            .join(name))
     }
     fn index(&self, kind: &str, key: &str) -> PathBuf {
         self.root.join("index").join(kind).join(key)
@@ -173,14 +204,14 @@ impl Spool {
 
     pub fn get(&self, identity: &str) -> Result<Option<Prepared>> {
         let Some(mut prepared) =
-            read_checked::<Prepared>(&self.operation(identity).join("metadata.json"))?
+            read_checked::<Prepared>(&self.operation(identity)?.join("metadata.json"))?
         else {
             return Ok(None);
         };
         if prepared.identity != identity {
             return invalid("spool operation identity differs from its directory");
         }
-        let directory = self.operation(identity);
+        let directory = self.operation(identity)?;
         let frame = prepared.frame_encoding.descriptor()?;
         if frame.hash.to_string() != prepared.frame_hash
             || frame.decoded_len != prepared.frame_length
@@ -215,7 +246,7 @@ impl Spool {
     pub fn prepared_frame(&self, identity: &str) -> Result<hashed_blobs::Prepared> {
         let prepared = self.required(identity)?;
         Ok(hashed_blobs::Prepared::from_encoded(
-            regular(&self.operation(identity).join("frame.zst"))?,
+            regular(&self.operation(identity)?.join("frame.zst"))?,
             prepared.frame_encoding.descriptor()?,
             None,
             ReadLimits::default(),
@@ -239,7 +270,7 @@ impl Spool {
             .body
             .ok_or_else(|| Error::Invalid("operation has no material body".into()))?;
         let descriptor = body.descriptor()?;
-        let path = self.operation(identity).join("body.zst");
+        let path = self.operation(identity)?.join("body.zst");
         check_length(&path, descriptor.stored_len)?;
         Ok((path, descriptor))
     }
@@ -256,7 +287,7 @@ impl Spool {
     }
 
     fn receipt(&self, identity: &str) -> Result<Option<Receipt>> {
-        let directory = self.operation(identity).join("ack");
+        let directory = self.operation(identity)?.join("ack");
         if directory.try_exists()? && !fs::symlink_metadata(&directory)?.file_type().is_dir() {
             return invalid("published acknowledgment is not a directory");
         }
@@ -277,7 +308,7 @@ impl Spool {
             return Ok(None);
         };
         let acknowledgment: Acknowledgment = decode_json(verified_encoded(
-            &self.operation(identity).join("ack/payload.zst"),
+            &self.operation(identity)?.join("ack/payload.zst"),
             receipt.payload.descriptor()?,
         )?)?;
         let prepared = self.required(identity)?;
@@ -357,15 +388,97 @@ impl Spool {
         )
     }
 
+    /// Stage all acquisition members privately, then expose their existing
+    /// operation records with one directory publication.
+    pub fn prepare_acquisition(
+        &self,
+        identity: &str,
+        intent: &str,
+        count: u64,
+        stage: impl FnOnce(&Spool) -> Result<()>,
+    ) -> Result<()> {
+        self.ensure_indexes()?;
+        let destination = self.root.join("operations").join(hash(identity.as_bytes()));
+        if destination.try_exists()? {
+            let acquisition = read_checked::<Acquisition>(&destination.join("acquisition.json"))?
+                .ok_or_else(|| {
+                Error::Invalid("acquisition identity belongs to another operation".into())
+            })?;
+            if acquisition.identity != identity
+                || acquisition.intent != intent
+                || acquisition.count != count
+            {
+                return invalid("acquisition identity changed its immutable membership");
+            }
+            let retained = fs::read_dir(destination.join("operations"))?.try_fold(
+                0u64,
+                |count, entry| -> Result<u64> {
+                    let entry = entry?;
+                    Ok(count + u64::from(entry.file_name().to_str().is_some_and(hex_name)))
+                },
+            )?;
+            if retained != count {
+                return Err(polylogue_store::StoreError::Conflict(
+                    "acquisition members were already applied; refresh the source basis".into(),
+                )
+                .into());
+            }
+            stage(self)?;
+            return Ok(());
+        }
+        let temporary = tempfile::Builder::new()
+            .prefix(&format!(".preparing-{}-", hash(identity.as_bytes())))
+            .tempdir_in(self.root.join("operations"))?;
+        fs::create_dir(temporary.path().join("operations"))?;
+        fs::create_dir(temporary.path().join("retired"))?;
+        let staging = Spool {
+            root: temporary.path().into(),
+            first: Cell::new(self.next.get()),
+            next: Cell::new(self.next.get()),
+            index_dirty: Cell::new(true),
+            _lock: self._lock.try_clone()?,
+        };
+        staging.rebuild_indexes()?;
+        // Rebuilding an empty private directory has no preceding queue order.
+        staging.next.set(self.next.get());
+        stage(&staging)?;
+        let staged = staging
+            .next
+            .get()
+            .checked_sub(self.next.get())
+            .ok_or_else(|| Error::Invalid("acquisition order moved backwards".into()))?;
+        if staged != count {
+            return invalid("acquisition member count differs from its complete plan");
+        }
+        write_checked(
+            &temporary.path().join("acquisition.json"),
+            &Acquisition {
+                identity: identity.into(),
+                intent: intent.into(),
+                count,
+            },
+        )?;
+        sync(temporary.path())?;
+        boundary("acquisition_synced");
+        self.index_dirty.set(true);
+        fs::rename(temporary.path(), &destination)?;
+        sync(&self.root.join("operations"))?;
+        boundary("acquisition_published");
+        self.rebuild_indexes()
+    }
+
     pub fn capture(&self, identity: &str) -> Result<Capture> {
         let prepared = self.required(identity)?;
         if let Some(captured) = prepared.captured {
             let capture: Capture = decode_json(verified_encoded(
-                &self.operation(identity).join("captured.zst"),
+                &self.operation(identity)?.join("captured.zst"),
                 captured.descriptor()?,
             )?)?;
             if prepared.capture.as_ref() != Some(&capture_header(&capture)) {
                 return invalid("capture sidecar differs from its queue header");
+            }
+            if prepared.control != control(&capture) {
+                return invalid("parser control differs from its immutable capture index");
             }
             Ok(capture)
         } else {
@@ -487,7 +600,7 @@ impl Spool {
             }
             return Ok(());
         }
-        let directory = self.operation(&prepared.identity);
+        let directory = self.operation(&prepared.identity)?;
         let temporary = tempfile::Builder::new()
             .prefix(".ack-preparing-")
             .tempdir_in(&directory)?;
@@ -642,7 +755,7 @@ impl Spool {
                     Kind::Events | Kind::ReplaySequence => writes += 1,
                     _ => {}
                 }
-                for file in fs::read_dir(self.operation(&prepared.identity))? {
+                for file in fs::read_dir(self.operation(&prepared.identity)?)? {
                     let file = file?;
                     if file.file_type()?.is_file() {
                         bytes = bytes.saturating_add(file.metadata()?.len());
@@ -674,7 +787,7 @@ impl Spool {
             return invalid("capture group encoding differs from its immutable set");
         }
         let mut file =
-            verified_encoded(&self.operation(identity).join("captures.zst"), descriptor)?;
+            verified_encoded(&self.operation(identity)?.join("captures.zst"), descriptor)?;
         let mut count = 0u64;
         for line in BufReader::new(&mut file).lines() {
             let _: String = serde_json::from_str(&line?)?;
@@ -851,6 +964,7 @@ impl Spool {
             material,
             capture,
             captured,
+            control: full_capture.and_then(control),
             request,
             group,
             acknowledged: false,
@@ -864,7 +978,7 @@ impl Spool {
             boundary("group_synced");
         }
         self.index_dirty.set(true);
-        fs::rename(temporary.path(), self.operation(&identity))?;
+        fs::rename(temporary.path(), self.operation(&identity)?)?;
         sync(&self.root.join("operations"))?;
         boundary("operation_published");
         if prepared.group.is_some() {
@@ -881,7 +995,7 @@ impl Spool {
     }
 
     fn remove(&self, identity: &str) -> Result<()> {
-        self.retire_path(&self.operation(identity))
+        self.retire_path(&self.operation(identity)?)
     }
 
     fn retire_path(&self, directory: &Path) -> Result<()> {
@@ -898,7 +1012,7 @@ impl Spool {
             sync(&self.root.join("retired"))?;
         }
         fs::rename(directory, &retired)?;
-        sync(&self.root.join("operations"))?;
+        sync(directory.parent().expect("owned operation parent"))?;
         sync(&self.root.join("retired"))?;
         boundary("operation_retired");
         fs::remove_dir_all(retired)?;
@@ -917,27 +1031,37 @@ impl Spool {
         if index.try_exists()? {
             fs::remove_dir_all(&index)?;
         }
-        for name in ["order", "groups", "members"] {
+        for name in ["order", "groups", "members", "locations"] {
             fs::create_dir_all(index.join(name))?;
         }
         let (mut first, mut last) = (u64::MAX, 0);
-        for entry in fs::read_dir(self.root.join("operations"))? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str().filter(|name| {
-                name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
-            }) else {
-                continue;
-            };
-            if !entry.file_type()?.is_dir() {
-                return invalid("spool operation is not a directory");
+        // Locations are derived from the one published acquisition directory.
+        // Build them before resolving member receipts and capture dependencies.
+        self.visit_operation_paths(|path, batch| {
+            if let Some(batch) = batch {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| Error::Invalid("invalid acquisition member name".into()))?;
+                let location = self.index("locations", name);
+                if read_json::<String>(&location)?.is_some()
+                    || self.root.join("operations").join(name).try_exists()?
+                {
+                    return invalid("operation occurs in more than one acquisition");
+                }
+                write_index(&location, batch)?;
             }
-            if entry.path().join("frame.json").try_exists()? {
+            Ok(())
+        })?;
+        self.visit_operation_paths(|path, _| {
+            let name = path.file_name().and_then(|name| name.to_str())
+                .ok_or_else(|| Error::Invalid("invalid spool operation name".into()))?;
+            if path.join("frame.json").try_exists()? {
                 return invalid(
                     "producer spool contains plaintext pending payloads; preserve them before an explicit transition",
                 );
             }
-            let metadata = read_checked::<Prepared>(&entry.path().join("metadata.json"))?
+            let metadata = read_checked::<Prepared>(&path.join("metadata.json"))?
                 .ok_or_else(|| Error::Invalid("published operation has no metadata".into()))?;
             if hash(metadata.identity.as_bytes()) != name {
                 return invalid("spool directory has another operation identity");
@@ -946,7 +1070,8 @@ impl Spool {
             first = first.min(prepared.order);
             last = last.max(prepared.order);
             self.index_entry(&prepared)?;
-        }
+            Ok(())
+        })?;
         self.first.set(if first == u64::MAX { 1 } else { first });
         self.next.set(
             last.checked_add(1)
@@ -954,6 +1079,43 @@ impl Spool {
         );
         self.index_dirty.set(false);
         sync(&index)?;
+        Ok(())
+    }
+
+    fn visit_operation_paths(
+        &self,
+        mut visit: impl FnMut(&Path, Option<&str>) -> Result<()>,
+    ) -> Result<()> {
+        for entry in fs::read_dir(self.root.join("operations"))? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str().filter(|name| hex_name(name)) else {
+                continue;
+            };
+            if !entry.file_type()?.is_dir() {
+                return invalid("spool operation is not a directory");
+            }
+            if let Some(acquisition) =
+                read_checked::<Acquisition>(&entry.path().join("acquisition.json"))?
+            {
+                if hash(acquisition.identity.as_bytes()) != name {
+                    return invalid("acquisition directory has another identity");
+                }
+                for member in fs::read_dir(entry.path().join("operations"))? {
+                    let member = member?;
+                    let member_name = member.file_name();
+                    if !member_name.to_str().is_some_and(hex_name) {
+                        continue;
+                    }
+                    if !member.file_type()?.is_dir() {
+                        return invalid("acquisition member is not a directory");
+                    }
+                    visit(&member.path(), Some(name))?;
+                }
+            } else {
+                visit(&entry.path(), None)?;
+            }
+        }
         Ok(())
     }
 
@@ -985,6 +1147,25 @@ impl Spool {
     }
 }
 
+fn hex_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn control(capture: &Capture) -> Option<Control> {
+    let Capture::Input(input) = capture else {
+        return None;
+    };
+    input
+        .parsed
+        .iter()
+        .rev()
+        .find_map(|reading| reading.checkpoint.as_ref())
+        .map(|checkpoint| Control {
+            reading_version: checkpoint.reading_version.clone(),
+            parsed_upto: checkpoint.parsed_upto,
+        })
+}
+
 pub(crate) fn capture_header(capture: &Capture) -> Capture {
     match capture {
         Capture::Input(input) => {
@@ -998,6 +1179,8 @@ pub(crate) fn capture_header(capture: &Capture) -> Capture {
                 group: input.group.clone(),
                 arrival_rank: input.arrival_rank,
                 parsed: Vec::new(),
+                raw_range: input.raw_range,
+                basis: input.basis.clone(),
             }))
         }
         Capture::Blob { hash, length } => Capture::Blob {

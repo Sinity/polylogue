@@ -250,6 +250,26 @@ impl Drop for Sinex {
 }
 
 impl polylogue_store::primary::Sinex for Sinex {
+    fn prepare_input_group(
+        &self,
+        plan: &polylogue_store::primary::CapturePlan,
+        members: &mut polylogue_store::primary::CaptureMembers<'_>,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_input_group(plan, members)?)
+    }
+    fn pending_source(
+        &self,
+        source: &polylogue_store::primary::SourceSelector,
+        reading_version: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::PendingSource> {
+        Ok(self.pending_source(source, reading_version)?)
+    }
+    fn capture_body(
+        &self,
+        identity: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedBody> {
+        Ok(self.capture_body(identity)?)
+    }
     fn prepare_input(
         &self,
         captured: &polylogue_store::primary::CapturedInput,

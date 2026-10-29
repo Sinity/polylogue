@@ -5,7 +5,7 @@ use polylogue_store::primary::{
 };
 use serde_json::json;
 
-fn body(root: &std::path::Path, bytes: &[u8]) -> polylogue_store::primary::PreparedBody {
+pub(crate) fn body(root: &std::path::Path, bytes: &[u8]) -> polylogue_store::primary::PreparedBody {
     let prepared = hashed_blobs::Preparation::new(root.join("source-staging"))
         .unwrap()
         .plain(bytes, 3)
@@ -17,7 +17,7 @@ fn body(root: &std::path::Path, bytes: &[u8]) -> polylogue_store::primary::Prepa
     }
 }
 
-fn client(root: &std::path::Path) -> Sinex {
+pub(crate) fn client(root: &std::path::Path) -> Sinex {
     Sinex::open(
         &Config {
             mode: Mode::Primary,
@@ -32,7 +32,7 @@ fn client(root: &std::path::Path) -> Sinex {
     )
     .unwrap()
 }
-fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInput {
+pub(crate) fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInput {
     serde_json::from_value(json!({
         "input":{"origin":"codex","path":"/home/op/session.jsonl","host":"fixture-host"},
         "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}},

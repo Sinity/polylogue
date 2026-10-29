@@ -167,7 +167,7 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     assert!(spool.acknowledge(ack("group", false, None)).is_err());
     assert!(spool.acknowledge(ack("group", false, Some(-1))).is_err());
     spool.acknowledge(ack("group", false, Some(12))).unwrap();
-    let receipt = spool.operation("group").join("ack/receipt.json");
+    let receipt = spool.operation("group").unwrap().join("ack/receipt.json");
     let original = fs::read(&receipt).unwrap();
     let mut damaged: serde_json::Value = serde_json::from_slice(&original).unwrap();
     damaged["value"]["commit_seq"] = 0.into();
@@ -179,7 +179,7 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     fs::write(&receipt, original).unwrap();
     assert_eq!(spool.get("group").unwrap().unwrap().commit_seq, Some(12));
     fs::write(
-        spool.operation("group").join("captures.zst"),
+        spool.operation("group").unwrap().join("captures.zst"),
         b"\"other\"\n",
     )
     .unwrap();
@@ -209,7 +209,7 @@ fn material_bodies_are_verified_including_empty_files_and_fifo_rejection() {
             .is_err()
     );
     assert!(spool.get("wrong").unwrap().is_none());
-    let path = spool.operation("empty").join("body.zst");
+    let path = spool.operation("empty").unwrap().join("body.zst");
     fs::remove_file(&path).unwrap();
     let status = Command::new("mkfifo").arg(&path).status().unwrap();
     assert!(status.success());
@@ -241,6 +241,7 @@ fn pending_metadata_stays_small_with_large_immutable_frames_and_streamed_bodies(
     assert!(
         spool
             .operation("large-frame")
+            .unwrap()
             .join("metadata.json")
             .metadata()
             .unwrap()
@@ -268,7 +269,19 @@ fn crash_worker() {
     };
     let spool = Spool::open(Path::new(&root), "host").unwrap();
     let stage = std::env::var("POLYLOGUE_SPOOL_CRASH").unwrap();
-    if stage == "capture_synced" {
+    if stage.starts_with("acquisition_") {
+        spool
+            .prepare_acquisition("acquisition", "two-raws", 2, |staging| {
+                for id in ["first", "second"] {
+                    staging.prepare_material(
+                        material(id, b"source bytes"),
+                        b"source bytes".as_slice(),
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    } else if stage == "capture_synced" {
         let bytes = b"original source";
         let capture = parsed_capture(bytes, "synthetic answer");
         spool
@@ -315,6 +328,42 @@ fn crash_worker() {
             .unwrap();
     }
     panic!("fault boundary did not terminate the process");
+}
+
+#[test]
+fn process_death_publishes_all_acquisition_members_together() {
+    for stage in ["acquisition_synced", "acquisition_published"] {
+        let directory = tempfile::tempdir().unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
+            .env("POLYLOGUE_SPOOL_CRASH_ROOT", directory.path())
+            .env("POLYLOGUE_SPOOL_CRASH", stage)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(77));
+        let spool = Spool::open(directory.path(), "host").unwrap();
+        let entries = all(&spool, 1);
+        assert_eq!(
+            entries.len(),
+            if stage == "acquisition_published" {
+                2
+            } else {
+                0
+            }
+        );
+        if !entries.is_empty() {
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|entry| entry.identity.as_str())
+                    .collect::<Vec<_>>(),
+                ["first", "second"]
+            );
+            let mut raw = Vec::new();
+            spool.body("second").unwrap().read_to_end(&mut raw).unwrap();
+            assert_eq!(raw, b"source bytes");
+        }
+    }
 }
 
 #[test]
@@ -658,7 +707,7 @@ fn complete_parser_facts_are_immutable_sidecars_and_queue_headers_stay_small() {
     spool.acknowledge(ack("captured", true, None)).unwrap();
     assert_eq!(spool.pending_after(None, 1).unwrap().len(), 1);
     assert_eq!(spool.capture("captured").unwrap(), capture);
-    let path = spool.operation("captured").join("captured.zst");
+    let path = spool.operation("captured").unwrap().join("captured.zst");
     let mut content = fs::read(&path).unwrap();
     content[0] ^= 1;
     fs::write(path, content).unwrap();
@@ -905,11 +954,11 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
         ("group", "captures.zst"),
         ("group", "ack/payload.zst"),
     ] {
-        let data = fs::read(spool.operation(identity).join(relative)).unwrap();
+        let data = fs::read(spool.operation(identity).unwrap().join(relative)).unwrap();
         assert_eq!(&data[..4], &[0x28, 0xb5, 0x2f, 0xfd], "{relative}");
     }
     let before = spool.counts().unwrap();
-    let path = spool.operation("raw").join("frame.zst");
+    let path = spool.operation("raw").unwrap().join("frame.zst");
     let mut data = fs::read(&path).unwrap();
     data[0] ^= 1;
     fs::write(path, data).unwrap();
@@ -921,7 +970,7 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
 fn plaintext_predecessor_operations_require_an_explicit_preserved_transition() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
-    let path = spool.operation("old");
+    let path = spool.operation("old").unwrap();
     fs::create_dir(&path).unwrap();
     fs::write(path.join("frame.json"), b"{synthetic old pending bytes}").unwrap();
     drop(spool);

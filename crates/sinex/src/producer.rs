@@ -10,6 +10,7 @@ use polylogue_store::primary::{
 };
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
+mod acquisition;
 mod reading;
 
 impl Sinex {
@@ -96,7 +97,16 @@ impl Sinex {
         }
         let identity = format!("{desired}{}", uuid::Uuid::now_v7());
         let queue = self.queue()?;
-        let (input, hash, length, parser, part_index, previous_part) = match &captured {
+        let frame = self.capture_frame(&captured, &identity)?;
+        queue.prepare_encoded_capture(frame, body, &captured)?;
+        Ok(PreparedWrite {
+            identity,
+            pending: true,
+        })
+    }
+
+    fn capture_frame(&self, captured: &Capture, identity: &str) -> Result<Ingress> {
+        let (input, hash, length, parser, part_index, previous_part) = match captured {
             Capture::Input(input) => (
                 InputRef {
                     kind: input.input.origin.clone(),
@@ -130,12 +140,12 @@ impl Sinex {
                 None,
             ),
         };
-        let header = crate::spool::capture_header(&captured);
-        let observation = matches!(&captured,Capture::Input(input) if input.rows.extent.is_none());
-        let frame = Ingress::Material {
-            frame: identity.clone(),
+        let header = crate::spool::capture_header(captured);
+        let observation = matches!(captured,Capture::Input(input) if input.rows.extent.is_none());
+        Ok(Ingress::Material {
+            frame: identity.into(),
             material: Box::new(MaterialFrame {
-                id: crate::material_id(&identity),
+                id: crate::material_id(identity),
                 input,
                 blob: format!("blake3:{hash}"),
                 length,
@@ -160,11 +170,6 @@ impl Sinex {
                     ..Default::default()
                 },
             }),
-        };
-        queue.prepare_encoded_capture(frame, body, &captured)?;
-        Ok(PreparedWrite {
-            identity,
-            pending: true,
         })
     }
 

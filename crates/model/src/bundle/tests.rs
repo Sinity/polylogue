@@ -250,7 +250,8 @@ fn canonical_transfer_retains_its_typed_record_after_round_trip() {
 fn published_bundle_schema_matches_the_canonical_wire_types() {
     let published: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../docs/reference/polylogue-bundle-v1.schema.json"
-    )).unwrap();
+    ))
+    .unwrap();
     let current = serde_json::to_value(schemars::schema_for!(Record)).unwrap();
     assert_eq!(published, current);
 }
