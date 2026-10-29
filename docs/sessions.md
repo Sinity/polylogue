@@ -16,7 +16,7 @@ The parsed model every other area reads: sessions, messages and blocks, message 
 - **Branches.** Messages carry their parent message, which gives the branch tree; the active path comes from the provider's marked leaf. An unknown path is NULL and is never collapsed into "off the path".
 - **Blocks.** A message is a sequence of blocks: text, thinking, tool calls and results, attachments, and the special output parts providers produce (artifacts, canvas, projects, citations), which are parsed as blocks and documents of their message rather than left as kept attributes.
 - **Thinking** keeps its text, or its encrypted or redacted state, and its word count.
-- **Tool calls and results are paired by the stored call and result relation**, never by serialization order. A tool call records its action (the origin's tool mapped to a closed set), target, input, exit code, outcome (`ok`, `error`, or `unknown` with a reason; `pending` is computed at read) and the time of its result.
+- **Tool calls and results are paired by the stored call and result relation**, never by serialization order. A tool call records its action (the origin's tool mapped to a closed set), target, input, exit code, outcome (`ok`, `error`, or `unknown` with a reason; `pending` is computed at read) and the time of its result. Source-reported elapsed milliseconds are stored separately from the difference between the call and result times.
 
 ## Message authorship
 

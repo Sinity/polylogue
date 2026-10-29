@@ -72,13 +72,17 @@ impl ResolvedKeys {
 struct Active {
     keys: BTreeSet<Key>,
     next: BTreeMap<Kind, i64>,
-    values: BTreeMap<Key, std::sync::Weak<Reservation>>,
+    // IDs outlive their payload owners: an older snapshot can resolve a value
+    // after another group committed it and released its prepared bytes.
+    values: BTreeMap<Key, (i64, std::sync::Weak<Reservation>)>,
 }
 pub(super) struct Resolver {
     archive: Archive,
     active: Mutex<Active>,
     available: Condvar,
     first: Option<Arc<crate::first_build::FirstBuild>>,
+    #[cfg(test)]
+    waiting: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 pub(super) struct Lease {
     resolver: Arc<Resolver>,
@@ -90,15 +94,16 @@ impl Drop for Lease {
         for key in &self.keys {
             active.keys.remove(key);
         }
-        active
-            .values
-            .retain(|_, reservation| reservation.strong_count() > 0);
         drop(active);
         self.resolver.available.notify_all();
     }
 }
 
 impl Resolver {
+    #[cfg(test)]
+    pub(super) fn observe_wait(&self, observer: std::sync::mpsc::Sender<()>) {
+        *self.waiting.lock().expect("wait observer") = Some(observer);
+    }
     pub(super) fn location(&self) -> &Archive {
         &self.archive
     }
@@ -143,12 +148,22 @@ impl Resolver {
             }),
             available: Condvar::new(),
             first,
+            #[cfg(test)]
+            waiting: Mutex::new(None),
         }))
     }
 
     pub(super) fn lease(self: &Arc<Self>, keys: BTreeSet<Key>) -> Lease {
+        let keys: BTreeSet<_> = keys
+            .into_iter()
+            .filter(|key| key.kind != Kind::Text)
+            .collect();
         let mut active = self.active.lock().expect("resolver lock");
         while keys.iter().any(|key| active.keys.contains(key)) {
+            #[cfg(test)]
+            if let Some(waiting) = self.waiting.lock().expect("wait observer").as_ref() {
+                let _ = waiting.send(());
+            }
             active = self.available.wait(active).expect("resolver lock");
         }
         active.keys.extend(keys.iter().cloned());
@@ -168,6 +183,38 @@ impl Resolver {
         Ok(pk)
     }
 
+    pub(super) fn resolve_key(&self, index: &Connection, key: &Key) -> Result<RowKey> {
+        let existing = self.find(index, key)?;
+        let pk = if key.kind == Kind::Text {
+            self.identity(key.clone(), existing)?.pk
+        } else {
+            match existing {
+                Some(pk) => pk,
+                None => self.allocate(key.kind)?,
+            }
+        };
+        self.remember(key, pk);
+        Ok(RowKey {
+            pk,
+            existing: existing.is_some(),
+        })
+    }
+    pub(super) fn remember(&self, key: &Key, pk: i64) {
+        if let Some(first) = &self.first {
+            match key.kind {
+                Kind::Message => {
+                    first.add_message(std::str::from_utf8(&key.bytes).expect("message key"), pk)
+                }
+                Kind::Event => {
+                    first.add_event(std::str::from_utf8(&key.bytes).expect("event key"), pk)
+                }
+                Kind::Text => {
+                    first.add_text(key.bytes.as_slice().try_into().expect("text hash"), pk)
+                }
+                _ => {}
+            }
+        }
+    }
     pub(super) fn find(&self, index: &Connection, key: &Key) -> Result<Option<i64>> {
         let first = self.first.as_deref();
         match key.kind {
@@ -264,7 +311,11 @@ impl Resolver {
         let mut latest = BTreeMap::<String, Option<(i64, i64)>>::new();
         for b in batches {
             keys.insert(Key::new(Kind::Input, b.input.id.as_bytes()));
-            let prior=match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?};
+            let prior = if matches!(b.change, Change::Reparse { .. }) {
+                None
+            } else {
+                match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?}
+            };
             let chain = match (&b.change, b.continues, prior) {
                 (Change::Reparse { chain }, _, _) => *chain,
                 (_, true, Some((_, chain)))
@@ -275,12 +326,14 @@ impl Resolver {
                 ) => chain,
                 _ => prior.map_or(1, |(number, _)| number + 1),
             };
-            let number = if b.continues {
-                prior.map_or(1, |p| p.0)
-            } else {
-                prior.map_or(1, |p| p.0 + 1)
-            };
-            latest.insert(b.input.id.clone(), Some((number, chain)));
+            if !matches!(b.change, Change::Reparse { .. }) {
+                let number = match (&b.change, b.continues, prior) {
+                    (_, true, Some((number, _)))
+                    | (Change::Unchanged | Change::Disappeared, _, Some((number, _))) => number,
+                    (_, _, prior) => prior.map_or(1, |(number, _)| number + 1),
+                };
+                latest.insert(b.input.id.clone(), Some((number, chain)));
+            }
             chains.push(chain);
             for p in &mut b.parse {
                 p.prepare();
@@ -402,6 +455,21 @@ impl Resolver {
                 }
             }
         }
+        let contents: Vec<_> = keys
+            .iter()
+            .filter(|key| matches!(key.kind, Kind::Message | Kind::Document))
+            .cloned()
+            .collect();
+        for key in contents {
+            if let Some(pk) = self.find(index, &key)? {
+                let kind = key.kind.table();
+                let mut statement=index.prepare_cached(&format!("SELECT t.hash FROM {kind}_source s JOIN {kind}_version_text v ON v.version_hash=s.version_hash JOIN text t ON t.id=v.text_id WHERE s.{kind}_pk=?1"))?;
+                let mut rows = statement.query([pk])?;
+                while let Some(row) = rows.next()? {
+                    keys.insert(Key::new(Kind::Text, row.get::<_, Vec<u8>>(0)?));
+                }
+            }
+        }
         Ok((keys, chains))
     }
 
@@ -425,18 +493,17 @@ impl Resolver {
                 drop(lease);
                 continue;
             }
-            let pending:HashMap<_,_>=batches.iter().flat_map(|batch|batch.new_blob.iter().chain(&batch.blobs)).map(|blob|(blob.hash,blob.size)).collect();
-            for batch in batches.iter_mut() {attachments::normalize(batch,&archive,&pending)?;}
+            let pending: HashMap<_, _> = batches
+                .iter()
+                .flat_map(|batch| batch.new_blob.iter().chain(&batch.blobs))
+                .map(|blob| (blob.hash, blob.size))
+                .collect();
+            for batch in batches.iter_mut() {
+                attachments::normalize(batch, &archive, &pending)?;
+            }
             let mut resolved = ResolvedKeys::default();
             for key in keys {
-                let existing = self.find(&snapshot, &key)?;
-                let row = RowKey {
-                    pk: match existing {
-                        Some(pk) => pk,
-                        None => self.allocate(key.kind)?,
-                    },
-                    existing: existing.is_some(),
-                };
+                let row = self.resolve_key(&snapshot, &key)?;
                 resolved.rows.insert(key, row);
             }
             versions::resolve(self, &snapshot, batches, &chains, &resolved)?;
@@ -471,7 +538,41 @@ pub(crate) struct PackedValue {
     pub body: Vec<u8>,
 }
 impl Resolver {
-    fn value(
+    fn identity(&self, key: Key, existing: Option<i64>) -> Result<Arc<Reservation>> {
+        let mut active = self.active.lock().expect("resolver lock");
+        if let Some((pk, prior)) = active.values.get_mut(&key) {
+            if existing.is_some_and(|existing| existing != *pk) {
+                return Err(StoreError::Invalid(
+                    "a shared hash has conflicting row identities".into(),
+                ));
+            }
+            return Ok(match prior.upgrade() {
+                Some(prior) => prior,
+                None => {
+                    let reservation = Arc::new(Reservation { pk: *pk });
+                    *prior = Arc::downgrade(&reservation);
+                    reservation
+                }
+            });
+        }
+        let pk = match existing {
+            Some(pk) => pk,
+            None => {
+                let next = active.next.get_mut(&key.kind).expect("identity allocator");
+                let pk = *next;
+                *next = next
+                    .checked_add(1)
+                    .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?;
+                pk
+            }
+        };
+        let reservation = Arc::new(Reservation { pk });
+        active
+            .values
+            .insert(key, (pk, Arc::downgrade(&reservation)));
+        Ok(reservation)
+    }
+    pub(super) fn value(
         &self,
         index: &Connection,
         kind: Kind,
@@ -488,24 +589,7 @@ impl Resolver {
                 |r| r.get::<_, i64>(0),
             )
             .optional()?;
-        let key = if let Some(pk) = pk {
-            Arc::new(Reservation { pk })
-        } else {
-            let mut active = self.active.lock().expect("resolver lock");
-            let key = Key::new(kind, hash.as_slice());
-            if let Some(prior) = active.values.get(&key).and_then(std::sync::Weak::upgrade) {
-                prior
-            } else {
-                let next = active.next.get_mut(&kind).expect("value allocator");
-                let pk = *next;
-                *next = next
-                    .checked_add(1)
-                    .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?;
-                let reservation = Arc::new(Reservation { pk });
-                active.values.insert(key, Arc::downgrade(&reservation));
-                reservation
-            }
-        };
+        let key = self.identity(Key::new(kind, hash.as_slice()), pk)?;
         Ok(PackedValue { key, hash, body })
     }
 }
@@ -525,4 +609,36 @@ mod reservation {
             pk: serde::Deserialize::deserialize(deserializer)?,
         }))
     }
+}
+
+#[cfg(test)]
+pub(super) fn prepare_index(
+    index: &Connection,
+    batch: &mut Batch,
+    chain: i64,
+    first: bool,
+) -> Result<()> {
+    let first = first
+        .then(|| crate::first_build::FirstBuild::load(index).map(Arc::new))
+        .transpose()?;
+    let resolver = Resolver::new(
+        &Archive::at(std::path::Path::new("unused-test-location")),
+        index,
+        first,
+    )?;
+    let change = std::mem::replace(&mut batch.change, Change::Reparse { chain });
+    let (keys, chains) = resolver.gather(&mut [batch], index, index)?;
+    batch.change = change;
+    let mut resolved = ResolvedKeys::default();
+    for key in keys {
+        let row = resolver.resolve_key(index, &key)?;
+        resolved.rows.insert(key, row);
+    }
+    versions::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;
+    let keys = Arc::new(resolved);
+    for step in &mut batch.parse {
+        step.prepared.keys = Some(Arc::clone(&keys));
+        step.prepared.chain = Some(chain);
+    }
+    Ok(())
 }

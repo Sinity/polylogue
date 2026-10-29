@@ -66,7 +66,10 @@ impl Rows {
             }
             std::collections::hash_map::Entry::Occupied(slot) if *slot.get() == pk => {}
             std::collections::hash_map::Entry::Occupied(_) => {
-                self.more.entry(hash).or_default().push(pk);
+                let more = self.more.entry(hash).or_default();
+                if !more.contains(&pk) {
+                    more.push(pk);
+                }
             }
         }
     }

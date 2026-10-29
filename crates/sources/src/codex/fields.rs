@@ -201,3 +201,61 @@ static AGENT_MESSAGE: Fields = Fields::new(&[
 );
 
 static TYPE_ONLY: Fields = Fields::new(&[("type", Read(T::String))]);
+
+pub static ITEM_COMPLETED: Fields = Fields::new(&[
+    ("type", Read(T::String)),
+    ("item.type", Read(T::String)),
+    ("item.id", Read(T::String)),
+    ("item.status", Read(T::String)),
+    ("item.exit_code", Read(T::Number)),
+    ("item.duration", Read(T::NumberOrObject)),
+    ("item.duration.secs", Read(T::Number)),
+    ("item.duration.nanos", Read(T::Number)),
+    ("item.durationMs", Read(T::Number)),
+    ("item.command", Read(T::StringOrArray)),
+    ("item.command[]", Read(T::String)),
+    ("item.cwd", Read(T::String)),
+    ("item.parsed_cmd", Kept("complete recovered command input")),
+    ("item.aggregated_output", Read(T::String)),
+    ("item.formatted_output", Read(T::String)),
+    ("item.stdout", Read(T::String)),
+    ("item.changes", Kept("complete recovered edit input")),
+    ("item.path", Read(T::String)),
+    ("item.server", Read(T::String)),
+    ("item.tool", Read(T::String)),
+    ("item.arguments", Kept("complete recovered MCP input")),
+    ("item.input", Kept("complete recovered MCP input")),
+    (
+        "item.result",
+        Kept("complete structured recovered tool result"),
+    ),
+    ("item.error", Kept("complete recovered tool error")),
+    ("item.query", Read(T::String)),
+    ("item.action", Kept("complete recovered web input")),
+])
+.shape(
+    &["item.changes"],
+    &[crate::fields::KnownKinds {
+        path: "item.type",
+        values: &[
+            "AgentMessage",
+            "UserMessage",
+            "Reasoning",
+            "ContextCompaction",
+            "CommandExecution",
+            "FileChange",
+            "McpToolCall",
+            "WebSearch",
+            "ImageView",
+            "SubAgentActivity",
+        ],
+    }],
+);
+
+pub static USER_MESSAGE: Fields = Fields::new(&[
+    ("type", Read(T::String)),
+    ("client_id", Read(T::String)),
+    ("message", Read(T::String)),
+    ("images", Read(T::Array)),
+    ("images[]", Read(T::String)),
+]);

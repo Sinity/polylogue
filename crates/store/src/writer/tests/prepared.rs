@@ -15,7 +15,7 @@ fn session_kind_reads(supplied: bool) -> u64 {
     let tx = conn.transaction().unwrap();
     let mut seed = batch("input1", 0, 0, vec![], &["main", "child"]);
     seed.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
-    write_rows(&tx, &seed, &seed.parse[0], 1, 1, Some(&first_build)).unwrap();
+    write_test_rows(&tx, &seed, &seed.parse[0], 1, 1, Some(&first_build)).unwrap();
     tx.execute(
         "UPDATE session SET kind='subagent' WHERE id=?1",
         [sid("child").to_string()],
@@ -61,7 +61,7 @@ fn session_kind_reads(supplied: bool) -> u64 {
     if supplied {
         b.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
     }
-    write_rows(&tx, &b, &b.parse[0], 1, 2, Some(&first_build)).unwrap();
+    write_test_rows(&tx, &b, &b.parse[0], 1, 2, Some(&first_build)).unwrap();
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     observed.load(Ordering::Relaxed)
@@ -114,7 +114,7 @@ fn new_messages_do_not_read_a_previous_source() {
     let mut b = batch("input1", 0, 100, rows, &["main"]);
     b.parse[0].at_end = false;
     assert_eq!(
-        write_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
+        write_test_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
         messages
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

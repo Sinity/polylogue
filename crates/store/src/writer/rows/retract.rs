@@ -31,23 +31,7 @@ impl RowWriter<'_, '_> {
             "DELETE FROM repo_lookup WHERE input_pk=?1 AND chain=?2",
             params![self.input_pk, self.chain],
         )?;
-        if self.choices.is_some() {
-            return Ok(());
-        }
-        for (kind, rows) in touched {
-            for pk in rows {
-                match kind {
-                    VersionKind::Message => {
-                        self.refresh_message(pk)?;
-                    }
-                    VersionKind::Document => {
-                        crate::documents::refresh(self.tx, pk, self.counter, self.first_build)?
-                    }
-                    VersionKind::Event => self.refresh_event(pk)?,
-                    VersionKind::Link => self.refresh_link(pk)?,
-                }
-            }
-        }
+
         Ok(())
     }
 }
@@ -75,37 +59,5 @@ pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> R
         crate::session_row::remove_with_references(tx, pk, &id, |_| Ok(()))?;
     }
     tx.execute("DELETE FROM temp.reparse_session WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2", params![input,chain])?;
-    Ok(())
-}
-
-/// Remove an input's statements before excision removes its remaining index rows.
-pub(crate) fn retract_input(
-    tx: &Transaction<'_>,
-    input_pk: i64,
-    input_id: &str,
-    counter: i64,
-) -> Result<()> {
-    let chains = tx
-        .prepare("SELECT chain FROM parse_state WHERE input_pk=?1 ORDER BY chain")?
-        .query_map([input_pk], |r| r.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let packed = HashMap::new();
-    for chain in chains {
-        RowWriter {
-            tx,
-            input_pk,
-            input_id,
-            chain,
-            repeats_whole_conversations: false,
-            rank: 0,
-            counter,
-            packed: &packed,
-            first_build: None,
-            keys: None,
-            choices: None,
-        }
-        .retract()?;
-        prune_sessions(tx, input_id, chain)?;
-    }
     Ok(())
 }

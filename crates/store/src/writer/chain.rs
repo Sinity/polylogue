@@ -76,7 +76,7 @@ impl ChainReading {
             let index = crate::archive::open_read(&resolver.location().index_db())?;
             let snapshot = index.unchecked_transaction()?;
             let archive = crate::archive::open_read(&resolver.location().archive_db())?;
-            let (fresh, history) =
+            let (fresh, mut history) =
                 self.gather(resolver, input, chain, length, &snapshot, &archive)?;
             if keys != fresh {
                 drop(snapshot);
@@ -85,28 +85,19 @@ impl ChainReading {
             }
             let mut resolved = resolve::ResolvedKeys::default();
             for key in keys {
-                let existing = resolver.find(&snapshot, &key)?;
-                let row = resolve::RowKey {
-                    pk: match existing {
-                        Some(pk) => pk,
-                        None => resolver.allocate(key.kind)?,
-                    },
-                    existing: existing.is_some(),
-                };
+                let row = resolver.resolve_key(&snapshot, &key)?;
                 resolved.rows.insert(key, row);
             }
             let keys = Arc::new(resolved);
+            let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
+            history.resolved = Some(path.to_path_buf());
             let mut projection =
                 resolve::versions::Projection::new(resolver, &snapshot, &keys, Some(&history))?;
-            let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
             let mut output = BufWriter::new(file);
             let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
             let mut values = Vec::new();
             while let Some(mut step) = read_step(&mut reader)? {
-                let pending:HashMap<_,_>=self.decoded.iter().flat_map(|item|item.batch.new_blob.iter().chain(&item.batch.blobs)).map(|blob|(blob.hash,blob.size)).collect();
-                let mut batch=Batch {input:input.clone(),change:Change::Reparse{chain},observation:None,continues:false,new_blob:None,blobs:Vec::new(),length,parse:vec![step],release:InFlight::default()};
-                attachments::normalize(&mut batch,&archive,&pending)?;
-                step=batch.parse.pop().expect("one chain step");
+                attachments::normalize_known(&mut step, &history.available)?;
                 projection.step(input, chain, &mut step)?;
                 if let Some(choices) = &step.prepared.choices {
                     values.extend(
@@ -117,7 +108,10 @@ impl ChainReading {
                             .map(|value| Arc::clone(&value.key)),
                     );
                 }
+                let offset = output.stream_position()?;
                 write_step(&mut output, &step)?;
+                output.flush()?;
+                history.record(&step, offset);
             }
             drop(output.into_inner().map_err(|error| error.into_error())?);
             drop(projection);
@@ -146,13 +140,25 @@ impl ChainReading {
             path: self.path.to_path_buf(),
             messages: BTreeMap::new(),
             documents: BTreeMap::new(),
+            resolved: None,
+            assertions: std::cell::RefCell::new(BTreeMap::new()),
+            sessions: std::cell::RefCell::new(BTreeMap::new()),
+            available: HashMap::new(),
         };
         let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
         loop {
             let offset = reader.stream_position()?;
-            let Some(step) = read_step(&mut reader)? else {
+            let Some(mut step) = read_step(&mut reader)? else {
                 break;
             };
+            let pending: HashMap<_, _> = self
+                .decoded
+                .iter()
+                .flat_map(|item| item.batch.new_blob.iter().chain(&item.batch.blobs))
+                .map(|blob| (blob.hash, blob.size))
+                .collect();
+            attachments::remember(&step, archive, &pending, &mut history.available)?;
+            attachments::normalize_known(&mut step, &history.available)?;
             for prepared in &step.prepared.messages {
                 history.messages.insert(prepared.hash.to_vec(), offset);
             }
@@ -242,16 +248,78 @@ struct History {
     path: std::path::PathBuf,
     messages: BTreeMap<Vec<u8>, u64>,
     documents: BTreeMap<Vec<u8>, u64>,
+    resolved: Option<std::path::PathBuf>,
+    assertions: std::cell::RefCell<BTreeMap<(resolve::Kind, i64), u64>>,
+    sessions: std::cell::RefCell<BTreeMap<i64, u64>>,
+    available: HashMap<BlobHash, Option<u64>>,
 }
 impl History {
+    fn record(&self, step: &ParseStep, offset: u64) {
+        if let Some(choices) = &step.prepared.choices {
+            for pk in choices.sessions.keys() {
+                self.sessions.borrow_mut().insert(*pk, offset);
+            }
+            let mut assertions = self.assertions.borrow_mut();
+            for value in &choices.event_values {
+                assertions.insert((resolve::Kind::EventValue, value.key.pk), offset);
+            }
+            for value in &choices.link_values {
+                assertions.insert((resolve::Kind::LinkValue, value.key.pk), offset);
+            }
+        }
+    }
+
     fn step(&self, offset: u64) -> Result<ParseStep> {
         let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
         reader.seek(SeekFrom::Start(offset))?;
-        read_step(&mut reader)?
-            .ok_or_else(|| StoreError::Invalid("a version offset has no chain step".into()))
+        let mut step = read_step(&mut reader)?
+            .ok_or_else(|| StoreError::Invalid("a version offset has no chain step".into()))?;
+        attachments::normalize_known(&mut step, &self.available)?;
+        Ok(step)
     }
 }
 impl resolve::versions::ValueSource for History {
+    fn session(&self, pk: i64) -> Result<Option<Session>> {
+        let Some(offset) = self.sessions.borrow().get(&pk).copied() else {
+            return Ok(None);
+        };
+        let mut reader = BufReader::new(std::fs::File::open(
+            self.resolved.as_ref().expect("resolved chain scratch"),
+        )?);
+        reader.seek(SeekFrom::Start(offset))?;
+        let step = read_step(&mut reader)?
+            .ok_or_else(|| StoreError::Invalid("a session offset has no chain step".into()))?;
+        Ok(step
+            .prepared
+            .choices
+            .and_then(|mut choices| choices.sessions.remove(&pk)))
+    }
+
+    fn assertion(&self, kind: resolve::Kind, pk: i64) -> Result<Option<Vec<u8>>> {
+        let Some(offset) = self.assertions.borrow().get(&(kind, pk)).copied() else {
+            return Ok(None);
+        };
+        let mut reader = BufReader::new(std::fs::File::open(
+            self.resolved.as_ref().expect("resolved chain scratch"),
+        )?);
+        reader.seek(SeekFrom::Start(offset))?;
+        let step = read_step(&mut reader)?
+            .ok_or_else(|| StoreError::Invalid("a value offset has no chain step".into()))?;
+        let choices = step
+            .prepared
+            .choices
+            .ok_or_else(|| StoreError::Invalid("a value offset has no prepared choices".into()))?;
+        let values = if kind == resolve::Kind::EventValue {
+            choices.event_values
+        } else {
+            choices.link_values
+        };
+        Ok(values
+            .into_iter()
+            .find(|value| value.key.pk == pk)
+            .map(|value| value.body))
+    }
+
     fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>> {
         let Some(offset) = self.messages.get(hash) else {
             return Ok(None);

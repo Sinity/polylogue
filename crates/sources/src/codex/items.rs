@@ -507,11 +507,16 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
         "McpToolCall" => {
             let server = str_field(item, "server").unwrap_or("mcp");
             let tool = str_field(item, "tool").unwrap_or("?");
-            let output = item
+            let result = item
                 .get("result")
                 .filter(|r| !r.is_null())
-                .or_else(|| item.get("error"))
-                .map(|r| output_parts(r, blobs).0);
+                .or_else(|| item.get("error"));
+            let (output, attachments) = result
+                .map(|raw| {
+                    let (text, attachments) = output_parts(raw, blobs);
+                    (Some(text), attachments)
+                })
+                .unwrap_or_default();
             let input = call_input(item);
             let name = format!("mcp__{server}__{tool}");
             return Some(vec![
@@ -524,7 +529,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
                     command: None,
                     path: None,
                 },
-                result_block(&id, item, output, Vec::new()),
+                result_block(&id, item, output, attachments),
             ]);
         }
         "WebSearch" => {
@@ -571,7 +576,11 @@ fn result_block(
         call_id: Some(id.to_owned()),
         outcome,
         output,
-        data: None,
+        data: item
+            .get("result")
+            .filter(|value| !value.is_null())
+            .or_else(|| item.get("error"))
+            .cloned(),
         attachments,
     }
 }

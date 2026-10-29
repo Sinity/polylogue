@@ -14,8 +14,9 @@ pub(crate) struct MessageChoice {
     pub hash: Vec<u8>,
     pub session: i64,
     pub order: (i64, (i64, i64)),
-    pub message: Message,
-    pub prepared: PreparedMessage,
+    pub changed: bool,
+    pub message: Option<Message>,
+    pub prepared: Option<PreparedMessage>,
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DocumentChoice {
@@ -24,8 +25,10 @@ pub(crate) struct DocumentChoice {
     pub start: i64,
     pub end: i64,
     pub rank: i64,
-    pub document: polylogue_model::Document,
-    pub prepared: PreparedDocument,
+    pub changed: bool,
+    pub hash: Vec<u8>,
+    pub document: Option<polylogue_model::Document>,
+    pub prepared: Option<PreparedDocument>,
 }
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Choices {
@@ -97,6 +100,8 @@ impl Source {
 }
 
 pub(in crate::writer) trait ValueSource {
+    fn session(&self, pk: i64) -> Result<Option<Session>>;
+    fn assertion(&self, kind: Kind, pk: i64) -> Result<Option<Vec<u8>>>;
     fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>>;
     fn document(
         &self,
@@ -109,6 +114,8 @@ pub(in crate::writer) struct Projection<'a> {
     index: &'a Connection,
     keys: &'a ResolvedKeys,
     messages: BTreeMap<i64, Vec<Source>>,
+    shown_messages: BTreeMap<i64, Option<(Vec<u8>, i64)>>,
+    shown_documents: BTreeMap<i64, Option<Vec<u8>>>,
     documents: BTreeMap<i64, Vec<Source>>,
     message_values: BTreeMap<Vec<u8>, (Message, PreparedMessage)>,
     document_values: BTreeMap<Vec<u8>, (polylogue_model::Document, PreparedDocument)>,
@@ -125,20 +132,44 @@ impl<'a> Projection<'a> {
         values: Option<&'a dyn ValueSource>,
     ) -> Result<Self> {
         let mut messages = BTreeMap::<i64, Vec<Source>>::new();
+        let mut shown_messages = BTreeMap::new();
+        let mut shown_documents = BTreeMap::new();
         let mut documents = BTreeMap::<i64, Vec<Source>>::new();
-        let mut message_values = BTreeMap::<Vec<u8>, (Message, PreparedMessage)>::new();
-        let mut document_values =
+        let message_values = BTreeMap::<Vec<u8>, (Message, PreparedMessage)>::new();
+        let document_values =
             BTreeMap::<Vec<u8>, (polylogue_model::Document, PreparedDocument)>::new();
         for (key, row) in &keys.rows {
             if !matches!(key.kind, Kind::Message | Kind::Document) {
                 continue;
             }
             let message = key.kind == Kind::Message;
+            if !row.existing {
+                if message {
+                    messages.insert(row.pk, Vec::new());
+                } else {
+                    documents.insert(row.pk, Vec::new());
+                }
+                continue;
+            }
             let sql = if message {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,NULL FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE message_pk=?1"
             } else {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.source_time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
             };
+            if message {
+                shown_messages.insert(row.pk,index.query_row("SELECT s.version_hash,m.session_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.shown=1",[row.pk],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,i64>(1)?))).optional()?);
+            } else {
+                shown_documents.insert(
+                    row.pk,
+                    index
+                        .query_row(
+                            "SELECT version_hash FROM document WHERE pk=?1",
+                            [row.pk],
+                            |r| r.get::<_, Vec<u8>>(0),
+                        )
+                        .optional()?,
+                );
+            }
             let values = index
                 .prepare(sql)?
                 .query_map([row.pk], |r| {
@@ -165,12 +196,14 @@ impl<'a> Projection<'a> {
                 documents.insert(row.pk, values);
             }
         }
-        let mut assertions = Assertions::load(index, keys)?;
+        let assertions = Assertions::load(index, keys)?;
         Ok(Self {
             resolver,
             index,
             keys,
             messages,
+            shown_messages,
+            shown_documents,
             documents,
             message_values,
             document_values,
@@ -191,6 +224,8 @@ impl<'a> Projection<'a> {
             index,
             keys,
             messages,
+            shown_messages,
+            shown_documents,
             documents,
             message_values,
             document_values,
@@ -231,6 +266,15 @@ impl<'a> Projection<'a> {
                 .get(Kind::Session, session.id.to_string().as_bytes())?
                 .pk;
             let key = (pk, input, chain);
+            if !session_facts.contains_key(&key) {
+                if let Some(session) = values
+                    .map(|values| values.session(pk))
+                    .transpose()?
+                    .flatten()
+                {
+                    session_facts.insert(key, session);
+                }
+            }
             if !session_facts.contains_key(&key) && !reset_inputs.contains(&(input, chain)) {
                 let body:Option<String>=index.query_row("SELECT facts FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain],|r|r.get(0)).optional()?;
                 if let Some(body) = body {
@@ -282,6 +326,15 @@ impl<'a> Projection<'a> {
             if !keep {
                 choices.message_mains.push(false);
                 continue;
+            }
+            if !session_facts.contains_key(&(session, input, chain)) {
+                if let Some(facts) = values
+                    .map(|values| values.session(session))
+                    .transpose()?
+                    .flatten()
+                {
+                    session_facts.insert((session, input, chain), facts);
+                }
             }
             let main=match session_facts.get(&(session,input,chain)) {
                     Some(facts)=>facts.kind==polylogue_model::SessionKind::Main,
@@ -394,7 +447,9 @@ impl<'a> Projection<'a> {
                     .iter()
                     .min_by_key(|s| (&s.id, s.seq, s.position))
                     .expect("winner has order");
-                if !message_values.contains_key(&source.hash) {
+                let changed = shown_messages.get(&pk).and_then(Option::as_ref)
+                    != Some(&(source.hash.clone(), source.session));
+                if changed && !message_values.contains_key(&source.hash) {
                     let prior = match values {
                         Some(values) => values.message(&source.hash)?,
                         None => None,
@@ -413,7 +468,13 @@ impl<'a> Projection<'a> {
                     };
                     message_values.insert(source.hash.clone(), (message, prepared));
                 }
-                let (message, prepared) = message_values[&source.hash].clone();
+                let (message, prepared) = if changed {
+                    let (message, prepared) = message_values[&source.hash].clone();
+                    (Some(message), Some(prepared))
+                } else {
+                    (None, None)
+                };
+                shown_messages.insert(pk, Some((source.hash.clone(), source.session)));
                 Some(MessageChoice {
                     input: source.input,
                     chain: source.chain,
@@ -424,12 +485,16 @@ impl<'a> Projection<'a> {
                     hash: source.hash.clone(),
                     session: source.session,
                     order: (order.input, (order.seq, order.position)),
+                    changed,
                     message,
                     prepared,
                 })
             } else {
                 None
             };
+            if choice.is_none() {
+                shown_messages.insert(pk, None);
+            }
             choices.messages.insert(pk, choice);
         }
         for (&pk, sources) in documents
@@ -440,7 +505,9 @@ impl<'a> Projection<'a> {
                 .iter()
                 .min_by(|a, b| a.document_order().cmp(&b.document_order()))
             {
-                if !document_values.contains_key(&source.hash) {
+                let changed =
+                    shown_documents.get(&pk).and_then(Option::as_ref) != Some(&source.hash);
+                if changed && !document_values.contains_key(&source.hash) {
                     let prior = match values {
                         Some(values) => values.document(&source.hash)?,
                         None => None,
@@ -459,26 +526,47 @@ impl<'a> Projection<'a> {
                     };
                     document_values.insert(source.hash.clone(), (document, prepared));
                 }
-                let (document, prepared) = document_values[&source.hash].clone();
+                let (document, prepared) = if changed {
+                    let (document, prepared) = document_values[&source.hash].clone();
+                    (Some(document), Some(prepared))
+                } else {
+                    (None, None)
+                };
+                shown_documents.insert(pk, Some(source.hash.clone()));
                 Some(DocumentChoice {
                     input: source.input,
                     chain: source.chain,
                     start: source.start,
                     end: source.end,
                     rank: source.rank,
+                    changed,
+                    hash: source.hash.clone(),
                     document,
                     prepared,
                 })
             } else {
                 None
             };
+            if choice.is_none() {
+                shown_documents.insert(pk, None);
+            }
             choices.documents.insert(pk, choice);
         }
-        assertions.step(resolver, index, keys, &input_key, chain, step, &mut choices)?;
+        assertions.step(
+            resolver,
+            index,
+            keys,
+            &input_key,
+            chain,
+            step,
+            &mut choices,
+            values.as_deref(),
+        )?;
         step.prepared.choices = Some(choices);
         if values.is_some() {
             message_values.clear();
             document_values.clear();
+            session_facts.clear();
         }
         Ok(())
     }
@@ -525,6 +613,7 @@ struct Assertion {
     id: String,
     chain: i64,
     rank: i64,
+    value_pk: i64,
     body: Vec<u8>,
     event: Option<EventChoice>,
 }
@@ -540,13 +629,16 @@ impl Assertions {
             links: BTreeMap::new(),
         };
         for (key, row) in &keys.rows {
+            if !row.existing {
+                continue;
+            }
             match key.kind {
                 Kind::Event => {
-                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,body:body.clone(),event:Some(EventChoice {value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:body.clone(),event:Some(EventChoice {value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
                     assertions.events.insert(row.pk, values);
                 }
                 Kind::Link => {
-                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,v.body FROM link_source s JOIN input_ref i ON i.pk=s.input_pk JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1")?.query_map([row.pk],|r|Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,body:r.get(4)?,event:None}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk FROM link_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.link_pk=?1")?.query_map([row.pk],|r|Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:Vec::new(),event:None}))?.collect::<rusqlite::Result<Vec<_>>>()?;
                     assertions.links.insert(row.pk, values);
                 }
                 _ => {}
@@ -563,6 +655,7 @@ impl Assertions {
         chain: i64,
         step: &ParseStep,
         choices: &mut Choices,
+        values: Option<&dyn ValueSource>,
     ) -> Result<()> {
         let input_pk = keys.get(Kind::Input, input.id.as_bytes())?.pk;
         let rank = i64::from(input.arrival_rank);
@@ -644,6 +737,7 @@ impl Assertions {
                 id: input.id.clone(),
                 chain,
                 rank,
+                value_pk: value.key.pk,
                 body: value.body.clone(),
                 event: Some(choice),
             });
@@ -662,7 +756,11 @@ impl Assertions {
                 .iter()
                 .find(|s| s.input == input_pk && s.chain == chain)
             {
-                let previous: Link = crate::encoding::unpack_json(&previous.body)?;
+                let previous: Link = crate::encoding::unpack_json(&previous.body(
+                    index,
+                    Kind::LinkValue,
+                    values,
+                )?)?;
                 merged.at = merged.at.into_iter().chain(previous.at).min();
                 merged.call_id = merged.call_id.into_iter().chain(previous.call_id).min();
                 merged.evidence = merged.evidence.min(previous.evidence);
@@ -674,6 +772,7 @@ impl Assertions {
                 id: input.id.clone(),
                 chain,
                 rank,
+                value_pk: value.key.pk,
                 body: value.body.clone(),
                 event: None,
             });
@@ -690,11 +789,10 @@ impl Assertions {
             let mut choice = winner.and_then(|s| s.event.clone());
             if let Some(choice) = &mut choice {
                 if choice.body.is_empty() {
-                    choice.body = index.query_row(
-                        "SELECT body FROM event_value WHERE pk=?1",
-                        [choice.value_pk],
-                        |r| r.get(0),
-                    )?;
+                    choice.body =
+                        winner
+                            .expect("event winner")
+                            .body(index, Kind::EventValue, values)?;
                 }
             }
             choices.events.insert(pk, choice);
@@ -708,9 +806,14 @@ impl Assertions {
                 .iter()
                 .min_by_key(|s| (s.rank, &s.id, std::cmp::Reverse(s.chain)))
             {
-                let mut link: Link = crate::encoding::unpack_json(&winner.body)?;
+                let mut link: Link =
+                    crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?;
                 for source in sources {
-                    let other: Link = crate::encoding::unpack_json(&source.body)?;
+                    let other: Link = crate::encoding::unpack_json(&source.body(
+                        index,
+                        Kind::LinkValue,
+                        values,
+                    )?)?;
                     link.at = link.at.into_iter().chain(other.at).min();
                     link.call_id = link.call_id.into_iter().chain(other.call_id).min();
                 }
@@ -724,6 +827,44 @@ impl Assertions {
             };
             choices.links.insert(pk, choice);
         }
+        if values.is_some() {
+            for source in self
+                .events
+                .values_mut()
+                .chain(self.links.values_mut())
+                .flatten()
+            {
+                source.body.clear();
+                if let Some(event) = &mut source.event {
+                    event.body.clear();
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+impl Assertion {
+    fn body(
+        &self,
+        index: &Connection,
+        kind: Kind,
+        values: Option<&dyn ValueSource>,
+    ) -> Result<Vec<u8>> {
+        if !self.body.is_empty() {
+            return Ok(self.body.clone());
+        }
+        if let Some(body) = values
+            .map(|values| values.assertion(kind, self.value_pk))
+            .transpose()?
+            .flatten()
+        {
+            return Ok(body);
+        }
+        Ok(index.query_row(
+            &format!("SELECT body FROM {} WHERE pk=?1", kind.table()),
+            [self.value_pk],
+            |r| r.get(0),
+        )?)
     }
 }
