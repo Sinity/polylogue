@@ -344,8 +344,10 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             deadline: command_surface::Deadline::None,
         })
         .unwrap();
-    let mut session = Session::default();
-    session.initialized = true;
+    let mut session = Session {
+        initialized: true,
+        ..Default::default()
+    };
     let reply = session
         .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":ready.mcp}))
         .answer(&daemon.daemon.archive)

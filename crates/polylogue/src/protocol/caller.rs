@@ -342,8 +342,7 @@ fn unit(cgroup: &str) -> Option<String> {
         .lines()
         .filter_map(|line| line.splitn(3, ':').nth(2))
         .flat_map(|path| path.split('/'))
-        .filter(|part| part.ends_with(".service") || part.ends_with(".scope"))
-        .next_back()
+        .rfind(|part| part.ends_with(".service") || part.ends_with(".scope"))
         .map(str::to_owned)
 }
 

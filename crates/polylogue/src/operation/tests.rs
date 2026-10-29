@@ -81,8 +81,14 @@ fn public_context_evidence_and_debug_never_expose_the_owner_bearer_token() {
         received_seconds_ago: 1.0,
     };
     let context = Context::primary(invocation, policy).unwrap();
-    assert_eq!(context.attention().unwrap().budget.remaining, 5);
-    assert_eq!(context.owner_token(), Some("synthetic-private-owner-token"));
+    assert_eq!(context.provenance().machine, "synthetic-machine");
+    assert!(matches!(
+        context.provenance().owner,
+        Owner::Primary {
+            owner_revision: 17,
+            ..
+        }
+    ));
     let output = serde_json::to_string(&context.provenance()).unwrap();
     let debug = format!("{context:?}");
     let schema = schemars::schema_for!(Provenance).to_value().to_string();

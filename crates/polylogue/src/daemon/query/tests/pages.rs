@@ -532,7 +532,9 @@ fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
     let cursor = first["next"].as_str().unwrap();
     let bytes: Vec<u8> = cursor
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     let encoded = String::from_utf8_lossy(&bytes);

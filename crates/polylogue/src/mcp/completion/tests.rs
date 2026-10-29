@@ -4,8 +4,10 @@ use super::*;
 fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     let daemon = crate::test_daemon::start("MCP query completion");
     let archive = &daemon.daemon.archive;
-    let mut session = Session::default();
-    session.initialized = true;
+    let mut session = Session {
+        initialized: true,
+        ..Default::default()
+    };
     let reply = session
         .prepare(json!({
             "jsonrpc":"2.0","id":1,"method":"completion/complete",
@@ -47,8 +49,10 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
 #[test]
 fn completion_route_rejects_a_cursor_inside_a_utf8_character() {
     let daemon = crate::test_daemon::start("MCP completion boundary");
-    let mut session = Session::default();
-    session.initialized = true;
+    let mut session = Session {
+        initialized: true,
+        ..Default::default()
+    };
     let reply = session
         .prepare(json!({
             "jsonrpc":"2.0","id":2,"method":"completion/complete",

@@ -361,7 +361,7 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         drop(foreground);
         assert_eq!(
             finished.recv_timeout(Duration::from_secs(2)).unwrap(),
-            ([b'b'], 2)
+            (*b"b", 2)
         );
     });
 }

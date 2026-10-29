@@ -572,6 +572,7 @@ pub(crate) fn select_usage(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn usage_selection(
     reader: &Reader<'_>,
     text: &str,

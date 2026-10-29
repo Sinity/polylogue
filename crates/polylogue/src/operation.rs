@@ -35,6 +35,7 @@ impl std::fmt::Debug for Invocation {
     }
 }
 impl Invocation {
+    #[cfg(test)]
     pub fn new(at: Timestamp, machine: String, authorship: Authorship) -> Self {
         Self {
             at,
@@ -85,8 +86,6 @@ pub struct Context {
     pub authorship: Authorship,
     owner: Owner,
     accepted_request: Option<Arc<command_surface::RunnableRequest>>,
-    #[cfg(feature = "sinex")]
-    policy: Option<Arc<polylogue_sinex::ResolvedContext>>,
 }
 impl std::fmt::Debug for Context {
     fn fmt(&self, format: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -95,11 +94,6 @@ impl std::fmt::Debug for Context {
             .field("provenance", &self.provenance())
             .finish()
     }
-}
-#[cfg(feature = "sinex")]
-pub struct Attention<'a> {
-    pub quiet_hours: Option<shared_signals::QuietHours>,
-    pub budget: &'a polylogue_sinex::PublicInterruptBudget,
 }
 impl Context {
     pub fn standalone(invocation: Invocation, day: DaySetting) -> Self {
@@ -110,8 +104,6 @@ impl Context {
             authorship: invocation.authorship,
             owner: Owner::Standalone,
             accepted_request: invocation.accepted_request,
-            #[cfg(feature = "sinex")]
-            policy: None,
         }
     }
     #[cfg(feature = "sinex")]
@@ -139,7 +131,6 @@ impl Context {
             authorship: invocation.authorship,
             owner,
             accepted_request: invocation.accepted_request,
-            policy: Some(Arc::new(policy)),
         })
     }
     pub fn invocation(&self) -> Invocation {
@@ -197,19 +188,6 @@ impl Context {
         let mut replay = self.clone();
         replay.clock = clock;
         Ok(replay)
-    }
-    #[cfg(feature = "sinex")]
-    pub fn attention(&self) -> Option<Attention<'_>> {
-        self.policy.as_ref().map(|policy| Attention {
-            quiet_hours: policy.quiet_hours,
-            budget: &policy.interrupt_budget,
-        })
-    }
-    #[cfg(feature = "sinex")]
-    pub(crate) fn owner_token(&self) -> Option<&str> {
-        self.policy
-            .as_ref()
-            .map(|policy| policy.context_token.as_str())
     }
     pub fn worker_authorship(program: &str) -> Authorship {
         Authorship {

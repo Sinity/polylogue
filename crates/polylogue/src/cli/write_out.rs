@@ -158,7 +158,7 @@ enum Sink {
     Directory(Box<bundle::Bundle>),
     Encoded {
         begin: Box<ReadBegin>,
-        items: ExportItems,
+        items: Box<ExportItems>,
         received: Counts,
         ordinal: u64,
     },
@@ -205,7 +205,7 @@ fn consume(
                 } else {
                     Sink::Encoded {
                         begin: Box::new(begin),
-                        items: ExportItems::new().map_err(invalid)?,
+                        items: Box::new(ExportItems::new().map_err(invalid)?),
                         received: Counts::default(),
                         ordinal: 0,
                     }
