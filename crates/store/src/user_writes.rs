@@ -249,16 +249,7 @@ pub(crate) fn apply_using(
             by,
             detail,
         } => {
-            crate::chat_actions::decide(
-                tx,
-                action,
-                *approve,
-                by,
-                detail.as_deref(),
-                at,
-                seq,
-                &r.id,
-            )?;
+            crate::chat_actions::decide(tx, action, *approve, by, detail.as_deref(), seq, r)?;
             Ok(UserOutcome {
                 pending: false,
                 id: action.clone(),

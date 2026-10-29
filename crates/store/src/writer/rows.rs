@@ -116,13 +116,36 @@ fn apply_rows(
         chain,
         rank: i64::from(b.input.arrival_rank),
         counter,
-        packed: &p.prepared.texts,
         first_build,
         keys,
         choices,
     };
     if p.reset {
         rows.retract()?;
+    }
+    let native_admission = if confirmed {
+        None
+    } else {
+        receipt
+            .map(|receipt| {
+                u64::try_from(receipt.sequence)
+                    .map_err(|_| StoreError::Invalid("negative source admission".into()))
+            })
+            .transpose()?
+    };
+    for version in choices.message_versions.values() {
+        crate::versions::store_message(
+            tx,
+            &version.message,
+            &version.prepared,
+            crate::versions::TextRows {
+                packed: &p.prepared.texts,
+                first_build,
+                keys,
+            },
+            version.replace,
+            version.admitted.or(native_admission),
+        )?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
@@ -348,7 +371,6 @@ pub(super) struct RowWriter<'a, 't> {
     chain: i64,
     rank: i64,
     counter: i64,
-    packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`Writer::start`]): search entries,
     /// trigram entries and secondary indexes are built once, in bulk, when
     /// it ends ([`Inner::build_deferred`]), and rows are found by natural
@@ -478,19 +500,6 @@ impl RowWriter<'_, '_> {
         let id = m.id.to_string();
         let pk = self.message_pk(&id)?;
         let new = pk.is_none();
-        crate::versions::store(
-            self.tx,
-            VersionKind::Message,
-            &prepared.hash,
-            &prepared.body,
-            &m.blocks,
-            &prepared.texts,
-            crate::versions::TextRows {
-                packed: self.packed,
-                first_build: self.first_build,
-                keys: self.keys,
-            },
-        )?;
         let v = Version {
             time: prepared.time.clone(),
             input_pk: self.input_pk,
@@ -833,6 +842,7 @@ impl RowWriter<'_, '_> {
                 "prepared message differs from its parsed blocks".into(),
             ));
         }
+        prepared.projection.validate(m.blocks.len())?;
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()
@@ -849,7 +859,14 @@ impl RowWriter<'_, '_> {
                 data: data.as_deref(),
                 text_id,
             };
-            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
+            self.insert_block(
+                message_pk,
+                session_pk,
+                (idx as i64, prepared.projection.block_ordinals[idx]),
+                block,
+                stored,
+                ms(m.at),
+            )?;
         }
         Ok(())
     }
@@ -858,7 +875,7 @@ impl RowWriter<'_, '_> {
         &self,
         message_pk: i64,
         session_pk: i64,
-        idx: i64,
+        position: (i64, u64),
         block: &Block,
         StoredBlock {
             body,
@@ -867,6 +884,7 @@ impl RowWriter<'_, '_> {
         }: StoredBlock<'_>,
         at: Option<i64>,
     ) -> Result<()> {
+        let (idx, ordinal) = position;
         let bit = if matches!(block, Block::ToolResult { .. }) {
             2
         } else {
@@ -900,8 +918,8 @@ impl RowWriter<'_, '_> {
             .prepare_cached(
                 "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
                      blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                     other_type, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                     other_type, data, ordinal)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             )?
             .execute(params![
                 message_pk,
@@ -921,6 +939,7 @@ impl RowWriter<'_, '_> {
                 i64::from(encrypted),
                 other_type,
                 data,
+                ordinal.to_string(),
             ])?;
         let block_pk = self.tx.last_insert_rowid();
 
