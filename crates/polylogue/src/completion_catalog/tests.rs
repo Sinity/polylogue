@@ -437,15 +437,30 @@ fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates()
 #[test]
 fn saved_output_fields_and_closed_values_publish_without_an_execution_clock() {
     use polylogue_store::fixture::Fixture;
-    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("catalog");
-    let mut fixture=Fixture::new(&directory.path().join("archive")).unwrap();
-    fixture.note("saved_query",Some("by-action"),Some("tool_calls | group by action | count"),"session:codex:neutral").unwrap();
-    let reads=fixture.reads().unwrap();let mut publisher=publisher::State::new(false);
-    publisher.refresh(&reads.reader().unwrap(),&path,"synthetic").unwrap();
-    let reader=CatalogReader::open(&path,"synthetic").unwrap().unwrap();
-    let saved=reader.saved("by-action").unwrap().pop().unwrap();
-    let schema=saved.schema.unwrap();
-    let action=schema.fields.iter().find(|field|field.name=="action").unwrap();
-    assert!(action.values.iter().any(|value|value=="shell"));
-    assert!(schema.fields.iter().any(|field|field.name=="count"));
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut fixture = Fixture::new(&directory.path().join("archive")).unwrap();
+    fixture
+        .note(
+            "saved_query",
+            Some("by-action"),
+            Some("tool_calls | group by action | count"),
+            "session:codex:neutral",
+        )
+        .unwrap();
+    let reads = fixture.reads().unwrap();
+    let mut publisher = publisher::State::new(false);
+    publisher
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    let reader = CatalogReader::open(&path, "synthetic").unwrap().unwrap();
+    let saved = reader.saved("by-action").unwrap().pop().unwrap();
+    let schema = saved.schema.unwrap();
+    let action = schema
+        .fields
+        .iter()
+        .find(|field| field.name == "action")
+        .unwrap();
+    assert!(action.values.iter().any(|value| value == "shell"));
+    assert!(schema.fields.iter().any(|field| field.name == "count"));
 }

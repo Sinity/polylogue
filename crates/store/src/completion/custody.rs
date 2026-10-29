@@ -41,7 +41,10 @@ impl CatalogPointer {
             if fs::read_link(&self.path).ok().as_deref() == Some(Path::new(name)) {
                 return Ok(());
             }
-            let parent = self.path.parent().ok_or_else(||StoreError::Invalid("completion catalog has no parent".into()))?;
+            let parent = self
+                .path
+                .parent()
+                .ok_or_else(|| StoreError::Invalid("completion catalog has no parent".into()))?;
             let temporary = parent.join(format!(".catalog-pointer-{}", uuid::Uuid::now_v7()));
             symlink(name, &temporary)?;
             let result = (|| {

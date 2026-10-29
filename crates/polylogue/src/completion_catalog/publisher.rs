@@ -5,9 +5,7 @@ use polylogue_store::{
     Reader, Result,
     completion::{self, CatalogWriter, CommitSubscription, Metadata, SessionChange},
 };
-use query_language::{
-    catalog::Catalog,
-};
+use query_language::catalog::Catalog;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -95,7 +93,7 @@ impl Drop for Publisher {
 }
 
 pub(super) struct State {
-    writer: Option<(String,CatalogWriter)>,
+    writer: Option<(String, CatalogWriter)>,
     position: Option<ChangePosition>,
     catalog: Catalog,
     definitions: BTreeMap<String, completion::Saved>,
@@ -124,7 +122,7 @@ impl State {
         if self
             .writer
             .as_ref()
-            .is_some_and(|(_,writer)| !writer.is_current_file())
+            .is_some_and(|(_, writer)| !writer.is_current_file())
         {
             self.writer = None;
             self.position = None;
@@ -138,8 +136,14 @@ impl State {
         if self.position.as_ref() == Some(&position) {
             return Ok(());
         }
-        if self.writer.as_ref().is_some_and(|(generation,_)|generation!=&position.generation)
-            || self.position.as_ref().is_some_and(|previous| previous.generation != position.generation)
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|(generation, _)| generation != &position.generation)
+            || self
+                .position
+                .as_ref()
+                .is_some_and(|previous| previous.generation != position.generation)
         {
             self.writer = None;
             self.position = None;
@@ -154,11 +158,11 @@ impl State {
         let pointer = completion::CatalogPointer::new(path.to_owned());
         let generation_path = pointer.generation_path(&position.generation);
         let after = self.position.clone();
-        let result = if let Some((generation,mut writer)) = self.writer.take() {
+        let result = if let Some((generation, mut writer)) = self.writer.take() {
             let result = writer.update(&metadata, |writer| {
                 self.apply(reader, writer, after.as_ref())
             });
-            self.writer = Some((generation,writer));
+            self.writer = Some((generation, writer));
             result
         } else {
             CatalogWriter::build(&generation_path, &metadata, |writer| {
@@ -166,7 +170,7 @@ impl State {
                 self.apply(reader, writer, None)
             })
             .map(|writer| {
-                self.writer = Some((position.generation.clone(),writer));
+                self.writer = Some((position.generation.clone(), writer));
             })
         };
         result?;
@@ -305,18 +309,23 @@ impl State {
                     first_note: definition.family.clone(),
                 });
         }
-        let bindings=polylogue_query::Bindings {
-            origins:polylogue_sources::origin::ORIGINS.iter().map(|origin|origin.name.to_owned()).collect(),
-            command_words:crate::commands::command_words(),saved,kept:self.kept.clone(),
+        let bindings = polylogue_query::Bindings {
+            origins: polylogue_sources::origin::ORIGINS
+                .iter()
+                .map(|origin| origin.name.to_owned())
+                .collect(),
+            command_words: crate::commands::command_words(),
+            saved,
+            kept: self.kept.clone(),
         };
         for definition in self.definitions.values_mut() {
-            definition.parameters =
-                bindings.definition_parameters(&definition.text)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|name| completion::Parameter { name, kind: None })
-                    .collect();
-            definition.schema=bindings.output_schema(&definition.text).ok();
+            definition.parameters = bindings
+                .definition_parameters(&definition.text)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|name| completion::Parameter { name, kind: None })
+                .collect();
+            definition.schema = bindings.output_schema(&definition.text).ok();
             definition.help = if definition.parameters.is_empty() {
                 definition.text.clone()
             } else {

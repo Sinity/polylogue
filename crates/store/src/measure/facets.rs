@@ -1,7 +1,7 @@
 //! Read-time grouped session counts. No separate facet rows are stored.
 use super::Selection;
-use crate::{Reader, Result, StoreError};
 use crate::session_sql;
+use crate::{Reader, Result, StoreError};
 use serde::Serialize;
 use serde_json::Value;
 

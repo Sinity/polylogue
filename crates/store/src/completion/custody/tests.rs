@@ -87,8 +87,12 @@ fn standalone_generation_change_revokes_pointer_before_reopen_finishes() {
     let token = archive.scope_token().unwrap();
     build(&pointer, "first", "cached");
     pointer.activate("first", &token).unwrap();
-    let conn=crate::archive::open_write(&archive.index_db(),1).unwrap();
-    conn.execute("UPDATE meta SET value='synthetic-earlier-boot' WHERE key='boot_id'",[]).unwrap();
+    let conn = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+    conn.execute(
+        "UPDATE meta SET value='synthetic-earlier-boot' WHERE key='boot_id'",
+        [],
+    )
+    .unwrap();
     drop(conn);
     drop(lock);
     drop(archive);

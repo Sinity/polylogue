@@ -21,7 +21,8 @@ fn error(message: impl ToString) -> Error {
 }
 fn options() -> Options {
     Options {
-        clock: polylogue_store::query::time::clock(0, LogicalDay::named("UTC", 240).unwrap()).unwrap(),
+        clock: polylogue_store::query::time::clock(0, LogicalDay::named("UTC", 240).unwrap())
+            .unwrap(),
         origins: vec!["claude-code".into()],
         command_words: vec![],
         page_size: None,

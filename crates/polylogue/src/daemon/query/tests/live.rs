@@ -3,9 +3,9 @@
 
 use crate::daemon::query::*;
 use polylogue_model::{Event, Json, Output, Session, SessionId, SessionKind, Timestamp};
-use polylogue_store::query::fields::{live_state, live_until};
 use polylogue_store::ReadPool;
 use polylogue_store::fixture::writer::WriterArchive;
+use polylogue_store::query::fields::{live_state, live_until};
 use serde_json::json;
 
 fn ask(text: &str, now: i64) -> Ask<'_> {

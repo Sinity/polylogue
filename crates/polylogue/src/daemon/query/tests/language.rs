@@ -1,6 +1,6 @@
 //! Query-language behavior over the archive built through the real loop.
 use polylogue_model::LogicalDay;
-use polylogue_store::query::{Options,Param,QueryError,compile};
+use polylogue_store::query::{Options, Param, QueryError, compile};
 use polylogue_store::{Reader, SqlValue};
 use polylogue_testkit::{Morrow, Set, short};
 use serde_json::{Value, json};
