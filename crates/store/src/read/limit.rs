@@ -42,6 +42,7 @@ pub struct ReadLimit {
     deadline: Option<Instant>,
     steps: Arc<AtomicU64>,
     stage: Arc<Mutex<Option<&'static str>>>,
+    scopes: Arc<Mutex<Vec<super::scope::ReadScopeToken>>>,
     pub cancellation: ReadCancellation,
 }
 
@@ -52,6 +53,7 @@ impl ReadLimit {
             cancellation,
             steps: Arc::new(AtomicU64::new(0)),
             stage: Arc::new(Mutex::new(None)),
+            scopes: Default::default(),
         }
     }
 
@@ -62,6 +64,7 @@ impl ReadLimit {
             cancellation,
             steps: Arc::new(AtomicU64::new(0)),
             stage: Arc::new(Mutex::new(None)),
+            scopes: Default::default(),
         }
     }
 
@@ -82,7 +85,27 @@ impl ReadLimit {
         self.steps.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn bind_scope(&self, scope: super::scope::ReadScopeToken) -> Result<()> {
+        scope.check()?;
+        let mut scopes = self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !scopes.iter().any(|existing| existing.same(&scope)) {
+            scopes.push(scope);
+        }
+        Ok(())
+    }
+
     pub fn check(&self) -> Result<()> {
+        for scope in self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            scope.check()?;
+        }
         if self.cancellation.is_cancelled() {
             Err(StoreError::ReadCancelled)
         } else if self

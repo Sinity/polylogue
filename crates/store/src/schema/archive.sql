@@ -118,6 +118,7 @@ CREATE TABLE client_request (
   imports       TEXT NOT NULL DEFAULT '{"observed":[],"declared":[]}', -- import evidence and historical claims, JSON
   commit_seq    INTEGER NOT NULL DEFAULT 0  -- the write counter of the transaction that wrote it
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX client_request_commit_seq ON client_request(commit_seq,id);
 
 CREATE TABLE note (
   id            TEXT PRIMARY KEY,        -- the writing request's ID (UUIDv7, chosen by the client), with '.<n>' for

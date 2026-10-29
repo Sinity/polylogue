@@ -18,6 +18,7 @@ use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
 pub mod limit;
+pub mod scope;
 
 mod behind_index;
 mod captured;
@@ -89,6 +90,7 @@ pub struct Reader<'a> {
     state: std::cell::Cell<ReadState>,
     owner: ThreadId,
     limit: Option<limit::ReadLimit>,
+    scope: scope::ReadScopeToken,
     // ThreadId ownership detects self-exhaustion only if live readers stay
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -219,6 +221,9 @@ impl ReadPool {
 
     fn connect(&self) -> Result<Connection> {
         let conn = open_read(&self.archive.index_db())?;
+        if self.archive.is_primary() {
+            crate::primary::scope::require_readable(&conn)?;
+        }
         // Set temp storage before creating views: changing it drops TEMP objects.
         conn.pragma_update(None, "temp_store", "file")?;
         conn.pragma_update(Some("temp"), "cache_size", -1024)?;
@@ -247,11 +252,16 @@ impl ReadPool {
     }
 
     fn acquire(&self, connect: impl FnOnce() -> Result<Connection>) -> Result<Reader<'_>> {
+        let scope = self.archive.read_scope.token()?;
         let limit = limit::ReadLimit::current();
+        if let Some(limit) = &limit {
+            limit.bind_scope(scope.clone())?;
+        }
         let owner = std::thread::current().id();
         let idle = {
             let mut state = self.state.lock().map_err(|_| pool_poisoned())?;
             loop {
+                scope.check()?;
                 if let Some(limit) = &limit {
                     limit.check()?;
                 }
@@ -275,14 +285,11 @@ impl ReadPool {
                     state.waiters += 1;
                     self.changed.notify_all();
                 }
-                state = if limit.is_some() {
-                    self.available
-                        .wait_timeout(state, std::time::Duration::from_millis(5))
-                        .map_err(|_| pool_poisoned())?
-                        .0
-                } else {
-                    self.available.wait(state).map_err(|_| pool_poisoned())?
-                };
+                state = self
+                    .available
+                    .wait_timeout(state, std::time::Duration::from_millis(5))
+                    .map_err(|_| pool_poisoned())?
+                    .0;
                 #[cfg(test)]
                 {
                     state.waiters -= 1;
@@ -298,6 +305,7 @@ impl ReadPool {
             state: std::cell::Cell::new(ReadState::Deferred),
             owner,
             limit,
+            scope,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
         };
@@ -322,7 +330,11 @@ impl ReadPool {
         };
         if let Some(limit) = &reader.limit {
             limit.install(&conn)?;
+        } else {
+            let scope = reader.scope.clone();
+            conn.progress_handler(1000, Some(move || scope.check().is_err()))?;
         }
+        reader.scope.check()?;
         conn.execute_batch("BEGIN")?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
@@ -354,11 +366,10 @@ impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
         let conn = self.conn.take().filter(|conn| {
-            if self.limit.is_some()
-                && (conn.progress_handler(0, None::<fn() -> bool>).is_err()
-                    || conn
-                        .busy_timeout(std::time::Duration::from_secs(30))
-                        .is_err())
+            if conn.progress_handler(0, None::<fn() -> bool>).is_err()
+                || conn
+                    .busy_timeout(std::time::Duration::from_secs(30))
+                    .is_err()
             {
                 return false;
             }
@@ -424,7 +435,13 @@ struct MessageContent<'a> {
 }
 
 impl Reader<'_> {
+    /// Retain this token through prepared or streamed delivery.
+    pub fn scope_token(&self) -> scope::ReadScopeToken {
+        self.scope.clone()
+    }
+
     pub fn check(&self) -> Result<()> {
+        self.scope.check()?;
         self.limit.as_ref().map_or(Ok(()), limit::ReadLimit::check)
     }
 
@@ -518,6 +535,7 @@ impl Reader<'_> {
                 }
                 let waiting = std::time::Instant::now();
                 let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
+                    self.scope.check()?;
                     if conn.is_interrupted() {
                         return Err(rusqlite::Error::SqliteFailure(
                             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
