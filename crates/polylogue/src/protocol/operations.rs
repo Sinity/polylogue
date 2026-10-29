@@ -248,16 +248,20 @@ fn checked_values<C: CommandType>(
         ));
     }
     let command = crate::commands::command(C::NAME).expect("typed command exists");
-    let mut values = serde_json::to_value(arguments)
+    let values = serde_json::to_value(arguments)
         .expect("typed arguments serialize")
         .as_object()
         .expect("command arguments are objects")
         .clone();
+    let mut values = Values::from_json(command, caller.surface, values)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error))?;
+    // Durable identity belongs to the accepted envelope, outside operation arguments.
     if command.writes {
-        values.insert("request_id".into(), Value::String(request_id.into()));
+        values
+            .0
+            .insert("request_id".into(), Value::String(request_id.into()));
     }
-    Values::from_json(command, caller.surface, values)
-        .map_err(|error| Failure::new(FailureKind::BadRequest, error))
+    Ok(values)
 }
 
 /// Streams and finite answers validate through the same declaration adapter.

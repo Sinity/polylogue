@@ -87,7 +87,21 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     .unwrap();
     let page: ReadPage = serde_json::from_str(&output).unwrap();
     assert!(page.records.is_empty());
-    assert!(!body(&page).is_empty());
+    assert!(
+        !body(&page).is_empty(),
+        "budgeted page has no text: items={:?}, footer={:?}",
+        page.document
+            .items
+            .iter()
+            .map(|item| {
+                let kind = serde_json::to_value(&item.kind).unwrap();
+                json!({"kind":kind["kind"],"encoding":kind["encoding"],
+                    "reference":item.source.reference,
+                    "text_bytes":kind.get("text").and_then(Value::as_str).map(str::len)})
+            })
+            .collect::<Vec<_>>(),
+        page.document.footer,
+    );
     assert!(source.starts_with(&body(&page)));
     assert!(page.document.footer.next.is_some());
     assert!(serde_json::to_vec(&page).unwrap().len() < 22_000);

@@ -191,7 +191,7 @@ impl Command {
     pub fn args_for(&self, surface: Surface) -> impl Iterator<Item = &'static Arg> {
         let args: &'static [Arg] = self.args;
         args.iter()
-            .chain(self.writes.then_some(&REQUEST_ID))
+            .chain((self.writes && self.register.is_none()).then_some(&REQUEST_ID))
             .filter(move |a| {
                 (surface == Surface::Cli || !a.cli_only)
                     && (surface != Surface::Cli || a.name != "request_id")
