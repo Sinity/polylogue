@@ -206,7 +206,7 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
     };
     let session = reader.query(
         "SELECT s.pk, s.origin, s.kind, coalesce(s.title, s.derived_title) AS title, s.cwd_json,
-                s.repo, s.branch, s.harness_version, s.mode, s.started_at, s.last_activity_at,
+                s.record_repo AS repo, s.branch, s.harness_version, s.mode, s.started_at, s.last_activity_at,
                 (SELECT o.machine FROM a.observation o
                  WHERE o.input = (SELECT i.id FROM message m JOIN input_ref i ON i.pk = m.input_pk
                                   WHERE m.session_pk = s.pk LIMIT 1)
@@ -290,6 +290,12 @@ pub(crate) fn session_events(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<
                 .and_then(|json| serde_json::from_str(json).ok())
                 .unwrap_or_default(),
             repo: text(&session["repo"]),
+            objectives: Vec::new(),
+            git_identity: None,
+            terminal: None,
+            boot_id: None,
+            native_sources: Vec::new(),
+            native_unavailable: Vec::new(),
             branch: text(&session["branch"]),
             tool_version: text(&session["harness_version"]),
             mode: text(&session["mode"]),
