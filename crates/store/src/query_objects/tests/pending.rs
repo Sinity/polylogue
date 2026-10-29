@@ -25,6 +25,23 @@ impl Sinex for PendingProducer {
     fn prepare_blob(&self, _: BlobHash, _: u64, _: PreparedBody) -> Result<PreparedWrite> {
         Self::unavailable()
     }
+    fn prepare_input_group(
+        &self,
+        _: &crate::primary::CapturePlan,
+        _: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<PreparedWrite> {
+        Self::unavailable()
+    }
+    fn pending_source(
+        &self,
+        _: &crate::primary::SourceSelector,
+        _: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        Self::unavailable()
+    }
+    fn capture_body(&self, _: &str) -> Result<PreparedBody> {
+        Self::unavailable()
+    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         Ok(vec![])
     }
