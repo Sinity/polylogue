@@ -399,34 +399,15 @@ impl Resolver {
                 for hash in p.prepared.texts.keys() {
                     keys.insert(Key::new(Kind::Text, hash.as_slice()));
                 }
-                let mut occurrences = BTreeMap::<(u64, u64), u64>::new();
-                for (i, (event, packed)) in
-                    p.output.events.iter().zip(&p.prepared.events).enumerate()
-                {
+                let event_ids = p.event_identities(&b.input.id, chain)?;
+                for (index, event) in p.output.events.iter().enumerate() {
                     if let Some(session) = &event.session {
                         keys.insert(Key::new(Kind::Session, session.to_string().into_bytes()));
                     }
                     if let Some(message) = &event.after {
                         keys.insert(Key::new(Kind::Message, message.to_string().into_bytes()));
                     }
-                    let occurrence = if event.session.is_none() {
-                        let next = occurrences
-                            .entry(event.range.unwrap_or_default())
-                            .or_default();
-                        let value = *next;
-                        *next += 1;
-                        value
-                    } else {
-                        0
-                    };
-                    keys.insert(Key::new(
-                        Kind::Event,
-                        match p.output.imported_events.get(&i) {
-                            Some(identity) => identity.id.clone(),
-                            None => event_id(&b.input.id, chain, event, &packed.0, occurrence)?,
-                        }
-                        .into_bytes(),
-                    ));
+                    keys.insert(Key::new(Kind::Event, event_ids[index].as_bytes()));
                 }
                 for link in &p.output.links {
                     keys.insert(Key::new(Kind::Link, link_key(link)?));
