@@ -283,7 +283,6 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         kind: NoteKind::Note,
         key: None,
         value: Some("older exact note <text>".into()),
-        author: Author::Operator,
         targets: vec![Reference::Session(
             polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
         )],

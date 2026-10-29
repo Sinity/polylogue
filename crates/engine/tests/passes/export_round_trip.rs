@@ -59,8 +59,12 @@ fn user_state(w: &ClaudeHome) -> Vec<(String, serde_json::Value)> {
         .collect()
 }
 
-fn request(n: u32, write: UserWrite) -> UserRequest {
+fn request(n: u32, write: UserWrite, author: Author) -> UserRequest {
     UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
         id: format!("0199d8a0-0000-7000-8000-{n:012}"),
         machine: "synthetic-machine".into(),
         at: Timestamp::from_unix_ms(1_790_000_000_000 + i64::from(n) * 1000).unwrap(),
@@ -68,13 +72,12 @@ fn request(n: u32, write: UserWrite) -> UserRequest {
     }
 }
 
-fn note(kind: NoteKind, author: Author, target: &str, revises: Option<String>) -> UserWrite {
+fn note(kind: NoteKind, target: &str, revises: Option<String>) -> UserWrite {
     UserWrite::AddNote {
         note: NewNote {
             kind,
             key: None,
             value: Some(format!("synthetic {}", kind.as_str())),
-            author,
             targets: vec![Reference::parse(target).unwrap()],
             relations: vec![],
             revises,
@@ -112,52 +115,53 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     assert!(e.run_pass().unwrap().errors.is_empty());
     let writes = e.writer().unwrap();
     let agent = Author::Agent(Some(SessionId::parse("claude-code:s1").unwrap()));
-    let mut n = 0;
-    let mut write = |w: UserWrite| {
-        n += 1;
-        writes.user(request(n, w)).unwrap().id
+    let n = std::cell::Cell::new(0);
+    let write_as = |w: UserWrite, author: Author| {
+        n.set(n.get() + 1);
+        writes.user(request(n.get(), w, author)).unwrap().id
     };
-    let first = write(note(
+    let write = |w| write_as(w, Author::Operator);
+    let write_note =
+        |kind, author, target: &str, revises| write_as(note(kind, target, revises), author);
+    let first = write_note(
         NoteKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         None,
-    ));
-    write(note(
+    );
+    write_note(
         NoteKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         Some(first),
-    ));
-    let finding = write(note(
+    );
+    let finding = write_note(
         NoteKind::Finding,
         agent.clone(),
         "session:claude-code:s1",
         None,
-    ));
-    write(note(
+    );
+    write_note(
         NoteKind::Judgment,
         Author::Operator,
         &format!("assertion:{finding}@{finding}"),
         None,
-    ));
-    let withdrawn = write(note(NoteKind::Lesson, agent, "repo:synthetic", None));
+    );
+    let withdrawn = write_note(NoteKind::Lesson, agent, "repo:synthetic", None);
     write(UserWrite::Withdraw {
         note: withdrawn,
-        author: Author::Operator,
         reason: Some("superseded".into()),
     });
     // Authored notes retain their explicit session targets.
-    write(note(
+    write_note(
         NoteKind::Note,
         Author::Operator,
         "session:claude-code:s2",
         None,
-    ));
+    );
     write(UserWrite::SetSetting {
         key: "day.zone".into(),
         value: "UTC".into(),
-        author: Author::Operator,
         machine: None,
     });
     write(UserWrite::KeepResult {
@@ -225,12 +229,12 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
             detail: None,
         },
     });
-    write(note(
+    write_note(
         NoteKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         None,
-    ));
+    );
     let original = w.export("claude-code:s1");
     let source_state = user_state(&w);
     let file = export_file(&w, &["claude-code:s1"]);

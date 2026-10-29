@@ -160,7 +160,6 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
                 kind: NoteKind::Note,
                 key: Some("claude-code:s1".into()),
                 value: Some("claude-code:s1".into()),
-                author: Author::Operator,
                 targets: vec![Reference::Session(
                     polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
                 )],

@@ -123,9 +123,6 @@ pub(crate) fn write(
             "variant source must name captured text or an exact authored revision".into(),
         ));
     }
-    if polylogue_model::authorship::Channel::from_name(&new.via).is_none() {
-        return Err(StoreError::Invalid("variant channel is unknown".into()));
-    }
     for part in &new.parts {
         polylogue_model::Reference::parse(&part.of)
             .map_err(|error| StoreError::Invalid(error.to_string()))?;
@@ -166,8 +163,8 @@ pub(crate) fn write(
         kind: new.kind,
         from_lang: new.from_lang.clone(),
         to_lang: new.to_lang.clone(),
-        author: new.author.clone(),
-        via: new.via.clone(),
+        author: r.authorship.author.clone(),
+        via: r.authorship.via.as_str().to_owned(),
         method: new.method.clone(),
         machine: r.machine.clone(),
         created_at: r.at,
@@ -266,6 +263,16 @@ impl Reader<'_> {
         visit: impl FnMut(VariantPart) -> Result<()>,
     ) -> Result<()> {
         rows::parts_for(self.conn()?, id, source_reference, visit)
+    }
+    /// Visit exact-source parts in ascending n. False stops before the next
+    /// stored body is decoded; true continues.
+    pub fn visit_variant_parts_for_while(
+        &self,
+        id: &str,
+        source_reference: &str,
+        visit: impl FnMut(VariantPart) -> Result<bool>,
+    ) -> Result<()> {
+        rows::parts_for_while(self.conn()?, id, source_reference, visit)
     }
     /// Stream only parts addressed to this message/document or its exact children.
     /// Original references are grouped in lexical order, each group's n ascending.

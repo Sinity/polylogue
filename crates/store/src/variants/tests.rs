@@ -3,6 +3,10 @@ use polylogue_model::{NewVariantPart, user::UserWrite};
 
 fn request(id: &str, base: Option<&str>, text: &str) -> UserRequest {
     UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Agent(None),
+            via: polylogue_model::authorship::Channel::Mcp,
+        },
         id: id.into(),
         machine: "machine".into(),
         at: Timestamp::from_unix_ms(1).unwrap(),
@@ -14,8 +18,6 @@ fn request(id: &str, base: Option<&str>, text: &str) -> UserRequest {
                 kind: VariantKind::Translation,
                 from_lang: Some("en".into()),
                 to_lang: Some("pl".into()),
-                author: Author::Agent(None),
-                via: "mcp".into(),
                 method: Some("translation".into()),
                 parts: vec![NewVariantPart {
                     of: "block:codex:source#0".into(),

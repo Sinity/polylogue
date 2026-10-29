@@ -136,33 +136,28 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                 | UserWrite::AnnotateQuery { note, .. } => {
                     value["note"] = request.id.clone().into();
                     value["kind"] = note.kind.as_str().into();
-                    value["author"] = note.author.to_string().into();
+                    value["author"] = request.authorship.author.to_string().into();
                     value["value"] = serde_json::to_value(&note.value)?;
                     value["key"] = serde_json::to_value(&note.key)?;
                     value["targets"] = serde_json::to_value(&note.targets)?;
                     value["revises"] = serde_json::to_value(&note.revises)?;
                 }
-                UserWrite::Withdraw {
-                    note,
-                    author,
-                    reason,
-                } => {
+                UserWrite::Withdraw { note, reason } => {
                     value["note"] = request.id.clone().into();
                     value["kind"] = "withdrawal".into();
-                    value["author"] = author.to_string().into();
+                    value["author"] = request.authorship.author.to_string().into();
                     value["withdraws"] = note.clone().into();
                     value["value"] = serde_json::to_value(reason)?;
                 }
                 UserWrite::SetSetting {
                     key,
                     value: setting,
-                    author,
                     machine,
                 } => {
                     value["setting"] = request.id.clone().into();
                     value["key"] = key.clone().into();
                     value["value"] = setting.clone().into();
-                    value["author"] = author.to_string().into();
+                    value["author"] = request.authorship.author.to_string().into();
                     value["machine"] = machine.clone().unwrap_or_else(|| "*".into()).into();
                 }
                 UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery) => {
