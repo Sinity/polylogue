@@ -91,9 +91,12 @@ pub(super) fn question(program: &Program, options: &Options, why: bool) -> Resul
         detail: None,
     };
     let mut compiled = serde_json::to_value(program).map_err(failed)?;
-    // Presentation may change between pages; selection remains in Program.sql.
+    // Page size and count execution plans do not change the page's
+    // selection or order, which remain in Program.sql.
     if let Some(fields) = compiled.as_object_mut() {
-        fields.remove("page_size");
+        for field in ["page_size", "row_count_sql", "row_membership_sql"] {
+            fields.remove(field);
+        }
     }
     let binding = Question {
         program: compiled,

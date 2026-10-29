@@ -236,7 +236,7 @@ impl Inner {
         let mut stored = Vec::new();
         let mut seen = BTreeSet::new();
         for item in group.iter_mut() {
-            let PreparedBatch { batch: b, files } = item;
+            let PreparedBatch { batch: b, files: _ } = item;
             // An immutable import named by its bytes may be stored already, or
             // appear twice in a group (equal container members).
             let known: Option<(i64, i64)> = tx

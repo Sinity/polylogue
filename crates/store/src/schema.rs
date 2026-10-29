@@ -23,7 +23,10 @@ pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// Numbered in-place steps after the version 1 format baseline.
-pub(crate) const INDEX_MIGRATIONS: &[&str] = &[];
+pub(crate) const INDEX_MIGRATIONS: &[&str] = &[
+    include_str!("schema/index_2.sql"),
+    include_str!("schema/index_3.sql"),
+];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
 
 /// The index schema and row encoding version. Parser changes carry their
