@@ -23,6 +23,7 @@ fn unknown_import_refuses_and_explain_stores_nothing() {
             &ImportOptions {
                 format: None,
                 explain: true,
+                ..Default::default()
             },
         )
         .unwrap();

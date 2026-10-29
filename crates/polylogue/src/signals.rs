@@ -141,10 +141,10 @@ pub fn rule(note: &Note) -> Result<Rule, Unusable> {
         interrupt: v
             .get("interrupt")
             .and_then(Value::as_bool)
-            .unwrap_or(!matches!(note.author, Author::Agent(_))),
+            .unwrap_or(note.author == Author::Operator),
         quiet_hours,
         rate_limit,
-        operator: !matches!(note.author, Author::Agent(_)),
+        operator: note.author == Author::Operator,
     })
 }
 

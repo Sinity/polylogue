@@ -24,6 +24,7 @@ fn an_interrupted_import_retains_exact_committed_bytes_across_restart() {
                     &ImportOptions {
                         format: Some("claude-code".into()),
                         explain: false,
+                        ..Default::default()
                     },
                 )
                 .unwrap();
@@ -61,6 +62,7 @@ fn an_interrupted_import_retains_exact_committed_bytes_across_restart() {
                 &ImportOptions {
                     format: Some("claude-code".into()),
                     explain: false,
+                    ..Default::default()
                 },
             )
             .unwrap();

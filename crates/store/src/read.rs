@@ -8,6 +8,7 @@ use crate::encoding::{restore_text, unpack_block, unpack_text};
 use crate::{Result, StoreError};
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, Timestamp, Usage,
+    bundle::MessageProjection,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -20,6 +21,7 @@ pub mod limit;
 
 mod behind_index;
 mod captured;
+mod import_attribution;
 mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;
@@ -32,6 +34,27 @@ mod rows;
 mod source_commit;
 
 pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
+
+struct MessageAdmission {
+    fact: Option<i64>,
+    source: Option<(String, i64, i64)>,
+}
+
+impl MessageAdmission {
+    fn resolve(self, conn: &Connection) -> Result<Option<u64>> {
+        if let Some(fact) = self.fact {
+            return u64::try_from(fact)
+                .map(Some)
+                .map_err(|_| StoreError::Invalid("negative message admission".into()));
+        }
+        let Some((input, chain, end)) = self.source else {
+            return Ok(None);
+        };
+        let end = u64::try_from(end)
+            .map_err(|_| StoreError::Invalid("negative message source endpoint".into()))?;
+        crate::source::Source::admitted_through(conn, &input, chain, end)
+    }
+}
 
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
@@ -636,6 +659,52 @@ impl Reader<'_> {
         Ok(out)
     }
 
+    /// The selected canonical reading and its original block positions in this snapshot.
+    pub fn message_with_projection(
+        &self,
+        id: &MessageId,
+    ) -> Result<Option<(Message, MessageProjection)>> {
+        let conn = self.conn()?;
+        let hash = conn.query_row(
+            "SELECT s.version_hash FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.shown=1
+             WHERE m.id=?1",
+            [id.to_string()], |row| row.get::<_, Option<Vec<u8>>>(0),
+        ).optional()?;
+        match hash {
+            Some(Some(hash)) => crate::versions::read_message(conn, &hash),
+            Some(None) => Err(StoreError::Invalid(
+                "the message has no canonical source reading".into(),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Immutable admission of the selected canonical facts, including all
+    /// contributing sparse readings. Native readings use their actual source
+    /// extent admission; unavailable legacy proof stays unknown.
+    pub fn message_admission(&self, id: &MessageId) -> Result<Option<u64>> {
+        let conn = self.conn()?;
+        let admission = conn
+            .query_row(
+                "SELECT p.admitted,i.id,s.chain,s.source_end FROM message m
+             JOIN message_source s ON s.message_pk=m.pk AND s.shown=1
+             JOIN input_ref i ON i.pk=s.input_pk
+             LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.id=?1",
+                [id.to_string()],
+                |row| {
+                    Ok(MessageAdmission {
+                        fact: row.get(0)?,
+                        source: Some((row.get(1)?, row.get(2)?, row.get(3)?)),
+                    })
+                },
+            )
+            .optional()?;
+        match admission {
+            Some(admission) => admission.resolve(conn),
+            None => Ok(None),
+        }
+    }
+
     /// Visit messages in reading order, decoding only the current message's
     /// bodies. Breaking stops before later bodies are loaded. With parents reads
     /// keep inherited message identifiers for ordering and deduplication.
@@ -648,6 +717,17 @@ impl Reader<'_> {
         let selected = self.select_messages(id, with_parents)?;
         selected.require_complete()?;
         selected.visit(&mut visit)
+    }
+
+    pub fn visit_messages_with_projection(
+        &self,
+        id: &SessionId,
+        with_parents: bool,
+        mut visit: impl FnMut(Message, MessageProjection) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        let selected = self.select_messages(id, with_parents)?;
+        selected.require_complete()?;
+        selected.visit_with_projection(&mut visit)
     }
 
     /// Fingerprint stored message facts without decompressing bodies. A strict
@@ -729,12 +809,23 @@ impl Reader<'_> {
         from: Option<i64>,
         content: MessageContent<'_>,
         mut keep: impl FnMut(i64) -> bool,
-        visit: &mut impl FnMut(i64, Message) -> std::ops::ControlFlow<()>,
+        visit: &mut impl FnMut(
+            i64,
+            Message,
+            Option<MessageProjection>,
+            MessageAdmission,
+        ) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed, m.pem";
+            m.cache_write_1h_tokens, m.speed, m.pem, shown.version_hash, projection.layout,
+            CASE WHEN projection.layout IS NULL THEN
+                (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
+            projection.admitted, source_input.id, shown.chain, shown.source_end";
+        const SOURCE: &str = "FROM message m LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.shown=1
+            LEFT JOIN message_projection projection ON projection.version_hash=shown.version_hash
+            LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
         const ORDER: &str = "ORDER BY m.order_input_id, m.seq, m.record_position, m.id";
         let start: Option<(String, i64, i64, String)> = match from {
             Some(pk) => self
@@ -756,12 +847,12 @@ impl Reader<'_> {
         }
         let mut stmt = match &start {
             None => self.conn()?.prepare_cached(&format!(
-                "SELECT {COLUMNS} FROM message m
+                "SELECT {COLUMNS} {SOURCE}
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL {ORDER}"
             ))?,
             // Index order from the start message: its key or a later one.
             Some(_) => self.conn()?.prepare_cached(&format!(
-                "SELECT {COLUMNS} FROM message m
+                "SELECT {COLUMNS} {SOURCE}
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
                    AND (m.order_input_id, m.seq, m.record_position) >= (?2, ?3, ?4)
                    AND NOT ((m.order_input_id, m.seq, m.record_position) = (?2, ?3, ?4)
@@ -804,6 +895,13 @@ impl Reader<'_> {
                     r.get::<_, Option<String>>(17)?,
                 ),
                 r.get::<_, i64>(18)?,
+                r.get::<_, Option<Vec<u8>>>(19)?,
+                r.get::<_, Option<Vec<u8>>>(20)?,
+                r.get::<_, i64>(21)?,
+                r.get::<_, Option<i64>>(22)?,
+                r.get::<_, Option<String>>(23)?,
+                r.get::<_, Option<i64>>(24)?,
+                r.get::<_, Option<i64>>(25)?,
             ))
         })?;
         for row in rows {
@@ -822,6 +920,13 @@ impl Reader<'_> {
                 attrs,
                 (w1h, speed),
                 pem,
+                hash,
+                layout,
+                legacy_blocks,
+                admitted,
+                source_input,
+                source_chain,
+                source_end,
             ) = row?;
             let Ok(id) = MessageId::parse(&id) else {
                 continue;
@@ -906,7 +1011,37 @@ impl Reader<'_> {
                     .and_then(|p| serde_json::from_value(p.clone()).ok())
                     .unwrap_or_default(),
             };
-            if visit(pk, message).is_break() {
+            let projection = hash
+                .map(|hash| {
+                    let mut projection = crate::versions::message_projection(
+                        &hash,
+                        layout.as_deref(),
+                        if visible {
+                            message.blocks.len()
+                        } else {
+                            usize::try_from(legacy_blocks).map_err(|_| {
+                                StoreError::Invalid(
+                                    "a message has an invalid stored block count".into(),
+                                )
+                            })?
+                        },
+                    )?;
+                    if visible {
+                        projection.validate(message.blocks.len())?;
+                    } else {
+                        projection.block_ordinals.clear();
+                    }
+                    Ok::<_, StoreError>(projection)
+                })
+                .transpose()?;
+            let admission = MessageAdmission {
+                fact: admitted,
+                source: source_input
+                    .zip(source_chain)
+                    .zip(source_end)
+                    .map(|((input, chain), end)| (input, chain, end)),
+            };
+            if visit(pk, message, projection, admission).is_break() {
                 return Ok(std::ops::ControlFlow::Break(()));
             }
         }

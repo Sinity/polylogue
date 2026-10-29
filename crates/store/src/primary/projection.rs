@@ -243,7 +243,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
-                let session = match &product {
+                let session = match product.as_ref() {
                     Product::Session { facts, .. } => Some(facts.id.to_string()),
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
                     Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
@@ -397,28 +397,36 @@ fn step(
     step
 }
 
-fn finish_step(
-    file: &mut crate::writer::ChainReading,
-    reading: &super::Reading,
+#[derive(Default)]
+struct ReadingStep {
     output: polylogue_model::Output,
     counts: polylogue_model::RecordCounts,
     receipt: Option<crate::wire_shapes::ReadingReceipt>,
-    published_reset: bool,
+    reset: bool,
     comparison: Option<crate::tool_databases::Comparison>,
-    through: &mut u64,
-    missing: &mut bool,
+}
+#[derive(Default)]
+struct SourceSpans {
+    through: u64,
+    missing: bool,
+}
+fn finish_step(
+    file: &mut crate::writer::ChainReading,
+    reading: &super::Reading,
+    facts: ReadingStep,
+    spans: &mut SourceSpans,
 ) -> Result<()> {
-    if published_reset {
-        *missing = false;
-    } else if reading.start > *through {
-        *missing = true;
+    if facts.reset {
+        spans.missing = false;
+    } else if reading.start > spans.through {
+        spans.missing = true;
     }
-    let mut step = step(reading, output, counts);
-    step.receipt = receipt;
-    step.reset = published_reset;
-    step.comparison = comparison;
-    step.source_prefix_missing = *missing || step.receipt.is_none();
-    *through = (*through).max(reading.parsed_upto);
+    let mut step = step(reading, facts.output, facts.counts);
+    step.receipt = facts.receipt;
+    step.reset = facts.reset;
+    step.comparison = facts.comparison;
+    step.source_prefix_missing = spans.missing || step.receipt.is_none();
+    spans.through = spans.through.max(reading.parsed_upto);
     file.push_confirmed(&mut step)
 }
 
@@ -489,13 +497,8 @@ fn plan(index: &Connection) -> Result<Plan> {
     for ((input, chain), key) in chains {
         let mut reading_file = crate::writer::ChainReading::new()?;
         let mut current: Option<super::Reading> = None;
-        let mut output = polylogue_model::Output::default();
-        let mut counts = polylogue_model::RecordCounts::default();
-        let mut receipt = None;
-        let mut published_reset = false;
-        let mut comparison = None;
-        let mut through = 0;
-        let mut missing = false;
+        let mut pending = ReadingStep::default();
+        let mut spans = SourceSpans::default();
         let mut length = index.query_row(
             "SELECT coalesce(max(length),0) FROM source_revision WHERE input=?1 AND chain=?2",
             params![input, chain],
@@ -506,26 +509,32 @@ fn plan(index: &Connection) -> Result<Plan> {
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(0)?;
             let product: Product = unpacked(&bytes)?;
+            let admitted = unsigned_column(row, 2)?;
+            if admitted == 0 {
+                return Err(StoreError::Invalid(
+                    "a canonical product has no positive admission receipt".into(),
+                ));
+            }
             let reading = product.reading().expect("parsed fact has reading").clone();
             if current.as_ref().is_some_and(|old| old != &reading) {
                 let old = current.take().expect("reading exists");
                 finish_step(
                     &mut reading_file,
                     &old,
-                    std::mem::take(&mut output),
-                    std::mem::take(&mut counts),
-                    receipt.take(),
-                    published_reset,
-                    comparison.take(),
-                    &mut through,
-                    &mut missing,
+                    std::mem::take(&mut pending),
+                    &mut spans,
                 )?;
-                published_reset = false;
             }
             current = Some(reading.clone());
             length = length.max(reading.parsed_upto);
             match product {
-                Product::Session { facts, .. } => output.sessions.push(facts),
+                Product::Session { facts, .. } => {
+                    pending
+                        .output
+                        .session_receipts
+                        .insert(pending.output.sessions.len(), admitted);
+                    pending.output.sessions.push(facts);
+                }
                 Product::Message {
                     facts,
                     order,
@@ -533,19 +542,31 @@ fn plan(index: &Connection) -> Result<Plan> {
                     ..
                 } => {
                     if let Some(projection) = projection {
-                        output
+                        pending
+                            .output
                             .message_projections
-                            .insert(output.messages.len(), projection);
+                            .insert(pending.output.messages.len(), projection);
                     }
                     if let Some(order) = order {
-                        output.message_order.insert(output.messages.len(), order);
+                        pending
+                            .output
+                            .message_order
+                            .insert(pending.output.messages.len(), order);
                     }
                     attachments(&facts.message.blocks, &mut needed);
-                    output.messages.push(facts);
+                    pending
+                        .output
+                        .message_receipts
+                        .insert(pending.output.messages.len(), admitted);
+                    pending.output.messages.push(*facts);
                 }
                 Product::Document { facts, .. } => {
                     attachments(&facts.document.blocks, &mut needed);
-                    output.documents.push(facts);
+                    pending
+                        .output
+                        .document_receipts
+                        .insert(pending.output.documents.len(), admitted);
+                    pending.output.documents.push(facts);
                 }
                 Product::Event {
                     id,
@@ -553,25 +574,41 @@ fn plan(index: &Connection) -> Result<Plan> {
                     imported,
                     ..
                 } => {
-                    output.event_ids.insert(output.events.len(), id);
+                    pending
+                        .output
+                        .event_receipts
+                        .insert(pending.output.events.len(), admitted);
+                    pending
+                        .output
+                        .event_ids
+                        .insert(pending.output.events.len(), id);
                     if let Some(imported) = imported {
-                        output.imported_events.insert(output.events.len(), imported);
+                        pending
+                            .output
+                            .imported_events
+                            .insert(pending.output.events.len(), imported);
                     }
-                    output.events.push(facts);
+                    pending.output.events.push(facts);
                 }
-                Product::Link { facts, .. } => output.links.push(facts),
-                Product::Background { facts, .. } => output.background.push(facts),
-                Product::Repository { facts, .. } => output.repo_lookups.push(facts),
+                Product::Link { facts, .. } => {
+                    pending
+                        .output
+                        .link_receipts
+                        .insert(pending.output.links.len(), admitted);
+                    pending.output.links.push(facts);
+                }
+                Product::Background { facts, .. } => pending.output.background.push(facts),
+                Product::Repository { facts, .. } => pending.output.repo_lookups.push(facts),
                 Product::ParseProgress {
                     counts: record_counts,
                     reset,
                     comparison: source_comparison,
                     ..
                 } => {
-                    counts = record_counts;
-                    published_reset = reset;
-                    comparison = source_comparison;
-                    receipt = Some(crate::wire_shapes::ReadingReceipt {
+                    pending.counts = record_counts;
+                    pending.reset = reset;
+                    pending.comparison = source_comparison;
+                    pending.receipt = Some(crate::wire_shapes::ReadingReceipt {
                         sequence: row.get(2)?,
                         id: Some(row.get(1)?),
                         observation: None,
@@ -582,17 +619,7 @@ fn plan(index: &Connection) -> Result<Plan> {
             }
         }
         if let Some(reading) = current {
-            finish_step(
-                &mut reading_file,
-                &reading,
-                output,
-                counts,
-                receipt,
-                published_reset,
-                comparison,
-                &mut through,
-                &mut missing,
-            )?;
+            finish_step(&mut reading_file, &reading, pending, &mut spans)?;
         } else {
             let mut absent =
                 crate::ParseStep::new(Default::default(), Default::default(), 0..0, false);
@@ -689,7 +716,7 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
             let bytes: Vec<u8> = row.get(0)?;
             let admitted: i64 = row.get(1)?;
             if let Product::Input { rows, .. } = unpacked(&bytes)? {
-                rows.insert(tx, admitted)?;
+                rows.insert_confirmed(tx, admitted)?;
             }
         }
     }
@@ -792,6 +819,7 @@ pub(crate) fn apply(
             }
         }
         crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
+        crate::variants::project(&tx)?;
         tx.execute(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
             [],

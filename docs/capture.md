@@ -143,7 +143,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | OpenTelemetry GenAI | OTLP-JSON `resourceSpans` | `otel-genai` |
 | OpenAI chat array | only with `--format openai-chat`, since the shape has no reliable structure | `openai-chat` |
 | aider | `.aider.llm.history` beside `.aider.chat.history.md` | `aider`: the LLM history is the session, the Markdown a companion document |
-| Polylogue export bundle | the bundle manifest ([reading.md](reading.md#writing-out)) | the bundle's own records |
+| Polylogue export bundle v1 | first typed manifest, pinned streamed inventory, exact member hashes and sizes ([reading.md](reading.md#writing-out)) | `polylogue-bundle` canonical records |
 | The predecessor's spools | hook spool NDJSON in every old layout, `browser_llm_session` v1 envelopes, `raw_sessions` blobs | the payload's origin |
 | A live-origin file outside its root | only with `--format NAME`, or when the path keeps the tool's own layout | that origin |
 
@@ -205,3 +205,7 @@ A completed full discovery walk publishes one capture-coverage snapshot per mach
 Coverage uses one unrecognized aggregate per root, independent of how many unknown subdirectories exist. Child symbolic links and special filesystem entries are ignored with explicit reasons; discovery does not follow them during either full walks or incremental events.
 
 Python predecessor archives containing `source.db`, `raw_sessions` and their declared blob files are supported external captured-data packages. Import reads their metadata without opening the archive for writing, validates exact source bytes and explicit append lineage, and preserves the original source facts. This is distinct from retired Rust archive storage layouts, whose codecs belong only to the private, explicit storage converter. Neither form authorizes a live archive conversion or reset.
+
+Canonical bundle import validates the complete immutable package before source or authored writes. Historical authored records use their frozen effects and retained sender provenance; the receiving channel supplies the current import actor. Stored-input replay restores these effects before advancing parse progress, so an interruption resumes from captured bytes. Imported chat and backfill history remains execution-ineligible.
+
+Retired `polylogue-export` v1-v4 documents are refused by name. Their existing original bytes and historical codec evidence are retained for explicit private conversion into the current bundle; they are not interpreted by the normal current-format reader. Python predecessor captured-data packages remain the supported external format described above.
