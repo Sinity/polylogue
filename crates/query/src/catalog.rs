@@ -6,17 +6,21 @@ fn field(value: &fields::Field, name: String) -> Field {
     use fields::Kind;
     Field {
         name,
-        kind: if value.value_kind == Some(crate::ColKind::Ids) { FieldKind::List(Box::new(FieldKind::Reference)) } else { match value.kind {
-            Kind::Match | Kind::Special => FieldKind::Match,
-            Kind::Prefix => FieldKind::Reference,
-            Kind::Substring => FieldKind::Substring,
-            Kind::Subtree => FieldKind::Subtree,
-            Kind::Number => FieldKind::Number,
-            Kind::Money => FieldKind::Money,
-            Kind::Duration => FieldKind::Duration,
-            Kind::Time => FieldKind::Time,
-            Kind::Bool => FieldKind::Bool,
-        } },
+        kind: if value.value_kind == Some(crate::ColKind::Ids) {
+            FieldKind::List(Box::new(FieldKind::Reference))
+        } else {
+            match value.kind {
+                Kind::Match | Kind::Special => FieldKind::Match,
+                Kind::Prefix => FieldKind::Reference,
+                Kind::Substring => FieldKind::Substring,
+                Kind::Subtree => FieldKind::Subtree,
+                Kind::Number => FieldKind::Number,
+                Kind::Money => FieldKind::Money,
+                Kind::Duration => FieldKind::Duration,
+                Kind::Time => FieldKind::Time,
+                Kind::Bool => FieldKind::Bool,
+            }
+        },
         values: value
             .values
             .into_iter()
@@ -57,11 +61,9 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
                 }
             }
             // These reference atoms are compiled at the product identity seam.
-            for name in origins
-                .iter()
-                .map(String::as_str)
-                .chain(["session", "message", "block", "note", "query", "result", "similar"])
-            {
+            for name in origins.iter().map(String::as_str).chain([
+                "session", "message", "block", "note", "query", "result", "similar",
+            ]) {
                 if !declarations.iter().any(|f| f.name == name) {
                     declarations.push(Field {
                         name: name.into(),

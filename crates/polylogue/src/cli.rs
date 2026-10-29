@@ -416,9 +416,14 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 
 /// Query completion runs in the CLI process from the last published vocabulary.
 fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
-    let Some(text) = current.to_str() else { return Vec::new(); };
+    let Some(text) = current.to_str() else {
+        return Vec::new();
+    };
     let data = crate::completion_catalog::read(&Archive::default_root()).unwrap_or_default();
-    let values = crate::daemon::warm::completions(&data, text).into_iter().map(|(value, help)| serde_json::json!({"value":value,"help":help})).collect::<Vec<_>>();
+    let values = crate::daemon::warm::completions(&data, text)
+        .into_iter()
+        .map(|(value, help)| serde_json::json!({"value":value,"help":help}))
+        .collect::<Vec<_>>();
     completion_candidates(&Value::Array(values))
 }
 

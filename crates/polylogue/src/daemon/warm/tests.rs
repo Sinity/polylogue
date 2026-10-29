@@ -61,8 +61,15 @@ fn completions_cover_fields_values_and_sessions() {
 
 #[test]
 fn values_with_spaces_are_quoted() {
-    let data = Completion { values: BTreeMap::from([("repo".into(), vec!["two words".into()])]), ..Default::default() };
-    assert!(completions(&data, "repo:two").iter().any(|(value, _)| value == "repo:\"two words\""));
+    let data = Completion {
+        values: BTreeMap::from([("repo".into(), vec!["two words".into()])]),
+        ..Default::default()
+    };
+    assert!(
+        completions(&data, "repo:two")
+            .iter()
+            .any(|(value, _)| value == "repo:\"two words\"")
+    );
 }
 
 #[test]
@@ -109,8 +116,15 @@ fn completions_escape_help_and_omit_values_with_controls() {
     };
     let tags = completions(&data, "tag:");
     assert!(tags.iter().any(|(value, _)| value == "tag:ordinary"));
-    assert!(tags.iter().all(|(value, _)| ["tag:ordinary", "tag:unknown", "tag:*"].contains(&value.as_str())));
-    assert!(completions(&data, "query:").iter().all(|(value, _)| !value.contains(hostile)));
+    assert!(
+        tags.iter()
+            .all(|(value, _)| ["tag:ordinary", "tag:unknown", "tag:*"].contains(&value.as_str()))
+    );
+    assert!(
+        completions(&data, "query:")
+            .iter()
+            .all(|(value, _)| !value.contains(hostile))
+    );
     assert_eq!(
         completions(&data, "claude-code:"),
         vec![(
@@ -123,7 +137,10 @@ fn completions_escape_help_and_omit_values_with_controls() {
 #[test]
 fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
     let data = Completion {
-        values: BTreeMap::from([("repo".into(), vec!["two words".into(), "path\\part \"λ\"".into()])]),
+        values: BTreeMap::from([(
+            "repo".into(),
+            vec!["two words".into(), "path\\part \"λ\"".into()],
+        )]),
         ..Completion::default()
     };
     assert_eq!(completions(&data, "repo:two")[0].0, "repo:\"two words\"");
