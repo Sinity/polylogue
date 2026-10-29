@@ -2,8 +2,8 @@
 use clap_complete::CompletionCandidate;
 use std::{
     ffi::{OsStr, OsString},
-    sync::OnceLock,
     path::PathBuf,
+    sync::OnceLock,
 };
 
 /// The callback argv follows `--` and includes the invoked wrapper name.
@@ -15,12 +15,14 @@ pub struct Context {
     pub catalog: Option<Catalog>,
 }
 pub struct Catalog {
-    pub path:PathBuf,
-    pub archive_key:String,
+    pub path: PathBuf,
+    pub archive_key: String,
 }
 static INVOCATION: OnceLock<Context> = OnceLock::new();
 /// Main supplies its one captured process/configuration boundary.
-pub fn capture(context:Context) {let _=INVOCATION.set(context);}
+pub fn capture(context: Context) {
+    let _ = INVOCATION.set(context);
+}
 
 pub struct Query;
 impl clap_complete::engine::ValueCompleter for Query {
@@ -43,22 +45,27 @@ impl clap_complete::engine::ValueCompleter for Query {
                 )
             })
             .unwrap_or_else(|| (current.to_owned(), current.len(), 0, current.len()));
-        let candidates=match invocation.and_then(|call|call.catalog.as_ref()) {
-            Some(catalog)=>crate::completion_catalog::complete_file(&catalog.path,&catalog.archive_key,&text,position),
-            None=>crate::completion_catalog::grammar(&text,position),
+        let candidates = match invocation.and_then(|call| call.catalog.as_ref()) {
+            Some(catalog) => crate::completion_catalog::complete_file(
+                &catalog.path,
+                &catalog.archive_key,
+                &text,
+                position,
+            ),
+            None => crate::completion_catalog::grammar(&text, position),
         };
         candidates
-        .into_iter()
-        .filter_map(|completion| {
-            if completion.replace.start < start || completion.replace.end > end {
-                return None;
-            }
-            let mut value = text[start..completion.replace.start].to_owned();
-            value.push_str(&completion.value);
-            value.push_str(&text[completion.replace.end..end]);
-            candidate(value, completion.help)
-        })
-        .collect()
+            .into_iter()
+            .filter_map(|completion| {
+                if completion.replace.start < start || completion.replace.end > end {
+                    return None;
+                }
+                let mut value = text[start..completion.replace.start].to_owned();
+                value.push_str(&completion.value);
+                value.push_str(&text[completion.replace.end..end]);
+                candidate(value, completion.help)
+            })
+            .collect()
     }
 }
 
@@ -115,7 +122,9 @@ impl clap_complete::engine::ValueCompleter for Setting {
         let Some(prefix) = current.to_str() else {
             return vec![];
         };
-        let Some(catalog)=INVOCATION.get().and_then(|call|call.catalog.as_ref())else{return vec![];};
+        let Some(catalog) = INVOCATION.get().and_then(|call| call.catalog.as_ref()) else {
+            return vec![];
+        };
         let key = if self.key {
             None
         } else {
@@ -136,9 +145,14 @@ impl clap_complete::engine::ValueCompleter for Setting {
                 .and_then(|setting| setting.get_one::<String>("key"))
                 .cloned()
         };
-        crate::completion_catalog::settings_file(&catalog.path,&catalog.archive_key,key.as_deref(),prefix)
-            .into_iter()
-            .filter_map(|(value, help)| candidate(value, help))
-            .collect()
+        crate::completion_catalog::settings_file(
+            &catalog.path,
+            &catalog.archive_key,
+            key.as_deref(),
+            prefix,
+        )
+        .into_iter()
+        .filter_map(|(value, help)| candidate(value, help))
+        .collect()
     }
 }

@@ -110,7 +110,7 @@ impl State {
         Self {
             writer: None,
             position: None,
-            catalog:super::base_catalog(),
+            catalog: super::base_catalog(),
             definitions: BTreeMap::new(),
             kept: BTreeMap::new(),
             clock,

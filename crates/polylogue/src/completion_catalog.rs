@@ -21,13 +21,18 @@ pub fn path(root: &Path) -> PathBuf {
         .join(crate::runtime_dir::archive_key(root))
         .join("catalog")
 }
-pub(super) fn base_catalog()->Catalog {
-    let origins=polylogue_sources::origin::ORIGINS.iter().map(|origin|origin.name.to_owned()).collect::<Vec<_>>();
-    polylogue_query::catalog::catalog(&origins,&crate::commands::command_words())
+pub(super) fn base_catalog() -> Catalog {
+    let origins = polylogue_sources::origin::ORIGINS
+        .iter()
+        .map(|origin| origin.name.to_owned())
+        .collect::<Vec<_>>();
+    polylogue_query::catalog::catalog(&origins, &crate::commands::command_words())
 }
-pub(crate) fn grammar(text:&str,position:usize)->Vec<Completion> {
-    if position>text.len()||!text.is_char_boundary(position){return vec![];}
-    query_language::complete::complete(text,position,&base_catalog())
+pub(crate) fn grammar(text: &str, position: usize) -> Vec<Completion> {
+    if position > text.len() || !text.is_char_boundary(position) {
+        return vec![];
+    }
+    query_language::complete::complete(text, position, &base_catalog())
 }
 /// Completion opens only the supplied derived catalog, never the archive.
 pub(crate) fn complete_file(
@@ -40,9 +45,7 @@ pub(crate) fn complete_file(
         return vec![];
     }
     let reader = CatalogReader::open(path, archive).ok().flatten();
-    complete_snapshot(reader.as_ref(), text, position).unwrap_or_else(|_| {
-        grammar(text,position)
-    })
+    complete_snapshot(reader.as_ref(), text, position).unwrap_or_else(|_| grammar(text, position))
 }
 fn complete_snapshot(
     reader: Option<&CatalogReader>,
@@ -50,7 +53,7 @@ fn complete_snapshot(
     position: usize,
 ) -> polylogue_store::Result<Vec<Completion>> {
     let Some(reader) = reader else {
-        return Ok(grammar(text,position));
+        return Ok(grammar(text, position));
     };
     let mut catalog = reader.catalog()?;
     for source in query_language::complete::requirements(text, position, &catalog).sources {
