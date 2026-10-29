@@ -1111,6 +1111,7 @@ impl Inner {
         } else {
             crate::write_lock::commit(tx)?;
         }
+        self.project_variant_text()?;
         Ok(outcome)
     }
 
