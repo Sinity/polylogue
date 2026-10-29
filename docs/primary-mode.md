@@ -40,6 +40,19 @@ What a host keeps locally in primary mode:
 - the embeddings store, local and backed up, since recomputing it costs money;
 - the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
+The cache records the confirmed consumer's grant scope alongside its persistent
+identity. When Sinex reports a changed scope, Polylogue first invalidates active
+reads and prepared output, then atomically clears cached facts and search data,
+rotates read cursors and saves the new scope. Queries interrupted by this change
+return `scope_changed`; streams end with that error and no completion record.
+The same consumer identity replays the history Sinex authorizes. Its position
+remains unknown until a complete confirmed barrier arrives, including an explicit
+zero barrier for an accessible empty store. Raw producer spools, pending authored
+intent and content-addressed paid embeddings survive this cache reset. The owner
+control is saved before clearing the cache; if clearing fails, reopening still
+blocks reads until retry succeeds. Failure to save that control blocks current
+readers and leaves the control unacknowledged; it provides no durable reset record.
+
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is a Cargo feature outside the default build.
 
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).

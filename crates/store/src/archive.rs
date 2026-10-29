@@ -39,6 +39,7 @@ pub struct Archive {
     /// inputs' bytes, and the register is a cache of what Sinex holds.
     sinex_store: Option<PathBuf>,
     primary: bool,
+    pub(crate) read_scope: std::sync::Arc<crate::read::scope::ReadScopeState>,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -48,6 +49,27 @@ pub struct ArchiveLock {
 }
 
 impl Archive {
+    /// Resolve existing ancestors even before this archive's directory exists.
+    pub fn resolved_root(root: &Path) -> PathBuf {
+        crate::read::scope::root_key(root)
+    }
+
+    /// Register before opening the producer or exposing a derived cache. The
+    /// callback runs immediately and at each reset, under the publication fence;
+    /// it must durably invalidate its pointer without re-entering store APIs.
+    pub fn register_scope_invalidator(
+        root: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<crate::read::scope::ScopeInvalidation> {
+        crate::read::scope::state(root).register(invalidate)
+    }
+
+    /// A transition guard without SQL. Currentness still comes from a reader's
+    /// confirmed checkpoint; this token alone cannot authorize cache activation.
+    pub fn scope_token(&self) -> Result<crate::ReadScopeToken> {
+        self.read_scope.token()
+    }
+
     /// Where source rows are read: the standalone ledger or the primary index cache.
     pub fn archive_db(&self) -> PathBuf {
         if self.is_primary() {
@@ -105,6 +127,7 @@ impl Archive {
             root: root.to_path_buf(),
             sinex_store: None,
             primary: false,
+            read_scope: crate::read::scope::state(root),
         }
     }
 
@@ -115,6 +138,7 @@ impl Archive {
             root: root.to_path_buf(),
             sinex_store: Some(store.to_path_buf()),
             primary: true,
+            read_scope: crate::read::scope::state(root),
         }
     }
 
@@ -125,6 +149,7 @@ impl Archive {
             root: root.to_path_buf(),
             sinex_store: None,
             primary: true,
+            read_scope: crate::read::scope::state(root),
         };
         archive.finish_open()?;
         Ok((archive, lock))
@@ -242,14 +267,21 @@ impl Archive {
     /// resume an interrupted build; incompatible indexes require an explicit
     /// schema change rather than removing already indexed rows.
     pub(crate) fn prepare_index(&self) -> Result<()> {
+        let index = open_write(&self.index_db(), cache::SETUP)?;
+        let fresh = schema::version(&index)? == 0;
+        if fresh {
+            let mut reset = self.read_scope.begin_reset()?;
+            reset.invalidate()?;
+        }
         if self.is_primary() {
-            let index = open_write(&self.index_db(), cache::SETUP)?;
             schema::ensure_primary_index(&index)?;
         } else {
             let archive = open_read(&self.archive_db())?;
             let _write = crate::write_lock::hold(&archive)?;
-            let index = open_write(&self.index_db(), cache::SETUP)?;
             schema::ensure_index(&index)?;
+        }
+        if fresh {
+            self.read_scope.finish_reset();
         }
         crate::fault::check("index.after_creation", "")?;
         Ok(())

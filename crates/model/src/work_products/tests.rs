@@ -77,6 +77,7 @@ fn later_known_model_response_and_explicit_background_notice_complete_calls() {
         call_id: Some("call-1".into()),
         outcome: ToolOutcome::Ok,
         result_at: None,
+        result_at_evidence: crate::TimeEvidence::UNKNOWN,
         reported_duration_ms: Some(52),
         output_file: None,
     };
@@ -108,4 +109,28 @@ fn human_bursts_commands_and_overflow_keep_explicit_meaning() {
     assert_eq!(turns[0].facts.unavailable, ["input_tokens_overflow"]);
     assert!(turns[1].facts.slash_command);
     assert!(turns[1].facts.abandoned);
+}
+
+#[test]
+fn retired_snapshot_keeps_only_session_identity_and_rejects_erased_metadata() {
+    let id = SessionId::parse("codex:retired").unwrap();
+    let mut snapshot = WorkSnapshot {
+        reducer_version: VERSION,
+        position: 9,
+        session_id: id.clone(),
+        session: None,
+        retired: true,
+        unavailable: Vec::new(),
+        messages: Vec::new(),
+        calls: Vec::new(),
+        turns: Vec::new(),
+        sources: Vec::new(),
+        native: Vec::new(),
+    };
+    assert!(snapshot.validate().is_ok());
+    snapshot.session = Some(crate::Session::new(id, crate::SessionKind::Main));
+    assert_eq!(
+        snapshot.validate(),
+        Err("retired snapshot contains source facts")
+    );
 }

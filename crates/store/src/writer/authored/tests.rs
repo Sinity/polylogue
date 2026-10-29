@@ -206,7 +206,7 @@ impl crate::primary::Sinex for Producer {
     fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
         Ok(())
     }
-    fn confirmed(&self, after: i64, _: &str) -> Result<Vec<Confirmed>> {
+    fn confirmed(&self, after: i64, _: &str, _: Option<&str>) -> Result<Vec<Confirmed>> {
         if !self.online.load(Ordering::SeqCst) {
             return Self::unavailable();
         }
@@ -236,6 +236,49 @@ impl crate::primary::Sinex for Producer {
         Ok(())
     }
 }
+#[test]
+fn a_pending_scope_reset_cannot_resolve_or_publish_authored_work_from_old_cache() {
+    let original = rendition();
+    let directory = tempfile::tempdir().unwrap();
+    let producer = Arc::new(Producer {
+        path: directory.path().join("private-product.json"),
+        online: AtomicBool::new(false),
+        live_calls: AtomicUsize::new(0),
+    });
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let connection = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
+    connection
+        .execute(
+            "INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending','narrow')",
+            [],
+        )
+        .unwrap();
+    let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+    assert!(matches!(
+        writer.user(original.request.clone()),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert!(matches!(
+        writer.restore_authored(original.clone(), vec![], current("import", 10)),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert_eq!(producer.live_calls.load(Ordering::SeqCst), 0);
+    assert!(!producer.path.exists());
+    connection
+        .execute("DELETE FROM meta WHERE key='confirmed_scope_pending'", [])
+        .unwrap();
+    archive.read_scope.begin_reset().unwrap();
+    assert!(matches!(
+        writer.user(original.request),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert_eq!(producer.live_calls.load(Ordering::SeqCst), 0);
+}
+
 #[test]
 fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry() {
     let original = prepared(UserWrite::ChatEnqueue(NewChatAction {
