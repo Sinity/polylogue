@@ -2,6 +2,7 @@
 //! Canonical source records stay separate from presentation substitutions.
 mod delivery;
 mod evidence;
+mod format;
 mod items;
 mod options;
 mod position;
@@ -10,6 +11,7 @@ mod projection;
 mod tokens;
 pub use delivery::*;
 pub use evidence::*;
+pub use format::*;
 pub use items::*;
 pub use options::*;
 pub use position::*;

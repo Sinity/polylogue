@@ -1,23 +1,6 @@
 //! Layout paging under bounded prepared selection coordinates. Store owns
 //! metadata seeks; the service authenticates and seals the captured read scope.
 use polylogue_model::{BlobHash, read::*};
-use std::num::{NonZeroU64, NonZeroUsize};
-
-#[derive(Debug, Clone, Copy)]
-pub struct Budget {
-    pub items: NonZeroUsize,
-    pub tokens: NonZeroU64,
-    pub bytes: NonZeroUsize,
-}
-impl Default for Budget {
-    fn default() -> Self {
-        Self {
-            items: NonZeroUsize::new(50).unwrap(),
-            tokens: NonZeroU64::new(4000).unwrap(),
-            bytes: NonZeroUsize::new(21_000).unwrap(),
-        }
-    }
-}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageError {
     MetadataTooLarge,
@@ -45,7 +28,7 @@ pub struct PageBuilder {
     header: ReadHeader,
     framing: ReadFraming,
     items: Vec<ReadItem>,
-    budget: Budget,
+    budget: PageBudget,
     bytes: usize,
     tokens: u64,
     start: Option<ReadPosition>,
@@ -56,7 +39,7 @@ pub struct PageBuilder {
 impl PageBuilder {
     pub fn new(
         header: ReadHeader,
-        budget: Budget,
+        budget: PageBudget,
         start: Option<ReadPosition>,
         framing: ReadFraming,
     ) -> Result<Self, PageError> {
