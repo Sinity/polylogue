@@ -49,17 +49,20 @@ impl Inner {
                 return Ok(QueryCustody::Canonical);
             }
             let mut queued = false;
-            sinex.visit_pending_products(&mut |product| {
-                if let crate::primary::Product::Query { object: existing } = product
-                    && existing.id == object.id
-                {
-                    if !crate::query_objects::equivalent(existing, object) {
-                        return Err(StoreError::Conflict(format!("query:{}", object.id)));
+            sinex.visit_named_products(
+                &crate::primary::NamedProductSelector::Exact(format!("query:{}", object.id)),
+                &mut |product| {
+                    if let crate::primary::Product::Query { object: existing } = product
+                        && existing.id == object.id
+                    {
+                        if !crate::query_objects::equivalent(existing, object) {
+                            return Err(StoreError::Conflict(format!("query:{}", object.id)));
+                        }
+                        queued = true;
                     }
-                    queued = true;
-                }
-                Ok(())
-            })?;
+                    Ok(())
+                },
+            )?;
             if queued {
                 return Ok(QueryCustody::Queued);
             }

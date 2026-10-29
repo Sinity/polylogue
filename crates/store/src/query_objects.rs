@@ -263,7 +263,13 @@ impl Reader<'_> {
             );
         }
         if let Some(pending) = pending {
-            pending.visit_pending_products(&mut |product| {
+            let name = format!("query:{key}");
+            let selector = if key.len() == 64 {
+                crate::primary::NamedProductSelector::Exact(name)
+            } else {
+                crate::primary::NamedProductSelector::Prefix(name)
+            };
+            pending.visit_named_products(&selector, &mut |product| {
                 if let Product::Query { object } = product
                     && object.id.to_string().starts_with(&key)
                 {
@@ -315,24 +321,27 @@ impl Reader<'_> {
             })
             .transpose()?;
         if let Some(pending) = pending {
-            pending.visit_pending_products(&mut |product| {
-                if let Product::QueryRun { run } = product
-                    && run.id == id
-                {
-                    validate_run(run)?;
-                    if let Some(existing) = &found {
-                        if existing.value != **run {
-                            return Err(StoreError::Conflict(format!("run:{id}")));
+            pending.visit_named_products(
+                &crate::primary::NamedProductSelector::Exact(format!("query-run:{id}")),
+                &mut |product| {
+                    if let Product::QueryRun { run } = product
+                        && run.id == id
+                    {
+                        validate_run(run)?;
+                        if let Some(existing) = &found {
+                            if existing.value != **run {
+                                return Err(StoreError::Conflict(format!("run:{id}")));
+                            }
+                        } else {
+                            found = Some(QueryLookup {
+                                value: *run.clone(),
+                                custody: QueryCustody::Queued,
+                            });
                         }
-                    } else {
-                        found = Some(QueryLookup {
-                            value: *run.clone(),
-                            custody: QueryCustody::Queued,
-                        });
                     }
-                }
-                Ok(())
-            })?;
+                    Ok(())
+                },
+            )?;
         }
         self.conn()?;
         Ok(found)
