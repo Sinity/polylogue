@@ -143,7 +143,7 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 
 - Every executed query writes a run: `query_run(id, query, at, resolved, read_at, author, via, outcome, count, exact)`, with the author computed as for every authored record ([assertions.md](assertions.md#authorship)). `explain` and completion write none.
 - `query(hash, normal_form, first_run)` holds each distinct query once.
-- Runs are written by the writer in its ordinary groups, never inside the read, so a read never waits on its run row.
+- Runs are written by the writer in its ordinary groups, never inside the read, so a read never waits on its run row. Before a continuation names `query:<hash>`, the immutable query body has acknowledged canonical or durable queued custody and is available through the same canonical/pending lookup. That body includes the hash-bound frozen definition closure and the used output schemas. A continuation reconstructs semantics from this object and its sealed execution context without depending on a run row or repeating the original query text.
 - Every answer carries `query: "query:<hash>"` and `run: "<run id>"`; a kept answer also carries `result:<id>`.
 
 ### Saved queries
@@ -203,7 +203,7 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 ## Paging
 
 - **Four bounds stay apart.** Selection (`limit`, `[last:k]`) is in the question. `page_size` is how much travels now (default 20 sessions or 50 other rows, the same on every surface). A presentation budget cuts display, never a figure's population. The deadline bounds execution.
-- **Cursors** hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are sealed: opaque and integrity-checked.
+- **Cursors** bind the semantic question hash separately from execution context. They hold the last row's order-key values with row identity as the final key, the captured clock, resolved times, random seed, index generation, first read position and version bindings for the native catalog, grants and ranking data. Fields, caller and presentation options belong to those execution bindings; they do not change `query:<hash>`. Cursors are sealed, opaque and integrity-checked. An unsupported captured catalog version returns a typed unavailable or stale replay outcome rather than rebinding against current declarations.
 - **Continuation is by key,** never by offset, and no read transaction is held between pages. When the archive changes between pages, no row whose key did not change is skipped or repeated, and `notes` say "the archive changed since the first page", listing rows that moved before the anchor.
 - **Refusals:** a cursor with an invalid or retired seal, or from another question, is `invalid_query`. An authenticated cursor whose read context is no longer available, including a ranked cursor after a vector write, is `stale_cursor`. The index keeps its private seal key across daemon restarts; rebuilding retires that key. Neither refusal restarts the query silently. Only the page size may change between pages.
 - A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is kept first, then paged.

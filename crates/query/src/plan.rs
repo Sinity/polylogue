@@ -212,10 +212,10 @@ fn prepare_inner(
     )?;
     let mut identity_catalog = catalog.clone();
     for output in &mut identity_catalog.source_outputs {
-        if let OutputSource::Saved { name, .. } = &mut output.source {
-            if let Some(hash) = identities.get(name) {
-                *name = hash.to_string();
-            }
+        if let OutputSource::Saved { name, .. } = &mut output.source
+            && let Some(hash) = identities.get(name)
+        {
+            *name = hash.to_string();
         }
     }
     let question_id =
