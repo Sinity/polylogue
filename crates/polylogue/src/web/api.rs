@@ -92,6 +92,22 @@ async fn answer(
             })
             .unwrap_or_default();
         let request = crate::protocol::operations::request(c, values, request_id, deadline);
+        if let Action::Stream { produce, .. } = c.action
+            && let Some(build) = c.build_typed
+        {
+            match build(request.arguments.clone(), &caller, &request.request_id) {
+                Ok(internal) if internal.streaming() => {
+                    return stream(web, internal, produce).await;
+                }
+                Err(failure) => {
+                    return json_answer(
+                        web,
+                        command_surface::Answer::<serde_json::Value>::error(failure).into(),
+                    );
+                }
+                _ => {}
+            }
+        }
         let table = &web.operations;
         let limit = super::request_limit();
         let accepted = crate::protocol::caller::accept(
@@ -131,6 +147,12 @@ async fn stream(
     let worker = Arc::clone(web);
     let limit = super::request_limit();
     let cancellation = limit.cancellation.clone();
+    let accepted = crate::protocol::caller::accept(
+        &web.daemon.callers,
+        &Default::default(),
+        polylogue_model::authorship::Channel::Web,
+        cancellation.clone(),
+    );
     let (output, input) = tokio::io::duplex(64 * 1024);
     let (ready, first) = tokio::sync::oneshot::channel();
     let runtime = tokio::runtime::Handle::current();
@@ -141,7 +163,14 @@ async fn stream(
             runtime,
             ready: Some(ready),
         };
-        let result = limit.scope(|| produce(&worker_request, &worker.daemon, &mut output));
+        let result = limit.scope(|| {
+            produce(
+                &worker_request,
+                &worker.daemon,
+                &accepted.authorship,
+                &mut output,
+            )
+        });
         let Some(result) = result else {
             if let Some(ready) = output.ready.take() {
                 let _ = ready.send(Ok(false));

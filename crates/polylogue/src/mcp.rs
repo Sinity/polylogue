@@ -17,7 +17,7 @@ use std::io::{self, BufRead, Write};
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
-        .filter(|c| c.mcp && matches!(c.action, Action::Request(_)))
+        .filter(|c| c.mcp && matches!(c.action, Action::Request(_) | Action::Stream { .. }))
 }
 
 pub fn tools() -> Vec<Value> {
@@ -45,10 +45,9 @@ fn build_request(
         .ok_or_else(|| {
             polylogue_render::terminal::escape(&format!("error (bad_request): no tool {name}"))
         })?;
-    let Action::Request(build) = command.action else {
-        return Err(polylogue_render::terminal::escape(&format!(
-            "error (bad_request): no tool {name}"
-        )));
+    let build = match command.action {
+        Action::Request(build) | Action::Stream { build, .. } => build,
+        Action::Local(_) => return Err(format!("no tool {name}")),
     };
     let bad = |e: String| polylogue_render::terminal::escape(&format!("error (bad_request): {e}"));
     let values = Values::from_json(command, Surface::Mcp, arguments).map_err(bad)?;

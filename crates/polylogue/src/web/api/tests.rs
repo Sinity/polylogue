@@ -17,7 +17,12 @@ fn web(daemon: &crate::test_daemon::TestDaemon) -> Arc<Web> {
 
 #[test]
 fn stream_failure_before_first_event_uses_the_shared_http_status() {
-    fn failed(_: &Request, _: &Daemon, _: &mut dyn Write) -> Option<Result<(), Response>> {
+    fn failed(
+        _: &Request,
+        _: &Daemon,
+        _: &polylogue_model::authorship::Authorship,
+        _: &mut dyn Write,
+    ) -> Option<Result<(), Response>> {
         Some(Err(error("bad_request", "invalid selection")))
     }
     let daemon = crate::test_daemon::start("synthetic stream refusal");
@@ -39,7 +44,14 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
 
 #[test]
 fn stream_failure_after_begin_delivers_error_without_final_completion() {
-    fn failed(_: &Request, _: &Daemon, output: &mut dyn Write) -> Option<Result<(), Response>> {
+    fn failed(
+        _: &Request,
+        _: &Daemon,
+        authorship: &polylogue_model::authorship::Authorship,
+        output: &mut dyn Write,
+    ) -> Option<Result<(), Response>> {
+        assert_eq!(authorship.author, polylogue_model::Author::Operator);
+        assert_eq!(authorship.via, polylogue_model::authorship::Channel::Web);
         crate::protocol::stream::event(
             output,
             "begin",
@@ -75,7 +87,12 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
 
 #[test]
 fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() {
-    fn large(_: &Request, _: &Daemon, output: &mut dyn Write) -> Option<Result<(), Response>> {
+    fn large(
+        _: &Request,
+        _: &Daemon,
+        _: &polylogue_model::authorship::Authorship,
+        output: &mut dyn Write,
+    ) -> Option<Result<(), Response>> {
         let result = (|| {
             crate::protocol::stream::event(output, "begin", &serde_json::json!({}))?;
             // Exceeds the transport buffer. Preparation cannot finish until the body is consumed.

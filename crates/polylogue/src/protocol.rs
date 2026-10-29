@@ -4,6 +4,7 @@ pub mod complete;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;
+pub mod read;
 pub mod schema;
 pub mod status;
 pub mod stream;

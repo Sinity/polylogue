@@ -280,6 +280,10 @@ fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     crate::daemon::service::change_feed(
         &Request::Changes { since: None },
         &daemon.daemon,
+        &polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Unattributed,
+            via: polylogue_model::authorship::Channel::Daemon,
+        },
         &mut wire,
     )
     .unwrap()

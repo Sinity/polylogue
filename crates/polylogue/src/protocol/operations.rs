@@ -74,20 +74,9 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     .and_then(|caller| caller.working_directory.clone()),
                 json: true,
             };
-            let values = serde_json::to_value(arguments).expect("typed arguments serialize");
-            let mut values = values
-                .as_object()
-                .expect("command arguments are objects")
-                .clone();
-            if command.writes {
-                values.insert(
-                    "request_id".into(),
-                    Value::String(context.request_id.clone()),
-                );
-            }
-            let values = match Values::from_json(command, caller.surface, values) {
+            let values = match checked_values::<C>(arguments, &caller, &context.request_id) {
                 Ok(values) => values,
-                Err(error) => return Answer::error(Failure::new(FailureKind::BadRequest, error)),
+                Err(error) => return Answer::error(error),
             };
             let narrower = values
                 .text("query")
@@ -105,11 +94,14 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             if let Err(error) = context.progress_unknown(C::NAME, narrower) {
                 return Answer::error(error);
             }
-            let Action::Request(build) = command.action else {
-                return Answer::error(Failure::new(
-                    FailureKind::BadRequest,
-                    "command is not a finite daemon operation",
-                ));
+            let build = match command.action {
+                Action::Request(build) | Action::Stream { build, .. } => build,
+                Action::Local(_) => {
+                    return Answer::error(Failure::new(
+                        FailureKind::BadRequest,
+                        "command runs locally",
+                    ));
+                }
             };
             let request = match build(command, &values, &caller) {
                 Ok(request) => request,
@@ -190,6 +182,44 @@ impl<C: CommandType> Operation for TypedCommand<C> {
     fn render_text(&self, answer: &Self::Response) -> String {
         let command = crate::commands::command(C::NAME).expect("typed command exists");
         (command.print)(&serde_json::to_value(answer).expect("typed answer serializes"))
+    }
+}
+
+fn checked_values<C: CommandType>(
+    arguments: C::Arguments,
+    caller: &Caller,
+    request_id: &str,
+) -> Result<Values, Failure> {
+    let command = crate::commands::command(C::NAME).expect("typed command exists");
+    let mut values = serde_json::to_value(arguments)
+        .expect("typed arguments serialize")
+        .as_object()
+        .expect("command arguments are objects")
+        .clone();
+    if command.writes {
+        values.insert("request_id".into(), Value::String(request_id.into()));
+    }
+    Values::from_json(command, caller.surface, values)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error))
+}
+
+/// Streams and finite answers validate through the same declaration adapter.
+pub fn build<C: CommandType>(
+    arguments: Value,
+    caller: &Caller,
+    request_id: &str,
+) -> Result<crate::daemon::Request, Failure> {
+    let arguments: C::Arguments = serde_json::from_value(arguments)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error.to_string()))?;
+    let values = checked_values::<C>(arguments, caller, request_id)?;
+    let command = crate::commands::command(C::NAME).expect("typed command exists");
+    match command.action {
+        Action::Request(build) | Action::Stream { build, .. } => build(command, &values, caller)
+            .map_err(|error| Failure::new(FailureKind::BadRequest, error)),
+        Action::Local(_) => Err(Failure::new(
+            FailureKind::BadRequest,
+            "command runs locally",
+        )),
     }
 }
 

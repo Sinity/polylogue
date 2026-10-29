@@ -106,43 +106,64 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let target = ReadTarget::parse(&v.text("session").ok_or("`session` is required")?)?;
-    let with_parents = v.flag("with_parents");
-    match target {
-        ReadTarget::Event(_) if with_parents => {
-            return Err("an event has no conversation parents".into());
-        }
-        ReadTarget::Document(_) if with_parents => {
-            return Err("documents have no conversation parents".into());
-        }
-        _ => {}
+    use polylogue_model::read::{ReadDelivery, ReadOptions};
+    let expansion = |key| {
+        v.text(key)
+            .map(|value| {
+                serde_json::from_value(serde_json::Value::String(value))
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()
+    };
+    if v.flag("inherited") && v.flag("no_inherited") {
+        return Err("choose inherited or no_inherited".into());
     }
-    let message = v.text("message");
-    if message.is_some() && v.flag("latest") {
-        return Err("choose either message or latest".into());
-    }
-    let start = if let Some(message) = message {
-        Some(crate::daemon::PageSelection::Message(
-            polylogue_model::MessageId::parse(message.strip_prefix("message:").unwrap_or(&message))
-                .map_err(|e| e.to_string())?,
-        ))
+    let directory = v.text("to").is_some();
+    let options = ReadOptions {
+        view: v
+            .text("view")
+            .unwrap_or_else(|| "transcript".into())
+            .parse()
+            .map_err(|error: polylogue_model::read::ReadError| error.to_string())?,
+        tools: expansion("tools")?,
+        thinking: expansion("thinking")?,
+        harness: expansion("harness")?,
+        output_lines: v.integer("output_lines").unwrap_or(100),
+        inherited: !v.flag("no_inherited") && (directory || v.flag("inherited")),
+        branches: v.flag("branches"),
+        turns: v.flag("turns"),
+        assertions: !v.flag("no_assertions")
+            && v.0
+                .get("assertions")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
+        for_others: v.flag("for_others"),
+        variants: v.list("variant"),
+    };
+    options.validate().map_err(|error| error.to_string())?;
+    let delivery = if directory {
+        ReadDelivery::Stream
     } else {
-        v.flag("latest")
-            .then_some(crate::daemon::PageSelection::Latest)
+        v.text("delivery")
+            .map(|value| serde_json::from_value(serde_json::Value::String(value)))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default()
     };
     Ok(Request::Read {
-        slices: v.flag("slices"),
-        selection: start,
-        target,
-        view: v.text("view").unwrap_or_else(|| "full".into()),
+        target: v.text("target").ok_or("target is required")?,
+        options,
+        delivery,
         format: v
             .text("format")
             .unwrap_or_else(|| if caller.json { "json" } else { "terminal" }.into()),
-        with_parents,
         budget: v
             .integer("budget")
-            .map(|b| usize::try_from(b).unwrap_or(usize::MAX)),
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "budget exceeds address space")?,
         cursor: v.text("cursor"),
+        with_blobs: v.flag("with_blobs"),
     })
 }
 
