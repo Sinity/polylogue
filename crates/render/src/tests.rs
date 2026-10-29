@@ -2430,3 +2430,201 @@ fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() 
         Err(ReadError::UnsupportedTarget { .. })
     ));
 }
+
+fn before_anchor(item: &ReadItem, ordinal: u64, character: u64) -> ReadPosition {
+    ReadPosition {
+        selection: selection(),
+        item: ordinal,
+        character,
+        item_hash: item_hash(item),
+    }
+}
+#[test]
+fn before_unicode_fragments_reconstruct_complete_json_without_overlap_or_gaps() {
+    let original = ReadItem {
+        source: Source::record(format!("block:test:{}#3", "opaque:λ".repeat(1000))),
+        kind: ItemKind::Other {
+            type_name: "native".into(),
+            data: json!({"text":"λ🙂漢字\n\"\\\u{9b}".repeat(1000),"provider":{"exact":[0,null,false]}}),
+        },
+    };
+    let encoded = String::from_utf8(crate::encode::json_bytes(&original).unwrap()).unwrap();
+    let mut anchor = before_anchor(&original, 3, encoded.chars().count() as u64);
+    let mut chunks = Vec::new();
+    for _ in 0..1000 {
+        let mut page =
+            pager::PageBuilder::new_before(header(), budget(), anchor, framing()).unwrap();
+        assert_eq!(page.upper_position(), Some(&anchor));
+        let status = page.push_at(selection(), 3, original.clone()).unwrap();
+        let lower = *page.first_position().unwrap();
+        let previous = page.position().copied();
+        assert_eq!(page.upper_position(), Some(&anchor));
+        let doc = page.finish(ReadFooter::default()).unwrap();
+        assert!(encode(&doc, Format::Json).len() <= budget().bytes.get());
+        let [item] = doc.items.as_slice() else {
+            panic!()
+        };
+        assert_eq!(item.source, framing().source());
+        let ItemKind::Fragment {
+            text,
+            position,
+            until,
+            total,
+        } = &item.kind
+        else {
+            panic!()
+        };
+        assert_eq!(*position, lower);
+        assert_eq!(position.item_hash, item_hash(&original));
+        assert_eq!(*until, anchor.character);
+        assert_eq!(*total, encoded.chars().count() as u64);
+        assert_eq!(text.chars().count() as u64, until - position.character);
+        assert!(position.character < *until);
+        chunks.push(text.clone());
+        if status == pager::Push::Accepted {
+            assert_eq!(lower.character, 0);
+            break;
+        }
+        assert_eq!(previous, Some(lower));
+        anchor = lower;
+    }
+    chunks.reverse();
+    let restored = chunks.concat();
+    assert_eq!(restored, encoded);
+    assert_eq!(
+        serde_json::from_str::<ReadItem>(&restored).unwrap(),
+        original
+    );
+}
+#[test]
+fn before_zero_excludes_the_verified_anchor_and_outputs_descending_input_forward() {
+    let upper_item = text("anchor");
+    let upper = before_anchor(&upper_item, 5, 0);
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(2).unwrap();
+    let mut page = pager::PageBuilder::new_before(header(), limits, upper, framing()).unwrap();
+    assert_eq!(
+        page.push_at(selection(), 5, upper_item.clone()).unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(page.first_position(), None);
+    assert_eq!(
+        page.push_at(selection(), 4, text("four")).unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(
+        page.push_at(selection(), 3, text("three")).unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(
+        page.push_at(selection(), 2, text("two")).unwrap(),
+        pager::Push::Full
+    );
+    assert_eq!(page.first_position().unwrap().item, 3);
+    assert_eq!(page.position(), page.first_position());
+    assert_eq!(page.upper_position(), Some(&upper));
+    let doc = page.finish(ReadFooter::default()).unwrap();
+    assert_eq!(doc.items, vec![text("three"), text("four")]);
+    let mut changed = pager::PageBuilder::new_before(header(), limits, upper, framing()).unwrap();
+    assert_eq!(
+        changed.push_at(selection(), 5, text("late availability changed")),
+        Err(pager::PageError::ItemChanged)
+    );
+    let mut missing = pager::PageBuilder::new_before(header(), limits, upper, framing()).unwrap();
+    assert_eq!(
+        missing.push_at(selection(), 4, upper_item.clone()),
+        Err(pager::PageError::InvalidPosition)
+    );
+    let mut duplicate = pager::PageBuilder::new_before(header(), limits, upper, framing()).unwrap();
+    duplicate.push_at(selection(), 5, upper_item).unwrap();
+    assert_eq!(
+        duplicate.push_at(selection(), 5, text("same ordinal")),
+        Err(pager::PageError::InvalidPosition)
+    );
+}
+#[test]
+fn before_footer_trim_evicts_earliest_output_and_regenerates_its_lower_anchor() {
+    let upper_item = text("anchor");
+    let upper = before_anchor(&upper_item, 3, 0);
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(3).unwrap();
+    limits.bytes = NonZeroUsize::new(2200).unwrap();
+    let mut page = pager::PageBuilder::new_before(header(), limits, upper, framing()).unwrap();
+    page.push_at(selection(), 3, upper_item).unwrap();
+    for n in (0..3).rev() {
+        assert_eq!(
+            page.push_at(selection(), n, text(&format!("{n}{}", "a".repeat(350))))
+                .unwrap(),
+            pager::Push::Accepted
+        );
+    }
+    assert_eq!(page.first_position().unwrap().item, 0);
+    assert_eq!(page.upper_position(), Some(&upper));
+    let mut attempts = 0;
+    let doc = page
+        .finish_with(|lower| {
+            attempts += 1;
+            large_footer(lower)
+        })
+        .unwrap();
+    assert!(attempts > 1);
+    assert!(!doc.items.is_empty() && doc.items.len() < 3);
+    let lower = doc.footer.position.unwrap();
+    assert_eq!(lower.item, 3 - doc.items.len() as u64);
+    let ItemKind::Text { text: first } = &doc.items[0].kind else {
+        panic!()
+    };
+    assert!(first.starts_with(&lower.item.to_string()));
+    let ItemKind::Text { text: last } = &doc.items.last().unwrap().kind else {
+        panic!()
+    };
+    assert!(last.starts_with('2'));
+    assert_eq!(
+        doc.footer.next.as_ref().unwrap().mcp["position"],
+        json!(lower)
+    );
+    assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
+}
+#[test]
+fn before_footer_trim_advances_only_the_left_fragment_edge() {
+    let original = text(&"λ🙂".repeat(150));
+    let encoded = String::from_utf8(crate::encode::json_bytes(&original).unwrap()).unwrap();
+    let upper = before_anchor(&original, 1, encoded.chars().count() as u64);
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(2).unwrap();
+    limits.bytes = NonZeroUsize::new(1900).unwrap();
+    let mut page = pager::PageBuilder::new_before(header(), limits, upper, framing()).unwrap();
+    assert_eq!(
+        page.push_at(selection(), 1, original.clone()).unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(
+        page.push_at(selection(), 0, text(&"n".repeat(1000)))
+            .unwrap(),
+        pager::Push::Full
+    );
+    assert_eq!(page.upper_position(), Some(&upper));
+    let doc = page.finish_with(large_footer).unwrap();
+    let ItemKind::Fragment {
+        text,
+        position,
+        until,
+        total,
+    } = &doc.items[0].kind
+    else {
+        panic!()
+    };
+    assert!(position.character > 0);
+    assert_eq!(*until, upper.character);
+    assert_eq!(*total, upper.character);
+    assert_eq!(position.item_hash, upper.item_hash);
+    assert_eq!(doc.footer.position, Some(*position));
+    assert_eq!(
+        text,
+        &encoded
+            .chars()
+            .skip(position.character as usize)
+            .collect::<String>()
+    );
+    assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
+}
