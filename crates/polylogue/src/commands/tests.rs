@@ -315,7 +315,11 @@ fn mcp_schemas_follow_the_arguments() {
     let s = schema(command("read").unwrap());
     assert!(s["properties"]["arguments"].is_object());
     assert!(s["properties"]["request_id"].is_object());
-    assert!(s.to_string().contains("ResumeArguments"));
+    assert!(
+        serde_json::to_string(&s)
+            .unwrap()
+            .contains("ResumeArguments")
+    );
     assert_eq!(s["additionalProperties"], false);
     let s = schema(command("note add").unwrap());
     assert!(s["properties"]["request_id"].is_object());

@@ -27,6 +27,7 @@ impl Stored {
             .store_bytes(
                 self.archive.prepare_bytes(bytes).unwrap(),
                 Batch {
+                    basis: None,
                     required_disposition: None,
                     input: InputKey {
                         id: input.into(),
