@@ -89,6 +89,7 @@ fn database_sidecars_name_the_database_for_its_capture_scheduler() {
 
 fn config(home: &Path) -> Config {
     Config {
+        clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
         home: home.to_owned(),
         tool_dirs: Default::default(),
         workers: 1,
@@ -282,7 +283,7 @@ fn hidden_directories_need_a_named_location() {
 fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() {
     use polylogue_model::capture::Accessibility;
     let home = polylogue_testkit::ClaudeHome::new();
-    let mut config = crate::Config::from_env();
+    let mut config = crate::test_config();
     config.home = home.home.clone();
     config.tool_dirs.clear();
     std::fs::create_dir_all(home.home.join(".codex")).unwrap();
@@ -305,7 +306,7 @@ fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() 
 #[test]
 fn unknown_directories_share_a_bounded_bucket_and_links_are_explicitly_ignored() {
     let home = polylogue_testkit::ClaudeHome::new();
-    let mut config = crate::Config::from_env();
+    let mut config = crate::test_config();
     config.home = home.home.clone();
     config.tool_dirs.clear();
     let root = home.home.join(".codex");

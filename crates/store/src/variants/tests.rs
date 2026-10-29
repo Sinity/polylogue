@@ -3,6 +3,10 @@ use polylogue_model::{NewVariantPart, user::UserWrite};
 
 fn request(id: &str, base: Option<&str>, text: &str) -> UserRequest {
     UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Agent(None),
+            via: polylogue_model::authorship::Channel::Mcp,
+        },
         id: id.into(),
         machine: "machine".into(),
         at: Timestamp::from_unix_ms(1).unwrap(),
@@ -14,8 +18,6 @@ fn request(id: &str, base: Option<&str>, text: &str) -> UserRequest {
                 kind: VariantKind::Translation,
                 from_lang: Some("en".into()),
                 to_lang: Some("pl".into()),
-                author: Author::Agent(None),
-                via: "mcp".into(),
                 method: Some("translation".into()),
                 parts: vec![NewVariantPart {
                     of: "block:codex:source#0".into(),
@@ -63,9 +65,10 @@ fn variant_revisions_use_graph_currency_and_preserve_exact_parts() {
     assert_eq!(body, "Poprawiony");
     let stale = request("stale", Some("first"), "Stary");
     let tx = conn.transaction().unwrap();
-    assert!(
-        matches!(crate::user_writes::apply(&tx,&stale,10),Err(StoreError::Invalid(message)) if message.contains("stale"))
-    );
+    assert!(matches!(
+        crate::user_writes::apply(&tx, &stale, 10),
+        Err(StoreError::Stale { .. })
+    ));
     drop(tx);
     assert!(rows::get(&conn, "stale").unwrap().is_none());
 }
@@ -165,13 +168,70 @@ fn variant_text_is_a_separate_derived_index_and_tracks_canonical_lifecycle() {
         0
     );
 }
+
+#[test]
+fn variant_restoration_is_exact_idempotent_and_refuses_changed_facts() {
+    let mut original = archive();
+    let mut request = request("first", None, "Original");
+    request.at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap();
+    write_request(&mut original, &request, 1);
+    let effect = capture(&original, &request, 1).unwrap();
+    assert_eq!(effect.variants[0].created_at, request.at);
+    let restored = archive();
+    apply(&restored, &effect, 10).unwrap();
+    apply(&restored, &effect, 11).unwrap();
+    let mut expected = effect.variants[0].clone();
+    expected.commit_seq = 10;
+    assert_eq!(rows::get(&restored, "first").unwrap(), Some(expected));
+    let mut changed = effect.clone();
+    changed.variant_parts[0].body = "Changed".into();
+    assert!(matches!(
+        apply(&restored, &changed, 12),
+        Err(StoreError::Conflict(_))
+    ));
+    let mut body = String::new();
+    rows::parts(&restored, "first", |part| {
+        body = part.body;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(body, "Original");
+}
+
 #[test]
 fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
     let archive = crate::fixture::writer::WriterArchive::new();
-    let first = request("first", None, "uniqueword");
-    archive.writer.user(first).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let before = pool.reader().unwrap();
+    assert!(!before.has_variant_source("message:codex:source").unwrap());
+    let mut first = request("first", None, "uniqueword");
+    let UserWrite::Variant { variant } = &mut first.write else {
+        unreachable!()
+    };
+    variant.parts.extend([
+        NewVariantPart {
+            of: "block:codex:source#1".into(),
+            of_hash: BlobHash([4; 32]),
+            relation: VariantRelation::Translates,
+            body: "different source".into(),
+        },
+        NewVariantPart {
+            of: "block:codex:source#0".into(),
+            of_hash: BlobHash([2; 32]),
+            relation: VariantRelation::Translates,
+            body: "second rendition part".into(),
+        },
+    ]);
+    archive.writer.user(first).unwrap();
+    assert!(!before.has_variant_source("message:codex:source").unwrap());
+    drop(before);
     let reader = pool.reader().unwrap();
+    assert!(reader.has_variant_source("message:codex:source").unwrap());
+    assert!(
+        !reader
+            .has_variant_source("message:codex:unrelated")
+            .unwrap()
+    );
     let variant = reader.variant("first").unwrap().unwrap();
     assert_eq!(variant.author, Author::Agent(None));
     assert_eq!(variant.via, "mcp");
@@ -190,6 +250,14 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
             .unwrap()
             .is_none()
     );
+    assert_eq!(
+        reader
+            .selected_variant("message:codex:source", BlobHash([9; 32]), &enabled, true)
+            .unwrap()
+            .unwrap()
+            .id,
+        "first",
+    );
     let mut bodies = Vec::new();
     reader
         .visit_variant_parts("first", |part| {
@@ -197,7 +265,29 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(bodies, ["uniqueword"]);
+    assert_eq!(
+        bodies,
+        ["uniqueword", "different source", "second rendition part"]
+    );
+    let mut selected = Vec::new();
+    reader
+        .visit_variant_parts_for("first", "block:codex:source#0", |part| {
+            selected.push((part.n, part.body));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        selected,
+        vec![
+            (0, "uniqueword".into()),
+            (2, "second rendition part".into())
+        ]
+    );
+    reader
+        .visit_variant_parts_for("first", "block:codex:source#9", |_| {
+            panic!("an absent exact source address matched another block")
+        })
+        .unwrap();
     let mut hits = Vec::new();
     reader
         .visit_variant_search("uniqueword", Some("pl"), |hit| {
@@ -224,4 +314,71 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
         reader.enabled_variant("message:codex:source", BlobHash([1; 32]), &enabled),
         Err(StoreError::Ambiguous { .. })
     ));
+    assert!(matches!(
+        reader.selected_variant("message:codex:source", BlobHash([9; 32]), &enabled, true),
+        Err(StoreError::Ambiguous { .. })
+    ));
+    drop(reader);
+    let mut fresh = request("fresh-root", None, "freshword");
+    let UserWrite::Variant { variant } = &mut fresh.write else {
+        unreachable!()
+    };
+    variant.source_hash = BlobHash([9; 32]);
+    archive.writer.user(fresh).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .selected_variant("message:codex:source", BlobHash([9; 32]), &enabled, true)
+            .unwrap()
+            .unwrap()
+            .id,
+        "fresh-root"
+    );
+}
+
+#[test]
+fn variant_ingress_keeps_original_author_and_first_admitted_time_separate_from_claims() {
+    use polylogue_model::{Reference, authored::ImportAttribution};
+    let mut origin = archive();
+    let request = request("first", None, "Original");
+    write_request(&mut origin, &request, 1);
+    let effect = capture(&origin, &request, 1).unwrap();
+    let target = archive();
+    let current = ImportAttribution {
+        machine: "receiver".into(),
+        input: "local-bundle".into(),
+        chain: 1,
+        actor: Author::Operator,
+        at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap(),
+    };
+    restore(&target, &effect, &current, 2).unwrap();
+    let mut rollback = current.clone();
+    rollback.at = Timestamp::from_unix_ms(0).unwrap();
+    restore(&target, &effect, &rollback, 3).unwrap();
+    let reference = Reference::parse("variant:first@first").unwrap();
+    let part = Reference::parse("variant:first@first#0").unwrap();
+    let claim = ImportAttribution {
+        machine: "sender".into(),
+        input: "declared-bundle".into(),
+        chain: 2,
+        actor: Author::Script("importer.service".into()),
+        at: Timestamp::from_unix_ms(1).unwrap(),
+    };
+    declare_imports(&target, &reference, std::slice::from_ref(&claim), 4).unwrap();
+    let history = imports::history(&target, &reference).unwrap().unwrap();
+    assert_eq!(history.observed.as_slice(), std::slice::from_ref(&current));
+    assert_eq!(history.declared, [claim]);
+    assert_eq!(
+        imports::history(&target, &part).unwrap().unwrap().observed,
+        [current]
+    );
+    let original = rows::get(&target, "first").unwrap().unwrap();
+    assert_eq!(original.author, Author::Agent(None));
+    assert_eq!(original.machine, "machine");
+    let copied = archive();
+    copy(&target, &copied).unwrap();
+    assert_eq!(
+        imports::history(&copied, &reference).unwrap().unwrap(),
+        history
+    );
 }

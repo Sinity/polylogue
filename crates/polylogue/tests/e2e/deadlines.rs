@@ -1,7 +1,6 @@
-use super::BIN;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::Duration;
 
 fn answer(args: &[&str], delay: Duration, response: &'static [u8], has_deadline: bool) -> Output {
@@ -18,13 +17,17 @@ fn answer(args: &[&str], delay: Duration, response: &'static [u8], has_deadline:
         std::thread::sleep(delay);
         stream.write_all(response).unwrap();
     });
-    let output = Command::new(BIN)
-        .env("XDG_DATA_HOME", directory.path())
-        .env("POLYLOGUE_READ_TIMEOUT_MS", "20")
-        .env_remove("POLYLOGUE_ARCHIVE")
-        .args(args)
-        .output()
-        .unwrap();
+    let output = crate::Fixture::new(
+        &archive,
+        &directory.path().join("home"),
+        &directory.path().join("config"),
+    )
+    .command()
+    .env("XDG_DATA_HOME", directory.path())
+    .env("POLYLOGUE_READ_TIMEOUT_MS", "20")
+    .args(args)
+    .output()
+    .unwrap();
     peer.join().unwrap();
     output
 }

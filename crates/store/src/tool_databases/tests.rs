@@ -23,6 +23,7 @@ impl Test {
                 machine: "test-machine".into(),
                 host: "test".into(),
                 path: db.display().to_string(),
+                path_bytes: db.as_os_str().as_encoded_bytes().to_vec(),
                 facts: None,
                 seen_at_ms: 1,
                 import: None,
@@ -85,6 +86,7 @@ impl Test {
                 blobs: vec![],
                 length,
                 parse: vec![parse],
+                acquisition: None,
                 release: Default::default(),
             };
             for done in writer.sender()?.store_group(

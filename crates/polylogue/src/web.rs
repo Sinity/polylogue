@@ -25,6 +25,7 @@ use std::sync::Arc;
 /// What every handler shares.
 pub struct Web {
     pub daemon: Arc<Daemon>,
+    pub operations: Arc<command_surface::OperationTable>,
     pub key: String,
     pub token: String,
     pub port: u16,
@@ -73,14 +74,25 @@ impl Drop for Server {
 
 /// Binds the port and returns the owner of the HTTP worker. Socket serving
 /// can continue independently if HTTP startup fails.
-pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Server> {
-    start_on(daemon, access::wanted_port())
+pub fn start(
+    daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
+) -> std::io::Result<Server> {
+    let port = daemon.config.http.listen.port();
+    start_on(daemon, operations, port)
 }
 
-fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
+fn start_on(
+    daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
+    port: u16,
+) -> std::io::Result<Server> {
     use std::future::IntoFuture;
     let key = crate::runtime_dir::archive_key(&daemon.archive.root);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    let listener = std::net::TcpListener::bind(std::net::SocketAddr::new(
+        daemon.config.http.listen.ip(),
+        port,
+    ))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -91,11 +103,15 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
         let _entered = runtime.enter();
         tokio::net::TcpListener::from_std(listener)?
     };
-    let token = access::new_token()?;
-    let directory = crate::runtime_dir::runtime_dir(&key);
+    let token = match &daemon.config.http.token {
+        Some(token) => token.expose().to_owned(),
+        None => access::new_token()?,
+    };
+    let directory = daemon.config.paths.runtime_dir(&daemon.archive.root);
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,
+        operations,
         key,
         token: token.clone(),
         port,
@@ -166,8 +182,8 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/m/{id}", get(reader::message))
         .route("/n/{id}", get(reader::note))
         .route("/auth", get(auth_page).post(auth_exchange))
-        .route("/assets/reader.css", get(css))
-        .route("/assets/reader.js", get(js))
+        .route("/assets/auth.js", get(auth_js))
+        .route("/assets/{*path}", get(asset))
         .route("/assets/live.js", get(live_js))
         .nest("/api/v1", api::routes())
         .layer(middleware::from_fn_with_state(Arc::clone(&web), guard))
@@ -251,52 +267,56 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
         {
             Some(value) => Some(value),
             None => {
-                return json_answer(
+                return web_shell::assets::secure(json_answer(
                     &web,
                     crate::daemon::service::error(
                         "bad_request",
                         "x-polylogue-deadline-ms must be Unix milliseconds",
                     ),
-                );
+                ));
             }
         },
         None => None,
     };
+    let is_asset = req.uri().path().starts_with("/assets/");
     let mut response = READ_LIMIT
         .scope((deadline_ms, cancellation), guarded(web, req, next))
         .await;
-    let h = response.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        ),
-    );
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    h.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    if !is_asset {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    web_shell::assets::secure(response)
 }
 
 /// Runs a request on a blocking thread, as the socket would.
 pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
+    let scope = if request.read_only() {
+        match web.daemon.reads.scope_token() {
+            Ok(scope) => Some(scope),
+            Err(error) => return crate::daemon::service::store_error(&error),
+        }
+    } else {
+        None
+    };
     let d = Arc::clone(&web.daemon);
     let (deadline_ms, cancellation) = READ_LIMIT.try_with(Clone::clone).unwrap_or_default();
     let limit = crate::daemon::execution::limit_for(&request, deadline_ms, cancellation);
     let mut cancel = CancelRead(Some(limit.cancellation.clone()));
+    let authorship = polylogue_model::authorship::compute_authorship(
+        polylogue_model::authorship::Channel::Web,
+        &Default::default(),
+        None,
+    );
     let response = tokio::task::spawn_blocking(move || {
-        crate::daemon::service::handle_with_limit(request, &d, &limit)
+        crate::daemon::service::handle_with_caller(request, &d, &limit, &authorship)
     })
     .await
     .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
     cancel.0.take();
-    browser_response(response, &web.daemon.archive.root)
+    let answer = crate::protocol::scope_answer(response.answer(), scope.as_ref());
+    browser_response(answer.into(), &web.daemon.archive.root)
 }
 
 pub(super) fn request_limit() -> polylogue_store::read::limit::ReadLimit {
@@ -317,7 +337,18 @@ impl Drop for CancelRead {
 }
 
 fn browser_response(response: Response, root: &std::path::Path) -> Response {
-    let mut response = response.clean(|text| access::scrub(text, root));
+    let mut response = response;
+    match &mut response {
+        Response::Ok { data } => access::scrub_value(data, root),
+        Response::Error {
+            message, detail, ..
+        } => {
+            *message = access::scrub(message, root);
+            if let Some(detail) = detail {
+                access::scrub_value(detail, root);
+            }
+        }
+    }
     if let Response::Ok { data, .. } = &mut response
         && let Some(data) = data.as_object_mut()
     {
@@ -331,9 +362,7 @@ pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
     if let Some(o) = value.as_object_mut() {
         o.remove("archive");
     }
-    polylogue_model::masking::mask_json_values(&mut value, |text| {
-        access::scrub(text, &web.daemon.archive.root)
-    });
+    access::scrub_value(&mut value, &web.daemon.archive.root);
     value
 }
 
@@ -507,18 +536,22 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn css() -> HttpResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("web/assets/reader.css"),
-    )
-        .into_response()
+async fn asset(request: HttpRequest) -> HttpResponse {
+    let (parts, _) = request.into_parts();
+    let request = axum::http::Request::from_parts(parts, ());
+    let theme = web_shell::theme::Theme {
+        stylesheet: Some(include_str!("web/assets/theme.css").into()),
+        fallback_reason: None,
+    };
+    web_shell::assets::serve_with_theme(&request, Some(&theme)).map(axum::body::Body::from)
 }
-
-async fn js() -> HttpResponse {
+async fn auth_js() -> HttpResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("web/assets/reader.js"),
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("web/assets/auth.js"),
     )
         .into_response()
 }
@@ -532,44 +565,31 @@ async fn live_js() -> HttpResponse {
 }
 
 fn error_status(kind: &str) -> StatusCode {
-    match kind {
-        "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
-        "cancelled" => StatusCode::REQUEST_TIMEOUT,
-        "not_found" => StatusCode::NOT_FOUND,
-        "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field" | "bad_value"
-        | "not_a_query" => StatusCode::BAD_REQUEST,
-        "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
-        "not_built" => StatusCode::NOT_IMPLEMENTED,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+    crate::protocol::kind(kind)
+        .http_status()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// The data as the socket gives it, or a typed error with its HTTP status.
-pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
-    match browser_response(response, &web.daemon.archive.root) {
-        Response::Ok { data, .. } => axum::Json(data).into_response(),
-        Response::Error {
-            kind,
-            message,
-            detail,
-        } => {
-            // A browser request's refusal names its own status.
-            let named = detail
-                .as_ref()
-                .and_then(|d| d["http_status"].as_u64())
-                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
-            let status = named.unwrap_or_else(|| error_status(&kind));
-            let message = access::scrub(&message, &web.daemon.archive.root);
-            (
-                status,
-                axum::Json(scrubbed(
-                    web,
-                    serde_json::json!({ "error": kind, "message": message, "detail": detail }),
-                )),
-            )
-                .into_response()
-        }
+pub fn json_answer(
+    web: &Web,
+    response: impl Into<command_surface::Answer<serde_json::Value>>,
+) -> HttpResponse {
+    let answer = response.into();
+    let status = answer
+        .http_status()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut value = serde_json::to_value(answer).expect("answer serializes");
+    if let Some(data) = value
+        .get_mut("value")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        data.remove("archive");
     }
+    access::scrub_value(&mut value, &web.daemon.archive.root);
+    (status, axum::Json(value)).into_response()
 }
 
 #[cfg(test)]

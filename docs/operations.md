@@ -91,10 +91,10 @@ The commands this area owns, each with the reason it is a command rather than a 
 | bare `polylogue` | orientation |
 | `status [--json]` | a snapshot of the daemon, not of archive rows |
 | `daemon [--until-idle] [--json] [--archive DIR]` | runs the service |
-| `import PATH…` | brings an outside file into the archive ([capture.md#import](capture.md#import)) |
+| `import PATH…` | brings explicit daemon-host paths into the archive ([capture.md#import](capture.md#import)); relative paths require the accepting native caller’s working directory |
 | `verify` | an on-demand check of stored bytes |
 | `setting [NAME [VALUE]]` | writes an authored `setting` record |
-| `schema infer\|diff\|unread\|check` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
+| `schema infer\|diff\|unread` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
 | `sinex cutover [--dry-run]` | the one-way move to primary mode ([primary-mode.md#cutover](primary-mode.md#cutover)) |
 
 Notices, the running list and the live list are shipped saved queries (`query:notices`, `query:running`), not commands. No command checks for a terminal or harness variables to decide whether it may run, and every write records its computed author ([assertions.md#authorship](assertions.md#authorship)). Every command shows stored text as it is: Polylogue censors no output.
@@ -167,11 +167,15 @@ Deployment configuration is loaded once by `main`, from the config file, then fl
 | subscription plans and price facts | authored `setting` | facts only the operator knows |
 | fetching linked attachments from third parties (`fetch-links`) | authored `setting` | sends requests out of the machine |
 
-**Authored settings** are insert-only assertions with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused. `polylogue setting` lists every setting with its value, who set it and when. Any author may change a setting; `status` lists changes by anyone but the operator until he next looks ([assertions.md](assertions.md#authorship)).
+`polylogue.toml` accepts `archive`, `check_history`, `[http]` (`listen`, `auth_token_file`) and standalone `[day]` (`zone`, `start`). `--config` chooses this file; `--archive`, `--listen` and `--auth-token-file` override its values. The two HTTP environment variables override flags. Relative file values resolve against their configuration file; relative flags resolve against the captured working directory. Standalone deployment defaults to the named `UTC` zone and `04:00:00`; an invalid zone refuses startup. Primary mode rejects a local `[day]` and obtains its day from Sinex's current public context.
+
+`signals.toml` has `[notifications]` (`route = "dbus"`, `"command"` or `"both"`, `deadline_ms`, and optional `command = { program = "...", arguments = ["..."] }`), `[value_targets.NAME]` (`path`) and `[action_commands.NAME]` (`program`, `arguments`). Programs and arguments are separate values. Relative paths resolve against the file; a configuration digest identifies the resolved definitions frozen by a delivery.
+
+**Authored settings** are insert-only assertions with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused. `polylogue setting` lists every setting with its value, who set it and when. The typed answer also includes each key’s kind, declared scope, default and owner. `setting KEY` reads one catalog entry; `setting KEY VALUE` authors a change. Host-scoped keys use the captured accepting machine unless `--machine NAME` selects a named host; archive-scoped keys refuse a machine override. Primary attention entries identify Sinex as owner and expose no Polylogue default or locally authored value. Any author may change a setting; `status` lists changes by anyone but the operator until he next looks ([assertions.md](assertions.md#authorship)).
 
 **Not configurable,** because a dominant option exists: provider locations (fixed per origin, honouring a tool's own documented home variable such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`; [capture.md#locations](capture.md#locations)); whether the session-start brief is injected (removing the hooks is the off switch); brief sizes and budgets; worker counts and memory targets (derived from the cgroup CPU quota and affinity); pacing; deadlines (defaults any caller lifts).
 
-**Environment.** No environment variable selects the archive, other than the XDG base directories, `HOME` and the tools' own home variables. The binary reads only those, `PAGER`, `NO_COLOR`, `COMPLETE`, the harness variables read for caller identity, and `POLYLOGUE_LISTEN` and `POLYLOGUE_AUTH_TOKEN_FILE`.
+**Environment.** No environment variable selects the archive, other than the XDG base directories, `HOME` and the tools' own home variables. The binary reads only those, `PAGER`, `NO_COLOR`, `COMPLETE`, the harness variables read for caller identity, and `POLYLOGUE_LISTEN` and `POLYLOGUE_AUTH_TOKEN_FILE`. The startup boundary also captures `DBUS_SESSION_BUS_ADDRESS` as a transport address for the notification worker and `VOYAGE_API_KEY` as the optional paid embedding credential; loading configuration opens no bus connection.
 
 **Broken configuration never falls back.** A `sinex.toml` that does not parse or names an unknown mode does not switch to standalone: `status` shows the error with the file's path, the verdict is `degraded`, and writes wait.
 

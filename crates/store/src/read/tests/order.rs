@@ -98,17 +98,12 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
                 .collect::<Vec<_>>(),
             expected
         );
-        let blocks = r
-            .messages(&id, false)
-            .unwrap()
-            .into_iter()
-            .flat_map(|message| {
-                message
-                    .blocks
-                    .into_iter()
-                    .filter_map(|block| block.text().map(str::to_owned))
-            })
-            .collect::<Vec<_>>();
+        let mut blocks = Vec::new();
+        crate::ordered_blocks::visit_text(r.conn().unwrap(), session, |block| {
+            blocks.push(block.text().unwrap().to_owned());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
         assert_eq!(blocks, expected);
     }
 }

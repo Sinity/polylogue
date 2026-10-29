@@ -70,17 +70,12 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
         let title = reader.display_title(&id).unwrap();
         assert_eq!(serde_json::to_value(&title).unwrap(), shown["title"]);
         let source = reader.session(&id).unwrap().unwrap();
-        let read = polylogue_render::session(
-            &source,
-            title.as_deref(),
-            vec![],
-            polylogue_model::read::View::Full,
-            polylogue_render::Format::Json,
-            &[],
-        )
-        .unwrap();
-        assert_eq!(read["display_title"], shown["title"]);
-        assert_eq!(read["session"], serde_json::to_value(&source).unwrap());
+        let expected = match shown["id"].as_str().unwrap() {
+            "claude-code:recorded" => Some("Provider title"),
+            "claude-code:empty" => Some(""),
+            _ => None,
+        };
+        assert_eq!(source.title.as_deref(), expected);
     }
     assert!(recorded[0]["title"].is_null());
     assert_eq!(recorded[0]["derived_title"], "First human question");

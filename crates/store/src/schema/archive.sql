@@ -63,6 +63,7 @@ CREATE TABLE extent (
   blob          BLOB NOT NULL REFERENCES blob(hash),
   blob_offset   INTEGER NOT NULL,
   commit_seq    INTEGER NOT NULL,
+  acquisition   BLOB,                    -- receiver acquisition evidence, unknown on historical rows
   PRIMARY KEY (input, chain, offset),
   FOREIGN KEY (input, chain) REFERENCES revision(input, number)
 ) STRICT, WITHOUT ROWID;
@@ -95,11 +96,13 @@ CREATE TABLE observation (
   details_json  TEXT,                    -- imported: the import member it was read as, and its format
   polylogue_version TEXT NOT NULL,
   seen_at       INTEGER NOT NULL,        -- Polylogue's clock
-  commit_seq    INTEGER NOT NULL DEFAULT 0
+  commit_seq    INTEGER NOT NULL DEFAULT 0,
+  path_bytes    BLOB                      -- exact acquired location; NULL is historical missing evidence
 ) STRICT;
 CREATE INDEX observation_input ON observation(input, seen_at);
 CREATE INDEX observation_commit_seq ON observation(commit_seq);
 CREATE INDEX observation_path ON observation(machine, path, seen_at);
+CREATE INDEX observation_path_bytes ON observation(machine,path_bytes,commit_seq);
 
 -- Notes, tags, titles, saved queries, withdrawals and everything else people
 -- and agents add.

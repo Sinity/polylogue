@@ -307,6 +307,7 @@ fn a_host_rename_restores_nothing() {
     let revisions = count(&w, "SELECT count(*) AS n FROM a.revision");
     let blobs = count(&w, "SELECT count(*) AS n FROM a.blob");
     let config = Config {
+        clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
         host: "morrow-renamed".into(),
         ..w.config()
     };

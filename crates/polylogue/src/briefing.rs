@@ -19,7 +19,7 @@
 //! - on resume, only what changed since the session's last brief; after
 //!   compaction, every prompt the operator typed in the session, verbatim.
 //!
-//! A brief fits its budget (`briefing.budget`, in tokens of about four
+//! A brief fits its fixed budget (in tokens of about four
 //! bytes; [`DEFAULT_BUDGET`]). Sections fill in the order above and each
 //! names what did not fit and the command that shows it. The operator's
 //! prompts after compaction are never cut.
@@ -29,7 +29,7 @@ mod advice;
 use crate::daemon::query::{NearFn, notes};
 use polylogue_model::DeliveryEvent;
 use polylogue_model::user::LeftOut;
-use polylogue_model::{Note, NoteKind, SessionId, Target, Timestamp};
+use polylogue_model::{Note, NoteKind, Reference, SessionId, Timestamp};
 use polylogue_store::search;
 use polylogue_store::{Reader, StoreError};
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 const RECENT_SESSIONS: u64 = 5;
 /// Hits a recall returns per page.
 const RECALL_PAGE: u64 = 20;
-/// A brief's budget in tokens when `briefing.budget` is unset.
+/// A brief's fixed budget in tokens.
 pub const DEFAULT_BUDGET: u64 = 2_000;
 /// Bytes kept for the lines that name what did not fit.
 const POINTER_RESERVE: usize = 600;
@@ -217,16 +217,26 @@ pub fn prepare(
     reader: &Reader<'_>,
     ask: &Ask,
     delivery_id: &str,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
     near: Option<&NearFn<'_>>,
+    check_history: &Path,
 ) -> Result<Prepared, StoreError> {
+    let now: Timestamp = context.clock.now.into();
     match ask {
         Ask::SessionStart {
             cwd,
             session,
             source,
-        } => session_start(reader, cwd, session.as_ref(), *source, delivery_id, now),
-        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, now),
+        } => session_start(
+            reader,
+            cwd,
+            session.as_ref(),
+            *source,
+            delivery_id,
+            context,
+            check_history,
+        ),
+        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, context),
         Ask::Recall {
             text, cwd, cursor, ..
         } => recall(
@@ -235,7 +245,7 @@ pub fn prepare(
             cwd.as_deref(),
             cursor.as_deref(),
             delivery_id,
-            now,
+            context,
             near,
         ),
         Ask::ToolUse {
@@ -251,10 +261,11 @@ pub fn prepare(
 /// accepted.
 fn operator_notes(
     reader: &Reader<'_>,
-    targets: Vec<Target>,
+    targets: Vec<Reference>,
     after_seq: Option<i64>,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<Note>, StoreError> {
+    let now: Timestamp = context.clock.now.into();
     let kinds = [
         NoteKind::Lesson,
         NoteKind::Handoff,
@@ -271,20 +282,20 @@ fn operator_notes(
     if let Some(after) = after_seq {
         conditions.push_str(&format!(" write_counter:>{after}"));
     }
-    let notes = notes::list(reader, &conditions, now)?;
+    let notes = notes::list(reader, &conditions, context)?;
     Ok(notes.into_iter().filter(|n| !n.expired_at(now)).collect())
 }
 
 /// Agent-written notes here the operator has not judged yet.
 fn unjudged_agent_notes(
     reader: &Reader<'_>,
-    targets: &[Target],
-    now: Timestamp,
+    targets: &[Reference],
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<u64, StoreError> {
     notes::count(
         reader,
         &format!("{} agent:true judged:unknown", notes::about(targets)),
-        now,
+        context,
     )
 }
 
@@ -420,44 +431,13 @@ impl Fitter {
     }
 }
 
-/// The budget in tokens: `briefing.budget`, else [`DEFAULT_BUDGET`].
-fn budget(reader: &Reader<'_>) -> Result<u64, StoreError> {
-    let machine = polylogue_store::user_writes::machine_id();
-    match reader.setting("briefing.budget", &machine)? {
-        None => Ok(DEFAULT_BUDGET),
-        Some(v) => v
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|b| *b > 0)
-            .ok_or_else(|| {
-                StoreError::Invalid(format!(
-                    "briefing.budget is {v:?}; it is a number of tokens, such as 2000"
-                ))
-            }),
-    }
-}
-
-/// Where the development tooling's check history is: the
-/// `briefing.check_history` setting, else devkit's file under the home
-/// directory.
-fn check_history(reader: &Reader<'_>) -> Result<PathBuf, StoreError> {
-    let machine = polylogue_store::user_writes::machine_id();
-    Ok(match reader.setting("briefing.check_history", &machine)? {
-        Some(path) => PathBuf::from(path),
-        None => polylogue_store::check_runs::default_path(Path::new(
-            &std::env::var_os("HOME").unwrap_or_default(),
-        )),
-    })
-}
-
 /// Sessions working under `dirs` now, other than `me`, through the query
 /// `live` runs.
 fn live_here(
     reader: &Reader<'_>,
     dirs: &[String],
     me: Option<&SessionId>,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<Item>, StoreError> {
     let places: Vec<String> = dirs
         .iter()
@@ -485,8 +465,7 @@ fn live_here(
                 page_size: None,
                 why: false,
                 session: None,
-                now: now.unix_ms(),
-                day: None,
+                context: std::sync::Arc::clone(context),
                 embeddings: false,
                 near: None,
                 fields: &fields,
@@ -638,14 +617,16 @@ fn session_start(
     session: Option<&SessionId>,
     source: StartSource,
     delivery_id: &str,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
+    check_history: &Path,
 ) -> Result<Prepared, StoreError> {
+    let now: Timestamp = context.clock.now.into();
     let dirs = scope_dirs(cwd);
     let here = cwd.display().to_string();
-    let mut targets: Vec<Target> = dirs.iter().map(|d| Target::Cwd(d.clone())).collect();
-    targets.extend(repo_names(reader, &dirs)?.into_iter().map(Target::Repo));
+    let mut targets: Vec<Reference> = dirs.iter().map(|d| Reference::Cwd(d.clone())).collect();
+    targets.extend(repo_names(reader, &dirs)?.into_iter().map(Reference::Repo));
     if let Some(s) = session {
-        targets.push(Target::Session(s.clone()));
+        targets.push(Reference::Session(s.clone()));
     }
 
     // On resume and after compaction, only what changed since this
@@ -669,12 +650,12 @@ fn session_start(
     let more_sessions = recent.len() as u64 > RECENT_SESSIONS;
     recent.truncate(RECENT_SESSIONS as usize);
     // Handoffs and blockers on the sessions listed belong with them.
-    targets.extend(recent.iter().map(|s| Target::Session(s.id.clone())));
+    targets.extend(recent.iter().map(|s| Reference::Session(s.id.clone())));
     let notes = operator_notes(
         reader,
         targets.clone(),
         previous.as_ref().map(|p| p.seq),
-        now,
+        context,
     )?;
 
     let mut header = format!("Polylogue brief for {here} (delivery {delivery_id})\n");
@@ -702,7 +683,7 @@ fn session_start(
             }
         }
     }
-    let mut fit = Fitter::new(budget(reader)?, header);
+    let mut fit = Fitter::new(DEFAULT_BUDGET, header);
     fit.refs.extend(prompt_refs);
 
     fit.section(
@@ -719,7 +700,7 @@ fn session_start(
     );
     fit.section(
         "Other agents working here now:",
-        live_here(reader, &dirs, session, now)?,
+        live_here(reader, &dirs, session, context)?,
         "live sessions",
         "polylogue live",
     );
@@ -770,7 +751,7 @@ fn session_start(
     // AgentCTL's check and test jobs run) come first; checks a session ran
     // itself follow.
     let mut failing: Vec<Item> =
-        polylogue_store::check_runs::failed_since(&check_history(reader)?, &dirs, since)?
+        polylogue_store::check_runs::failed_since(check_history, &dirs, since)?
             .into_iter()
             .map(|f| {
                 let mut text = format!(
@@ -837,7 +818,7 @@ fn session_start(
         .collect();
     fit.section("Signal notices:", notices, "notices", "polylogue notices");
 
-    let agent_notes = unjudged_agent_notes(reader, &targets, now)?;
+    let agent_notes = unjudged_agent_notes(reader, &targets, context)?;
     if agent_notes > 0 {
         fit.left_out.push(LeftOut {
             what: format!("{agent_notes} agent-written notes"),
@@ -875,7 +856,7 @@ fn takeover(
     reader: &Reader<'_>,
     session: &SessionId,
     delivery_id: &str,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Prepared, StoreError> {
     let id = session.to_string();
     let Some(s) = reader.session(session)? else {
@@ -904,9 +885,9 @@ fn takeover(
         reader,
         &format!(
             "{} agent:false",
-            notes::about(&[Target::Session(session.clone())])
+            notes::about(&[Reference::Session(session.clone())])
         ),
-        now,
+        context,
     )?;
     let open_items = reader.open_items(&id)?.unwrap_or_default();
 
@@ -1015,7 +996,7 @@ fn recall_query(
     if similarity {
         lists.push((
             "semantic",
-            format!("messages where near:{}", notes::quoted(text)),
+            format!("messages where similar:{}", notes::quoted(text)),
         ));
     }
     let ((_, first), rest) = lists.split_first()?;
@@ -1039,7 +1020,7 @@ fn recall(
     cwd: Option<&Path>,
     cursor: Option<&str>,
     delivery_id: &str,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
     near: Option<&NearFn<'_>>,
 ) -> Result<Prepared, StoreError> {
     let words = search::words(text_in);
@@ -1060,8 +1041,7 @@ fn recall(
                 page_size: Some(RECALL_PAGE),
                 why: false,
                 session: None,
-                now: now.unix_ms(),
-                day: None,
+                context: std::sync::Arc::clone(context),
                 embeddings: similarity,
                 near: if similarity { near } else { None },
                 fields: &[],
@@ -1181,7 +1161,11 @@ fn recall(
         }
         // Notes on the session: the operator's as they are, agents'
         // fenced and labelled as an agent's note, never as instructions.
-        let notes = notes::list(reader, &notes::about(&[Target::Session(id.clone())]), now)?;
+        let notes = notes::list(
+            reader,
+            &notes::about(&[Reference::Session(id.clone())]),
+            context,
+        )?;
         for n in notes {
             let body = n.value.as_deref().unwrap_or("").trim();
             if n.author.is_agent() {

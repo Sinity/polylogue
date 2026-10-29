@@ -24,6 +24,8 @@ pub struct Observation {
     pub machine: String,
     pub host: String,
     pub path: String,
+    /// Exact acquired location bytes; `path` is only its display label.
+    pub path_bytes: Vec<u8>,
     pub facts: Option<FileFacts>,
     pub seen_at_ms: i64,
     /// Membership established by this explicit import, independent of byte deduplication.
@@ -169,6 +171,8 @@ pub struct Batch {
     /// commits (the writer keeps a transaction's batches to retry them one
     /// at a time), or when a batch is dropped unsent.
     pub release: InFlight,
+    /// Receiver-minted evidence of the body acquisition, not parsed payload data.
+    pub acquisition: Option<crate::primary::AcquisitionReceipt>,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The

@@ -40,7 +40,7 @@ fn day_and_cost_measurements() {
         .write_all(source.as_bytes())
         .unwrap();
     r.w.wait_for(|s| s["store"]["messages"] == 1001 && s["store"]["search_pending"] == 0);
-    let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
+    let mut server = start_on(Arc::clone(&r.web.daemon), Arc::clone(&r.web.operations), 0).unwrap();
     let baseline = || Request::Query {
         text: "sessions | measure usage".into(),
         cursor: None,

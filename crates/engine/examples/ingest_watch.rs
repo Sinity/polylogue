@@ -73,8 +73,7 @@ fn watch(dir: &Path, seconds: u64) {
     drop(db);
     fs::write(dir.join("home/.codex/sessions/2026/10/27/rollout-measure.jsonl"), format!("{}\n", json!({"type":"session_meta","payload":{"id":"00000000-0000-4000-8000-000000000042","source":"cli"}}))).unwrap();
     let (archive, lock) = Archive::open_or_create(&dir.join("archive")).unwrap();
-    let mut config = Config::from_env();
-    config.home = dir.join("home");
+    let mut config = measurement_config(dir.join("home"));
     config.tool_dirs.clear();
     config.workers = 2;
     let mut engine = Engine::new(config, archive).unwrap();
@@ -185,8 +184,7 @@ fn threads() -> serde_json::Value {
     }).collect::<Vec<_>>().into()
 }
 fn config(dir: &Path) -> Config {
-    let mut config = Config::from_env();
-    config.home = dir.join("home");
+    let mut config = measurement_config(dir.join("home"));
     config.tool_dirs.clear();
     config.workers = 2;
     config
@@ -239,6 +237,7 @@ fn seed_restart(dir: &Path) {
                 machine: config(dir).machine,
                 host: "test".into(),
                 path: source.display().to_string(),
+                path_bytes: source.as_os_str().as_encoded_bytes().to_vec(),
                 facts: None,
                 seen_at_ms: 1,
                 import: None,
@@ -249,6 +248,7 @@ fn seed_restart(dir: &Path) {
             blobs: vec![],
             length,
             parse,
+            acquisition: None,
             release: Default::default(),
         };
         for result in writer
@@ -299,4 +299,18 @@ fn main() {
         "seed-restart" => seed_restart(dir),
         _ => panic!("expected watch, produce or restart"),
     }
+}
+
+fn measurement_config(home: std::path::PathBuf) -> Config {
+    Config::new(
+        home,
+        Default::default(),
+        "measurement-machine".into(),
+        "measurement-host".into(),
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .expect("CPU allowance"),
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    )
+    .expect("measurement configuration")
 }

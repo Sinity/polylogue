@@ -4,7 +4,7 @@
 
 use crate::briefing::Ask;
 use polylogue_model::DeliveryOutcome;
-use polylogue_model::{Author, DocumentId, NewNote, SessionId};
+use polylogue_model::{NewNote, SessionId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -86,6 +86,13 @@ pub enum Request {
         conversation: String,
     },
     Status,
+    SchemaInfer {
+        #[serde(flatten)]
+        selection: super::schema::Infer,
+    },
+    SchemaUnread {
+        origin: Option<String>,
+    },
     Explain {
         subject: String,
         expression: Option<String>,
@@ -117,9 +124,10 @@ pub enum Request {
         cursor: Option<String>,
         page_size: Option<u64>,
     },
-    /// Completions for one word of a query being typed.
+    /// Grammar completions at a UTF-8 byte offset in the full query text.
     Complete {
-        word: String,
+        text: String,
+        position: usize,
     },
     Attachment {
         message: polylogue_model::MessageId,
@@ -133,7 +141,7 @@ pub enum Request {
         #[serde(default)]
         cursor: Option<String>,
     },
-    /// Finite JSON-lines change-reference batch over the existing socket.
+    /// Finite change-reference batch using shared SSE framing.
     Changes {
         since: Option<String>,
     },
@@ -154,20 +162,18 @@ pub enum Request {
         #[serde(default)]
         fields: Vec<String>,
     },
-    /// Reads one session, document or event in a view and format.
-    /// `with_parents` (sessions only): the parent sessions' messages first.
+    /// Read one canonical reference or a query through the shared selection.
     Read {
-        target: ReadTarget,
+        target: String,
         #[serde(default)]
-        slices: bool,
-        view: String,
+        options: polylogue_model::read::ReadOptions,
+        #[serde(default)]
+        delivery: polylogue_model::read::ReadDelivery,
         format: String,
-        #[serde(default)]
-        with_parents: bool,
         budget: Option<usize>,
         cursor: Option<String>,
         #[serde(default)]
-        selection: Option<PageSelection>,
+        with_blobs: bool,
     },
     /// One exact note revision, including a superseded or withdrawn revision.
     Note {
@@ -183,13 +189,6 @@ pub enum Request {
     Import {
         request_id: String,
         paths: Vec<PathBuf>,
-    },
-    Export {
-        targets: Vec<ReadTarget>,
-        format: String,
-        /// Also the archive's user state: every request.
-        #[serde(default)]
-        user_state: bool,
     },
     AddNote {
         request_id: String,
@@ -216,7 +215,6 @@ pub enum Request {
         request_id: String,
         name: String,
         text: String,
-        author: Author,
     },
     /// Watches a query: each row that starts matching becomes a notice
     /// (a signal rule delivering notices).
@@ -231,7 +229,6 @@ pub enum Request {
         /// Also show each notice as a desktop notification.
         #[serde(default)]
         notify: bool,
-        author: Author,
     },
     /// Runs a query and keeps the rows it returned, as `result:<id>`.
     Keep {
@@ -243,7 +240,6 @@ pub enum Request {
     Withdraw {
         request_id: String,
         note: String,
-        author: Author,
         #[serde(default)]
         reason: Option<String>,
     },
@@ -283,12 +279,12 @@ pub enum Request {
     Setting {
         #[serde(default)]
         request_id: Option<String>,
-        key: String,
+        key: Option<String>,
         #[serde(default)]
         value: Option<String>,
-        /// Per machine instead of archive-wide.
+        /// Explicit host identity for host-scoped settings.
         #[serde(default)]
-        machine: bool,
+        machine: Option<String>,
     },
     Sql {
         statement: String,
@@ -309,11 +305,24 @@ pub enum Request {
 }
 
 impl Request {
+    pub(crate) fn streaming(&self) -> bool {
+        matches!(
+            self,
+            Self::Changes { .. }
+                | Self::Read {
+                    delivery: polylogue_model::read::ReadDelivery::Stream,
+                    ..
+                }
+        )
+    }
+
     /// Whether the request can run without writing to the archive.
     /// Conditional delivery and setting writes are resolved from their values.
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::SchemaInfer { .. }
+            | Self::SchemaUnread { .. }
             | Self::Timeline { .. }
             | Self::Cost { .. }
             | Self::Complete { .. }
@@ -324,7 +333,6 @@ impl Request {
             | Self::Read { .. }
             | Self::Outline { .. }
             | Self::Note { .. }
-            | Self::Export { .. }
             | Self::Resumable { .. }
             | Self::Continue { .. }
             | Self::Sql { .. }
@@ -365,41 +373,15 @@ impl Request {
     }
 }
 
-/// What `read` and `export` name: `document:ID`, `event:ID`, or a session
-/// ID (with or without `session:`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-pub enum ReadTarget {
-    Session(SessionId),
-    Document(DocumentId),
-    Event(String),
-}
-
-impl ReadTarget {
-    pub fn parse(text: &str) -> Result<Self, String> {
-        if let Some(id) = text.strip_prefix("event:") {
-            if id.is_empty() {
-                return Err("event reference requires an ID".into());
-            }
-            return Ok(Self::Event(id.to_owned()));
-        }
-        if let Some(id) = text.strip_prefix("document:") {
-            return DocumentId::parse(id)
-                .map(Self::Document)
-                .map_err(|e| e.to_string());
-        }
-        SessionId::parse(text.strip_prefix("session:").unwrap_or(text))
-            .map(Self::Session)
-            .map_err(|e| e.to_string())
-    }
-}
-
 fn attachment_chunk() -> usize {
-    super::attachment::PAGE_BYTES
+    64 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "result", rename_all = "snake_case")]
+#[serde(
+    into = "command_surface::Answer<serde_json::Value>",
+    from = "command_surface::Answer<serde_json::Value>"
+)]
 pub enum Response {
     Ok {
         data: serde_json::Value,
@@ -412,6 +394,67 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<serde_json::Value>,
     },
+}
+
+impl Response {
+    pub fn answer(&self) -> command_surface::Answer<serde_json::Value> {
+        match self {
+            Self::Ok { data, .. } => crate::protocol::answer(data.clone()),
+            Self::Error {
+                kind,
+                message,
+                detail,
+            } => command_surface::Answer::Error {
+                error: crate::protocol::failure(kind, message.clone(), detail.as_ref()),
+                notes: detail
+                    .as_ref()
+                    .and_then(|d| serde_json::from_value(d["notes"].clone()).ok())
+                    .unwrap_or_default(),
+                next: detail
+                    .as_ref()
+                    .and_then(|d| serde_json::from_value(d["next"].clone()).ok())
+                    .unwrap_or_default(),
+            },
+        }
+    }
+}
+
+impl From<Response> for command_surface::Answer<serde_json::Value> {
+    fn from(response: Response) -> Self {
+        response.answer()
+    }
+}
+
+impl From<command_surface::Answer<serde_json::Value>> for Response {
+    fn from(answer: command_surface::Answer<serde_json::Value>) -> Self {
+        use command_surface::Answer;
+        match answer {
+            Answer::Ok { value, .. }
+            | Answer::Empty { value, .. }
+            | Answer::Degraded { value, .. } => Self::Ok { data: value },
+            Answer::Error { error, notes, next } => {
+                let detail = serde_json::json!({
+                    "position": error.position,
+                    "suggestion": error.suggestion,
+                    "hint": error.hint,
+                    "retryable": error.retryable,
+                    "notes": notes,
+                    "next": next,
+                });
+                Self::Error {
+                    kind: error.code.unwrap_or_else(|| {
+                        serde_json::to_value(error.kind)
+                            .expect("failure kind serializes")
+                            .as_str()
+                            .expect("kind is text")
+                            .to_owned()
+                    }),
+                    message: error.message,
+                    detail: Some(detail),
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

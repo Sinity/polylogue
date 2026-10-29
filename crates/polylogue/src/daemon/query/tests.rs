@@ -5,6 +5,7 @@
 
 use super::*;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+use query_language::time::Clock;
 
 const DAY: i64 = 86_400_000;
 /// 2026-10-01T12:00Z.
@@ -376,8 +377,7 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: None,
         why: false,
         session: None,
-        now: OCT1 + 7 * DAY,
-        day: Some(LogicalDay::named("UTC", 0).unwrap()),
+        context: fixture_context(OCT1 + 7 * DAY, "UTC", 0),
         embeddings: false,
         near: None,
         fields: &[],
@@ -857,12 +857,12 @@ fn an_empty_result_explains_itself() {
     assert_eq!(v["why"][0]["matches"], 0);
     assert_eq!(v["why"][0]["of"], 7);
     // 33: semantic search is not enabled.
-    let v = q(&w, "near:\"ambiguous date formats\"");
+    let v = q(&w, "similar:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "incomplete");
     assert_eq!(v["count"], 7);
 }
 
-/// Similarities for `near:` computed from stored vectors: the texts of the
+/// Similarities for `similar:` computed from stored vectors: the texts of the
 /// sessions whose ID is `LIKE like` lie along the query, every other text
 /// across it.
 fn similarity(w: &TestArchive, like: &str) -> std::sync::Arc<polylogue_store::vectors::Similarity> {
@@ -905,7 +905,7 @@ fn near_ranks_every_row_by_similarity() {
         assert_eq!(q, "ambiguous date formats");
         Ok(std::sync::Arc::clone(&s))
     };
-    let mut a = ask("near:\"ambiguous date formats\"");
+    let mut a = ask("similar:\"ambiguous date formats\"");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -923,7 +923,7 @@ fn near_applies_its_conditions_before_ranking() {
     // excludes #2 still ranks what it keeps instead of finding nothing.
     let s = similarity(&w, "%0002-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let mut a = ask("near:x -id:claude-code:7f3a2c10-0002");
+    let mut a = ask("similar:x -id:claude-code:7f3a2c10-0002");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -947,7 +947,7 @@ fn text_and_similarity_rank_together() {
     let mut text_only = ask("messages where parser");
     text_only.page_size = Some(100);
     let lexical = run_q(&w, text_only).unwrap();
-    let mut both = ask("messages where parser near:x");
+    let mut both = ask("messages where parser similar:x");
     both.page_size = Some(100);
     both.embeddings = true;
     both.near = Some(&near);
@@ -979,7 +979,12 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
         a.page_size = Some(3);
         a.cursor = Some(&c);
         // A later request still answers the first one's question.
-        a.now += DAY;
+        std::sync::Arc::make_mut(&mut a.context).clock.now = a
+            .context
+            .clock
+            .now
+            .checked_add(jiff::SignedDuration::from_millis(DAY))
+            .unwrap();
         let page = run_q(&w, a).unwrap();
         seen.extend(ids(&page));
         cursor = page["next"].as_str().map(str::to_owned);
@@ -1282,3 +1287,39 @@ mod composition;
 
 mod language;
 mod measures;
+
+mod shared_laws;
+
+mod reported_timing;
+
+fn fixture_clock(now: i64, zone: &str, start_minutes: u16) -> Clock {
+    Clock::new(
+        jiff::Timestamp::from_millisecond(now).unwrap(),
+        DaySetting::new(
+            jiff::tz::TimeZone::get(zone).unwrap(),
+            jiff::civil::Time::constant(
+                (start_minutes / 60) as i8,
+                (start_minutes % 60) as i8,
+                0,
+                0,
+            ),
+        )
+        .unwrap(),
+    )
+}
+
+fn fixture_context(
+    now: i64,
+    zone: &str,
+    start_minutes: u16,
+) -> std::sync::Arc<crate::operation::Context> {
+    let clock = fixture_clock(now, zone, start_minutes);
+    std::sync::Arc::new(crate::operation::Context::standalone(
+        crate::operation::Invocation::new(
+            clock.now.into(),
+            "synthetic-query-machine".into(),
+            crate::operation::Context::worker_authorship("query-fixture"),
+        ),
+        clock.day,
+    ))
+}

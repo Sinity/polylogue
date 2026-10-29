@@ -40,33 +40,6 @@ fn a_first_page_is_reused_only_briefly() {
 }
 
 #[test]
-fn completions_cover_fields_values_and_sessions() {
-    let data = Completion {
-        units: vec!["sessions".into(), "messages".into()],
-        fields: vec!["repo:".into(), "origin:".into()],
-        values: vec!["repo:polylogue".into(), "repo:sinex".into()],
-        sessions: vec![("claude-code:abc".into(), "a title".into())],
-    };
-    let values = |word: &str| -> Vec<String> {
-        completions(&data, word)
-            .into_iter()
-            .map(|(v, _)| v)
-            .collect()
-    };
-    assert_eq!(values("re"), vec!["repo:"]);
-    assert_eq!(values("repo:p"), vec!["repo:polylogue"]);
-    assert_eq!(values("ses"), vec!["sessions"]);
-    assert_eq!(values("claude"), vec!["claude-code:abc"]);
-    assert_eq!(values("claude-code:a"), vec!["claude-code:abc"]);
-}
-
-#[test]
-fn values_with_spaces_are_quoted() {
-    assert_eq!(quoted("polylogue"), "polylogue");
-    assert_eq!(quoted("two words"), "\"two words\"");
-}
-
-#[test]
 fn count_failures_are_visible_and_a_success_clears_them() {
     let daemon = crate::test_daemon::start("count worker failure");
     let warm = Warm::default();
@@ -94,65 +67,13 @@ fn count_failures_are_visible_and_a_success_clears_them() {
 }
 
 #[test]
-fn completions_escape_help_and_omit_values_with_controls() {
-    let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
-    let mut values = vec!["tag:ordinary".into(), format!("query:{hostile}")];
-    for code in 0..=159 {
-        let c = char::from_u32(code).unwrap();
-        if c.is_control() {
-            values.push(format!("tag:{c}"));
-        }
-    }
-    let data = Completion {
-        values,
-        sessions: vec![("claude-code:abc".into(), hostile.into())],
-        ..Completion::default()
-    };
-    assert_eq!(
-        completions(&data, "tag:"),
-        vec![("tag:ordinary".into(), "".into())]
-    );
-    assert!(completions(&data, "query:").is_empty());
-    assert_eq!(
-        completions(&data, "claude-code:"),
-        vec![(
-            "claude-code:abc".into(),
-            polylogue_render::terminal::escape(hostile)
-        )]
-    );
-}
-
-#[test]
-fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
-    let data = Completion {
-        values: vec![
-            format!("repo:{}", quoted("two words")),
-            format!("repo:{}", quoted("path\\part \"λ\"")),
-        ],
-        ..Completion::default()
-    };
-    assert_eq!(completions(&data, "repo:two")[0].0, "repo:\"two words\"");
-    assert_eq!(completions(&data, "repo:\"two")[0].0, "repo:\"two words\"");
-    let value = &completions(&data, "repo:path")[0].0;
-    let parsed = polylogue_query::parse(value).unwrap();
-    let polylogue_query::ast::Source::Sessions { cond } = parsed.source else {
-        panic!()
-    };
-    let polylogue_query::ast::CondKind::Match {
-        value: polylogue_query::ast::Value::One { text, .. },
-        ..
-    } = cond.kind
-    else {
-        panic!()
-    };
-    assert_eq!(text, "path\\part \"λ\"");
-}
-
-#[test]
 fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
     let values = |word: &str| match crate::daemon::service::handle(
-        crate::daemon::Request::Complete { word: word.into() },
+        crate::daemon::Request::Complete {
+            text: word.into(),
+            position: word.len(),
+        },
         &d.daemon,
     ) {
         crate::daemon::Response::Ok { data, .. } => data,
@@ -163,9 +84,17 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["value"] == "live:waiting")
+            .any(|v| v["value"] == "waiting"
+                && v["replace"]["start"] == 5
+                && v["replace"]["end"] == 5)
     );
-    assert!(values("model:").as_array().unwrap().is_empty());
+    assert!(
+        !values("model:")
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["value"] == "\"model with spaces\"")
+    );
     let mut message: serde_json::Value = serde_json::from_str(
         &polylogue_testkit::claude_assistant("a1", "s1", "synthetic answer"),
     )
@@ -180,12 +109,67 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
         ),
     )
     .unwrap();
-    d.wait_for(|s| s["store"]["messages"] == 2);
+    d.wait_for(|s| {
+        s["store"]["messages"] == 2
+            && values("model:model")
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value["value"] == "\"model with spaces\"")
+    });
     assert!(
         values("model:model")
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["value"] == "model:\"model with spaces\"")
+            .any(|v| v["value"] == "\"model with spaces\"")
     );
+}
+
+#[test]
+fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries() {
+    let daemon = crate::test_daemon::start("synthetic prompt");
+    let text = "tool_calls where outcome:err | count";
+    let position = text.find(" | ").unwrap();
+    match crate::daemon::service::handle(
+        crate::daemon::Request::Complete {
+            text: text.into(),
+            position,
+        },
+        &daemon.daemon,
+    ) {
+        crate::daemon::Response::Ok { data, .. } => {
+            let candidate = data
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|candidate| candidate["value"] == "error")
+                .unwrap();
+            let start = candidate["replace"]["start"].as_u64().unwrap() as usize;
+            let end = candidate["replace"]["end"].as_u64().unwrap() as usize;
+            assert_eq!(candidate["kind"], "value");
+            assert_eq!(
+                format!(
+                    "{}{}{}",
+                    &text[..start],
+                    candidate["value"].as_str().unwrap(),
+                    &text[end..]
+                ),
+                "tool_calls where outcome:error | count"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    for position in [6, 8] {
+        match crate::daemon::service::handle(
+            crate::daemon::Request::Complete {
+                text: "repo:λ".into(),
+                position,
+            },
+            &daemon.daemon,
+        ) {
+            crate::daemon::Response::Error { kind, .. } => assert_eq!(kind, "bad_request"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

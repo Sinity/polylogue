@@ -66,7 +66,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
     );
     let reader = engine.reads.reader().unwrap();
     let known = reader
-        .known_input_at("test-machine", &path.to_string_lossy())
+        .known_input_at("test-machine", path.as_os_str().as_encoded_bytes())
         .unwrap()
         .unwrap();
     let chain = reader
@@ -89,7 +89,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
 
 // Unit tests need this crate's Engine rather than the testkit's dependency.
 fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
-    let mut config = Config::from_env();
+    let mut config = crate::test_config();
     config.home = home.home.clone();
     config.tool_dirs.clear();
     config.workers = 3;

@@ -246,25 +246,18 @@ fn note_lists_and_queries_carry_every_option() {
 }
 
 #[test]
-fn an_agent_writes_notes_as_itself() {
+fn note_write_payloads_never_supply_the_actor() {
     let add = command("note add").unwrap();
-    let args = json!({"targets": ["repo:x"], "body": "b"});
-    let v = Values::from_json(add, Surface::Mcp, args.as_object().unwrap().clone()).unwrap();
-    assert_eq!(
-        request_json(add, &v, &mcp_caller())["note"]["author"],
-        "agent"
+    let args = json!({"targets":["repo:x"],"body":"b"});
+    let values = Values::from_json(add, Surface::Mcp, args.as_object().unwrap().clone()).unwrap();
+    let request = request_json(add, &values, &mcp_caller());
+    assert!(request["note"].get("author").is_none());
+    assert!(request["note"].get("via").is_none());
+    assert!(
+        crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b", "--agent"]).is_err()
     );
-    let (_, v) = crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b"]).unwrap();
-    assert_eq!(
-        request_json(add, &v, &cli_caller())["note"]["author"],
-        "operator"
-    );
-    let (_, v) =
-        crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b", "--agent"]).unwrap();
-    assert_eq!(
-        request_json(add, &v, &cli_caller())["note"]["author"],
-        "agent"
-    );
+    let invalid = json!({"targets":["repo:x"],"body":"b","agent":"codex:synthetic"});
+    assert!(Values::from_json(add, Surface::Mcp, invalid.as_object().unwrap().clone()).is_err());
 }
 
 #[test]

@@ -12,6 +12,27 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) fn engine_config(home: PathBuf) -> Config {
+    Config::new(
+        home,
+        Default::default(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        2,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    )
+    .expect("valid fixture configuration")
+}
+
+pub(crate) fn start_runtime(
+    root: &std::path::Path,
+    engine: Config,
+    mode: service::ArchiveMode,
+) -> std::io::Result<service::Runtime> {
+    let deployment = crate::config::Config::for_test(&engine, root);
+    service::start(deployment, engine, mode)
+}
+
 pub(crate) struct ReadObservation {
     pub limit: polylogue_store::read::limit::ReadLimit,
     pub owner: std::thread::ThreadId,
@@ -52,18 +73,19 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
         polylogue_testkit::claude_user("u1", "s1", text),
     )
     .unwrap();
-    let mut config = Config::from_env();
+    let mut config = engine_config(home.clone());
     config.home = home.clone();
     config.tool_dirs.clear();
     config.workers = workers;
-    let runtime = service::start(
+    let runtime = start_runtime(
         &dir.path().join("archive"),
         config.clone(),
         service::ArchiveMode::Standalone,
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
-    let server = server::Server::start(Arc::clone(&daemon)).unwrap();
+    let server =
+        server::Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
     let daemon = TestDaemon {
         _dir: dir,
         home,
@@ -105,9 +127,17 @@ impl TestDaemon {
         self.server.shutdown().unwrap();
         self.runtime.shutdown().unwrap();
         self.runtime =
-            service::start(&root, self.config.clone(), service::ArchiveMode::Standalone).unwrap();
+            start_runtime(&root, self.config.clone(), service::ArchiveMode::Standalone).unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);
-        self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
+        self.server = server::Server::start(
+            Arc::clone(&self.daemon),
+            Arc::clone(&self.runtime.operations),
+        )
+        .unwrap();
+    }
+
+    pub fn operations(&self) -> &Arc<command_surface::OperationTable> {
+        &self.runtime.operations
     }
 
     pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {
@@ -152,9 +182,9 @@ impl TestDaemon {
         let r = handle(
             Request::Setting {
                 request_id: None,
-                key: key.into(),
+                key: Some(key.into()),
                 value: Some(value.into()),
-                machine: false,
+                machine: None,
             },
             &self.daemon,
         );
