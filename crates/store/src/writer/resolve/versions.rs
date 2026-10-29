@@ -33,7 +33,7 @@ pub(crate) struct DocumentChoice {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Choices {
     pub messages: BTreeMap<i64, Option<MessageChoice>>,
-    pub message_versions: BTreeMap<BlobHash, (Message, PreparedMessage)>,
+    pub message_versions: BTreeMap<BlobHash, MessageVersion>,
     pub documents: BTreeMap<i64, Option<DocumentChoice>>,
     pub sessions: BTreeMap<i64, Session>,
     pub message_mains: Vec<bool>,
@@ -46,6 +46,12 @@ pub(crate) struct Choices {
     pub event_sources: Vec<(i64, EventChoice)>,
     pub link_values: Vec<PackedValue>,
     pub live_events: Vec<Event>,
+}
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct MessageVersion {
+    pub message: Message,
+    pub prepared: PreparedMessage,
+    pub replace: bool,
 }
 #[derive(Clone)]
 struct Source {
@@ -112,9 +118,11 @@ pub(in crate::writer) trait ValueSource {
 }
 
 fn merge_message(
-    previous: (Message, PreparedMessage),
-    incoming: (Message, PreparedMessage),
+    mut previous: (Message, PreparedMessage),
+    mut incoming: (Message, PreparedMessage),
 ) -> Result<(Message, PreparedMessage)> {
+    crate::writer::attachments::restore_values(&mut previous.0.blocks, &previous.1)?;
+    crate::writer::attachments::restore_values(&mut incoming.0.blocks, &incoming.1)?;
     let (message, projection) = previous
         .1
         .projection
@@ -165,6 +173,7 @@ pub(in crate::writer) struct Projection<'a> {
     shown_documents: BTreeMap<i64, Option<Vec<u8>>>,
     documents: BTreeMap<i64, Vec<Source>>,
     message_values: BTreeMap<Vec<u8>, (Message, PreparedMessage)>,
+    message_layouts: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     document_values: BTreeMap<Vec<u8>, (polylogue_model::Document, PreparedDocument)>,
     assertions: Assertions,
     session_facts: BTreeMap<(i64, i64, i64), Session>,
@@ -184,6 +193,7 @@ impl<'a> Projection<'a> {
         let mut shown_documents = BTreeMap::new();
         let mut documents = BTreeMap::<i64, Vec<Source>>::new();
         let message_values = BTreeMap::<Vec<u8>, (Message, PreparedMessage)>::new();
+        let mut message_layouts = BTreeMap::new();
         let document_values =
             BTreeMap::<Vec<u8>, (polylogue_model::Document, PreparedDocument)>::new();
         for (key, row) in &keys.rows {
@@ -200,7 +210,7 @@ impl<'a> Projection<'a> {
                 continue;
             }
             let sql = if message {
-                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,NULL FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE message_pk=?1"
+                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,NULL,p.layout FROM message_source s JOIN input_ref i ON i.pk=s.input_pk LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE message_pk=?1"
             } else {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
             };
@@ -221,27 +231,43 @@ impl<'a> Projection<'a> {
             let values = index
                 .prepare(sql)?
                 .query_map([row.pk], |r| {
-                    Ok(Source {
-                        input: r.get(0)?,
-                        id: r.get(1)?,
-                        chain: r.get(2)?,
-                        start: r.get(3)?,
-                        end: r.get(4)?,
-                        session: r.get(5)?,
-                        main: r.get(6)?,
-                        complete: r.get(7)?,
-                        rank: r.get(8)?,
-                        seq: r.get(9)?,
-                        position: r.get(10)?,
-                        hash: r.get(11)?,
-                        time: if message {
-                            None
-                        } else {
-                            crate::encoding::read_time(r, 12)?.0
+                    Ok((
+                        Source {
+                            input: r.get(0)?,
+                            id: r.get(1)?,
+                            chain: r.get(2)?,
+                            start: r.get(3)?,
+                            end: r.get(4)?,
+                            session: r.get(5)?,
+                            main: r.get(6)?,
+                            complete: r.get(7)?,
+                            rank: r.get(8)?,
+                            seq: r.get(9)?,
+                            position: r.get(10)?,
+                            hash: r.get(11)?,
+                            time: if message {
+                                None
+                            } else {
+                                crate::encoding::read_time(r, 12)?.0
+                            },
                         },
-                    })
+                        if message {
+                            r.get::<_, Option<Vec<u8>>>(13)?
+                        } else {
+                            None
+                        },
+                    ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
+            let values = values
+                .into_iter()
+                .map(|(source, layout)| {
+                    if message {
+                        message_layouts.insert(source.hash.clone(), layout);
+                    }
+                    source
+                })
+                .collect();
             if message {
                 messages.insert(row.pk, values);
             } else {
@@ -258,6 +284,7 @@ impl<'a> Projection<'a> {
             shown_documents,
             documents,
             message_values,
+            message_layouts,
             document_values,
             assertions,
             session_facts: BTreeMap::new(),
@@ -280,6 +307,7 @@ impl<'a> Projection<'a> {
             shown_documents,
             documents,
             message_values,
+            message_layouts,
             document_values,
             assertions,
             session_facts,
@@ -374,6 +402,61 @@ impl<'a> Projection<'a> {
                 }
             });
             choices.keep_messages.push(keep);
+            if !keep && !previous.is_some_and(|n| sources[n].hash.as_slice() == prepared.hash) {
+                choices.message_mains.push(false);
+                continue;
+            }
+            let incoming_layout = crate::versions::message_layout(&prepared.projection)?;
+            let prior_layout = message_layouts.get(prepared.hash.as_slice());
+            // Complete values already proved this hash. Sparse values alone
+            // require payload comparison and enrichment of a known version.
+            let complete = prepared.projection.block_count == prepared.blocks.len() as u64;
+            let previous_value = if prior_layout.is_none()
+                || (complete
+                    && prior_layout.is_some_and(|layout| {
+                        layout
+                            .as_ref()
+                            .is_none_or(|layout| layout == &incoming_layout)
+                    })) {
+                None
+            } else {
+                match message_values.get(prepared.hash.as_slice()) {
+                    Some(value) => Some(value.clone()),
+                    None => known_message(index, *values, &prepared.hash)?,
+                }
+            };
+            let incoming = (row.message.clone(), prepared.clone());
+            let merged = match previous_value {
+                Some(previous) => merge_message(previous, incoming)?,
+                None => incoming,
+            };
+            let layout = crate::versions::message_layout(&merged.1.projection)?;
+            let replace = prior_layout
+                .and_then(Option::as_ref)
+                .is_some_and(|before| before != &layout)
+                || choices
+                    .message_versions
+                    .get(&BlobHash(prepared.hash))
+                    .is_some_and(|previous| previous.replace);
+            message_layouts.insert(prepared.hash.to_vec(), Some(layout));
+            for (block, hash) in merged.0.blocks.iter().zip(&merged.1.texts) {
+                if let (Some(text), Some(hash)) = (crate::encoding::block_text(block), hash)
+                    && let std::collections::hash_map::Entry::Vacant(slot) =
+                        step.prepared.texts.entry(*hash)
+                {
+                    slot.insert(crate::encoding::pack_text(text)?);
+                }
+            }
+            choices.message_versions.insert(
+                BlobHash(prepared.hash),
+                MessageVersion {
+                    message: merged.0.clone(),
+                    prepared: merged.1.clone(),
+                    replace,
+                },
+            );
+            message_values.insert(prepared.hash.to_vec(), merged);
+            touched_messages.insert(pk);
             if !keep {
                 choices.message_mains.push(false);
                 continue;
@@ -423,30 +506,6 @@ impl<'a> Projection<'a> {
             } else {
                 sources.push(source);
             }
-            touched_messages.insert(pk);
-            let previous = match message_values.get(prepared.hash.as_slice()) {
-                Some(value) => Some(value.clone()),
-                None => known_message(index, *values, &prepared.hash)?,
-            };
-            let mut message = row.message.clone();
-            crate::writer::attachments::restore_values(&mut message.blocks, prepared)?;
-            let incoming = (message, prepared.clone());
-            let merged = match &previous {
-                Some(previous) => merge_message(previous.clone(), incoming)?,
-                None => incoming,
-            };
-            for (block, hash) in merged.0.blocks.iter().zip(&merged.1.texts) {
-                if let (Some(text), Some(hash)) = (crate::encoding::block_text(block), hash)
-                    && let std::collections::hash_map::Entry::Vacant(slot) =
-                        step.prepared.texts.entry(*hash)
-                {
-                    slot.insert(crate::encoding::pack_text(text)?);
-                }
-            }
-            choices
-                .message_versions
-                .insert(BlobHash(prepared.hash), merged.clone());
-            message_values.insert(prepared.hash.to_vec(), merged);
         }
         for (row, prepared) in step.output.documents.iter().zip(&step.prepared.documents) {
             let pk = keys

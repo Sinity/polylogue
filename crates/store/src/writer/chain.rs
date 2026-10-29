@@ -268,7 +268,10 @@ fn gather<'a>(
             attachments::normalize_known(&mut step, &history.available)?;
             let location = Location { path, offset };
             for prepared in &step.prepared.messages {
-                history.messages.insert(prepared.hash.to_vec(), location);
+                history
+                    .messages
+                    .borrow_mut()
+                    .insert(prepared.hash.to_vec(), location);
             }
             for prepared in &step.prepared.documents {
                 history.documents.insert(prepared.hash.to_vec(), location);
@@ -361,7 +364,7 @@ struct Location {
 }
 struct History<'a> {
     paths: std::cell::RefCell<Vec<std::path::PathBuf>>,
-    messages: BTreeMap<Vec<u8>, Location>,
+    messages: std::cell::RefCell<BTreeMap<Vec<u8>, Location>>,
     documents: BTreeMap<Vec<u8>, Location>,
     assertions: std::cell::RefCell<BTreeMap<(resolve::Kind, i64), Location>>,
     sessions: std::cell::RefCell<BTreeMap<(i64, i64, i64), Location>>,
@@ -372,7 +375,7 @@ impl<'a> History<'a> {
     fn new(source: ReadingLookup<'a>) -> Self {
         Self {
             paths: std::cell::RefCell::new(Vec::new()),
-            messages: BTreeMap::new(),
+            messages: std::cell::RefCell::new(BTreeMap::new()),
             documents: BTreeMap::new(),
             assertions: std::cell::RefCell::new(BTreeMap::new()),
             sessions: std::cell::RefCell::new(BTreeMap::new()),
@@ -391,6 +394,9 @@ impl<'a> History<'a> {
     }
     fn record(&self, input: i64, chain: i64, step: &ParseStep, location: Location) {
         if let Some(choices) = &step.prepared.choices {
+            for hash in choices.message_versions.keys() {
+                self.messages.borrow_mut().insert(hash.0.to_vec(), location);
+            }
             for pk in choices.sessions.keys() {
                 self.sessions
                     .borrow_mut()
@@ -473,7 +479,7 @@ impl resolve::versions::ValueSource for History<'_> {
             .map(|value| value.body))
     }
     fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>> {
-        let Some(location) = self.messages.get(hash).copied() else {
+        let Some(location) = self.messages.borrow().get(hash).copied() else {
             return Ok(None);
         };
         let step = self.step(location)?;
@@ -482,7 +488,7 @@ impl resolve::versions::ValueSource for History<'_> {
                 .message_versions
                 .get(&BlobHash(hash.try_into().ok()?))
         }) {
-            return Ok(Some(value.clone()));
+            return Ok(Some((value.message.clone(), value.prepared.clone())));
         }
         Ok(step
             .output

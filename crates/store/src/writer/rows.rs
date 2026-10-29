@@ -108,13 +108,25 @@ fn apply_rows(
         chain,
         rank: i64::from(b.input.arrival_rank),
         counter,
-        packed: &p.prepared.texts,
         first_build,
         keys,
         choices,
     };
     if p.reset {
         rows.retract()?;
+    }
+    for version in choices.message_versions.values() {
+        crate::versions::store_message(
+            tx,
+            &version.message,
+            &version.prepared,
+            crate::versions::TextRows {
+                packed: &p.prepared.texts,
+                first_build,
+                keys,
+            },
+            version.replace,
+        )?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
@@ -339,7 +351,6 @@ pub(super) struct RowWriter<'a, 't> {
     chain: i64,
     rank: i64,
     counter: i64,
-    packed: &'a HashMap<[u8; 32], Vec<u8>>,
     /// Set during a first build ([`Writer::start`]): search entries,
     /// trigram entries and secondary indexes are built once, in bulk, when
     /// it ends ([`Inner::build_deferred`]), and rows are found by natural
@@ -469,23 +480,6 @@ impl RowWriter<'_, '_> {
         let id = m.id.to_string();
         let pk = self.message_pk(&id)?;
         let new = pk.is_none();
-        let (version_message, version_prepared) = self
-            .choices
-            .message_versions
-            .get(&BlobHash(prepared.hash))
-            .ok_or_else(|| {
-                StoreError::Invalid("an incoming message has no resolved value".into())
-            })?;
-        crate::versions::store_message(
-            self.tx,
-            version_message,
-            version_prepared,
-            crate::versions::TextRows {
-                packed: self.packed,
-                first_build: self.first_build,
-                keys: self.keys,
-            },
-        )?;
         let v = Version {
             time: prepared.time.clone(),
             input_pk: self.input_pk,

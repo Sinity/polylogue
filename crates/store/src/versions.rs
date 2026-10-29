@@ -61,12 +61,44 @@ pub(crate) fn store(
     texts: &[Option<[u8; 32]>],
     text_rows: TextRows<'_>,
 ) -> Result<()> {
+    store_value(
+        conn,
+        kind,
+        ValueRows {
+            hash,
+            body,
+            blocks,
+            texts,
+        },
+        text_rows,
+        false,
+    )
+}
+
+struct ValueRows<'a> {
+    hash: &'a [u8],
+    body: &'a [u8],
+    blocks: &'a [Block],
+    texts: &'a [Option<[u8; 32]>],
+}
+
+fn store_value(
+    conn: &Connection,
+    kind: VersionKind,
+    ValueRows {
+        hash,
+        body,
+        blocks,
+        texts,
+    }: ValueRows<'_>,
+    text_rows: TextRows<'_>,
+    replace: bool,
+) -> Result<()> {
     let TextRows {
         packed,
         first_build,
         keys,
     } = text_rows;
-    let replace = matches!(kind, VersionKind::Message);
     let kind = kind.name();
     let sql = if replace {
         format!("INSERT INTO {kind}_version(version_hash,body) VALUES (?1,?2)
@@ -120,19 +152,23 @@ pub(crate) fn store_message(
     message: &Message,
     prepared: &encoding::PreparedMessage,
     text_rows: TextRows<'_>,
+    replace: bool,
 ) -> Result<()> {
     prepared.projection.validate(message.blocks.len())?;
     if prepared.hash != prepared.projection.source_version.0 {
         return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
     }
-    store(
+    store_value(
         conn,
         VersionKind::Message,
-        &prepared.hash,
-        &prepared.body,
-        &message.blocks,
-        &prepared.texts,
+        ValueRows {
+            hash: &prepared.hash,
+            body: &prepared.body,
+            blocks: &message.blocks,
+            texts: &prepared.texts,
+        },
         text_rows,
+        replace,
     )?;
     let layout = message_layout(&prepared.projection)?;
     conn.execute(

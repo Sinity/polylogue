@@ -1,5 +1,6 @@
 use super::*;
 use polylogue_model::bundle::{BundleError, MessageProjection};
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
 fn original() -> Message {
     let mut message = text_message("sparse", "s", Role::Assistant, "source", Some("end_turn"));
@@ -379,4 +380,32 @@ fn sparse_index_migration_keeps_native_versions_and_infers_dense_positions() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
+    let w = test_archive();
+    let message = original();
+    write(
+        &w,
+        batch("native", 0, 0, vec![row(0, message.clone())], &["s"]),
+    );
+    let mut index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = index.transaction().unwrap();
+    tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Read {
+            table_name: "message_version",
+            column_name: "body",
+        } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }))
+    .unwrap();
+    let mut replay = batch("native", 0, 0, vec![row(0, message)], &["s"]);
+    replay.change = Change::Reparse { chain: 1 };
+    assert_eq!(
+        write_test_rows(&tx, &replay, &replay.parse[0], 1, 2, None).unwrap(),
+        0
+    );
+    tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .unwrap();
 }
