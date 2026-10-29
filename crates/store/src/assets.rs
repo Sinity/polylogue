@@ -153,60 +153,12 @@ impl Reader<'_> {
             )
             .optional()?
             .unwrap_or(0);
-        let through: i64 = conn.query_row(
-            "SELECT COALESCE(max(rowid),0) FROM source_observation",
-            [],
-            |r| r.get(0),
-        )?;
-        // A ZIP is the source of its members, not one of the attachments among them.
-        let mut originals =
-            std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-        let mut roots=conn.prepare("SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id') FROM source_observation o
-            JOIN source_observation_container c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2 AND json_type(o.details_json,'$.import.import_id')='text'")?;
-        for row in roots.query_map([after, through], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })? {
-            let (input, import_id) = row?;
-            originals.entry(input).or_default().insert(import_id);
-        }
-        let mut stmt = conn.prepare(
-            "SELECT o.id,o.input,o.details_json FROM source_observation o
-            WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL",
-        )?;
         let mut out = Vec::new();
-        for row in stmt.query_map([after, through], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })? {
-            let (observation, input, details) = row?;
-            let details: serde_json::Value = serde_json::from_str(&details)?;
-            if let Some(member) = details.get("import") {
-                let membership: ImportMember = serde_json::from_value(member.clone())?;
-                if originals
-                    .get(&input)
-                    .is_some_and(|imports| imports.contains(&membership.import_id))
-                {
-                    continue;
-                }
-                if membership.version != 1
-                    || membership.import_id.is_empty()
-                    || membership.member.is_empty()
-                {
-                    return Err(StoreError::Invalid(
-                        "unsupported or invalid import membership".into(),
-                    ));
-                }
-                out.push(ObservedMember {
-                    observation,
-                    input,
-                    membership,
-                });
-            }
-        }
-        Ok((out, (through != after).then_some(through)))
+        let through = visit_import_members(conn, "source_", after, None, |member| {
+            out.push(member);
+            Ok(())
+        })?;
+        Ok((out, through))
     }
 
     pub fn pending_asset_sidecars(&self) -> Result<Vec<(String, String)>> {
@@ -235,6 +187,76 @@ impl Reader<'_> {
         }
         Ok(pending)
     }
+}
+
+/// Visits import metadata inside the caller's source snapshot. Rowids are only
+/// a discovery cursor; replay selects each changed input from zero after source
+/// rematerialization, whose local rowids need not preserve their old order.
+pub(crate) fn visit_import_members(
+    conn: &Connection,
+    prefix: &str,
+    after: i64,
+    input: Option<&str>,
+    mut visit: impl FnMut(ObservedMember) -> Result<()>,
+) -> Result<Option<i64>> {
+    let through: i64 = conn.query_row(
+        &format!("SELECT COALESCE(max(rowid),0) FROM {prefix}observation"),
+        [],
+        |row| row.get(0),
+    )?;
+    // A ZIP is the source of its members, not one of the attachments among them.
+    let mut originals =
+        std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut roots = conn.prepare(&format!(
+        "SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id')
+        FROM {prefix}observation o JOIN {prefix}observation_container c ON c.observation_id=o.id
+        WHERE o.rowid>?1 AND o.rowid<=?2 AND (?3 IS NULL OR c.container_input=?3)
+          AND json_type(o.details_json,'$.import.import_id')='text'"
+    ))?;
+    for row in roots.query_map(params![after, through, input], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (input, import_id) = row?;
+        originals.entry(input).or_default().insert(import_id);
+    }
+    let mut observations = conn.prepare(&format!(
+        "SELECT o.id,o.input,o.details_json FROM {prefix}observation o
+        WHERE o.rowid>?1 AND o.rowid<=?2 AND (?3 IS NULL OR o.input=?3)
+          AND o.details_json IS NOT NULL ORDER BY o.rowid"
+    ))?;
+    for row in observations.query_map(params![after, through, input], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (observation, input, details) = row?;
+        let details: serde_json::Value = serde_json::from_str(&details)?;
+        if let Some(member) = details.get("import") {
+            let membership: ImportMember = serde_json::from_value(member.clone())?;
+            if originals
+                .get(&input)
+                .is_some_and(|imports| imports.contains(&membership.import_id))
+            {
+                continue;
+            }
+            if membership.version != 1
+                || membership.import_id.is_empty()
+                || membership.member.is_empty()
+            {
+                return Err(StoreError::Invalid(
+                    "unsupported or invalid import membership".into(),
+                ));
+            }
+            visit(ObservedMember {
+                observation,
+                input,
+                membership,
+            })?;
+        }
+    }
+    Ok((through != after).then_some(through))
 }
 
 /// The same actual-member projection is used by import refresh and confirmed replay.

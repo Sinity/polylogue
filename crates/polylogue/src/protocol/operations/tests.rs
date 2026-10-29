@@ -110,6 +110,35 @@ fn status_operation_uses_its_typed_answer_on_the_shared_socket_path() {
     );
 }
 
+fn closed_argument_names(
+    root: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> std::collections::BTreeSet<String> {
+    if let Some(reference) = schema["$ref"].as_str() {
+        let pointer = reference.strip_prefix('#').expect("local schema reference");
+        return closed_argument_names(
+            root,
+            root.pointer(pointer).expect("declared argument shape"),
+        );
+    }
+    if let Some(branches) = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(serde_json::Value::as_array)
+    {
+        return branches
+            .iter()
+            .flat_map(|branch| closed_argument_names(root, branch))
+            .collect();
+    }
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["additionalProperties"], false);
+    schema["properties"]
+        .as_object()
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 #[test]
 fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
     for command in crate::commands::COMMANDS
@@ -122,18 +151,8 @@ fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
             .map(|arg| arg.name.to_owned())
             .collect::<std::collections::BTreeSet<_>>();
         let schema = (command.typed_schemas.unwrap())().0;
-        assert_eq!(schema["type"], "object", "{}", command.name);
-        let typed = schema["properties"]
-            .as_object()
-            .map(|properties| {
-                properties
-                    .keys()
-                    .cloned()
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
-            .unwrap_or_default();
+        let typed = closed_argument_names(&schema, &schema);
         assert_eq!(typed, declared, "{}", command.name);
-        assert_eq!(schema["additionalProperties"], false, "{}", command.name);
     }
 }
 
@@ -341,4 +360,47 @@ fn mixed_setting_reads_use_scope_fences_from_the_admitted_request() {
     .unwrap();
     assert!(read_scope_required(Some(command), Some(&read)));
     assert!(!read_scope_required(Some(command), Some(&write)));
+}
+
+#[test]
+fn typed_write_identity_comes_from_the_envelope_on_every_surface() {
+    let command = crate::commands::command("setting").unwrap();
+    let build = command.build_typed.unwrap();
+    for surface in [Surface::Cli, Surface::Http, Surface::Mcp] {
+        let caller = Caller {
+            surface,
+            cwd: None,
+            json: true,
+        };
+        assert!(
+            !command
+                .args_for(surface)
+                .any(|arg| arg.name == "request_id")
+        );
+        let read = build(json!({}), &caller, "catalog-envelope-id").unwrap();
+        assert!(matches!(
+            read,
+            crate::daemon::Request::Setting {
+                request_id: None,
+                ..
+            }
+        ));
+        let write = build(
+            json!({"key":"browser.actions","value":"on"}),
+            &caller,
+            "write-envelope-id",
+        )
+        .unwrap();
+        assert!(
+            matches!(write,crate::daemon::Request::Setting{request_id:Some(ref id),..} if id=="write-envelope-id")
+        );
+        assert!(
+            build(
+                json!({"key":"browser.actions","request_id":"in-arguments"}),
+                &caller,
+                "actual-envelope-id"
+            )
+            .is_err()
+        );
+    }
 }

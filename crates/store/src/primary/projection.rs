@@ -571,6 +571,7 @@ fn plan(index: &Connection) -> Result<Plan> {
                     projection,
                     native_fields,
                     declared_injections,
+                    declared_attachment_bindings,
                     ..
                 } => {
                     let ordinal = pending.output.messages.len();
@@ -585,6 +586,12 @@ fn plan(index: &Connection) -> Result<Plan> {
                             .output
                             .declared_injections
                             .insert(ordinal, declared_injections);
+                    }
+                    if !declared_attachment_bindings.is_empty() {
+                        pending
+                            .output
+                            .declared_attachment_bindings
+                            .insert(ordinal, declared_attachment_bindings);
                     }
                     if let Some(projection) = projection {
                         pending

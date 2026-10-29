@@ -163,9 +163,14 @@ pub enum Request {
         delivery: polylogue_model::read::ReadDelivery,
         format: String,
         budget: Option<usize>,
-        cursor: Option<String>,
         #[serde(default)]
         with_blobs: bool,
+    },
+    /// Continue an acknowledged read with its frozen options and current authority.
+    ReadResume {
+        root_run: polylogue_model::RunId,
+        cursor: query_language::cursor::SealedCursor,
+        budget: Option<std::num::NonZeroU64>,
     },
     /// One exact note revision, including a superseded or withdrawn revision.
     Note {
@@ -323,6 +328,7 @@ impl Request {
             | Self::Query { .. }
             | Self::Changes { .. }
             | Self::Read { .. }
+            | Self::ReadResume { .. }
             | Self::Outline { .. }
             | Self::Note { .. }
             | Self::Resumable { .. }

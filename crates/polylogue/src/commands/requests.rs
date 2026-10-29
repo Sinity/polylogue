@@ -111,6 +111,15 @@ pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
+    if v.0.contains_key("root_run") {
+        return crate::protocol::read::resume_from_values(v);
+    }
+    if v.0.contains_key("cursor") {
+        return Err("a read continuation requires root_run and its authenticated cursor".into());
+    }
+    if v.integer("budget") == Some(0) {
+        return Err("budget must be positive".into());
+    }
     use polylogue_model::read::{ReadDelivery, ReadOptions};
     let expansion = |key| {
         v.text(key)
@@ -167,7 +176,6 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
             .map(usize::try_from)
             .transpose()
             .map_err(|_| "budget exceeds address space")?,
-        cursor: v.text("cursor"),
         with_blobs: v.flag("with_blobs"),
     })
 }

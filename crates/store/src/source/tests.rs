@@ -192,6 +192,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: Batch {
+                    required_disposition: None,
                     input: InputKey {
                         id: "native".into(),
                         format: "synthetic".into(),

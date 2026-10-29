@@ -6,12 +6,39 @@
 use crate::BlobHash;
 use serde::{Deserialize, Serialize};
 
+/// Original import namespace qualified by its actual source input and chain.
+/// This is portable provenance, not receiving-archive membership authority.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentNamespace {
+    pub input: String,
+    pub chain: i64,
+    pub import_id: String,
+}
+impl AttachmentNamespace {
+    fn valid(&self) -> bool {
+        !self.input.is_empty() && self.chain > 0 && !self.import_id.is_empty()
+    }
+}
+
 /// One attachment slot in the complete source message. Sparse projections keep
 /// the original block ordinal instead of renumbering the blocks they carry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttachmentBinding {
     pub source_version: BlobHash,
+    /// Retained even when candidate bytes are unknown. Several namespaces may
+    /// describe the same source slot without merging their claims.
+    pub namespace: AttachmentNamespace,
+    /// Actual context of this export. A receiver retains it as a declaration,
+    /// independently of its own validated receiving members.
+    pub exported_from: AttachmentNamespace,
+    /// Supplied prior export declarations, preserved in their original order.
+    /// Export never manufactures or appends a context history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior_exports: Vec<AttachmentNamespace>,
     pub block: u64,
     pub attachment: u64,
     pub source_id: String,
@@ -21,7 +48,7 @@ pub struct AttachmentBinding {
 
 /// A complete content hash can span several stored extents. Original source
 /// claims remain distinct even when candidate hashes happen to agree.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttachmentCandidate {
     pub hash: BlobHash,
@@ -31,9 +58,13 @@ pub struct AttachmentCandidate {
 
 /// Historical provenance supplied by the exporting archive. These fields never
 /// grant access to a receiving archive's inputs, chains, or import namespaces.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttachmentSourceClaim {
+    /// Unknown historical provenance stays unknown; ingress never substitutes
+    /// the receiving namespace for an original source claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<AttachmentNamespace>,
     pub input: String,
     pub chain: i64,
     pub source_version: String,
@@ -43,16 +74,47 @@ pub struct AttachmentSourceClaim {
     pub declared_sizes: Vec<u64>,
 }
 
+impl AttachmentBinding {
+    /// Checks claim structure. Only ingress with actual bytes and a receiving
+    /// member can establish candidate truth or local availability.
+    pub fn validate(&self) -> Result<(), crate::bundle::BundleError> {
+        use crate::bundle::BundleError;
+        if self.source_id.is_empty()
+            || !self.namespace.valid()
+            || !self.exported_from.valid()
+            || self
+                .prior_exports
+                .iter()
+                .any(|namespace| !namespace.valid())
+        {
+            return Err(BundleError::InvalidAttachmentBinding);
+        }
+        for candidate in &self.candidates {
+            for source in &candidate.sources {
+                if source.input.is_empty()
+                    || source.chain <= 0
+                    || source.source_version.is_empty()
+                    || source
+                        .namespace
+                        .as_ref()
+                        .is_some_and(|namespace| !namespace.valid())
+                {
+                    return Err(BundleError::InvalidAttachmentBinding);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_record(
     record: &crate::bundle::MessageRecord,
 ) -> Result<(), crate::bundle::BundleError> {
     use crate::{Block, bundle::BundleError};
-    let mut slots = std::collections::BTreeSet::new();
+    let mut claims = std::collections::HashSet::new();
     for binding in &record.bindings {
-        if binding.source_version != record.source_version
-            || binding.source_id.is_empty()
-            || !slots.insert((binding.block, binding.attachment))
-        {
+        binding.validate()?;
+        if binding.source_version != record.source_version || !claims.insert(binding) {
             return Err(BundleError::InvalidAttachmentBinding);
         }
         let position = record
@@ -71,16 +133,6 @@ pub(crate) fn validate_record(
             || attachment.source_id.as_deref() != Some(binding.source_id.as_str())
         {
             return Err(BundleError::InvalidAttachmentBinding);
-        }
-        for candidate in &binding.candidates {
-            // Hash and size are typed claims. Only ingress with the actual bytes
-            // can establish their truth; declared source sizes stay untouched.
-            for source in &candidate.sources {
-                if source.input.is_empty() || source.chain <= 0 || source.source_version.is_empty()
-                {
-                    return Err(BundleError::InvalidAttachmentBinding);
-                }
-            }
         }
     }
     Ok(())

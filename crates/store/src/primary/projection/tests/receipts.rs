@@ -133,6 +133,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
                 }),
                 native_fields: Vec::new(),
                 declared_injections: Vec::new(),
+                declared_attachment_bindings: Vec::new(),
                 order: None,
                 projection: Some(polylogue_model::bundle::MessageProjection {
                     source_version: message.content_hash().unwrap(),
