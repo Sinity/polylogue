@@ -39,6 +39,54 @@ pub struct Daemon {
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
 
+impl Daemon {
+    /// Currency comes from the reader checkpoint and cached owner observations.
+    pub(crate) fn currency(
+        &self,
+        reader: &polylogue_store::Reader<'_>,
+    ) -> polylogue_store::Result<polylogue_model::currency::IndexCurrency> {
+        use polylogue_model::currency::IndexCurrency;
+        let _ = reader;
+        match &self.mode {
+            ModeState::Standalone => Ok(IndexCurrency::Standalone),
+            #[cfg(feature = "sinex")]
+            ModeState::Primary { connection } => connection
+                .currency(reader.confirmed_checkpoint()?)
+                .map_err(StoreError::from),
+            #[cfg(feature = "sinex")]
+            ModeState::Blocked { error, .. } => Ok(IndexCurrency::primary(
+                reader.confirmed_checkpoint()?,
+                None,
+                None,
+                Some(false),
+                Some(error.clone()),
+            )),
+        }
+    }
+}
+
+fn query_answer(
+    d: &Daemon,
+    reader: &polylogue_store::Reader<'_>,
+    mut data: serde_json::Value,
+) -> Response {
+    let currency = match d.currency(reader) {
+        Ok(currency) => currency,
+        Err(error) => return store_error(&error),
+    };
+    let Some(position) = data
+        .get_mut("read_at")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return error("internal", "a query answer omitted its read position");
+    };
+    position.insert(
+        "currency".into(),
+        serde_json::to_value(currency).expect("currency serializes"),
+    );
+    super::query::response(data)
+}
+
 pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
     Response::Error {
         kind: kind.into(),
@@ -446,7 +494,7 @@ fn handle_inner(
             let key =
                 serde_json::json!([text, cursor, page_size, why, session, fields]).to_string();
             if let Some(data) = d.warm.answer(&key, &position) {
-                return super::query::response(data);
+                return query_answer(d, &reader, data);
             }
             super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
                 let ask = super::query::Ask {
@@ -464,7 +512,7 @@ fn handle_inner(
                 match super::query::run(&reader, ask) {
                     Ok(data) => {
                         d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                        super::query::response(data)
+                        query_answer(d, &reader, data)
                     }
                     Err(f) => Response::Error {
                         kind: f.kind,
@@ -1197,33 +1245,6 @@ enum ModeState {
 }
 
 impl ModeState {
-    fn primary_status(&self, reader: &polylogue_store::Reader<'_>) -> Option<serde_json::Value> {
-        #[cfg(feature = "sinex")]
-        if let Self::Primary { connection } = self {
-            return Some(match connection.status() {
-                Ok(status) => {
-                    let mut status = serde_json::to_value(status)
-                        .unwrap_or_else(|error| serde_json::json!({"error":error.to_string()}));
-                    match reader.confirmed_position() {
-                        Ok(position) => {
-                            status["applied_position"] = position.into();
-                            status["lag_positions"] = status["owner_position"]
-                                .as_i64()
-                                .map(|owner| owner.saturating_sub(position))
-                                .map(serde_json::Value::from)
-                                .unwrap_or(serde_json::Value::Null);
-                        }
-                        Err(error) => status["position_error"] = error.to_string().into(),
-                    }
-                    status
-                }
-                Err(error) => serde_json::json!({"error":error.to_string()}),
-            });
-        }
-        let _ = reader;
-        None
-    }
-
     /// Writes are paused until the Sinex configuration is fixed or Sinex
     /// can be reached.
     fn blocked(&self) -> bool {

@@ -59,6 +59,8 @@ pub enum MeasureOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<polylogue_model::currency::IndexCurrency>,
     pub generation: String,
     pub index: u64,
     pub archive: u64,

@@ -101,3 +101,21 @@ fn projection_failures_distinguish_conflicts_from_invalid_input() {
         assert_eq!(error.kind, kind);
     }
 }
+
+#[test]
+fn noncurrent_primary_reads_keep_their_data_and_observed_positions_as_degraded() {
+    use polylogue_model::currency::IndexCurrency;
+    for currency in [
+        IndexCurrency::primary(Some(5), Some(8), Some(0.5), Some(true), None),
+        IndexCurrency::primary(Some(5), Some(8), Some(9.0), Some(true), None),
+        IndexCurrency::primary(Some(5), None, None, Some(false), Some("unreachable".into())),
+    ] {
+        let value = json!({"rows":[{"ref":"session:synthetic"}], "read_at":{"currency":currency}});
+        let result = answer(value.clone());
+        assert_eq!(result.exit_code(), 5);
+        assert_eq!(result.http_status(), Some(200));
+        assert_eq!(result.value(), Some(&value));
+    }
+    let value = json!({"read_at":{"currency":IndexCurrency::primary(Some(8),Some(8),Some(0.5),Some(true),None)}});
+    assert!(matches!(answer(value), Answer::Ok { .. }));
+}

@@ -140,6 +140,32 @@ pub fn answer(value: Value) -> Answer<Value> {
             notes: vec!["accepted locally; awaiting Sinex confirmation".into()],
             next: vec![],
         }
+    } else if let Some(currency) = value
+        .get("currency")
+        .or_else(|| value.pointer("/snapshot/currency"))
+        .or_else(|| value.pointer("/read_at/currency"))
+        .and_then(|value| {
+            serde_json::from_value::<polylogue_model::currency::IndexCurrency>(value.clone()).ok()
+        })
+        && currency.degraded()
+    {
+        use polylogue_model::currency::{CurrencyState, IndexCurrency};
+        let note = match currency {
+            IndexCurrency::Primary {
+                state: CurrencyState::Behind,
+                ..
+            } => "primary index is behind the observed owner position",
+            IndexCurrency::Primary {
+                state: CurrencyState::Unavailable,
+                ..
+            } => "primary owner is unavailable",
+            _ => "primary index currency is unknown",
+        };
+        Answer::Degraded {
+            value,
+            notes: vec![note.into()],
+            next: vec![],
+        }
     } else if value["incomplete"].as_bool() == Some(true)
         || value["outcome"].as_str() == Some("incomplete")
         || value["incomplete"]
