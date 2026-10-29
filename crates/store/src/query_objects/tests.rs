@@ -265,3 +265,5 @@ fn composition_edges_are_read_from_the_canonical_source() {
 }
 
 mod migrations;
+
+mod pending;
