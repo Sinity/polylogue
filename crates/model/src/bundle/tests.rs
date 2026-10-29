@@ -13,17 +13,19 @@ fn manifest() -> Manifest {
             archive: 3,
         },
         caught_up: false,
+        currency: crate::currency::IndexCurrency::Standalone,
         counts: Counts::default(),
         flags: Flags {
             format: Format::Json,
-            view: crate::read::View::Full,
             with_blobs: false,
-            inherited: true,
-            assertions: true,
+            read: crate::read::ReadOptions::default(),
         },
         enabled_variants: vec![],
         author: Author::Operator,
         inventory: None,
+        notes: vec![],
+        incomplete: vec![],
+        coverage: vec![],
     }
 }
 
@@ -199,4 +201,56 @@ fn overlapping_conflicting_content_is_not_equal_or_an_implicit_new_version() {
     let mut invalid = full;
     invalid.block_ordinals = vec![1, 1];
     assert_eq!(invalid.validate(), Err(BundleError::InvalidBlockSelection));
+}
+
+#[test]
+fn current_bundle_refuses_unknown_outer_record_fields() {
+    let malformed = include_str!("tests/extra-envelope-field.json");
+    let mut valid: serde_json::Value = serde_json::from_str(malformed).unwrap();
+    valid.as_object_mut().unwrap().remove("future");
+    assert!(serde_json::from_value::<Record>(valid).is_ok());
+    assert!(serde_json::from_str::<Record>(malformed).is_err());
+}
+
+#[test]
+fn presentation_transfer_cannot_carry_an_omitted_canonical_body() {
+    use crate::read::ReadRecord;
+    let record: ReadRecord = serde_json::from_str(r#"{"kind":"presentation","parts":[]}"#).unwrap();
+    assert!(record.record().is_none());
+    assert!(record.parts().is_empty());
+    assert_eq!(
+        serde_json::to_string(&record).unwrap(),
+        r#"{"kind":"presentation","parts":[]}"#
+    );
+    let forbidden =
+        r#"{"kind":"presentation","parts":[],"record":{"record":"document","data":{}}}"#;
+    assert!(serde_json::from_str::<ReadRecord>(forbidden).is_err());
+    let schema = serde_json::to_value(schemars::schema_for!(ReadRecord)).unwrap();
+    assert!(
+        schema["oneOf"]
+            .as_array()
+            .is_some_and(|variants| variants.len() == 2)
+    );
+}
+
+#[test]
+fn canonical_transfer_retains_its_typed_record_after_round_trip() {
+    use crate::read::ReadRecord;
+    let transfer = ReadRecord::Canonical {
+        record: Box::new(Record::Message(Box::new(message_record()))),
+        parts: vec![],
+    };
+    let restored: ReadRecord =
+        serde_json::from_slice(&serde_json::to_vec(&transfer).unwrap()).unwrap();
+    assert_eq!(transfer, restored);
+    assert!(matches!(restored.record(), Some(Record::Message(_))));
+}
+
+#[test]
+fn published_bundle_schema_matches_the_canonical_wire_types() {
+    let published: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../docs/reference/polylogue-bundle-v1.schema.json"
+    )).unwrap();
+    let current = serde_json::to_value(schemars::schema_for!(Record)).unwrap();
+    assert_eq!(published, current);
 }

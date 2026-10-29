@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// What the loop knows about one input between passes. Its parser state
-/// (`parser_state`) is `None` until the input is next parsed after a restart.
+/// (`parser_state`) is restored lazily from the admitted cursor after a restart.
 pub(crate) struct InputState {
     pub(crate) input_id: String,
     pub(crate) origin: &'static OriginSpec,
@@ -49,6 +49,8 @@ pub(crate) struct Plan {
     pub(crate) stored_upto: u64,
     pub(crate) parse_pos: u64,
     pub(crate) storing_started: bool,
+    /// Capture continues while a missing same-version continuation defers parsing.
+    pub(crate) parser_deferred: bool,
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
@@ -93,6 +95,7 @@ impl Plan {
             stored_upto: size,
             parse_pos,
             storing_started: false,
+            parser_deferred: false,
             parser_state: None,
             tail: None,
             chunk,
@@ -107,13 +110,18 @@ impl Plan {
 
     pub(crate) fn finished(&self) -> bool {
         self.failed
+            || (self.parser_deferred && self.stored_upto >= self.size)
             || (self.observation.is_none()
                 && self.stored_upto >= self.size
                 && (self.waiting || self.parse_pos >= self.size))
     }
 
     pub(crate) fn next_job(&mut self) -> Job {
-        let start = self.parse_pos;
+        let start = if self.parser_deferred {
+            self.stored_upto
+        } else {
+            self.parse_pos
+        };
         let end = self.size.min(start + self.span);
         let store_from = (end > self.stored_upto).then_some(self.stored_upto);
         let (change, observation, continues, length) = match store_from {
@@ -163,6 +171,11 @@ impl Plan {
                 self.storing_started = true;
             }
             self.tail = Some(d.tail);
+        }
+        if d.continuation_missing {
+            self.parser_deferred = true;
+            self.waiting = true;
+            return;
         }
         if d.error.is_some() {
             self.failed = true;

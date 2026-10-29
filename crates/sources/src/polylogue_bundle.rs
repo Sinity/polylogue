@@ -58,7 +58,7 @@ pub fn manifest(reader: impl std::io::Read) -> Result<Manifest, String> {
     match stream.next() {
         Some(Ok(Record::Manifest(manifest))) => {
             manifest.validate().map_err(|error| error.to_string())?;
-            Ok(manifest)
+            Ok(*manifest)
         }
         Some(Ok(_)) | None => Err("a Polylogue bundle starts with its manifest".into()),
         Some(Err(error)) => Err(error.to_string()),
