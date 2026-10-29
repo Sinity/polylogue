@@ -1,11 +1,139 @@
 //! Portable readings over the canonical domain records. Provider bytes stay
 //! in their archive; imported source claims never become local byte extents.
 
-use crate::Event;
+use crate::{Author, BlobHash, ChangePosition, Document, Event, Link, Message, Session, Timestamp};
 use serde::{Deserialize, Serialize};
 
 pub const FORMAT: &str = "polylogue-bundle";
 pub const VERSION: u32 = 1;
+
+/// The primary manifest stays small. A directory package names a streamed
+/// inventory, rather than collecting all members in the manifest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub format: String,
+    pub version: u32,
+    pub query: String,
+    pub query_text: String,
+    pub ran_at: Timestamp,
+    pub read_at: ChangePosition,
+    pub caught_up: bool,
+    pub counts: Counts,
+    pub flags: Flags,
+    pub enabled_variants: Vec<String>,
+    pub author: Author,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<FileDescriptor>,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct Counts {
+    pub sessions: u64,
+    pub messages: u64,
+    pub documents: u64,
+    pub events: u64,
+    pub links: u64,
+    pub authored: u64,
+    pub variants: u64,
+    pub blobs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Flags {
+    pub format: Format,
+    pub view: crate::read::View,
+    pub with_blobs: bool,
+    pub inherited: bool,
+    pub assertions: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Format {
+    Json,
+    Jsonl,
+    Markdown,
+    Html,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileDescriptor {
+    pub path: String,
+    pub hash: BlobHash,
+    pub size: u64,
+}
+
+/// The primary manifest-bearing file and inventory itself are not inventory
+/// members: including either would make the pinned hashes recursive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryRecord {
+    pub kind: MemberKind,
+    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    pub file: FileDescriptor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberKind {
+    Records,
+    Rendered,
+    Blob,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub commit: u64,
+    pub session: Session,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MessageRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub commit: u64,
+    /// Reading position within the physical session, independent of commit
+    /// order and of the receiving bundle's actual local byte extents.
+    pub order: u64,
+    pub message: Message,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub commit: u64,
+    pub document: Document,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LinkRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub commit: u64,
+    pub link: Link,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BlobRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub file: FileDescriptor,
+}
 
 /// One original source claim carried through a bundle. The receiving
 /// archive keeps its actual local bundle input and chain separately.
@@ -44,6 +172,22 @@ pub struct InputEventRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BundleError {
+    #[error("not a current Polylogue bundle (format {0:?})")]
+    WrongFormat(String),
+    #[error(
+        "Polylogue bundle version {found} is unsupported; this build reads only version {VERSION}"
+    )]
+    UnsupportedVersion { found: u32 },
+    #[error("bundle query reference must be query: followed by its full BLAKE3 hash")]
+    InvalidQuery,
+    #[error("bundle read position is invalid")]
+    InvalidPosition,
+    #[error("bundle member path is not a canonical relative path")]
+    InvalidPath,
+    #[error("bundle record reference does not match its canonical identity")]
+    ReferenceMismatch,
+    #[error("invalid source time evidence: {0}")]
+    Time(#[from] crate::TimeEvidenceError),
     #[error("invalid event identity or original source claim")]
     InvalidEventIdentity,
     #[error("event reference does not name its imported identity")]
@@ -86,6 +230,7 @@ impl ImportedEventIdentity {
 impl InputEventRecord {
     pub fn validate(&self) -> Result<(), BundleError> {
         self.identity.validate()?;
+        self.event.time_evidence().validate(self.event.at)?;
         if self.reference != format!("event:{}", self.identity.id) {
             return Err(BundleError::EventReferenceMismatch);
         }
@@ -95,3 +240,109 @@ impl InputEventRecord {
         Ok(())
     }
 }
+
+impl Manifest {
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.format != FORMAT {
+            return Err(BundleError::WrongFormat(self.format.clone()));
+        }
+        if self.version != VERSION {
+            return Err(BundleError::UnsupportedVersion {
+                found: self.version,
+            });
+        }
+        if !self.query.strip_prefix("query:").is_some_and(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        }) {
+            return Err(BundleError::InvalidQuery);
+        }
+        if self.read_at.generation.is_empty() || self.read_at.index < 0 || self.read_at.archive < 0
+        {
+            return Err(BundleError::InvalidPosition);
+        }
+        if let Some(inventory) = &self.inventory {
+            inventory.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl FileDescriptor {
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.path.is_empty()
+            || self.path.contains(['\\', '\0'])
+            || self
+                .path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(BundleError::InvalidPath);
+        }
+        Ok(())
+    }
+}
+
+impl SessionRecord {
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.reference != format!("session:{}", self.session.id) {
+            return Err(BundleError::ReferenceMismatch);
+        }
+        self.session
+            .time_evidence()
+            .validate(self.session.started)?;
+        Ok(())
+    }
+}
+
+impl MessageRecord {
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.reference != format!("message:{}", self.message.id) {
+            return Err(BundleError::ReferenceMismatch);
+        }
+        self.message.time_evidence().validate(self.message.at)?;
+        Ok(())
+    }
+}
+
+impl DocumentRecord {
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.reference != format!("document:{}", self.document.id) {
+            return Err(BundleError::ReferenceMismatch);
+        }
+        self.document
+            .time_evidence()
+            .validate(self.document.source_time)?;
+        Ok(())
+    }
+}
+
+impl LinkRecord {
+    pub fn reference(link: &Link) -> String {
+        // Only natural identity participates; later evidence can fill fields
+        // without changing the link's reference.
+        let key = serde_json::to_vec(&(link.kind, &link.parent, &link.child))
+            .expect("link keys serialize");
+        format!("link:{}", blake3::hash(&key).to_hex())
+    }
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.reference != Self::reference(&self.link) {
+            return Err(BundleError::ReferenceMismatch);
+        }
+        Ok(())
+    }
+}
+
+impl BlobRecord {
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.reference != format!("blob:{}", self.file.hash) {
+            return Err(BundleError::ReferenceMismatch);
+        }
+        self.file.validate()
+    }
+}
+
+#[cfg(test)]
+mod tests;
