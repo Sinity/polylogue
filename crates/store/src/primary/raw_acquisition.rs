@@ -153,6 +153,9 @@ impl RawAcquisitionProof {
         if body.generation != self.generation || body.range.start < self.generation.window().start
             || body.range.end > self.generation.window().end
             || body.known_total.is_some_and(|end| end != self.generation.window().end)
+            || matches!(&self.generation,
+                SourceGeneration::File { stream: RawStream { role: RawStreamRole::ProviderBytes, .. }, observed, .. }
+                if body.known_total.is_some_and(|end| end != observed.size))
             || self.total.zip(body.known_total).is_some_and(|(a,b)| a != b)
         { self.valid = false; }
         if let Some((range, hash, previous_body, predecessor)) = &self.last {
