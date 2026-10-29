@@ -8,6 +8,7 @@
 //! - `segments/`: every input blob, in append-only shared frame segments.
 
 pub mod archive;
+pub mod assertions;
 pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
