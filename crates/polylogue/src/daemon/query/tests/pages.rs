@@ -48,6 +48,39 @@ fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
 }
 
 #[test]
+fn count_execution_plans_do_not_change_page_cursor_binding() {
+    let w = morrow();
+    let mut request = ask("messages where parser");
+    request.page_size = Some(1);
+    let first = run_q(&w, request).unwrap();
+    let mut request = ask("messages where parser");
+    request.page_size = Some(1);
+    let cursor = Cursor::decode(first["next"].as_str().unwrap()).unwrap();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let opts = options(&reader, &request, cursor.now, cursor.seed).unwrap();
+    let mut program = polylogue_query::compile(request.text, &opts).unwrap();
+    assert!(
+        cursor
+            .check(&program, &page::question(&program, &opts, false).unwrap())
+            .is_ok()
+    );
+    program.row_count_sql = None;
+    program.row_membership_sql = None;
+    assert!(
+        cursor
+            .check(&program, &page::question(&program, &opts, false).unwrap())
+            .is_ok()
+    );
+    program.sql = format!("SELECT * FROM ({}) WHERE 0", program.sql);
+    assert!(
+        cursor
+            .check(&program, &page::question(&program, &opts, false).unwrap())
+            .is_err()
+    );
+}
+
+#[test]
 fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
     let w = morrow();
     let pool = w.fx.reads().unwrap();
