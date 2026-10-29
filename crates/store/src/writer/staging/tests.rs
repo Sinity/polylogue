@@ -228,3 +228,78 @@ fn ordinary_open_releases_encoded_preparations_after_process_death_in_both_modes
         assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
     }
 }
+
+#[test]
+fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let bodies = [
+        b"first synthetic source".as_slice(),
+        b"second synthetic source".as_slice(),
+    ];
+    {
+        let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        let mut group = Vec::new();
+        for body in bodies {
+            let prepared = archive.prepare_bytes(body).unwrap();
+            let mut item = batch(&prepared.hash().to_string(), prepared.len());
+            item.new_blob = Some(NewBlob {
+                hash: prepared.hash(),
+                size: prepared.len(),
+            });
+            group.push(crate::staging::PreparedBatch {
+                batch: item,
+                files: vec![prepared],
+            });
+        }
+        let late = group[1].files[0].body().unwrap().path.unwrap();
+        std::fs::write(late, b"synthetic damaged encoding").unwrap();
+        let result = writer
+            .sender()
+            .unwrap()
+            .store_group(group, Arc::new(archive.blobs().unwrap()))
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(Result::is_err));
+        for body in bodies {
+            assert!(matches!(
+                archive
+                    .blobs()
+                    .unwrap()
+                    .extent(&hashed_blobs::Hash::of(body)),
+                Err(StoreError::NotFound(_))
+            ));
+        }
+    }
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let mut group = Vec::new();
+    for body in bodies {
+        let prepared = archive.prepare_bytes(body).unwrap();
+        let mut item = batch(&prepared.hash().to_string(), prepared.len());
+        item.new_blob = Some(NewBlob {
+            hash: prepared.hash(),
+            size: prepared.len(),
+        });
+        group.push(crate::staging::PreparedBatch {
+            batch: item,
+            files: vec![prepared],
+        });
+    }
+    let results = writer
+        .sender()
+        .unwrap()
+        .store_group(group, Arc::new(archive.blobs().unwrap()))
+        .unwrap();
+    assert!(results.iter().all(Result::is_ok));
+    for body in bodies {
+        let mut reader = archive
+            .blobs()
+            .unwrap()
+            .read(&hashed_blobs::Hash::of(body))
+            .unwrap();
+        let mut restored = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut restored).unwrap();
+        assert_eq!(restored, body);
+    }
+}

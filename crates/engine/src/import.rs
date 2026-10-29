@@ -75,9 +75,8 @@ impl Engine {
                 if options.explain {
                     continue;
                 }
-                let authored_bytes = (origin.name == "polylogue-bundle")
-                    .then(|| member.bytes.reader())
-                    .transpose()?;
+                let authored_bytes =
+                    (origin.name == "polylogue-bundle").then(|| member.bytes.clone());
                 let mut captured = Captured {
                     prepared: member.bytes,
                     member: None,
@@ -145,7 +144,7 @@ impl Engine {
             }
             if !options.explain {
                 let executed = self.store_import_group(items, &mut report)?;
-                for (at, id, mut bytes) in authored_records {
+                for (at, id, bytes) in authored_records {
                     if executed.contains(&id) {
                         continue;
                     }
@@ -170,7 +169,12 @@ impl Engine {
                                 },
                             )?,
                         };
-                        self.restore_bundle_authored(&at, &mut bytes, &current, &mut report)?;
+                        self.restore_bundle_authored(
+                            &at,
+                            &mut bytes.reader()?,
+                            &current,
+                            &mut report,
+                        )?;
                     }
                 }
                 let counts = self.reads.reader()?.import_counts(&ids)?;

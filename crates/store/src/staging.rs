@@ -10,37 +10,49 @@ pub struct PreparedBatch {
     pub files: Vec<PreparedBytes>,
 }
 
-/// Encoded bytes whose inode stays pinned until the writer transfers custody.
+/// One private encoded file and the descriptor produced by its encoder.
+/// The archive lock owns its path until accepted custody pins a file handle.
+/// Closed preparations keep read-ahead independent of the descriptor limit.
+#[derive(Clone)]
 pub struct PreparedBytes {
     pub(crate) owner: std::path::PathBuf,
-    pub(crate) file: Box<hashed_blobs::Prepared>,
-    temporary: tempfile::NamedTempFile,
+    descriptor: hashed_blobs::EncodedBlob,
+    temporary: std::sync::Arc<tempfile::TempPath>,
 }
 
 impl PreparedBytes {
     pub fn hash(&self) -> BlobHash {
-        BlobHash(self.file.hash().0)
+        BlobHash(self.descriptor.hash.0)
     }
     pub fn len(&self) -> u64 {
-        self.file.decoded_len()
+        self.descriptor.decoded_len
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     pub fn reader(&self) -> Result<hashed_blobs::BlobReader> {
-        Ok(self
-            .file
-            .reader(None, hashed_blobs::ReadLimits::default())?)
+        Ok(self.descriptor.open(
+            std::fs::File::open(self.temporary.as_ref())?,
+            None,
+            hashed_blobs::ReadLimits::default(),
+        )?)
     }
     pub(crate) fn body(&self) -> Result<crate::primary::PreparedBody> {
         Ok(crate::primary::PreparedBody {
-            file: self.temporary.as_file().try_clone()?,
-            descriptor: self.file.descriptor(),
-            path: Some(self.temporary.path().to_owned()),
+            file: std::fs::File::open(self.temporary.as_ref())?,
+            descriptor: self.descriptor.clone(),
+            path: Some(self.temporary.to_path_buf()),
         })
     }
-    pub(crate) fn into_prepared(self) -> hashed_blobs::Prepared {
-        *self.file
+    pub(crate) fn into_prepared(self) -> hashed_blobs::Result<hashed_blobs::Prepared> {
+        // Reopening private custody verifies both encoded and plain identities
+        // before append. No decoded bytes are written and no encoding repeats.
+        hashed_blobs::Prepared::from_encoded(
+            std::fs::File::open(self.temporary.as_ref()).map_err(hashed_blobs::Error::Io)?,
+            self.descriptor,
+            None,
+            hashed_blobs::ReadLimits::default(),
+        )
     }
 }
 
@@ -95,12 +107,12 @@ impl crate::Archive {
         let mut encoded = hashed_blobs::Preparation::new(&directory)?
             .plain_writer(temporary.as_file().try_clone()?, crate::blobs::LEVEL)?;
         let value = write(&mut encoded)?;
-        let prepared = encoded.finish()?;
+        let descriptor = encoded.finish()?.descriptor();
         Ok((
             PreparedBytes {
                 owner: self.root.clone(),
-                file: Box::new(prepared),
-                temporary,
+                descriptor,
+                temporary: std::sync::Arc::new(temporary.into_temp_path()),
             },
             value,
         ))
