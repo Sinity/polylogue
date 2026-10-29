@@ -1,5 +1,8 @@
 //! Exact temporal predicates over canonical native evidence, without zone I/O.
-use crate::query::{fields::NativeTimeStorage, time::NativePredicate};
+use crate::query::{
+    fields::{NativeTimeAttribute, NativeTimeStorage},
+    time::NativePredicate,
+};
 use polylogue_model::{Document, Event, Precision, TimeEvidence, Timestamp};
 use query_language::semantics::Truth;
 use query_language::time::{Time, TimeValue};
@@ -93,6 +96,26 @@ fn test(
 
 pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
     let flags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQLITE_DETERMINISTIC);
+    conn.create_scalar_function("pl_time_attribute", 3, flags, |ctx| {
+        let bytes: Option<Vec<u8>> = ctx.get(0)?;
+        let storage: String = ctx.get(1)?;
+        let attribute: String = ctx.get(2)?;
+        let attribute = NativeTimeAttribute::from_code(&attribute).ok_or_else(|| {
+            rusqlite::Error::UserFunctionError("unknown native time attribute".into())
+        })?;
+        let (_, evidence) =
+            evidence(bytes.as_deref(), &storage).map_err(rusqlite::Error::UserFunctionError)?;
+        // No related tuple is distinct from an explicit native Unknown quality.
+        if bytes.is_none() {
+            return Ok(None);
+        }
+        Ok(match attribute {
+            NativeTimeAttribute::Quality => Some(evidence.quality.as_str().to_owned()),
+            NativeTimeAttribute::Precision => evidence
+                .precision
+                .map(|precision| precision.as_str().to_owned()),
+        })
+    })?;
     conn.create_scalar_function("pl_time_is_point", 2, flags, |ctx| {
         let bytes: Option<Vec<u8>> = ctx.get(0)?;
         let storage: String = ctx.get(1)?;

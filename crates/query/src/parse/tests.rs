@@ -281,3 +281,53 @@ fn product_namespace_spelling_binds_to_the_same_declared_unit() {
         );
     }
 }
+
+#[test]
+fn native_time_companion_catalog_keeps_closed_precision_and_literal_unknown_distinct() {
+    for text in [
+        "messages where at.time_quality:operator at.precision:bounded",
+        "events where time_quality:\"unknown\" precision:unknown",
+        "sessions where started_at.time_quality:captured started_at.precision:minute",
+        "sessions where last_active.precision:unknown",
+        "tool_calls where result_at.time_quality:unknown",
+        "documents where source_time.precision:second",
+        "deliveries where at.time_quality:unknown",
+    ] {
+        p(text);
+    }
+    for text in [
+        "messages where at.precision:milliseconds",
+        "messages where at.time_quality:guessed",
+        "sessions where precision:instant",
+        "sessions where started.precision:instant",
+        "events where precision:\"unknown\"",
+    ] {
+        assert!(parse(text).is_err(), "{text}");
+    }
+    assert!(matches!(
+        cond("events where at.time_quality:unknown"),
+        ConditionKind::Match {
+            value: Value::Unknown,
+            ..
+        }
+    ));
+    assert!(
+        matches!(cond("events where at.time_quality:\"unknown\""), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
+    );
+    let catalog = crate::catalog::catalog(&[], &[]);
+    let text = "events where at.time_quality:unk";
+    let completions = query_language::complete::complete(text, text.len(), &catalog);
+    let literal = completions
+        .iter()
+        .find(|candidate| candidate.value == "\"unknown\"")
+        .expect("native unknown quality is a quoted literal completion");
+    let completed = format!(
+        "{}{}{}",
+        &text[..literal.replace.start],
+        literal.value,
+        &text[literal.replace.end..]
+    );
+    assert!(
+        matches!(cond(&completed), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
+    );
+}
