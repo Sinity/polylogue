@@ -4,6 +4,7 @@ use polylogue_store::fixture::{Fixture, SessionFacts, MessageFacts, CallFacts};
 use query_language::{ast::*, laws, semantics::{Answer, Dataset, Row, Scalar}, Error, ErrorKind};
 use query_language::cursor::{PageRequest, SealedCursor};
 use std::collections::BTreeMap;
+use serde_json::Value;
 
 struct Product;
 struct Plan { text: String, shape: Shape }
@@ -71,13 +72,13 @@ impl Execution {
             let name = format!("claude-code:{}", row.id);
             let session = fixture.session(SessionFacts { id: &name, repo: string(row.fields.get("repo")), ..Default::default() }).map_err(error)?;
             sessions.insert(row.id.clone(), session);
-            fixture.message(session, MessageFacts { id: &format!("claude-code:cost-{}", row.id), role: "assistant", written_by: "model", cost_nusd: number(row.fields.get("cost")).map(|n| (n * 1e9) as i64), seq: Some(-1), ..Default::default() }).map_err(error)?;
+            fixture.message(session, MessageFacts { id: &format!("claude-code:cost-{}", row.id), role: "assistant", written_by: "model", cost_nusd: number(row.fields.get("cost")).map(|n| (n * 1e9) as i64), seq: Some(0), ..Default::default() }).map_err(error)?;
         }
         for row in &dataset["tool_calls"] {
             let parent = row.parent.as_ref().expect("shared child parent");
             let session = sessions[parent];
             let at = row.time.map(|time| time.start);
-            let message = fixture.message(session, MessageFacts { id: &format!("claude-code:{}", row.id), role: "assistant", written_by: "model", at, seq: Some(row.order), ..Default::default() }).map_err(error)?;
+            let message = fixture.message(session, MessageFacts { id: &format!("claude-code:{}", row.id), role: "assistant", written_by: "model", at, seq: Some(row.order + 1), ..Default::default() }).map_err(error)?;
             fixture.tool_call(session, message, CallFacts { tool: "Bash", action: "shell", command: Some(&row.id), outcome: "error", exit_code: number(row.fields.get("cost")).map(|n| n as i64), at, ..Default::default() }).map_err(error)?;
         }
         self.loaded = Some(Loaded { fixture, _directory: directory });
