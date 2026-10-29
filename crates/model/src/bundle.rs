@@ -154,6 +154,97 @@ pub struct VariantPartRecord {
     pub part: crate::VariantPart,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoredRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub commit: u64,
+    pub prepared: crate::authored::PreparedRequest,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::authored::ImportAttribution>,
+}
+
+/// A stream starts with exactly one manifest. All remaining values are
+/// independently staged and validated before the receiving archive writes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "record", content = "data", rename_all = "snake_case")]
+pub enum Record {
+    Manifest(Manifest),
+    Session(SessionRecord),
+    Message(MessageRecord),
+    Event(InputEventRecord),
+    Link(LinkRecord),
+    Document(DocumentRecord),
+    Authored(AuthoredRecord),
+    Variant(VariantRecord),
+    VariantPart(VariantPartRecord),
+    Blob(BlobRecord),
+}
+
+impl Record {
+    pub fn reference(&self) -> Option<&str> {
+        Some(match self {
+            Self::Manifest(_) => return None,
+            Self::Session(r) => &r.reference,
+            Self::Message(r) => &r.reference,
+            Self::Event(r) => &r.reference,
+            Self::Link(r) => &r.reference,
+            Self::Document(r) => &r.reference,
+            Self::Authored(r) => &r.reference,
+            Self::Variant(r) => &r.reference,
+            Self::VariantPart(r) => &r.reference,
+            Self::Blob(r) => &r.reference,
+        })
+    }
+
+    pub fn commit(&self) -> Option<u64> {
+        Some(match self {
+            Self::Manifest(_) | Self::Blob(_) => return None,
+            Self::Session(r) => r.commit,
+            Self::Message(r) => r.commit,
+            Self::Event(r) => r.commit,
+            Self::Link(r) => r.commit,
+            Self::Document(r) => r.commit,
+            Self::Authored(r) => r.commit,
+            Self::Variant(r) => r.commit,
+            Self::VariantPart(r) => r.commit,
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), BundleError> {
+        match self {
+            Self::Manifest(r) => r.validate(),
+            Self::Session(r) => r.validate(),
+            Self::Message(r) => r.validate(),
+            Self::Event(r) => r.validate(),
+            Self::Link(r) => r.validate(),
+            Self::Document(r) => r.validate(),
+            Self::Authored(r) => {
+                if r.reference != format!("request:{}", r.prepared.request.id) {
+                    return Err(BundleError::ReferenceMismatch);
+                }
+                Ok(())
+            }
+            Self::Variant(r) => {
+                if r.reference != format!("variant:{}@{}", r.variant.root, r.variant.id) {
+                    return Err(BundleError::ReferenceMismatch);
+                }
+                Ok(())
+            }
+            Self::VariantPart(r) => {
+                // Matching root/revision and part ordinals is a staged package
+                // relation: a part need not follow its header in the stream.
+                if r.part.variant.is_empty() || r.reference.is_empty() {
+                    return Err(BundleError::ReferenceMismatch);
+                }
+                Ok(())
+            }
+            Self::Blob(r) => r.validate(),
+        }
+    }
+}
+
 /// One original source claim carried through a bundle. The receiving
 /// archive keeps its actual local bundle input and chain separately.
 #[derive(
