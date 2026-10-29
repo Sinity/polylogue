@@ -130,9 +130,7 @@ pub struct Program {
     /// to when it was compiled.
     pub definitions: Vec<Definition>,
     /// The instant and zone the times were resolved against.
-    pub now: i64,
-    pub zone: String,
-    pub day_start_minutes: u16,
+    pub clock: query_language::time::Clock,
     /// Shared expression resolutions carried unchanged by every continuation.
     pub resolved_times: Vec<query_language::time::ResolvedTime>,
     /// `| measure WHAT`: the measurement to run over the sessions `sql`

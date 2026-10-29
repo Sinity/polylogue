@@ -6,10 +6,10 @@
 //! unknown name all read it.
 
 use super::query::Failure;
-use polylogue_model::LogicalDay;
 use polylogue_render::measures as text;
 use polylogue_store::Reader;
 use polylogue_store::measure::{self, Selection, daily, drift, quota, survival, tool_calls};
+use query_language::time::DaySetting;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -39,7 +39,7 @@ pub struct Measure {
 pub struct Run<'a> {
     pub selection: Selection,
     pub now: i64,
-    pub day: &'a LogicalDay,
+    pub day: &'a DaySetting,
     /// The measure's series or named options.
     pub metric: &'a str,
 }
@@ -256,7 +256,7 @@ pub fn run(
     what: &str,
     sessions: Option<Vec<i64>>,
     now: i64,
-    day: &LogicalDay,
+    day: &DaySetting,
     population: Option<Vec<i64>>,
 ) -> Result<Value, Failure> {
     let (m, metric) = find_checked(what)?;

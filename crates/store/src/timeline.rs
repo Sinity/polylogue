@@ -1,6 +1,6 @@
 //! Chronological metadata and calendar counts, without loading message bodies.
 use crate::{Reader, Result, SqlValue};
-use polylogue_model::LogicalDay;
+use query_language::time::{Clock, DaySetting};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -88,7 +88,7 @@ fn representable(column: &str, undated: bool) -> String {
 
 /// Finds recorded logical years by seeking to the first timestamp after each
 /// year. Empty years and individual records are never walked.
-fn years(reader: &Reader<'_>, day: &LogicalDay, through: jiff::civil::Date) -> Result<Vec<i16>> {
+fn years(reader: &Reader<'_>, day: &DaySetting, through: jiff::civil::Date) -> Result<Vec<i16>> {
     let mut years = std::collections::BTreeSet::new();
     for column in ["message.at", "event.at", "source_note.created_at"] {
         let (table, field) = column.rsplit_once('.').unwrap();
@@ -98,12 +98,15 @@ fn years(reader: &Reader<'_>, day: &LogicalDay, through: jiff::civil::Date) -> R
                 &format!(
                     "SELECT min({field}) AS at FROM {table} WHERE {field} >= ?1 AND {field} < ?2"
                 ),
-                &[SqlValue::Int(since), SqlValue::Int(day.day(through).1)],
+                &[
+                    SqlValue::Int(since),
+                    SqlValue::Int(crate::calendar::range(day, through)?.1),
+                ],
             )?;
             let Some(at) = rows.first().and_then(|row| row["at"].as_i64()) else {
                 break;
             };
-            let year = day.date_of(at).year();
+            let year = crate::calendar::date(day, at)?.year();
             years.insert(year);
             let Some(next) = year
                 .checked_add(1)
@@ -111,7 +114,7 @@ fn years(reader: &Reader<'_>, day: &LogicalDay, through: jiff::civil::Date) -> R
             else {
                 break;
             };
-            let next = day.start_of(next);
+            let next = crate::calendar::start(day, next)?;
             if next <= since || next <= at {
                 break;
             }
@@ -328,11 +331,12 @@ fn rows(
 /// undated reads follow separately, ordered by kind and ID.
 pub fn page(
     reader: &Reader<'_>,
-    day: &LogicalDay,
+    clock: &Clock,
     selection: &Selection<'_>,
     after: Option<&Position>,
     size: u64,
 ) -> Result<Value> {
+    let day = &clock.day;
     let limit = i64::try_from(
         size.checked_add(1)
             .ok_or_else(|| crate::StoreError::Invalid("page size exceeds i64".into()))?,
@@ -344,9 +348,9 @@ pub fn page(
             Some(date) if selection.across_years => years(reader, day, date)?
                 .into_iter()
                 .filter_map(|year| jiff::civil::Date::new(year, date.month(), date.day()).ok())
-                .map(|date| Some(day.day(date)))
-                .collect(),
-            Some(date) => vec![Some(day.day(date))],
+                .map(|date| crate::calendar::range(day, date).map(Some))
+                .collect::<Result<Vec<_>>>()?,
+            Some(date) => vec![Some(crate::calendar::range(day, date)?)],
             None => vec![None],
         };
         for bounds in ranges {
@@ -378,7 +382,10 @@ pub fn page(
     }
     for (i, row) in found.iter_mut().enumerate() {
         row["date"] = if i < dated {
-            json!(day.day_label(row["at"].as_i64().unwrap()))
+            json!(crate::calendar::day_label(
+                day,
+                row["at"].as_i64().unwrap()
+            )?)
         } else {
             Value::Null
         };
@@ -397,54 +404,33 @@ pub fn page(
 }
 
 /// A single calendar month. Each source is bounded before date conversion.
-pub fn calendar(
-    reader: &Reader<'_>,
-    day: &LogicalDay,
-    date: jiff::civil::Date,
-) -> Result<Vec<Value>> {
-    dates(reader, day)?;
-    let (since, until) = day.month(date);
+pub fn calendar(reader: &Reader<'_>, clock: &Clock, date: jiff::civil::Date) -> Result<Vec<Value>> {
+    let day = &clock.day;
+    let (since, until) = crate::calendar::month(day, date)?;
     if until <= since {
         return Err(crate::StoreError::Invalid(
             "calendar month has no representable interval".into(),
         ));
     }
-    reader.query(
-        "SELECT pl_timeline_date(at) AS date,count(*) AS records FROM (
+    reader.with_clock(clock, || reader.query(
+        "SELECT pl_day(at) AS date,count(*) AS records FROM (
         SELECT at FROM message WHERE at >= ?1 AND at < ?2
         UNION ALL SELECT at FROM event WHERE at >= ?1 AND at < ?2
         UNION ALL SELECT created_at AS at FROM source_note WHERE created_at >= ?1 AND created_at < ?2
     ) GROUP BY date ORDER BY date",
         &[SqlValue::Int(since), SqlValue::Int(until)],
-    )
-}
-
-fn dates(reader: &Reader<'_>, day: &LogicalDay) -> Result<()> {
-    let day = day.clone();
-    reader.conn()?.create_scalar_function(
-        "pl_timeline_date",
-        1,
-        rusqlite::functions::FunctionFlags::SQLITE_UTF8
-            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-        move |ctx| {
-            let at = ctx.get::<Option<i64>>(0)?;
-            Ok(at
-                .filter(|at| jiff::Timestamp::from_millisecond(*at).is_ok())
-                .map(|at| day.day_label(at)))
-        },
-    )?;
-    Ok(())
+    ))
 }
 
 /// Known physical response subtotals in a calendar month. Independent usage
 /// observations remain separate in the usage report, as they do by model.
 pub fn costs_by_day(
     reader: &Reader<'_>,
-    day: &LogicalDay,
+    clock: &Clock,
     month: jiff::civil::Date,
     selected: &crate::measure::Selection,
 ) -> Result<Vec<Value>> {
-    dates(reader, day)?;
+    let day = &clock.day;
     let (sources, mut params) = sources(
         &Selection {
             date: None,
@@ -458,7 +444,7 @@ pub fn costs_by_day(
         false,
     );
     let source = &sources[0];
-    let (since, until) = day.month(month);
+    let (since, until) = crate::calendar::month(day, month)?;
     if until <= since {
         return Err(crate::StoreError::Invalid(
             "calendar month has no representable interval".into(),
@@ -468,7 +454,7 @@ pub fn costs_by_day(
     let first = params.len();
     params.push(SqlValue::Int(until));
     let last = params.len();
-    reader.query(&format!("WITH activity AS ({source}) SELECT pl_timeline_date(at) AS date,count(*) AS records,sum(cost_nusd)/1e9 AS known_usd,sum(cost_nusd IS NULL) AS unpriced_records FROM activity WHERE at >= ?{first} AND at < ?{last} GROUP BY date ORDER BY date"),&params)
+    reader.with_clock(clock, || reader.query(&format!("WITH activity AS ({source}) SELECT pl_day(at) AS date,count(*) AS records,sum(cost_nusd)/1e9 AS known_usd,sum(cost_nusd IS NULL) AS unpriced_records FROM activity WHERE at >= ?{first} AND at < ?{last} GROUP BY date ORDER BY date"),&params))
 }
 
 /// Known responses with unrepresentable source times in the selected sessions,

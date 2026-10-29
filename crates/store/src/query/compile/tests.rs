@@ -4,11 +4,14 @@ use super::*;
 
 fn opts(saved: &[(&str, &str)]) -> Options {
     Options {
-        clock: crate::query::time::clock(
-            1_790_000_000_000,
-            polylogue_model::LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        )
-        .unwrap(),
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_790_000_000_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
+        ),
         origins: vec!["claude-code".into(), "codex".into()],
         command_words: vec!["list".into(), "brief".into()],
         page_size: None,

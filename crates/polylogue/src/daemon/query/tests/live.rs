@@ -1,11 +1,12 @@
 //! The live view, the change feed and the signal notices as queries:
 //! `sessions` with live fields, the `changes` unit and `deliveries`.
 
+use super::fixture_clock;
 use crate::daemon::query::*;
 use polylogue_model::{Event, Json, Output, Session, SessionId, SessionKind, Timestamp};
-use polylogue_store::query::fields::{live_state, live_until};
 use polylogue_store::ReadPool;
 use polylogue_store::fixture::writer::WriterArchive;
+use polylogue_store::query::fields::{live_state, live_until};
 use serde_json::json;
 
 fn ask(text: &str, now: i64) -> Ask<'_> {
@@ -15,8 +16,7 @@ fn ask(text: &str, now: i64) -> Ask<'_> {
         page_size: Some(100),
         why: false,
         session: None,
-        now,
-        day: Some(LogicalDay::named("UTC", 0).unwrap()),
+        clock: fixture_clock(now, "UTC", 0),
         embeddings: false,
         near: None,
         fields: &[],
