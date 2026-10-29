@@ -250,6 +250,7 @@ fn seed_restart(dir: &Path) {
             blobs: vec![],
             length,
             parse,
+            acquisition: None,
             release: Default::default(),
         };
         for result in writer

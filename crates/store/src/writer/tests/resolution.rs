@@ -722,6 +722,7 @@ fn apply_confirmed_readings(
             blobs: Vec::new(),
             length: *length,
             parse: Vec::new(),
+            acquisition: None,
             release: InFlight::default(),
         };
         reading.visit(|step| {

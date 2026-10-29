@@ -86,6 +86,7 @@ impl Test {
                 blobs: vec![],
                 length,
                 parse: vec![parse],
+                acquisition: None,
                 release: Default::default(),
             };
             for done in writer.sender()?.store_group(

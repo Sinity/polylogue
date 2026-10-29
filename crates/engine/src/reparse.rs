@@ -431,6 +431,7 @@ fn keep_decoded(
                 blobs,
                 length: plan.size,
                 parse: Vec::new(),
+                acquisition: None,
                 release: Default::default(),
             },
             files,

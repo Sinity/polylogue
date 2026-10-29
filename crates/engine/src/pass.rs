@@ -270,6 +270,7 @@ impl Engine {
                 blobs: vec![],
                 length: st.stored,
                 parse: Vec::new(),
+                acquisition: None,
                 release: Default::default(),
             };
             self.writer.send(batch)?;

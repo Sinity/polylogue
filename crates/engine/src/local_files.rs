@@ -172,6 +172,7 @@ impl Engine {
                         step.reading_version = origin.reading_version();
                         vec![step]
                     },
+                    acquisition: None,
                     release: Default::default(),
                 };
                 self.writer
@@ -230,6 +231,7 @@ impl Engine {
             blobs: Vec::new(),
             length: prepared.len(),
             parse: Vec::new(),
+            acquisition: None,
             release: Default::default(),
         };
         if !exists {

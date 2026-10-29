@@ -185,6 +185,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             step.reading_version = "synthetic=1".into();
             step
         }],
+        acquisition: None,
         release: InFlight::default(),
     }
 }
