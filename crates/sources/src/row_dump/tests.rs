@@ -71,12 +71,30 @@ fn envelope_and_declared_column_metadata_are_counted_without_repeating_row_leave
     assert_eq!(observed("row_envelope", "facts", "/k").unused_count, 0);
     assert_eq!(observed("row_envelope", "facts", "").unknown_table_count, 0);
     assert_eq!(observed("row", "facts", "").unknown_table_count, 1);
-    assert!(observed("table_metadata", "empty_table", "/columns/[]/name")
-        .expected.contains(&"string".into()));
-    assert_eq!(observed("table_metadata", "empty_table", "/columns/[]/future/leaf").unused_count, 1);
-    assert_eq!(step.counts.wire_shapes.values().map(|shape| shape.unused_count).sum::<u64>(), 3);
+    assert!(
+        observed("table_metadata", "empty_table", "/columns/[]/name")
+            .expected
+            .contains(&"string".into())
+    );
+    assert_eq!(
+        observed("table_metadata", "empty_table", "/columns/[]/future/leaf").unused_count,
+        1
+    );
+    assert_eq!(
+        step.counts
+            .wire_shapes
+            .values()
+            .map(|shape| shape.unused_count)
+            .sum::<u64>(),
+        3
+    );
     let encoded = serde_json::to_string(&step.counts.wire_shapes).unwrap();
-    for scalar in ["distinctive_column_name", "distinctive_type_name", "distinctive_hash", "distinctive_body"] {
+    for scalar in [
+        "distinctive_column_name",
+        "distinctive_type_name",
+        "distinctive_hash",
+        "distinctive_body",
+    ] {
         assert!(!encoded.contains(scalar));
     }
 }
