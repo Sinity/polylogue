@@ -37,7 +37,7 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
     assert_eq!(program.resolved_times.len(), 1);
     let question = identity(text, &options).unwrap();
     let seal = CursorSeal::new([7; 32]);
-    let context = context(question, &position(), &options, &program, 9, false).unwrap();
+    let context = context(question, &position(), (1, 2), &options, &program, 9, false).unwrap();
     let row: serde_json::Map<String, Value> = program
         .order
         .iter()
@@ -53,7 +53,7 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
         },
     )
     .unwrap();
-    let opened = open(&token, &seal, question, &position(), &options).unwrap();
+    let opened = open(&token, &seal, question, &position(), (1, 2), &options).unwrap();
     assert_eq!(opened.context.clock, options.clock);
     assert_eq!(opened.context.random_seed, 9);
     assert_eq!(opened.context.resolved_times, program.resolved_times);
@@ -63,7 +63,7 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
     );
     let other = identity("since:3d | sort by id", &options).unwrap();
     assert_eq!(
-        open(&token, &seal, other, &position(), &options)
+        open(&token, &seal, other, &position(), (1, 2), &options)
             .unwrap_err()
             .kind,
         "invalid_query"
@@ -76,8 +76,7 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
             std::str::from_utf8(&tampered).unwrap(),
             &seal,
             question,
-            &position(),
-            &options
+            &position(), (1, 2), &options
         )
         .unwrap_err()
         .kind,
@@ -91,7 +90,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
     let program = polylogue_query::compile("sessions", &options).unwrap();
     let question = identity("sessions", &options).unwrap();
     let seal = CursorSeal::new([8; 32]);
-    let context = context(question, &position(), &options, &program, 9, false).unwrap();
+    let context = context(question, &position(), (1, 2), &options, &program, 9, false).unwrap();
     let continuation = Continuation {
         context,
         after: OrderPosition {
@@ -103,7 +102,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
     let mut newer = position();
     newer.generation = "rebuilt-generation".into();
     assert_eq!(
-        open(token.as_str(), &seal, question, &newer, &options)
+        open(token.as_str(), &seal, question, &newer, (1, 2), &options)
             .unwrap_err()
             .kind,
         "stale_cursor"

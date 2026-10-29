@@ -45,6 +45,7 @@ pub(super) fn open(
     seal: &CursorSeal,
     question: QuestionId,
     position: &ChangePosition,
+    index_file: (u64, u64),
     options: &Options,
 ) -> Result<Continuation, Failure> {
     seal.open(
@@ -63,6 +64,7 @@ pub(super) fn open(
         },
         |context| {
             context.read_positions.get("generation") == Some(&position.generation)
+                && context.read_positions.get("index_file") == Some(&format!("{}:{}", index_file.0, index_file.1))
                 && context
                     .read_positions
                     .get("index")
@@ -99,6 +101,7 @@ fn definitions(program: &Program) -> Result<String, Failure> {
 pub(super) fn context(
     question: QuestionId,
     position: &ChangePosition,
+    index_file: (u64, u64),
     options: &Options,
     program: &Program,
     seed: u64,
@@ -122,6 +125,7 @@ pub(super) fn context(
         random_seed: seed,
         read_positions: BTreeMap::from([
             ("generation".into(), position.generation.clone()),
+            ("index_file".into(), format!("{}:{}", index_file.0, index_file.1)),
             ("index".into(), position.index.to_string()),
             ("archive".into(), position.archive.to_string()),
         ]),
