@@ -295,7 +295,7 @@ impl ExportParser for AiStudio {
                         range: Some((0, self.state.length)),
                         data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
                     });
-                    let attrs = crate::fields::attributes(doc, &DOCUMENT_FIELDS);
+                    let attrs = crate::fields::attributes(&doc, &DOCUMENT_FIELDS);
                     if !attrs.is_empty() {
                         sink.out.events.push(Event {
                             session: Some(sid.clone()),
@@ -463,6 +463,7 @@ impl AiStudio {
                     },
                 };
                 blocks.push(Block::ToolResult {
+                    reported_duration_ms: None,
                     call_id,
                     outcome,
                     output: string_of(result, "output"),

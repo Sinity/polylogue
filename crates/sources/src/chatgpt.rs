@@ -884,6 +884,7 @@ fn tool_result(
         _ => Some(content.clone()),
     };
     Block::ToolResult {
+        reported_duration_ms: None,
         call_id,
         outcome: outcome(kind, msg, meta),
         output,
