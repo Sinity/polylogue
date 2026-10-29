@@ -7,6 +7,7 @@ use polylogue_model::{
 mod extent_checkpoint;
 mod input_events;
 mod resolution;
+mod sparse_projection;
 
 fn write_test_rows(
     tx: &Transaction<'_>,

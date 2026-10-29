@@ -456,6 +456,14 @@ impl resolve::versions::ValueSource for History<'_> {
             return Ok(None);
         };
         let step = self.step(location)?;
+        if let Some(value) = step
+            .prepared
+            .choices
+            .as_ref()
+            .and_then(|choices| choices.message_versions.get(hash))
+        {
+            return Ok(Some(value.clone()));
+        }
         Ok(step
             .output
             .messages

@@ -275,11 +275,11 @@ impl Reader<'_> {
         let Some(row) = self.deliveries("WHERE d.id = ?1", id)?.pop() else {
             return Ok(None);
         };
-        let body: Vec<u8> =
-            self.conn()?
-                .query_row("SELECT body FROM source_delivery WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })?;
+        let body: Vec<u8> = self.conn()?.query_row(
+            "SELECT body FROM source_delivery WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
         let text = crate::encoding::unpack_text(&body)?;
         Ok(Some((row, text)))
     }
@@ -450,7 +450,7 @@ impl Reader<'_> {
         };
         let sql = format!(
             "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state,
-                    json_array(s.id, m.id, b.idx, v.at)
+                    json_array(s.id, m.id, json(coalesce(b.ordinal,CAST(b.idx AS TEXT))), v.at)
                FROM work_node v JOIN session s ON s.pk = v.session_pk
                LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
                LEFT JOIN block b ON b.pk = t.call_block_pk

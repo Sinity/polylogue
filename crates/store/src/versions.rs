@@ -1,7 +1,7 @@
 //! Packed readings and their shared text. Source rows choose what is shown.
 use crate::{Result, encoding, first_build::FirstBuild};
-use polylogue_model::Block;
-use rusqlite::{Connection, params};
+use polylogue_model::{BlobHash, Block, Message, bundle::MessageProjection};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 
@@ -66,22 +66,34 @@ pub(crate) fn store(
         first_build,
         keys,
     } = text_rows;
+    let replace = matches!(kind, VersionKind::Message);
     let kind = kind.name();
-    let inserted = conn
-        .prepare_cached(&format!(
-            "INSERT OR IGNORE INTO {kind}_version(version_hash,body) VALUES (?1,?2)"
-        ))?
-        .execute(params![hash, body])?;
+    let sql = if replace {
+        format!("INSERT INTO {kind}_version(version_hash,body) VALUES (?1,?2)
+            ON CONFLICT(version_hash) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body")
+    } else {
+        format!("INSERT OR IGNORE INTO {kind}_version(version_hash,body) VALUES (?1,?2)")
+    };
+    let inserted = conn.prepare_cached(&sql)?.execute(params![hash, body])?;
     if inserted == 0 {
         return Ok(());
+    }
+    if replace {
+        conn.execute(
+            &format!("DELETE FROM {kind}_version_text WHERE version_hash=?1"),
+            [hash],
+        )?;
     }
     for (idx, text_hash) in texts.iter().enumerate() {
         if let Some(text_hash) = text_hash {
             let key = keys.get(crate::writer::resolve::Kind::Text, text_hash)?;
-            let body = packed.get(text_hash).ok_or_else(|| {
-                crate::StoreError::Invalid("a new text has no prepared bytes".into())
-            })?;
-            crate::text_rows::store_prepared(conn, key.pk, text_hash, body, first_build)?;
+            if let Some(body) = packed.get(text_hash) {
+                crate::text_rows::store_prepared(conn, key.pk, text_hash, body, first_build)?;
+            } else if !key.existing {
+                return Err(crate::StoreError::Invalid(
+                    "a new text has no prepared bytes".into(),
+                ));
+            }
             conn.prepare_cached(&format!(
                 "INSERT INTO {kind}_version_text(version_hash,idx,text_id) VALUES (?1,?2,?3)"
             ))?
@@ -103,6 +115,41 @@ pub(crate) fn store(
     Ok(())
 }
 
+pub(crate) fn store_message(
+    conn: &Connection,
+    message: &Message,
+    prepared: &encoding::PreparedMessage,
+    text_rows: TextRows<'_>,
+) -> Result<()> {
+    prepared.projection.validate(message.blocks.len())?;
+    if prepared.hash != prepared.projection.source_version.0 {
+        return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+    }
+    store(
+        conn,
+        VersionKind::Message,
+        &prepared.hash,
+        &prepared.body,
+        &message.blocks,
+        &prepared.texts,
+        text_rows,
+    )?;
+    let layout = message_layout(&prepared.projection)?;
+    conn.execute(
+        "INSERT INTO message_projection(version_hash,layout) VALUES (?1,?2)
+         ON CONFLICT(version_hash) DO UPDATE SET layout=excluded.layout WHERE layout IS NOT excluded.layout",
+        params![prepared.hash.as_slice(), layout],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn message_layout(projection: &MessageProjection) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&(
+        projection.block_count,
+        &projection.block_ordinals,
+    ))?)
+}
+
 pub(crate) fn read<T: DeserializeOwned>(
     conn: &Connection,
     kind: VersionKind,
@@ -114,7 +161,16 @@ pub(crate) fn read<T: DeserializeOwned>(
             "SELECT body FROM {kind}_version WHERE version_hash=?1"
         ))?
         .query_row([hash], |r| r.get(0))?;
-    let mut value: serde_json::Value = encoding::unpack_json(&body)?;
+    read_body(conn, kind, hash, &body)
+}
+
+fn read_body<T: DeserializeOwned>(
+    conn: &Connection,
+    kind: &str,
+    hash: &[u8],
+    body: &[u8],
+) -> Result<T> {
+    let mut value: serde_json::Value = encoding::unpack_json(body)?;
     let mut statement = conn.prepare_cached(&format!(
         "SELECT v.idx,t.body FROM {kind}_version_text v JOIN text t ON t.id=v.text_id WHERE v.version_hash=?1 ORDER BY v.idx"
     ))?;
@@ -131,6 +187,54 @@ pub(crate) fn read<T: DeserializeOwned>(
         block[field] = encoding::unpack_text(&packed)?.into();
     }
     Ok(serde_json::from_value(value)?)
+}
+
+/// The value and its block positions belong to the caller's one read snapshot.
+pub(crate) fn read_message(
+    conn: &Connection,
+    hash: &[u8],
+) -> Result<Option<(Message, MessageProjection)>> {
+    let stored = conn
+        .query_row(
+            "SELECT v.body,p.layout FROM message_version v
+         LEFT JOIN message_projection p USING(version_hash) WHERE v.version_hash=?1",
+            [hash],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+        )
+        .optional()?;
+    let Some((body, layout)) = stored else {
+        return Ok(None);
+    };
+    let message: Message = read_body(conn, "message", hash, &body)?;
+    let projection = message_projection(hash, layout.as_deref(), message.blocks.len())?;
+    projection.validate(message.blocks.len())?;
+    if projection.block_count == message.blocks.len() as u64
+        && message.content_hash()? != projection.source_version
+    {
+        return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+    }
+    Ok(Some((message, projection)))
+}
+
+pub(crate) fn message_projection(
+    hash: &[u8],
+    layout: Option<&[u8]>,
+    blocks: usize,
+) -> Result<MessageProjection> {
+    let source_version = BlobHash(hash.try_into().map_err(|_| {
+        crate::StoreError::Invalid("a message source version is not a BLAKE3 hash".into())
+    })?);
+    let (block_count, block_ordinals) = match layout {
+        Some(layout) => encoding::read_json::<(u64, Vec<u64>)>(layout)?,
+        None => (blocks as u64, (0..blocks as u64).collect()),
+    };
+    let projection = MessageProjection {
+        source_version,
+        block_count,
+        block_ordinals,
+    };
+    projection.validate(projection.block_ordinals.len())?;
+    Ok(projection)
 }
 
 /// Recheck only readings whose source references changed, using their hash indexes.

@@ -1,5 +1,5 @@
-//! Source membership overlays for one worker snapshot. Payloads are decoded only
-//! for versions the batch will show; all other readings remain shared by hash.
+//! Source membership overlays for one worker snapshot. Touched message versions
+//! merge compatible block observations before source selection; values stay shared by hash.
 use super::*;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 
@@ -33,6 +33,7 @@ pub(crate) struct DocumentChoice {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Choices {
     pub messages: BTreeMap<i64, Option<MessageChoice>>,
+    pub message_versions: BTreeMap<Vec<u8>, (Message, PreparedMessage)>,
     pub documents: BTreeMap<i64, Option<DocumentChoice>>,
     pub sessions: BTreeMap<i64, Session>,
     pub message_mains: Vec<bool>,
@@ -110,12 +111,57 @@ pub(in crate::writer) trait ValueSource {
     ) -> Result<Option<(polylogue_model::Document, PreparedDocument)>>;
 }
 
+fn merge_message(
+    previous: (Message, PreparedMessage),
+    incoming: (Message, PreparedMessage),
+) -> Result<(Message, PreparedMessage)> {
+    let (message, projection) = previous
+        .1
+        .projection
+        .merge(&previous.0, &incoming.1.projection, &incoming.0)?
+        .ok_or(polylogue_model::bundle::BundleError::SourceVersionMismatch)?;
+    if projection == previous.1.projection {
+        return Ok(previous);
+    }
+    if projection == incoming.1.projection {
+        return Ok(incoming);
+    }
+    let prepared = PreparedMessage::projected(&message, &projection)?;
+    Ok((message, prepared))
+}
+
+fn known_message(
+    index: &Connection,
+    values: Option<&dyn ValueSource>,
+    hash: &[u8],
+) -> Result<Option<(Message, PreparedMessage)>> {
+    let stored = crate::versions::read_message(index, hash)?
+        .map(|(message, projection)| {
+            let prepared = PreparedMessage::projected(&message, &projection)?;
+            Ok::<_, StoreError>((message, prepared))
+        })
+        .transpose()?;
+    let staged = values
+        .map(|values| values.message(hash))
+        .transpose()?
+        .flatten()
+        .map(|(mut message, prepared)| {
+            crate::writer::attachments::restore_values(&mut message.blocks, &prepared)?;
+            Ok::<_, StoreError>((message, prepared))
+        })
+        .transpose()?;
+    match (stored, staged) {
+        (Some(stored), Some(staged)) => Ok(Some(merge_message(stored, staged)?)),
+        (stored, staged) => Ok(stored.or(staged)),
+    }
+}
+
 pub(in crate::writer) struct Projection<'a> {
     resolver: &'a Resolver,
     index: &'a Connection,
     keys: &'a ResolvedKeys,
     messages: BTreeMap<i64, Vec<Source>>,
-    shown_messages: BTreeMap<i64, Option<(Vec<u8>, i64)>>,
+    shown_messages: BTreeMap<i64, Option<ShownMessage>>,
     shown_documents: BTreeMap<i64, Option<Vec<u8>>>,
     documents: BTreeMap<i64, Vec<Source>>,
     message_values: BTreeMap<Vec<u8>, (Message, PreparedMessage)>,
@@ -125,6 +171,7 @@ pub(in crate::writer) struct Projection<'a> {
     reset_inputs: BTreeSet<(i64, i64)>,
     values: Option<&'a dyn ValueSource>,
 }
+type ShownMessage = (Vec<u8>, i64, Option<Vec<u8>>);
 impl<'a> Projection<'a> {
     pub(in crate::writer) fn new(
         resolver: &'a Resolver,
@@ -158,7 +205,7 @@ impl<'a> Projection<'a> {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
             };
             if message {
-                shown_messages.insert(row.pk,index.query_row("SELECT s.version_hash,m.session_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.shown=1",[row.pk],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,i64>(1)?))).optional()?);
+                shown_messages.insert(row.pk,index.query_row("SELECT s.version_hash,m.session_pk,p.layout FROM message_source s JOIN message m ON m.pk=s.message_pk LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE s.message_pk=?1 AND s.shown=1",[row.pk],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,i64>(1)?,r.get::<_,Option<Vec<u8>>>(2)?))).optional()?);
             } else {
                 shown_documents.insert(
                     row.pk,
@@ -377,10 +424,29 @@ impl<'a> Projection<'a> {
                 sources.push(source);
             }
             touched_messages.insert(pk);
-            message_values.insert(
-                prepared.hash.to_vec(),
-                (row.message.clone(), prepared.clone()),
-            );
+            let previous = match message_values.get(prepared.hash.as_slice()) {
+                Some(value) => Some(value.clone()),
+                None => known_message(index, *values, &prepared.hash)?,
+            };
+            let mut message = row.message.clone();
+            crate::writer::attachments::restore_values(&mut message.blocks, prepared)?;
+            let incoming = (message, prepared.clone());
+            let merged = match &previous {
+                Some(previous) => merge_message(previous.clone(), incoming)?,
+                None => incoming,
+            };
+            for (block, hash) in merged.0.blocks.iter().zip(&merged.1.texts) {
+                if let (Some(text), Some(hash)) = (crate::encoding::block_text(block), hash)
+                    && let std::collections::hash_map::Entry::Vacant(slot) =
+                        step.prepared.texts.entry(*hash)
+                {
+                    slot.insert(crate::encoding::pack_text(text)?);
+                }
+            }
+            choices
+                .message_versions
+                .insert(prepared.hash.to_vec(), merged.clone());
+            message_values.insert(prepared.hash.to_vec(), merged);
         }
         for (row, prepared) in step.output.documents.iter().zip(&step.prepared.documents) {
             let pk = keys
@@ -450,26 +516,22 @@ impl<'a> Projection<'a> {
                     .iter()
                     .min_by_key(|s| (&s.id, s.seq, s.position))
                     .expect("winner has order");
-                let changed = shown_messages.get(&pk).and_then(Option::as_ref)
-                    != Some(&(source.hash.clone(), source.session));
+                let shown = shown_messages.get(&pk).and_then(Option::as_ref);
+                let layout = message_values
+                    .get(&source.hash)
+                    .map(|(_, prepared)| crate::versions::message_layout(&prepared.projection))
+                    .transpose()?;
+                let changed = shown.map(|(hash, session, _)| (hash, *session))
+                    != Some((&source.hash, source.session))
+                    || shown
+                        .and_then(|(_, _, layout)| layout.as_ref())
+                        .zip(layout.as_ref())
+                        .is_some_and(|(before, after)| before != after);
                 if changed && !message_values.contains_key(&source.hash) {
-                    let prior = match values {
-                        Some(values) => values.message(&source.hash)?,
-                        None => None,
-                    };
-                    let (message, prepared) = match prior {
-                        Some(value) => value,
-                        None => {
-                            let message: Message = crate::versions::read(
-                                index,
-                                crate::versions::VersionKind::Message,
-                                &source.hash,
-                            )?;
-                            let prepared = PreparedMessage::new(&message)?;
-                            (message, prepared)
-                        }
-                    };
-                    message_values.insert(source.hash.clone(), (message, prepared));
+                    let value = known_message(index, *values, &source.hash)?.ok_or_else(|| {
+                        StoreError::Invalid("a selected message version has no value".into())
+                    })?;
+                    message_values.insert(source.hash.clone(), value);
                 }
                 let (message, prepared) = if changed {
                     let (message, prepared) = message_values[&source.hash].clone();
@@ -477,7 +539,12 @@ impl<'a> Projection<'a> {
                 } else {
                     (None, None)
                 };
-                shown_messages.insert(pk, Some((source.hash.clone(), source.session)));
+                let layout = message_values
+                    .get(&source.hash)
+                    .map(|(_, prepared)| crate::versions::message_layout(&prepared.projection))
+                    .transpose()?
+                    .or_else(|| shown.and_then(|(_, _, layout)| layout.clone()));
+                shown_messages.insert(pk, Some((source.hash.clone(), source.session, layout)));
                 Some(MessageChoice {
                     input: source.input,
                     chain: source.chain,
@@ -842,7 +909,10 @@ impl Assertions {
             if let Some(choice) = &mut choice
                 && choice.body.is_empty()
             {
-                choice.body = winner.expect("event winner").body(index, Kind::EventValue, values)?;
+                choice.body =
+                    winner
+                        .expect("event winner")
+                        .body(index, Kind::EventValue, values)?;
             }
             choices.events.insert(pk, choice);
         }
