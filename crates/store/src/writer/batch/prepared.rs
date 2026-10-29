@@ -178,3 +178,27 @@ impl ParseStep {
             .transpose()
     }
 }
+
+impl ParseStep {
+    /// Restores complete domain facts for the primary producer from the worker's codecs.
+    pub fn complete_output(&self) -> Result<Output> {
+        self.prepared.validate(&self.output)?;
+        let mut output = self.output.clone();
+        if !self.prepared.released {
+            return Ok(output);
+        }
+        for (row, prepared) in output.messages.iter_mut().zip(&self.prepared.messages) {
+            crate::writer::attachments::restore_values(&mut row.message.blocks, prepared)?;
+        }
+        for (row, prepared) in output.documents.iter_mut().zip(&self.prepared.documents) {
+            let mut blocks = std::mem::take(&mut row.document.blocks);
+            crate::writer::attachments::restore_values(&mut blocks, prepared)?;
+            row.document = crate::encoding::unpack_json(&prepared.fields)?;
+            row.document.blocks = blocks;
+        }
+        for (event, (_, data)) in output.events.iter_mut().zip(&self.prepared.events) {
+            event.data = crate::encoding::unpack_json(data)?;
+        }
+        Ok(output)
+    }
+}

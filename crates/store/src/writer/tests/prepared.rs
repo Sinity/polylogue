@@ -309,3 +309,70 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
         }
     }
 }
+
+#[test]
+fn complete_products_restore_prepared_structured_values_without_an_index_read() {
+    use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
+    let mut message = text_message("m", "s", Role::Assistant, "exact text", None);
+    message.blocks.extend([
+        Block::ToolCall {
+            call_id: Some("call".into()),
+            tool: Some("Bash".into()),
+            action: ToolAction::Shell,
+            input: serde_json::json!({"command":"printf synthetic","nested":[false,null,{}]}),
+            command: None,
+            path: None,
+            run_by_script: false,
+        },
+        Block::ToolResult {
+            reported_duration_ms: None,
+            call_id: Some("call".into()),
+            outcome: ToolOutcome::Ok,
+            output: Some("exact output".into()),
+            data: Some(serde_json::json!({"answer":42})),
+            attachments: vec![],
+        },
+        Block::Other {
+            type_name: "native".into(),
+            data: serde_json::json!({"kept":true}),
+        },
+    ]);
+    let mut document = Document::new(
+        DocumentId::parse("claude-code:doc").unwrap(),
+        DocumentPurpose::Context,
+    );
+    document.blocks = message.blocks.clone();
+    document.metadata = serde_json::json!({"native":false,"empty":"","unknown":null});
+    let mut batch = batch("input", 0, 0, vec![row(0, message)], &["s"]);
+    batch.parse[0].output.documents.push(DocumentRow {
+        offset: 1,
+        end: 9,
+        document,
+    });
+    batch.parse[0].output.events.push(Event {
+        session: Some(sid("s")),
+        kind: "native".into(),
+        at: None,
+        after: None,
+        range: Some((1, 9)),
+        data: serde_json::json!({"structured":[{},null,false]}),
+    });
+    let original = batch.parse[0].output.clone();
+    batch.parse[0].prepare();
+    assert_ne!(batch.parse[0].output, original);
+    assert_eq!(batch.parse[0].complete_output().unwrap(), original);
+    let products = crate::primary::products::parse(&batch.input, 41, &batch.parse[0]).unwrap();
+    let restored = products
+        .iter()
+        .find_map(|p| match p {
+            crate::primary::Product::Message { reading, facts } => Some((reading, facts)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(restored.0.chain, 41);
+    assert_eq!(restored.1, &original.messages[0]);
+    assert!(matches!(
+        products.last(),
+        Some(crate::primary::Product::ParseProgress { .. })
+    ));
+}
