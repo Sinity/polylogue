@@ -79,6 +79,7 @@ enum Msg {
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
     SynchronizePrimary(SyncSender<Result<i64>>),
     CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
+    Capture(String, SyncSender<Result<crate::primary::Capture>>),
     SourceSnapshot(
         crate::primary::SourceSelector,
         String,
@@ -485,6 +486,11 @@ impl Writer {
         coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
     }
 
+    /// Hydrates one locally durable acquisition and its complete private facts.
+    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
+        capture_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
+    }
+
     /// Pins one locally durable pending source body without network I/O.
     pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
         capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
@@ -675,6 +681,11 @@ impl WriterSender {
         coverage_via(&self.0, coverage)
     }
 
+    /// As [`Writer::capture`].
+    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
+        capture_via(&self.0, identity)
+    }
+
     /// As [`Writer::capture_body`].
     pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
         capture_body_via(&self.0, identity)
@@ -693,6 +704,13 @@ impl WriterSender {
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
     }
+}
+
+fn capture_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::Capture> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Capture(identity, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 fn capture_body_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::PreparedBody> {
@@ -787,6 +805,7 @@ impl Inner {
         let mut synchronizations = Vec::new();
         let mut snapshots = Vec::new();
         let mut pending_bodies = Vec::new();
+        let mut private_captures = Vec::new();
         let mut restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
@@ -842,6 +861,10 @@ impl Inner {
                     }
                     Msg::RestoreAuthored(restoration, reply) => {
                         restorations.push((restoration, reply));
+                        false
+                    }
+                    Msg::Capture(identity, reply) => {
+                        private_captures.push((identity, reply));
                         false
                     }
                     Msg::CaptureBody(identity, reply) => {
@@ -952,6 +975,16 @@ impl Inner {
             }
             for (fact, reply) in coverage.drain(..) {
                 let _ = reply.send(self.write_coverage(*fact));
+            }
+            for (identity, reply) in private_captures.drain(..) {
+                let result = self
+                    .sinex
+                    .as_ref()
+                    .ok_or_else(|| {
+                        StoreError::Invalid("private source captures require a primary producer".into())
+                    })
+                    .and_then(|sinex| sinex.capture(&identity));
+                let _ = reply.send(result);
             }
             for (identity, reply) in pending_bodies.drain(..) {
                 let result = self
