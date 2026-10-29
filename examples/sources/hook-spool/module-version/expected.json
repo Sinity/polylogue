@@ -27,14 +27,6 @@
     ],
     "links": [],
     "messages": [],
-    "sessions": [
-      {
-        "cwd": [
-          "/work/project"
-        ],
-        "id": "claude-code:synthetic",
-        "kind": "main"
-      }
-    ]
+    "sessions": []
   }
 }

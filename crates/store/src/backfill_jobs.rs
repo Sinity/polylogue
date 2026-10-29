@@ -61,11 +61,12 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<B
     let count = |n: i64| u64::try_from(n).unwrap_or(0);
     let events = conn
         .prepare_cached(&format!(
-            "SELECT at, kind, by, position, listed, captured, unchanged, failed, detail
+            "SELECT at, kind, by, position, listed, captured, unchanged, failed, detail, request
              FROM {schema}backfill_job_event WHERE job = ?1 ORDER BY n"
         ))?
         .query_map([id], |r| {
             Ok(BackfillEvent {
+                request: r.get(9)?,
                 at: r.get(0)?,
                 kind: r.get(1)?,
                 by: r.get(2)?,
@@ -98,7 +99,13 @@ fn refused(code: &'static str) -> StoreError {
 
 /// Starts a job, or finds the provider's job that has not ended: one runs
 /// per provider at a time.
-pub(crate) fn start(tx: &Connection, new: &NewBackfillJob, at: i64, seq: i64) -> Result<String> {
+pub(crate) fn start(
+    tx: &Connection,
+    new: &NewBackfillJob,
+    at: i64,
+    seq: i64,
+    request: &str,
+) -> Result<String> {
     let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
         .prepare_cached(&source.sql(
@@ -121,6 +128,7 @@ pub(crate) fn start(tx: &Connection, new: &NewBackfillJob, at: i64, seq: i64) ->
         params![new.id, new.provider, new.since, at, seq],
     )?;
     let event = BackfillEvent {
+        request: request.into(),
         at,
         kind: "started".into(),
         by: None,
@@ -133,7 +141,7 @@ pub(crate) fn start(tx: &Connection, new: &NewBackfillJob, at: i64, seq: i64) ->
 }
 
 /// Hands `by` the job it already holds, or the oldest waiting one.
-pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<String> {
+pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64, request: &str) -> Result<String> {
     let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
         .prepare_cached(&source.sql(
@@ -155,6 +163,7 @@ pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<Stri
     let job = next.ok_or_else(|| StoreError::NotFound("a waiting backfill job".into()))?;
     let (counts, position) = job.progress();
     let event = BackfillEvent {
+        request: request.into(),
         at,
         kind: "claimed".into(),
         by: Some(by.to_owned()),
@@ -174,6 +183,7 @@ pub(crate) fn report(
     report: &BackfillReport,
     at: i64,
     seq: i64,
+    request: &str,
 ) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
     let job = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_backfill_job"))?;
@@ -188,6 +198,7 @@ pub(crate) fn report(
         return Err(refused("not_the_claimant"));
     }
     let event = BackfillEvent {
+        request: request.into(),
         at,
         kind: report.kind.clone(),
         by: Some(by.to_owned()),
@@ -199,7 +210,7 @@ pub(crate) fn report(
 }
 
 /// The operator stops a job.
-pub(crate) fn cancel(tx: &Connection, id: &str, at: i64, seq: i64) -> Result<()> {
+pub(crate) fn cancel(tx: &Connection, id: &str, at: i64, seq: i64, request: &str) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
     let job = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_backfill_job"))?;
     if job.status(at).0.ended() {
@@ -207,6 +218,7 @@ pub(crate) fn cancel(tx: &Connection, id: &str, at: i64, seq: i64) -> Result<()>
     }
     let (counts, position) = job.progress();
     let event = BackfillEvent {
+        request: request.into(),
         at,
         kind: "cancelled".into(),
         by: Some("operator".into()),
@@ -222,9 +234,9 @@ fn add_event(tx: &Connection, id: &str, e: &BackfillEvent, seq: i64) -> Result<(
     let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
     tx.execute(
         &source.sql("INSERT INTO @source.backfill_job_event(job, n, at, kind, by, position, listed, captured,
-             unchanged, failed, detail, commit_seq)
+             unchanged, failed, detail, request, commit_seq)
          VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM @source.backfill_job_event WHERE job = ?1),
-                 ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
+                 ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"),
         params![
             id,
             e.at,
@@ -236,6 +248,7 @@ fn add_event(tx: &Connection, id: &str, e: &BackfillEvent, seq: i64) -> Result<(
             count(e.counts.unchanged),
             count(e.counts.failed),
             e.detail,
+            e.request,
             seq
         ],
     )?;

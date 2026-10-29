@@ -2,7 +2,10 @@
   "counts": {
     "records": 2,
     "skipped": {},
-    "unread_fields": {},
+    "unread_fields": {
+      "room.version": 1,
+      "user.context": 1
+    },
     "unreadable": {},
     "used": {
       "room": 1,
