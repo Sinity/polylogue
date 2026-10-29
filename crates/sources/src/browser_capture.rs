@@ -281,10 +281,10 @@ impl DocumentParser for Capture {
         });
         if let Some(session) = session {
             let provenance = capture.get("provenance").cloned().unwrap_or(Json::Null);
-            sink.out.events.push(Event {
+            sink.out.events.push({ let (at,time_evidence)=crate::time::parts(provenance.get("captured_at").and_then(time_of).map(crate::time::SourceTime::captured)); Event {
                 session: Some(session),
                 kind: "browser_capture".into(),
-                at: provenance.get("captured_at").and_then(time_of),
+ at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until,
                 after: None,
                 range: None,
                 data: serde_json::json!({
@@ -296,7 +296,7 @@ impl DocumentParser for Capture {
                             "id": a.get("provider_attachment_id"), "not_fetched": a.get("not_fetched")
                         })).collect::<Vec<_>>(),
                 }),
-            });
+            } });
         }
         attach_files(&capture, origin, first_message, &mut sink);
     }
@@ -322,7 +322,9 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         facts.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = session.get("created_at").and_then(time_of) {
-        facts.offer_start(at);
+        facts
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(facts);
     sink.records.record("session", &RecordOutcome::Used);
@@ -406,21 +408,27 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             let stored = attachment_bytes(a, sink);
             blocks.extend(attachment(a, direction, stored));
         }
-        let message = Message {
-            id,
-            session: sid.clone(),
-            parent: str_of(turn, "parent_turn_id").and_then(|p| message_id(origin, p)),
-            role,
-            at: turn.get("timestamp").and_then(time_of),
-            model: string_of(turn, "model"),
-            prompt_kind,
-            blocks,
-            usage: Default::default(),
-            stop_reason: None,
-            reported_cost_usd: None,
-            duration_ms: None,
-            attrs: crate::fields::attributes(turn, &TURN_FIELDS),
-            production: Default::default(),
+        let message = {
+            let (at, time_evidence) = crate::time::parts(turn.get("timestamp").and_then(time_of));
+            Message {
+                id,
+                session: sid.clone(),
+                parent: str_of(turn, "parent_turn_id").and_then(|p| message_id(origin, p)),
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: string_of(turn, "model"),
+                prompt_kind,
+                blocks,
+                usage: Default::default(),
+                stop_reason: None,
+                reported_cost_usd: None,
+                duration_ms: None,
+                attrs: crate::fields::attributes(turn, &TURN_FIELDS),
+                production: Default::default(),
+            }
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {

@@ -1,7 +1,7 @@
 //! Full product facts exchanged with the confirmed-stream adapter.
 use crate::input_rows::InputRows;
-use polylogue_model::user::UserRequest;
 use crate::writer::InputKey;
+use polylogue_model::authored::PreparedRequest;
 use polylogue_model::{
     BackgroundUpdate, BlobHash, DocumentRow, Event, Link, MessageRow, RecordCounts, RepoLookup,
     Session,
@@ -19,6 +19,7 @@ pub struct Reading {
     pub start: u64,
     pub parsed_upto: u64,
     pub at_end: bool,
+    pub no_parser_yet: bool,
 }
 
 /// Authoritative material descriptors supplied by Sinex, never hash lookups.
@@ -46,12 +47,15 @@ pub enum Product {
     Message {
         reading: Reading,
         facts: MessageRow,
+        order: Option<u64>,
+        projection: Option<polylogue_model::bundle::MessageProjection>,
     },
     Document {
         reading: Reading,
         facts: DocumentRow,
     },
     Event {
+        id: String,
         reading: Reading,
         facts: Event,
         imported: Option<polylogue_model::bundle::ImportedEventIdentity>,
@@ -72,8 +76,13 @@ pub enum Product {
         reading: Reading,
         counts: RecordCounts,
         reset: bool,
+        comparison: Option<crate::tool_databases::Comparison>,
     },
-    Request(UserRequest),
+    Request(PreparedRequest),
+    WorkSnapshot {
+        snapshot: polylogue_model::work_products::WorkSnapshot,
+    },
+    Coverage(polylogue_model::capture::Coverage),
 }
 
 impl Product {
@@ -87,7 +96,11 @@ impl Product {
             | Self::Background { reading, .. }
             | Self::Repository { reading, .. }
             | Self::ParseProgress { reading, .. } => Some(reading),
-            Self::Input { .. } | Self::Blob(_) | Self::Request(_) => None,
+            Self::Input { .. }
+            | Self::Blob(_)
+            | Self::Request(_)
+            | Self::Coverage(_)
+            | Self::WorkSnapshot { .. } => None,
         }
     }
 }
@@ -113,7 +126,7 @@ pub enum ConfirmedChange {
 }
 
 /// A source capture waiting in the producer spool, before cache application.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CapturedInput {
     pub input: super::InputName,
     pub rows: InputRows,
@@ -121,6 +134,71 @@ pub struct CapturedInput {
     pub previous: Option<String>,
     pub hash: BlobHash,
     pub length: u64,
+    pub group: Option<CaptureGroup>,
+    pub arrival_rank: u8,
+    pub parsed: Vec<CapturedReading>,
+}
+
+/// Complete parser facts retained with an immutable source acquisition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CapturedReading {
+    pub output: polylogue_model::Output,
+    pub counts: RecordCounts,
+    pub start: u64,
+    pub parsed_upto: u64,
+    pub at_end: bool,
+    pub order_from: Option<u64>,
+    pub reading_version: String,
+    pub repeats_whole_conversations: bool,
+    pub no_parser_yet: bool,
+    pub reset: bool,
+    pub comparison: Option<crate::tool_databases::Comparison>,
+}
+impl CapturedReading {
+    pub fn from_step(step: &crate::ParseStep) -> crate::Result<Self> {
+        let output = step.complete_output()?;
+        if !output.blobs.is_empty() {
+            return Err(crate::StoreError::Invalid(
+                "decoded bytes need their own durable capture before parser facts".into(),
+            ));
+        }
+        step.counts.check()?;
+        Ok(Self {
+            output,
+            counts: step.counts.clone(),
+            start: step.start,
+            parsed_upto: step.parsed_upto,
+            at_end: step.at_end,
+            order_from: step.order_from,
+            reading_version: step.reading_version.clone(),
+            repeats_whole_conversations: step.repeats_whole_conversations,
+            no_parser_yet: step.no_parser_yet,
+            reset: step.reset,
+            comparison: step.comparison.clone(),
+        })
+    }
+    pub fn into_step(self) -> crate::ParseStep {
+        let mut step = crate::ParseStep::new(
+            self.output,
+            self.counts,
+            self.start..self.parsed_upto,
+            self.at_end,
+        );
+        step.order_from = self.order_from;
+        step.reading_version = self.reading_version;
+        step.repeats_whole_conversations = self.repeats_whole_conversations;
+        step.no_parser_yet = self.no_parser_yet;
+        step.reset = self.reset;
+        step.comparison = self.comparison;
+        step
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CaptureGroup {
+    pub identity: String,
+    pub ordinal: u64,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +236,7 @@ pub struct SourceLocation {
 
 /// Creates complete outbound products from one parser step, before any index write.
 pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Result<Vec<Product>> {
+    let event_ids = step.event_identities(&input.id, chain)?;
     let output = step.complete_output()?;
     if !output.blobs.is_empty() {
         return Err(crate::StoreError::Invalid(
@@ -173,16 +252,27 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
         start: step.start,
         parsed_upto: step.parsed_upto,
         at_end: step.at_end,
+        no_parser_yet: step.no_parser_yet,
     };
     let mut products = Vec::new();
     products.extend(output.sessions.into_iter().map(|facts| Product::Session {
         reading: reading.clone(),
         facts,
     }));
-    products.extend(output.messages.into_iter().map(|facts| Product::Message {
-        reading: reading.clone(),
-        facts,
-    }));
+    let mut message_order = output.message_order;
+    let mut message_projections = output.message_projections;
+    products.extend(
+        output
+            .messages
+            .into_iter()
+            .enumerate()
+            .map(|(index, facts)| Product::Message {
+                reading: reading.clone(),
+                facts,
+                order: message_order.remove(&index),
+                projection: message_projections.remove(&index),
+            }),
+    );
     products.extend(output.documents.into_iter().map(|facts| Product::Document {
         reading: reading.clone(),
         facts,
@@ -194,6 +284,7 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
             .into_iter()
             .enumerate()
             .map(|(index, facts)| Product::Event {
+                id: event_ids[index].clone(),
                 reading: reading.clone(),
                 facts,
                 imported: imported_events.remove(&index),
@@ -225,19 +316,21 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
         reading,
         counts: step.counts.clone(),
         reset: step.reset,
+        comparison: step.comparison.clone(),
     });
     Ok(products)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "capture", rename_all = "snake_case")]
 pub enum Capture {
     Input(CapturedInput),
     Blob { hash: BlobHash, length: u64 },
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PendingCapture {
     pub identity: String,
     pub captured: Capture,
     pub material: Option<Material>,
+    pub anchor: Option<SourceLocation>,
 }

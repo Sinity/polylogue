@@ -18,7 +18,7 @@ use crate::export::{ExportParser, ExportState};
 use crate::parse::{MessageRow, Parse};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
-    SessionKind, Timestamp, Usage,
+    SessionKind, Usage,
 };
 use std::path::Path;
 
@@ -43,7 +43,7 @@ const APP: &str = "https://gemini.google.com/app/";
 struct Entry {
     verb: String,
     prompt: String,
-    at: Option<Timestamp>,
+    at: Option<crate::time::SourceTime>,
     at_text: String,
     notes: Vec<String>,
     files: Vec<String>,
@@ -99,20 +99,27 @@ impl ExportParser for GeminiApp {
         if state.record_first_session(&native, &sid)?.is_none() {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
             if let Some(at) = e.at {
-                s.offer_start(at);
+                s.offer_start(at.timestamp(), at.evidence())
+                    .expect("decoded source time is valid");
             }
             sink.out.sessions.push(s);
         }
         if e.verb != "Prompted" {
-            sink.out.events.push(Event {
-                session: Some(sid.clone()),
-                kind: "activity".into(),
-                at: e.at,
-                after: state.last_message(&sid)?,
-                range: None,
-                data: serde_json::json!({
-                    "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response
-                }),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(e.at);
+                Event {
+                    session: Some(sid.clone()),
+                    kind: "activity".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: state.last_message(&sid)?,
+                    range: None,
+                    data: serde_json::json!({
+                        "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response, "native_time":e.at_text
+                    }),
+                }
             });
             sink.records.record(&e.verb, &RecordOutcome::Used);
             return Ok(());
@@ -136,6 +143,8 @@ impl ExportParser for GeminiApp {
         let user = message(user_id.clone(), &sid, Role::User, e.at, prompt_blocks);
         let mut user = user;
         user.parent = state.last_message(&sid)?;
+        user.attrs
+            .insert("activity_time".into(), Json::String(e.at_text.clone()));
         let mut reply_blocks = Vec::new();
         if !e.response.is_empty() {
             reply_blocks.push(Block::Text {
@@ -153,6 +162,8 @@ impl ExportParser for GeminiApp {
             (!reply_blocks.is_empty()).then(|| {
                 let mut m = message(reply_id.clone(), &sid, Role::Assistant, e.at, reply_blocks);
                 m.parent = Some(user_id.clone());
+                m.attrs
+                    .insert("activity_time".into(), Json::String(e.at_text.clone()));
                 m
             }),
         ]
@@ -176,24 +187,30 @@ fn message(
     id: polylogue_model::MessageId,
     session: &polylogue_model::SessionId,
     role: Role,
-    at: Option<Timestamp>,
+    at: Option<crate::time::SourceTime>,
     blocks: Vec<Block>,
 ) -> Message {
-    Message {
-        id,
-        session: session.clone(),
-        parent: None,
-        role,
-        at,
-        model: None,
-        prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-        blocks,
-        usage: Usage::default(),
-        stop_reason: None,
-        reported_cost_usd: None,
-        duration_ms: None,
-        attrs: Default::default(),
-        production: Default::default(),
+    {
+        let (at, time_evidence) = crate::time::parts(at);
+        Message {
+            id,
+            session: session.clone(),
+            parent: None,
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: None,
+            prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+            blocks,
+            usage: Usage::default(),
+            stop_reason: None,
+            reported_cost_usd: None,
+            duration_ms: None,
+            attrs: Default::default(),
+            production: Default::default(),
+        }
     }
 }
 
@@ -211,7 +228,7 @@ fn entry(cell: &str) -> Option<Entry> {
     };
     let date_at = segments
         .iter()
-        .position(|s| parse_time(&text_of(s)).is_some());
+        .position(|s| activity_time_text(&text_of(s)));
     let (notes_end, at, at_text) = match date_at {
         Some(i) => {
             let t = text_of(segments[i]);
@@ -352,7 +369,33 @@ fn decode_entities(s: &str) -> String {
 
 /// `Jul 27, 2026, 10:59:30 PM CEST` (a narrow no-break space before the
 /// meridiem). An unknown zone abbreviation leaves the time unknown.
-fn parse_time(s: &str) -> Option<Timestamp> {
+// Recognize the native date slot independently of resolving its timezone or
+// civil date, so an unreadable clock keeps its original text and response.
+fn activity_time_text(text: &str) -> bool {
+    let words: Vec<_> = text.split_whitespace().collect();
+    words.len() == 6
+        && matches!(
+            words[0],
+            "Jan"
+                | "Feb"
+                | "Mar"
+                | "Apr"
+                | "May"
+                | "Jun"
+                | "Jul"
+                | "Aug"
+                | "Sep"
+                | "Oct"
+                | "Nov"
+                | "Dec"
+        )
+        && words[1].trim_end_matches(',').parse::<u32>().is_ok()
+        && words[2].trim_end_matches(',').parse::<i64>().is_ok()
+        && words[3].matches(':').count() == 2
+        && matches!(words[4], "AM" | "PM")
+}
+
+fn parse_time(s: &str) -> Option<crate::time::SourceTime> {
     let s = s.replace(['\u{202f}', '\u{a0}'], " ");
     let mut it = s.split_whitespace();
     let month = match it.next()? {
@@ -383,24 +426,21 @@ fn parse_time(s: &str) -> Option<Timestamp> {
         "AM" | "PM" => {}
         _ => return None,
     }
+    // Ambiguous abbreviations need source timezone settings; the host zone
+    // cannot disambiguate them. Keep their raw activity time without an instant.
     let offset_h = match it.next()? {
         "UTC" | "GMT" => 0,
-        "CET" | "BST" | "WEST" => 1,
+        "CET" | "WEST" => 1,
         "CEST" | "EET" => 2,
-        "EEST" | "MSK" => 3,
-        "EST" | "CDT" => -5,
-        "EDT" => -4,
-        "CST" | "MDT" => -6,
-        "MST" | "PDT" => -7,
-        "PST" => -8,
+        "EEST" => 3,
         _ => return None,
     };
     if it.next().is_some() {
         return None;
     }
-    Timestamp::parse_rfc3339(&format!(
+    crate::time::rfc3339(&Json::String(format!(
         "{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{sec:02}{offset_h:+03}:00"
-    ))
+    )))
 }
 
 #[cfg(test)]

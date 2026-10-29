@@ -60,19 +60,25 @@ struct Source {
     seq: i64,
     position: i64,
     hash: Vec<u8>,
-    time: Option<i64>,
+    time: Option<Timestamp>,
 }
+type MessagePriority<'a> = (
+    std::cmp::Reverse<bool>,
+    std::cmp::Reverse<bool>,
+    i64,
+    &'a [u8],
+    &'a str,
+    std::cmp::Reverse<i64>,
+);
+type DocumentPriority<'a> = (
+    std::cmp::Reverse<Option<Timestamp>>,
+    i64,
+    std::cmp::Reverse<&'a [u8]>,
+    &'a str,
+    std::cmp::Reverse<i64>,
+);
 impl Source {
-    fn message_order(
-        &self,
-    ) -> (
-        std::cmp::Reverse<bool>,
-        std::cmp::Reverse<bool>,
-        i64,
-        &[u8],
-        &str,
-        std::cmp::Reverse<i64>,
-    ) {
+    fn message_order(&self) -> MessagePriority<'_> {
         (
             std::cmp::Reverse(self.main),
             std::cmp::Reverse(self.complete),
@@ -82,15 +88,7 @@ impl Source {
             std::cmp::Reverse(self.chain),
         )
     }
-    fn document_order(
-        &self,
-    ) -> (
-        std::cmp::Reverse<Option<i64>>,
-        i64,
-        std::cmp::Reverse<&[u8]>,
-        &str,
-        std::cmp::Reverse<i64>,
-    ) {
+    fn document_order(&self) -> DocumentPriority<'_> {
         (
             std::cmp::Reverse(self.time),
             self.rank,
@@ -157,7 +155,7 @@ impl<'a> Projection<'a> {
             let sql = if message {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,NULL FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE message_pk=?1"
             } else {
-                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.source_time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
+                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
             };
             if message {
                 shown_messages.insert(row.pk,index.query_row("SELECT s.version_hash,m.session_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.shown=1",[row.pk],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,i64>(1)?))).optional()?);
@@ -189,7 +187,11 @@ impl<'a> Projection<'a> {
                         seq: r.get(9)?,
                         position: r.get(10)?,
                         hash: r.get(11)?,
-                        time: r.get(12)?,
+                        time: if message {
+                            None
+                        } else {
+                            crate::encoding::read_time(r, 12)?.0
+                        },
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -269,14 +271,13 @@ impl<'a> Projection<'a> {
                 .get(Kind::Session, session.id.to_string().as_bytes())?
                 .pk;
             let key = (pk, input, chain);
-            if !session_facts.contains_key(&key) {
-                if let Some(session) = values
+            if let std::collections::btree_map::Entry::Vacant(slot) = session_facts.entry(key)
+                && let Some(session) = values
                     .map(|values| values.session(pk, input, chain))
                     .transpose()?
                     .flatten()
-                {
-                    session_facts.insert(key, session);
-                }
+            {
+                slot.insert(session);
             }
             if !session_facts.contains_key(&key) && !reset_inputs.contains(&(input, chain)) {
                 let body:Option<String>=index.query_row("SELECT facts FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain],|r|r.get(0)).optional()?;
@@ -330,14 +331,14 @@ impl<'a> Projection<'a> {
                 choices.message_mains.push(false);
                 continue;
             }
-            if !session_facts.contains_key(&(session, input, chain)) {
-                if let Some(facts) = values
+            if let std::collections::btree_map::Entry::Vacant(slot) =
+                session_facts.entry((session, input, chain))
+                && let Some(facts) = values
                     .map(|values| values.session(session, input, chain))
                     .transpose()?
                     .flatten()
-                {
-                    session_facts.insert((session, input, chain), facts);
-                }
+            {
+                slot.insert(facts);
             }
             let main=match session_facts.get(&(session,input,chain)) {
                     Some(facts)=>facts.kind==polylogue_model::SessionKind::Main,
@@ -389,7 +390,7 @@ impl<'a> Projection<'a> {
             let previous = sources
                 .iter()
                 .position(|s| s.input == input && s.chain == chain);
-            let time = row.document.source_time.map(Timestamp::unix_ms);
+            let time = row.document.source_time;
             let rank = i64::from(input_key.arrival_rank);
             let keep = !previous.is_some_and(|n| {
                 (time, std::cmp::Reverse(rank), prepared.hash.as_slice())
@@ -555,14 +556,16 @@ impl<'a> Projection<'a> {
             choices.documents.insert(pk, choice);
         }
         assertions.step(
-            resolver,
-            index,
-            keys,
-            &input_key,
-            chain,
+            AssertionStep {
+                resolver,
+                index,
+                keys,
+                input: input_key,
+                chain,
+                values: values.as_deref(),
+            },
             step,
             &mut choices,
-            values.as_deref(),
         )?;
         step.prepared.choices = Some(choices);
         if values.is_some() {
@@ -627,6 +630,14 @@ struct Assertions {
     events: BTreeMap<i64, Vec<Assertion>>,
     links: BTreeMap<i64, Vec<Assertion>>,
 }
+struct AssertionStep<'a> {
+    resolver: &'a Resolver,
+    index: &'a Connection,
+    keys: &'a ResolvedKeys,
+    input: &'a InputKey,
+    chain: i64,
+    values: Option<&'a dyn ValueSource>,
+}
 impl Assertions {
     fn load(index: &Connection, keys: &ResolvedKeys) -> Result<Self> {
         let mut assertions = Self {
@@ -653,15 +664,18 @@ impl Assertions {
     }
     fn step(
         &mut self,
-        resolver: &Resolver,
-        index: &Connection,
-        keys: &ResolvedKeys,
-        input: &InputKey,
-        chain: i64,
+        context: AssertionStep<'_>,
         step: &ParseStep,
         choices: &mut Choices,
-        values: Option<&dyn ValueSource>,
     ) -> Result<()> {
+        let AssertionStep {
+            resolver,
+            index,
+            keys,
+            input,
+            chain,
+            values,
+        } = context;
         let input_pk = keys.get(Kind::Input, input.id.as_bytes())?.pk;
         let rank = i64::from(input.arrival_rank);
         let mut touched_events = BTreeSet::new();
@@ -691,7 +705,7 @@ impl Assertions {
                 sources.retain(|s| s.input != input_pk || s.chain != chain);
             }
         }
-        let mut occurrences = BTreeMap::<(u64, u64), u64>::new();
+        let event_ids = step.event_identities(&input.id, chain)?;
         let mut packer = crate::encoding::RowPacker::new()?;
         for (i, (event, packed)) in step
             .output
@@ -700,21 +714,8 @@ impl Assertions {
             .zip(&step.prepared.events)
             .enumerate()
         {
-            let occurrence = if event.session.is_none() {
-                let next = occurrences
-                    .entry(event.range.unwrap_or_default())
-                    .or_default();
-                let value = *next;
-                *next += 1;
-                value
-            } else {
-                0
-            };
             let imported = step.output.imported_events.get(&i);
-            let id = match imported {
-                Some(identity) => identity.id.clone(),
-                None => event_id(&input.id, chain, event, &packed.0, occurrence)?,
-            };
+            let id = event_ids[i].clone();
             let pk = keys.get(Kind::Event, id.as_bytes())?.pk;
             let data: Json = crate::encoding::unpack_json(&packed.1)?;
             let value = resolver.value(index, Kind::EventValue, &data)?;
@@ -736,28 +737,34 @@ impl Assertions {
                 .or(step
                     .repeats_whole_conversations
                     .then_some(step.start as i64));
+            let mut fields = event.clone();
+            fields.data = Json::Null;
+            let fields = packer.pack_json(&fields)?;
             let mut original = imported
                 .map(|identity| identity.sources.clone())
                 .unwrap_or_default();
             if let Some(previous) = self.events.get(&pk).and_then(|sources| {
-                sources
-                    .iter()
-                    .find(|source| source.input == input_pk && source.chain == chain)
+                sources.iter().find(|source| {
+                    source.input == input_pk
+                        && source.chain == chain
+                        && source.value_pk == value.key.pk
+                })
             }) {
-                original.extend(previous.event_source(index, pk, values)?.imported);
+                let previous = previous.event_source(index, pk, values)?;
+                if previous.fields == fields {
+                    original.extend(previous.imported);
+                }
             }
             original.sort();
             original.dedup();
-            let mut fields = event.clone();
-            fields.data = Json::Null;
             let local_range = if imported.is_some() {
                 Some((step.start, step.parsed_upto))
             } else {
-                event.range
+                event.range.or(Some((step.start, step.parsed_upto)))
             };
             let choice = EventChoice {
                 kind: event.kind.clone(),
-                fields: packer.pack_json(&fields)?,
+                fields,
                 imported: original,
                 value_pk: value.key.pk,
                 input: input_pk,
@@ -832,13 +839,13 @@ impl Assertions {
             let mut choice = winner
                 .map(|source| source.event_source(index, pk, values))
                 .transpose()?;
-            if let Some(choice) = &mut choice {
-                if choice.body.is_empty() {
-                    choice.body =
-                        winner
-                            .expect("event winner")
-                            .body(index, Kind::EventValue, values)?;
-                }
+            if let Some(choice) = &mut choice
+                && choice.body.is_empty()
+            {
+                choice.body =
+                    winner
+                        .expect("event winner")
+                        .body(index, Kind::EventValue, values)?;
             }
             choices.events.insert(pk, choice);
         }

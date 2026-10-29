@@ -2,6 +2,9 @@ use super::*;
 
 fn event(range: (u64, u64), name: &str) -> Event {
     Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: None,
         kind: "hermes_observer".into(),
         at: Timestamp::from_unix_ms(1000),

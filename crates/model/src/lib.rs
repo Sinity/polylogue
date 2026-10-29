@@ -6,6 +6,7 @@ mod stored_names;
 
 pub mod atomic_write;
 pub mod authorship;
+pub mod authored;
 pub mod batch;
 mod block;
 pub mod bundle;
@@ -25,10 +26,15 @@ pub mod price;
 mod quota;
 mod reference;
 pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
+pub mod read;
 mod session;
 mod time;
 mod usage;
 pub mod user;
+mod variant;
+pub use variant::{
+    NewVariant, NewVariantPart, Variant, VariantEffect, VariantKind, VariantPart, VariantRelation,
+};
 mod work;
 
 pub use batch::{
@@ -52,7 +58,7 @@ pub use message::{
 pub use note::{Author, NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
-pub use time::{LogicalDay, Timestamp};
+pub use time::{LogicalDay, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
 pub mod note_sql;
 pub mod session_sql;
 pub mod text;
@@ -82,3 +88,5 @@ macro_rules! string_schema {
 string_schema!(
     Origin, SessionId, MessageId, DocumentId, BlobHash, Reference, Author
 );
+
+pub mod work_products;

@@ -1,0 +1,47 @@
+{
+  "counts": {
+    "records": 1,
+    "used": {
+      "task": 1
+    },
+    "unreadable": {},
+    "skipped": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "offset": 0,
+        "end": 217,
+        "message": {
+          "id": "codex-cloud:turn-synthetic",
+          "session": "codex-cloud:task_e_synthetic_clock",
+          "role": "user",
+          "prompt_kind": "prose",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Read clocks."
+            }
+          ],
+          "at_quality": "unknown"
+        }
+      }
+    ],
+    "sessions": [
+      {
+        "id": "codex-cloud:task_e_synthetic_clock",
+        "kind": "main",
+        "title": {
+          "source": "generated",
+          "text": "Native missing clock"
+        },
+        "started_quality": "unknown"
+      }
+    ]
+  }
+}

@@ -24,7 +24,8 @@
           0,
           1006
         ],
-        "session": "ai-studio:text_and_parts_prompt"
+        "session": "ai-studio:text_and_parts_prompt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -42,7 +43,9 @@
           "id": "ai-studio:21:text_and_parts_prompt#position:1:0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:text_and_parts_prompt"
+          "session": "ai-studio:text_and_parts_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 122
       },
@@ -64,7 +67,9 @@
           "session": "ai-studio:text_and_parts_prompt",
           "attrs": {
             "thinkingBudget": 128
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 252
       },
@@ -90,7 +95,9 @@
             "input": null,
             "output": 24,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 664
       }
@@ -98,12 +105,15 @@
     "sessions": [
       {
         "id": "ai-studio:text_and_parts_prompt",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:text_and_parts_prompt",
         "kind": "main",
-        "started": "2026-01-05T10:00:00Z"
+        "started": "2026-01-05T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

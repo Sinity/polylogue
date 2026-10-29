@@ -22,19 +22,13 @@
           0,
           148
         ],
-        "session": "claude-code:synthetic"
+        "session": "claude-code:synthetic",
+        "at_quality": "captured",
+        "at_precision": "second"
       }
     ],
     "links": [],
     "messages": [],
-    "sessions": [
-      {
-        "cwd": [
-          "/work/project"
-        ],
-        "id": "claude-code:synthetic",
-        "kind": "main"
-      }
-    ]
+    "sessions": []
   }
 }

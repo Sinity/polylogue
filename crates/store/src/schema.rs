@@ -9,7 +9,11 @@ use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
-pub const ARCHIVE: &str = include_str!("schema/archive.sql");
+pub const ARCHIVE: &str = concat!(
+    include_str!("schema/archive.sql"),
+    "\n",
+    include_str!("schema/variants.sql")
+);
 pub const INDEX: &str = concat!(
     include_str!("schema/index.sql"),
     "\n",
@@ -49,8 +53,14 @@ fn add_primary(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
+fn base_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
+    conn.execute_batch(crate::coverage::SCHEMA)?;
+    Ok(())
+}
+
+fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    base_index(conn)?;
     conn.execute_batch(READ_INDEXES)?;
     if primary {
         add_primary(conn)?;
@@ -130,16 +140,6 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
 }
 
-/// The tables of `sinex.db`, primary mode's register: the archive's tables
-/// and the Sinex material of each part.
-pub(crate) const SINEX: [&str; 2] = [ARCHIVE, crate::primary::SCHEMA];
-
-/// Creates `sinex.db` in an empty file and brings an older one forward with
-/// the archive's migrations.
-pub fn ensure_sinex(conn: &Connection) -> Result<()> {
-    ensure(conn, "sinex", &SINEX, ARCHIVE_MIGRATIONS)
-}
-
 /// Creates `embeddings.db` in an empty file; refuses one with other tables.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
     ensure(conn, "embeddings", &[EMBEDDINGS], &[])
@@ -199,7 +199,7 @@ pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
 }
 fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
+    base_index(&expected)?;
     if primary {
         add_primary(&expected)?;
     }
@@ -224,7 +224,7 @@ pub(crate) fn same_build_schema(conn: &Connection) -> Result<bool> {
 }
 fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
+    base_index(&expected)?;
     expected.execute_batch(READ_INDEXES)?;
     if primary {
         add_primary(&expected)?;

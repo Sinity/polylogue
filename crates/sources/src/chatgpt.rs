@@ -250,7 +250,9 @@ fn conversation_with_owners(
         session.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = conv.get("create_time").and_then(time_of) {
-        session.offer_start(at);
+        session
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
     sink.records.record("conversation", &RecordOutcome::Used);
@@ -262,13 +264,19 @@ fn conversation_with_owners(
         .filter(|(k, _)| k.as_str() != "mapping")
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    sink.out.events.push(Event {
-        session: Some(sid.clone()),
-        kind: "conversation_settings".into(),
-        at: conv.get("update_time").and_then(time_of),
-        after: None,
-        range: None,
-        data: Json::Object(settings),
+    sink.out.events.push({
+        let (at, time_evidence) = crate::time::parts(conv.get("update_time").and_then(time_of));
+        Event {
+            session: Some(sid.clone()),
+            kind: "conversation_settings".into(),
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            after: None,
+            range: None,
+            data: Json::Object(settings),
+        }
     });
 
     sink.records.fields(
@@ -354,13 +362,19 @@ fn conversation_with_owners(
     if let Some(leaf) = str_of(conv, "current_node").and_then(|n| tree.nearest_message(n))
         && let Some(id) = message_id(ORIGIN, &leaf)
     {
-        sink.out.events.push(Event {
-            session: Some(sid),
-            kind: "active_leaf".into(),
-            at: None,
-            after: Some(id),
-            range: None,
-            data: Json::Null,
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid),
+                kind: "active_leaf".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: Some(id),
+                range: None,
+                data: Json::Null,
+            }
         });
     }
     Ok(())
@@ -580,33 +594,39 @@ fn message(
             .then(|| string_of(meta, "default_model_slug").or(default_model.map(str::to_owned)))
             .flatten()
     });
-    Ok(Message {
-        id,
-        session: sid.clone(),
-        parent: tree
-            .parent_message(node_id)
-            .and_then(|p| message_id(ORIGIN, &p)),
-        role,
-        at: msg.get("create_time").and_then(time_of),
-        model,
-        prompt_kind,
-        blocks,
-        usage: Default::default(),
-        stop_reason: meta
-            .pointer("/finish_details/type")
-            .and_then(Json::as_str)
-            .map(str::to_owned),
-        reported_cost_usd: None,
-        duration_ms: meta
-            .get("finished_duration_sec")
-            .and_then(Json::as_f64)
-            .filter(|s| s.is_finite() && *s >= 0.0)
-            .map(|s| (s * 1000.0).round())
-            // u64::MAX rounds to 2^64 as f64, so that boundary is exclusive.
-            .filter(|ms| ms.is_finite() && *ms < u64::MAX as f64)
-            .map(|ms| ms as u64),
-        attrs: message_attrs(msg),
-        production: production(meta),
+    Ok({
+        let (at, time_evidence) = crate::time::parts(msg.get("create_time").and_then(time_of));
+        Message {
+            id,
+            session: sid.clone(),
+            parent: tree
+                .parent_message(node_id)
+                .and_then(|p| message_id(ORIGIN, &p)),
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model,
+            prompt_kind,
+            blocks,
+            usage: Default::default(),
+            stop_reason: meta
+                .pointer("/finish_details/type")
+                .and_then(Json::as_str)
+                .map(str::to_owned),
+            reported_cost_usd: None,
+            duration_ms: meta
+                .get("finished_duration_sec")
+                .and_then(Json::as_f64)
+                .filter(|s| s.is_finite() && *s >= 0.0)
+                .map(|s| (s * 1000.0).round())
+                // u64::MAX rounds to 2^64 as f64, so that boundary is exclusive.
+                .filter(|ms| ms.is_finite() && *ms < u64::MAX as f64)
+                .map(|ms| ms as u64),
+            attrs: message_attrs(msg),
+            production: production(meta),
+        }
     })
 }
 

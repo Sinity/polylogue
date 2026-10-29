@@ -19,7 +19,24 @@ fn write_test_rows(
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];
     resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
-    write_rows(tx, &batch, &batch.parse[0], chain, counter, first)
+    write_rows(
+        tx,
+        &batch,
+        &batch.parse[0],
+        chain,
+        counter,
+        first,
+        Some(&fixture_receipt()),
+    )
+}
+
+fn fixture_receipt() -> crate::wire_shapes::ReadingReceipt {
+    crate::wire_shapes::ReadingReceipt {
+        sequence: 1,
+        id: Some("fixture-confirmation".into()),
+        observation: None,
+        observed_at_ms: None,
+    }
 }
 
 struct TestArchive {
@@ -47,6 +64,9 @@ fn sid(n: &str) -> SessionId {
 
 fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&str>) -> Message {
     Message {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         id: MessageId::parse(&format!("claude-code:{id}")).unwrap(),
         session: sid(session),
         parent: None,

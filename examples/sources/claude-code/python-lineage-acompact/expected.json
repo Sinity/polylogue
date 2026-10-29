@@ -42,7 +42,9 @@
           "id": "claude-code:compact-u",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:agent-acompact-1a"
+          "session": "claude-code:agent-acompact-1a",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -60,7 +62,9 @@
           "model": "claude-sonnet-4-5-20250929",
           "parent": "claude-code:compact-u",
           "role": "assistant",
-          "session": "claude-code:agent-acompact-1a"
+          "session": "claude-code:agent-acompact-1a",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 162
       }
@@ -69,7 +73,9 @@
       {
         "id": "claude-code:agent-acompact-1a",
         "kind": "compaction",
-        "started": "2026-07-01T12:05:00Z"
+        "started": "2026-07-01T12:05:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

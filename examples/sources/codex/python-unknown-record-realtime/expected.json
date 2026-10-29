@@ -48,12 +48,15 @@
           "id": "unknown-context-session",
           "timestamp": "2026-09-01T10:00:00.000Z",
           "cwd": "/workspace/sample"
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:unknown-context-session"
+        "session": "codex:unknown-context-session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -71,7 +74,9 @@
           "id": "codex:unknown-context-session@183",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:unknown-context-session"
+          "session": "codex:unknown-context-session",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 183
       },
@@ -99,7 +104,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:unknown-context-session"
+          "session": "codex:unknown-context-session",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 382
       },
@@ -120,7 +127,9 @@
           "id": "codex:unknown-context-session@918",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:unknown-context-session"
+          "session": "codex:unknown-context-session",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 918
       },
@@ -139,7 +148,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:unknown-context-session"
+          "session": "codex:unknown-context-session",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1536
       }
@@ -151,7 +162,9 @@
         ],
         "id": "codex:unknown-context-session",
         "kind": "main",
-        "started": "2026-09-01T10:00:00Z"
+        "started": "2026-09-01T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

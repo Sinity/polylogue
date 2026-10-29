@@ -262,6 +262,10 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **confirmed stream**: Sinex's ordered stream of committed events, which
   Polylogue applies to `index.db`.
 - **write identity**: the durable identity of a prepared write, reused on retry.
+- **prepared request**: an authored request with its original outcome and frozen
+  effect, resolved once against the applied view and durable pending writes.
+- **authored effect**: the exact typed records and event histories confirmation
+  applies, including the selected identities and stored provenance.
 - **cutover**: the one-way move of a standalone archive to primary mode.
 
 ## Development

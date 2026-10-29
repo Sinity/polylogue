@@ -245,7 +245,7 @@ const CWD: Arg = opt(
     "The directory (default: the caller's working directory)",
 );
 const FORMATS: &[&str] = polylogue_render::Format::NAMES;
-const VIEWS: &[&str] = polylogue_render::View::NAMES;
+const VIEWS: &[&str] = polylogue_model::read::View::NAMES;
 const SHELLS: &[&str] = &["bash", "elvish", "fish", "powershell", "zsh"];
 
 /// A query over a unit with the page, cursor, explanation and columns.

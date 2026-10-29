@@ -343,24 +343,36 @@ impl ExportParser for AiStudio {
                         session.offer_title(title, TitleSource::FileName);
                     }
                     sink.out.sessions.push(session);
-                    sink.out.events.push(Event {
-                        session: Some(sid.clone()),
-                        kind: "run_settings".into(),
-                        at: None,
-                        after: None,
-                        range: Some((0, self.state.length)),
-                        data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(None);
+                        Event {
+                            session: Some(sid.clone()),
+                            kind: "run_settings".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: None,
+                            range: Some((0, self.state.length)),
+                            data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
+                        }
                     });
                     let mut attrs = crate::fields::attributes(&doc, &DOCUMENT_FIELDS);
                     attrs.remove("runSettings");
                     if !attrs.is_empty() {
-                        sink.out.events.push(Event {
-                            session: Some(sid.clone()),
-                            kind: "prompt_metadata".into(),
-                            at: None,
-                            after: None,
-                            range: Some((0, self.state.length)),
-                            data: Json::Object(attrs),
+                        sink.out.events.push({
+                            let (at, time_evidence) = crate::time::parts(None);
+                            Event {
+                                session: Some(sid.clone()),
+                                kind: "prompt_metadata".into(),
+                                at,
+                                at_quality: time_evidence.quality,
+                                at_precision: time_evidence.precision,
+                                at_until: time_evidence.until,
+                                after: None,
+                                range: Some((0, self.state.length)),
+                                data: Json::Object(attrs),
+                            }
                         });
                     }
                     if let Some(text) = system_text(doc.get("systemInstruction")) {
@@ -386,7 +398,9 @@ impl ExportParser for AiStudio {
                     && let Some(at) = chunk.get("createTime").and_then(time_of)
                 {
                     let mut session = Session::new(sid.clone(), SessionKind::Main);
-                    session.offer_start(at);
+                    session
+                        .offer_start(at.timestamp(), at.evidence())
+                        .expect("decoded source time is valid");
                     sink.out.sessions.push(session);
                     self.state.started = true;
                 }
@@ -564,7 +578,10 @@ impl AiStudio {
             message.attrs.remove(field);
         }
         message.parent = self.state.previous.clone();
-        message.at = chunk.get("createTime").and_then(time_of);
+        let (at, evidence) = crate::time::parts(chunk.get("createTime").and_then(time_of));
+        message
+            .set_time(at, evidence)
+            .expect("decoded source time is valid");
         if role == Role::Assistant {
             message.model = self.state.model.clone();
             message.stop_reason = string_of(chunk, "finishReason");
@@ -600,21 +617,27 @@ fn plain(
     role: Role,
     blocks: Vec<Block>,
 ) -> Message {
-    Message {
-        id,
-        session,
-        parent: None,
-        role,
-        at: None,
-        model: None,
-        prompt_kind: None,
-        blocks,
-        usage: Usage::default(),
-        stop_reason: None,
-        reported_cost_usd: None,
-        duration_ms: None,
-        attrs: Default::default(),
-        production: Default::default(),
+    {
+        let (at, time_evidence) = crate::time::parts(None);
+        Message {
+            id,
+            session,
+            parent: None,
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: None,
+            prompt_kind: None,
+            blocks,
+            usage: Usage::default(),
+            stop_reason: None,
+            reported_cost_usd: None,
+            duration_ms: None,
+            attrs: Default::default(),
+            production: Default::default(),
+        }
     }
 }
 
@@ -854,8 +877,14 @@ impl ExportParser for Listing {
         if let Some(name) = str_of(f, "name") {
             session.offer_title(name, TitleSource::Generated);
         }
-        if let Some(at) = f.get("createdTime").and_then(time_of) {
-            session.offer_start(at);
+        if let Some(at) = f
+            .get("createdTime")
+            .and_then(time_of)
+            .map(crate::time::SourceTime::file_mtime)
+        {
+            session
+                .offer_start(at.timestamp(), at.evidence())
+                .expect("decoded source time is valid");
         }
         sink.out.sessions.push(session);
         sink.records.record("file", &RecordOutcome::Used);

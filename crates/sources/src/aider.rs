@@ -137,7 +137,8 @@ impl ExportParser for History {
             }
         }
         self.context = messages;
-        sink.out.events.push(Event {session:Some(sid),kind:"aider_request".into(),at:None,after:self.last.clone(),range:None,data:serde_json::json!({"logged_at":header.strip_prefix("TO LLM "),"copied_prefix_messages":copied,"companion_name":COMPANION})});
+        sink.out.events.push({ let (at,time_evidence)=crate::time::parts(None); Event {session:Some(sid),kind:"aider_request".into(),
+ at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until,after:self.last.clone(),range:None,data:serde_json::json!({"logged_at":header.strip_prefix("TO LLM "),"copied_prefix_messages":copied,"companion_name":COMPANION})} });
         sink.records.record("invocation", &RecordOutcome::Used);
         Ok(())
     }
@@ -183,24 +184,30 @@ impl History {
         sink.out.messages.push(MessageRow {
             offset,
             end: offset + 1,
-            message: Message {
-                id: id.clone(),
-                session: sid.clone(),
-                parent: self.last.clone(),
-                role,
-                at: None,
-                model: None,
-                prompt_kind,
-                blocks,
-                usage: Usage::default(),
-                stop_reason: None,
-                reported_cost_usd: None,
-                duration_ms: None,
-                production: Default::default(),
-                attrs: serde_json::Map::from_iter([(
-                    "aider_logged_at".into(),
-                    Json::String(logged_at.into()),
-                )]),
+            message: {
+                let (at, time_evidence) = crate::time::parts(None);
+                Message {
+                    id: id.clone(),
+                    session: sid.clone(),
+                    parent: self.last.clone(),
+                    role,
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    model: None,
+                    prompt_kind,
+                    blocks,
+                    usage: Usage::default(),
+                    stop_reason: None,
+                    reported_cost_usd: None,
+                    duration_ms: None,
+                    production: Default::default(),
+                    attrs: serde_json::Map::from_iter([(
+                        "aider_logged_at".into(),
+                        Json::String(logged_at.into()),
+                    )]),
+                }
             },
         });
         self.last = Some(id);

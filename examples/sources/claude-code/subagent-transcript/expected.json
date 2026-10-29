@@ -29,7 +29,9 @@
           0,
           141
         ],
-        "session": "claude-code:agent-ab12"
+        "session": "claude-code:agent-ab12",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [
@@ -61,7 +63,9 @@
           "id": "claude-code:t1",
           "prompt_kind": "model",
           "role": "user",
-          "session": "claude-code:agent-ab12"
+          "session": "claude-code:agent-ab12",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 142
       },
@@ -78,7 +82,9 @@
           "id": "claude-code:t2",
           "parent": "claude-code:t1",
           "role": "assistant",
-          "session": "claude-code:agent-ab12"
+          "session": "claude-code:agent-ab12",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 326
       }
@@ -87,7 +93,9 @@
       {
         "id": "claude-code:agent-ab12",
         "kind": "subagent",
-        "started": "2026-03-01T11:00:00Z"
+        "started": "2026-03-01T11:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

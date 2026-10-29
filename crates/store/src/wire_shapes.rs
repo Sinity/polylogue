@@ -9,7 +9,26 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Retained facts without their reading receipt cannot establish current coverage.
+pub(crate) fn unobserved(tx: &Transaction<'_>, input_pk: i64, chain: i64) -> Result<()> {
+    tx.execute(
+        "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2",
+        params![input_pk, chain],
+    )?;
+    Ok(())
+}
+
 pub const SCHEMA: &str = include_str!("schema/wire_shapes.sql");
+
+/// Product-native confirmation of the reading's source. Sequence is the
+/// standalone archive commit order or the primary confirmed fact order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadingReceipt {
+    pub sequence: i64,
+    pub id: Option<String>,
+    pub observation: Option<String>,
+    pub observed_at_ms: Option<i64>,
+}
 
 /// The committed source described by this parse step. Time may be unknown;
 /// receipt order is the authority even when observation clocks disagree.
@@ -274,12 +293,20 @@ pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Resu
     }
     if duplicate {
         if let Some(mut old) = previous {
-            if step.parsed_upto == old.parsed_upto
-                && step.at_end
-                && !old.at_end
-                && step.parsed_upto >= source.length
+            let prefix_missing = if step.reset {
+                step.source_prefix_missing
+            } else {
+                old.prefix_missing || step.source_prefix_missing
+            };
+            let coverage_changed = prefix_missing != old.prefix_missing;
+            old.prefix_missing = prefix_missing;
+            if coverage_changed
+                || (step.parsed_upto == old.parsed_upto
+                    && step.at_end
+                    && !old.at_end
+                    && step.parsed_upto >= source.length)
             {
-                old.at_end = true;
+                old.at_end |= step.at_end && step.parsed_upto >= source.length;
                 old.length = source.length;
                 old.last = receipt.clone();
                 tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?.execute(params![source.input_pk,source.chain,step.reading_version,serde_json::to_string(&old)?])?;
@@ -295,13 +322,14 @@ pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Resu
         parsed_upto: step.parsed_upto,
         length: source.length,
         at_end: step.at_end,
-        prefix_missing: if reset {
-            false
-        } else {
-            previous
-                .as_ref()
-                .is_none_or(|old| old.prefix_missing || step.start != old.parsed_upto)
-        },
+        prefix_missing: step.source_prefix_missing
+            || if reset {
+                false
+            } else {
+                previous
+                    .as_ref()
+                    .is_none_or(|old| old.prefix_missing || step.start != old.parsed_upto)
+            },
         no_parser_yet: step.no_parser_yet,
         unreadable: step
             .counts
@@ -484,9 +512,6 @@ mod tests;
 
 impl crate::Reader<'_> {
     pub fn wire_shapes(&self, scope: Scope<'_>) -> Result<Report> {
-        {
-            let conn = self.conn()?;
-            read(&conn, scope)
-        }
+        read(self.conn()?, scope)
     }
 }

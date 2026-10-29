@@ -160,7 +160,7 @@ fn walk_paths(
             })
             .collect();
         for child in children {
-            if child.is_dir() {
+            if fs::symlink_metadata(&child).is_ok_and(|m| m.is_dir()) {
                 walk_paths(&child, segs, paths, out, unreadable);
             }
         }
@@ -181,9 +181,9 @@ fn walk_paths(
                 .and_then(|n| n.to_str())
                 .is_some_and(|name| wildcard(seg, name))
             {
-                if rest.is_empty() && child.is_file() {
+                if rest.is_empty() && fs::symlink_metadata(&child).is_ok_and(|m| m.is_file()) {
                     out.push(child);
-                } else if child.is_dir() {
+                } else if fs::symlink_metadata(&child).is_ok_and(|m| m.is_dir()) {
                     walk_paths(&child, rest, paths, out, unreadable);
                 }
             }
@@ -191,7 +191,9 @@ fn walk_paths(
     } else {
         let child = dir.join(seg);
         if rest.is_empty() {
-            if paths.iter().any(|path| child.starts_with(path)) && child.is_file() {
+            if paths.iter().any(|path| child.starts_with(path))
+                && fs::symlink_metadata(&child).is_ok_and(|m| m.is_file())
+            {
                 out.push(child);
             }
         } else {
@@ -296,20 +298,29 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
             &mut scan.unreadable,
             &mut status,
         );
-        for path in files {
+        for (path, meta) in files {
             let relative = path.strip_prefix(&root).unwrap_or(&path);
-            let ignored = (tool.is_some_and(|tool| tool.name == "claude-code")
-                && user_project(&root, &path))
-            .then_some(("**", "user project under tool home"))
-            .or_else(|| git_metadata(relative, tool).then_some((".git/**", "git metadata")))
-            .or_else(|| {
-                tool.and_then(|tool| {
-                    tool.ignored
-                        .iter()
-                        .find(|(p, _)| matches_path(relative, p))
-                        .map(|(pattern, reason)| (*pattern, *reason))
+            let ignored = meta
+                .file_type()
+                .is_symlink()
+                .then_some(("**", "symbolic link is not followed"))
+                .or_else(|| {
+                    (!meta.is_file()).then_some(("**", "special filesystem entry is not read"))
                 })
-            });
+                .or_else(|| {
+                    (tool.is_some_and(|tool| tool.name == "claude-code")
+                        && user_project(&root, &path))
+                    .then_some(("**", "user project under tool home"))
+                })
+                .or_else(|| git_metadata(relative, tool).then_some((".git/**", "git metadata")))
+                .or_else(|| {
+                    tool.and_then(|tool| {
+                        tool.ignored
+                            .iter()
+                            .find(|(p, _)| matches_path(relative, p))
+                            .map(|(pattern, reason)| (*pattern, *reason))
+                    })
+                });
             let matched = if ignored.is_none() {
                 collected()
                     .find_map(|origin| {
@@ -342,37 +353,30 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
             } else {
                 (
                     Class::Unrecognized,
-                    format!(
-                        "{}/*.{}",
-                        relative.parent().unwrap_or(Path::new("")).display(),
-                        relative.extension().and_then(|e| e.to_str()).unwrap_or("")
-                    ),
-                    None,
+                    "**".into(),
+                    Some("no declared collection or ignore pattern matched".into()),
                 )
             };
-            match fs::metadata(&path) {
-                Ok(meta) => {
-                    let row = rows
-                        .entry((root.clone(), class.clone(), pattern.clone()))
-                        .or_insert(Coverage {
-                            root: root.clone(),
-                            class,
-                            pattern,
-                            reason,
-                            files: 0,
-                            bytes: 0,
-                            newest_mtime_ms: None,
-                        });
-                    row.files += 1;
-                    row.bytes += meta.len();
-                    let mtime = meta
-                        .modified()
-                        .ok()
-                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                        .and_then(|duration| duration.as_millis().try_into().ok());
-                    row.newest_mtime_ms = row.newest_mtime_ms.max(mtime);
-                }
-                Err(_) => scan.unreadable.push(path),
+            {
+                let row = rows
+                    .entry((root.clone(), class, pattern.clone(), reason.clone()))
+                    .or_insert(Coverage {
+                        root: root.clone(),
+                        class,
+                        pattern,
+                        reason,
+                        files: 0,
+                        bytes: 0,
+                        newest_mtime_ms: None,
+                    });
+                row.files += 1;
+                row.bytes += meta.len();
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|duration| duration.as_millis().try_into().ok());
+                row.newest_mtime_ms = row.newest_mtime_ms.max(mtime);
             }
         }
         if status == Accessibility::Accessible && scan.unreadable.len() > before {
@@ -450,7 +454,7 @@ fn all_files(
     root: &Path,
     path: &Path,
     roots: &std::collections::BTreeSet<PathBuf>,
-    files: &mut Vec<PathBuf>,
+    files: &mut Vec<(PathBuf, fs::Metadata)>,
     unreadable: &mut Vec<PathBuf>,
     status: &mut Accessibility,
 ) {
@@ -475,8 +479,7 @@ fn all_files(
                 all_files(root, &child, roots, files, unreadable, status);
             }
         }
-        Ok(meta) if meta.is_file() => files.push(path.to_path_buf()),
-        Ok(_) => {}
+        Ok(meta) => files.push((path.to_path_buf(), meta)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => unreadable.push(path.to_path_buf()),
     }
@@ -597,7 +600,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
     if !seg.contains('*') {
         let p = dir.join(seg);
         if last {
-            if p.is_file() {
+            if fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
                 out.push(p);
             }
         } else if fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
@@ -613,7 +616,7 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
             continue;
         }
         if last {
-            if p.is_file() {
+            if fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
                 out.push(p);
             }
         } else if fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {

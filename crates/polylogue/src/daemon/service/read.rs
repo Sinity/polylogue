@@ -102,7 +102,7 @@ pub(super) fn run(
             "a message or latest selection requires a budget and cannot be combined with a cursor",
         );
     }
-    let Some(view) = polylogue_render::View::parse(options.view) else {
+    let Some(view) = polylogue_model::read::View::parse(options.view) else {
         return error("bad_request", format!("unknown view {:?}", options.view));
     };
     let session = match reader.session(id) {
@@ -298,7 +298,7 @@ pub(super) fn run(
         generation: generation.clone(),
         index,
     };
-    let selected = if view == polylogue_render::View::Full {
+    let selected = if view == polylogue_model::read::View::Full {
         selected.for_text()
     } else {
         selected.for_blocks(view.block_kinds(), view.prompts_only())
@@ -619,12 +619,12 @@ pub(super) fn document(
     if options.selection.is_some() {
         return error("bad_request", "documents have no message starting point");
     }
-    let Some(view) = polylogue_render::View::parse(options.view) else {
+    let Some(view) = polylogue_model::read::View::parse(options.view) else {
         return error("bad_request", "unknown document view");
     };
     if matches!(
         view,
-        polylogue_render::View::Prompts | polylogue_render::View::Actions
+        polylogue_model::read::View::Prompts | polylogue_model::read::View::Actions
     ) {
         return error(
             "bad_request",
@@ -873,12 +873,12 @@ pub(super) fn event(reader: &Reader<'_>, id: &str, options: Options<'_>) -> Resp
     if options.selection.is_some() {
         return error("bad_request", "events have no message starting point");
     }
-    let Some(view) = polylogue_render::View::parse(options.view) else {
+    let Some(view) = polylogue_model::read::View::parse(options.view) else {
         return error("bad_request", "unknown event view");
     };
     if matches!(
         view,
-        polylogue_render::View::Prompts | polylogue_render::View::Actions
+        polylogue_model::read::View::Prompts | polylogue_model::read::View::Actions
     ) {
         return error("bad_request", "events support the full and dialogue views");
     }

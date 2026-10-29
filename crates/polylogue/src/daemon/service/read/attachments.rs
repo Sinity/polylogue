@@ -1,5 +1,6 @@
+use polylogue_model::read::View;
 use polylogue_model::{Block, Message};
-use polylogue_render::{AttachmentLabel, View};
+use polylogue_render::AttachmentLabel;
 use polylogue_store::{
     Reader,
     assets::{AttachmentResolution, AttachmentState},
