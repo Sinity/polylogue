@@ -342,6 +342,8 @@ pub enum BundleError {
     InvalidQuery,
     #[error("bundle read position is invalid")]
     InvalidPosition,
+    #[error("bundle declares blob records while with_blobs is false")]
+    BlobFlagMismatch,
     #[error("invalid bundle read options: {0}")]
     ReadOptions(String),
     #[error("bundle member path is not a canonical relative path")]
@@ -458,6 +460,9 @@ impl Manifest {
         if self.read_at.generation.is_empty() || self.read_at.index < 0 || self.read_at.archive < 0
         {
             return Err(BundleError::InvalidPosition);
+        }
+        if self.counts.blobs > 0 && !self.flags.with_blobs {
+            return Err(BundleError::BlobFlagMismatch);
         }
         self.flags
             .read
