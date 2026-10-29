@@ -5,14 +5,22 @@ use crate::{
     WrittenBy,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolCallProduct {
+    /// Stable structural identity; display references and native IDs are evidence.
+    pub entry_id: String,
     pub call: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_block: Option<u64>,
+    pub unavailable: Vec<String>,
     pub session: SessionId,
+    pub physical_session: SessionId,
     pub message: MessageId,
     pub tool: Option<String>,
     pub action: ToolAction,
@@ -23,7 +31,8 @@ pub struct ToolCallProduct {
     pub result: Option<MessageId>,
     pub result_at: Option<Timestamp>,
     pub result_at_evidence: crate::TimeEvidence,
-    pub outcome: ToolOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ToolOutcome>,
     pub outcome_reason: Option<String>,
     pub reported_duration_ms: Option<u64>,
     pub run_by_script: bool,
@@ -106,6 +115,9 @@ pub struct WorkSnapshot {
 
 impl WorkSnapshot {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.reducer_version != VERSION {
+            return Err("unsupported work reducer version");
+        }
         if self.position < 0 {
             return Err("snapshot position is negative");
         }
@@ -137,21 +149,114 @@ impl WorkSnapshot {
         {
             return Err("snapshot member belongs to another session");
         }
+        let mut entries = BTreeSet::new();
+        for call in &self.calls {
+            if call.entry_id.is_empty() || !entries.insert(&call.entry_id) {
+                return Err("snapshot call entry identity is missing or repeated");
+            }
+            if call.outcome.is_none()
+                && (call
+                    .outcome_reason
+                    .as_ref()
+                    .is_none_or(|reason| reason.is_empty())
+                    || call.unavailable.is_empty())
+            {
+                return Err("unavailable call outcome has no reason and evidence coverage");
+            }
+            if call.original_block.is_none()
+                && !call
+                    .unavailable
+                    .iter()
+                    .any(|reason| reason == "original_block_unavailable")
+            {
+                return Err("unknown call block origin has no unavailable reason");
+            }
+        }
         Ok(())
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedMessage {
+    /// Raw physical-session facts remain unchanged.
     pub message: Message,
+    pub logical_session: SessionId,
+    /// None is a complete original row; a sparse row requires its source mapping.
+    pub projection: Option<crate::bundle::MessageProjection>,
     pub event: String,
     pub cost_nusd: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedBackground {
+    pub logical_session: SessionId,
+    pub update: crate::BackgroundUpdate,
+    pub event: String,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "origin", rename_all = "snake_case")]
+enum BlockOrigin<'a> {
+    Original {
+        block: u64,
+    },
+    Unknown {
+        event: &'a str,
+        selected_slot: usize,
+    },
+}
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+enum CallKey<'a> {
+    Native(&'a str),
+    Local,
+}
+fn entry_id(
+    selected: &SelectedMessage,
+    original: Option<u64>,
+    slot: usize,
+    native: Option<&str>,
+) -> String {
+    let origin = match original {
+        Some(block) => BlockOrigin::Original { block },
+        None => BlockOrigin::Unknown {
+            event: &selected.event,
+            selected_slot: slot,
+        },
+    };
+    let key = native.map_or(CallKey::Local, CallKey::Native);
+    let identity = (
+        "polylogue.work.tool_call",
+        VERSION,
+        &selected.logical_session,
+        &selected.message.session,
+        &selected.message.id,
+        origin,
+        key,
+    );
+    let bytes = serde_json::to_vec(&identity)
+        .expect("structural call identity contains only serializable scalar fields");
+    format!("work-call:{}", blake3::hash(&bytes).to_hex())
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Derived<T> {
     pub facts: T,
     pub parents: Vec<String>,
+}
+
+// Missing source fields do not conflict with explicit evidence. Different
+// observed values remain unavailable rather than choosing by arrival or clock.
+fn agreed<T: PartialEq>(values: impl IntoIterator<Item = T>) -> Result<Option<T>, ()> {
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    if values.all(|value| value == first) {
+        Ok(Some(first))
+    } else {
+        Err(())
+    }
 }
 
 fn add_u64(
@@ -202,11 +307,11 @@ struct Turn {
     parents: Vec<String>,
 }
 impl Turn {
-    fn new(message: &Message) -> Self {
+    fn new(message: &Message, logical_session: &SessionId) -> Self {
         Self {
             product: TurnProduct {
                 turn: message.id.clone(),
-                session: message.session.clone(),
+                session: logical_session.clone(),
                 start: None,
                 start_evidence: crate::TimeEvidence::UNKNOWN,
                 end: None,
@@ -282,24 +387,23 @@ pub fn derive(
     derive_with_background(messages, std::iter::empty())
 }
 
-/// Background notices only affect the call the source explicitly identifies.
+/// Native IDs associate evidence only with a unique selected definition.
+/// Conflicting observations stay unavailable; clocks and arrival do not resolve them.
 pub fn derive_with_background(
     messages: impl IntoIterator<Item = SelectedMessage>,
-    backgrounds: impl IntoIterator<Item = (crate::BackgroundUpdate, String)>,
+    backgrounds: impl IntoIterator<Item = SelectedBackground>,
 ) -> (Vec<Derived<ToolCallProduct>>, Vec<Derived<TurnProduct>>) {
+    struct Observation {
+        result: Option<MessageId>,
+        at: Option<Timestamp>,
+        evidence: crate::TimeEvidence,
+        outcome: ToolOutcome,
+        duration: Option<u64>,
+        event: String,
+    }
     let mut calls = Vec::<Derived<ToolCallProduct>>::new();
-    let mut by_call = BTreeMap::<(SessionId, String), usize>::new();
-    let mut pending_results = BTreeMap::<
-        (SessionId, String),
-        (
-            MessageId,
-            Option<Timestamp>,
-            crate::TimeEvidence,
-            ToolOutcome,
-            Option<u64>,
-            String,
-        ),
-    >::new();
+    let mut by_call = BTreeMap::<(SessionId, SessionId, String), Vec<usize>>::new();
+    let mut observations = BTreeMap::<(SessionId, SessionId, String), Vec<Observation>>::new();
     let mut turns = Vec::<Turn>::new();
     let mut active = BTreeMap::<SessionId, (usize, bool)>::new();
     let mut call_turns = Vec::new();
@@ -307,16 +411,17 @@ pub fn derive_with_background(
     let mut last_response = BTreeMap::new();
     for (ordinal, selected) in messages.into_iter().enumerate() {
         let message = &selected.message;
+        let session = &selected.logical_session;
         let written_by = WrittenBy::of(message.role, message.prompt_kind);
         if message.role == Role::Assistant
             && written_by == WrittenBy::Model
             && message.production.response_boundary_unknown != Some(true)
         {
-            last_response.insert(message.session.clone(), ordinal);
+            last_response.insert((session.clone(), message.session.clone()), ordinal);
         }
         if matches!(written_by, WrittenBy::Human | WrittenBy::Model) {
             let human = written_by == WrittenBy::Human;
-            let current = active.get(&message.session).copied();
+            let current = active.get(session).copied();
             let begins = match current {
                 None => true,
                 Some((_, previous_human)) => {
@@ -325,35 +430,59 @@ pub fn derive_with_background(
             };
             let turn = if begins {
                 let n = turns.len();
-                turns.push(Turn::new(message));
+                turns.push(Turn::new(message, session));
                 n
             } else {
                 current.expect("active turn").0
             };
             turns[turn].push(&selected);
-            active.insert(message.session.clone(), (turn, human));
+            active.insert(session.clone(), (turn, human));
         }
+        let mapping_valid = selected
+            .projection
+            .as_ref()
+            .is_none_or(|projection| projection.validate(message.blocks.len()).is_ok());
         for (index, block) in message.blocks.iter().enumerate() {
+            let original = if mapping_valid {
+                Some(
+                    selected
+                        .projection
+                        .as_ref()
+                        .map_or(index as u64, |projection| projection.block_ordinals[index]),
+                )
+            } else {
+                None
+            };
             match block {
                 Block::ToolCall {
                     call_id,
                     tool,
                     action,
-                    input: _,
                     command,
                     path,
                     run_by_script,
+                    ..
                 } => {
-                    let native_key = call_id
-                        .as_ref()
-                        .map(|id| (message.session.clone(), id.clone()));
-                    let call_id = call_id
-                        .clone()
-                        .unwrap_or_else(|| format!("{}/{index}", message.id));
-                    let mut call = Derived {
+                    let mut unavailable = Vec::new();
+                    if original.is_none() {
+                        unavailable.push("original_block_unavailable".into());
+                    }
+                    if call_id.is_none() {
+                        unavailable.push("native_call_id_unavailable".into());
+                    }
+                    let display = call_id.clone().unwrap_or_else(|| match original {
+                        Some(block) => format!("{}/{block}", message.id),
+                        None => format!("{}/unknown-{index}", message.id),
+                    });
+                    let call = Derived {
                         facts: ToolCallProduct {
-                            call: format!("tool:{}#{call_id}", message.session),
-                            session: message.session.clone(),
+                            entry_id: entry_id(&selected, original, index, call_id.as_deref()),
+                            call: format!("tool:{}#{display}", message.session),
+                            native_call_id: call_id.clone(),
+                            original_block: original,
+                            unavailable,
+                            session: session.clone(),
+                            physical_session: message.session.clone(),
                             message: message.id.clone(),
                             tool: tool.clone(),
                             action: *action,
@@ -364,8 +493,15 @@ pub fn derive_with_background(
                             result: None,
                             result_at: None,
                             result_at_evidence: crate::TimeEvidence::UNKNOWN,
-                            outcome: ToolOutcome::NoResult,
-                            outcome_reason: Some("no_result".into()),
+                            outcome: call_id.as_ref().map(|_| ToolOutcome::NoResult),
+                            outcome_reason: Some(
+                                if call_id.is_some() {
+                                    "no_result"
+                                } else {
+                                    "native_call_id_unavailable"
+                                }
+                                .into(),
+                            ),
                             reported_duration_ms: None,
                             run_by_script: *run_by_script,
                             revision: message
@@ -385,22 +521,13 @@ pub fn derive_with_background(
                         },
                         parents: vec![selected.event.clone()],
                     };
-                    if let Some((id, at, evidence, outcome, duration, event)) = native_key
-                        .as_ref()
-                        .and_then(|key| pending_results.remove(key))
-                    {
-                        call.facts.result = Some(id);
-                        call.facts.result_at = at;
-                        call.facts.result_at_evidence = evidence;
-                        call.facts.outcome = outcome;
-                        call.facts.outcome_reason = None;
-                        call.facts.reported_duration_ms = duration;
-                        call.parents.push(event);
+                    if let Some(id) = call_id {
+                        by_call
+                            .entry((session.clone(), message.session.clone(), id.clone()))
+                            .or_default()
+                            .push(calls.len());
                     }
-                    if let Some(key) = native_key {
-                        by_call.insert(key, calls.len());
-                    }
-                    call_turns.push(active.get(&message.session).map(|(turn, _)| *turn));
+                    call_turns.push(active.get(session).map(|(turn, _)| *turn));
                     call_boundaries.push((
                         ordinal,
                         message.production.response_boundary_unknown == Some(true),
@@ -413,71 +540,127 @@ pub fn derive_with_background(
                     reported_duration_ms,
                     ..
                 } => {
-                    let key = (message.session.clone(), id.clone());
-                    if let Some(index) = by_call.get(&key) {
-                        let call = &mut calls[*index];
-                        call.facts.result = Some(message.id.clone());
-                        call.facts.result_at = message.at;
-                        call.facts.result_at_evidence = message.time_evidence();
-                        call.facts.outcome = outcome.clone();
-                        call.facts.outcome_reason = None;
-                        call.facts.reported_duration_ms = *reported_duration_ms;
-                        call.parents.push(selected.event.clone());
-                    } else {
-                        pending_results.insert(
-                            key,
-                            (
-                                message.id.clone(),
-                                message.at,
-                                message.time_evidence(),
-                                outcome.clone(),
-                                *reported_duration_ms,
-                                selected.event.clone(),
-                            ),
-                        );
-                    }
+                    observations
+                        .entry((session.clone(), message.session.clone(), id.clone()))
+                        .or_default()
+                        .push(Observation {
+                            result: Some(message.id.clone()),
+                            at: message.at,
+                            evidence: message.time_evidence(),
+                            outcome: outcome.clone(),
+                            duration: *reported_duration_ms,
+                            event: selected.event.clone(),
+                        });
                 }
                 _ => {}
             }
         }
     }
-    for (update, event) in backgrounds {
-        if let Some(index) = update
-            .call_id
-            .as_ref()
-            .and_then(|id| by_call.get(&(update.session.clone(), id.clone())))
-        {
-            let call = &mut calls[*index];
-            call.facts.outcome = update.outcome;
-            call.facts.outcome_reason = None;
-            if update.result_at.is_some() {
-                call.facts.result_at = update.result_at;
-                call.facts.result_at_evidence = update.result_at_evidence;
+    for selected in backgrounds {
+        let update = selected.update;
+        if let Some(id) = update.call_id {
+            observations
+                .entry((selected.logical_session, update.session, id))
+                .or_default()
+                .push(Observation {
+                    result: None,
+                    at: update.result_at,
+                    evidence: update.result_at_evidence,
+                    outcome: update.outcome,
+                    duration: update.reported_duration_ms,
+                    event: selected.event,
+                });
+        }
+    }
+    for (key, definitions) in by_call {
+        let results = observations.remove(&key).unwrap_or_default();
+        let mut evidence: Vec<_> = definitions
+            .iter()
+            .flat_map(|&index| calls[index].parents.clone())
+            .collect();
+        evidence.extend(results.iter().map(|result| result.event.clone()));
+        let ambiguous = definitions.len() > 1;
+        for index in definitions {
+            let call = &mut calls[index];
+            call.parents.extend(evidence.iter().cloned());
+            if ambiguous {
+                call.facts.outcome = None;
+                call.facts.outcome_reason = Some("ambiguous_native_call_id".into());
+                call.facts
+                    .unavailable
+                    .push("ambiguous_native_call_id".into());
+            } else if !results.is_empty() {
+                match agreed(results.iter().map(|result| &result.outcome)) {
+                    Ok(outcome) => {
+                        call.facts.outcome = outcome.cloned();
+                        call.facts.outcome_reason = None;
+                    }
+                    Err(()) => {
+                        call.facts.outcome = None;
+                        call.facts.outcome_reason = Some("ambiguous_result_evidence".into());
+                        call.facts
+                            .unavailable
+                            .push("ambiguous_result_evidence".into());
+                    }
+                }
+                match agreed(results.iter().filter_map(|result| result.result.as_ref())) {
+                    Ok(result) => call.facts.result = result.cloned(),
+                    Err(()) => call
+                        .facts
+                        .unavailable
+                        .push("result_message_ambiguous".into()),
+                }
+                match agreed(
+                    results
+                        .iter()
+                        .filter_map(|result| result.at.map(|at| (at, result.evidence))),
+                ) {
+                    Ok(Some((at, evidence))) => {
+                        call.facts.result_at = Some(at);
+                        call.facts.result_at_evidence = evidence;
+                    }
+                    Ok(None) => {}
+                    Err(()) => call.facts.unavailable.push("result_time_ambiguous".into()),
+                }
+                match agreed(results.iter().filter_map(|result| result.duration)) {
+                    Ok(duration) => call.facts.reported_duration_ms = duration,
+                    Err(()) => call
+                        .facts
+                        .unavailable
+                        .push("reported_duration_ambiguous".into()),
+                }
             }
-            call.facts.reported_duration_ms = update
-                .reported_duration_ms
-                .or(call.facts.reported_duration_ms);
-            call.parents.push(event);
         }
     }
     for (index, call) in calls.iter_mut().enumerate() {
-        if matches!(call.facts.outcome, ToolOutcome::NoResult) {
+        if matches!(call.facts.outcome, Some(ToolOutcome::NoResult))
+            && call.facts.outcome_reason.as_deref() == Some("no_result")
+        {
             let (ordinal, unknown) = call_boundaries[index];
             if !unknown
                 && last_response
-                    .get(&call.facts.session)
+                    .get(&(
+                        call.facts.session.clone(),
+                        call.facts.physical_session.clone(),
+                    ))
                     .is_some_and(|later| *later > ordinal)
             {
                 call.facts.outcome_reason = Some("passed_without_result".into());
             }
         }
+        call.facts.unavailable.sort();
+        call.facts.unavailable.dedup();
         if let Some(turn) = call_turns[index].map(|turn| &mut turns[turn]) {
             turn.product.tool_calls += 1;
-            turn.product.errors +=
-                u64::from(matches!(call.facts.outcome, ToolOutcome::Error { .. }));
+            turn.product.errors += u64::from(matches!(
+                call.facts.outcome,
+                Some(ToolOutcome::Error { .. })
+            ));
+            turn.product
+                .unavailable
+                .extend(call.facts.unavailable.iter().cloned());
+            turn.parents.extend(call.parents.iter().cloned());
         }
-    }
-    for call in &mut calls {
         call.parents.sort();
         call.parents.dedup();
     }
@@ -491,6 +674,8 @@ pub fn derive_with_background(
                     .is_some_and(|(last, _)| *last == index);
             turn.parents.sort();
             turn.parents.dedup();
+            turn.product.unavailable.sort();
+            turn.product.unavailable.dedup();
             Derived {
                 facts: turn.product,
                 parents: turn.parents,
