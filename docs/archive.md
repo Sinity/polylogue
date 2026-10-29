@@ -25,6 +25,8 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 - **Reading the same bytes again changes nothing**: a row version's hash is a function of the bytes and the reading version.
 - A sparse message reading keeps the complete source version's hash, its original block count and the original positions of the blocks it carries. Missing blocks are unknown. Compatible observations of one version union their known blocks; a partial observation cannot replace known complete content, and conflicting facts under one source hash are refused.
 - A canonical message's admission is the latest immutable fact admission that contributed to its known blocks. It survives raw-byte archival. Standalone readings without canonical receipts use their source extents' actual admission; unavailable proof stays unknown.
+- Selected events and documents retain their canonical fact admission. Sessions and links use the latest admission across their full retained provenance fold, including redundant facts. A fold with any unproven contribution has unknown admission. Exact source extents can supply missing standalone evidence; a cache counter cannot. Raw-byte availability alone never changes retained canonical admission.
+- Canonical timestamps retain their full precision, quality and bounds. Millisecond SQL columns are query caches, and replacing a reading preserves the complete source time evidence.
 - **Message IDs are stable across re-parse.** A source without native message IDs gets a fallback ID from the input and record position (`<stem>@<offset>`), stable for the same bytes.
 - Which route's reading of a conversation is shown, field by field, is in [sessions.md](sessions.md#one-conversation-through-several-routes).
 
@@ -47,6 +49,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **Each parser module declares its reading version.** A chain is re-parsed when the reading version of the module that parsed it changes, and nothing else triggers a re-parse; there is no index-wide version that rebuilds everything.
 - Each origin declares the ordered tuple of parser modules and versions it uses. The tuple commits with each chain's parsed rows and progress. Workers prepare replacement readings in private scratch, then the writer retracts and replaces one chain in one transaction. Other chains stay readable throughout.
+- A committed parser checkpoint retains its actual admission position. Replaying the same checkpoint, including a full reset with unchanged state, preserves that position; a rolled-back update cannot advance it.
 - Source selection and chain retraction for messages, documents, events and links share the `VersionKind` declarations in the store.
 - Derivations carry their own versions ([measures.md](measures.md#rules)).
 
