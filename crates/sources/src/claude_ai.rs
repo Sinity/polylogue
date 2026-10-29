@@ -299,7 +299,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                     .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
                 {
                     sink.out.events.push({
-                        let (at, time_evidence) = crate::time::parts(msg.at);
+                        let (at, time_evidence) = (msg.at, msg.time_evidence());
                         Event {
                             session: Some(sid.clone()),
                             kind: "compaction".into(),

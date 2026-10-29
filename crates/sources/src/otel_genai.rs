@@ -345,7 +345,7 @@ fn model_span(
                     [("otel_span_clock".into(), serde_json::json!({
                     "basis":"call_start", "startTimeUnixNano":span.raw.get("startTimeUnixNano"),
                     "endTimeUnixNano":span.raw.get("endTimeUnixNano")
-                }))].into()
+                }))].into_iter().collect()
                 } else {
                     Default::default()
                 },
