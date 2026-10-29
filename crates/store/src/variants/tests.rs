@@ -306,6 +306,22 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
         reader.selected_variant("message:codex:source", BlobHash([9; 32]), &enabled, true),
         Err(StoreError::Ambiguous { .. })
     ));
+    drop(reader);
+    let mut fresh = request("fresh-root", None, "freshword");
+    let UserWrite::Variant { variant } = &mut fresh.write else {
+        unreachable!()
+    };
+    variant.source_hash = BlobHash([9; 32]);
+    archive.writer.user(fresh).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .selected_variant("message:codex:source", BlobHash([9; 32]), &enabled, true)
+            .unwrap()
+            .unwrap()
+            .id,
+        "fresh-root"
+    );
 }
 
 #[test]
