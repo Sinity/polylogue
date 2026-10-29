@@ -1282,3 +1282,118 @@ fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
         matches!(&items[2],ReadItem{source,kind:ItemKind::Attachment{availability:ValueState::Value{value},..}} if source==&result_source && value=="present")
     );
 }
+
+#[test]
+fn one_token_pages_and_accessible_empty_text_always_make_progress() {
+    let mut limits = budget();
+    limits.tokens = NonZeroU64::new(1).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    assert_eq!(
+        builder.push_at("message:test", 0, text("λ🙂more")).unwrap(),
+        pager::Push::Full
+    );
+    let position = builder.position().unwrap();
+    assert!(position.character > 0);
+    let document = builder.finish(ReadFooter::default()).unwrap();
+    assert!(!document.items.is_empty());
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    assert_eq!(
+        builder.push_at("message:test", 0, text("")).unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(
+        builder.finish(ReadFooter::default()).unwrap().items,
+        vec![text("")]
+    );
+}
+fn large_footer(position: Option<&ReadPosition>) -> Result<ReadFooter, pager::PageError> {
+    let mut footer = ReadFooter::default();
+    footer.referenced_by = vec![ReferencedBy {
+        reference: "x".repeat(500),
+        role: "evidence".into(),
+        open: None,
+    }];
+    footer.next = position.map(|position| ReadyCall {
+        cli: format!(
+            "read {} {} {}",
+            position.reference, position.item, position.character
+        ),
+        mcp: json!({"position":position}),
+        http: HttpCall {
+            method: "GET".into(),
+            path: "/api/v1/read".into(),
+            arguments: json!({"position":position}),
+        },
+    });
+    Ok(footer)
+}
+#[test]
+fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(3).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    for n in 0..3 {
+        assert_eq!(
+            builder
+                .push_at("message:test", n, text(&"a".repeat(100)))
+                .unwrap(),
+            pager::Push::Accepted
+        );
+    }
+    assert_eq!(
+        builder.push_at("message:test", 3, text("next")).unwrap(),
+        pager::Push::Full
+    );
+    let mut attempts = 0;
+    let doc = builder
+        .finish_with(|position| {
+            attempts += 1;
+            large_footer(position)
+        })
+        .unwrap();
+    assert!(attempts > 1);
+    assert!(!doc.items.is_empty());
+    assert!(doc.items.len() < 3);
+    let position = doc.footer.position.as_ref().unwrap();
+    assert_eq!(position.item, doc.items.len() as u64);
+    assert_eq!(
+        doc.footer.next.as_ref().unwrap().mcp["position"],
+        json!(position)
+    );
+    assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
+}
+#[test]
+fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(2).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    assert_eq!(
+        builder
+            .push_at("message:test", 0, text(&"λ".repeat(300)))
+            .unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(
+        builder
+            .push_at("message:test", 1, text(&"n".repeat(600)))
+            .unwrap(),
+        pager::Push::Full
+    );
+    let doc = builder.finish_with(large_footer).unwrap();
+    let ItemKind::Fragment {
+        text,
+        from,
+        until,
+        total,
+        ..
+    } = &doc.items[0].kind
+    else {
+        panic!()
+    };
+    assert_eq!(*from, 0);
+    assert_eq!(*total, 300);
+    assert_eq!(text.chars().count() as u64, *until);
+    assert_eq!(doc.footer.position.as_ref().unwrap().character, *until);
+    assert_eq!(doc.footer.position.as_ref().unwrap().item, 0);
+    assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
+}
