@@ -26,6 +26,8 @@ pub struct CallerEvidence {
     pub harness_pid: Option<u32>,
     pub controlling_terminal: bool,
     pub unit: Option<String>,
+    #[serde(default)]
+    pub ambiguous_harness: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -73,7 +75,9 @@ pub fn compute_authorship(
                 }
             })
             .or_else(|| caller.session.clone());
-        if let Some(session) = session {
+        if via == Channel::Cli && caller.ambiguous_harness && hook.is_none() {
+            Author::Unattributed
+        } else if let Some(session) = session {
             Author::Agent(Some(session))
         } else if let Some(origin) = &caller.harness {
             Author::AgentOrigin(origin.clone())

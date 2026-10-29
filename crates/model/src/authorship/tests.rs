@@ -110,3 +110,17 @@ fn honest_author_forms_round_trip_without_turning_unknowns_into_operator() {
         );
     }
 }
+
+#[test]
+fn conflicting_harness_identity_is_never_promoted_to_operator_or_script() {
+    let caller = CallerEvidence {
+        ambiguous_harness: true,
+        controlling_terminal: true,
+        unit: Some("shell.scope".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        compute_authorship(Channel::Cli, &caller, None).author,
+        Author::Unattributed
+    );
+}
