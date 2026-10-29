@@ -26,7 +26,7 @@ fn exactly_stored(w: &ClaudeHome, file: &str) {
 fn a_new_input_retries_without_a_source_change_or_restart() {
     for point in [
         "write.archive_commit",
-        "write.between_commits",
+        "segment.after_commit",
         "write.index_commit",
     ] {
         fault::clear();
@@ -35,11 +35,11 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         let (mut engine, _lock) = w.engine(256);
         fault::arm(point, "", Action::Fail, 0, 64);
         let failed = engine.run_pass().unwrap();
-        assert!(!failed.errors.is_empty());
-        assert!(w.texts("new").is_empty());
+        assert!(!failed.errors.is_empty(), "{point}: {failed:?}");
+        assert!(w.texts("new").is_empty(), "{point}");
         fault::clear();
         let retry = engine.run_pass().unwrap();
-        assert!(retry.errors.is_empty(), "{retry:?}");
+        assert!(retry.errors.is_empty(), "{point}: {retry:?}");
         assert_eq!(w.texts("new"), ["new stored body"]);
         assert!(engine.run_pass().unwrap().errors.is_empty());
         assert_eq!(w.texts("new"), ["new stored body"]);
