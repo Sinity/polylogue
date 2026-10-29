@@ -25,6 +25,13 @@ pub struct ImportAttribution {
     pub at: Timestamp,
 }
 
+/// Locally observed ingress is distinct from claims carried by a bundle.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ImportHistory {
+    pub observed: Vec<ImportAttribution>,
+    pub declared: Vec<ImportAttribution>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreparedRequest {
     pub request: UserRequest,
