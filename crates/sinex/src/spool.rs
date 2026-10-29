@@ -866,7 +866,7 @@ impl Spool {
     }
 }
 
-fn capture_header(capture: &Capture) -> Capture {
+pub(crate) fn capture_header(capture: &Capture) -> Capture {
     match capture {
         Capture::Input(input) => Capture::Input(polylogue_store::primary::CapturedInput {
             input: input.input.clone(),
