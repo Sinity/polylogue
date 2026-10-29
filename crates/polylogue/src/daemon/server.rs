@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-fn serve_client(stream: UnixStream, d: &Daemon) {
+fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
@@ -82,14 +82,48 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
             }
             continue;
         }
-        let response = match request {
-            request @ Request::Attachment { reveal: true, .. } => {
-                super::execution::run(request, &limit, |request| {
-                    super::attachment::socket(&out, request, d)
-                })
-            }
-            request => service::handle_with_limit(request, d, &limit),
-        };
+        let response =
+            if let Some(arguments) = crate::protocol::query::Arguments::from_request(&request) {
+                let table = crate::protocol::operations::table(Arc::clone(d));
+                let request = command_surface::Request {
+                    operation: "query".into(),
+                    arguments: serde_json::to_value(arguments).expect("query arguments serialize"),
+                    request_id: uuid::Uuid::now_v7().to_string(),
+                    deadline: incoming.deadline_ms.map_or(
+                        command_surface::Deadline::Default,
+                        |deadline| {
+                            command_surface::Deadline::Milliseconds(
+                                super::execution::remaining(Some(deadline))
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(u64::MAX),
+                            )
+                        },
+                    ),
+                };
+                let trusted = command_surface::Caller::authenticated("local", cancellation.clone());
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("operation runtime starts");
+                runtime
+                    .block_on(table.call_as(
+                        request,
+                        command_surface::Origin::Socket,
+                        trusted,
+                        Default::default(),
+                    ))
+                    .into()
+            } else {
+                match request {
+                    request @ Request::Attachment { reveal: true, .. } => {
+                        super::execution::run(request, &limit, |request| {
+                            super::attachment::socket(&out, request, d)
+                        })
+                    }
+                    request => service::handle_with_limit(request, d, &limit),
+                }
+            };
         let Ok(mut text) = serde_json::to_string(&response) else {
             return;
         };

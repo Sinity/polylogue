@@ -441,11 +441,17 @@ impl Response {
                 kind,
                 message,
                 detail,
-            } => command_surface::Answer::error(crate::protocol::failure(
-                kind,
-                message.clone(),
-                detail.as_ref(),
-            )),
+            } => command_surface::Answer::Error {
+                error: crate::protocol::failure(kind, message.clone(), detail.as_ref()),
+                notes: detail
+                    .as_ref()
+                    .and_then(|d| serde_json::from_value(d["notes"].clone()).ok())
+                    .unwrap_or_default(),
+                next: detail
+                    .as_ref()
+                    .and_then(|d| serde_json::from_value(d["next"].clone()).ok())
+                    .unwrap_or_default(),
+            },
         }
     }
 
@@ -486,12 +492,14 @@ impl From<command_surface::Answer<serde_json::Value>> for Response {
                 data: value,
                 references: References::default(),
             },
-            Answer::Error { error, .. } => {
+            Answer::Error { error, notes, next } => {
                 let detail = serde_json::json!({
                     "position": error.position,
                     "suggestion": error.suggestion,
                     "hint": error.hint,
                     "retryable": error.retryable,
+                    "notes": notes,
+                    "next": next,
                 });
                 Self::Error {
                     kind: error.code.unwrap_or_else(|| {

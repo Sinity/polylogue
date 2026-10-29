@@ -71,6 +71,40 @@ async fn answer(
         cwd: None,
         json: true,
     };
+    if c.register.is_some() {
+        let values = match values {
+            Ok(values) => values,
+            Err(error) => {
+                return json_answer(web, crate::daemon::service::error("bad_request", error));
+            }
+        };
+        let request_id = values.request_id();
+        let deadline = super::READ_LIMIT
+            .try_with(|(deadline, _)| {
+                deadline.map_or(command_surface::Deadline::Default, |deadline| {
+                    command_surface::Deadline::Milliseconds(
+                        crate::daemon::execution::remaining(Some(deadline))
+                            .as_millis()
+                            .try_into()
+                            .unwrap_or(u64::MAX),
+                    )
+                })
+            })
+            .unwrap_or_default();
+        let request = crate::protocol::operations::request(c, values, request_id, deadline);
+        let table = crate::protocol::operations::table(Arc::clone(&web.daemon));
+        let limit = super::request_limit();
+        let trusted = command_surface::Caller::authenticated("local", limit.cancellation);
+        let answer = table
+            .call_as(
+                request,
+                command_surface::Origin::Http,
+                trusted,
+                Default::default(),
+            )
+            .await;
+        return json_answer(web, answer.into());
+    }
     match values.and_then(|v| build(c, &v, &caller)) {
         Ok(request) => match c.action {
             Action::Stream { prepare, .. } => stream(web, request, prepare).await,

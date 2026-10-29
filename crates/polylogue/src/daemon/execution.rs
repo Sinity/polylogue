@@ -151,7 +151,7 @@ pub fn refusal(
     }.masked()
 }
 
-fn narrower(query: &str) -> Option<String> {
+pub(crate) fn narrower(query: &str) -> Option<String> {
     use polylogue_query::ast::Source;
     let parsed = polylogue_query::parse(query).ok()?;
     let suggestion = match parsed.source {

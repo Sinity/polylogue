@@ -128,6 +128,13 @@ pub enum Action {
 
 #[derive(Clone, Copy)]
 pub struct Command {
+    pub reason: &'static str,
+    pub latency: command_surface::LatencyClass,
+    pub failures: &'static [command_surface::FailureKind],
+    pub register: Option<
+        fn(std::sync::Arc<crate::daemon::service::Daemon>, &mut command_surface::OperationTable),
+    >,
+    pub typed_schemas: Option<fn() -> (Value, Value)>,
     /// The command-line words (`note add`); the MCP tool joins them with
     /// `_`, the HTTP route with `/`.
     pub name: &'static str,
@@ -295,6 +302,11 @@ const HOOKS_ARGS: &[Arg] = &[
 /// A command on the command line only, sent to the daemon unless its
 /// action is local.
 const CLI: Command = Command {
+    reason: "",
+    latency: command_surface::LatencyClass::Local,
+    failures: &command_surface::FailureKind::ALL,
+    register: None,
+    typed_schemas: None,
     name: "",
     help: "",
     args: &[],
@@ -341,6 +353,23 @@ pub const GROUPS: &[Group] = &[
         help: "Capture a web chat's older conversations through the browser extension",
     },
 ];
+
+macro_rules! typed_command {
+    ($marker:ident, $arguments:ty, $answer:ty, { name: $name:literal, $($fields:tt)* }) => {{
+        struct $marker;
+        impl crate::protocol::operations::CommandType for $marker {
+            type Arguments = $arguments;
+            type Answer = $answer;
+            const NAME: &'static str = $name;
+        }
+        Command {
+            name: $name,
+            register: Some(crate::protocol::operations::register::<$marker>),
+            typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
+            $($fields)*
+        }
+    }};
+}
 
 /// Every command, in the order help lists them: the written ones, with a
 /// `measure NAME` for each measurement after `setting`.
@@ -525,15 +554,27 @@ const WRITTEN: &[Command] = &[
         action: Action::Local(local::manual),
         ..CLI
     },
-    Command {
+    typed_command!(QueryOperation, crate::protocol::query::Arguments, crate::protocol::query::Answer, {
         name: "query",
         help: "Run a query",
+        reason: "Execute a question expressed in the archive query language",
+        latency: command_surface::LatencyClass::Search,
+        failures: &[
+            command_surface::FailureKind::InvalidQuery, command_surface::FailureKind::UnknownField,
+            command_surface::FailureKind::BadValue, command_surface::FailureKind::NotAQuery,
+            command_surface::FailureKind::BadRequest, command_surface::FailureKind::Ambiguous,
+            command_surface::FailureKind::StaleCursor, command_surface::FailureKind::NotYetAvailable,
+            command_surface::FailureKind::NotFound, command_surface::FailureKind::Conflict,
+            command_surface::FailureKind::Io, command_surface::FailureKind::Timeout,
+            command_surface::FailureKind::Cancelled,
+        ],
         args: &[
             pos_opt("query", Kind::Rest, "A query, when no subcommand is given"),
             LIMIT,
             WHY,
             CURSOR,
             FIELDS,
+            opt("session", Kind::Text, "The session named by self in the query"),
         ],
         action: Action::Request(requests::query),
         print: print::query,
@@ -541,7 +582,7 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "status",
         help: "What the archive holds and what the daemon is doing",
@@ -1528,6 +1569,13 @@ fn describe(kind: Kind) -> String {
 /// The JSON Schema of a command's arguments, for an MCP tool.
 pub fn schema(command: &Command) -> Map<String, Value> {
     use serde_json::json;
+    if let Some(schemas) = command.typed_schemas {
+        return schemas()
+            .0
+            .as_object()
+            .expect("argument schema is an object")
+            .clone();
+    }
     let mut properties = Map::new();
     for a in command.args_for(Surface::Mcp) {
         let mut p = match a.kind {

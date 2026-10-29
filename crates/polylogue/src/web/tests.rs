@@ -63,7 +63,8 @@ async fn send(r: &Reader, req: Http<Body>) -> (StatusCode, HeaderMap, String) {
 
 /// Domain assertions use the payload; protocol tests inspect the wire envelope.
 pub(super) fn application_body(body: String) -> String {
-    let Ok(answer) = serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&body) else {
+    let Ok(answer) = serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&body)
+    else {
         return body;
     };
     match answer {

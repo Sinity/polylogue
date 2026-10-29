@@ -20,7 +20,7 @@ pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
 
 pub fn tools() -> Vec<Value> {
     tool_commands()
-        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": commands::schema(c), "outputSchema": schemars::schema_for!(command_surface::Answer<Value>).to_value(), "annotations": {"readOnlyHint": !c.writes}}))
+        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": commands::schema(c), "outputSchema": c.typed_schemas.map(|schemas| schemas().1).unwrap_or_else(|| schemars::schema_for!(command_surface::Answer<Value>).to_value()), "annotations": {"readOnlyHint": !c.writes}}))
         .collect()
 }
 

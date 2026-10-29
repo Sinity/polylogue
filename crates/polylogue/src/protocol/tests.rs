@@ -58,9 +58,20 @@ fn pending_capture_returns_receipt_instead_of_storage_failure() {
 
 #[test]
 fn query_empty_and_incomplete_outcomes_keep_their_shared_exit() {
-    assert_eq!(answer(json!({"outcome":"empty", "rows":[], "count":0})).exit_code(), 1);
-    let incomplete = answer(json!({"outcome":"incomplete", "rows":[{"id":"session:one"}], "incomplete":["semantic vectors unavailable"]}));
+    assert_eq!(
+        answer(json!({"outcome":"empty", "rows":[], "count":0})).exit_code(),
+        1
+    );
+    let incomplete = answer(
+        json!({"outcome":"incomplete", "rows":[{"id":"session:one"}], "incomplete":["semantic vectors unavailable"]}),
+    );
     assert_eq!(incomplete.exit_code(), 5);
     assert_eq!(incomplete.http_status(), Some(200));
-    assert_eq!(incomplete.value().unwrap()["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        incomplete.value().unwrap()["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }

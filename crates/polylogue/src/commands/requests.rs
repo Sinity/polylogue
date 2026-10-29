@@ -15,7 +15,7 @@ fn query_request(text: String, page_size: Option<u64>, v: &Values) -> Request {
         cursor: v.text("cursor"),
         page_size,
         why: v.flag("why"),
-        session: None,
+        session: v.text("session"),
         fields: v.list("fields"),
     }
 }
