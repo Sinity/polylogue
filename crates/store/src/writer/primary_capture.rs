@@ -368,9 +368,18 @@ impl Inner {
                         (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64)
                     });
                 let captured = CapturedInput {
-                    generation: None,
-                    raw_total: None,
-                    raw_predecessor: None,
+                    generation: batch
+                        .acquisition
+                        .as_ref()
+                        .and_then(|receipt| receipt.generation.clone()),
+                    raw_total: batch
+                        .acquisition
+                        .as_ref()
+                        .and_then(|receipt| receipt.raw_total),
+                    raw_predecessor: batch
+                        .acquisition
+                        .as_ref()
+                        .and_then(|receipt| receipt.raw_predecessor.clone()),
                     raw_range: batch
                         .acquisition
                         .as_ref()

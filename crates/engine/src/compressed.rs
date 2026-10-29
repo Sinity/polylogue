@@ -132,6 +132,7 @@ impl Engine {
             return self.stored_plan(path);
         }
         let mut source = std::fs::File::open(path)?;
+        let observed = crate::acquisition::file_snapshot(&source.metadata()?)?;
         let raw = if compressed {
             Some(self.archive.prepare_bytes(&mut source)?)
         } else {
@@ -239,31 +240,33 @@ impl Engine {
                 raw_added = raw.len();
             }
             let raw_length = raw.len();
-            group.push(self.rollout_batch(
-                raw_id.clone(),
-                found.origin,
-                if exists {
-                    Change::Unchanged
-                } else {
-                    Change::First
-                },
-                self.observation(path, Some(facts)),
-                raw_length,
-                Some(raw.clone()),
-                exists,
-                raw_context.as_ref().expect("compressed acquisition"),
-            ));
-            group.last_mut().expect("raw container").batch.acquisition = Some(
-                raw_context
-                    .as_ref()
-                    .expect("compressed acquisition")
-                    .finish(
-                        polylogue_store::primary::RawRange {
-                            start: 0,
-                            end: raw_length,
-                        },
-                        raw.hash(),
-                    ),
+            group.push(
+                self.rollout_batch(
+                    if exists {
+                        Change::Unchanged
+                    } else {
+                        Change::First
+                    },
+                    self.observation(path, Some(facts)),
+                    Some(raw.clone()),
+                    raw_context.as_ref().expect("compressed acquisition"),
+                    raw_context
+                        .as_ref()
+                        .expect("compressed acquisition")
+                        .file_generation(
+                            InputKey {
+                                id: raw_id.clone(),
+                                format: found.origin.name.into(),
+                                arrival_rank: 2,
+                            },
+                            observed.clone(),
+                            polylogue_store::primary::RawStreamRole::ProviderBytes,
+                            polylogue_store::primary::RawRange {
+                                start: 0,
+                                end: raw_length,
+                            },
+                        ),
+                ),
             );
             observation.container = Some(polylogue_store::InContainer {
                 input: raw_id,
@@ -293,15 +296,38 @@ impl Engine {
         } else {
             Change::First
         };
+        let role = if compressed {
+            polylogue_store::primary::RawStreamRole::DecodedMember {
+                codec: "zstd".into(),
+                member_index: 0,
+                path_bytes: observation
+                    .container
+                    .as_ref()
+                    .expect("decoded member")
+                    .path_bytes
+                    .clone(),
+            }
+        } else {
+            polylogue_store::primary::RawStreamRole::ProviderBytes
+        };
         group.push(self.rollout_batch(
-            id.clone(),
-            origin,
             change,
             observation,
-            length,
             prepared,
-            same || historical.is_some(),
             &context,
+            context.file_generation(
+                InputKey {
+                    id: id.clone(),
+                    format: origin.name.into(),
+                    arrival_rank: origin.arrival.rank(),
+                },
+                observed.clone(),
+                role,
+                polylogue_store::primary::RawRange {
+                    start: 0,
+                    end: length,
+                },
+            ),
         ));
         self.writer
             .sender()?
@@ -337,35 +363,28 @@ impl Engine {
     }
     fn rollout_batch(
         &self,
-        id: String,
-        origin: &'static OriginSpec,
         change: Change,
         observation: Observation,
-        length: u64,
         bytes: Option<PreparedBytes>,
-        body_only: bool,
         context: &crate::acquisition::AcquisitionContext,
+        generation: polylogue_store::primary::SourceGeneration,
     ) -> PreparedBatch {
+        let input = generation.stream().input.clone();
+        let length = generation.window().end;
+        let body_only = matches!(change, Change::Unchanged | Change::Observed { .. });
         let acquisition = bytes.as_ref().map(|bytes| {
-            context.finish(
+            context.finish_generation(
                 polylogue_store::primary::RawRange {
                     start: length - bytes.len(),
                     end: length,
                 },
                 bytes.hash(),
+                generation,
             )
         });
         PreparedBatch {
             batch: polylogue_store::Batch {
-                input: InputKey {
-                    id,
-                    format: origin.name.into(),
-                    arrival_rank: if origin.name == "codex-compressed" {
-                        2
-                    } else {
-                        origin.arrival.rank()
-                    },
-                },
+                input,
                 change,
                 observation: Some(observation),
                 continues: false,

@@ -96,9 +96,9 @@ impl Databases {
                         )
                     }));
                     match outcome {
-                        Ok(Ok(_)) => {
+                        Ok(Ok(report)) => {
                             completed.changed = true;
-                            if let Err(error) = queue.publish() {
+                            if let Err(error) = queue.publish(report.snapshot) {
                                 reader.forget(&source.path);
                                 completed.errors.push(format!(
                                     "stage database {}: {error}",
@@ -300,9 +300,48 @@ impl<'a> InputWriter<'a> {
         self.bytes += size;
         Ok(())
     }
-    fn publish(&mut self) -> Result<(), DatabaseError> {
+    fn publish(
+        &mut self,
+        snapshot: Option<polylogue_store::primary::DatabaseSnapshotToken>,
+    ) -> Result<(), DatabaseError> {
         if self.staged.is_empty() {
             return Ok(());
+        }
+        let snapshot = snapshot.ok_or_else(|| {
+            polylogue_store::StoreError::Invalid(
+                "database sample has no actual consistent-read token".into(),
+            )
+        })?;
+        let start = self.staged.iter().find_map(|part| {
+            part.batch
+                .acquisition
+                .as_ref()
+                .map(|receipt| receipt.range.start)
+        });
+        if let Some(start) = start {
+            let window = polylogue_store::primary::RawRange {
+                start,
+                end: self.length,
+            };
+            for part in &mut self.staged {
+                if let Some(receipt) = &mut part.batch.acquisition {
+                    receipt.generation =
+                        Some(polylogue_store::primary::SourceGeneration::Database {
+                            stream: polylogue_store::primary::RawStream {
+                                source: receipt.source.clone(),
+                                input: part.batch.input.clone(),
+                                role: polylogue_store::primary::RawStreamRole::DatabaseDump,
+                                namespace: None,
+                            },
+                            snapshot: snapshot.clone(),
+                            window,
+                        });
+                    receipt.raw_total = (receipt.range.end == window.end).then_some(window.end);
+                    // Original sibling body addresses are assigned by atomic
+                    // custody; no operation ID is inferred from its ordinal.
+                    receipt.raw_predecessor = None;
+                }
+            }
         }
         // The read transaction has completed successfully before one SDK group
         // can accept any of its members. The pre-IO basis is unchanged.

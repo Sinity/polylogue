@@ -25,6 +25,12 @@ pub struct AcquisitionReceipt {
     pub range: RawRange,
     pub hash: polylogue_model::BlobHash,
     pub observed_at: polylogue_model::Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<super::SourceGeneration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_predecessor: Option<String>,
 }
 impl AcquisitionReceipt {
     pub const VERSION: u32 = 1;

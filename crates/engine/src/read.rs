@@ -27,9 +27,11 @@ pub(crate) fn read_native_range(
     start: u64,
     end: u64,
     expected: Option<polylogue_store::FileFacts>,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<(Vec<u8>, polylogue_store::primary::FileSnapshot)> {
     let mut file = File::open(path)?;
-    let before = polylogue_store::FileFacts::of(&file.metadata()?);
+    let metadata = file.metadata()?;
+    let observed = crate::acquisition::file_snapshot(&metadata)?;
+    let before = polylogue_store::FileFacts::of(&metadata);
     if expected.is_some_and(|facts| facts != before) {
         return Err(io::Error::other("native source changed before reading"));
     }
@@ -41,7 +43,7 @@ pub(crate) fn read_native_range(
     {
         return Err(io::Error::other("native source changed during reading"));
     }
-    Ok(bytes)
+    Ok((bytes, observed))
 }
 
 /// Whether the bytes just before `from` still equal `tail`, the end of what

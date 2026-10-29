@@ -379,6 +379,7 @@ pub(crate) fn run(
         checkpoint: None,
     };
     let started = std::time::Instant::now();
+    let mut file_snapshot = None;
     let read = match &job.source {
         Bytes::Import(source) => source
             .lock()
@@ -388,7 +389,11 @@ pub(crate) fn run(
             .read_range(store, job.start, job.end)
             .map_err(|e| std::io::Error::other(e.to_string())),
         Bytes::File => match &job.acquisition {
-            Some(context) => read::read_native_range(&job.path, job.start, job.end, context.facts),
+            Some(context) => read::read_native_range(&job.path, job.start, job.end, context.facts)
+                .map(|(bytes, observed)| {
+                    file_snapshot = Some(observed);
+                    bytes
+                }),
             None => read::read_range(&job.path, job.start, job.end),
         },
         Bytes::Unloaded { .. } => Err(std::io::Error::other(
@@ -425,13 +430,24 @@ pub(crate) fn run(
         .as_ref()
         .zip(job.acquisition.as_ref())
         .map(|(blob, context)| {
-            context.finish(
-                polylogue_store::primary::RawRange {
-                    start: job.store_from.expect("new body has a source interval"),
-                    end: job.store_from.expect("new body has a source interval") + blob.size,
-                },
-                blob.hash,
-            )
+            let range = polylogue_store::primary::RawRange {
+                start: job.store_from.expect("new body has a source interval"),
+                end: job.store_from.expect("new body has a source interval") + blob.size,
+            };
+            match &file_snapshot {
+                Some(observed) => context.finish_file(
+                    range,
+                    blob.hash,
+                    job.input.clone(),
+                    observed.clone(),
+                    polylogue_store::primary::RawStreamRole::ProviderBytes,
+                    polylogue_store::primary::RawRange {
+                        start: 0,
+                        end: observed.size,
+                    },
+                ),
+                None => context.finish(range, blob.hash),
+            }
         });
     let mut extra = Vec::new();
     let parser = (job.origin.open)(&job.path).or_else(|| {

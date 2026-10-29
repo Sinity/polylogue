@@ -17,9 +17,15 @@ pub struct RawStream {
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum RawStreamRole {
     ProviderBytes,
-    DecodedMember { codec: String, member_index: u64, path_bytes: Vec<u8> },
+    DecodedMember {
+        codec: String,
+        member_index: u64,
+        path_bytes: Vec<u8>,
+    },
     DatabaseDump,
-    DatabaseTable { table: String },
+    DatabaseTable {
+        table: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -51,45 +57,82 @@ pub struct DatabaseSnapshotToken {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SourceGeneration {
-    File { stream: RawStream, observed: FileSnapshot, window: RawRange },
-    Database { stream: RawStream, snapshot: DatabaseSnapshotToken, window: RawRange },
+    File {
+        stream: RawStream,
+        observed: FileSnapshot,
+        window: RawRange,
+    },
+    Database {
+        stream: RawStream,
+        snapshot: DatabaseSnapshotToken,
+        window: RawRange,
+    },
 }
 
 impl SourceGeneration {
     pub fn stream(&self) -> &RawStream {
-        match self { Self::File { stream, .. } | Self::Database { stream, .. } => stream }
+        match self {
+            Self::File { stream, .. } | Self::Database { stream, .. } => stream,
+        }
     }
     pub fn window(&self) -> RawRange {
-        match self { Self::File { window, .. } | Self::Database { window, .. } => *window }
+        match self {
+            Self::File { window, .. } | Self::Database { window, .. } => *window,
+        }
     }
     pub fn validate(&self) -> Result<()> {
         let stream = self.stream();
         self.window().length()?;
-        if stream.source.origin != stream.input.format || stream.input.id.is_empty()
-            || stream.source.machine.is_empty() || stream.source.path_bytes.is_empty()
+        if stream.source.origin != stream.input.format
+            || stream.input.id.is_empty()
+            || stream.source.machine.is_empty()
+            || stream.source.path_bytes.is_empty()
             || stream.namespace.as_ref().is_some_and(String::is_empty)
         {
-            return Err(StoreError::Invalid("raw acquisition stream identity is incomplete".into()));
+            return Err(StoreError::Invalid(
+                "raw acquisition stream identity is incomplete".into(),
+            ));
         }
         match self {
-            Self::File { observed, stream, .. } => {
-                if observed.modified.nanos >= 1_000_000_000 || observed.changed.nanos >= 1_000_000_000 {
-                    return Err(StoreError::Invalid("provider file time has invalid nanoseconds".into()));
+            Self::File {
+                observed, stream, ..
+            } => {
+                if observed.modified.nanos >= 1_000_000_000
+                    || observed.changed.nanos >= 1_000_000_000
+                {
+                    return Err(StoreError::Invalid(
+                        "provider file time has invalid nanoseconds".into(),
+                    ));
                 }
                 match &stream.role {
                     RawStreamRole::ProviderBytes if self.window().end <= observed.size => {}
                     RawStreamRole::DecodedMember { codec, .. } if !codec.is_empty() => {}
-                    _ => return Err(StoreError::Invalid("file generation has an incompatible stream window or role".into())),
+                    _ => {
+                        return Err(StoreError::Invalid(
+                            "file generation has an incompatible stream window or role".into(),
+                        ));
+                    }
                 }
             }
-            Self::Database { snapshot, stream, .. } => {
-                if uuid::Uuid::parse_str(&snapshot.nonce).ok().is_none_or(|id| id.is_nil()) {
-                    return Err(StoreError::Invalid("consistent-read custody nonce is missing".into()));
+            Self::Database {
+                snapshot, stream, ..
+            } => {
+                if uuid::Uuid::parse_str(&snapshot.nonce)
+                    .ok()
+                    .is_none_or(|id| id.is_nil())
+                {
+                    return Err(StoreError::Invalid(
+                        "consistent-read custody nonce is missing".into(),
+                    ));
                 }
                 match &stream.role {
                     RawStreamRole::DatabaseDump => {}
                     RawStreamRole::DatabaseTable { table } if !table.is_empty() => {}
-                    _ => return Err(StoreError::Invalid("database generation has an incompatible stream role".into())),
+                    _ => {
+                        return Err(StoreError::Invalid(
+                            "database generation has an incompatible stream role".into(),
+                        ));
+                    }
                 }
             }
         }
@@ -119,10 +162,18 @@ pub struct RawAcquisitionCursor {
 }
 
 impl RawAcquisitionCursor {
-    pub fn generation(&self) -> &SourceGeneration { &self.generation }
-    pub fn range(&self) -> RawRange { self.range }
-    pub fn known_total(&self) -> Option<u64> { self.known_total }
-    pub fn last_body(&self) -> &str { &self.last_body }
+    pub fn generation(&self) -> &SourceGeneration {
+        &self.generation
+    }
+    pub fn range(&self) -> RawRange {
+        self.range
+    }
+    pub fn known_total(&self) -> Option<u64> {
+        self.known_total
+    }
+    pub fn last_body(&self) -> &str {
+        &self.last_body
+    }
     pub fn is_complete_stream(&self) -> bool {
         self.range.start == 0 && self.known_total == Some(self.range.end)
     }
@@ -143,37 +194,60 @@ impl RawAcquisitionProof {
     pub fn new(generation: SourceGeneration) -> Result<Self> {
         generation.validate()?;
         let start = generation.window().start;
-        Ok(Self { generation, range: RawRange { start, end: start }, total: None, last: None, valid: true })
+        Ok(Self {
+            generation,
+            range: RawRange { start, end: start },
+            total: None,
+            last: None,
+            valid: true,
+        })
     }
     pub fn push(&mut self, body: RawBodyRange) -> Result<()> {
         if body.body.is_empty() || body.range.length()? != body.decoded_length {
-            return Err(StoreError::Invalid("raw custody body reference or decoded range is invalid".into()));
+            return Err(StoreError::Invalid(
+                "raw custody body reference or decoded range is invalid".into(),
+            ));
         }
-        if body.generation != self.generation || body.range.start < self.generation.window().start
+        if body.generation != self.generation
+            || body.range.start < self.generation.window().start
             || body.range.end > self.generation.window().end
-            || body.known_total.is_some_and(|end| end != self.generation.window().end)
-            || self.total.zip(body.known_total).is_some_and(|(a,b)| a != b)
-        { self.valid = false; }
-        if let Some((range,hash,_)) = &self.last {
+            || body
+                .known_total
+                .is_some_and(|end| end != self.generation.window().end)
+            || self
+                .total
+                .zip(body.known_total)
+                .is_some_and(|(a, b)| a != b)
+        {
+            self.valid = false;
+        }
+        if let Some((range, hash, _)) = &self.last {
             if *range == body.range && *hash == body.hash {
                 if self.valid {
                     self.total = body.known_total.or(self.total);
-                    self.last = Some((body.range,body.hash,body.body));
+                    self.last = Some((body.range, body.hash, body.body));
                 }
                 return Ok(());
             }
         }
-        if body.range.start != self.range.end { self.valid = false; }
-        if !self.valid { return Ok(()); }
+        if body.range.start != self.range.end {
+            self.valid = false;
+        }
+        if !self.valid {
+            return Ok(());
+        }
         self.range.end = body.range.end;
         self.total = body.known_total.or(self.total);
-        self.last = Some((body.range,body.hash,body.body));
+        self.last = Some((body.range, body.hash, body.body));
         Ok(())
     }
     pub fn finish(self) -> Option<RawAcquisitionCursor> {
-        let (_,_,last_body) = self.last?;
+        let (_, _, last_body) = self.last?;
         self.valid.then_some(RawAcquisitionCursor {
-            generation:self.generation,range:self.range,known_total:self.total,last_body,
+            generation: self.generation,
+            range: self.range,
+            known_total: self.total,
+            last_body,
         })
     }
 }
