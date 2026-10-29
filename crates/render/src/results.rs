@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::io::{self, Write};
 
 pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
-    render_with_links(data, format, out, None, crate::terminal::color_enabled())
+    render_with_links(data, format, out, None, false)
 }
 
 /// Plain text for a transcript whose displaying client chooses its styling.
@@ -31,7 +31,7 @@ fn render_with_links(
     target: Option<&LinkTarget<'_>>,
     color: bool,
 ) -> io::Result<()> {
-    if format == Format::Json {
+    if matches!(format, Format::Json | Format::Jsonl) {
         return writeln!(out, "{}", crate::terminal::json(data, false));
     }
     let columns: Vec<String> = data["columns"]

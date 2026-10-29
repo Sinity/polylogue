@@ -262,7 +262,20 @@ pub enum ItemKind {
     Raw {
         record: Box<RawRecord>,
     },
+    /// A budget may split one oversized item without discarding fields.
+    /// Concatenate the text fragments and decode according to `encoding`.
+    Fragment {
+        encoding: FragmentEncoding,
+        text: String,
+        from: u64,
+        until: u64,
+        total: u64,
+    },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FragmentEncoding { Text, ReadItemJson }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
