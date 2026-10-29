@@ -30,6 +30,8 @@ pub trait Sinex: Send + Sync {
         false
     }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
+    /// Loads complete private facts for one ready capture, never the whole queue.
+    fn capture(&self, identity: &str) -> Result<Capture>;
     fn complete_captures(
         &self,
         identities: &[String],
