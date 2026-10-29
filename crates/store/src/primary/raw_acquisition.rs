@@ -184,6 +184,13 @@ impl RawAcquisitionProof {
         { self.valid = false; }
         if let Some((range, hash, previous_body, predecessor)) = &self.last {
             if *range == body.range && *hash == body.hash {
+                // Equal bytes under another original acquisition are a separate
+                // chain. A generation-only lookup cannot choose between them.
+                if body.range.start == self.generation.window().start
+                    && body.predecessor.is_none() && *previous_body != body.body
+                {
+                    self.valid = false;
+                }
                 if *predecessor != body.predecessor {
                     self.valid = false;
                 }
