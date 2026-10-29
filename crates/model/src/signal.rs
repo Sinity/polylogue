@@ -16,6 +16,9 @@ pub struct Checkpoint {
     pub owner: String,
     pub evaluator: Evaluator,
     pub rules: Vec<ActiveRule>,
+    /// Source revision identities for the local monotone adoption ordinal.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rule_sources: BTreeMap<String, String>,
     /// Present only for the standalone host deliverer. Primary uses Forward.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostPolicy>,
@@ -80,7 +83,7 @@ pub struct EventRecord {
 }
 
 /// Checkpoint, immutable outbox entries and returned receipts commit together.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Commit {
     /// Digest of the canonical checkpoint resolved before this update.
@@ -106,4 +109,29 @@ pub struct StoredOutbox {
     pub at: Timestamp,
     pub outbox: Outbox,
     pub events: Vec<EventRecord>,
+}
+
+// Internally tagged authored writes buffer JSON before this field is decoded.
+// Normalize serde_json's arbitrary-precision Number representation once at
+// that boundary so nested shared f64 fields retain their ordinary wire form.
+impl<'de> Deserialize<'de> for Commit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            #[serde(default)]
+            prior: Option<BlobHash>,
+            checkpoint: Checkpoint,
+            outbox: Vec<Outbox>,
+            events: Vec<Event>,
+        }
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let fields: Fields = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            prior: fields.prior,
+            checkpoint: fields.checkpoint,
+            outbox: fields.outbox,
+            events: fields.events,
+        })
+    }
 }

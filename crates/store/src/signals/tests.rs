@@ -31,6 +31,7 @@ fn checkpoint_value() -> Checkpoint {
         owner: "host".into(),
         evaluator: Evaluator::new(0, vec![], Policy::default(), &CalendarFixture).unwrap(),
         rules: vec![],
+        rule_sources: Default::default(),
         host: None,
         notifications: None,
         outlet_attempts: Default::default(),

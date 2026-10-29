@@ -1528,7 +1528,7 @@ pub fn start(
     runtime.signals = Some(
         std::thread::Builder::new()
             .name("polylogue-signals".into())
-            .spawn(move || crate::signals::run(&daemon, &stopped))?,
+            .spawn(move || crate::signals::run(daemon, &stopped))?,
     );
     let (stop, stopped) = channel();
     runtime.counts_stop = Some(stop);
