@@ -77,6 +77,35 @@ impl Reader<'_> {
             })?
             .map(|_| BlobHash(*hash.finalize().as_bytes())))
     }
+    fn source_message_projection(
+        &self,
+        message: i64,
+        reference: &Reference,
+    ) -> Result<polylogue_model::bundle::MessageProjection> {
+        let conn = self.conn()?;
+        let (hash, layout, blocks): (Option<Vec<u8>>, Option<Vec<u8>>, i64) = conn.query_row(
+            "SELECT s.version_hash,p.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.shown=1 LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk=?1",
+            [message], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let hash = hash
+            .ok_or_else(|| unavailable(reference, "the canonical source version is unavailable"))?;
+        crate::versions::message_projection(
+            &hash,
+            layout.as_deref(),
+            usize::try_from(blocks)
+                .map_err(|_| StoreError::Invalid("invalid stored block count".into()))?,
+        )
+    }
+    fn require_complete_message(&self, message: i64, reference: &Reference) -> Result<()> {
+        let projection = self.source_message_projection(message, reference)?;
+        if projection.block_count != projection.block_ordinals.len() as u64 {
+            return Err(unavailable(
+                reference,
+                "some original source blocks are unavailable",
+            ));
+        }
+        Ok(())
+    }
     fn reference_text(&self, reference: &Reference, visit: &mut Visit<'_>) -> Result<bool> {
         let conn = self.conn()?;
         match reference {
@@ -89,6 +118,13 @@ impl Reader<'_> {
                     )
                     .optional()?;
                 let Some(pk) = pk else { return Ok(false) };
+                let mut messages = conn.prepare_cached(
+                    "SELECT pk FROM message WHERE session_pk=?1 AND duplicate_of IS NULL",
+                )?;
+                let mut rows = messages.query([pk])?;
+                while let Some(row) = rows.next()? {
+                    self.require_complete_message(row.get(0)?, reference)?;
+                }
                 let mut text = Text {
                     visit,
                     separated: false,
@@ -109,6 +145,7 @@ impl Reader<'_> {
                     )
                     .optional()?;
                 let Some(pk) = pk else { return Ok(false) };
+                self.require_complete_message(pk, reference)?;
                 let mut text = Text {
                     visit,
                     separated: false,
@@ -123,11 +160,31 @@ impl Reader<'_> {
                 Ok(true)
             }
             Reference::Block { message, n } => {
-                let Ok(n) = i64::try_from(*n) else {
+                let message_pk: Option<i64> = conn
+                    .query_row(
+                        "SELECT pk FROM message WHERE id=?1",
+                        [message.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(message_pk) = message_pk else {
                     return Ok(false);
                 };
-                let pk:Option<i64>=conn.query_row("SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND b.idx=?2",params![message.to_string(),n],|row|row.get(0)).optional()?;
-                let Some(pk) = pk else { return Ok(false) };
+                let projection = self.source_message_projection(message_pk, reference)?;
+                let pk: Option<i64> = conn.query_row(
+                    "SELECT pk FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2",
+                    params![message_pk,n.to_string()], |row| row.get(0),
+                ).optional()?;
+                let Some(pk) = pk else {
+                    return if *n < projection.block_count {
+                        Err(unavailable(
+                            reference,
+                            "the original source block is unavailable",
+                        ))
+                    } else {
+                        Ok(false)
+                    };
+                };
                 let block = crate::ordered_blocks::one(conn, pk)?;
                 if !matches!(
                     block,
@@ -276,7 +333,16 @@ impl Reader<'_> {
                 "message range ends before it starts".into(),
             ));
         }
-        let mut statement=conn.prepare_cached("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND b.kind IN ('text','thinking','tool_result') AND (m.order_input_id,m.seq,m.record_position,m.id)>=(?2,?3,?4,?5) AND (m.order_input_id,m.seq,m.record_position,m.id)<=(?6,?7,?8,?9) ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx")?;
+        const RANGE: &str = "m.session_pk=?1 AND m.duplicate_of IS NULL AND (m.order_input_id,m.seq,m.record_position,m.id)>=(?2,?3,?4,?5) AND (m.order_input_id,m.seq,m.record_position,m.id)<=(?6,?7,?8,?9)";
+        let mut messages =
+            conn.prepare_cached(&format!("SELECT m.pk FROM message m WHERE {RANGE}"))?;
+        let mut rows = messages.query(params![
+            first.0, first.1, first.2, first.3, first.4, last.1, last.2, last.3, last.4
+        ])?;
+        while let Some(row) = rows.next()? {
+            self.require_complete_message(row.get(0)?, &reference)?;
+        }
+        let mut statement = conn.prepare_cached(&format!("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE {RANGE} AND b.kind IN ('text','thinking','tool_result') ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx"))?;
         let mut rows = statement.query(params![
             first.0, first.1, first.2, first.3, first.4, last.1, last.2, last.3, last.4
         ])?;

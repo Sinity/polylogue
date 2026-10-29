@@ -159,3 +159,97 @@ fn missing_and_unrecorded_text_never_become_an_accessible_empty_hash() {
         Err(StoreError::ReferenceUnavailable { .. })
     ));
 }
+
+#[test]
+fn sparse_source_blocks_keep_original_addresses_and_never_hash_as_complete_text() {
+    use polylogue_model::{MessageRow, Output, Session, SessionKind, bundle::MessageProjection};
+    let mut archive = WriterArchive::new();
+    let original = source(
+        "sparse",
+        vec![
+            Block::Text {
+                text: "first".into(),
+            },
+            Block::Text {
+                text: "middle".into(),
+            },
+            Block::Text {
+                text: "last".into(),
+            },
+        ],
+    );
+    let output = |ordinals: &[u64]| {
+        let mut selected = original.clone();
+        selected.blocks = ordinals
+            .iter()
+            .map(|n| original.blocks[*n as usize].clone())
+            .collect();
+        let mut output = Output {
+            sessions: vec![Session::new(original.session.clone(), SessionKind::Main)],
+            messages: vec![MessageRow {
+                offset: 0,
+                end: 1,
+                message: selected,
+            }],
+            ..Default::default()
+        };
+        output.message_projections.insert(
+            0,
+            MessageProjection {
+                source_version: original.content_hash().unwrap(),
+                block_count: 3,
+                block_ordinals: ordinals.to_vec(),
+            },
+        );
+        output
+    };
+    archive.write_output(
+        "first-sparse",
+        "synthetic",
+        "/synthetic/first",
+        output(&[2]),
+        1,
+    );
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        text(&reader, "block:claude-code:s-sparse#2").as_deref(),
+        Some("last")
+    );
+    assert_eq!(text(&reader, "block:claude-code:s-sparse#3"), None);
+    assert_eq!(
+        text(&reader, "span:block:claude-code:s-sparse#2#c=0-4").as_deref(),
+        Some("last")
+    );
+    for reference in [
+        "block:claude-code:s-sparse#0",
+        "message:claude-code:s-sparse",
+        "session:claude-code:s",
+        "message:claude-code:s-sparse..claude-code:s-sparse",
+    ] {
+        assert!(
+            matches!(
+                reader.reference_hash(&r(reference)),
+                Err(StoreError::ReferenceUnavailable { .. })
+            ),
+            "{reference}"
+        );
+    }
+    drop(reader);
+    archive.write_output(
+        "second-sparse",
+        "synthetic",
+        "/synthetic/second",
+        output(&[0, 1]),
+        1,
+    );
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        text(&reader, "message:claude-code:s-sparse").as_deref(),
+        Some("first\n\nmiddle\n\nlast")
+    );
+    assert_eq!(
+        reader.reference_hash(&r("session:claude-code:s")).unwrap(),
+        Some(BlobHash::of(b"first\n\nmiddle\n\nlast"))
+    );
+}

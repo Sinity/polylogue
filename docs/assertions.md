@@ -31,7 +31,7 @@ CREATE TABLE assertion_link (
   assertion   TEXT NOT NULL REFERENCES assertion(id),
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
-  seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
+  seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; NULL for a waiting target
   PRIMARY KEY (assertion, role, ref)
 ) STRICT;
 CREATE INDEX assertion_link_ref ON assertion_link(ref, role);
@@ -42,6 +42,15 @@ CREATE INDEX assertion_root     ON assertion(root);
 - **One link table.** Target, evidence, scope, origin and every relation are the same fact: this assertion points at that reference, in this role.
 - **Nothing computed is stored.** Currency, conflicts, withdrawal, judgment state, target state and work-item state are computed when read, so they can never disagree with the links they come from.
 - **Nothing expires by itself.** `valid_until` changes how an assertion is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
+
+A waiting link's original `seen_hash = NULL` stays immutable. Its later binding
+is a separate typed fact naming the exact target version and text hash, with
+the authoritative admission and availability evidence that makes that version
+readable. Primary mode publishes the binding through its existing confirmed
+product path. Imported declared bindings remain provenance claims, separate
+from a newly observed canonical binding; a claimed earlier timestamp never
+overwrites one. Reads use the binding alongside the original link. Replaying
+the original unbound assertion neither changes nor conflicts with it.
 
 ## Kinds
 
@@ -168,7 +177,7 @@ Authorship is for honest attribution, not a security boundary: all agents run as
 **Target state.** Each `about` and `evidence` link is shown in one of four states:
 - **current**: the target exists and its text hash equals `seen_hash`;
 - **changed since**: the hash differs (a better version merged, a re-parse produced different text), shown as "the text has changed since this was written";
-- **waiting**: well formed, not stored yet, its session live or incomplete; it attaches on arrival with no rewrite and fills `seen_hash` then;
+- **waiting**: well formed, not stored yet, its session live or incomplete; it attaches through a canonical binding when its exact source text becomes available, without rewriting the original link;
 - **missing**: the session is complete and the ID never appeared; `status` counts these.
 
 **Work-item state** is computed from links, never from text:
@@ -345,7 +354,7 @@ Performance rules: currency, conflict and withdrawn state are computed by indexe
 - **kinds-round-trip**: every kind writes and reads back its key, value and links through the daemon, the `assertions` unit and `read assertion:`; a malformed value and an unknown kind are refused with the shape error (property test over generated assertions).
 - **links-by-role**: an assertion with `about`, `evidence`, `scope` and `origin` links reads back each in its role, and `kv:` matches only `about` links at the unit's grain.
 - **highlight-changed-since**: a `highlight` on a `span:` written from the web reader and one from `::highlight` both read back on the message; after a better version of the message merges, both show "changed since".
-- **waiting-target-attaches**: a reference written before its message is stored attaches on arrival with no rewrite and fills `seen_hash`; on a completed session whose ID never appears, it counts as missing.
+- **waiting-target-attaches**: a reference written before its message is stored attaches with a separate canonical binding while preserving its original unbound link; on a completed session whose ID never appears, it counts as missing.
 - **stale-base-refused**: two revisions of one base through the daemon: the second is refused `stale`, naming the first. The law runs standalone and in primary mode against a test Sinex with the first revision still unconfirmed; the memory adapter's `create` then `str_replace` on the unconfirmed `create` succeeds, and a second `str_replace` on the old base is refused.
 - **concurrent-revisions-conflict**: the same two revisions written on two archives and imported into one give a conflict; `conflict:true` matches; a single-valued read matches neither; a revision of both resolves it.
 - **withdraw-and-restore**: with R1←R2, withdrawing R2 makes R1 current; withdrawing that withdrawal makes R2 current; withdrawing the root hides the family except under `withdrawn:*`.

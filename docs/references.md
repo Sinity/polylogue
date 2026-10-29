@@ -58,7 +58,9 @@ its original stored ordinal. Recorded text, thinking text and textual tool
 results are joined by two LF characters between bodies. Empty recorded text
 stays present. Tool arguments and other structured metadata are separate
 from this plain-text stream. Missing targets, unavailable text and accessible
-empty text stay distinct.
+empty text stay distinct. A sparse reading can supply an exact known block,
+but a message, range or session with missing original blocks has unavailable
+source text; the available subset is never hashed as a complete source.
 
 Text hashes are BLAKE3 of those UTF-8 chunks. They are separate from a
 message's canonical JSON source-version hash. Spans use half-open bounds
