@@ -503,12 +503,14 @@ fn sparse_index_migration_keeps_native_versions_and_infers_dense_positions() {
         batch("native", 0, 0, vec![row(0, message.clone())], &["s"]),
     );
     let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-    // These are the only differences from the prior index format. The
-    // existing writer supplied the opaque payloads and shared text rows.
+    // Recreate the prior index columns around payloads supplied by the real
+    // writer, including the scanner metadata retired by migration four.
     index.execute_batch("DROP TABLE message_projection; ALTER TABLE block DROP COLUMN ordinal;
         ALTER TABLE session_record DROP COLUMN admitted; ALTER TABLE document_source DROP COLUMN admitted;
         ALTER TABLE event_source DROP COLUMN admitted; ALTER TABLE link_source DROP COLUMN admitted;
         ALTER TABLE parse_state DROP COLUMN commit_seq;
+        ALTER TABLE message ADD COLUMN pem INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX message_pem ON message(session_pk) WHERE pem <> 0;
         PRAGMA user_version=1;").unwrap();
     crate::schema::ensure_index(&index).unwrap();
     assert_eq!(
