@@ -55,7 +55,9 @@ impl NativeSpanSeek {
         coverage: &TextCoverage,
     ) -> Result<(), TextFragmentError> {
         if coverage.start > coverage.end
-            || coverage.total_bytes.is_some_and(|total| coverage.end > total)
+            || coverage
+                .total_bytes
+                .is_some_and(|total| coverage.end > total)
             || !matches!(
                 container,
                 Reference::Message(_) | Reference::Block { .. } | Reference::Document(_)
@@ -96,7 +98,9 @@ impl NativeSpanSeek {
         {
             return Err(TextFragmentError::Origin);
         }
-        if self.start.piece == self.end.piece && self.start.byte > self.end.byte {
+        if self.start.piece == self.end.piece
+            && self.end.byte.checked_sub(self.start.byte) != Some(coverage.end - coverage.start)
+        {
             return Err(TextFragmentError::Origin);
         }
         let start = native_order(self.start.piece);
