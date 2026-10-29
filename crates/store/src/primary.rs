@@ -13,7 +13,7 @@ pub mod replay;
 pub mod raw_acquisition;
 pub use raw_acquisition::{
     DatabaseSnapshotToken, FileSnapshot, FileTime, RawAcquisitionCursor, RawAcquisitionProof,
-    RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
+    RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
 };
 pub use replay::{
     ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeFactContext, NativeKind,
@@ -92,7 +92,7 @@ pub trait Sinex: Send + Sync {
     /// This local custody cursor does not acknowledge logical source acceptance.
     fn raw_acquisition_cursor(
         &self,
-        generation: &SourceGeneration,
+        query: &RawAcquisitionQuery,
     ) -> Result<Option<RawAcquisitionCursor>>;
     /// Pins the original encoded body for exact range comparison without network I/O.
     fn capture_body(&self, identity: &str) -> Result<PreparedBody>;
