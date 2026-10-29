@@ -40,9 +40,17 @@ fn projected_batch(input: &str, message: Message, projection: MessageProjection)
 
 fn write(w: &TestArchive, mut batch: Batch) {
     if matches!(batch.change, Change::First) {
-        batch.new_blob =
-            Some(NewBlob::prepare(&w.archive, &vec![b' '; batch.length as usize]).unwrap());
+        let bytes = vec![b' '; batch.length as usize];
+        let prepared = w.archive.prepare_bytes(bytes.as_slice()).unwrap();
+        let mut captured = batch.clone();
+        captured.parse.clear();
+        let stored = w.writer.store_bytes(prepared, captured).unwrap();
+        batch.input.id = stored.input;
+        batch.change = Change::Reparse {
+            chain: stored.chain,
+        };
     }
+    batch.observation = None;
     w.writer.send(batch).unwrap();
     let report = w.writer.flush_rows().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -171,9 +179,7 @@ fn sparse_overlap_conflict_is_typed_and_keeps_the_prior_value() {
     ] {
         let mut batch = projected_batch("first", message, projection);
         batch.change = Change::Reparse { chain: 1 };
-        let index = crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP)
-            .unwrap();
-        let error = resolve::prepare_index(&index, &mut batch, 1, false).unwrap_err();
+        let error = w.writer.send(batch).unwrap_err();
         assert!(
             matches!(
                 error,
