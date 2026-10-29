@@ -145,6 +145,13 @@ fn persist(
     outbox: Vec<Outbox>,
     events: Vec<Event>,
 ) -> Result<(String, bool), String> {
+    // This request contains computed/copied rule state. The ordinary authored
+    // Source publisher must never carry it without native lineage certification.
+    if d.archive.is_primary() {
+        return Err(
+            "signal publication requires certified native basis and the derived publisher".into(),
+        );
+    }
     let writes = d.writes.as_ref().ok_or("writer is unavailable")?;
     let commit = Commit {
         prior,

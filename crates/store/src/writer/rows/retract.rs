@@ -44,7 +44,12 @@ impl RowWriter<'_, '_> {
 }
 
 /// Drop sessions whose last statement disappeared, after the replacement rows exist.
-pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> Result<()> {
+pub(crate) fn prune_sessions(
+    tx: &Transaction<'_>,
+    input: &str,
+    chain: i64,
+    counter: i64,
+) -> Result<()> {
     tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID")?;
     let sessions = tx
         .prepare(
@@ -63,7 +68,7 @@ pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> R
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (pk, id) in sessions {
-        crate::session_row::remove(tx, pk, &id)?;
+        crate::session_row::remove(tx, pk, &id, counter)?;
     }
     tx.execute("DELETE FROM temp.reparse_session WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2", params![input,chain])?;
     Ok(())

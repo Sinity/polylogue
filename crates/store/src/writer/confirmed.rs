@@ -23,7 +23,7 @@ pub(crate) fn apply_confirmed_readings(
             rows::write_confirmed_rows(tx, &batch, step, *chain, counter, None, None)?;
             Ok(())
         })?;
-        rows::prune_sessions(tx, &input.id, *chain)?;
+        rows::prune_sessions(tx, &input.id, *chain, counter)?;
     }
     Ok(())
 }

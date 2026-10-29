@@ -93,7 +93,6 @@ fn publication_uses_the_captured_clock_and_machine_scoped_setting() {
     assert_eq!(setting.value, serde_json::json!("3"));
 }
 
-
 #[test]
 fn explicit_shutdown_reports_a_panicked_publisher_once() {
     let mut publisher = Publisher {

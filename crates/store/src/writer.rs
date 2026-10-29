@@ -1489,7 +1489,7 @@ impl Inner {
                     )?;
                 }
                 if b.parse.iter().any(|p| p.at_end) {
-                    rows::prune_sessions(&itx, &b.input.id, chain)?;
+                    rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
                 }
             }
             stats.0 += 1;

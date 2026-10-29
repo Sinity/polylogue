@@ -217,7 +217,13 @@ async fn answer(
                     {
                         return json_answer(web, crate::daemon::service::store_error(&error));
                     }
-                    return axum::response::Html(html).into_response();
+                    return scoped_body_response(
+                        web,
+                        StatusCode::OK,
+                        "text/html; charset=utf-8",
+                        html.into_bytes(),
+                        read_scope.as_ref(),
+                    );
                 }
                 Err(error) => {
                     return json_answer(
@@ -227,7 +233,8 @@ async fn answer(
                 }
             }
         }
-        return json_answer(web, answer);
+        let (status, bytes) = super::prepare_json_answer(web, answer);
+        return scoped_body_response(web, status, "application/json", bytes, read_scope.as_ref());
     }
     match values.and_then(|input| match input {
         Input::Values(values) => build(c, &values, &caller),
@@ -241,6 +248,69 @@ async fn answer(
     }
 }
 
+struct ScopedBytes {
+    bytes: Vec<u8>,
+    offset: usize,
+    scope: polylogue_store::ReadScopeToken,
+}
+impl tokio::io::AsyncRead for ScopedBytes {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let scope = this.scope.clone();
+        std::task::Poll::Ready(
+            scope
+                .with_current(|| {
+                    let end = this
+                        .bytes
+                        .len()
+                        .min(this.offset.saturating_add(buffer.remaining()));
+                    buffer.put_slice(&this.bytes[this.offset..end]);
+                    this.offset = end;
+                    Ok(())
+                })
+                .map_err(std::io::Error::other),
+        )
+    }
+}
+
+/// Encode before this boundary, then fence each bounded body-frame activation.
+fn scoped_body_response(
+    web: &Web,
+    status: StatusCode,
+    media_type: &'static str,
+    bytes: Vec<u8>,
+    scope: Option<&polylogue_store::ReadScopeToken>,
+) -> HttpResponse {
+    let length = bytes.len();
+    let body = match scope {
+        Some(scope) => {
+            if let Err(error) = scope.check() {
+                return json_answer(web, crate::daemon::service::store_error(&error));
+            }
+            axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(ScopedBytes {
+                bytes,
+                offset: 0,
+                scope: scope.clone(),
+            }))
+        }
+        None => axum::body::Body::from(bytes),
+    };
+    let mut response = (status, body).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static(media_type),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        length.to_string().parse().expect("numeric content length"),
+    );
+    response
+}
+
 /// Headers are committed on the first produced bytes. Subsequent failures
 /// terminate the stream with a canonical error event, without completion.
 async fn stream(
@@ -250,6 +320,10 @@ async fn stream(
     limit: Option<polylogue_store::read::limit::ReadLimit>,
     accepted_request: Option<command_surface::RunnableRequest>,
 ) -> HttpResponse {
+    let scope = match web.daemon.reads.scope_token() {
+        Ok(scope) => scope,
+        Err(error) => return json_answer(web, crate::daemon::service::store_error(&error)),
+    };
     let worker = Arc::clone(web);
     let limit = limit.unwrap_or_else(super::request_limit);
     let cancellation = limit.cancellation.clone();
@@ -273,7 +347,8 @@ async fn stream(
             runtime,
             ready: Some(ready),
         };
-        let mut guarded = crate::protocol::stream::GuardedWriter::new(&mut output, limit.clone());
+        let mut guarded =
+            crate::protocol::stream::GuardedWriter::new(&mut output, limit.clone(), scope);
         let result = limit.scope(
             || match worker.daemon.resolve_operation_context(invocation) {
                 Ok(operation) => produce(&worker_request, &worker.daemon, &operation, &mut guarded),

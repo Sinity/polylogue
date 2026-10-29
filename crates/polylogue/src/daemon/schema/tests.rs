@@ -53,6 +53,7 @@ impl Stored {
                     length: bytes.len() as u64,
                     parse: vec![],
                     release: Default::default(),
+                    acquisition: None,
                 },
             )
             .unwrap();

@@ -8,14 +8,6 @@ use polylogue_model::{NewNote, SessionId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Selects the first page at a message reference or at the latest message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PageSelection {
-    Message(polylogue_model::MessageId),
-    Latest,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {

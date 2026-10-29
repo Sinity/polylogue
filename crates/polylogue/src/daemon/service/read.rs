@@ -25,10 +25,13 @@ struct Resume {
     position: ReadPosition,
 }
 fn failure(error: SelectionError) -> Response {
-    Response::Error {
-        kind: error.kind().into(),
-        message: error.to_string(),
-        detail: error.detail(),
+    match error {
+        SelectionError::Store(error) => store_error(&error),
+        error => Response::Error {
+            kind: error.kind().into(),
+            message: error.to_string(),
+            detail: error.detail(),
+        },
     }
 }
 fn language_error(error: query_language::Error) -> Response {

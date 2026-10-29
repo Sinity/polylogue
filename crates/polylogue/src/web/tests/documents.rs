@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{Author, NewNote, NoteKind, Reference};
+use polylogue_model::{NewNote, NoteKind, Reference};
 use serde_json::json;
 
 #[test]

@@ -219,3 +219,39 @@ fn shell_completion_escapes_daemon_help_and_omits_control_values() {
         polylogue_render::terminal::escape(data[0]["help"].as_str().unwrap())
     );
 }
+
+#[test]
+fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
+    use std::io::{BufRead, Write};
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut request = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut request)
+            .unwrap();
+        write!(
+            stream,
+            "{}",
+            serde_json::to_string(&command_surface::Answer::ok(
+                serde_json::json!({"stale":"complete JSON but incomplete frame"})
+            ))
+            .unwrap()
+        )
+        .unwrap();
+    });
+    let call = command_surface::Request {
+        operation: "status".into(),
+        arguments: serde_json::json!({}),
+        request_id: "incomplete-answer-witness".into(),
+        deadline: command_surface::Deadline::None,
+    };
+    let error = crate::client::call_ready(&archive, &call).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    server.join().unwrap();
+}

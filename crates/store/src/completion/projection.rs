@@ -111,7 +111,7 @@ impl Reader<'_> {
         }
         if let Some(after) = after {
             let mut removed = conn
-                .prepare("SELECT r.id FROM removed_session r WHERE r.changed>?1 AND NOT EXISTS(SELECT 1 FROM session s WHERE s.id=r.id) ORDER BY r.changed,r.id")?;
+                .prepare("SELECT r.session_id FROM removed_session r WHERE r.changed>?1 AND NOT EXISTS(SELECT 1 FROM session s WHERE s.id=r.session_id) ORDER BY r.changed,r.session_id")?;
             for id in removed.query_map([after.index], |row| row.get::<_, String>(0))? {
                 visit(SessionChange::Removed(id?))?;
             }
@@ -225,3 +225,6 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 }
+
+#[cfg(test)]
+mod tests;
