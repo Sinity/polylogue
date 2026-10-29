@@ -6,8 +6,8 @@ use super::fail;
 use crate::commands::{Command, Values};
 use std::process::ExitCode;
 
-pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
-    match crate::daemon::server::serve() {
+pub fn daemon(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool) -> ExitCode {
+    match crate::daemon::server::serve(startup) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!(
@@ -34,8 +34,8 @@ pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
     }
 }
 
-pub fn mcp(_: &Command, _: &Values, _: bool) -> ExitCode {
-    match crate::mcp::serve_stdio() {
+pub fn mcp(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool) -> ExitCode {
+    match crate::mcp::serve_stdio(&polylogue_store::Archive::at(&startup.config.archive)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!(
@@ -47,20 +47,28 @@ pub fn mcp(_: &Command, _: &Values, _: bool) -> ExitCode {
     }
 }
 
-pub fn hook(_: &Command, v: &Values, json: bool) -> ExitCode {
+pub fn hook(_: &Command, v: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
     let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
         return fail(json, "bad_request", &format!("unknown harness {name:?}"), 2);
     };
-    crate::hook::run(harness, &v.text("event").unwrap_or_default())
+    crate::hook::run(harness, &v.text("event").unwrap_or_default(), startup)
 }
 
-pub fn web(_: &Command, _: &Values, json: bool) -> ExitCode {
-    open_reader(json)
+pub fn web(_: &Command, _: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
+    open_reader(startup, json)
 }
 
-pub fn browser_host(_: &Command, _: &Values, _: bool) -> ExitCode {
-    crate::browser::native::run()
+pub fn browser_host(
+    _: &Command,
+    _: &Values,
+    startup: &crate::config::Startup,
+    _: bool,
+) -> ExitCode {
+    crate::browser::native::run(
+        &startup.engine,
+        &polylogue_store::Archive::at(&startup.config.archive),
+    )
 }
 
 /// Prints what `COMPLETE=<shell> polylogue` prints: shell code that asks
@@ -89,22 +97,32 @@ pub fn completions(_: &Command, v: &Values, _: bool) -> ExitCode {
     }
 }
 
-pub fn hooks_install(_: &Command, v: &Values, json: bool) -> ExitCode {
-    hooks(v, json, true)
+pub fn hooks_install(
+    _: &Command,
+    v: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    hooks(v, startup, json, true)
 }
 
-pub fn hooks_uninstall(_: &Command, v: &Values, json: bool) -> ExitCode {
-    hooks(v, json, false)
+pub fn hooks_uninstall(
+    _: &Command,
+    v: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    hooks(v, startup, json, false)
 }
 
-fn hooks(v: &Values, json: bool, on: bool) -> ExitCode {
+fn hooks(v: &Values, startup: &crate::config::Startup, json: bool, on: bool) -> ExitCode {
     let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
         return fail(json, "bad_request", &format!("unknown harness {name:?}"), 2);
     };
     let path = match v.text("settings") {
         Some(path) => std::path::PathBuf::from(path),
-        None => match crate::hook::settings_path(harness) {
+        None => match crate::hook::settings_path(harness, &startup.engine) {
             Ok(path) => path,
             Err(message) => return fail(json, "bad_request", &message, 2),
         },
@@ -133,8 +151,14 @@ pub fn not_built(c: &Command, _: &Values, json: bool) -> ExitCode {
     )
 }
 
-pub fn install_agent(_: &Command, v: &Values, json: bool) -> ExitCode {
+pub fn install_agent(
+    _: &Command,
+    v: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     install_chrome(
+        startup,
         json,
         &v.text("harness").unwrap_or_default(),
         v.text("extension_id").as_deref(),
@@ -161,7 +185,13 @@ pub fn host_manifest_dirs(config: &std::path::Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove: bool) -> ExitCode {
+fn install_chrome(
+    startup: &crate::config::Startup,
+    json: bool,
+    harness: &str,
+    extension_id: Option<&str>,
+    remove: bool,
+) -> ExitCode {
     if harness != "chrome" {
         return fail(
             json,
@@ -172,10 +202,7 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
             1,
         );
     }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let config = startup.config.paths.config.clone();
     let file = format!("{}.json", crate::browser::HOST_NAME);
     let mut changed = Vec::new();
     for dir in host_manifest_dirs(&config) {
@@ -236,9 +263,9 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
 /// Opens the web reader: reads the running daemon's port and token, checks
 /// that the port's listener is this user's, and opens `/auth#<token>` in
 /// the browser. The fragment never reaches a server log or history.
-fn open_reader(json: bool) -> ExitCode {
+fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
     use crate::web::access;
-    let root = polylogue_store::Archive::default_root();
+    let root = startup.config.archive.clone();
     let auth = match access::reader_url(&root) {
         Ok(url) => url,
         Err(error) => {

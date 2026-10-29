@@ -121,10 +121,12 @@ pub enum Action {
     Stream {
         build: fn(&Command, &Values, &Caller) -> Result<Request, String>,
         produce: StreamProducer,
-        cli: fn(&Values, &Request, Option<std::time::Duration>) -> ExitCode,
+        cli:
+            fn(&Values, &Request, &crate::config::Startup, Option<std::time::Duration>) -> ExitCode,
     },
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
+    ConfiguredLocal(fn(&Command, &Values, &crate::config::Startup, bool) -> ExitCode),
 }
 
 #[derive(Clone, Copy)]
@@ -155,7 +157,7 @@ pub struct Command {
     pub print: fn(&Value) -> String,
     /// What the command line does with the answer in place of printing it
     /// (`export` writes a file, `continue --exec` runs the plan).
-    pub output: Option<fn(&Values, &Value, bool) -> ExitCode>,
+    pub output: Option<fn(&Values, &Value, &crate::config::Startup, bool) -> ExitCode>,
 }
 
 impl Command {
@@ -529,7 +531,7 @@ const WRITTEN: &[Command] = &[
             Kind::Text,
             "A new directory for the example home, archive and transcript",
         )],
-        action: Action::Local(crate::demo::tour),
+        action: Action::ConfiguredLocal(crate::demo::tour),
         ..CLI
     },
     Command {
@@ -604,7 +606,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "daemon",
         help: "Run the daemon in the foreground",
-        action: Action::Local(local::daemon),
+        action: Action::ConfiguredLocal(local::daemon),
         ..CLI
     },
     Command {
@@ -1210,7 +1212,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "web",
         help: "Open the web reader",
-        action: Action::Local(local::web),
+        action: Action::ConfiguredLocal(local::web),
         ..CLI
     },
     Command {
@@ -1225,20 +1227,20 @@ const WRITTEN: &[Command] = &[
             ),
             opt("remove", Kind::Bool, "Delete the manifest instead"),
         ],
-        action: Action::Local(local::install_agent),
+        action: Action::ConfiguredLocal(local::install_agent),
         ..CLI
     },
     Command {
         name: "browser-host",
         help: "The browser extension's native messaging host; Chrome starts it",
-        action: Action::Local(local::browser_host),
+        action: Action::ConfiguredLocal(local::browser_host),
         cli: Cli::Hidden,
         ..CLI
     },
     Command {
         name: "mcp",
         help: "Serve MCP over stdio",
-        action: Action::Local(local::mcp),
+        action: Action::ConfiguredLocal(local::mcp),
         ..CLI
     },
     Command {
@@ -1255,21 +1257,21 @@ const WRITTEN: &[Command] = &[
                 )
             },
         ],
-        action: Action::Local(local::hook),
+        action: Action::ConfiguredLocal(local::hook),
         ..CLI
     },
     Command {
         name: "hooks install",
         help: "Merge Polylogue's hook entries into the settings file, keeping everything else. Installing twice changes nothing",
         args: HOOKS_ARGS,
-        action: Action::Local(local::hooks_install),
+        action: Action::ConfiguredLocal(local::hooks_install),
         ..CLI
     },
     Command {
         name: "hooks uninstall",
         help: "Remove Polylogue's hook entries, keeping everything else",
         args: HOOKS_ARGS,
-        action: Action::Local(local::hooks_uninstall),
+        action: Action::ConfiguredLocal(local::hooks_uninstall),
         ..CLI
     },
     Command {

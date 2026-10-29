@@ -191,7 +191,23 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
     Ok((c, values(c, m)))
 }
 
-pub fn run(matches: &ArgMatches) -> ExitCode {
+pub fn run_local(matches: &ArgMatches) -> Option<ExitCode> {
+    let (command, matches) = chosen(matches)?;
+    let Action::Local(run) = command.action else {
+        return None;
+    };
+    Some(run(
+        command,
+        &values(command, matches),
+        matches.get_flag("json"),
+    ))
+}
+
+pub fn run(
+    matches: &ArgMatches,
+    startup: &crate::config::Startup,
+    cwd: &std::path::Path,
+) -> ExitCode {
     let json = matches.get_flag("json");
     let Some((cmd, m)) = chosen(matches) else {
         return fail(json, "bad_request", "no such command", 2);
@@ -199,11 +215,12 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     let values = values(cmd, m);
     let build = match cmd.action {
         Action::Local(f) => return f(cmd, &values, json),
+        Action::ConfiguredLocal(f) => return f(cmd, &values, startup, json),
         Action::Request(build) | Action::Stream { build, .. } => build,
     };
     let caller = Caller {
         surface: Surface::Cli,
-        cwd: Some(current_dir()),
+        cwd: Some(cwd.to_owned()),
         json,
     };
     let request = match build(cmd, &values, &caller) {
@@ -215,9 +232,9 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         .copied()
         .map(std::time::Duration::from_secs);
     if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&values, &request, timeout);
+        return cli(&values, &request, startup, timeout);
     }
-    let root = Archive::default_root();
+    let root = startup.config.archive.clone();
     let result = if cmd.register.is_some() {
         let deadline = timeout.map_or(command_surface::Deadline::Default, |duration| {
             command_surface::Deadline::Milliseconds(
@@ -275,7 +292,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
             }
             match cmd.output {
-                Some(output) => output(&values, &data, json),
+                Some(output) => output(&values, &data, startup, json),
                 None => {
                     if json {
                         println!(
@@ -310,7 +327,12 @@ fn current_dir() -> PathBuf {
 
 /// `continue --exec`: replaces this process with the session's native
 /// resume command; without `--exec`, the plan is printed.
-pub fn resume_output(values: &Values, data: &Value, json: bool) -> ExitCode {
+pub fn resume_output(
+    values: &Values,
+    data: &Value,
+    _startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     if !values.flag("exec") {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));

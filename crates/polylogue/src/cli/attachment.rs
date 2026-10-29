@@ -4,7 +4,12 @@ use super::*;
 use base64::Engine as _;
 use std::io::Write;
 
-pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
+pub(crate) fn output(
+    values: &Values,
+    data: &Value,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     if values.text("out").is_none() {
         if json {
             println!(
@@ -20,7 +25,7 @@ pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
-    match write(values, data) {
+    match write(values, data, startup) {
         Ok(path) => {
             if json {
                 println!(
@@ -37,7 +42,11 @@ pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
     }
 }
 
-fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
+fn write(
+    values: &Values,
+    data: &Value,
+    startup: &crate::config::Startup,
+) -> Result<PathBuf, String> {
     let path = PathBuf::from(values.text("out").ok_or("--out is required")?);
     let mut temporary = super::staged_file::StagedFile::new(&path).map_err(|e| e.to_string())?;
     let command = crate::commands::command("attachment").ok_or("attachment command missing")?;
@@ -90,7 +99,7 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
                 };
                 *cursor = Some(next);
                 value = match send_with_timeout(
-                    &Archive::at(&Archive::default_root()),
+                    &Archive::at(&startup.config.archive.clone()),
                     &request,
                     values
                         .integer("timeout")

@@ -54,7 +54,12 @@ pub fn diff(_: &Command, values: &Values, json: bool) -> ExitCode {
     })
 }
 
-pub fn output(values: &Values, value: &serde_json::Value, json: bool) -> ExitCode {
+pub fn output(
+    values: &Values,
+    value: &serde_json::Value,
+    _startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     if json && values.text("output").is_none() {
         let answer = crate::protocol::answer(value.clone());
         println!(

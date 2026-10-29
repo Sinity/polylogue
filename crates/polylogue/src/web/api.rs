@@ -64,7 +64,9 @@ async fn answer(
 ) -> HttpResponse {
     let build = match c.action {
         Action::Request(build) | Action::Stream { build, .. } => build,
-        Action::Local(_) => return StatusCode::NOT_FOUND.into_response(),
+        Action::Local(_) | Action::ConfiguredLocal(_) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
     let caller = Caller {
         surface: Surface::Http,
