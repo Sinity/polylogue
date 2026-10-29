@@ -138,6 +138,9 @@ pub struct MessageRecord {
     pub block_count: u64,
     /// Original source positions aligned to `message.blocks`.
     pub block_ordinals: Vec<u64>,
+    /// Attachment provenance is independent of the source message value and hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<crate::attachment_binding::AttachmentBinding>,
     pub message: Message,
 }
 
@@ -350,6 +353,8 @@ pub enum BundleError {
     ReferenceMismatch,
     #[error("message projection has invalid original block positions")]
     InvalidBlockSelection,
+    #[error("attachment binding does not match its message source slot or provenance")]
+    InvalidAttachmentBinding,
     #[error("complete message content does not match its source version")]
     SourceVersionMismatch,
     #[error("partial message observations conflict at the same source version")]
@@ -504,6 +509,7 @@ impl MessageRecord {
         }
         self.message.time_evidence().validate(self.message.at)?;
         self.projection().validate(self.message.blocks.len())?;
+        crate::attachment_binding::validate_record(self)?;
         if self.is_complete()
             && self
                 .message

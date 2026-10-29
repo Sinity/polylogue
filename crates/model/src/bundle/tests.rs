@@ -131,6 +131,7 @@ fn message_record() -> MessageRecord {
         source_version: message.content_hash().unwrap(),
         block_count: 2,
         block_ordinals: vec![0, 1],
+        bindings: Vec::new(),
         message,
     }
 }
