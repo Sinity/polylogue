@@ -1,5 +1,10 @@
 //! Durable primary producer intents and the confirmed cache contract.
+pub mod acquisition;
 pub mod authored;
+pub use acquisition::{
+    CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan, ConfirmedSource, PendingCheckpoint,
+    PendingSource, RawRange, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus,
+};
 pub mod products;
 pub(crate) mod projection;
 pub(crate) mod scope;
