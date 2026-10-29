@@ -95,7 +95,10 @@ impl Engine {
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
         let started = Instant::now();
         let mut total = self.run_turn()?;
-        while total.capture_pending {
+        while total.capture_pending
+            && (self.captures.pending()
+                || self.capture_checked.is_none() && !self.databases.is_empty())
+        {
             let completed = self.captures.completed(true);
             total.inputs_seen += completed.inputs_seen;
             total.bytes_stored += completed.bytes_stored;
@@ -626,6 +629,7 @@ impl Engine {
             (parse_pos, parser_state)
         };
         Ok(Some(Plan {
+            raw: None,
             basis: Some(snapshot.basis),
             pending: None,
             checkpoint: None,
@@ -937,6 +941,12 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
+            self.prepare_raw_plan(&mut plan)?;
+            if plan.raw.is_some() && plan.finished() {
+                Self::record_raw_status(&plan, pass);
+                self.finish_plan(plan);
+                continue;
+            }
             if plan.pending.is_some() && !plan.tracked && plan.finished() {
                 pass.capture_pending = true;
                 continue;
@@ -1066,22 +1076,36 @@ impl Engine {
                 }
                 let mut job = plan.next_job();
                 if matches!(job.source, pool::Bytes::File) {
-                    let mut context = if !plan.storing_started && plan.basis.is_some() {
-                        let mut context = self.acquisition_context(
-                            &job.path,
-                            &job.input.format,
-                            polylogue_store::primary::AcquisitionRoute::NativeCapture,
-                        );
-                        context.basis = plan.basis.clone();
-                        context
-                    } else {
-                        self.sampling_context(
-                            &job.path,
-                            &job.input.format,
-                            &job.origin.reading_version(),
-                        )?
-                    };
+                    let mut context =
+                        if plan.raw.is_none() && !plan.storing_started && plan.basis.is_some() {
+                            let mut context = self.acquisition_context(
+                                &job.path,
+                                &job.input.format,
+                                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                            );
+                            context.basis = plan.basis.clone();
+                            context
+                        } else {
+                            self.sampling_context(
+                                &job.path,
+                                &job.input.format,
+                                &job.origin.reading_version(),
+                            )?
+                        };
                     context.facts = plan.facts;
+                    if let Some(raw) = &plan.raw {
+                        job.observation = Some(self.observation(&plan.path, plan.facts));
+                        if let Some(cursor) = &raw.cursor {
+                            if job.store_from == Some(cursor.range().end) {
+                                context.raw_predecessor = Some(cursor.last_body().into());
+                            }
+                            if cursor.disposition()
+                                != Some(polylogue_store::primary::CaptureDisposition::Prepared)
+                            {
+                                context.required_disposition = Some(polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict);
+                            }
+                        }
+                    }
                     job.acquisition = Some(context);
                 }
                 pass.bytes_read += job.end - job.start;
@@ -1101,6 +1125,25 @@ impl Engine {
             let Some(mut plan) = running.remove(&d.path) else {
                 continue;
             };
+            if d.raw_custody.is_some()
+                || plan.raw.is_some()
+                || d.pending.is_some()
+                    && d.raw_acquisition.is_some()
+                    && plan.tracked
+                    && matches!(plan.source, pool::Bytes::File)
+            {
+                if let Some(error) = &d.error {
+                    pass.errors.push(error.clone());
+                }
+                self.apply_raw_result(&mut plan, &d)?;
+                if plan.finished() {
+                    Self::record_raw_status(&plan, pass);
+                    self.finish_plan(plan);
+                } else {
+                    waiting.push_front(plan);
+                }
+                continue;
+            }
             if d.write_failed {
                 if let Some(error) = d.error {
                     pass.errors.push(error);
@@ -1159,6 +1202,11 @@ impl Engine {
     /// is kept in memory only for files written recently; an older file's
     /// state is restored from its admitted checkpoint if it grows.
     pub(crate) fn finish_plan(&mut self, plan: Plan) {
+        if plan.raw.is_some() {
+            // A verified physical cursor never updates logical input facts,
+            // parser progress, or the latest accepted working source head.
+            return;
+        }
         if plan.pending.is_some() && !plan.tracked {
             return;
         }
