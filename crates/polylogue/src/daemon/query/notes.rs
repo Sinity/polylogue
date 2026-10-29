@@ -91,6 +91,7 @@ fn page(
             session: None,
             context: std::sync::Arc::clone(context),
             embeddings: false,
+            ranking_identity: None,
             near: None,
             fields: &[],
         },

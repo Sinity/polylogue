@@ -237,11 +237,13 @@ fn context(
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
+        let ranking_identity = crate::embeddings::ranking_key(&reader, provider.as_ref());
         let result = briefing::prepare(
             &reader,
             ask,
             &request_id,
             operation,
+            ranking_identity.as_deref(),
             near,
             &d.config.paths.check_history,
         );

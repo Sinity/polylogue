@@ -218,6 +218,7 @@ pub fn prepare(
     ask: &Ask,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
+    ranking_identity: Option<&str>,
     near: Option<&NearFn<'_>>,
     check_history: &Path,
 ) -> Result<Prepared, StoreError> {
@@ -246,6 +247,7 @@ pub fn prepare(
             cursor.as_deref(),
             delivery_id,
             context,
+            ranking_identity,
             near,
         ),
         Ask::ToolUse {
@@ -467,6 +469,7 @@ fn live_here(
                 session: None,
                 context: std::sync::Arc::clone(context),
                 embeddings: false,
+                ranking_identity: None,
                 near: None,
                 fields: &fields,
             },
@@ -1021,6 +1024,7 @@ fn recall(
     cursor: Option<&str>,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
+    ranking_identity: Option<&str>,
     near: Option<&NearFn<'_>>,
 ) -> Result<Prepared, StoreError> {
     let words = search::words(text_in);
@@ -1043,6 +1047,9 @@ fn recall(
                 session: None,
                 context: std::sync::Arc::clone(context),
                 embeddings: similarity,
+                ranking_identity: similarity
+                    .then(|| ranking_identity.map(str::to_owned))
+                    .flatten(),
                 near: if similarity { near } else { None },
                 fields: &[],
             },
