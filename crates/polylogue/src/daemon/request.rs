@@ -126,9 +126,10 @@ pub enum Request {
         cursor: Option<String>,
         page_size: Option<u64>,
     },
-    /// Completions for one word of a query being typed.
+    /// Grammar completions at a UTF-8 byte offset in the full query text.
     Complete {
-        word: String,
+        text: String,
+        position: usize,
     },
     Attachment {
         message: polylogue_model::MessageId,

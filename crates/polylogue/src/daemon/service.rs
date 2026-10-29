@@ -493,25 +493,28 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 }
             })
         }
-        Request::Complete { word } => {
-            let position = match reader.change_position() {
+        Request::Complete { text, position } => {
+            if position > text.len() || !text.is_char_boundary(position) {
+                return self::error(
+                    "bad_request",
+                    "completion position must be a UTF-8 byte boundary within the query",
+                );
+            }
+            let read_position = match reader.change_position() {
                 Ok(p) => p.to_string(),
                 Err(e) => return store_error(&e),
             };
-            match d.warm.completion(&reader, &position) {
+            match d.warm.completion(&reader, &read_position) {
                 Ok(data) => {
                     if let Err(error) = crate::completion_catalog::publish(
                         &d.archive.root,
-                        &position,
+                        &read_position,
                         &data,
                         now_ms(),
                     ) {
                         return self::error("completion_catalog", error);
                     }
-                    ok(super::warm::completions(&data, &word)
-                        .into_iter()
-                        .map(|(value, help)| serde_json::json!({"value":value,"help":help}))
-                        .collect::<Vec<_>>())
+                    ok(super::warm::complete_at(&data, &text, position))
                 }
                 Err(error) => self::error("store", error),
             }
