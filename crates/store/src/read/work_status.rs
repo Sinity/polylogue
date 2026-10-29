@@ -1,6 +1,6 @@
 //! Canonical physical-component routing status from this reader's pinned view.
 use super::*;
-impl Reader {
+impl Reader<'_> {
     pub fn work_component_status(
         &self,
         sessions: &[SessionId],

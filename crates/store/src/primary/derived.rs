@@ -14,7 +14,7 @@ pub use outbox::stage_products;
 pub(crate) use outbox::{SCHEMA, publish};
 
 fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
-    crate::encoding::pack_bytes(&serde_json::to_vec(value)?)
+    Ok(crate::encoding::pack_bytes(&serde_json::to_vec(value)?)?)
 }
 fn product(bytes: &[u8]) -> Result<Product> {
     crate::encoding::unpack_json(bytes)
@@ -65,7 +65,13 @@ fn selected(
     facts: &polylogue_model::MessageRow,
     projection: Option<&polylogue_model::bundle::MessageProjection>,
 ) -> Result<Option<(String, i64, i64)>> {
-    let choice:Option<(String,i64,i64,Vec<u8>)>=index.query_row("SELECT m.order_input_id,m.seq,m.record_position,s.version_hash FROM message m JOIN message_source s ON s.message_pk=m.pk AND s.shown=1 JOIN input_ref i ON i.pk=s.input_pk WHERE m.id=?1 AND i.id=?2 AND s.chain=?3 AND s.source_start=?4 AND s.source_end=?5 AND m.duplicate_of IS NULL AND coalesce(m.on_active_path,1)=1",params![facts.message.id.to_string(),reading.input.id,reading.chain,facts.offset,facts.end],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+    let start = i64::try_from(facts.offset).map_err(|_| {
+        StoreError::Invalid("a source record position exceeds SQLite's signed integer range".into())
+    })?;
+    let end = i64::try_from(facts.end).map_err(|_| {
+        StoreError::Invalid("a source record position exceeds SQLite's signed integer range".into())
+    })?;
+    let choice:Option<(String,i64,i64,Vec<u8>)>=index.query_row("SELECT m.order_input_id,m.seq,m.record_position,s.version_hash FROM message m JOIN message_source s ON s.message_pk=m.pk AND s.shown=1 JOIN input_ref i ON i.pk=s.input_pk WHERE m.id=?1 AND i.id=?2 AND s.chain=?3 AND s.source_start=?4 AND s.source_end=?5 AND m.duplicate_of IS NULL AND coalesce(m.on_active_path,1)=1",params![facts.message.id.to_string(),reading.input.id,reading.chain,start,end],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
     let Some((input, seq, ordinal, hash)) = choice else {
         return Ok(None);
     };
