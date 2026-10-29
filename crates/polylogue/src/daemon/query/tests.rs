@@ -1282,3 +1282,5 @@ mod composition;
 
 mod language;
 mod measures;
+
+mod shared_laws;
