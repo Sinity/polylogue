@@ -51,16 +51,16 @@ fn native_zone_and_valid_boundaries_are_required_at_the_adapter() {
         .is_err()
     );
     for start_minutes in [1500, 15360, u16::MAX] {
-    assert!(
-        clock(
-            0,
-            LogicalDay {
-                zone: jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
-                start_minutes
-            }
-        )
-        .is_err()
-    );
+        assert!(
+            clock(
+                0,
+                LogicalDay {
+                    zone: jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                    start_minutes
+                }
+            )
+            .is_err()
+        );
     }
 }
 #[test]

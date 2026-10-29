@@ -38,7 +38,11 @@ impl<'a> Compiler<'a> {
                         ConditionKind::Text { text, mode }
                             if !self.is_reference(x) && text_unit(scope.unit) =>
                         {
-                            words.push((search_word(text, *mode)?, *mode == TextMode::Phrase, x.span));
+                            words.push((
+                                search_word(text, *mode)?,
+                                *mode == TextMode::Phrase,
+                                x.span,
+                            ));
                         }
                         _ => parts.push(self.cond(x, scope, top)?),
                     }

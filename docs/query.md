@@ -88,7 +88,7 @@ Time expressions (relative, calendar, natural-language dates, bounds, daylight-s
 
 - A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run.
 - Every time Polylogue reads carries `time_quality` and `precision` ([sessions.md](sessions.md#times)), in the closed sets shared with Sinex.
-- Tool-call `result_at` is the native result or completion-notification time. `reported_duration` is the harness's own duration, in milliseconds, and stays unknown when absent. It is separate from the elapsed `duration` defined in [measures](measures.md#tool-call-result-time-and-duration); that field requires the declared same-clock interval and its reason before it enters the product catalog.
+- Tool-call `result_at` is the native result or completion-notification time. `reported_duration` is the harness's own duration, in milliseconds, and stays unknown when absent. It is separate from the elapsed `duration` defined in [measures](measures.md); that field requires the declared same-clock interval and its reason before it enters the product catalog.
 - **Coarse times.** A coarse or bounded time satisfies a time condition only when its whole period does, fails when none of its period does, and is otherwise `unknown`. A row whose time is unknown never matches a time condition, is counted in `notes`, and `group by day` puts it in an `unknown` group.
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`.
 

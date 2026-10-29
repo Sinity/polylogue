@@ -118,14 +118,18 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
         }
         assert_eq!(
             run_q(&w, request).unwrap_err().kind,
-            "bad_request",
+            if changed == "zone" {
+                "stale_cursor"
+            } else {
+                "invalid_query"
+            },
             "{changed}"
         );
     }
 }
 
 #[test]
-fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
+fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
     for rebuild in [false, true] {
         let home = ClaudeHome::new();
         for session in ["a", "b", "c"] {
@@ -144,10 +148,8 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
             assert!(reopened.run_pass().unwrap().errors.is_empty());
-            assert_eq!(
-                page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
-                "claude-code:c"
-            );
+            assert_eq!(page(&home, Some(cursor)).unwrap_err().kind, "invalid_query");
+            assert_eq!(page(&home, None).unwrap()["rows"][0]["id"], "claude-code:a");
         } else {
             std::fs::write(
                 home.file("b.jsonl"),
@@ -161,6 +163,29 @@ fn edits_and_rebuilds_between_pages_continue_after_the_last_row() {
             );
         }
     }
+}
+
+#[test]
+fn daemon_reopen_preserves_cursor_key_and_continues_the_page() {
+    let home = ClaudeHome::new();
+    for session in ["a", "b", "c"] {
+        home.append(
+            &format!("{session}.jsonl"),
+            &claude_user(&format!("{session}1"), session, "synthetic prompt"),
+        );
+    }
+    let (mut engine, lock) = home.engine(64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let first = page(&home, None).unwrap();
+    let cursor = first["next"].as_str().unwrap();
+    drop(engine);
+    drop(lock);
+    let (mut reopened, _lock) = home.engine(64 << 20);
+    assert!(reopened.run_pass().unwrap().errors.is_empty());
+    assert_eq!(
+        page(&home, Some(cursor)).unwrap()["rows"][0]["id"],
+        "claude-code:c"
+    );
 }
 
 fn fixture_query(
@@ -295,9 +320,23 @@ fn random_selection_count_rows_and_pages_use_one_resolved_seed() {
         let mut request = ask(query);
         request.page_size = Some(1);
         let first = run_q(&w, request).unwrap();
-        let seed = Cursor::decode(first["next"].as_str().unwrap())
-            .unwrap()
-            .seed;
+        let pool = w.fx.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let request = ask(query);
+        let options = options(&reader, &request, request.now, 0).unwrap();
+        let seal = CursorSeal::new(reader.cursor_key().unwrap());
+        let question = page::identity(query, &options).unwrap();
+        let seed = page::open(
+            first["next"].as_str().unwrap(),
+            &seal,
+            question,
+            &reader.change_position().unwrap(),
+            reader.index_identity().unwrap(),
+            &options,
+        )
+        .unwrap()
+        .context
+        .random_seed;
         let reference = query.replace("random", &format!("random({seed})"));
         let expected = q(&w, &reference);
         assert_eq!(first["count"], expected["count"], "{query}");
@@ -362,10 +401,12 @@ fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
     request.session = Some("claude-code:private-caller-marker".into());
     let first = run_q(&w, request).unwrap();
     let cursor = first["next"].as_str().unwrap();
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(cursor)
-        .unwrap();
-    let encoded = String::from_utf8(bytes).unwrap();
+    let bytes: Vec<u8> = cursor
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let encoded = String::from_utf8_lossy(&bytes);
     assert!(!encoded.contains(text));
     assert!(!encoded.contains("private marker"));
     assert!(!encoded.contains("private-caller-marker"));
@@ -373,7 +414,7 @@ fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
         .encode(br#"{"offset":1,"now":0,"query":"old"}"#);
     let mut request = ask("sessions");
     request.cursor = Some(&old);
-    assert_eq!(run_q(&w, request).unwrap_err().kind, "bad_request");
+    assert_eq!(run_q(&w, request).unwrap_err().kind, "invalid_query");
 }
 
 #[test]

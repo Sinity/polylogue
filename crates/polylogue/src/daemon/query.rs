@@ -334,7 +334,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .transpose()?;
     let context = match cursor {
         Some(cursor) => cursor.context,
-        None => page::context(question, &position, index_file, &opts, &program, seed, ask.why)?,
+        None => page::context(
+            question, &position, index_file, &opts, &program, seed, ask.why,
+        )?,
     };
     let paging = page::Paging {
         seal: &seal,

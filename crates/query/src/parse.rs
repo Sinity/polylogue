@@ -30,9 +30,18 @@ pub fn with_catalog(
     }
     query_language::parse::parse(text, catalog).map_err(|mut error| {
         if error.kind == query_language::ErrorKind::UnknownField
-            && text.get(error.position..error.position + 5).is_some_and(|field| field.eq_ignore_ascii_case("near:")) {
-            let corrected = format!("{}similar:{}", &text[..error.position], &text[error.position + 5..]);
-            if query_language::parse::parse(&corrected, catalog).is_ok() { error.suggestion = Some(corrected); }
+            && text
+                .get(error.position..error.position + 5)
+                .is_some_and(|field| field.eq_ignore_ascii_case("near:"))
+        {
+            let corrected = format!(
+                "{}similar:{}",
+                &text[..error.position],
+                &text[error.position + 5..]
+            );
+            if query_language::parse::parse(&corrected, catalog).is_ok() {
+                error.suggestion = Some(corrected);
+            }
             error.hint = Some("use similar: for semantic ranking".into());
         }
         QueryError::language(error, text)

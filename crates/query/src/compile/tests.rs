@@ -397,7 +397,8 @@ fn near_builds_only_when_an_answer_needs_ranking() {
         if embeddings {
             assert!(compile("similar:dates | union (similar:times)", &options).is_err());
         } else {
-            let counted = compile("similar:dates | union (origin:codex) | count", &options).unwrap();
+            let counted =
+                compile("similar:dates | union (origin:codex) | count", &options).unwrap();
             assert!(counted.incomplete.is_empty());
         }
     }
