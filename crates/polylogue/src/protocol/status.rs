@@ -8,7 +8,6 @@ use std::path::PathBuf;
 pub struct Arguments {}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Answer {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<PathBuf>,
@@ -17,10 +16,8 @@ pub struct Answer {
     pub store: Option<polylogue_store::Status>,
     pub count_error: Option<String>,
     pub counted: Counted,
-    pub busy: bool,
-    pub passes: u64,
-    pub full_scans: u64,
-    pub last_pass: polylogue_engine::Pass,
+    #[serde(flatten)]
+    pub loop_status: polylogue_engine::LoopStatus,
     pub signals: Option<Signals>,
     pub notices: Notices,
     pub warm: Warm,
