@@ -81,10 +81,25 @@ pub(super) fn stage(tx: &Transaction<'_>, proof: &RawInputProof) -> Result<()> {
                 vec![(facts.session.clone(), PhysicalField::BackgroundSession)]
             }
             Product::Link { reading, facts } => {
-                let selected: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM link l JOIN link_source s ON s.link_pk=l.pk JOIN input_ref i ON i.pk=s.input_pk WHERE i.id=?1 AND s.chain=?2 AND l.parent_id=?3 AND l.child_id=?4 AND l.kind=?5 AND l.how=?6)",
-                    params![reading.input.id,reading.chain,facts.parent.to_string(),facts.child.to_string(),facts.kind.columns().0,facts.kind.columns().1],|row|row.get(0))?;
+                let mut selected_links=tx.prepare("SELECT l.kind,l.how FROM link l JOIN link_source s ON s.link_pk=l.pk JOIN input_ref i ON i.pk=s.input_pk WHERE i.id=?1 AND s.chain=?2 AND l.parent_id=?3 AND l.child_id=?4 AND EXISTS(SELECT 1 FROM primary_next f WHERE f.event=?5 AND f.input=i.id AND f.chain=s.chain AND f.reference=?6)")?;
+                let mut choices = selected_links.query(params![
+                    reading.input.id,
+                    reading.chain,
+                    facts.parent.to_string(),
+                    facts.child.to_string(),
+                    event,
+                    facts.selection_tag()
+                ])?;
+                let mut selected = false;
+                while let Some(choice) = choices.next()? {
+                    let kind: String = choice.get(0)?;
+                    let how: String = choice.get(1)?;
+                    selected |=
+                        polylogue_model::LinkKind::from_columns(&kind, &how) == Some(facts.kind);
+                }
+                // Missing selected source evidence cannot manufacture separate roots.
                 if !selected {
-                    continue;
+                    return Ok(());
                 }
                 links.push(ConfirmedLink {
                     event: event.clone(),

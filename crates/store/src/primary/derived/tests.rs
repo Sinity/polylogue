@@ -96,6 +96,12 @@ fn show(db: &Connection, value: &Product, active: bool) {
     let Product::Message { facts, .. } = value else {
         panic!()
     };
+    let prepared = crate::encoding::PreparedMessage::new(&facts.message).unwrap();
+    db.execute(
+        "INSERT INTO message_version(version_hash,body) VALUES(?1,?2)",
+        params![prepared.hash.as_slice(), prepared.body],
+    )
+    .unwrap();
     db.execute("INSERT INTO message(pk,id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk,source_chain,source_start,source_end,on_active_path) VALUES(1,?1,1,1,'input-x',0,'assistant','model',1,1,0,10,?2)",params![facts.message.id.to_string(),active]).unwrap();
     db.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,session_pk,main,version_hash) VALUES(1,1,1,0,10,1,1,1,?1)",[&hash_message(&facts.message).unwrap()[..]]).unwrap();
 }
@@ -335,9 +341,8 @@ fn canonical_custody_survives_restart_without_proof_and_rolls_back_proof_attachm
     tx.rollback().unwrap();
 }
 
-#[test]
-fn explicit_spawn_copy_keeps_its_parent_as_root_and_canonicalizes_physical_refs() {
-    let mut db = database();
+fn spawn_copy_graph() -> (Connection, SessionId, SessionId) {
+    let db = database();
     let root = SessionId::parse("a:root").unwrap();
     let child = SessionId::parse("a-b:child").unwrap();
     for (event, id) in [("root-fact", root.clone()), ("child-fact", child.clone())] {
@@ -373,6 +378,12 @@ fn explicit_spawn_copy_keeps_its_parent_as_root_and_canonicalizes_physical_refs(
     )
     .unwrap();
     db.execute("INSERT INTO link_source(link_pk,input_pk,chain,value_pk,arrival_rank,admitted) VALUES (1,1,1,1,0,1)",[]).unwrap();
+    (db, root, child)
+}
+
+#[test]
+fn explicit_spawn_copy_keeps_its_parent_as_root_and_canonicalizes_physical_refs() {
+    let (mut db, root, child) = spawn_copy_graph();
     let tx = db.transaction().unwrap();
     stage(&tx, 1, 1, Some(&proof(1))).unwrap();
     tx.commit().unwrap();
@@ -395,4 +406,41 @@ fn explicit_spawn_copy_keeps_its_parent_as_root_and_canonicalizes_physical_refs(
             .collect::<Vec<_>>(),
         vec![child.to_string(), root.to_string()]
     );
+}
+
+#[test]
+fn unmatched_source_link_does_not_publish_disconnected_complete_roots() {
+    for mismatch in ["chain", "reference"] {
+        let (mut db, _, _) = spawn_copy_graph();
+        match mismatch {
+            "chain" => db.execute("UPDATE link_source SET chain=2", []).unwrap(),
+            _ => {
+                db.execute("UPDATE link SET how='fresh'", []).unwrap();
+                db.execute(
+                    "UPDATE primary_candidate SET reference='unrelated' WHERE event='spawn-fact'",
+                    [],
+                )
+                .unwrap()
+            }
+        };
+        let tx = db.transaction().unwrap();
+        stage(&tx, 1, 1, Some(&proof(1))).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM primary_derived", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "{mismatch}"
+        );
+        assert!(
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM primary_work_dirty)",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .unwrap(),
+            "{mismatch}"
+        );
+    }
 }
