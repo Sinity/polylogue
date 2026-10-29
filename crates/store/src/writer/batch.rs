@@ -61,6 +61,8 @@ pub struct ParseStep {
     /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
     pub reading_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     #[serde(default)]
     pub(crate) receipt: Option<crate::wire_shapes::ReadingReceipt>,
     /// Confirmed surviving facts can omit source ranges despite a scratch reset.
@@ -123,6 +125,7 @@ impl ParseStep {
         Self {
             order_from: None,
             reading_version: String::new(),
+            checkpoint: None,
             receipt: None,
             source_prefix_missing: false,
             no_parser_yet: false,
