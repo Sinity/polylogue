@@ -63,9 +63,10 @@ fn variant_revisions_use_graph_currency_and_preserve_exact_parts() {
     assert_eq!(body, "Poprawiony");
     let stale = request("stale", Some("first"), "Stary");
     let tx = conn.transaction().unwrap();
-    assert!(
-        matches!(crate::user_writes::apply(&tx,&stale,10),Err(StoreError::Invalid(message)) if message.contains("stale"))
-    );
+    assert!(matches!(
+        crate::user_writes::apply(&tx, &stale, 10),
+        Err(StoreError::Stale { .. })
+    ));
     drop(tx);
     assert!(rows::get(&conn, "stale").unwrap().is_none());
 }

@@ -26,39 +26,41 @@ pub fn key(variant: &Variant) -> String {
 
 /// Withdrawal is a graph fact. A withdrawal can itself be withdrawn; cycles
 /// have no defined active state and are refused rather than choosing a winner.
-struct Withdrawals {
-    by_target: HashMap<String, Vec<String>>,
+struct Withdrawals<'a> {
+    conn: &'a Connection,
+    source: Source,
+    known: HashMap<String, bool>,
 }
-impl Withdrawals {
-    fn read(conn: &Connection) -> Result<Self> {
-        let source = rows::reading(conn)?;
-        let mut statement=conn.prepare(&source.sql("SELECT r.note_id,r.other FROM @source.note_relation r JOIN @source.note n ON n.id=r.note_id WHERE r.kind='withdraws' AND n.kind='withdrawal'"))?;
-        let mut rows = statement.query([])?;
-        let mut by_target: HashMap<String, Vec<String>> = HashMap::new();
-        while let Some(row) = rows.next()? {
-            by_target.entry(row.get(1)?).or_default().push(row.get(0)?);
-        }
-        Ok(Self { by_target })
+impl<'a> Withdrawals<'a> {
+    fn read(conn: &'a Connection) -> Result<Self> {
+        Ok(Self {
+            conn,
+            source: rows::reading(conn)?,
+            known: HashMap::new(),
+        })
     }
-    fn target(&self, target: &str, path: &mut HashSet<String>) -> Result<bool> {
+    fn target(&mut self, target: &str, path: &mut HashSet<String>) -> Result<bool> {
+        if let Some(value) = self.known.get(target) {
+            return Ok(*value);
+        }
         if !path.insert(target.into()) {
             return Err(StoreError::Invalid(
                 "withdrawal graph contains a cycle".into(),
             ));
         }
+        let writers:Vec<String>=self.conn.prepare_cached(&self.source.sql("SELECT r.note_id FROM @source.note_relation r JOIN @source.note n ON n.id=r.note_id WHERE r.kind='withdraws' AND r.other=?1 AND n.kind='withdrawal'"))?.query_map([target],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?;
         let mut withdrawn = false;
-        if let Some(writers) = self.by_target.get(target) {
-            for id in writers {
-                if !self.target(&format!("note:{id}"), path)? {
-                    withdrawn = true;
-                    break;
-                }
+        for id in writers {
+            if !self.target(&format!("note:{id}"), path)? {
+                withdrawn = true;
+                break;
             }
         }
         path.remove(target);
+        self.known.insert(target.into(), withdrawn);
         Ok(withdrawn)
     }
-    fn variant(&self, v: &Variant) -> Result<bool> {
+    fn variant(&mut self, v: &Variant) -> Result<bool> {
         Ok(
             self.target(&format!("variant:{}", v.root), &mut HashSet::new())?
                 || self.target(&format!("variant:{}@{}", v.root, v.id), &mut HashSet::new())?,
@@ -67,10 +69,10 @@ impl Withdrawals {
 }
 
 fn heads(conn: &Connection, root: &str) -> Result<Vec<Variant>> {
-    let withdrawals = Withdrawals::read(conn)?;
+    let mut withdrawals = Withdrawals::read(conn)?;
     let mut live = Vec::new();
-    rows::visit(conn, "", None, |v| {
-        if v.root == root && !withdrawals.variant(&v)? {
+    rows::visit_root(conn, root, |v| {
+        if !withdrawals.variant(&v)? {
             live.push(v);
         }
         Ok(())
@@ -89,24 +91,54 @@ pub(crate) fn write(
     new: &NewVariant,
     counter: i64,
 ) -> Result<UserOutcome> {
-    if new.source.is_empty() || new.via.is_empty() {
+    let source = polylogue_model::Reference::parse(&new.source)
+        .map_err(|error| StoreError::Invalid(error.to_string()))?;
+    if !matches!(
+        source,
+        polylogue_model::Reference::Session(_)
+            | polylogue_model::Reference::Message(_)
+            | polylogue_model::Reference::MessageRange { .. }
+            | polylogue_model::Reference::Block { .. }
+            | polylogue_model::Reference::Span { .. }
+            | polylogue_model::Reference::Assertion(polylogue_model::RevisionReference {
+                revision: Some(_),
+                ..
+            })
+            | polylogue_model::Reference::Page(polylogue_model::RevisionReference {
+                revision: Some(_),
+                ..
+            })
+            | polylogue_model::Reference::Variant {
+                revision: polylogue_model::RevisionReference {
+                    revision: Some(_),
+                    ..
+                },
+                ..
+            }
+    ) {
         return Err(StoreError::Invalid(
-            "variant source and channel are required".into(),
+            "variant source must name captured text or an exact authored revision".into(),
         ));
+    }
+    if polylogue_model::authorship::Channel::from_name(&new.via).is_none() {
+        return Err(StoreError::Invalid("variant channel is unknown".into()));
+    }
+    for part in &new.parts {
+        polylogue_model::Reference::parse(&part.of)
+            .map_err(|error| StoreError::Invalid(error.to_string()))?;
     }
     let root = if let Some(base) = &new.base {
         let previous = rows::get(conn, base)?
             .ok_or_else(|| StoreError::NotFound(format!("variant {base}")))?;
         let current = heads(conn, &previous.root)?;
         if !current.iter().any(|v| v.id == *base) {
-            return Err(StoreError::Invalid(format!(
-                "stale variant {base}; current revisions: {}",
-                current
+            return Err(StoreError::Stale {
+                reference: format!("variant:{}@{base}", previous.root),
+                current: current
                     .iter()
-                    .map(|v| v.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )));
+                    .map(|v| format!("variant:{}@{}", v.root, v.id))
+                    .collect(),
+            });
         }
         if previous.source != new.source
             || previous.source_hash != new.source_hash
@@ -213,13 +245,14 @@ impl Reader<'_> {
         enabled: &[String],
     ) -> Result<Option<Variant>> {
         let conn = self.conn()?;
-        let mut roots = HashSet::new();
-        rows::visit(conn, "", None, |v| {
-            if v.source == source {
-                roots.insert(v.root);
-            }
-            Ok(())
-        })?;
+        let namespace = rows::reading(conn)?;
+        let roots: Vec<String> = conn
+            .prepare_cached(
+                &namespace
+                    .sql("SELECT DISTINCT root FROM @source.variant WHERE source=?1 ORDER BY root"),
+            )?
+            .query_map([source], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         let mut candidates = Vec::new();
         for root in roots {
             let mut current = heads(conn, &root)?;
@@ -231,11 +264,21 @@ impl Reader<'_> {
             }
         }
         for preference in enabled {
-            let mut matched = candidates.iter().filter(|v| key(v) == *preference);
-            if let Some(v) = matched.next() {
-                if matched.next().is_none() {
-                    return Ok(Some(v.clone()));
-                }
+            let matched: Vec<_> = candidates
+                .iter()
+                .filter(|v| key(v) == *preference)
+                .collect();
+            if matched.len() > 1 {
+                return Err(StoreError::Ambiguous {
+                    reference: preference.clone(),
+                    candidates: matched
+                        .iter()
+                        .map(|v| format!("variant:{}@{}", v.root, v.id))
+                        .collect(),
+                });
+            }
+            if let Some(v) = matched.first() {
+                return Ok(Some((*v).clone()));
             }
         }
         Ok(None)

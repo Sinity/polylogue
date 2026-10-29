@@ -53,6 +53,21 @@ pub(super) fn get(conn: &Connection, id: &str) -> Result<Option<Variant>> {
     let mut rows = statement.query([id])?;
     rows.next()?.map(variant).transpose()
 }
+pub(super) fn visit_root(
+    conn: &Connection,
+    root: &str,
+    mut visit: impl FnMut(Variant) -> Result<()>,
+) -> Result<()> {
+    let source = reading(conn)?;
+    let mut statement = conn.prepare_cached(&source.sql(&format!(
+        "SELECT {COLUMNS} FROM @source.variant WHERE root=?1 ORDER BY id"
+    )))?;
+    let mut rows = statement.query([root])?;
+    while let Some(row) = rows.next()? {
+        visit(variant(row)?)?;
+    }
+    Ok(())
+}
 pub(super) fn visit(
     conn: &Connection,
     filter: &str,
