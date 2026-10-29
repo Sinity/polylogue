@@ -1414,6 +1414,19 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
             .unwrap(),
         None
     );
+    // A historical fold with one unproven contributor cannot borrow the
+    // admission of its other contributor or the current cache transaction.
+    conn.execute("UPDATE session_record SET admitted=NULL WHERE input_pk=(SELECT pk FROM input_ref WHERE id='later-fact-source')",[]).unwrap();
+    conn.execute("UPDATE link_source SET admitted=NULL WHERE input_pk=(SELECT pk FROM input_ref WHERE id='later-fact-source')",[]).unwrap();
+    conn.execute("UPDATE document_source SET admitted=NULL", [])
+        .unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(
+        reader.session_commit(&sid("receipt-session")).unwrap(),
+        None
+    );
+    assert_eq!(reader.link_commit(&link).unwrap(), None);
+    assert_eq!(reader.document_commit(&document.id).unwrap(), None);
     for invalid in [0, u64::MAX] {
         let mut malformed = confirmed.clone();
         malformed.parse[0].output.link_receipts.insert(0, invalid);
