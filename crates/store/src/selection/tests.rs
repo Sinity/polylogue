@@ -708,6 +708,18 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
         })
         .unwrap();
     assert_eq!(selected, ["message:test:a", "message:test:b"]);
+    let semantic = reader
+        .prepare_query_selection("message:test:a..test:b", &options)
+        .unwrap();
+    assert!(semantic.direct_reference().is_none());
+    let mut semantic_count = 0;
+    reader
+        .visit_selection::<SelectionError>(&semantic, None, None, |_| {
+            semantic_count += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(semantic_count, 2);
     let range = reader
         .prepare_selection("message:test:a..test:b", &options)
         .unwrap();

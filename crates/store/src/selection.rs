@@ -2,6 +2,7 @@
 pub use crate::query::{Param, Program, RowBasis};
 use crate::{ReadScopeToken, Reader, SqlValue, StoreError};
 use polylogue_model::{DocumentId, MessageId, Reference, SessionId};
+use polylogue_query::catalog::reference_unit;
 pub use polylogue_query::plan::{Plan, ResolvedDefinition};
 use polylogue_query::{
     Options, QueryError, Shape,
@@ -183,6 +184,21 @@ impl Reader<'_> {
             |condition| self.resolve_question_reference(condition, &options),
         )?)
     }
+    /// Evaluate the full semantic row selection, including an atomic native
+    /// range. Read-target source grouping is a separate presentation input.
+    pub fn prepare_query_selection<'read>(
+        &'read self,
+        text: &str,
+        options: &Options,
+    ) -> Result<PreparedSelection<'read>, SelectionError> {
+        self.with_clock(&options.clock, || {
+            let plan = self.prepare_query_plan(text, options)?;
+            let program = crate::query::lower(&plan, options)?;
+            self.validate_selection(&program)?;
+            self.finish_selection(plan, program, None, options)
+        })
+    }
+
     /// Resolve names and references once against this pinned read. Incoming
     /// saved/kept maps are replaced with the authoritative Reader snapshot.
     pub fn prepare_selection<'read>(
@@ -833,7 +849,6 @@ pub fn sql_value(value: &Value) -> SqlValue {
         other => SqlValue::Text(other.to_string()),
     }
 }
-use polylogue_query::catalog::reference_unit;
 
 fn reference_atom(reference: &Reference) -> String {
     let text = reference.to_string();

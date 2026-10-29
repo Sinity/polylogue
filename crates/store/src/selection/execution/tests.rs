@@ -160,3 +160,96 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
         "invalid_query"
     );
 }
+
+#[test]
+fn acknowledged_direct_range_restores_presentation_without_changing_question_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:session",
+            ..Default::default()
+        })
+        .unwrap();
+    for id in ["test:a", "test:b"] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role: "user",
+                    written_by: "human",
+                    prompt_kind: Some("prose"),
+                    text: Some("synthetic"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let options = options();
+    let direct = reader
+        .prepare_selection("message:test:a..test:b", &options)
+        .unwrap();
+    let semantic = reader
+        .prepare_query_selection("message:test:a..test:b", &options)
+        .unwrap();
+    assert_eq!(direct.question_id(), semantic.question_id());
+    let binding = direct
+        .execution_binding(
+            crate::query::execute::options_snapshot(&options, false, None).unwrap(),
+            ExecutionPresentation::Read {
+                options: Default::default(),
+                delivery: Default::default(),
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        binding.query_options.direct_reference,
+        direct.direct_reference().cloned()
+    );
+    let object = direct.query_object().unwrap();
+    let run = QueryRun {
+        id: "00000000-0000-7000-8000-000000000002".parse().unwrap(),
+        question: object.id,
+        at: options.clock.now.into(),
+        read_at: reader.change_position().unwrap(),
+        machine: "synthetic-machine".into(),
+        authorship: compute_authorship(
+            Channel::Cli,
+            &CallerEvidence {
+                controlling_terminal: true,
+                ..Default::default()
+            },
+            None,
+        ),
+        binding,
+    };
+    let replay = reader
+        .prepare_query_run_selection(&object, &run, &options.clock, None, None)
+        .unwrap();
+    assert_eq!(replay.direct_reference(), direct.direct_reference());
+    let mut forged = run.clone();
+    forged.binding.query_options.direct_reference =
+        Some(Reference::Message("test:a".parse().unwrap()));
+    assert_eq!(
+        reader
+            .prepare_query_run_selection(&object, &forged, &options.clock, None, None)
+            .err()
+            .unwrap()
+            .kind(),
+        "conflict"
+    );
+    let mut old_scope = run;
+    old_scope.binding.replay.scope_fingerprint = Some("another-grant".into());
+    assert_eq!(
+        reader
+            .prepare_query_run_selection(&object, &old_scope, &options.clock, None, None)
+            .err()
+            .unwrap()
+            .kind(),
+        "scope_changed"
+    );
+}

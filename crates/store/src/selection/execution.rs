@@ -11,7 +11,7 @@ impl PreparedSelection<'_> {
     /// rendered headers remain under their original read authority.
     pub fn execution_binding(
         &self,
-        query_options: QueryExecutionOptions,
+        mut query_options: QueryExecutionOptions,
         presentation: ExecutionPresentation,
         accepted_request: Option<Value>,
     ) -> Result<ExecutionBinding, SelectionError> {
@@ -25,6 +25,20 @@ impl PreparedSelection<'_> {
                 "execution options differ from the prepared selection",
             ));
         }
+        if query_options.direct_reference.is_some() && query_options.direct_reference != self.direct
+        {
+            return Err(invalid(
+                "conflict",
+                "direct presentation differs from the accepted selection",
+            ));
+        }
+        if self.direct.is_some() && matches!(presentation, ExecutionPresentation::Query) {
+            return Err(invalid(
+                "conflict",
+                "query execution requires semantic rows, not direct read presentation",
+            ));
+        }
+        query_options.direct_reference = self.direct.clone();
         let object = self.query_object()?;
         let definitions = self
             .definitions()
@@ -136,7 +150,8 @@ impl Reader<'_> {
             run.binding.replay.context.random_seed,
             page_size,
         );
-        let selection = self.prepare_query_object_selection(object, &options, expected_catalog)?;
+        let mut selection =
+            self.prepare_query_object_selection(object, &options, expected_catalog)?;
         for key in ["compiler", "catalog", "scope", "ranking"] {
             if selection.context.versions.get(key) != run.binding.replay.context.versions.get(key) {
                 return Err(invalid(
@@ -175,6 +190,28 @@ impl Reader<'_> {
                 "stale_cursor",
                 "the resolved-time commitment changed",
             ));
+        }
+        if let Some(reference) = &run.binding.query_options.direct_reference {
+            let expected = polylogue_query::plan::prepare(
+                &reference_query(reference)?,
+                selection.plan.bindings(),
+                |_| Ok(()),
+            )?;
+            if expected.question_id() != selection.question_id()
+                || reference_unit(reference) != Some(selection.program.unit)
+            {
+                return Err(invalid(
+                    "conflict",
+                    "direct presentation names another bound question",
+                ));
+            }
+            if matches!(reference,Reference::Assertion(revision) if revision.revision.is_none()) {
+                return Err(invalid(
+                    "not_yet_available",
+                    "direct assertion has no pinned revision",
+                ));
+            }
+            selection.direct = Some(reference.clone());
         }
         Ok(selection)
     }
