@@ -383,7 +383,7 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
-    _authorship: &polylogue_model::authorship::Authorship,
+    _operation: &Arc<crate::operation::Context>,
     output: &mut dyn std::io::Write,
 ) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {
@@ -422,6 +422,15 @@ pub fn handle_with_caller(
     limit: &polylogue_store::read::limit::ReadLimit,
     authorship: &polylogue_model::authorship::Authorship,
 ) -> Response {
+    handle_with_invocation(request, d, limit, &d.invocation(authorship))
+}
+
+pub(crate) fn handle_with_invocation(
+    request: Request,
+    d: &Daemon,
+    limit: &polylogue_store::read::limit::ReadLimit,
+    invocation: &crate::operation::Invocation,
+) -> Response {
     #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(crate::test_daemon::ReadObservation {
@@ -429,9 +438,8 @@ pub fn handle_with_caller(
             owner: std::thread::current().id(),
         });
     }
-    let invocation = d.invocation(authorship);
     super::execution::run(request, limit, |request| {
-        handle_inner(request, d, &invocation)
+        handle_inner(request, d, invocation)
     })
 }
 

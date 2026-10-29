@@ -8,17 +8,46 @@ use polylogue_model::{
 };
 use query_language::time::{Clock, DaySetting};
 use std::collections::BTreeMap;
-#[cfg(feature = "sinex")]
 use std::sync::Arc;
 
 /// Clock-free writes capture this once without requiring an owner's logical day.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Invocation {
     pub at: Timestamp,
     pub machine: String,
     pub authorship: Authorship,
+    accepted_request: Option<Arc<command_surface::RunnableRequest>>,
+}
+impl std::fmt::Debug for Invocation {
+    fn fmt(&self, format: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        format
+            .debug_struct("Invocation")
+            .field("at", &self.at)
+            .field("machine", &self.machine)
+            .field("authorship", &self.authorship)
+            .finish()
+    }
 }
 impl Invocation {
+    pub fn new(at: Timestamp, machine: String, authorship: Authorship) -> Self {
+        Self {
+            at,
+            machine,
+            authorship,
+            accepted_request: None,
+        }
+    }
+    pub(crate) fn with_accepted_request(
+        mut self,
+        request: Option<Arc<command_surface::RunnableRequest>>,
+    ) -> Self {
+        self.accepted_request = request;
+        self
+    }
+    /// Exact transport input; internal invocations have no accepted envelope.
+    pub fn accepted_request(&self) -> Option<&command_surface::RunnableRequest> {
+        self.accepted_request.as_deref()
+    }
     pub fn capture(
         metadata: &polylogue_model::user::RequestMetadata,
         authorship: &Authorship,
@@ -27,6 +56,7 @@ impl Invocation {
             at: metadata.now(),
             machine: metadata.machine().into(),
             authorship: authorship.clone(),
+            accepted_request: None,
         }
     }
     pub fn request(&self, id: String, write: UserWrite) -> UserRequest {
@@ -48,6 +78,7 @@ pub struct Context {
     pub machine: String,
     pub authorship: Authorship,
     owner: Owner,
+    accepted_request: Option<Arc<command_surface::RunnableRequest>>,
     #[cfg(feature = "sinex")]
     policy: Option<Arc<polylogue_sinex::ResolvedContext>>,
 }
@@ -72,6 +103,7 @@ impl Context {
             machine: invocation.machine,
             authorship: invocation.authorship,
             owner: Owner::Standalone,
+            accepted_request: invocation.accepted_request,
             #[cfg(feature = "sinex")]
             policy: None,
         }
@@ -100,6 +132,7 @@ impl Context {
             machine: invocation.machine,
             authorship: invocation.authorship,
             owner,
+            accepted_request: invocation.accepted_request,
             policy: Some(Arc::new(policy)),
         })
     }
@@ -108,7 +141,11 @@ impl Context {
             at: self.ran_at,
             machine: self.machine.clone(),
             authorship: self.authorship.clone(),
+            accepted_request: self.accepted_request.clone(),
         }
+    }
+    pub fn accepted_request(&self) -> Option<&command_surface::RunnableRequest> {
+        self.accepted_request.as_deref()
     }
     pub fn request(&self, id: String, write: UserWrite) -> UserRequest {
         self.invocation().request(id, write)

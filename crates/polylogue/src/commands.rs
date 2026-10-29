@@ -109,7 +109,7 @@ pub enum Cli {
 pub type StreamProducer = fn(
     &Request,
     &crate::daemon::service::Daemon,
-    &polylogue_model::authorship::Authorship,
+    &std::sync::Arc<crate::operation::Context>,
     &mut dyn std::io::Write,
 ) -> Option<Result<(), crate::daemon::Response>>;
 
