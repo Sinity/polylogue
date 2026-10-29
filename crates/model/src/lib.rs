@@ -60,3 +60,19 @@ pub use work::{WorkEdgeKind, WorkNodeKind};
 pub type Json = serde_json::Value;
 
 pub mod derived;
+
+macro_rules! string_schema {
+    ($($type:ty),* $(,)?) => { $(
+        impl schemars::JsonSchema for $type {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($type).into()
+            }
+            fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                <String as schemars::JsonSchema>::json_schema(generator)
+            }
+        }
+    )* };
+}
+string_schema!(
+    Origin, SessionId, MessageId, DocumentId, BlobHash, Target, Author
+);
