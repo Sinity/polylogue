@@ -194,7 +194,14 @@ fn prepared<T>(
             },
             figures: vec![],
         };
-        run(&selection, resume, snapshot, header, Some(near), &evaluation)
+        run(
+            &selection,
+            resume,
+            snapshot,
+            header,
+            Some(near),
+            &evaluation,
+        )
     })
 }
 
