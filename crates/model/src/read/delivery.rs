@@ -41,25 +41,12 @@ pub enum ReadRecord {
         parts: Vec<ReadPart>,
     },
     Presentation {
-        source: super::Source,
-        reason: PresentationReason,
         parts: Vec<ReadPart>,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum PresentationReason {
-    Omission {
-        view: super::View,
-        target: super::TargetKind,
-        accepted_views: Vec<super::View>,
-    },
-    QueryResult,
-}
-
 impl ReadRecord {
-    pub fn canonical(&self) -> Option<&Record> {
+    pub fn record(&self) -> Option<&Record> {
         match self {
             Self::Canonical { record, .. } => Some(record),
             Self::Presentation { .. } => None,
