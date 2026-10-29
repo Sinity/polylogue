@@ -56,9 +56,17 @@ pub fn status(_: &Command, _: &Values, _: &Caller) -> Built {
 }
 
 pub fn complete(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Complete {
-        word: v.text("word").unwrap_or_default(),
-    })
+    let text = v.text("text").unwrap_or_default();
+    let position = v
+        .integer("position")
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| "completion position cannot be represented on this host".to_owned())?
+        .unwrap_or(text.len());
+    if position > text.len() || !text.is_char_boundary(position) {
+        return Err("completion position must be a UTF-8 byte boundary within the query".into());
+    }
+    Ok(Request::Complete { text, position })
 }
 
 pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {

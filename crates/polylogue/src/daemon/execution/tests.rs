@@ -90,7 +90,8 @@ fn expired_requests_never_start_any_read_operation() {
             fields: vec![],
         },
         Request::Complete {
-            word: "repo:".into(),
+            text: "repo:".into(),
+            position: 5,
         },
         Request::Query {
             text: "sessions".into(),

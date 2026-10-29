@@ -168,7 +168,10 @@ fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
 fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
     let values = |word: &str| match crate::daemon::service::handle(
-        crate::daemon::Request::Complete { word: word.into() },
+        crate::daemon::Request::Complete {
+            text: word.into(),
+            position: word.len(),
+        },
         &d.daemon,
     ) {
         crate::daemon::Response::Ok { data, .. } => data,
@@ -179,9 +182,17 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["value"] == "live:waiting")
+            .any(|v| v["value"] == "waiting"
+                && v["replace"]["start"] == 5
+                && v["replace"]["end"] == 5)
     );
-    assert!(values("model:").as_array().unwrap().is_empty());
+    assert!(
+        !values("model:")
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["value"] == "\"model with spaces\"")
+    );
     let mut message: serde_json::Value = serde_json::from_str(
         &polylogue_testkit::claude_assistant("a1", "s1", "synthetic answer"),
     )
@@ -202,6 +213,54 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["value"] == "model:\"model with spaces\"")
+            .any(|v| v["value"] == "\"model with spaces\"")
     );
+}
+
+#[test]
+fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries() {
+    let daemon = crate::test_daemon::start("synthetic prompt");
+    let text = "tool_calls where outcome:err | count";
+    let position = text.find(" | ").unwrap();
+    match crate::daemon::service::handle(
+        crate::daemon::Request::Complete {
+            text: text.into(),
+            position,
+        },
+        &daemon.daemon,
+    ) {
+        crate::daemon::Response::Ok { data, .. } => {
+            let candidate = data
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|candidate| candidate["value"] == "error")
+                .unwrap();
+            let start = candidate["replace"]["start"].as_u64().unwrap() as usize;
+            let end = candidate["replace"]["end"].as_u64().unwrap() as usize;
+            assert_eq!(candidate["kind"], "value");
+            assert_eq!(
+                format!(
+                    "{}{}{}",
+                    &text[..start],
+                    candidate["value"].as_str().unwrap(),
+                    &text[end..]
+                ),
+                "tool_calls where outcome:error | count"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    for position in [6, 8] {
+        match crate::daemon::service::handle(
+            crate::daemon::Request::Complete {
+                text: "repo:λ".into(),
+                position,
+            },
+            &daemon.daemon,
+        ) {
+            crate::daemon::Response::Error { kind, .. } => assert_eq!(kind, "bad_request"),
+            other => panic!("{other:?}"),
+        }
+    }
 }
