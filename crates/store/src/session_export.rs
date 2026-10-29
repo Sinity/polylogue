@@ -6,7 +6,7 @@
 use crate::Result;
 use crate::read::Reader;
 use polylogue_model::export::SessionExport;
-use polylogue_model::{Event, Json, Link, LinkKind, MessageId, SessionId, Timestamp};
+use polylogue_model::{Event, Link, LinkKind, MessageId, SessionId};
 use rusqlite::OptionalExtension;
 
 impl Reader<'_> {
@@ -35,38 +35,17 @@ impl Reader<'_> {
         let Some(pk) = pk else {
             return Ok(Vec::new());
         };
-        let mut stmt = self.conn()?.prepare_cached(
-            "SELECT e.kind, e.at, m.id, e.source_start, e.source_end, e.data
-             FROM event e LEFT JOIN message m ON m.pk = e.after_message_pk
-             -- Events at the same position (each file's own byte 0, from
-             -- different inputs) sort by their content-derived ID, not by
-             -- which file was read first.
-             WHERE e.session_pk = ?1 ORDER BY e.seq, e.id",
-        )?;
-        let rows = stmt.query_map([pk], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Vec<u8>>(5)?,
-            ))
+        let mut statement = self
+            .conn()?
+            .prepare_cached("SELECT fields,data FROM event WHERE session_pk=?1 ORDER BY seq,id")?;
+        let rows = statement.query_map([pk], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (kind, at, after, start, end, data) = row?;
-            let data: Json = crate::encoding::unpack_json(&data)?;
-            out.push(Event {
-                session: Some(id.clone()),
-                kind,
-                at: at.and_then(Timestamp::from_unix_ms),
-                after: after.and_then(|a| MessageId::parse(&a).ok()),
-                range: start.zip(end).map(|(s, e)| (s as u64, e as u64)),
-                data,
-            });
-        }
-        Ok(out)
+        rows.map(|row| {
+            let (fields, data) = row?;
+            crate::events::canonical_event(&fields, &data)
+        })
+        .collect()
     }
 
     /// Links where the session is the parent or the child, in an order fixed

@@ -307,6 +307,7 @@ CREATE TABLE event (
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
   source_start      INTEGER,
   source_end        INTEGER,
+  fields            BLOB NOT NULL,          -- canonical Event without its shared data payload
   data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
@@ -649,6 +650,8 @@ CREATE TABLE event_source (
   source_end INTEGER,
   after_message_id TEXT,
   at INTEGER,
+  fields BLOB NOT NULL,
+  imported_provenance TEXT NOT NULL CHECK(json_valid(imported_provenance)),
   PRIMARY KEY(event_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX event_source_input ON event_source(input_pk, chain);

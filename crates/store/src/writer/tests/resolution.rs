@@ -765,3 +765,124 @@ fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
         2
     );
 }
+
+#[test]
+fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
+    let first = test_archive();
+    let mut conn = crate::archive::open_write(&first.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    let mut input = batch("original", 0, 0, Vec::new(), &[]);
+    let event = Event {
+        session: None,
+        kind: "input.report".into(),
+        at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z"),
+        after: None,
+        range: Some((3, 17)),
+        data: serde_json::json!({"remaining":42}),
+    };
+    input.parse[0].output.events.push(event.clone());
+    write_test_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
+    let id: String = tx
+        .query_row("SELECT id FROM event", [], |row| row.get(0))
+        .unwrap();
+    tx.commit().unwrap();
+    let reads = ReadPool::open(&first.archive).unwrap();
+    let exported = reads.reader().unwrap().event_record(&id).unwrap().unwrap();
+    assert_eq!(exported.event, event);
+    let second = test_archive();
+    let mut conn = crate::archive::open_write(&second.archive.index_db(), 1).unwrap();
+    let mut portable = batch("bundle-local", 2, 0, Vec::new(), &[]);
+    portable.parse[0].output.events.push(exported.event.clone());
+    portable.parse[0]
+        .output
+        .imported_events
+        .insert(0, exported.identity.clone());
+    for counter in [1, 2] {
+        let tx = conn.transaction().unwrap();
+        write_test_rows(&tx, &portable, &portable.parse[0], 1, counter, None).unwrap();
+        tx.commit().unwrap();
+    }
+    let reads = ReadPool::open(&second.archive).unwrap();
+    let reexported = reads.reader().unwrap().event_record(&id).unwrap().unwrap();
+    assert_eq!(reexported.identity.id, id);
+    assert_eq!(reexported.event, event);
+    assert!(
+        exported
+            .identity
+            .sources
+            .iter()
+            .all(|claim| reexported.identity.sources.contains(claim))
+    );
+    assert!(
+        reexported
+            .identity
+            .sources
+            .iter()
+            .any(|claim| claim.input == "bundle-local"
+                && claim.source_start == Some(0)
+                && claim.source_end == Some(100))
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM input_ref WHERE id='original'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM event", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    let tx = conn.transaction().unwrap();
+    let mut competing = batch("preferred-local", 0, 0, Vec::new(), &[]);
+    let mut newer = event.clone();
+    newer.kind = "input.revised".into();
+    newer.range = Some((500, 999));
+    newer.data = serde_json::json!({"remaining":7});
+    competing.parse[0].output.events.push(newer.clone());
+    competing.parse[0]
+        .output
+        .imported_events
+        .insert(0, reexported.identity);
+    write_test_rows(&tx, &competing, &competing.parse[0], 1, 3, None).unwrap();
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM event_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM event_value", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    tx.commit().unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .event_record(&id)
+            .unwrap()
+            .unwrap()
+            .event,
+        newer
+    );
+    let tx = conn.transaction().unwrap();
+    let empty = batch("preferred-local", 0, 0, Vec::new(), &[]);
+    write_test_rows(&tx, &empty, &empty.parse[0], 1, 4, None).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .event_record(&id)
+            .unwrap()
+            .unwrap()
+            .event,
+        event
+    );
+}

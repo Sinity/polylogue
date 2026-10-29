@@ -400,7 +400,9 @@ impl Resolver {
                     keys.insert(Key::new(Kind::Text, hash.as_slice()));
                 }
                 let mut occurrences = BTreeMap::<(u64, u64), u64>::new();
-                for (event, packed) in p.output.events.iter().zip(&p.prepared.events) {
+                for (i, (event, packed)) in
+                    p.output.events.iter().zip(&p.prepared.events).enumerate()
+                {
                     if let Some(session) = &event.session {
                         keys.insert(Key::new(Kind::Session, session.to_string().into_bytes()));
                     }
@@ -419,7 +421,11 @@ impl Resolver {
                     };
                     keys.insert(Key::new(
                         Kind::Event,
-                        event_id(&b.input.id, chain, event, &packed.0, occurrence)?.into_bytes(),
+                        match p.output.imported_events.get(&i) {
+                            Some(identity) => identity.id.clone(),
+                            None => event_id(&b.input.id, chain, event, &packed.0, occurrence)?,
+                        }
+                        .into_bytes(),
                     ));
                 }
                 for link in &p.output.links {
