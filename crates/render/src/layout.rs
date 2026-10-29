@@ -604,59 +604,98 @@ fn call_item(call: &Block, result: Option<&Block>, full: bool, running: bool) ->
     }
 }
 
-/// Keep exact substrings and count the omitted middle without searching the
-/// output for success or failure prose.
+/// Retained lines and each long line's retained ends remain exact substrings.
+/// Every omitted interval names original Unicode offsets and exact counts.
 fn excerpt_output(call: &mut CallItem, lines: u64, open: Option<&ReadyCall>) {
     if lines == 0 {
         return;
     }
     let Some(output) = &call.output else { return };
-    let mut bounds: Vec<usize> = std::iter::once(0)
-        .chain(output.match_indices('\n').map(|(i, _)| i + 1))
-        .collect();
-    if bounds.last() != Some(&output.len()) {
-        bounds.push(output.len());
-    }
-    let line_count = bounds.len().saturating_sub(1);
+    let source_lines: Vec<&str> = output.split_inclusive('\n').collect();
     let n = usize::try_from(lines).unwrap_or(usize::MAX);
-    let (mut head_end, mut tail_start) = if n < line_count.div_ceil(2) {
-        (bounds[n], bounds[line_count - n])
-    } else {
-        (output.len(), output.len())
-    };
-    // Long lines are also shortened visibly. Restricting the retained ends
-    // bounds even a provider's single enormous, newline-free result.
-    let long_line = output.lines().any(|line| line.chars().count() > 4000);
-    if long_line {
-        head_end = head_end.min(
-            output
+    let trim_lines = n < source_lines.len().div_ceil(2);
+    let mut parts = Vec::new();
+    let mut offset = 0u64;
+    let mut omitted = false;
+    for (index, line) in source_lines.iter().enumerate() {
+        let count = line.chars().count() as u64;
+        if trim_lines && index >= n && index < source_lines.len() - n {
+            match parts.last_mut() {
+                Some(OutputPart::Omission {
+                    lines,
+                    characters,
+                    until,
+                    ..
+                }) => {
+                    *lines += 1;
+                    *characters += count;
+                    *until += count;
+                }
+                _ => parts.push(OutputPart::Omission {
+                    lines: 1,
+                    characters: count,
+                    from: offset,
+                    until: offset + count,
+                }),
+            }
+            omitted = true;
+            offset += count;
+            continue;
+        }
+        let content_characters = line.strip_suffix('\n').unwrap_or(line).chars().count();
+        if content_characters > 4000 {
+            let from = line
                 .char_indices()
                 .nth(2000)
                 .map(|(i, _)| i)
-                .unwrap_or(output.len()),
-        );
-        let tail_bound = output
-            .char_indices()
-            .rev()
-            .nth(1999)
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        tail_start = if tail_start == output.len() {
-            tail_bound
+                .expect("long line");
+            let tail = line
+                .char_indices()
+                .rev()
+                .nth(1999)
+                .map(|(i, _)| i)
+                .expect("long line");
+            let before = &line[..from];
+            let middle = &line[from..tail];
+            let after = &line[tail..];
+            let first = before.chars().count() as u64;
+            let missing = middle.chars().count() as u64;
+            append_output_text(&mut parts, before, offset, offset + first);
+            parts.push(OutputPart::Omission {
+                lines: 0,
+                characters: missing,
+                from: offset + first,
+                until: offset + first + missing,
+            });
+            append_output_text(&mut parts, after, offset + first + missing, offset + count);
+            omitted = true;
         } else {
-            tail_start.max(tail_bound)
-        };
+            append_output_text(&mut parts, line, offset, offset + count);
+        }
+        offset += count;
     }
-    if head_end >= tail_start {
-        return;
+    if omitted {
+        call.output_excerpt = Some(OutputExcerpt {
+            parts,
+            open: open.cloned(),
+        });
+        call.output = None;
     }
-    let omitted = &output[head_end..tail_start];
-    call.output_excerpt = Some(OutputExcerpt {
-        head: output[..head_end].into(),
-        tail: output[tail_start..].into(),
-        omitted_lines: omitted.bytes().filter(|byte| *byte == b'\n').count() as u64,
-        omitted_characters: omitted.chars().count() as u64,
-        open: open.cloned(),
-    });
-    call.output = None;
+}
+fn append_output_text(parts: &mut Vec<OutputPart>, text: &str, from: u64, until: u64) {
+    if let Some(OutputPart::Text {
+        text: previous,
+        until: end,
+        ..
+    }) = parts.last_mut()
+    {
+        previous.push_str(text);
+        *end = until;
+    } else {
+        parts.push(OutputPart::Text {
+            text: text.into(),
+            from,
+            until,
+        });
+    }
 }

@@ -283,15 +283,19 @@ impl<'a> Encoder<'a> {
                     self.literal(output, "")?;
                 }
                 if let Some(excerpt) = &call.output_excerpt {
-                    self.literal(&excerpt.head, "")?;
-                    self.line(&format!(
-                        "… {} lines / {} characters skipped",
-                        excerpt.omitted_lines, excerpt.omitted_characters
-                    ))?;
+                    for part in &excerpt.parts {
+                        match part {
+                            OutputPart::Text { text, .. } => self.literal(text, "")?,
+                            OutputPart::Omission {
+                                lines, characters, ..
+                            } => self.line(&format!(
+                                "… {lines} lines / {characters} characters skipped"
+                            ))?,
+                        }
+                    }
                     if let Some(open) = &excerpt.open {
                         self.line(&open.cli)?;
                     }
-                    self.literal(&excerpt.tail, "")?;
                 }
                 if let Some(edit) = &call.edit {
                     self.edit(edit)?;
@@ -540,12 +544,12 @@ impl serde_json::ser::Formatter for ArchiveFormatter {
         for (index, c) in fragment.char_indices() {
             if matches!(c,'\u{7f}'..='\u{9f}'|'\u{061c}'|'\u{200e}'|'\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2066}'..='\u{2069}')
             {
-                writer.write_all(fragment[start..index].as_bytes())?;
+                writer.write_all(&fragment.as_bytes()[start..index])?;
                 write!(writer, "\\u{:04x}", c as u32)?;
                 start = index + c.len_utf8();
             }
         }
-        writer.write_all(fragment[start..].as_bytes())
+        writer.write_all(&fragment.as_bytes()[start..])
     }
 }
 fn json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {

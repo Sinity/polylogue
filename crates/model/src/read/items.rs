@@ -338,13 +338,26 @@ pub struct CallItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputExcerpt {
-    pub head: String,
-    pub tail: String,
-    pub omitted_lines: u64,
-    pub omitted_characters: u64,
+    pub parts: Vec<OutputPart>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<ReadyCall>,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OutputPart {
+    Text {
+        text: String,
+        from: u64,
+        until: u64,
+    },
+    Omission {
+        lines: u64,
+        characters: u64,
+        from: u64,
+        until: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationCard {

@@ -713,13 +713,21 @@ fn expanded_tool_output_has_exact_omission_counts_and_zero_means_all() {
     };
     let (record, call) = result_output(original.clone(), options.clone());
     let excerpt = call.output_excerpt.unwrap();
-    assert_eq!(excerpt.omitted_lines, 101);
-    assert!(excerpt.head.starts_with("line 0"));
-    assert!(excerpt.tail.starts_with("line 201"));
+    assert!(matches!(
+        &excerpt.parts[1],
+        OutputPart::Omission { lines: 101, .. }
+    ));
+    assert!(matches!(&excerpt.parts[0],OutputPart::Text {text,..} if text.starts_with("line 0")));
+    assert!(matches!(&excerpt.parts[2],OutputPart::Text {text,..} if text.starts_with("line 201")));
     assert_eq!(
-        excerpt.head.chars().count() as u64
-            + excerpt.omitted_characters
-            + excerpt.tail.chars().count() as u64,
+        excerpt
+            .parts
+            .iter()
+            .map(|part| match part {
+                OutputPart::Text { text, .. } => text.chars().count() as u64,
+                OutputPart::Omission { characters, .. } => *characters,
+            })
+            .sum::<u64>(),
         original.chars().count() as u64
     );
     assert!(call.output.is_none());
@@ -750,10 +758,16 @@ fn a_single_long_output_line_is_shortened_at_unicode_boundaries() {
         },
     );
     let excerpt = call.output_excerpt.unwrap();
-    assert_eq!(excerpt.head.chars().count(), 2000);
-    assert_eq!(excerpt.tail.chars().count(), 2000);
-    assert_eq!(excerpt.omitted_characters, 6000);
-    assert_eq!(excerpt.omitted_lines, 0);
+    assert!(matches!(&excerpt.parts[0],OutputPart::Text {text,..} if text.chars().count()==2000));
+    assert!(matches!(&excerpt.parts[2],OutputPart::Text {text,..} if text.chars().count()==2000));
+    assert!(matches!(
+        &excerpt.parts[1],
+        OutputPart::Omission {
+            characters: 6000,
+            lines: 0,
+            ..
+        }
+    ));
 }
 #[test]
 fn multiple_result_attachments_keep_individual_availability_and_source() {
@@ -955,4 +969,31 @@ fn json_encoding_preserves_the_output_error_kind() {
         .err()
         .unwrap();
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+}
+
+#[test]
+fn each_retained_long_tool_line_has_its_own_explicit_omission() {
+    let original = format!("{}\nshort middle\n{}\n", "a".repeat(5000), "λ".repeat(5000));
+    let (_, call) = result_output(
+        original,
+        ReadOptions {
+            tools: Some(Expansion::Full),
+            ..Default::default()
+        },
+    );
+    let excerpt = call.output_excerpt.unwrap();
+    assert_eq!(
+        excerpt
+            .parts
+            .iter()
+            .filter(|part| matches!(part, OutputPart::Omission { lines: 0, .. }))
+            .count(),
+        2
+    );
+    assert!(
+        excerpt
+            .parts
+            .iter()
+            .any(|part| matches!(part,OutputPart::Text {text,..} if text.contains("short middle")))
+    );
 }
