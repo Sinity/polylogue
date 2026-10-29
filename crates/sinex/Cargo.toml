@@ -19,6 +19,7 @@ sinex-model = { git = "https://github.com/Sinity/sinex", rev = "41e79f09661fa466
 async-nats = "0.47"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures-util = "0.3"
+uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

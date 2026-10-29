@@ -1742,6 +1742,7 @@ dependencies = [
  "blake3",
  "credential-masking",
  "jiff",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -1796,6 +1797,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -1824,6 +1826,7 @@ dependencies = [
  "memchr",
  "polylogue-model",
  "rusqlite",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

@@ -44,7 +44,9 @@ impl fmt::Display for Origin {
 }
 
 /// An identifier as the source wrote it. Opaque; may contain colons.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
 pub struct NativeId(String);
 

@@ -3,9 +3,11 @@ use std::fmt;
 
 /// A point in time as a source stated it. Unknown times are `None` at the
 /// use site, never a zero or a guess.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(transparent)]
-pub struct Timestamp(jiff::Timestamp);
+pub struct Timestamp(#[schemars(with = "String")] jiff::Timestamp);
 
 impl Timestamp {
     pub fn from_unix_ms(ms: i64) -> Option<Self> {

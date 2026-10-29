@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// A recorded fact from an input, optionally tied to a conversation.
 /// Without a conversation, it belongs to its input and record range.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionId>,
@@ -23,7 +23,7 @@ pub struct Event {
     pub data: Json,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
     /// A fork: the child shares the parent's messages up to `at`, then
@@ -86,7 +86,7 @@ pub static LINK_HOW_NAMES: &[&str] = LINK_HOWS.0.split_at(LINK_HOWS.1).0;
 
 /// A relationship between two sessions, from an explicit marker in the
 /// source, never from guessing.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Link {
     pub kind: LinkKind,
     pub parent: SessionId,

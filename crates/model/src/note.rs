@@ -175,7 +175,7 @@ impl<'de> Deserialize<'de> for Author {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteKind {
     /// `key` is the tag; `value` optionally carries membership, affinity
@@ -235,7 +235,19 @@ impl NoteKind {
 }
 
 /// How one note relates to something else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Relation {
     Answers,
@@ -264,7 +276,7 @@ impl Relation {
 }
 
 /// A note to write. The writing request's ID becomes the note's ID.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NewNote {
     pub kind: NoteKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,7 +295,7 @@ pub struct NewNote {
 }
 
 /// A stored note.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Note {
     pub id: String,
     /// The first note of its revisions; its own ID for a first note.

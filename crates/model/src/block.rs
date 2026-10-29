@@ -2,7 +2,7 @@ use crate::{BlobHash, Json};
 use serde::{Deserialize, Serialize};
 
 /// One part of a message's content, in the order the source wrote it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Block {
     Text {
@@ -86,7 +86,9 @@ stored_names!(BlockKind {
 
 /// What a tool call does. Each origin's parser maps its own tool names to
 /// one of these; everything after the parser reads only the action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolAction {
     /// Runs a shell command; `command` holds it.
@@ -144,7 +146,7 @@ impl Block {
 }
 
 /// How a tool call ended. Kinds never collapse into one success figure.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolOutcome {
     Ok,
@@ -162,7 +164,7 @@ pub enum ToolOutcome {
 
 /// A tool call's outcome as stored and queried: `pending` is a call with
 /// no result while the harness reports it running, decided when read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CallOutcome {
     Ok,
@@ -189,7 +191,7 @@ impl ToolOutcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum ErrorReason {
     /// Refused by a permission rule, mode or the user; the source's own label.
@@ -199,7 +201,7 @@ pub enum ErrorReason {
     ExitCode(i64),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
     StatusFieldUnreadable,
@@ -207,7 +209,7 @@ pub enum UnknownReason {
     RunningInBackground,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Attachment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -228,7 +230,9 @@ pub struct Attachment {
 }
 
 /// Whether the attachment went to the model or came from it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentDirection {
     /// The source records the media without establishing model delivery or authorship.

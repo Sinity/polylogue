@@ -2,7 +2,7 @@
 use crate::{Block, DocumentId, Json, Timestamp};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentPurpose {
     Instruction,
@@ -19,7 +19,9 @@ stored_names!(DocumentPurpose {
 });
 
 /// A purpose, project creator or upload does not by itself establish a writer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentAuthorship {
     #[default]
@@ -36,7 +38,7 @@ stored_names!(DocumentAuthorship {
     Harness => "harness",
 });
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Document {
     pub id: DocumentId,
     pub purpose: DocumentPurpose,
