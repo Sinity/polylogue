@@ -515,7 +515,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         let _: UserRequest = crate::encoding::unpack_json(request.as_ref().ok_or_else(missing)?)?;
         let _: UserOutcome = crate::encoding::unpack_json(outcome.as_ref().ok_or_else(missing)?)?;
         let _: AuthoredEffect = crate::encoding::unpack_json(effect.as_ref().ok_or_else(missing)?)?;
-        let _: Vec<ImportAttribution> = serde_json::from_str(&imports)?;
+        let _: ImportHistory = serde_json::from_str(&imports)?;
         to.execute(&target.sql("INSERT INTO @source.client_request(id,content_hash,created_at,request,outcome,effect,imports,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,0)"),params![id,hash,at,request,outcome,effect,imports])?;
     }
     Ok(())
