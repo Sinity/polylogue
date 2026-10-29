@@ -136,6 +136,15 @@ impl<'a> Compiler<'a> {
                     top,
                 )?
             }
+            ConditionKind::Since { operand, value } | ConditionKind::Until { operand, value } => {
+                field_operand(operand)?;
+                let field = if matches!(&c.kind, ConditionKind::Since { .. }) {
+                    "since"
+                } else {
+                    "until"
+                };
+                self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
+            }
             ConditionKind::Between { operand, from, to } => self.field_cond(
                 field_operand(operand)?,
                 FieldOp::Between(value_text(from)?, value_text(to)?),

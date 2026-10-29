@@ -594,12 +594,13 @@ fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
     for c in top {
         let f = match &c.kind {
             ConditionKind::Match { field, .. } => field.as_str(),
-            ConditionKind::Compare { operand, .. } | ConditionKind::Between { operand, .. } => {
-                match operand {
-                    Operand::Field { name } => name,
-                    _ => continue,
-                }
-            }
+            ConditionKind::Compare { operand, .. }
+            | ConditionKind::Between { operand, .. }
+            | ConditionKind::Since { operand, .. }
+            | ConditionKind::Until { operand, .. } => match operand {
+                Operand::Field { name } => name,
+                _ => continue,
+            },
             _ => continue,
         };
         let f = f.to_ascii_lowercase();

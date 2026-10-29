@@ -491,6 +491,8 @@ impl Parameters {
             ConditionKind::In { query, .. } => self.query(query, used, position)?,
             ConditionKind::Match { value, .. }
             | ConditionKind::Compare { value, .. }
+            | ConditionKind::Since { value, .. }
+            | ConditionKind::Until { value, .. }
             | ConditionKind::Similar { value }
             | ConditionKind::TimeRange { value, .. }
                 if inside =>

@@ -461,7 +461,7 @@ pub static FIELDS: &[Field] = &[
     ),
     f(Sessions, "last_active", Time, "last own message or event").sql("{s}.last_activity_at"),
     sp(Sessions, "since", "active on or after the time", custom::since),
-    sp(Sessions, "until", "begun on or before the time", custom::until),
+    sp(Sessions, "until", "begun before the instant or through the logical day", custom::until),
     f(Sessions, "messages", Number, "own messages").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"message_count")),
     f(Sessions, "human_prompts", Number, "own prose prompts").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"human_prompt_count")),
     f(Sessions, "human_commands", Number, "own typed commands").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"human_command_count")),
@@ -576,7 +576,7 @@ pub static FIELDS: &[Field] = &[
     ).sql("{m}.cost_nusd"),
     f(Messages, "stop_reason", Match, "").sql("{m}.stop_reason"),
     sp(Messages, "since", "at or after the time", custom::since),
-    sp(Messages, "until", "at or before the time", custom::until),
+    sp(Messages, "until", "before the instant or through the logical day", custom::until),
     sp(Messages, "similar", "semantic similarity (a ranking)", custom::near),
     sp(Messages, "output", "words in tool output", custom::output),
     sp(Messages, "thinking", "words in thinking", custom::thinking),
@@ -603,7 +603,7 @@ pub static FIELDS: &[Field] = &[
         custom::evidence_until,
     ),
     sp(Blocks, "since", "at or after the time", custom::since),
-    sp(Blocks, "until", "at or before the time", custom::until),
+    sp(Blocks, "until", "before the instant or through the logical day", custom::until),
     // tool_calls
     f(ToolCalls, "tool", Match, "the tool name as written").sql("{t}.tool"),
     sp(ToolCalls, "mcp_server", "for MCP tools, the server part of the name", custom::mcp_server).sql(
@@ -651,7 +651,7 @@ pub static FIELDS: &[Field] = &[
         custom::evidence_until,
     ),
     sp(ToolCalls, "since", "ended at or after the time, or still open", custom::since),
-    sp(ToolCalls, "until", "started at or before the time", custom::until),
+    sp(ToolCalls, "until", "started before the instant or through the logical day", custom::until),
     sp(ToolCalls, "child", "for subagent calls: the child session", custom::spawned_child),
     sp(ToolCalls, "next", "the session's next tool call", custom::next_call),
     // files
@@ -691,7 +691,7 @@ pub static FIELDS: &[Field] = &[
         custom::evidence_until,
     ),
     sp(Events, "since", "at or after the time", custom::since),
-    sp(Events, "until", "at or before the time", custom::until),
+    sp(Events, "until", "before the instant or through the logical day", custom::until),
     // links
     v(
         Links,
@@ -762,7 +762,7 @@ pub static FIELDS: &[Field] = &[
         "the notes stored by the time, each family at its revision then",
         custom::evidence_until,
     ),
-    sp(Notes, "until", "created at or before the time", custom::until),
+    sp(Notes, "until", "created before the instant or through the logical day", custom::until),
     // deliveries
     f(Deliveries, "id", Prefix, "").sql("{r}.id"),
     sp(Deliveries, "recipient", "the receiving session", custom::recipient).sql("{r}.recipient_id"),

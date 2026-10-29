@@ -460,3 +460,13 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
             .contains("$.matches")
     );
 }
+
+#[test]
+fn saved_query_parameters_bind_typed_time_bounds() {
+    let options = opts(&[("window", "sessions where since $lower until $upper")]);
+    same(
+        "query:window(lower=2026-10-24,upper=2026-10-25)",
+        "sessions where since 2026-10-24 until 2026-10-25",
+        &options,
+    );
+}

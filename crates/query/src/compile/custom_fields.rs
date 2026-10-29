@@ -191,7 +191,7 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     Ok(x.scope
         .a
         .expand(window)
-        .replace("{v}", &t.end_ms()?.to_string()))
+        .replace("{v}", &t.until_bound().as_millisecond().to_string()))
 }
 
 /// `evidence_until:T`: the evidence Polylogue had by T, read with today's
