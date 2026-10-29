@@ -18,8 +18,11 @@ pub fn run(
     _: &crate::commands::Values,
     request: &Request,
     startup: &crate::config::Startup,
-    timeout: Option<std::time::Duration>,
+    call: &command_surface::RunnableRequest,
 ) -> ExitCode {
+    let timeout = call
+        .deadline
+        .duration(Some(crate::daemon::execution::timeout()));
     let archive = Archive::at(&startup.config.archive);
     match send(&archive, request, &mut io::stdout().lock(), timeout) {
         Ok(code) => ExitCode::from(code),

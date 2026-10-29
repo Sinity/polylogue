@@ -17,7 +17,6 @@ use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
 use polylogue_store::Archive;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// The clap command tree: one subcommand per table command, grouped by
@@ -33,16 +32,28 @@ pub fn command() -> clap::Command {
                 .action(ArgAction::SetTrue)
                 .help("Machine-readable output"),
         );
-    root = root.arg(
-        clap::Arg::new("timeout")
-            .long("timeout")
-            .global(true)
-            .value_name("SECONDS")
-            .value_parser(clap::value_parser!(u64).range(1..))
-            .help(
-                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export and schema infer: none)",
-            ),
-    );
+    root = root
+        .arg(
+            clap::Arg::new("request")
+                .long("request")
+                .global(true)
+                .value_name("JSON")
+                .help("The operation's complete typed argument object"),
+        )
+        .arg(
+            clap::Arg::new("request_id")
+                .long("request-id")
+                .global(true)
+                .value_name("ID")
+                .help("The durable request identity"),
+        )
+        .arg(
+            clap::Arg::new("deadline")
+                .long("deadline")
+                .global(true)
+                .value_name("MS|none")
+                .help("Milliseconds from admission, or none to lift the deadline"),
+        );
     let mut globals: Vec<&str> = Vec::new();
     for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
         if !globals.contains(&a.name) {
@@ -56,6 +67,7 @@ pub fn command() -> clap::Command {
                 for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
                     root = root.arg(clap_arg(a));
                 }
+                root = root.subcommand(subcommand(c).name("find"));
             }
             Cli::Subcommand | Cli::Hidden => {
                 let sub = subcommand(c);
@@ -139,7 +151,11 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
     if let Some(d) = a.default {
         arg = arg.default_value(d);
     }
-    arg.required(a.required && a.default.is_none() && a.kind != Kind::Bool)
+    if a.required && a.default.is_none() && a.kind != Kind::Bool {
+        arg.required_unless_present("request")
+    } else {
+        arg
+    }
 }
 
 /// The table command the matches chose, and the matches holding its
@@ -151,6 +167,9 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
             .find(|c| c.cli == Cli::NoSubcommand)
             .map(|c| (c, matches));
     };
+    if word == "find" {
+        return crate::commands::command("query").map(|command| (command, sub));
+    }
     let (name, leaf) = match sub.subcommand() {
         Some((second, leaf)) => (format!("{word} {second}"), leaf),
         None => (word.to_owned(), sub),
@@ -183,8 +202,10 @@ fn values(c: &Command, m: &ArgMatches) -> Values {
             out.insert(a.name.to_owned(), v);
         }
     }
-    if let Some(seconds) = m.get_one::<u64>("timeout") {
-        out.insert("timeout".into(), Value::from(*seconds));
+    if c.writes
+        && let Some(id) = m.get_one::<String>("request_id")
+    {
+        out.insert("request_id".into(), Value::String(id.clone()));
     }
     Values(out)
 }
@@ -220,43 +241,96 @@ pub fn run(
     let Some((cmd, m)) = chosen(matches) else {
         return fail(json, "bad_request", "no such command", 2);
     };
-    let values = values(cmd, m);
-    let build = match cmd.action {
-        Action::Local(f) => return f(cmd, &values, json),
-        Action::ConfiguredLocal(f) => return f(cmd, &values, startup, json),
-        Action::Request(build) | Action::Stream { build, .. } => build,
-    };
+    let mut values = values(cmd, m);
+    values.0.insert("json".into(), Value::Bool(json));
     let caller = Caller {
         surface: Surface::Cli,
         cwd: Some(cwd.to_owned()),
         json,
     };
-    let request = match build(cmd, &values, &caller) {
-        Ok(r) => r,
-        Err(message) => return fail(json, "bad_request", &message, 2),
+    let raw = m.get_one::<String>("request");
+    if raw.is_some()
+        && cmd
+            .args_for(Surface::Cli)
+            .any(|argument| m.value_source(argument.name) == Some(ValueSource::CommandLine))
+    {
+        return fail(
+            json,
+            "bad_request",
+            "--request cannot be mixed with operation arguments",
+            2,
+        );
+    }
+    let deadline = match m.get_one::<String>("deadline").map(String::as_str) {
+        None => command_surface::Deadline::Default,
+        Some("none") => command_surface::Deadline::None,
+        Some(value) => match value.parse() {
+            Ok(milliseconds) => command_surface::Deadline::Milliseconds(milliseconds),
+            Err(_) => {
+                return fail(
+                    json,
+                    "bad_request",
+                    "deadline must be milliseconds or none",
+                    2,
+                );
+            }
+        },
     };
-    let timeout = matches
-        .get_one::<u64>("timeout")
-        .copied()
-        .map(std::time::Duration::from_secs);
+    let request_id = m
+        .get_one::<String>("request_id")
+        .cloned()
+        .unwrap_or_else(|| values.request_id());
+    let request = if let Some(raw) = raw {
+        let Some(build) = cmd.build_typed else {
+            return fail(
+                json,
+                "bad_request",
+                "this operation has no typed argument adapter",
+                2,
+            );
+        };
+        let arguments = match serde_json::from_str::<Value>(raw) {
+            Ok(arguments) => arguments,
+            Err(error) => return fail(json, "bad_request", &error.to_string(), 2),
+        };
+        let request = match build(arguments.clone(), &caller, &request_id) {
+            Ok(request) => request,
+            Err(error) => return fail(json, "bad_request", &error.message, 2),
+        };
+        let Some(object) = arguments.as_object() else {
+            return fail(
+                json,
+                "bad_request",
+                "operation arguments must be an object",
+                2,
+            );
+        };
+        values = match Values::from_json(cmd, Surface::Cli, object.clone()) {
+            Ok(values) => values,
+            Err(error) => return fail(json, "bad_request", &error, 2),
+        };
+        values.0.insert("json".into(), Value::Bool(json));
+        request
+    } else {
+        let build = match cmd.action {
+            Action::Local(run) => return run(cmd, &values, json),
+            Action::ConfiguredLocal(run) => return run(cmd, &values, startup, json),
+            Action::Request(build) | Action::Stream { build, .. } => build,
+        };
+        match build(cmd, &values, &caller) {
+            Ok(request) => request,
+            Err(message) => return fail(json, "bad_request", &message, 2),
+        }
+    };
+    let call = crate::protocol::operations::request(cmd, values.clone(), request_id, deadline);
     if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&values, &request, startup, timeout);
+        return cli(&values, &request, startup, &call);
     }
     let root = startup.config.archive.clone();
     let result = if cmd.register.is_some() {
-        let deadline = timeout.map_or(command_surface::Deadline::Default, |duration| {
-            command_surface::Deadline::Milliseconds(
-                duration.as_millis().try_into().unwrap_or(u64::MAX),
-            )
-        });
-        let call = crate::protocol::operations::request(
-            cmd,
-            values.clone(),
-            values.request_id(),
-            deadline,
-        );
         crate::client::call_ready(&Archive::at(&root), &call)
     } else {
+        let timeout = deadline.duration(Some(crate::daemon::execution::timeout()));
         send_with_timeout(&Archive::at(&root), &request, timeout).map(|response| response.answer())
     };
     let answer = match result {
@@ -327,10 +401,6 @@ pub fn run(
             fail_detail(json, &kind, &message, detail, code)
         }
     }
-}
-
-fn current_dir() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 /// `continue --exec`: replaces this process with the session's native

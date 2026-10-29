@@ -9,6 +9,21 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{marker::PhantomData, sync::Arc};
 
+/// MCP carries the same operation arguments and admission metadata as the socket.
+#[derive(serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpArguments<T> {
+    pub arguments: T,
+    #[schemars(length(min = 1))]
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "default_deadline")]
+    pub deadline: command_surface::Deadline,
+}
+
+fn default_deadline(deadline: &command_surface::Deadline) -> bool {
+    matches!(deadline, command_surface::Deadline::Default)
+}
+
 pub const PRODUCT: &str = "polylogue";
 
 pub trait CommandType: Send + Sync + 'static {
@@ -47,7 +62,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
         let command = crate::commands::command(C::NAME).expect("typed command exists");
         OperationSpec {
             name: C::NAME.into(),
-            command: C::NAME.split(' ').map(str::to_owned).collect(),
+            command: command.cli_words(),
             summary: command.help.into(),
             reason: command.reason.into(),
             http_route: format!("/api/v1{}", command.http_path()),
@@ -192,6 +207,12 @@ fn checked_values<C: CommandType>(
     caller: &Caller,
     request_id: &str,
 ) -> Result<Values, Failure> {
+    if request_id.is_empty() {
+        return Err(Failure::new(
+            FailureKind::BadRequest,
+            "request_id must not be empty",
+        ));
+    }
     let command = crate::commands::command(C::NAME).expect("typed command exists");
     let mut values = serde_json::to_value(arguments)
         .expect("typed arguments serialize")
