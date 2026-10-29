@@ -56,38 +56,10 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             cancellation.clone(),
         );
         let request = incoming.request;
-        let prepared = limit.scope(|| {
-            crate::commands::COMMANDS
-                .iter()
-                .find_map(|command| match command.action {
-                    crate::commands::Action::Stream { prepare, .. } => prepare(&request, d, None),
-                    _ => None,
-                })
-        });
-        if let Some(prepared) = prepared {
-            let prepared = limit
-                .check()
-                .map_err(|e| {
-                    super::execution::refusal(&e, &serde_json::json!({"op":"changes"}), &limit)
-                })
-                .and(prepared);
-            match prepared {
-                Ok(mut file) => {
-                    if std::io::copy(&mut file, &mut out).is_err() {
-                        return;
-                    }
-                }
-                Err(response) => {
-                    if writeln!(
-                        out,
-                        "{}",
-                        serde_json::to_string(&response).unwrap_or_default()
-                    )
-                    .is_err()
-                    {
-                        return;
-                    }
-                }
+        let produced = limit.scope(|| crate::protocol::stream::produce(&request, d, &mut out));
+        if let Some(result) = produced {
+            if let Err(response) = result {
+                let _ = crate::protocol::stream::error(&mut out, &response);
             }
             continue;
         }

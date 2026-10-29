@@ -30,6 +30,8 @@ async function batch() {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let pending = "";
+    let event = "message";
+    let data = [];
     let began = false;
     let complete;
     let count = 0;
@@ -39,11 +41,25 @@ async function batch() {
         pending += decoder.decode(value, { stream: !done });
         let newline;
         while ((newline = pending.indexOf("\n")) >= 0) {
-          const raw = pending.slice(0, newline);
+          const raw = pending.slice(0, newline).replace(/\r$/, "");
           pending = pending.slice(newline + 1);
-          const response = JSON.parse(raw);
-          if (response.outcome !== "ok") throw new Error("Change batch failed");
-          const line = response.value;
+          if (raw !== "") {
+            if (raw.startsWith(":")) continue;
+            const colon = raw.indexOf(":");
+            const field = colon < 0 ? raw : raw.slice(0, colon);
+            const value = colon < 0 ? "" : raw.slice(colon + 1).replace(/^ /, "");
+            if (field === "event") event = value;
+            if (field === "data") data.push(value);
+            continue;
+          }
+          if (!data.length) { event = "message"; continue; }
+          const name = event;
+          const line = JSON.parse(data.join("\n"));
+          event = "message";
+          data = [];
+          if (name === "error") throw new Error(line.error?.message || "Change batch failed");
+          const expected = line.type === "change" ? "record" : line.type;
+          if (name !== expected) throw new Error("Invalid change event");
           if (complete) throw new Error("Records after change completion");
           if (line.type === "begin" && !began) {
             began = true;
@@ -57,7 +73,7 @@ async function batch() {
         }
         if (done) break;
       }
-      if (pending || !complete) throw new Error("Change batch interrupted; retrying from the last complete position");
+      if (pending || data.length || !complete) throw new Error("Change batch interrupted; retrying from the last complete position");
       for (const subscriber of audience) await subscriber.complete?.(complete);
       if (initializing.size === 0 && [...ready].every(subscriber => audience.includes(subscriber))) position = complete.position;
     } finally {

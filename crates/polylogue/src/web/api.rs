@@ -114,48 +114,121 @@ async fn answer(
     }
     match values.and_then(|v| build(c, &v, &caller)) {
         Ok(request) => match c.action {
-            Action::Stream { prepare, .. } => stream(web, request, prepare).await,
+            Action::Stream { produce, .. } => stream(web, request, produce).await,
             _ => json_answer(web, ask(web, request).await),
         },
         Err(message) => json_answer(web, crate::daemon::service::error("bad_request", message)),
     }
 }
 
-/// Stream a prepared finite batch after its reader has been released. The
-/// spool belongs to the response, so a slow or disconnected client owns no
-/// database transaction, reader slot or detached producer.
+/// Headers are committed on the first produced bytes. Subsequent failures
+/// terminate the stream with a canonical error event, without completion.
 async fn stream(
     web: &Arc<Web>,
     request: crate::daemon::Request,
-    prepare: crate::commands::StreamHandler,
+    produce: crate::commands::StreamProducer,
 ) -> HttpResponse {
-    let web = Arc::clone(web);
-    let worker = Arc::clone(&web);
+    let worker = Arc::clone(web);
     let limit = super::request_limit();
-    let mut cancel = super::CancelRead(Some(limit.cancellation.clone()));
-    let result = tokio::task::spawn_blocking(move || {
-        limit.scope(|| {
-            let result = prepare(&request, &worker.daemon, Some(super::access::scrub))
-                .expect("command owns its request");
-            limit.check().map_err(|e| {
-                crate::daemon::execution::refusal(&e, &serde_json::json!({"op":"changes"}), &limit)
-            })?;
-            result
-        })
-    })
-    .await;
-    cancel.0.take();
-    match result {
-        Ok(Ok(file)) => {
-            let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));
+    let cancellation = limit.cancellation.clone();
+    let (output, input) = tokio::io::duplex(64 * 1024);
+    let (ready, first) = tokio::sync::oneshot::channel();
+    let runtime = tokio::runtime::Handle::current();
+    let worker_request = request.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut output = ProducerWriter {
+            output,
+            runtime,
+            ready: Some(ready),
+        };
+        let result = limit.scope(|| produce(&worker_request, &worker.daemon, &mut output));
+        let Some(result) = result else {
+            if let Some(ready) = output.ready.take() {
+                let _ = ready.send(Ok(false));
+            }
+            return;
+        };
+        match result {
+            Err(response) => {
+                if let Some(ready) = output.ready.take() {
+                    let _ = ready.send(Err(response));
+                } else {
+                    let _ = crate::protocol::stream::error(&mut output, &response);
+                }
+            }
+            Ok(()) => {
+                if let Some(ready) = output.ready.take() {
+                    let _ = ready.send(Err(crate::daemon::service::error(
+                        "internal",
+                        "stream completed without producing events",
+                    )));
+                }
+            }
+        }
+    });
+    let mut cancel = super::CancelRead(Some(cancellation.clone()));
+    match first.await {
+        Ok(Ok(true)) => {
+            cancel.0.take();
+            let input = StreamInput {
+                input,
+                cancellation,
+            };
             (
-                [(header::CONTENT_TYPE, "application/x-ndjson")],
-                axum::body::Body::from_stream(stream),
+                [
+                    (header::CONTENT_TYPE, "text/event-stream"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(input)),
             )
                 .into_response()
         }
-        Ok(Err(response)) => json_answer(&web, response),
-        Err(error) => json_answer(&web, crate::daemon::service::error("internal", error)),
+        Ok(Ok(false)) => json_answer(web, ask(web, request).await),
+        Ok(Err(response)) => json_answer(web, response),
+        Err(error) => json_answer(web, crate::daemon::service::error("internal", error)),
+    }
+}
+
+struct ProducerWriter {
+    output: tokio::io::DuplexStream,
+    runtime: tokio::runtime::Handle,
+    ready: Option<tokio::sync::oneshot::Sender<Result<bool, crate::daemon::Response>>>,
+}
+impl std::io::Write for ProducerWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        use tokio::io::AsyncWriteExt;
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if let Some(ready) = self.ready.take() {
+            ready
+                .send(Ok(true))
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        }
+        self.runtime.block_on(self.output.write(bytes))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.runtime.block_on(self.output.flush())
+    }
+}
+
+struct StreamInput {
+    input: tokio::io::DuplexStream,
+    cancellation: polylogue_store::read::limit::ReadCancellation,
+}
+impl tokio::io::AsyncRead for StreamInput {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.input).poll_read(context, buffer)
+    }
+}
+impl Drop for StreamInput {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
     }
 }
 

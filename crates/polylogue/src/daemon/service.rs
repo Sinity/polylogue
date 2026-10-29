@@ -209,19 +209,20 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     Ok(())
 }
 
-/// Transport-specific string cleaning stays with the transport.
-pub(crate) type Cleaner = fn(&str, &std::path::Path) -> String;
-
-/// Prepare this stream request, or leave a different request for its handler.
+/// Produces this finite feed, or leaves another request to its operation.
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
-    clean: Option<Cleaner>,
-) -> Option<Result<std::fs::File, Response>> {
+    output: &mut dyn std::io::Write,
+) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {
         return None;
     };
-    Some(accepting(d).and_then(|()| d.feeds.read(d, since.as_deref(), clean)))
+    Some(accepting(d).and_then(|()| {
+        let mut file = d.feeds.read(d, since.as_deref())?;
+        std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
+        Ok(())
+    }))
 }
 
 /// Answers one request. Reads use the read pool; imports go to the loop
@@ -277,6 +278,9 @@ fn handle_inner(
     if let Request::SchemaInfer { selection } = request {
         return super::schema::infer(d, selection);
     }
+    if matches!(&request, Request::Attachment { .. }) {
+        return super::attachment::read(request, d);
+    }
     let _foreground = d.schema_admission.foreground();
     let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
@@ -287,7 +291,7 @@ fn handle_inner(
         Err(e) => return store_error(&e),
     };
     match request {
-        request @ Request::Attachment { .. } => super::attachment::read(request, d),
+        Request::Attachment { .. } => unreachable!("attachment reads own their reader"),
         Request::ChatSend { .. }
         | Request::ChatActions
         | Request::ChatAction { .. }

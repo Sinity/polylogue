@@ -1,4 +1,5 @@
 //! One socket client for CLI, MCP, browser-host and hook requests.
+pub mod stream;
 use crate::daemon::{Request, Response};
 use polylogue_store::Archive;
 use std::io;

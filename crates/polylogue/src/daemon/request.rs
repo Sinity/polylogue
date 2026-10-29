@@ -143,7 +143,7 @@ pub enum Request {
         #[serde(default)]
         cursor: Option<String>,
     },
-    /// Finite JSON-lines change-reference batch over the existing socket.
+    /// Finite change-reference batch using shared SSE framing.
     Changes {
         since: Option<String>,
     },

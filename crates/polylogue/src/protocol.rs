@@ -4,6 +4,7 @@ pub mod operations;
 pub mod query;
 pub mod query_aliases;
 pub mod status;
+pub mod stream;
 use command_surface::{Answer, Failure, FailureKind, Position};
 use serde_json::Value;
 

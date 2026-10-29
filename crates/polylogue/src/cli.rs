@@ -213,7 +213,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         .copied()
         .map(std::time::Duration::from_secs);
     if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&request, timeout);
+        return cli(&values, &request, timeout);
     }
     let root = Archive::default_root();
     let response = match send_with_timeout(&Archive::at(&root), &request, timeout) {
@@ -373,7 +373,7 @@ fn send_with_timeout(
     crate::client::send_when_ready(archive, request, deadline_ms)
 }
 
-fn wait_for_ready<T>(
+pub(crate) fn wait_for_ready<T>(
     archive: &Archive,
     deadline_ms: Option<i64>,
     mut call: impl FnMut() -> std::io::Result<T>,
