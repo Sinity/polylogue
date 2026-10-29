@@ -131,7 +131,7 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<String, QueryError> {
         let grouped_by_one = query.stages.iter().rev().find_map(|s| match &s.kind {
-            StageKind::GroupBy { keys } => Some(keys.len() == 1),
+            StageKind::Group { keys } => Some(keys.len() == 1),
             _ => None,
         });
         if grouped_by_one != Some(true) {

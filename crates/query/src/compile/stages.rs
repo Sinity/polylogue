@@ -17,7 +17,7 @@ impl<'a> Compiler<'a> {
             .map(|term| scope.a.expand(term))
             .collect();
         Ok(match key {
-            Operand::Function { .. } => match random_seed(key)?.or(self.opts.random_seed) {
+            Operand::Function { .. } => match parse_random_seed(key)?.or(self.opts.random_seed) {
                 Some(seed) => {
                     let name = match identity.as_slice() {
                         [one] => format!("CAST({one} AS TEXT)"),
@@ -378,7 +378,8 @@ impl<'a> Compiler<'a> {
         let saved_near_rank = self.near_rank.take();
         let saved_near_join = self.near_join.take();
         let saved_fusion = self.fusion.take();
-        let sc = RowContext::plain(child.unit);
+        let unit = bind_unit(&child.unit)?;
+        let sc = RowContext::plain(unit);
         let conds: Vec<Condition> = child
             .windows
             .iter()
@@ -396,7 +397,7 @@ impl<'a> Compiler<'a> {
         let mut columns = vec![];
         for f in &child.fields {
             let lower = f.to_ascii_lowercase();
-            let (expr, kind) = if child.unit == Unit::Messages && lower == "text" {
+            let (expr, kind) = if unit == Unit::Messages && lower == "text" {
                 (
                     format!(
                         "(SELECT group_concat(pl_text(tx.body), char(10)) FROM (SELECT xb.text_id FROM block xb WHERE xb.message_pk = {}.pk AND xb.kind = 'text' ORDER BY xb.idx) xbs JOIN text tx ON tx.id = xbs.text_id)",
@@ -423,7 +424,7 @@ impl<'a> Compiler<'a> {
         } else {
             Err(not_built(&format!(
                 "attaching {} to {}",
-                child.unit.name(),
+                unit.name(),
                 parent.unit.name()
             )))
         };
@@ -443,7 +444,7 @@ impl<'a> Compiler<'a> {
             } else {
                 select.join(", ")
             },
-            base_from(child.unit, &sc.a),
+            base_from(unit, &sc.a),
             and_all(&w),
             order.join(", ")
         )
@@ -464,7 +465,7 @@ impl<'a> Compiler<'a> {
             }
         }
         Ok(Attach {
-            name: child.unit.name().to_owned(),
+            name: unit.name().to_owned(),
             sql,
             params,
             columns,
