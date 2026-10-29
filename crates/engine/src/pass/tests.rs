@@ -66,7 +66,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
     );
     let reader = engine.reads.reader().unwrap();
     let known = reader
-        .known_input_at("test-machine", &path.to_string_lossy())
+        .known_input_at("test-machine", path.as_os_str().as_encoded_bytes())
         .unwrap()
         .unwrap();
     let chain = reader

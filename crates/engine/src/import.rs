@@ -430,6 +430,7 @@ impl Engine {
             blobs: Vec::new(),
             length: size,
             parse: Vec::new(),
+            acquisition: None,
             release: Default::default(),
         }
     }

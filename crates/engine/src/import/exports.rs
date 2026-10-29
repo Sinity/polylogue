@@ -162,6 +162,7 @@ impl Engine {
                 blobs: Vec::new(),
                 length: plan.size,
                 parse: Vec::new(),
+                acquisition: None,
                 release: Default::default(),
             },
         )?;
@@ -257,6 +258,7 @@ impl Engine {
             blobs,
             length: plan.size,
             parse: vec![parse],
+            acquisition: None,
             release: Default::default(),
         };
         if files.is_empty() {

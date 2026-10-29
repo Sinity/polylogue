@@ -261,6 +261,7 @@ impl Engine {
                     machine: self.config.machine.clone(),
                     host: self.config.host.clone(),
                     path: path.display().to_string(),
+                    path_bytes: path.as_os_str().as_encoded_bytes().to_vec(),
                     facts: None,
                     seen_at_ms: self.config.clock.now().as_millisecond(),
                     import: None,
@@ -271,6 +272,7 @@ impl Engine {
                 blobs: vec![],
                 length: st.stored,
                 parse: Vec::new(),
+                acquisition: None,
                 release: Default::default(),
             };
             self.writer.send(batch)?;
@@ -503,10 +505,10 @@ impl Engine {
             && st.parser_state.is_none()
             && st.parsed_upto > 0
         {
-            let known = self
-                .reads
-                .reader()?
-                .known_watched_input_at(&self.config.machine, &path.to_string_lossy())?;
+            let known = self.reads.reader()?.known_watched_input_at(
+                &self.config.machine,
+                path.as_os_str().as_encoded_bytes(),
+            )?;
             if let Some(known) = known
                 && known.input_id == st.input_id
                 && known.facts == st.facts
@@ -1030,7 +1032,7 @@ impl Engine {
                 if plan.tracked {
                     let known = self.reads.reader()?.known_watched_input_at(
                         &self.config.machine,
-                        &plan.path.to_string_lossy(),
+                        plan.path.as_os_str().as_encoded_bytes(),
                     )?;
                     if let Some(state) = self.inputs.get_mut(&plan.path) {
                         state.facts = known.as_ref().and_then(|known| known.facts);

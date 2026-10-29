@@ -18,6 +18,7 @@ fn input(position: i64, id: &str) -> Confirmed {
         event: format!("event-{id}"),
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
+                acquisition: None,
                 input: id.into(),
                 format: "synthetic".into(),
                 revision: None,
@@ -243,6 +244,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         event: format!("event-{id}"),
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
+                acquisition: None,
                 input: id.into(),
                 format: "synthetic".into(),
                 observation: None,
@@ -368,6 +370,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         event: "input-fact".into(),
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
+                acquisition: None,
                 input: "input".into(),
                 format: "synthetic".into(),
                 revision: Some(crate::input_rows::Revision {
@@ -511,6 +514,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
         event: "input-fact".into(),
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
+                acquisition: None,
                 input: "input".into(),
                 format: "synthetic".into(),
                 revision: Some(crate::input_rows::Revision {

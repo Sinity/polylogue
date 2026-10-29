@@ -158,6 +158,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             machine: "m".into(),
             host: "h".into(),
             path: format!("/p/{input}"),
+            path_bytes: format!("/p/{input}").into_bytes(),
             facts: None,
             seen_at_ms: 1,
             import: None,
@@ -184,6 +185,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             step.reading_version = "synthetic=1".into();
             step
         }],
+        acquisition: None,
         release: InFlight::default(),
     }
 }

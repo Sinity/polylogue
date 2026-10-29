@@ -392,47 +392,25 @@ impl Engine {
         }
         let reader = self.reads.reader()?;
 
-        let mut known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
-        let mut database_paths: HashMap<String, String> = self
-            .inputs
-            .iter()
-            .filter(|(path, state)| state.origin.is_row_dump(path))
-            .map(|(path, state)| (state.input_id.clone(), path.display().to_string()))
-            .collect();
-        for input in &mut known {
-            if ORIGINS
-                .iter()
-                .any(|origin| origin.name == input.format && origin.capture == Capture::RowDump)
-            {
-                if let Some(path) = database_paths.get(&input.input_id) {
-                    input.path = path.clone();
-                    input.facts = None;
-                    continue;
-                }
-                if let Some((machine, path)) =
-                    reader.tool_database_source(&input.input_id, &self.blobs)?
-                    && machine == self.config.machine
-                {
-                    database_paths.insert(input.input_id.clone(), path.clone());
-                    input.path = path;
-                    input.facts = None;
-                }
-            }
-        }
+        let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
         drop(reader);
         self.inputs
             .retain(|path, state| !state.origin.is_row_dump(path));
         for k in known {
+            let Some(path_bytes) = k.path_bytes else {
+                // Historical display text cannot identify a native location.
+                continue;
+            };
+            use std::os::unix::ffi::OsStringExt;
+            let path = PathBuf::from(std::ffi::OsString::from_vec(path_bytes));
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };
-            if !origin.is_row_dump(Path::new(&k.path))
-                && self.inputs.contains_key(Path::new(&k.path))
-            {
+            if !origin.is_row_dump(&path) && self.inputs.contains_key(&path) {
                 continue;
             }
             self.inputs.insert(
-                PathBuf::from(&k.path),
+                path,
                 InputState {
                     input_id: k.input_id,
                     origin,
@@ -458,6 +436,7 @@ impl Engine {
             machine: self.config.machine.clone(),
             host: self.config.host.clone(),
             path: path.display().to_string(),
+            path_bytes: path.as_os_str().as_encoded_bytes().to_vec(),
             facts,
             seen_at_ms: self.config.clock.now().as_millisecond(),
             import: None,
