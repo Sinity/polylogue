@@ -907,9 +907,7 @@ impl Inner {
     /// stale, so the scan for stale sessions, which reads every session for
     /// every derivation, is skipped.
     fn derive(&mut self) -> Result<u64> {
-        let tx = self.index.transaction()?;
-        crate::variants::project(&tx)?;
-        tx.commit()?;
+        self.project_variant_text()?;
         // Changes only when another connection commits.
         let version = |index: &Connection| -> Result<i64> {
             Ok(index.pragma_query_value(None, "data_version", |r| r.get(0))?)
