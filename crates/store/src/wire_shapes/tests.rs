@@ -401,6 +401,9 @@ fn wire_shape_unknown_discriminators_and_tables_use_explicit_metadata_without_va
     table.unknown_table_count = 1;
     let mut parsed = step("v1", 0..10, true, vec![table, kind]);
     parsed.output.events.push(polylogue_model::Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: None,
         kind: "fixture".into(),
         at: None,
