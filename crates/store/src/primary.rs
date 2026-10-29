@@ -14,9 +14,9 @@ pub use products::{
 };
 
 use crate::input_rows::InputRows;
-use crate::user_writes::UserRequest;
 use crate::{ReadPool, Result, StoreError};
 use polylogue_model::BlobHash;
+use polylogue_model::user::UserRequest;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 

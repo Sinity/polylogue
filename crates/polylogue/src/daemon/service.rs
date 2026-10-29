@@ -4,11 +4,10 @@
 use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
+use polylogue_model::user::{Delivery, UserWrite};
 use polylogue_model::{Author, NewNote, NoteKind};
 use polylogue_store::user_writes::{self as user_writes, machine_id};
-use polylogue_store::{
-    Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
-};
+use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -136,7 +135,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             return store_error(&error);
         }
         let _invalidation = d.page_ends.mutation();
-        let result = writes.user(UserRequest::now(request_id, write));
+        let result = writes.user(polylogue_store::user_writes::request_now(request_id, write));
         match result {
             Ok(out) => delivery = Some(out.id),
             Err(e) => return store_error(&e),
@@ -156,7 +155,7 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
         Err(response) => return response,
     };
     let _invalidation = d.page_ends.mutation();
-    match writes.user(UserRequest::now(request_id, w)) {
+    match writes.user(polylogue_store::user_writes::request_now(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
     }

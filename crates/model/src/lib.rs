@@ -24,6 +24,7 @@ mod quota;
 mod session;
 mod time;
 mod usage;
+pub mod user;
 mod work;
 
 pub use batch::{
@@ -77,3 +78,5 @@ macro_rules! string_schema {
 string_schema!(
     Origin, SessionId, MessageId, DocumentId, BlobHash, Target, Author
 );
+
+pub mod authored;

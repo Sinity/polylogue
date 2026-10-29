@@ -1,6 +1,7 @@
 use super::*;
-use crate::user_writes::{UserRequest, UserWrite};
 use crate::{Archive, ReadPool, Writer};
+use polylogue_model::user::CHAT_CLAIM_MS;
+use polylogue_model::user::UserWrite;
 
 fn setup() -> (
     tempfile::TempDir,
@@ -16,8 +17,8 @@ fn setup() -> (
     (dir, archive, lock, writer, reads)
 }
 
-fn write(writer: &Writer, write: UserWrite) -> Result<crate::UserOutcome> {
-    writer.user(UserRequest::now(
+fn write(writer: &Writer, write: UserWrite) -> Result<polylogue_model::user::UserOutcome> {
+    writer.user(crate::user_writes::request_now(
         crate::user_writes::new_request_id(),
         write,
     ))
@@ -99,6 +100,7 @@ fn an_expired_claim_returns_the_action_to_the_queue() {
         stage_only: true,
         needs_approval: false,
         created_at: 0,
+        execution: polylogue_model::authored::ExecutionEligibility::Live,
         attachments: vec![],
         events: vec![ChatEvent {
             at: 1_000,
@@ -110,10 +112,13 @@ fn an_expired_claim_returns_the_action_to_the_queue() {
         }],
     };
     assert_eq!(
-        action.status(1_000 + CLAIM_MS),
+        action.status(1_000 + CHAT_CLAIM_MS),
         (ChatStatus::Claimed, Some("tab"))
     );
-    assert_eq!(action.status(1_001 + CLAIM_MS), (ChatStatus::Queued, None));
+    assert_eq!(
+        action.status(1_001 + CHAT_CLAIM_MS),
+        (ChatStatus::Queued, None)
+    );
 }
 
 #[test]

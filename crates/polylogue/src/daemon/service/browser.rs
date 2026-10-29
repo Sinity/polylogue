@@ -9,7 +9,8 @@ use super::{Daemon, browser_refusal, error, machine_id, ok, store_error, writer}
 use crate::browser::{actions, backfill};
 use crate::daemon::{Request, Response};
 use base64::Engine as _;
-use polylogue_store::{Reader, StoreError, UserRequest, UserWrite, user_writes};
+use polylogue_model::user::UserWrite;
+use polylogue_store::{Reader, StoreError, user_writes};
 use serde_json::json;
 
 fn refused(e: &StoreError) -> Response {
@@ -33,7 +34,10 @@ fn enabled(reader: &Reader<'_>) -> Result<bool, Response> {
 /// request ID.
 fn apply(d: &Daemon, write: UserWrite) -> Result<Option<String>, Response> {
     let writes = writer(d)?;
-    match writes.user(UserRequest::now(user_writes::new_request_id(), write)) {
+    match writes.user(polylogue_store::user_writes::request_now(
+        user_writes::new_request_id(),
+        write,
+    )) {
         Ok(outcome) => Ok(Some(outcome.id)),
         Err(StoreError::NotFound(_)) => Ok(None),
         Err(e) => Err(refused(&e)),
@@ -80,7 +84,7 @@ fn backfill_then_view(d: &Daemon, write: UserWrite) -> Response {
 fn store_files(
     d: &Daemon,
     files: &[actions::ChatFile],
-) -> Result<Vec<polylogue_store::chat_actions::ChatAttachment>, Response> {
+) -> Result<Vec<polylogue_model::user::ChatAttachment>, Response> {
     let writes = writer(d)?;
     files
         .iter()

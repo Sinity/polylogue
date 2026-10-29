@@ -1,6 +1,7 @@
 use super::*;
-use crate::user_writes::{UserRequest, UserWrite};
 use crate::{Archive, ReadPool, Writer};
+use polylogue_model::user::BACKFILL_CLAIM_MS;
+use polylogue_model::user::UserWrite;
 
 fn setup() -> (
     tempfile::TempDir,
@@ -16,14 +17,14 @@ fn setup() -> (
     (dir, archive, lock, writer, reads)
 }
 
-fn write(writer: &Writer, write: UserWrite) -> Result<crate::UserOutcome> {
-    writer.user(UserRequest::now(
+fn write(writer: &Writer, write: UserWrite) -> Result<polylogue_model::user::UserOutcome> {
+    writer.user(crate::user_writes::request_now(
         crate::user_writes::new_request_id(),
         write,
     ))
 }
 
-fn start(writer: &Writer, id: &str, provider: &str) -> crate::UserOutcome {
+fn start(writer: &Writer, id: &str, provider: &str) -> polylogue_model::user::UserOutcome {
     write(
         writer,
         UserWrite::BackfillStart(NewBackfillJob {
@@ -123,6 +124,7 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
         provider: "grok".into(),
         since: None,
         created_at: 0,
+        execution: polylogue_model::authored::ExecutionEligibility::Live,
         events: vec![
             BackfillEvent {
                 at: 0,
@@ -143,10 +145,13 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
         ],
     };
     assert_eq!(
-        job.status(10 + CLAIM_MS),
+        job.status(10 + BACKFILL_CLAIM_MS),
         (BackfillStatus::Running, Some("ext"))
     );
-    assert_eq!(job.status(11 + CLAIM_MS), (BackfillStatus::Waiting, None));
+    assert_eq!(
+        job.status(11 + BACKFILL_CLAIM_MS),
+        (BackfillStatus::Waiting, None)
+    );
 
     let (_dir, _archive, _lock, writer, reads) = setup();
     start(&writer, "j1", "grok");

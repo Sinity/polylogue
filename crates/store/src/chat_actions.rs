@@ -8,138 +8,10 @@
 use crate::{Reader, Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 
-/// How long a claim lasts without a report from the extension instance
-/// holding it; an expired claim returns the action to the queue.
-pub const CLAIM_MS: i64 = 180_000;
-
-/// A new chat action, as the writer stores it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct NewChatAction {
-    pub id: String,
-    /// The request's idempotency key: a resent request is the same action.
-    pub request_key: String,
-    /// BLAKE3 of the request's JSON.
-    pub request_hash: BlobHash,
-    pub request: serde_json::Value,
-    pub stage_only: bool,
-    pub needs_approval: bool,
-    pub attachments: Vec<ChatAttachment>,
-}
-
-/// A file attached to a chat action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct ChatAttachment {
-    pub id: String,
-    pub blob: BlobHash,
-    pub name: String,
-    pub media_type: String,
-    pub size: u64,
-}
-
-/// One thing that happened to a chat action.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChatEvent {
-    pub at: i64,
-    pub kind: String,
-    pub phase: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub receipt: Option<serde_json::Value>,
-}
-
-/// Where a chat action stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatStatus {
-    AwaitingApproval,
-    Queued,
-    Claimed,
-    Drafted,
-    Submitted,
-    OutcomeUnknown,
-    Blocked,
-    Failed,
-    Cancelled,
-}
-
-impl ChatStatus {
-    pub fn finished(self) -> bool {
-        matches!(
-            self,
-            Self::Drafted | Self::Submitted | Self::Failed | Self::Cancelled
-        )
-    }
-}
-
-/// What an extension instance may report about the action it holds, and
-/// the state each outcome leaves; `progress` renews the claim.
-pub fn outcome(kind: &str) -> Option<Option<ChatStatus>> {
-    Some(match kind {
-        "progress" => None,
-        "drafted" => Some(ChatStatus::Drafted),
-        "submitted" => Some(ChatStatus::Submitted),
-        "outcome_unknown" => Some(ChatStatus::OutcomeUnknown),
-        "rate_limited" | "auth_challenge" | "safety_locked" | "provider_warning" => {
-            Some(ChatStatus::Blocked)
-        }
-        "failed" | "network_error" | "capability_mismatch" | "provider_drift" => {
-            Some(ChatStatus::Failed)
-        }
-        _ => return None,
-    })
-}
-
-/// A stored chat action with everything that happened to it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChatAction {
-    pub id: String,
-    pub request_key: String,
-    pub request_hash: BlobHash,
-    pub request: serde_json::Value,
-    pub stage_only: bool,
-    pub needs_approval: bool,
-    pub created_at: i64,
-    pub attachments: Vec<ChatAttachment>,
-    pub events: Vec<ChatEvent>,
-}
-
-impl ChatAction {
-    /// The state at `now`, and the instance holding an unexpired claim.
-    pub fn status(&self, now: i64) -> (ChatStatus, Option<&str>) {
-        let mut status = if self.needs_approval {
-            ChatStatus::AwaitingApproval
-        } else {
-            ChatStatus::Queued
-        };
-        let mut claim: Option<(&str, i64)> = None;
-        for e in &self.events {
-            match e.kind.as_str() {
-                "approved" => status = ChatStatus::Queued,
-                "declined" => status = ChatStatus::Cancelled,
-                "claimed" | "progress" => {
-                    status = ChatStatus::Claimed;
-                    claim = e.by.as_deref().map(|by| (by, e.at + CLAIM_MS));
-                }
-                kind => {
-                    if let Some(Some(next)) = outcome(kind) {
-                        status = next;
-                        claim = None;
-                    }
-                }
-            }
-        }
-        match (status, claim) {
-            (ChatStatus::Claimed, Some((by, until))) if until >= now => (status, Some(by)),
-            (ChatStatus::Claimed, _) => (ChatStatus::Queued, None),
-            _ => (status, None),
-        }
-    }
-}
+use polylogue_model::user::{
+    ChatAction, ChatAttachment, ChatEvent, ChatStatus, NewChatAction, chat_outcome,
+};
 
 impl Reader<'_> {
     /// Every chat action, oldest first.
@@ -192,7 +64,7 @@ impl Reader<'_> {
 pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<ChatAction>> {
     let row = conn
         .prepare_cached(&format!(
-            "SELECT request_key, request_hash, request_json, stage_only, needs_approval, created_at
+            "SELECT request_key, request_hash, request_json, stage_only, needs_approval, created_at, execution
              FROM {schema}chat_action WHERE id = ?1"
         ))?
         .query_row([id], |r| {
@@ -203,10 +75,12 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
                 r.get::<_, bool>(3)?,
                 r.get::<_, bool>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })
         .optional()?;
-    let Some((request_key, hash, request, stage_only, needs_approval, created_at)) = row else {
+    let Some((request_key, hash, request, stage_only, needs_approval, created_at, execution)) = row
+    else {
         return Ok(None);
     };
     let attachments = conn
@@ -275,6 +149,8 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         stage_only,
         needs_approval,
         created_at,
+        execution: polylogue_model::authored::ExecutionEligibility::parse(&execution)
+            .ok_or_else(|| StoreError::Invalid("unknown execution eligibility".into()))?,
         attachments,
         events,
     }))
@@ -355,7 +231,9 @@ pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -
 pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<String> {
     let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
-        .prepare_cached(&source.sql("SELECT id FROM @source.chat_action ORDER BY created_at, id"))?
+        .prepare_cached(&source.sql(
+            "SELECT id FROM @source.chat_action WHERE execution='live' ORDER BY created_at, id",
+        ))?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut next = None;
@@ -389,7 +267,7 @@ pub(crate) fn report(
 ) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
     let action = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_chat_action"))?;
-    let next = outcome(kind).ok_or_else(|| refused("unknown_outcome"))?;
+    let next = chat_outcome(kind).ok_or_else(|| refused("unknown_outcome"))?;
     let (status, holder) = action.status(at);
     if status.finished() {
         return Err(refused("action_finished"));
