@@ -5,6 +5,7 @@ pub mod query;
 pub mod query_aliases;
 pub mod status;
 pub mod stream;
+pub mod wire;
 use command_surface::{Answer, Failure, FailureKind, Position};
 use serde_json::Value;
 
@@ -59,6 +60,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
         &[
             "conflict",
             "stale",
+            "scope_changed",
             "resync_required",
             "idempotency_key_reused",
             "action_finished",

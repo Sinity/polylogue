@@ -85,7 +85,10 @@ fn call_with_limit(
     cancelled: &tokio_util::sync::CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
-    let request = build_request(name, arguments)?;
+    let command = tool_commands()
+        .find(|command| command.mcp_name() == name)
+        .ok_or_else(|| format!("no tool {name}"))?;
+    let request = build_request(name, arguments.clone())?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -94,22 +97,45 @@ fn call_with_limit(
     if tool_call_id.is_some() {
         caller.tool_call_id = tool_call_id;
     }
-    let response = runtime.block_on(crate::client::send_ready_as(
-        archive,
-        &request,
-        deadline_ms,
-        cancelled,
-        caller,
-    ));
-    let structured = match &response {
-        Ok(response) => serde_json::to_value(response.answer()).expect("answer serializes"),
+    let answer = if command.register.is_some() {
+        let values = Values::from_json(command, Surface::Mcp, arguments)?;
+        let deadline = deadline_ms.map_or(command_surface::Deadline::Default, |deadline| {
+            command_surface::Deadline::Milliseconds(
+                crate::daemon::execution::remaining(Some(deadline))
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            )
+        });
+        let call = crate::protocol::operations::request(
+            command,
+            values.clone(),
+            values.request_id(),
+            deadline,
+        );
+        runtime.block_on(crate::client::call_ready_as(
+            archive, &call, cancelled, caller,
+        ))
+    } else {
+        runtime
+            .block_on(crate::client::send_ready_as(
+                archive,
+                &request,
+                deadline_ms,
+                cancelled,
+                caller,
+            ))
+            .map(|response| response.answer())
+    };
+    let structured = match &answer {
+        Ok(answer) => serde_json::to_value(answer).expect("answer serializes"),
         Err(error) => serde_json::to_value(command_surface::Answer::<Value>::error(
             crate::protocol::failure("not_running", error.to_string(), None),
         ))
         .expect("failure serializes"),
     };
-    let failed = matches!(response, Ok(Response::Error { .. }) | Err(_));
-    let text = match format_answer(&request, response) {
+    let failed = matches!(answer, Ok(command_surface::Answer::Error { .. }) | Err(_));
+    let text = match format_answer(&request, answer.map(Response::from)) {
         Ok(text) | Err(text) => text,
     };
     Ok((text, structured, failed))

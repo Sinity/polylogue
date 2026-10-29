@@ -190,7 +190,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
     }
 }
 
-pub fn table(daemon: Arc<Daemon>) -> OperationTable {
+pub fn deadlines() -> command_surface::Deadlines {
     let mut deadlines = command_surface::Deadlines::default();
     for (class, milliseconds) in [
         (LatencyClass::Status, 80),
@@ -200,7 +200,11 @@ pub fn table(daemon: Arc<Daemon>) -> OperationTable {
     ] {
         deadlines.set(class, Some(std::time::Duration::from_millis(milliseconds)));
     }
-    let mut table = OperationTable::new("polylogue", deadlines);
+    deadlines
+}
+
+pub fn table(daemon: Arc<Daemon>) -> OperationTable {
+    let mut table = OperationTable::new("polylogue", deadlines());
     for (kind, codes) in super::FAILURE_CLASSES {
         for code in *codes {
             table

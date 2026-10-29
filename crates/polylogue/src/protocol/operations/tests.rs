@@ -18,35 +18,16 @@ fn typed_query_runs_through_the_shared_table_and_socket() {
         request_id: "query-witness".into(),
         deadline: command_surface::Deadline::None,
     };
-    let answer =
-        runtime().block_on(table.call(envelope, command_surface::Origin::Cli, Default::default()));
+    let answer = runtime().block_on(table.call(
+        envelope.clone(),
+        command_surface::Origin::Cli,
+        Default::default(),
+    ));
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     let typed: crate::protocol::query::Answer =
         serde_json::from_value(answer.value().unwrap().clone()).unwrap();
     assert_eq!(typed.rows().unwrap().len(), 1);
-    let command = crate::commands::command("query").unwrap();
-    let values = Values::from_json(
-        command,
-        Surface::Cli,
-        json!({"query":"sessions"}).as_object().unwrap().clone(),
-    )
-    .unwrap();
-    let Action::Request(build) = command.action else {
-        unreachable!()
-    };
-    let request = build(
-        command,
-        &values,
-        &Caller {
-            surface: Surface::Cli,
-            cwd: None,
-            json: true,
-        },
-    )
-    .unwrap();
-    let socket = crate::client::send(&daemon.daemon.archive.socket(), &request)
-        .unwrap()
-        .answer();
+    let socket = crate::client::call_ready(&daemon.daemon.archive, &envelope).unwrap();
     assert_eq!(
         socket.value().unwrap()["rows"],
         answer.value().unwrap()["rows"]
@@ -102,12 +83,16 @@ fn declaration_and_typed_query_schema_have_the_same_argument_names() {
 #[test]
 fn status_operation_uses_its_typed_answer_on_the_shared_socket_path() {
     let daemon = crate::test_daemon::start("typed status witness");
-    let response = crate::client::send(
-        &daemon.daemon.archive.socket(),
-        &crate::daemon::Request::Status,
+    let answer = crate::client::call_ready(
+        &daemon.daemon.archive,
+        &command_surface::Request {
+            operation: "status".into(),
+            arguments: json!({}),
+            request_id: "status-wire".into(),
+            deadline: command_surface::Deadline::None,
+        },
     )
     .unwrap();
-    let answer = response.answer();
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     let status: crate::protocol::status::Answer =
         serde_json::from_value(answer.value().unwrap().clone()).unwrap();
@@ -162,4 +147,21 @@ fn typed_sql_empty_rows_are_successful_empty_reads() {
     assert_eq!(socket.exit_code(), 1, "{socket:?}");
     assert_eq!(socket.http_status(), Some(200));
     assert_eq!(socket.value(), Some(&json!([])));
+}
+
+#[test]
+fn canonical_socket_rejects_another_operations_arguments_before_execution() {
+    let daemon = crate::test_daemon::start("typed socket validation");
+    let answer = crate::client::call_ready(
+        &daemon.daemon.archive,
+        &command_surface::Request {
+            operation: "status".into(),
+            arguments: json!({"query":"sessions"}),
+            request_id: "bad-status-wire".into(),
+            deadline: command_surface::Deadline::None,
+        },
+    )
+    .unwrap();
+    assert!(matches!(answer, Answer::Error { .. }));
+    assert_eq!(answer.http_status(), Some(400));
 }

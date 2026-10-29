@@ -30,6 +30,59 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         if line.trim().is_empty() {
             continue;
         }
+        if let Some(incoming) = crate::protocol::wire::incoming(&line) {
+            let answer = match incoming {
+                Err(error) => command_surface::Answer::error(crate::protocol::failure(
+                    "bad_request",
+                    error.to_string(),
+                    None,
+                )),
+                Ok((request, caller)) => {
+                    let (evidence, channel) = crate::protocol::caller::peer(&out, &caller)
+                        .unwrap_or_else(|_| {
+                            (
+                                Default::default(),
+                                polylogue_model::authorship::Channel::Cli,
+                            )
+                        });
+                    let accepted = crate::protocol::caller::accept(
+                        &d.callers,
+                        &evidence,
+                        channel,
+                        cancellation.clone(),
+                    );
+                    let origin = if channel == polylogue_model::authorship::Channel::Mcp {
+                        command_surface::Origin::Mcp
+                    } else {
+                        command_surface::Origin::Socket
+                    };
+                    let trusted = command_surface::Caller::authenticated(
+                        accepted.authorship.author.to_string(),
+                        accepted,
+                    );
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("operation runtime starts");
+                    runtime.block_on(operations.call_as(
+                        request,
+                        origin,
+                        trusted,
+                        Default::default(),
+                    ))
+                }
+            };
+            if writeln!(
+                out,
+                "{}",
+                serde_json::to_string(&answer).expect("answer serializes")
+            )
+            .is_err()
+            {
+                return;
+            }
+            continue;
+        }
         let incoming = match serde_json::from_str::<super::execution::Incoming>(&line) {
             Ok(incoming) => incoming,
             Err(e) => {
