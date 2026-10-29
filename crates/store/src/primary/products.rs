@@ -1,7 +1,7 @@
 //! Full product facts exchanged with the confirmed-stream adapter.
 use crate::input_rows::InputRows;
-use polylogue_model::user::UserRequest;
 use crate::writer::InputKey;
+use polylogue_model::user::UserRequest;
 use polylogue_model::{
     BackgroundUpdate, BlobHash, DocumentRow, Event, Link, MessageRow, RecordCounts, RepoLookup,
     Session,
@@ -46,6 +46,7 @@ pub enum Product {
     Message {
         reading: Reading,
         facts: MessageRow,
+        order: Option<u64>,
     },
     Document {
         reading: Reading,
@@ -74,6 +75,7 @@ pub enum Product {
         reset: bool,
     },
     Request(UserRequest),
+    Coverage(polylogue_model::capture::Coverage),
 }
 
 impl Product {
@@ -87,7 +89,7 @@ impl Product {
             | Self::Background { reading, .. }
             | Self::Repository { reading, .. }
             | Self::ParseProgress { reading, .. } => Some(reading),
-            Self::Input { .. } | Self::Blob(_) | Self::Request(_) => None,
+            Self::Input { .. } | Self::Blob(_) | Self::Request(_) | Self::Coverage(_) => None,
         }
     }
 }
@@ -121,6 +123,14 @@ pub struct CapturedInput {
     pub previous: Option<String>,
     pub hash: BlobHash,
     pub length: u64,
+    pub group: Option<CaptureGroup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CaptureGroup {
+    pub identity: String,
+    pub ordinal: u64,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -179,10 +189,18 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
         reading: reading.clone(),
         facts,
     }));
-    products.extend(output.messages.into_iter().map(|facts| Product::Message {
-        reading: reading.clone(),
-        facts,
-    }));
+    let mut message_order = output.message_order;
+    products.extend(
+        output
+            .messages
+            .into_iter()
+            .enumerate()
+            .map(|(index, facts)| Product::Message {
+                reading: reading.clone(),
+                facts,
+                order: message_order.remove(&index),
+            }),
+    );
     products.extend(output.documents.into_iter().map(|facts| Product::Document {
         reading: reading.clone(),
         facts,

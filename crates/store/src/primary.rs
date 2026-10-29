@@ -9,8 +9,8 @@
 pub mod products;
 pub(crate) mod projection;
 pub use products::{
-    Capture, CapturedInput, Confirmed, ConfirmedChange, Material, PendingCapture, PreparedInput,
-    PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
+    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, Material, PendingCapture,
+    PreparedInput, PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
 };
 
 use crate::input_rows::InputRows;
@@ -34,7 +34,11 @@ pub trait Sinex: Send + Sync {
         bytes: &mut dyn std::io::Read,
     ) -> Result<PreparedWrite>;
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
-    fn complete_capture(&self, identity: &str, products: &[ProductWrite]) -> Result<PreparedWrite>;
+    fn complete_captures(
+        &self,
+        identities: &[String],
+        products: &[ProductWrite],
+    ) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
     fn prepare_request(&self, request: &UserRequest) -> Result<polylogue_model::user::UserOutcome>;
     fn confirmed(&self, after: i64, cache: &str) -> Result<Vec<Confirmed>>;
