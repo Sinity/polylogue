@@ -80,6 +80,9 @@ fn wire_shapes_survive_scratch_serialization_and_count_merge() {
             expected: vec!["string".into()],
             dynamic_map: true,
             known_kinds: vec!["message".into()],
+            unknown_kind_count: 0,
+            table: None,
+            unknown_table_count: 0,
         },
     );
     let decoded: RecordCounts =

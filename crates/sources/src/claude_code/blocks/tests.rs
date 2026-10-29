@@ -129,3 +129,42 @@ fn origin_declared_harness_prefixes_do_not_become_authored_titles() {
         PromptKind::Prose
     );
 }
+
+#[test]
+fn server_tool_results_pair_and_keep_structured_success_or_failure() {
+    let record = serde_json::json!({"message":{"content":[
+        {"type":"server_tool_use","id":"code","name":"code_execution","input":{"code":"raise RuntimeError()"}},
+        {"type":"code_execution_tool_result","tool_use_id":"code","content":{"type":"code_execution_result","stdout":"before","stderr":"failed","return_code":7,"content":[{"type":"code_execution_output","file_id":"file-synthetic"}]}},
+        {"type":"web_search_tool_result","tool_use_id":"search","content":{"type":"web_search_tool_result_error","error_code":"max_uses_exceeded"}}
+    ]}});
+    let result = blocks(&record, &record["message"]["content"], &mut Vec::new());
+    let Block::ToolResult {
+        call_id,
+        outcome,
+        output,
+        data,
+        ..
+    } = &result[1]
+    else {
+        panic!("code result")
+    };
+    assert_eq!(call_id.as_deref(), Some("code"));
+    assert_eq!(
+        *outcome,
+        ToolOutcome::Error {
+            reason: Some(ErrorReason::ExitCode(7))
+        }
+    );
+    assert_eq!(output.as_deref(), Some("before\nfailed"));
+    assert_eq!(
+        data.as_ref().unwrap()["content"],
+        record["message"]["content"][1]["content"]
+    );
+    assert!(matches!(
+        result[2],
+        Block::ToolResult {
+            outcome: ToolOutcome::Error { .. },
+            ..
+        }
+    ));
+}
