@@ -61,6 +61,19 @@ impl ChainReading {
         self.decoded.push(batch);
     }
 
+    /// Complete source facts are read without resolving local cache keys first.
+    pub(crate) fn visit_source(
+        &mut self,
+        mut apply: impl FnMut(&ParseStep) -> Result<()>,
+    ) -> Result<()> {
+        self.finish()?;
+        let mut input = BufReader::new(std::fs::File::open(&self.path)?);
+        while let Some(step) = read_step(&mut input)? {
+            apply(&step)?;
+        }
+        Ok(())
+    }
+
     /// Prepared steps keep the shared position lease alive until all readings
     /// have been dropped after the transaction result.
     pub(crate) fn visit(&mut self, mut apply: impl FnMut(&ParseStep) -> Result<()>) -> Result<()> {
@@ -490,6 +503,18 @@ impl Inner {
         length: u64,
         mut reading: ChainReading,
     ) -> Result<u64> {
+        if self.sinex.is_some() {
+            if !reading.decoded.is_empty() {
+                let store = Arc::new(self.location.blobs()?);
+                for result in self.store_group(std::mem::take(&mut reading.decoded), store) {
+                    match result {
+                        Ok(_) | Err(StoreError::PrimaryPending { .. }) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            return self.primary_reading(input, chain, length, reading);
+        }
         let exists: bool = self.archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
             params![input.id, chain, length as i64],

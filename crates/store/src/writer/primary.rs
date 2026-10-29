@@ -119,6 +119,56 @@ impl Inner {
         Ok(())
     }
 
+    pub(super) fn primary_reading(
+        &mut self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        mut source: ChainReading,
+    ) -> Result<u64> {
+        let root:Option<String>=self.index.query_row("SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",params![input.id,chain],|row|row.get(0)).optional()?;
+        let root = root.ok_or_else(|| {
+            StoreError::Invalid("the confirmed source chain has no root material".into())
+        })?;
+        let mut version = None;
+        let mut complete = false;
+        let mut messages = 0;
+        source.visit_source(|step| {
+            if version
+                .as_ref()
+                .is_some_and(|previous| previous != &step.reading_version)
+            {
+                return Err(StoreError::Invalid(
+                    "one replacement has several reading versions".into(),
+                ));
+            }
+            version.get_or_insert_with(|| step.reading_version.clone());
+            complete = step.at_end && step.parsed_upto <= length;
+            messages += step.output.messages.len() as u64;
+            Ok(())
+        })?;
+        if !complete {
+            return Err(StoreError::Invalid(
+                "a replacement reading is not complete".into(),
+            ));
+        }
+        let version =
+            version.ok_or_else(|| StoreError::Invalid("a replacement has no reading".into()))?;
+        let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
+        sinex.prepare_reading(&root, &version, &mut |emit| {
+            source.visit_source(|step| {
+                for product in
+                    self.product_writes(crate::primary::products::parse(&input, chain, step)?)?
+                {
+                    emit(product)?;
+                }
+                Ok(())
+            })
+        })?;
+        self.poll_primary()?;
+        Ok(messages)
+    }
+
     pub(super) fn primary_request(
         &mut self,
         request: &polylogue_model::user::UserRequest,
