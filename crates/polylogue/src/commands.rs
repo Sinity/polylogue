@@ -121,8 +121,12 @@ pub enum Action {
     Stream {
         build: fn(&Command, &Values, &Caller) -> Result<Request, String>,
         produce: StreamProducer,
-        cli:
-            fn(&Values, &Request, &crate::config::Startup, Option<std::time::Duration>) -> ExitCode,
+        cli: fn(
+            &Values,
+            &Request,
+            &crate::config::Startup,
+            &command_surface::RunnableRequest,
+        ) -> ExitCode,
     },
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
@@ -138,6 +142,7 @@ pub struct Command {
         fn(std::sync::Arc<crate::daemon::service::Daemon>, &mut command_surface::OperationTable),
     >,
     pub typed_schemas: Option<fn() -> (Value, Value)>,
+    pub typed_mcp_schema: Option<fn() -> Value>,
     pub build_typed: Option<fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>>,
     /// The command-line words (`note add`); the MCP tool joins them with
     /// `_`, the HTTP route with `/`.
@@ -162,7 +167,20 @@ pub struct Command {
 
 impl Command {
     pub fn mcp_name(&self) -> String {
-        self.name.replace(' ', "_")
+        let words = self.name.replace(' ', "_");
+        if self.register.is_some() {
+            format!("polylogue_{words}")
+        } else {
+            words
+        }
+    }
+
+    pub fn cli_words(&self) -> Vec<String> {
+        if self.cli == Cli::NoSubcommand {
+            vec!["find".into()]
+        } else {
+            self.name.split(' ').map(str::to_owned).collect()
+        }
     }
 
     pub fn http_path(&self) -> String {
@@ -175,7 +193,10 @@ impl Command {
         let args: &'static [Arg] = self.args;
         args.iter()
             .chain(self.writes.then_some(&REQUEST_ID))
-            .filter(move |a| surface == Surface::Cli || !a.cli_only)
+            .filter(move |a| {
+                (surface == Surface::Cli || !a.cli_only)
+                    && (surface != Surface::Cli || a.name != "request_id")
+            })
     }
 }
 
@@ -311,6 +332,7 @@ const CLI: Command = Command {
     failures: &command_surface::FailureKind::ALL,
     register: None,
     typed_schemas: None,
+    typed_mcp_schema: None,
     build_typed: None,
     name: "",
     help: "",
@@ -372,6 +394,7 @@ macro_rules! typed_command {
             register: Some(crate::protocol::operations::register::<$marker>),
             build_typed: Some(crate::protocol::operations::build::<$marker>),
             typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
+            typed_mcp_schema: Some(|| schemars::schema_for!(crate::protocol::operations::McpArguments<$arguments>).to_value()),
             $($fields)*
         }
     }};

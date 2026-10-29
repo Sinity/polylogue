@@ -26,7 +26,6 @@ fn a_starting_daemon_is_waited_for() {
         std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
         let reply = serde_json::to_string(&Response::Ok {
             data: serde_json::json!({"ready": true}),
-            references: Default::default(),
         })
         .unwrap();
         std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
@@ -48,18 +47,80 @@ fn manual_is_an_offline_topic() {
 }
 
 #[test]
-fn timeout_is_global_and_requires_positive_seconds() {
-    for args in [
-        vec!["polylogue", "--timeout", "120", "status"],
-        vec!["polylogue", "status", "--timeout", "120"],
-    ] {
-        let matches = command().try_get_matches_from(args).unwrap();
-        assert_eq!(matches.get_one::<u64>("timeout"), Some(&120));
-    }
+fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() {
+    use std::io::{BufRead, Write};
+    let daemon = crate::test_daemon::start("canonical command witness");
+    let request = command_surface::Request {
+        operation: "query".into(),
+        arguments: serde_json::json!({"query":"sessions"}),
+        request_id: "quoted ' identity".into(),
+        deadline: command_surface::Deadline::None,
+    };
+    let ready = daemon.daemon.ready_call(&request).unwrap();
+    let stages = polylogue_model::command::effective_stages(&ready.cli);
+    assert_eq!(stages.len(), 1);
+    assert_eq!(stages[0].args[0], "find");
+    let root = tempfile::tempdir().unwrap();
+    let archive = Archive::at(root.path());
+    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let expected = request.clone();
+    let server = std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && start.elapsed() < std::time::Duration::from_secs(3) =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("CLI did not reach the canonical socket: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut text = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut text)
+            .unwrap();
+        let (actual, _) = crate::protocol::wire::incoming(&text).unwrap().unwrap();
+        assert_eq!(actual, expected);
+        let answer = command_surface::Answer::ok(serde_json::json!({"count":1}));
+        writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
+    });
+    let mut arguments = vec!["polylogue".to_owned()];
+    arguments.extend(stages[0].args.clone());
+    arguments.push("--json".into());
+    let matches = command().try_get_matches_from(arguments).unwrap();
+    let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
+    assert_eq!(run(&matches, &startup, root.path()), ExitCode::SUCCESS);
+    server.join().unwrap();
+    let mixed = command()
+        .try_get_matches_from([
+            "polylogue",
+            "find",
+            "--request",
+            r#"{"query":"sessions"}"#,
+            "--limit",
+            "1",
+        ])
+        .unwrap();
+    assert_eq!(run(&mixed, &startup, root.path()), ExitCode::from(2));
+}
+
+#[test]
+fn raw_cli_arguments_replace_required_positionals() {
+    let (selected, values) =
+        parse(&["polylogue", "find", "--request", "{}", "--deadline", "none"]).unwrap();
+    assert_eq!(selected.name, "query");
+    assert!(values.text("query").is_none());
     assert!(
         command()
-            .try_get_matches_from(["polylogue", "--timeout", "0", "status"])
-            .is_err()
+            .try_get_matches_from(["polylogue", "read", "--request", r#"{"target":"sessions"}"#])
+            .is_ok()
     );
 }
 

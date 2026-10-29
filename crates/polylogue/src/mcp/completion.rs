@@ -29,12 +29,32 @@ pub(super) fn answer(
     cancelled: &tokio_util::sync::CancellationToken,
     with_result_type: bool,
 ) -> Value {
-    let object = serde_json::to_value(&arguments)
-        .expect("completion arguments serialize")
-        .as_object()
-        .expect("completion arguments are an object")
-        .clone();
-    let answer = match call_with_limit(archive, "complete", object, deadline_ms, cancelled, None) {
+    let command = crate::commands::command("complete").expect("completion is declared");
+    let deadline = deadline_ms.map_or(command_surface::Deadline::Default, |deadline| {
+        command_surface::Deadline::Milliseconds(
+            crate::daemon::execution::remaining(Some(deadline))
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        )
+    });
+    let object = serde_json::to_value(crate::protocol::operations::McpArguments {
+        arguments: &arguments,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        deadline,
+    })
+    .expect("completion envelope serializes")
+    .as_object()
+    .expect("envelope is an object")
+    .clone();
+    let answer = match call_with_limit(
+        archive,
+        &command.mcp_name(),
+        object,
+        deadline_ms,
+        cancelled,
+        None,
+    ) {
         Ok((_, answer, _)) => answer,
         Err(message) => return error(id, -32603, &message),
     };

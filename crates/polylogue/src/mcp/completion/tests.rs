@@ -27,8 +27,8 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     );
     let (_, direct, failed) = call_with_limit(
         archive,
-        "complete",
-        json!({"text":"live: | measure count","position":5})
+        "polylogue_complete",
+        json!({"arguments":{"text":"live: | measure count","position":5},"request_id":"complete-parity"})
             .as_object()
             .unwrap()
             .clone(),
