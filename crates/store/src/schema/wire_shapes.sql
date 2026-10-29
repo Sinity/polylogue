@@ -15,8 +15,9 @@ CREATE TABLE wire_shape (
   reading_version TEXT NOT NULL,
   record_kind TEXT NOT NULL,
   path TEXT NOT NULL,
+  table_key TEXT NOT NULL CHECK (json_valid(table_key)),
   shape TEXT NOT NULL CHECK (json_valid(shape)),
-  PRIMARY KEY (input_pk,chain,reading_version,record_kind,path),
+  PRIMARY KEY (input_pk,chain,reading_version,record_kind,path,table_key),
   FOREIGN KEY (input_pk,chain,reading_version)
     REFERENCES wire_reading(input_pk,chain,reading_version)
 ) STRICT, WITHOUT ROWID;
