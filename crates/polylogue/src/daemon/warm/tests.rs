@@ -14,32 +14,6 @@ fn recent_keeps_the_most_recently_used() {
 }
 
 #[test]
-fn an_answer_is_reused_only_at_its_read_position() {
-    let warm = Warm::default();
-    warm.keep_answer("q".into(), "g:1:1".into(), false, &json!({"rows": [1]}));
-    assert_eq!(warm.answer("q", "g:1:1"), Some(json!({"rows": [1]})));
-    assert_eq!(
-        warm.answer("q", "g:2:1"),
-        None,
-        "a write moved the position"
-    );
-    assert_eq!(warm.answer("other", "g:1:1"), None);
-}
-
-#[test]
-fn a_first_page_is_reused_only_briefly() {
-    let warm = Warm::default();
-    warm.keep_answer("q".into(), "p".into(), true, &json!(1));
-    assert!(warm.answer("q", "p").is_some());
-    if let Ok(mut answers) = warm.answers.lock()
-        && let Some(entry) = answers.entries.back_mut()
-    {
-        entry.1.made -= FIRST_PAGE_FOR;
-    }
-    assert!(warm.answer("q", "p").is_none(), "the clock moved on");
-}
-
-#[test]
 fn count_failures_are_visible_and_a_success_clears_them() {
     let daemon = crate::test_daemon::start("count worker failure");
     let warm = Warm::default();

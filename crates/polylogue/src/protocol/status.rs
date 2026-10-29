@@ -105,8 +105,6 @@ pub struct Warm {
     pub vectors: Option<Vectors>,
     pub vector_loads: u64,
     pub query_vectors_reused: u64,
-    pub answers_reused: u64,
-    pub answers_computed: u64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
