@@ -3,13 +3,13 @@ use super::*;
 #[test]
 fn native_resume_uses_each_harness_command() {
     let s = SessionId::parse("claude-code:7f3e").unwrap();
-    let c = harness_resume(&s, Some("/realm/project/x repo")).unwrap();
+    let c = harness_resume(&s, Some("/workspace/project x/repo")).unwrap();
     assert_eq!(
         (c.program.as_str(), c.args.as_slice(), c.cwd.as_deref()),
         (
             "claude",
             &["--resume".to_owned(), "7f3e".to_owned()][..],
-            Some("/realm/project/x repo")
+            Some("/workspace/project x/repo")
         )
     );
     let c = harness_resume(&SessionId::parse("codex:0199").unwrap(), None).unwrap();

@@ -95,12 +95,11 @@ impl Inner {
                 return errors(&group, error);
             }
         }
-        let prepared = group
+        let files = group
             .iter_mut()
             .flat_map(|item| item.files.drain(..))
-            .map(PreparedBytes::into_prepared)
             .collect::<Vec<_>>();
-        let synced = if self.sinex.is_none() && !prepared.is_empty() {
+        let synced = if !files.is_empty() {
             if self.segment.is_none() {
                 match crate::blobs::open_writer(&self.archive, &self.location.root) {
                     Ok(writer) => self.segment = Some(writer),
@@ -108,6 +107,7 @@ impl Inner {
                 }
             }
             let writer = self.segment.as_mut().expect("opened segment writer");
+            let prepared = files.into_iter().map(PreparedBytes::into_prepared);
             let appended = writer.append_group(prepared, |hash| {
                 crate::blobs::load_extent(&self.archive, "", hash)
                     .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
