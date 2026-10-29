@@ -269,7 +269,13 @@ fn across_inputs_a_complete_version_beats_an_open_one_whichever_comes_first() {
         let done = text_message("r", "s", Role::Assistant, "done", Some("end_turn"));
         let batches = [
             batch("live", 0, 0, vec![row(0, open)], &["s"]),
-            batch("import", 2, 0, vec![row(0, done)], &["s"]),
+            batch(
+                &polylogue_model::BlobHash::of(&SOURCE_RECORD).to_string(),
+                2,
+                0,
+                vec![row(0, done)],
+                &["s"],
+            ),
         ];
         for i in order {
             w.store_reading(batches[i].clone(), Some(&SOURCE_RECORD))
@@ -593,10 +599,12 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
     );
     bad.parse.first_mut().unwrap().counts.records = 5;
     w.store_reading(good, Some(&SOURCE_RECORD)).unwrap();
-    let refused_before_queue = matches!(
-        w.store_reading(bad, Some(&SOURCE_RECORD)),
-        Err(StoreError::Counts(_))
-    );
+    let bad = w.commit_source(bad, &SOURCE_RECORD).unwrap();
+    let refused_before_queue = match w.writer.send(bad) {
+        Ok(()) => false,
+        Err(StoreError::Counts(_)) => true,
+        Err(error) => panic!("unexpected count refusal: {error}"),
+    };
     let report = w.writer.flush().unwrap();
     assert_eq!(
         report.errors.len(),
@@ -1155,11 +1163,26 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     let mut a = w
         .commit_source(batch("a", 0, 0, vec![], &[]), &SOURCE_RECORD)
         .unwrap();
+    let (committed, completed) = sync_channel(5);
     let queued_batches: Vec<_> = ["b", "c", "d", "e", "f"]
         .into_iter()
         .map(|name| {
-            w.commit_source(batch(name, 0, 0, vec![], &[]), &SOURCE_RECORD)
-                .unwrap()
+            let mut reading = w
+                .commit_source(batch(name, 0, 0, vec![], &[]), &SOURCE_RECORD)
+                .unwrap();
+            let committed = committed.clone();
+            let archive = w.archive.archive_db();
+            reading.release = InFlight::new(move || {
+                let db = crate::archive::open_read(&archive).unwrap();
+                let value = db
+                    .query_row("SELECT value FROM setting WHERE key='ahead'", [], |r| {
+                        r.get::<_, String>(0)
+                    })
+                    .optional()
+                    .unwrap();
+                committed.send(value).unwrap();
+            });
+            reading
         })
         .collect();
     a.release = InFlight::new(move || {
@@ -1169,7 +1192,7 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     sender.send(a).unwrap();
     inside.recv().unwrap();
     // The source bytes already exist; parsed batches fill the queue behind it.
-    // Their parse checkpoint commits, rather than earlier raw observations, measure priority.
+    // Each completion observes whether the durable setting was already committed.
     let queued = std::thread::spawn({
         let sender = sender.clone();
         move || {
@@ -1198,23 +1221,13 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     assert!(user.join().unwrap().is_ok());
     queued.join().unwrap();
     w.writer.flush().unwrap();
-    let reads = ReadPool::open(&w.archive).unwrap();
-    let reader = reads.reader().unwrap();
-    let rows = reader
-        .query(
-            "SELECT (SELECT commit_seq FROM a.setting WHERE key = 'ahead') AS setting,
-                    (SELECT min(p.commit_seq) FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id IN ('b', 'c', 'd', 'e', 'f')) AS batches",
-            &[],
-        )
-        .unwrap();
-    let (setting, batches) = (
-        rows[0]["setting"].as_i64().unwrap(),
-        rows[0]["batches"].as_i64().unwrap(),
-    );
-    assert!(
-        setting < batches,
-        "the setting committed at {setting}, the queued batches from {batches}"
-    );
+    for _ in 0..5 {
+        assert_eq!(
+            completed.recv().unwrap().as_deref(),
+            Some("yes"),
+            "the user write must commit before every queued batch finishes"
+        );
+    }
 }
 
 mod attachments;

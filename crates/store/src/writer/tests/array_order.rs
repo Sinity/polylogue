@@ -8,7 +8,7 @@ fn a_parse_from_the_first_byte_restates_event_positions() {
         end: 200,
         message: text_message("a", "s", Role::User, "A", None),
     };
-    let mut seed = batch("array", 2, 0, vec![row], &["s"]);
+    let mut seed = batch("array", 0, 0, vec![row], &["s"]);
     seed.length = 200;
     seed.parse[0].parsed_upto = 200;
     seed.parse[0].output.events.push(Event {

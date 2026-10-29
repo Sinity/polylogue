@@ -37,6 +37,32 @@ fn active(w: &TestArchive) -> Vec<Json> {
         .unwrap()
 }
 
+// Out-of-order discoveries become complete readings; each replacement keeps native record order.
+fn replace_observations(w: &TestArchive, observations: &std::collections::BTreeMap<u64, Batch>) {
+    let mut reading = ChainReading::new().unwrap();
+    for at in [0, 100, 200] {
+        let mut b = observations
+            .get(&at)
+            .cloned()
+            .unwrap_or_else(|| batch("a", 0, at, vec![], &[]));
+        reading.push(&mut b.parse[0]).unwrap();
+    }
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(
+            InputKey {
+                id: "a".into(),
+                format: "claude-code".into(),
+                arrival_rank: 0,
+            },
+            1,
+            300,
+            reading,
+        )
+        .unwrap();
+}
+
 #[test]
 fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
     for reverse in [false, true] {
@@ -67,8 +93,10 @@ fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
         if reverse {
             observations.reverse();
         }
+        let mut received = std::collections::BTreeMap::new();
         for (index, b) in observations.into_iter().enumerate() {
-            w.store_reading(b, None).unwrap();
+            received.insert(b.parse[0].start, b);
+            replace_observations(&w, &received);
             w.writer.derive().unwrap();
             if !reverse {
                 let expected = ["claude-code:a", "claude-code:b", "claude-code:a"][index];
@@ -167,8 +195,10 @@ fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
             if reverse {
                 observations.reverse();
             }
+            let mut received = std::collections::BTreeMap::new();
             for b in observations {
-                w.store_reading(b, None).unwrap();
+                received.insert(b.parse[0].start, b);
+                replace_observations(&w, &received);
                 w.writer.derive().unwrap();
             }
             let pool = ReadPool::open(&w.archive).unwrap();

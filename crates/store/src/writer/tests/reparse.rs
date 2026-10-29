@@ -2,6 +2,8 @@ use super::*;
 use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
 use serde_json::json;
 
+const EXPORT_RECORD: [u8; 100] = [b'e'; 100];
+
 fn fixture(changed: bool) -> Vec<Batch> {
     let message = |id, text| text_message(id, "main", Role::Assistant, text, Some("end_turn"));
     let mut main = batch(
@@ -60,7 +62,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
         SessionKind::Main,
     ));
     let mut export = browser.clone();
-    export.input.id = "export".into();
+    export.input.id = polylogue_model::BlobHash::of(&EXPORT_RECORD).to_string();
     export.input.arrival_rank = 2;
     export.input.format = "chatgpt".into();
     export.observation.as_mut().unwrap().path = "/p/export".into();
@@ -154,7 +156,11 @@ fn write(w: &TestArchive, batches: impl IntoIterator<Item = Batch>) {
             step.prepare();
         }
         let bytes =
-            (!matches!(b.change, Change::Reparse { .. })).then_some(SOURCE_RECORD.as_slice());
+            (!matches!(b.change, Change::Reparse { .. })).then_some(if b.input.arrival_rank == 2 {
+                EXPORT_RECORD.as_slice()
+            } else {
+                SOURCE_RECORD.as_slice()
+            });
         w.store_reading(b, bytes).unwrap();
     }
     let report = w.writer.flush().unwrap();
@@ -334,7 +340,13 @@ fn retracting_the_winner_restores_complete_structured_payloads_without_parsing_s
         &w,
         [
             batch("a", 0, 0, vec![row(1, winner)], &["hash-order"]),
-            batch("b", 2, 0, vec![row(3, original.clone())], &["hash-order"]),
+            batch(
+                &polylogue_model::BlobHash::of(&EXPORT_RECORD).to_string(),
+                2,
+                0,
+                vec![row(3, original.clone())],
+                &["hash-order"],
+            ),
         ],
     );
     let mut reading = ChainReading::new().unwrap();

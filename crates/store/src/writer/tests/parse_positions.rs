@@ -23,19 +23,19 @@ fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
         b.length = 300;
         b
     };
-    w.store_reading(reading(0, "first", "first"), None).unwrap();
+    w.writer.send(reading(0, "first", "first")).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let mut bad = reading(100, "middle", "middle");
     bad.parse[0].counts.records = 0;
     // Worker validation can refuse a batch before it reaches the writer.
     // The committed parse position remains the retry authority in either case.
-    let refused_before_queue = match w.store_reading(bad, None) {
-        Ok(_) => false,
+    let refused_before_queue = match w.writer.send(bad) {
+        Ok(()) => false,
         Err(StoreError::Counts(_)) => true,
         Err(error) => panic!("unexpected malformed-count refusal: {error}"),
     };
-    match w.store_reading(reading(200, "last", "last"), None) {
-        Ok(_) | Err(StoreError::Invalid(_)) => {}
+    match w.writer.send(reading(200, "last", "last")) {
+        Ok(()) | Err(StoreError::Invalid(_)) => {}
         Err(error) => panic!("unexpected suffix refusal: {error}"),
     }
     w.store_reading(make("unrelated", 0, "other", "other"), Some(&SOURCE_RECORD))
@@ -50,9 +50,8 @@ fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
     assert_eq!(checkpoint.parsed_upto, 100);
     drop(r);
     drop(reader);
-    w.store_reading(reading(100, "middle", "middle"), None)
-        .unwrap();
-    w.store_reading(reading(200, "last", "last"), None).unwrap();
+    w.writer.send(reading(100, "middle", "middle")).unwrap();
+    w.writer.send(reading(200, "last", "last")).unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
     assert_eq!(texts(&w, "input"), ["first", "middle", "last"]);
