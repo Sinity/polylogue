@@ -295,27 +295,35 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
     });
     drop(foreground);
     let _lease = admission.infer().unwrap();
-    let count = std::cell::Cell::new(0);
-    let mut stream = IdleRead {
-        source: &b"abcdef"[..],
-        admission: &admission,
-        read: &count,
-    };
-    let mut byte = [0];
-    stream.read_exact(&mut byte).unwrap();
-    assert_eq!(byte, [b'a']);
-    let foreground = admission.foreground();
     std::thread::scope(|scope| {
-        let (release, waiting) = channel();
+        let (first, started) = channel();
+        let (next, proceed) = channel();
+        let (done, finished) = channel();
+        let admission_ref = &admission;
         scope.spawn(move || {
-            waiting.recv().unwrap();
-            drop(foreground);
+            let count = std::cell::Cell::new(0);
+            let mut stream = IdleRead {
+                source: &b"abcdef"[..],
+                admission: admission_ref,
+                read: &count,
+            };
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            first.send(byte).unwrap();
+            proceed.recv().unwrap();
+            stream.read_exact(&mut byte).unwrap();
+            done.send((byte, count.get())).unwrap();
         });
-        release.send(()).unwrap();
-        stream.read_exact(&mut byte).unwrap();
+        assert_eq!(started.recv().unwrap(), [b'a']);
+        let foreground = admission.foreground();
+        next.send(()).unwrap();
+        assert!(finished.recv_timeout(Duration::from_millis(40)).is_err());
+        drop(foreground);
+        assert_eq!(
+            finished.recv_timeout(Duration::from_secs(2)).unwrap(),
+            ([b'b'], 2)
+        );
     });
-    assert_eq!(byte, [b'b']);
-    assert_eq!(count.get(), 2);
 }
 
 #[test]

@@ -390,3 +390,27 @@ fn row_dump_declared_columns_are_not_dynamic_maps_and_long_sql_is_discarded() {
     assert_eq!(schema.tables["wide"].fields.len(), 61);
     assert!(!schema.tables["wide"].fields.contains_key("/*"));
 }
+
+#[test]
+fn row_dump_metadata_variants_survive_merging_without_claiming_observed_column_types() {
+    let mut observer = Observer::default();
+    for declared in ["TEXT", "INTEGER"] {
+        let header = serde_json::json!({"schema":{"empty":"private SQL"},"table_metadata":{"empty":{"columns":[{"cid":0,"name":"id","declared_type":declared,"not_null":false,"primary_key":0,"hidden":0}],"without_rowid":false}}});
+        let mut one = Observer::default();
+        one.read(
+            io::Cursor::new(serde_json::to_vec(&header).unwrap()),
+            Framing::RowDump,
+        )
+        .unwrap();
+        observer.merge(one).unwrap();
+    }
+    let schema = observer.finish("synthetic".into(), vec![]);
+    let table = &schema.tables["empty"];
+    assert_eq!(
+        (table.headers, table.metadata_headers, table.metadata.len()),
+        (2, 2, 2)
+    );
+    assert!(table.fields.is_empty());
+    assert!(table.unobserved_columns);
+    assert!(compare(&schema, &schema).unwrap().tables.is_empty());
+}

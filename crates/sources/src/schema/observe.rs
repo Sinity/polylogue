@@ -177,14 +177,30 @@ impl<R: BufRead> Parser<R> {
     }
 
     fn integer(&mut self) -> Result<i64, serde_json::Error> {
-        let mut text = Vec::new();
-        if self.peek()? == Some(b'-') {
-            text.push(self.byte()?);
+        let negative = self.peek()? == Some(b'-');
+        if negative {
+            self.byte()?;
         }
+        let first = self.byte()?;
+        if !first.is_ascii_digit() {
+            return Err(invalid());
+        }
+        let mut value = -i64::from(first - b'0');
         while self.peek()?.is_some_and(|b| b.is_ascii_digit()) {
-            text.push(self.byte()?);
+            if first == b'0' {
+                return Err(invalid());
+            }
+            let digit = i64::from(self.byte()? - b'0');
+            value = value
+                .checked_mul(10)
+                .and_then(|n| n.checked_sub(digit))
+                .ok_or_else(invalid)?;
         }
-        serde_json::from_slice(&text)
+        if negative {
+            Ok(value)
+        } else {
+            value.checked_neg().ok_or_else(invalid)
+        }
     }
 
     fn boolean(&mut self) -> Result<bool, serde_json::Error> {
