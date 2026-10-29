@@ -3,8 +3,8 @@ pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
     AcquisitionReceipt, AcquisitionRoute, CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan,
-    ConfirmedSource, PendingCheckpoint, PendingSource, RawRange, SourceBasis, SourceSelector,
-    SourceSnapshot, SourceStatus,
+    ConfirmedSource, PendingCheckpoint, PendingGroupPage, PendingSource, RawRange, SourceBasis,
+    SourceSelector, SourceSnapshot, SourceStatus,
 };
 pub mod products;
 pub(crate) mod projection;
@@ -52,6 +52,14 @@ pub trait Sinex: Send + Sync {
         source: &SourceSelector,
         reading_version: &str,
     ) -> Result<PendingSource>;
+    /// Pages immutable accepted membership; headers contain no parsed outputs.
+    /// Zero limit is invalid. Missing applied members do not prove source EOF.
+    fn pending_group_headers(
+        &self,
+        group: &str,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<PendingGroupPage>;
     /// Pins the original encoded body for exact range comparison without network I/O.
     fn capture_body(&self, identity: &str) -> Result<PreparedBody>;
     fn canonical_publisher(&self) -> bool {
