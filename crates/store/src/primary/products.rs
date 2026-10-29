@@ -142,10 +142,76 @@ pub struct ProductWrite {
     pub product: Product,
     pub location: Option<SourceLocation>,
     pub parents: Vec<String>,
+    pub machine: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceLocation {
     pub material: String,
     pub anchor: u64,
+}
+
+/// Creates complete outbound products from one parser step, before any index write.
+pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Result<Vec<Product>> {
+    let output = step.complete_output()?;
+    if !output.blobs.is_empty() {
+        return Err(crate::StoreError::Invalid(
+            "decoded bytes must be prepared before their product facts".into(),
+        ));
+    }
+    let reading = Reading {
+        input: input.clone(),
+        chain,
+        reading_version: step.reading_version.clone(),
+        order_from: step.order_from,
+        repeats_whole_conversations: step.repeats_whole_conversations,
+        start: step.start,
+        parsed_upto: step.parsed_upto,
+        at_end: step.at_end,
+    };
+    let mut products = Vec::new();
+    products.extend(output.sessions.into_iter().map(|facts| Product::Session {
+        reading: reading.clone(),
+        facts,
+    }));
+    products.extend(output.messages.into_iter().map(|facts| Product::Message {
+        reading: reading.clone(),
+        facts,
+    }));
+    products.extend(output.documents.into_iter().map(|facts| Product::Document {
+        reading: reading.clone(),
+        facts,
+    }));
+    products.extend(output.events.into_iter().map(|facts| Product::Event {
+        reading: reading.clone(),
+        facts,
+    }));
+    products.extend(output.links.into_iter().map(|facts| Product::Link {
+        reading: reading.clone(),
+        facts,
+    }));
+    products.extend(
+        output
+            .background
+            .into_iter()
+            .map(|facts| Product::Background {
+                reading: reading.clone(),
+                facts,
+            }),
+    );
+    products.extend(
+        output
+            .repo_lookups
+            .into_iter()
+            .map(|facts| Product::Repository {
+                reading: reading.clone(),
+                facts,
+            }),
+    );
+    products.push(Product::ParseProgress {
+        reading,
+        counts: step.counts.clone(),
+        reset: step.reset,
+    });
+    Ok(products)
 }
