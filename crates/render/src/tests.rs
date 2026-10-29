@@ -889,3 +889,70 @@ fn hand_written_format_goldens_agree_on_the_typed_document() {
             .unwrap()
     );
 }
+
+#[test]
+fn every_encoder_exposes_controls_without_losing_json_source_values() {
+    let source = "\x1b]52;c;data\x07\u{9b}2J\u{202e}x\r\u{2066}";
+    let doc = document(vec![text(source)]);
+    for format in [
+        Format::Terminal,
+        Format::Markdown,
+        Format::Html,
+        Format::Json,
+        Format::Jsonl,
+    ] {
+        let output = encode(&doc, format);
+        assert!(
+            !output
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "{format:?}"
+        );
+        assert!(!output.contains('\u{202e}'));
+        assert!(!output.contains('\u{2066}'));
+    }
+    assert_eq!(
+        serde_json::from_str::<ReadDocument>(&encode(&doc, Format::Json)).unwrap(),
+        doc
+    );
+}
+#[test]
+fn document_items_keep_a_runnable_document_reference_and_separate_original_position() {
+    let mut doc = polylogue_model::Document::new(
+        polylogue_model::DocumentId::parse("test:document").unwrap(),
+        polylogue_model::DocumentPurpose::Transcript,
+    );
+    doc.blocks = vec![
+        Block::Text { text: "one".into() },
+        Block::Text { text: "two".into() },
+    ];
+    let record = Record::Document(polylogue_model::bundle::DocumentRecord {
+        reference: "document:test:document".into(),
+        commit: 1,
+        document: doc,
+    });
+    let items = layout(
+        record,
+        &ReadOptions::default(),
+        &ProjectionEvidence::default(),
+    );
+    assert_eq!(items[1].source.reference, "document:test:document");
+    assert_eq!(items[1].source.block, Some(1));
+}
+struct BrokenPipe;
+impl Write for BrokenPipe {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+#[test]
+fn json_encoding_preserves_the_output_error_kind() {
+    let mut sink = BrokenPipe;
+    let error = Encoder::new(&header(), Format::Json, EncodeOptions::default(), &mut sink)
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+}

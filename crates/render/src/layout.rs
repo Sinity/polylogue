@@ -242,7 +242,7 @@ pub fn visit_record(
             }
             for (ordinal, block) in row.document.blocks.iter().enumerate() {
                 let source = Source {
-                    reference: format!("{}#{}", row.reference, ordinal),
+                    reference: row.reference.clone(),
                     block: Some(ordinal as u64),
                     ..source.clone()
                 };

@@ -53,14 +53,21 @@ fn main() -> io::Result<()> {
         EncodeOptions::default(),
         &mut sink,
     )?;
+    let mut first_item_ms = 0.0;
     if mode == "collect" {
         let items: Vec<_> = (0..100_000).map(item).collect();
-        for item in &items {
+        for (n, item) in items.iter().enumerate() {
             encoder.push(item)?;
+            if n == 0 {
+                first_item_ms = start.elapsed().as_secs_f64() * 1000.;
+            }
         }
     } else {
         for n in 0..100_000 {
             encoder.push(&item(n))?;
+            if n == 0 {
+                first_item_ms = start.elapsed().as_secs_f64() * 1000.;
+            }
         }
     }
     encoder.finish(&ReadFooter::default())?;
@@ -73,7 +80,7 @@ fn main() -> io::Result<()> {
                 .map(str::to_owned)
         });
     println!(
-        "mode={mode} records=100000 bytes={} largest_write={} elapsed_ms={elapsed:.3} {}",
+        "mode={mode} records=100000 bytes={} largest_write={} elapsed_ms={elapsed:.3} first_item_ms={first_item_ms:.3} {}",
         sink.bytes,
         sink.largest,
         peak.as_deref().unwrap_or("VmHWM unavailable")

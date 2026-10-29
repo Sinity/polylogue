@@ -527,9 +527,38 @@ pub fn value_text<T: Display>(value: &ValueState<T>) -> String {
         ValueState::Inherited { value } => format!("↳ {value}"),
     }
 }
-fn json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {
-    serde_json::to_writer(out, value).map_err(io::Error::other)
+/// Keep JSON valid and lossless while making C1 and direction controls inert
+/// when a client displays its bytes directly on a terminal.
+struct ArchiveFormatter;
+impl serde_json::ser::Formatter for ArchiveFormatter {
+    fn write_string_fragment<W: Write + ?Sized>(
+        &mut self,
+        writer: &mut W,
+        fragment: &str,
+    ) -> io::Result<()> {
+        let mut start = 0;
+        for (index, c) in fragment.char_indices() {
+            if matches!(c,'\u{7f}'..='\u{9f}'|'\u{061c}'|'\u{200e}'|'\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2066}'..='\u{2069}')
+            {
+                writer.write_all(fragment[start..index].as_bytes())?;
+                write!(writer, "\\u{:04x}", c as u32)?;
+                start = index + c.len_utf8();
+            }
+        }
+        writer.write_all(fragment[start..].as_bytes())
+    }
 }
+fn json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {
+    value
+        .serialize(&mut serde_json::Serializer::with_formatter(
+            out,
+            ArchiveFormatter,
+        ))
+        .map_err(|error| {
+            io::Error::new(error.io_error_kind().unwrap_or(io::ErrorKind::Other), error)
+        })
+}
+
 pub fn encode_document(
     document: &ReadDocument,
     format: Format,

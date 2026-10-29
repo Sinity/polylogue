@@ -68,6 +68,9 @@ pub fn value<T: Display>(state: &ValueState<T>) -> Markup {
     web_shell::value_cell(&shared)
 }
 pub fn header(header: &ReadHeader) -> Markup {
+    visible_controls(header_markup(header))
+}
+fn header_markup(header: &ReadHeader) -> Markup {
     html! { header class="read-header" { h1 { @if let Some(title) = header.title.value() { (title) } @else { (&header.target) } } p class="meta" { code { (&header.target) } " · " (header.view) } dl { @for figure in &header.figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } }
     }
 }
@@ -139,6 +142,9 @@ pub fn item(item: &ReadItem) -> Markup {
     item_with_inline_limit(item, 0)
 }
 pub fn item_with_inline_limit(item: &ReadItem, inline_limit: usize) -> Markup {
+    visible_controls(item_markup(item, inline_limit))
+}
+fn item_markup(item: &ReadItem, inline_limit: usize) -> Markup {
     html! { section class="read-item" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
         ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at|at.to_string()).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"?".into())) "/" (total.map(|n|n.to_string()).unwrap_or_else(||"?".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call)) } } } code { (&item.source.reference) } @for assertion in &header.assertions { aside { "◆ " (&assertion.kind) ": " (&assertion.value) " · " (format!("{:?}",assertion.author)) } } },
         ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
@@ -159,6 +165,9 @@ pub fn item_with_inline_limit(item: &ReadItem, inline_limit: usize) -> Markup {
 }
 /// Ordinary navigation consumes the daemon's sealed calls, never guesses URLs.
 pub fn footer(footer: &ReadFooter) -> Markup {
+    visible_controls(footer_markup(footer))
+}
+fn footer_markup(footer: &ReadFooter) -> Markup {
     html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (format!("{:?}",coverage.target)) " omitted from " (coverage.view) } } @for reference in &footer.referenced_by { p { "Referenced by " (&reference.reference) " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call)) } } } @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call)) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call)) } } } }
 }
 pub fn document(document: &ReadDocument) -> Markup {
@@ -202,4 +211,8 @@ fn inline_image(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+fn visible_controls(markup: Markup) -> Markup {
+    PreEscaped(crate::terminal::escape(markup.as_str()))
 }
