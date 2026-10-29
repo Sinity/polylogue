@@ -100,6 +100,13 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         0
     );
     // An accepted note reaches the brief as the operator's own.
+    let operation = d
+        .daemon
+        .operation_context(&polylogue_model::authorship::Authorship {
+            author: Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        })
+        .unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let brief = crate::briefing::prepare(
         &reader,
@@ -109,7 +116,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
             source: crate::briefing::StartSource::Startup,
         },
         "d1",
-        d.daemon.config.requests.now(),
+        &operation,
         None,
         &d.daemon.config.paths.check_history,
     )
