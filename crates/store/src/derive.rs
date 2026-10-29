@@ -104,6 +104,13 @@ pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool>
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM derive_state d JOIN session s ON s.pk=d.session_pk WHERE d.name=?1 AND s.pk=?2 AND d.from_changed=s.changed AND pl_derived_current(d.name,d.version))", params![name,pk], |r| r.get(0))?)
 }
 
+/// Canonical publication reads the same selected messages as ordinary derivation.
+/// These rules use the just-projected rows inside the position transaction.
+pub(crate) fn select_confirmed(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+    duplicates::run(tx, session_pk)?;
+    active_path::run(tx, session_pk)
+}
+
 /// Runs every derivation over the sessions it has not derived at their
 /// current state; returns the number of (derivation, session) pairs done.
 pub fn run(index: &mut Connection) -> Result<u64> {
