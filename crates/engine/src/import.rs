@@ -332,7 +332,7 @@ impl Engine {
     fn restore_bundle_authored(
         &mut self,
         path: &Path,
-        file: &mut std::fs::File,
+        file: &mut impl std::io::Read,
         current: &polylogue_model::authored::ImportAttribution,
         report: &mut ImportReport,
     ) -> Result<(), EngineError> {

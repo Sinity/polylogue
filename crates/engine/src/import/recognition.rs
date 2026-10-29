@@ -123,7 +123,7 @@ impl<'de> Deserialize<'de> for Shape {
 
 pub(super) fn declared(
     path: &Path,
-    file: &mut std::fs::File,
+    file: &mut (impl std::io::Read + std::io::Seek),
     format: Option<&str>,
 ) -> std::io::Result<Option<&'static OriginSpec>> {
     use std::io::{Read, Seek};
