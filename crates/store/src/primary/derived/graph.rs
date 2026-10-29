@@ -163,7 +163,7 @@ pub(super) fn stage(tx: &Transaction<'_>, proof: &RawInputProof) -> Result<()> {
     let mut writes = Vec::new();
     let mut addressed = BTreeSet::new();
     for work in &works {
-        let refs: Vec<_> = work
+        let mut refs: Vec<_> = work
             .physical
             .iter()
             .map(|session| PhysicalRef {
@@ -171,6 +171,7 @@ pub(super) fn stage(tx: &Transaction<'_>, proof: &RawInputProof) -> Result<()> {
                 evidence: physical[session].iter().cloned().collect(),
             })
             .collect();
+        refs.sort_by_key(|reference| reference.session.to_string());
         let membership_basis = basis(work, proof);
         if let Some(root) = &work.root {
             for physical in &work.physical {
@@ -276,7 +277,12 @@ pub(super) fn stage(tx: &Transaction<'_>, proof: &RawInputProof) -> Result<()> {
                     .any(|id| status.sessions().any(|old| old == id))
             })
             .collect();
-        if selected.is_empty() || selected.iter().any(|work| work.root.is_none()) {
+        if selected.is_empty()
+            || selected.iter().any(|work| work.root.is_none())
+            || status
+                .sessions()
+                .any(|old| !selected.iter().any(|work| work.physical.contains(old)))
+        {
             continue;
         }
         let mut roots: Vec<_> = selected
@@ -305,11 +311,28 @@ pub(super) fn stage(tx: &Transaction<'_>, proof: &RawInputProof) -> Result<()> {
         ));
     }
     if !writes.is_empty() {
+        let generation: String =
+            tx.query_row("SELECT value FROM meta WHERE key='generation'", [], |row| {
+                row.get(0)
+            })?;
+        if generation.is_empty() {
+            return Err(StoreError::Invalid(
+                "canonical intent has no cache publication generation".into(),
+            ));
+        }
         let identity = format!(
             "work-batch:{}:{}:{}",
             work_products::VERSION,
             proof.position,
-            blake3::hash(&serde_json::to_vec(&writes)?).to_hex()
+            blake3::hash(&serde_json::to_vec(&(
+                "polylogue.work.intent.v1",
+                &generation,
+                proof.policy_epoch,
+                &proof.scope,
+                proof.position,
+                &writes
+            ))?)
+            .to_hex()
         );
         stage_products(tx, &identity, &writes, Some(proof))?;
     }

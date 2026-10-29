@@ -25,8 +25,9 @@ pub use replay::{
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
-    Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange, Material,
-    PendingCapture, PreparedInput, PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
+    CanonicalCustody, Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed,
+    ConfirmedChange, Material, PendingCapture, PreparedInput, PreparedWrite, Product, ProductWrite,
+    Reading, SourceLocation,
 };
 
 use crate::{Result, StoreError};
@@ -133,6 +134,20 @@ pub trait Sinex: Send + Sync {
         identity: &str,
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
+    /// Durable HELD bytes only. This never uploads or grants publication.
+    fn stage_canonical_products(
+        &self,
+        identity: &str,
+        products: &[ProductWrite],
+        historical_proof: Option<&RawInputProof>,
+    ) -> Result<PreparedWrite>;
+    /// Hydrates one existing immutable body per callback, never the full backlog.
+    fn visit_canonical_custody(
+        &self,
+        visit: &mut dyn FnMut(&CanonicalCustody) -> Result<()>,
+    ) -> Result<()>;
+    /// Must durably fence HELD and already-staged canonical intents before reset.
+    fn revoke_canonical_custody(&self) -> Result<()>;
     /// Owner-certified canonical batch, separate from native acquisition facts.
     fn prepare_canonical_products(
         &self,

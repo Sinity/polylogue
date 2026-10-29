@@ -38,6 +38,11 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    pub(crate) fn fence_publication(&mut self) {
+        self.publication_scope = None;
+        self.publication_epoch = None;
+    }
+
     pub(crate) fn family(&self) -> &str {
         &self.family
     }
@@ -264,6 +269,28 @@ impl Client {
                 .spool
                 .lock()
                 .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
+            let current = spool
+                .get(&prepared.identity)?
+                .ok_or_else(|| Error::Invalid("prepared operation disappeared".into()))?;
+            if current.revoked || current.private || current.unresolved || current.refused {
+                return Err(Error::Refused {
+                    name: prepared.identity.clone(),
+                    reason: "the original operation is not publishable".into(),
+                });
+            }
+            if prepared.canonical && prepared.group.is_some() {
+                let mut revoked = false;
+                spool.visit_captures(&prepared.identity, |identity| {
+                    revoked |= spool.get(identity)?.is_none_or(|member| member.revoked);
+                    Ok(())
+                })?;
+                if revoked {
+                    return Err(Error::Refused {
+                        name: prepared.identity.clone(),
+                        reason: "the original canonical custody was revoked".into(),
+                    });
+                }
+            }
             (
                 spool.acknowledgment(&prepared.identity)?,
                 spool.prepared_frame(&prepared.identity)?,
@@ -342,6 +369,8 @@ impl Client {
     fn publication_allowed(&self, prepared: &crate::spool::Prepared) -> bool {
         !prepared.unresolved
             && !prepared.refused
+            && !prepared.private
+            && !prepared.revoked
             && (!prepared.canonical
                 || prepared
                     .canonical_scope

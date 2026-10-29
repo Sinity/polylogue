@@ -198,7 +198,16 @@ impl Client {
             self.native_page(state, cache).await
         };
         match result {
-            Ok(page) => Ok(page),
+            Ok(page) => {
+                if page.iter().any(|event| matches!(&event.change,ConfirmedChange::Control(control)
+                    if matches!(control.as_ref(),ReplayControl::Reset{..}
+                        |ReplayControl::BasisStatus{status:local::ReplayBasisStatus::Invalidated{..}}
+                        |ReplayControl::Coverage{coverage:local::RawInputCoverage::Incomplete{basis:local::ReplayBasisStatus::Invalidated{..},..}}))) {
+                    self.spool.lock().map_err(|_|Error::Invalid("producer spool panicked".into()))?.revoke_canonical()?;
+                    self.fence_publication();
+                }
+                Ok(page)
+            }
             Err(error) => {
                 for message in &self.pending {
                     let _ = message

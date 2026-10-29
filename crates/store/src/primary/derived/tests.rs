@@ -17,6 +17,11 @@ fn database() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch(crate::schema::INDEX).unwrap();
     db.execute_batch(super::SCHEMA).unwrap();
+    db.execute(
+        "INSERT INTO meta(key,value) VALUES ('generation','synthetic-generation')",
+        [],
+    )
+    .unwrap();
     db.execute_batch(crate::primary::projection::SCHEMA)
         .unwrap();
     db.execute_batch("CREATE TEMP TABLE primary_candidate AS SELECT * FROM primary_fact WHERE 0; CREATE TEMP VIEW primary_next AS SELECT * FROM primary_candidate UNION ALL SELECT f.* FROM primary_fact f WHERE NOT EXISTS(SELECT 1 FROM primary_candidate c WHERE c.event=f.event);").unwrap();
@@ -46,15 +51,25 @@ fn reading() -> Reading {
     }
 }
 fn fact(db: &Connection, event: &str, value: &Product) {
-    let reference = if let Product::Session { facts, .. } = value {
-        Some(format!("session:{}", facts.id))
-    } else {
-        None
+    let reference = match value {
+        Product::Session { facts, .. } => Some(format!("session:{}", facts.id)),
+        Product::Link { facts, .. } => Some(facts.selection_tag()),
+        _ => None,
     };
     let native = crate::primary::NativeFactContext {
         kind: crate::primary::NativeKind {
-            name: "polylogue.session".into(),
-            version: 1,
+            name: match value {
+                Product::Link { .. } => "polylogue.link",
+                Product::Message { .. } => "polylogue.message",
+                Product::Event { .. } => "polylogue.event",
+                _ => "polylogue.session",
+            }
+            .into(),
+            version: if matches!(value, Product::Message { .. }) {
+                4
+            } else {
+                1
+            },
         },
         kind_definition_hash: "a".repeat(64),
         projection: crate::primary::ProjectionIdentity {
@@ -71,7 +86,7 @@ fn fact(db: &Connection, event: &str, value: &Product) {
             producer_identity: Some("synthetic-producer".into()),
         },
     };
-    db.execute("INSERT INTO primary_candidate(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session,native_context) VALUES(?1,1,1,0,'live',?2,'input-x',1,?3,'parsed',0,10,'reader-1','codex:morrow',?4)",params![event,pack(value).unwrap(),reference,pack(&native).unwrap()]).unwrap();
+    db.execute("INSERT INTO primary_candidate(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session,native_context) VALUES(?1,1,1,0,'live',?2,'input-x',1,?3,'parsed',0,10,'reader-1',?5,?4)",params![event,pack(value).unwrap(),reference,pack(&native).unwrap(),session(value).map(ToString::to_string)]).unwrap();
 }
 fn invocation(id: &str, call: &str) -> Product {
     Product::Message{reading:reading(),order:None,projection:None,native_fields:Vec::new(),declared_injections:Vec::new(),declared_attachment_bindings:Vec::new(),facts:Box::new(MessageRow{offset:0,end:10,message:serde_json::from_value(json!({"id":id,"session":"codex:morrow","role":"assistant","stop_reason":"end_turn","blocks":[{"type":"tool_call","call_id":call,"tool":"shell","action":"shell","input":{},"command":"true"}]})).unwrap()})}
@@ -318,4 +333,66 @@ fn canonical_custody_survives_restart_without_proof_and_rolls_back_proof_attachm
         Err(StoreError::Conflict(_))
     ));
     tx.rollback().unwrap();
+}
+
+#[test]
+fn explicit_spawn_copy_keeps_its_parent_as_root_and_canonicalizes_physical_refs() {
+    let mut db = database();
+    let root = SessionId::parse("a:root").unwrap();
+    let child = SessionId::parse("a-b:child").unwrap();
+    for (event, id) in [("root-fact", root.clone()), ("child-fact", child.clone())] {
+        fact(
+            &db,
+            event,
+            &Product::Session {
+                reading: reading(),
+                facts: Session::new(id, SessionKind::Main),
+            },
+        );
+    }
+    let link = polylogue_model::Link {
+        kind: polylogue_model::LinkKind::Spawn,
+        parent: root.clone(),
+        child: child.clone(),
+        at: None,
+        call_id: None,
+        evidence: "explicit source parent".into(),
+    };
+    fact(
+        &db,
+        "spawn-fact",
+        &Product::Link {
+            reading: reading(),
+            facts: link.clone(),
+        },
+    );
+    db.execute("INSERT INTO link(pk,parent_id,child_id,kind,how,evidence,input_pk,source_chain) VALUES (1,?1,?2,'subagent','copied','explicit source parent',1,1)",params![root.to_string(),child.to_string()]).unwrap();
+    db.execute(
+        "INSERT INTO link_value(pk,hash,body) VALUES (1,zeroblob(32),?1)",
+        [pack(&link).unwrap()],
+    )
+    .unwrap();
+    db.execute("INSERT INTO link_source(link_pk,input_pk,chain,value_pk,arrival_rank,admitted) VALUES (1,1,1,1,0,1)",[]).unwrap();
+    let tx = db.transaction().unwrap();
+    stage(&tx, 1, 1, Some(&proof(1))).unwrap();
+    tx.commit().unwrap();
+    let snapshot = staged(&db);
+    assert_eq!(snapshot.session_id, root);
+    let work_products::SnapshotMembership::Established {
+        work,
+        physical_refs,
+        ..
+    } = snapshot.membership
+    else {
+        panic!("explicit source links establish the root");
+    };
+    assert_eq!(work.links.len(), 1);
+    assert_eq!(work.links[0].event, "spawn-fact");
+    assert_eq!(
+        physical_refs
+            .iter()
+            .map(|reference| reference.session.to_string())
+            .collect::<Vec<_>>(),
+        vec![child.to_string(), root.to_string()]
+    );
 }

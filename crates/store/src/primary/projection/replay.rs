@@ -24,14 +24,24 @@ pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
             |row| row.get(0),
         )
         .optional()?;
-    match value {
-        Some(value) => Ok(serde_json::from_str(&value)?),
-        None => Ok(ReplayState {
+    let mut state = match value {
+        Some(value) => serde_json::from_str(&value)?,
+        None => ReplayState {
             applied_position: checkpoint(conn)?,
             scope: super::super::scope::current(conn)?,
             ..Default::default()
-        }),
+        },
+    };
+    // A durable cancellation may precede a failed SDK revocation/clear. Its
+    // old serialized certificate cannot authorize publication after restart.
+    let blocked = conn.query_row("SELECT EXISTS(SELECT 1 FROM meta WHERE key IN ('confirmed_scope_pending','confirmed_replay_blocked'))", [], |row| row.get::<_,bool>(0))?;
+    if blocked {
+        state.publication = None;
+        if state.availability == ProjectionAvailability::Certified {
+            state.availability = ProjectionAvailability::Unverified;
+        }
     }
+    Ok(state)
 }
 
 pub(crate) fn save(conn: &Connection, state: &ReplayState) -> Result<()> {
@@ -140,6 +150,7 @@ fn unavailable(
     // that refusal cannot subsequently restore currentness on its own.
     conn.execute("DELETE FROM primary_complete", [])?;
     if matches!(status, ReplayBasisStatus::Invalidated { .. }) {
+        super::super::derived::revoke(conn)?;
         conn.execute("DELETE FROM primary_pending", [])?;
     }
     Ok(())

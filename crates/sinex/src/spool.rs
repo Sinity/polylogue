@@ -100,6 +100,10 @@ pub(crate) struct Prepared {
     pub canonical_scope: Option<String>,
     #[serde(default)]
     pub canonical_epoch: Option<i64>,
+    #[serde(default)]
+    pub private: bool,
+    #[serde(default)]
+    pub revoked: bool,
     pub request: bool,
     pub group: Option<Group>,
     #[serde(skip)]
@@ -332,6 +336,11 @@ impl Spool {
                 captured.descriptor()?.stored_len,
             )?;
         }
+        prepared.revoked = match read_checked::<bool>(&directory.join("revoked.json"))? {
+            Some(true) => true,
+            Some(false) => return invalid("canonical revocation cannot be reversed"),
+            None => false,
+        };
         if let Some(receipt) = self.receipt(identity)? {
             prepared.acknowledged = receipt.conflict.is_none();
             prepared.commit_seq = receipt.commit_seq;
@@ -972,6 +981,34 @@ impl Spool {
         Ok(Some(receipt))
     }
 
+    pub fn revoke_canonical(&self) -> Result<()> {
+        let mut after = None;
+        loop {
+            let page = self.pending_after(after, 64)?;
+            if page.is_empty() {
+                return Ok(());
+            }
+            for prepared in page {
+                after = Some(prepared.order);
+                if (!prepared.canonical && !prepared.private) || prepared.revoked {
+                    continue;
+                }
+                let directory = self.operation(&prepared.identity)?;
+                let temporary = tempfile::Builder::new()
+                    .prefix(".revoking-")
+                    .tempdir_in(&directory)?;
+                write_checked(&temporary.path().join("revoked.json"), &true)?;
+                sync(temporary.path())?;
+                fs::rename(
+                    temporary.path().join("revoked.json"),
+                    directory.join("revoked.json"),
+                )?;
+                sync(&directory)?;
+                boundary("canonical_revoked");
+            }
+        }
+    }
+
     pub fn retire(&self, applied: i64) -> Result<()> {
         if applied < 0 {
             return invalid("confirmed position is negative");
@@ -996,6 +1033,8 @@ impl Spool {
                 return invalid("pending queue order differs from its operation");
             }
             if prepared.refused
+                || prepared.private
+                || prepared.revoked
                 || !prepared.acknowledged
                 || prepared
                     .commit_seq
@@ -1339,6 +1378,9 @@ impl Spool {
                 } => Some(proof.policy_epoch),
                 _ => None,
             },
+            private: matches!(&frame,Ingress::Material{material,..}
+                if material.manifest.details.get("polylogue_private_canonical").and_then(serde_json::Value::as_bool)==Some(true)),
+            revoked: false,
             request,
             group,
             unresolved: false,
@@ -1618,7 +1660,7 @@ fn named(frame: &Ingress) -> bool {
         Ingress::Material { frame, material } => {
             matches!(
                 material.parser.as_str(),
-                "polylogue-products" | "polylogue-request-restore"
+                "polylogue-products" | "polylogue-request-restore" | "polylogue-canonical-custody"
             ) && frame.ends_with(":observation")
         }
         _ => false,
@@ -1827,7 +1869,7 @@ fn write_derived(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-fn decode_json<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> {
+pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> {
     let mut decoder = serde_json::Deserializer::from_reader(reader);
     decoder.disable_recursion_limit();
     let value = T::deserialize(&mut decoder)?;

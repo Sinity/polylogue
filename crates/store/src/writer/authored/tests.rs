@@ -261,6 +261,25 @@ impl crate::primary::Sinex for Producer {
             pending: true,
         })
     }
+    fn stage_canonical_products(
+        &self,
+        _: &str,
+        _: &[crate::primary::ProductWrite],
+        _: Option<&crate::primary::RawInputProof>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        Err(StoreError::Invalid(
+            "canonical custody is unavailable in this fixture".into(),
+        ))
+    }
+    fn visit_canonical_custody(
+        &self,
+        _: &mut dyn FnMut(&crate::primary::CanonicalCustody) -> Result<()>,
+    ) -> Result<()> {
+        Ok(())
+    }
+    fn revoke_canonical_custody(&self) -> Result<()> {
+        Ok(())
+    }
     fn prepare_canonical_products(
         &self,
         _identity: &str,

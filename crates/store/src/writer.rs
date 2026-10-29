@@ -383,6 +383,7 @@ impl Writer {
             location: archive.clone(),
             sinex,
         };
+        inner.restore_canonical_custody()?;
         // Senders block once a few batches wait. The writer is the slowest
         // stage of a first build, and a parsed batch holds its rows and
         // packed bodies; a deep queue let finished batches pile up past

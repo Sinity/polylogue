@@ -4,7 +4,8 @@ use crate::primary::{ProjectionAvailability, RawInputProof, ReplayState};
 
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE primary_derived (
- identity TEXT PRIMARY KEY, body BLOB NOT NULL, proof BLOB, cancelled_at INTEGER
+ identity TEXT PRIMARY KEY, body BLOB NOT NULL, proof BLOB, cancelled_at INTEGER,
+ revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)), custody TEXT
 ) STRICT;
 CREATE TABLE primary_derived_parent (
  identity TEXT NOT NULL REFERENCES primary_derived(identity) ON DELETE CASCADE,
@@ -54,14 +55,17 @@ pub fn stage_products(
     }
     let body = pack(&writes)?;
     let offered_proof = proof.map(pack).transpose()?;
-    let old: Option<(Vec<u8>, Option<Vec<u8>>, Option<i64>)> = tx
+    let old: Option<(Vec<u8>, Option<Vec<u8>>, Option<i64>, bool)> = tx
         .query_row(
-            "SELECT body,proof,cancelled_at FROM primary_derived WHERE identity=?1",
+            "SELECT body,proof,cancelled_at,revoked FROM primary_derived WHERE identity=?1",
             [identity],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
-    if let Some((old_body, old_proof, cancelled)) = old {
+    if let Some((old_body, old_proof, cancelled, revoked)) = old {
+        if revoked {
+            return Err(StoreError::Conflict(identity.into()));
+        }
         let same_proof = match (old_proof.as_deref(), proof) {
             (Some(bytes), Some(offered)) => {
                 let old: RawInputProof = crate::encoding::unpack_json(bytes)?;
@@ -98,8 +102,9 @@ pub fn stage_products(
 /// A native confirmed product, rather than a transport receipt, discharges an
 /// outbox batch. Every output must be present in the same applied owner view.
 pub(super) fn confirmed(tx: &Transaction<'_>, position: i64) -> Result<()> {
-    let mut intents =
-        tx.prepare("SELECT identity,body FROM primary_derived WHERE cancelled_at IS NULL")?;
+    let mut intents = tx.prepare(
+        "SELECT identity,body FROM primary_derived WHERE cancelled_at IS NULL AND revoked=0",
+    )?;
     let mut rows = intents.query([])?;
     while let Some(row) = rows.next()? {
         let identity: String = row.get(0)?;
@@ -121,14 +126,14 @@ pub(super) fn confirmed(tx: &Transaction<'_>, position: i64) -> Result<()> {
             tx.execute("DELETE FROM primary_derived WHERE identity=?1", [identity])?;
         }
     }
-    tx.execute("UPDATE primary_derived SET cancelled_at=?1 WHERE cancelled_at IS NULL AND proof IS NOT NULL AND EXISTS(SELECT 1 FROM primary_derived_parent p LEFT JOIN primary_next f ON f.event=p.event WHERE p.identity=primary_derived.identity AND coalesce(f.state,'missing')<>'live')",[position])?;
+    tx.execute("UPDATE primary_derived SET cancelled_at=?1 WHERE cancelled_at IS NULL AND revoked=0 AND proof IS NOT NULL AND EXISTS(SELECT 1 FROM primary_derived_parent p LEFT JOIN primary_next f ON f.event=p.event WHERE p.identity=primary_derived.identity AND coalesce(f.state,'missing')<>'live')",[position])?;
     Ok(())
 }
 
 pub(crate) fn publish(index: &Connection, sinex: &dyn Sinex, state: &ReplayState) -> Result<()> {
     let applied = state.applied_position.unwrap_or(0);
     let mut query = index.prepare(
-        "SELECT identity,body,proof,cancelled_at FROM primary_derived ORDER BY identity",
+        "SELECT identity,body,proof,cancelled_at FROM primary_derived WHERE revoked=0 ORDER BY identity",
     )?;
     let mut rows = query.query([])?;
     let mut discarded = Vec::new();
@@ -163,6 +168,106 @@ pub(crate) fn publish(index: &Connection, sinex: &dyn Sinex, state: &ReplayState
     drop(query);
     for identity in discarded {
         index.execute("DELETE FROM primary_derived WHERE identity=?1", [identity])?;
+    }
+    Ok(())
+}
+
+/// Revocation preserves frozen intent bytes and historical receipts. Neither
+/// confirmation, cancellation nor publication may consume these old intents.
+pub(crate) fn revoke(conn: &Connection) -> Result<()> {
+    conn.execute("UPDATE primary_derived SET revoked=1", [])?;
+    Ok(())
+}
+
+/// The producer spool owns the immutable body and revocation. Recovery never
+/// converts a historical receipt into current publication eligibility.
+pub(crate) fn restore_custody(
+    tx: &Transaction<'_>,
+    custody: &super::super::CanonicalCustody,
+) -> Result<()> {
+    if custody.identity.is_empty() || custody.products.is_empty() {
+        return Err(StoreError::Invalid(
+            "canonical recovery needs its original identified body".into(),
+        ));
+    }
+    for write in &custody.products {
+        if write.location.is_some()
+            || !matches!(
+                write.product,
+                Product::WorkSnapshot { .. }
+                    | Product::WorkComponentStatus { .. }
+                    | Product::AttachmentBinding { .. }
+            )
+        {
+            return Err(StoreError::Invalid(
+                "canonical recovery contains an unsupported located product".into(),
+            ));
+        }
+        super::validate_confirmed(&write.product)?;
+        if let Product::AttachmentBinding { record } = &write.product {
+            record.validate()?;
+        }
+    }
+    let body = pack(&custody.products)?;
+    let old: Option<(Vec<u8>, bool)> = tx
+        .query_row(
+            "SELECT body,revoked FROM primary_derived WHERE identity=?1",
+            [&custody.identity],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((old, revoked)) = old {
+        if old != body || (revoked && !custody.revoked) {
+            return Err(StoreError::Conflict(custody.identity.clone()));
+        }
+        if custody.revoked {
+            tx.execute(
+                "UPDATE primary_derived SET revoked=1 WHERE identity=?1",
+                [&custody.identity],
+            )?;
+        }
+    } else {
+        // Historical proof stays in durable producer custody. The cache has no
+        // current proof until an actual revalidation stages a fresh intent.
+        tx.execute(
+            "INSERT INTO primary_derived(identity,body,revoked) VALUES (?1,?2,?3)",
+            params![custody.identity, body, custody.revoked],
+        )?;
+        for parent in custody.products.iter().flat_map(|write| &write.parents) {
+            tx.execute(
+                "INSERT INTO primary_derived_parent(identity,event) VALUES (?1,?2)",
+                params![custody.identity, parent],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Every unacknowledged immutable body reaches the producer's durable local
+/// custody before broker acknowledgment; this performs no publication.
+pub(crate) fn hold(conn: &Connection, sinex: &dyn Sinex) -> Result<()> {
+    let mut query = conn.prepare(
+        "SELECT identity,body,proof FROM primary_derived WHERE revoked=0 AND custody IS NULL ORDER BY identity",
+    )?;
+    let mut rows = query.query([])?;
+    while let Some(row) = rows.next()? {
+        let identity: String = row.get(0)?;
+        let products: Vec<ProductWrite> = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(1)?)?;
+        let proof: Option<RawInputProof> = row
+            .get::<_, Option<Vec<u8>>>(2)?
+            .as_deref()
+            .map(crate::encoding::unpack_json)
+            .transpose()?;
+        let receipt = sinex.stage_canonical_products(&identity, &products, proof.as_ref())?;
+        if receipt.identity.is_empty() {
+            return Err(StoreError::Invalid(
+                "durable canonical custody has no body reference".into(),
+            ));
+        }
+        conn.execute(
+            "UPDATE primary_derived SET custody=?2 WHERE identity=?1",
+            params![identity, receipt.identity],
+        )?;
     }
     Ok(())
 }

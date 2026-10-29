@@ -382,6 +382,25 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
         Ok(self.prepare_named_products(identity, products)?)
     }
+    fn stage_canonical_products(
+        &self,
+        identity: &str,
+        products: &[polylogue_store::primary::ProductWrite],
+        historical_proof: Option<&polylogue_store::primary::RawInputProof>,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.stage_canonical_products(identity, products, historical_proof)?)
+    }
+    fn visit_canonical_custody(
+        &self,
+        visit: &mut dyn FnMut(
+            &polylogue_store::primary::CanonicalCustody,
+        ) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        Ok(self.visit_canonical_custody(visit)?)
+    }
+    fn revoke_canonical_custody(&self) -> polylogue_store::Result<()> {
+        Ok(self.revoke_canonical_custody()?)
+    }
     fn prepare_canonical_products(
         &self,
         identity: &str,

@@ -267,6 +267,70 @@ impl crate::primary::Sinex for OfflineProducer {
     ) -> Result<crate::primary::PreparedWrite> {
         Self::unavailable()
     }
+    fn stage_canonical_products(
+        &self,
+        identity: &str,
+        products: &[crate::primary::ProductWrite],
+        historical_proof: Option<&crate::primary::RawInputProof>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        let root = self.root.join("canonical");
+        std::fs::create_dir_all(&root)?;
+        let path = root.join(format!(
+            "{}.json",
+            blake3::hash(identity.as_bytes()).to_hex()
+        ));
+        let custody = crate::primary::CanonicalCustody {
+            identity: identity.into(),
+            products: products.to_vec(),
+            historical_proof: historical_proof.cloned(),
+            revoked: false,
+        };
+        if path.exists() {
+            let old: crate::primary::CanonicalCustody =
+                serde_json::from_reader(std::fs::File::open(&path)?)?;
+            if old.identity != custody.identity || old.products != custody.products {
+                return Err(StoreError::Conflict(identity.into()));
+            }
+        } else {
+            let file = std::fs::File::create(&path)?;
+            serde_json::to_writer(&file, &custody)?;
+            file.sync_all()?;
+        }
+        Ok(crate::primary::PreparedWrite {
+            identity: identity.into(),
+            pending: true,
+        })
+    }
+    fn visit_canonical_custody(
+        &self,
+        visit: &mut dyn FnMut(&crate::primary::CanonicalCustody) -> Result<()>,
+    ) -> Result<()> {
+        let root = self.root.join("canonical");
+        if !root.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(root)? {
+            let custody = serde_json::from_reader(std::fs::File::open(entry?.path())?)?;
+            visit(&custody)?;
+        }
+        Ok(())
+    }
+    fn revoke_canonical_custody(&self) -> Result<()> {
+        let root = self.root.join("canonical");
+        if !root.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(root)? {
+            let path = entry?.path();
+            let mut custody: crate::primary::CanonicalCustody =
+                serde_json::from_reader(std::fs::File::open(&path)?)?;
+            custody.revoked = true;
+            let file = std::fs::File::create(path)?;
+            serde_json::to_writer(&file, &custody)?;
+            file.sync_all()?;
+        }
+        Ok(())
+    }
     fn prepare_canonical_products(
         &self,
         _identity: &str,
@@ -521,4 +585,231 @@ fn import_retry_intent_excludes_its_generated_operation_id() {
         .unwrap()
         .author = polylogue_model::Author::Script("other-importer".into());
     assert_ne!(capture_group_identity(&group, false).unwrap(), first);
+}
+
+fn serialized_binding() -> crate::assets::bindings::AttachmentBindingRecord {
+    let message_version = BlobHash::of(b"source message identity");
+    let member_hash = BlobHash::of(b"claimed member bytes");
+    // A serialized witness is opaque custody, not receiver admission evidence.
+    let record: crate::assets::bindings::AttachmentBindingRecord = serde_json::from_value(serde_json::json!({
+        "context":{"message":"codex:bound-message","source_version":message_version,"input":"receiving-input","chain":1,"import_id":"receiving-namespace"},
+        "claim":{"source_version":message_version,"namespace":{"input":"original-input","chain":2,"import_id":"original-namespace"},"exported_from":{"input":"export-input","chain":3,"import_id":"export-namespace"},"block":0,"attachment":0,"source_id":"claimed-attachment","candidates":[{"hash":member_hash,"size":20,"sources":[]}]},
+        "members":[{"candidate":0,"witness":{"version":1,"member":{"import_id":"receiving-namespace","input":"receiving-member","member":"blobs/member","chain":1,"source_version":"frozen-source-version","hash":member_hash,"size":20},"observation":"original-receiving-observation"}}]
+    })).unwrap();
+    record
+}
+
+#[test]
+fn serialized_binding_witness_is_retained_through_refusal_and_restart_without_publication() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("cache");
+    let bytes = directory.path().join("bytes");
+    let producer_root = directory.path().join("producer");
+    let record = serialized_binding();
+    let expected = crate::primary::Product::AttachmentBinding {
+        record: Box::new(record.clone()),
+    };
+    for _ in 0..2 {
+        let (archive, _lock) = Archive::open_primary(&cache, &bytes).unwrap();
+        let producer = Arc::new(OfflineProducer {
+            root: producer_root.clone(),
+        });
+        let writer = Writer::start_on_sinex(&archive, producer).unwrap();
+        let mut staged = crate::export_items::ExportItems::new().unwrap();
+        staged
+            .push(
+                0..0,
+                Vec::new(),
+                None,
+                &serde_json::to_vec(&crate::assets::AssetRow::Binding {
+                    record: record.clone(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            writer.import_assets(staged),
+            Err(StoreError::ReferenceUnavailable { .. })
+        ));
+        let index = Connection::open(archive.index_db()).unwrap();
+        let retained: Vec<u8> = index
+            .query_row(
+                "SELECT body FROM primary_derived WHERE proof IS NULL AND cancelled_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let writes: Vec<crate::primary::ProductWrite> =
+            crate::encoding::unpack_json(&retained).unwrap();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].product, expected);
+        assert!(writes[0].parents.is_empty());
+        assert_eq!(
+            index
+                .query_row("SELECT count(*) FROM primary_derived", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            index
+                .query_row("SELECT count(*) FROM attachment_binding", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::primary::projection::replay_state(&index)
+                .unwrap()
+                .publication,
+            None
+        );
+        drop(index);
+        drop(writer);
+    }
+}
+
+#[test]
+fn actual_scope_reset_preserves_frozen_witness_intents_and_revokes_them_across_restart() {
+    use crate::primary::*;
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("cache");
+    let bytes = directory.path().join("bytes");
+    let producer_root = directory.path().join("producer");
+    let record = serialized_binding();
+    let original_body;
+    let original_identity;
+    let historical = RawInputProof {
+        stamp: "historical-write-receipt".into(),
+        position: 1,
+        policy_epoch: 7,
+        scope: "old-scope".into(),
+    };
+    {
+        let (archive, _lock) = Archive::open_primary(&cache, &bytes).unwrap();
+        let producer = Arc::new(OfflineProducer {
+            root: producer_root.clone(),
+        });
+        let writer = Writer::start_on_sinex(&archive, producer).unwrap();
+        let mut staged = crate::export_items::ExportItems::new().unwrap();
+        staged
+            .push(
+                0..0,
+                Vec::new(),
+                None,
+                &serde_json::to_vec(&crate::assets::AssetRow::Binding { record }).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            writer.import_assets(staged),
+            Err(StoreError::ReferenceUnavailable { .. })
+        ));
+        let mut index = Connection::open(archive.index_db()).unwrap();
+        (original_identity, original_body) = index
+            .query_row("SELECT identity,body FROM primary_derived", [], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .unwrap();
+        let writes: Vec<ProductWrite> = crate::encoding::unpack_json(&original_body).unwrap();
+        let tx = index.transaction().unwrap();
+        // Preserve an original receipt as history, independently of current read authority.
+        derived::stage_products(&tx, "historical-intent", &writes, Some(&historical)).unwrap();
+        tx.commit().unwrap();
+        let token = archive.scope_token().unwrap();
+        writer
+            .apply_confirmed(vec![Confirmed {
+                position: 0,
+                output_index: 0,
+                event: String::new(),
+                native: None,
+                change: ConfirmedChange::Control(Box::new(ReplayControl::Reset {
+                    scope: "new-scope".into(),
+                    policy_epoch: 8,
+                })),
+            }])
+            .unwrap();
+        assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
+        assert_eq!(projection::replay_state(&index).unwrap().publication, None);
+        assert_eq!(projection::checkpoint(&index).unwrap(), None);
+        assert_eq!(
+            index
+                .query_row(
+                    "SELECT count(*) FROM primary_derived WHERE revoked=1",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
+        let tx = index.transaction().unwrap();
+        assert!(matches!(
+            derived::stage_products(
+                &tx,
+                &original_identity,
+                &writes,
+                Some(&RawInputProof {
+                    stamp: "new-owner-proof".into(),
+                    position: 0,
+                    policy_epoch: 8,
+                    scope: "new-scope".into()
+                })
+            ),
+            Err(StoreError::Conflict(_))
+        ));
+        tx.rollback().unwrap();
+        drop(index);
+        drop(writer);
+    }
+    let (archive, _lock) = Archive::open_primary(&cache, &bytes).unwrap();
+    let index = Connection::open(archive.index_db()).unwrap();
+    let retained: (Vec<u8>, bool, Option<Vec<u8>>) = index
+        .query_row(
+            "SELECT body,revoked,proof FROM primary_derived WHERE identity=?1",
+            [&original_identity],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(retained, (original_body.clone(), true, None));
+    let historical_bytes: Vec<u8> = index
+        .query_row(
+            "SELECT proof FROM primary_derived WHERE identity='historical-intent' AND revoked=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::encoding::unpack_json::<RawInputProof>(&historical_bytes).unwrap(),
+        historical
+    );
+    let producer = OfflineProducer {
+        root: producer_root,
+    };
+    // Even matching old Q/E/scope cannot make a revoked intent ready again.
+    derived::publish(
+        &index,
+        &producer,
+        &ReplayState {
+            applied_position: Some(1),
+            policy_epoch: Some(7),
+            scope: Some("old-scope".into()),
+            publication: Some(historical),
+            availability: ProjectionAvailability::Certified,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM attachment_binding", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM primary_derived", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
 }

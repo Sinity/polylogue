@@ -481,3 +481,23 @@ fn renewed_write_stamp_preserves_the_first_frozen_proof_for_the_same_applied_bas
         "first-owner-proof"
     );
 }
+
+#[test]
+fn durable_read_fence_keeps_an_old_serialized_certificate_unavailable_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.db");
+    let mut index = cache(&path);
+    initialize(&index);
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(&mut index, &resolver, &[native_input(), complete()]).unwrap();
+    let original = replay_state(&index).unwrap().coverage;
+    crate::primary::scope::invalidate(&index, &archive).unwrap();
+    drop(index);
+    let index = Connection::open(path).unwrap();
+    let fenced = replay_state(&index).unwrap();
+    assert_eq!(fenced.coverage, original);
+    assert_eq!(fenced.certified_position(), None);
+    assert_eq!(fenced.publication, None);
+    assert_eq!(fenced.applied_position, Some(20));
+}

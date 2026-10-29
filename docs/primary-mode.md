@@ -117,6 +117,17 @@ one capture at a time. Shared encoded preparations carry bytes through staging,
 spooling and transport without plaintext disk copies. Material receipts make
 dependent writes ready; they do not retire unconfirmed source custody.
 
+Private canonical intents retain their original full body and optional historical
+proof in the existing producer spool before acknowledgment. Held bodies reserve
+no publisher sequence and remain private. The index caches their references and
+status; startup recovers one immutable intent per callback. A historical proof
+remains provenance and cannot restore current publication eligibility.
+
+A scope or policy reset durably revokes held and already-prepared canonical
+intents before adopting the new cache scope. Their original identities, bodies
+and historical receipts survive index replacement. Recovery preserves revocation;
+new authority requires a freshly validated, generation-bound intent.
+
 Confirmed pages may end inside one owner transaction. Their facts, signed replay
 cursor and actual native delivery receipt commit together in private cache
 staging. Delivery acknowledgments release broker credit for those staged pages;

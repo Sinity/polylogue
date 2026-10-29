@@ -11,6 +11,7 @@ use polylogue_store::primary::{
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
 mod acquisition;
+mod canonical;
 mod reading;
 
 impl Sinex {
@@ -437,22 +438,36 @@ impl Sinex {
                 }
             }
         }
+        let custody = self.stage_canonical_products(identity, writes, Some(proof))?;
+        if self
+            .queue()?
+            .get(&custody.identity)?
+            .is_some_and(|entry| entry.revoked)
+        {
+            return Err(Error::Refused {
+                name: identity.into(),
+                reason: "the original canonical intent was revoked".into(),
+            });
+        }
         let mut events = crate::products::events(writes)?;
         for event in &mut events {
             event.reading_order = Some(proof.position);
         }
-        self.queue()?.prepare(Ingress::Events {
-            frame: identity.into(),
-            source: None,
-            coverage: Some(sinex_protocol::CoverageProof {
-                stamp: proof.stamp.clone(),
-                position: proof.position,
-                policy_epoch: proof.policy_epoch,
-                scope: proof.scope.clone(),
-            }),
-            events,
-            failures: Vec::new(),
-        })?;
+        self.queue()?.prepare_group(
+            Ingress::Events {
+                frame: identity.into(),
+                source: None,
+                coverage: Some(sinex_protocol::CoverageProof {
+                    stamp: proof.stamp.clone(),
+                    position: proof.position,
+                    policy_epoch: proof.policy_epoch,
+                    scope: proof.scope.clone(),
+                }),
+                events,
+                failures: Vec::new(),
+            },
+            &[custody.identity],
+        )?;
         Ok(PreparedWrite {
             identity: identity.into(),
             pending: true,

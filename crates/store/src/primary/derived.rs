@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 mod outbox;
 pub use outbox::stage_products;
-pub(crate) use outbox::{SCHEMA, publish};
+pub(crate) use outbox::{SCHEMA, hold, publish, restore_custody, revoke};
 
 fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
     Ok(crate::encoding::pack_bytes(&serde_json::to_vec(value)?)?)

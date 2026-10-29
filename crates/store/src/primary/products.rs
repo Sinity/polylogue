@@ -144,6 +144,16 @@ impl Product {
     }
 }
 
+/// Durable private producer custody, independent of the rebuildable index.
+/// A historical proof never supplies current publication or read eligibility.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CanonicalCustody {
+    pub identity: String,
+    pub products: Vec<ProductWrite>,
+    pub historical_proof: Option<super::RawInputProof>,
+    pub revoked: bool,
+}
+
 /// One change from Sinex's ordered confirmed stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Confirmed {
