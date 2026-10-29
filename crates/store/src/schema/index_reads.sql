@@ -4,3 +4,4 @@ CREATE INDEX IF NOT EXISTS message_session_at ON message(session_pk, at, id);
 CREATE INDEX IF NOT EXISTS message_model_at ON message(model, at, id);
 CREATE INDEX IF NOT EXISTS message_session_model_at ON message(session_pk, model, at, id);
 CREATE INDEX IF NOT EXISTS event_at ON event(at, id);
+CREATE INDEX IF NOT EXISTS block_original_ordinal ON block(message_pk,coalesce(ordinal,cast(idx AS TEXT)));
