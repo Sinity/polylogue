@@ -51,6 +51,9 @@ pub struct ObservationRow {
     pub path: String,
     pub class: String,
     pub revision: Option<i64>,
+    /// A byte-proven chain prefix that is not a recorded revision endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<i64>,
     pub length: Option<i64>,
     pub device: Option<i64>,
     pub inode: Option<i64>,
@@ -104,6 +107,25 @@ impl InputRows {
             ])?;
         }
         if let Some(o) = &self.observation {
+            if let Some(chain) = o.chain {
+                let length = o
+                    .length
+                    .and_then(|length| u64::try_from(length).ok())
+                    .ok_or_else(|| {
+                        crate::StoreError::Invalid(
+                            "a prefix observation needs its observed byte length".into(),
+                        )
+                    })?;
+                if o.revision.is_some()
+                    || crate::source::Source::admitted_through(tx, &self.input, chain, length)?
+                        .is_none()
+                {
+                    return Err(crate::StoreError::Invalid(
+                        "a prefix observation needs a committed chain prefix and no revision claim"
+                            .into(),
+                    ));
+                }
+            }
             tx.prepare_cached(&source.sql(
                 "INSERT OR IGNORE INTO @source.machine(id, host, first_seen) VALUES (?1, ?2, ?3)",
             ))?
@@ -111,8 +133,8 @@ impl InputRows {
             tx.prepare_cached(
                 &source.sql("INSERT OR IGNORE INTO @source.observation(id, input, machine, path, class, revision, length,
                      device, inode, size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq,
-                     details_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
+                     details_json, chain)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"),
             )?
             .execute(params![
                 o.id,
@@ -131,6 +153,7 @@ impl InputRows {
                 o.seen_at,
                 seq,
                 o.details_json,
+                o.chain,
             ])?;
             if let Some(c) = &o.container {
                 tx.prepare_cached(
