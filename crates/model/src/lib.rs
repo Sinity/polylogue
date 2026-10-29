@@ -30,6 +30,7 @@ pub mod price;
 mod quota;
 mod reference;
 pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
+pub mod query_objects;
 pub mod read;
 mod session;
 pub mod settings;
