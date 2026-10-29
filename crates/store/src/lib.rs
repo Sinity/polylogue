@@ -52,6 +52,7 @@ pub mod user_writes;
 pub mod variants;
 pub mod vectors;
 mod versions;
+pub mod wire_shapes;
 mod write_lock;
 pub mod writer;
 
