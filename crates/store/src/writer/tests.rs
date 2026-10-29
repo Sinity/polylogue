@@ -6,6 +6,21 @@ use polylogue_model::{
 
 mod extent_checkpoint;
 mod input_events;
+mod resolution;
+
+fn write_test_rows(
+    tx: &Transaction<'_>,
+    batch: &Batch,
+    step: &ParseStep,
+    chain: i64,
+    counter: i64,
+    first: Option<&crate::first_build::FirstBuild>,
+) -> Result<u64> {
+    let mut batch = batch.clone();
+    batch.parse = vec![step.clone()];
+    resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
+    write_rows(tx, &batch, &batch.parse[0], chain, counter, first)
+}
 
 struct TestArchive {
     _dir: tempfile::TempDir,
@@ -45,6 +60,7 @@ fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&s
         reported_cost_usd: None,
         duration_ms: None,
         production: Default::default(),
+        attrs: Default::default(),
     }
 }
 

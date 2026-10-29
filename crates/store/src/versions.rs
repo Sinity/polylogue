@@ -1,7 +1,7 @@
 //! Packed readings and their shared text. Source rows choose what is shown.
 use crate::{Result, encoding, first_build::FirstBuild};
 use polylogue_model::Block;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, params};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 
@@ -30,45 +30,6 @@ impl VersionKind {
         matches!(self, Self::Message | Self::Document)
     }
 
-    fn order(self) -> &'static str {
-        match self {
-            Self::Message => {
-                "s.main DESC,s.complete DESC,s.arrival_rank,s.version_hash,i.id,s.chain DESC"
-            }
-            Self::Document => {
-                "s.source_time IS NULL,s.source_time DESC,s.arrival_rank,s.version_hash DESC,i.id,s.chain DESC"
-            }
-            Self::Event | Self::Link => "s.arrival_rank,i.id,s.chain DESC",
-        }
-    }
-
-    /// Selection reads the stored source rank; codecs only read the selected value.
-    pub(crate) fn select<T>(
-        self,
-        conn: &Connection,
-        pk: i64,
-        columns: &str,
-        read: impl FnOnce(&Row<'_>) -> rusqlite::Result<T>,
-    ) -> Result<Option<T>> {
-        let name = self.name();
-        let (join, newest) = match self {
-            Self::Message => (
-                "".to_owned(),
-                "AND NOT EXISTS(SELECT 1 FROM message_source n WHERE n.message_pk=s.message_pk AND n.input_pk=s.input_pk AND n.chain>s.chain)",
-            ),
-            Self::Document => ("".to_owned(), ""),
-            Self::Event | Self::Link => (format!("JOIN {name}_value v ON v.pk=s.value_pk"), ""),
-        };
-        Ok(conn
-            .prepare_cached(&format!(
-                "SELECT {columns} FROM {name}_source s JOIN input_ref i ON i.pk=s.input_pk {join}
-             WHERE s.{name}_pk=?1 {newest} ORDER BY {} LIMIT 1",
-                self.order()
-            ))?
-            .query_row([pk], read)
-            .optional()?)
-    }
-
     pub(crate) fn retract(self, conn: &Connection, input: i64, chain: i64) -> Result<Vec<i64>> {
         let name = self.name();
         let touched = conn
@@ -91,8 +52,10 @@ pub(crate) fn store(
     hash: &[u8],
     body: &[u8],
     blocks: &[Block],
+    texts: &[Option<[u8; 32]>],
     packed: &HashMap<[u8; 32], Vec<u8>>,
     first_build: Option<&FirstBuild>,
+    keys: &crate::writer::resolve::ResolvedKeys,
 ) -> Result<()> {
     let kind = kind.name();
     let inserted = conn
@@ -103,13 +66,17 @@ pub(crate) fn store(
     if inserted == 0 {
         return Ok(());
     }
-    for (idx, block) in blocks.iter().enumerate() {
-        if let Some(text) = encoding::block_text(block) {
-            let id = crate::text_rows::intern(conn, text, 0, Some(packed), first_build)?;
+    for (idx, text_hash) in texts.iter().enumerate() {
+        if let Some(text_hash) = text_hash {
+            let key = keys.get(crate::writer::resolve::Kind::Text, text_hash)?;
+            let body = packed.get(text_hash).ok_or_else(|| {
+                crate::StoreError::Invalid("a new text has no prepared bytes".into())
+            })?;
+            crate::text_rows::store_prepared(conn, key.pk, text_hash, body, first_build)?;
             conn.prepare_cached(&format!(
                 "INSERT INTO {kind}_version_text(version_hash,idx,text_id) VALUES (?1,?2,?3)"
             ))?
-            .execute(params![hash, idx as i64, id])?;
+            .execute(params![hash, idx as i64, key.pk])?;
         }
     }
     for block in blocks {

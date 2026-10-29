@@ -277,7 +277,7 @@ impl Reader<'_> {
         };
         let body: Vec<u8> =
             self.conn()?
-                .query_row("SELECT body FROM a.delivery WHERE id = ?1", [id], |r| {
+                .query_row("SELECT body FROM source_delivery WHERE id = ?1", [id], |r| {
                     r.get(0)
                 })?;
         let text = crate::encoding::unpack_text(&body)?;
@@ -289,8 +289,8 @@ impl Reader<'_> {
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
                     (SELECT group_concat(e.what, ',') FROM
-                        (SELECT what FROM a.delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
-               FROM a.delivery d {filter}
+                        (SELECT what FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
+               FROM source_delivery d {filter}
               ORDER BY d.commit_seq DESC"
         ))?;
         let rows = stmt.query_map([arg], |r| {
@@ -319,7 +319,7 @@ impl Reader<'_> {
         Ok(self
             .conn()?
             .query_row(
-                "SELECT value FROM a.setting
+                "SELECT value FROM source_setting
                   WHERE key = ?1 AND machine IN (?2, '*')
                   ORDER BY machine = '*', set_at DESC, id DESC
                   LIMIT 1",
@@ -585,7 +585,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let ids: Vec<String> = conn
             .prepare_cached(
-                "SELECT id FROM a.delivery WHERE sender = 'signal' AND at >= ?1
+                "SELECT id FROM source_delivery WHERE sender = 'signal' AND at >= ?1
                   ORDER BY at DESC, commit_seq DESC",
             )?
             .query_map([since], |r| r.get(0))?

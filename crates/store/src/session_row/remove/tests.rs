@@ -27,7 +27,7 @@ fn text_block(
     text: &str,
     hash: &[u8],
 ) -> i64 {
-    let tid = crate::text_rows::intern(tx, text, 0, None, None).unwrap();
+    let tid = crate::text_rows::intern(tx, text, 0, None, None, None).unwrap();
     tx.execute(
         "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body,blob_hash)
         VALUES(?1,?2,?3,'text',?4,x'00',?5)",

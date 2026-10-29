@@ -117,7 +117,7 @@ impl crate::export::ExportParser for Export {
 /// A mapping node's own fields.
 static NODE_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read(T::String)),
-    ("message", Rule::Kept("accounted separately as a message")),
+    ("message", Rule::Read(T::Object)),
     ("parent", Rule::Read(T::String)),
     (
         "children",
@@ -131,7 +131,7 @@ static NODE_FIELDS: Fields = Fields::new(&[
 /// attachments, hidden prompts).
 static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read(T::String)),
-    ("author", Rule::Read(T::String)),
+    ("author", Rule::Read(T::Object)),
     ("author.role", Rule::Read(T::String)),
     ("author.name", Rule::Read(T::String)),
     ("author.metadata", Rule::Kept("tool display details")),
@@ -140,7 +140,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "update_time",
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
-    ("content", Rule::Read(T::StringOrArray)),
+    ("content", Rule::Read(T::Object)),
     ("content.content_type", Rule::Read(T::String)),
     ("content.parts[]", Rule::Read(T::StringOrObject)),
     ("content.parts[].content_type", Rule::Read(T::String)),
@@ -151,8 +151,8 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("content.text", Rule::Read(T::String)),
     ("content.language", Rule::Read(T::String)),
     ("content.thoughts", Rule::Read(T::Array)),
-    ("content.thoughts[].summary", Rule::Read(T::Array)),
-    ("content.thoughts[].content", Rule::Read(T::StringOrArray)),
+    ("content.thoughts[].summary", Rule::Read(T::String)),
+    ("content.thoughts[].content", Rule::Read(T::String)),
     ("content.model_set_context", Rule::Read(T::String)),
     ("content.user_profile", Rule::Read(T::String)),
     ("content.user_instructions", Rule::Read(T::String)),
@@ -187,6 +187,16 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         },
     ],
 );
+
+static CONVERSATION_FIELDS: Fields = Fields::new(&[
+    ("", Rule::Kept("conversation settings event")),
+    ("id", Rule::Read(T::String)),
+    ("conversation_id", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("create_time", Rule::Read(T::StringOrNumber)),
+    ("update_time", Rule::Read(T::StringOrNumber)),
+    ("mapping", Rule::Read(T::Object)),
+]);
 
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
@@ -246,7 +256,7 @@ fn conversation_with_owners(
     // memory scope) are kept whole as one event.
     let settings: serde_json::Map<String, Json> = obj
         .iter()
-        .filter(|(k, v)| k.as_str() != "mapping" && !v.is_null())
+        .filter(|(k, _)| k.as_str() != "mapping")
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     sink.out.events.push(Event {
@@ -258,6 +268,11 @@ fn conversation_with_owners(
         data: Json::Object(settings),
     });
 
+    sink.records.fields(
+        "conversation",
+        &crate::fields::header(conv, &["mapping"]),
+        &CONVERSATION_FIELDS,
+    );
     let tree = Tree::new(mapping);
     let places = tree.places();
     let default_model = string_of(conv, "default_model_slug");
@@ -265,7 +280,11 @@ fn conversation_with_owners(
     let mut nodes: Vec<(&String, &Json)> = mapping.iter().collect();
     nodes.sort_by_key(|(id, _)| places.get(id.as_str()).copied());
     for (index, (node_id, node)) in nodes.into_iter().enumerate() {
-        sink.records.fields("node", node, &NODE_FIELDS);
+        sink.records.fields(
+            "node",
+            &crate::fields::header(node, &["message"]),
+            &NODE_FIELDS,
+        );
         let Some(msg) = node.get("message").filter(|m| !m.is_null()) else {
             continue; // The root and other empty nodes hold no record.
         };
@@ -591,7 +610,7 @@ fn message(
 /// Provider metadata keeps the original nested references, groups and canvas
 /// data, including fields added by the provider after this parser was written.
 fn message_attrs(msg: &Json) -> serde_json::Map<String, Json> {
-    let mut attrs = serde_json::Map::new();
+    let mut attrs = crate::fields::attributes(msg, &MESSAGE_FIELDS);
     for key in ["metadata", "channel", "weight"] {
         if let Some(value) = msg.get(key) {
             attrs.insert(key.into(), value.clone());

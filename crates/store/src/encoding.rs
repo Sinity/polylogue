@@ -60,6 +60,7 @@ pub(crate) struct PreparedMessage {
 pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
+    pub(crate) texts: Vec<Option<[u8; 32]>>,
     /// Each block's structured value, packed for `block.data` ([`block_data`]).
     pub(crate) data: Vec<Option<Vec<u8>>>,
     /// What each block holds of PEM private key blocks
@@ -240,6 +241,12 @@ impl RowPacker {
         }
         Ok(PreparedContent {
             hash,
+            texts: blocks
+                .iter()
+                .map(|block| {
+                    block_text(block).map(|text| *blake3::hash(text.as_bytes()).as_bytes())
+                })
+                .collect(),
             blocks: packed,
             data,
             pem,

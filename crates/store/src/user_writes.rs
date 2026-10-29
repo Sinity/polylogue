@@ -169,6 +169,8 @@ pub struct UserOutcome {
     pub id: String,
     /// The request had already been written; nothing changed.
     pub repeat: bool,
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// One user write with the request that carries it.
@@ -217,11 +219,12 @@ pub fn new_request_id() -> String {
 /// Applies one request in `tx`, which the writer commits. `seq` is the
 /// archive's write counter for this transaction.
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
+    let source = crate::source::Source::of(tx)?;
     let content = serde_json::to_vec(&r.write.intent())?;
     let hash = blake3::hash(&content);
     let seen: Option<Vec<u8>> = tx
         .query_row(
-            "SELECT content_hash FROM client_request WHERE id = ?1",
+            &source.sql("SELECT content_hash FROM @source.client_request WHERE id = ?1"),
             [&r.id],
             |row| row.get(0),
         )
@@ -229,6 +232,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
     match seen {
         Some(h) if h.as_slice() == hash.as_bytes() => {
             return Ok(UserOutcome {
+                pending: false,
                 id: r.id.clone(),
                 repeat: true,
             });
@@ -237,8 +241,10 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         None => {}
     }
     tx.execute(
-        "INSERT INTO client_request(id, content_hash, created_at, request, commit_seq)
+        &source.sql(
+            "INSERT INTO @source.client_request(id, content_hash, created_at, request, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",
+        ),
         params![
             r.id,
             hash.as_bytes().as_slice(),
@@ -265,15 +271,16 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         } => {
             let first_note = first_note_of(tx, note)?;
             tx.execute(
-                "INSERT INTO note(id, first_note, kind, value, author, machine, created_at, commit_seq)
-                 VALUES (?1, ?1, 'withdrawal', ?2, ?3, ?4, ?5, ?6)",
+                &source.sql("INSERT INTO @source.note(id, first_note, kind, value, author, machine, created_at, commit_seq)
+                 VALUES (?1, ?1, 'withdrawal', ?2, ?3, ?4, ?5, ?6)"),
                 params![r.id, reason, author.to_string(), r.machine, at, seq],
             )?;
             tx.execute(
-                "INSERT INTO note_relation(note_id, kind, other) VALUES (?1, 'withdraws', ?2)",
+                &source.sql("INSERT INTO @source.note_relation(note_id, kind, other) VALUES (?1, 'withdraws', ?2)"),
                 params![r.id, format!("note:{first_note}")],
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: r.id.clone(),
                 repeat: false,
             })
@@ -281,9 +288,9 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         UserWrite::Deliver(d) | UserWrite::DeliveredAdvice(d) => {
             let body = crate::encoding::pack_text(&d.text)?;
             tx.execute(
-                "INSERT INTO delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
+                &source.sql("INSERT INTO @source.delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
                      content_hash, bytes, body, refs_json, left_out_json, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"),
                 params![
                     r.id,
                     d.recipient_kind,
@@ -301,10 +308,11 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 ],
             )?;
             if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
-                tx.execute("INSERT INTO delivery_event(delivery, what, at, detail, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4)",
+                tx.execute(&source.sql("INSERT INTO @source.delivery_event(delivery, what, at, detail, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4)"),
                     params![r.id, at, "written to the harness hook output", seq])?;
             }
             Ok(UserOutcome {
+                pending: false,
                 id: r.id.clone(),
                 repeat: false,
             })
@@ -315,17 +323,18 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             detail,
         } => {
             let known: bool = tx
-                .prepare_cached("SELECT 1 FROM delivery WHERE id = ?1")?
+                .prepare_cached(&source.sql("SELECT 1 FROM @source.delivery WHERE id = ?1"))?
                 .exists([delivery])?;
             if !known {
                 return Err(StoreError::NotFound(format!("delivery {delivery}")));
             }
             tx.execute(
-                "INSERT OR IGNORE INTO delivery_event(delivery, what, at, detail, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                &source.sql("INSERT OR IGNORE INTO @source.delivery_event(delivery, what, at, detail, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5)"),
                 params![delivery, what.as_str(), at, detail, seq],
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: delivery.clone(),
                 repeat: false,
             })
@@ -337,11 +346,14 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             read_at,
         } => {
             tx.execute(
-                "INSERT INTO kept_result(id, name, query, ran_at, read_at, rows_json)
+                &source.sql(
+                    "INSERT INTO @source.kept_result(id, name, query, ran_at, read_at, rows_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                ),
                 params![r.id, name, query, at, read_at, rows_json],
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: r.id.clone(),
                 repeat: false,
             })
@@ -349,11 +361,13 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         UserWrite::ChatEnqueue(new) => {
             let id = crate::chat_actions::enqueue(tx, new, at, seq)?;
             Ok(UserOutcome {
+                pending: false,
                 repeat: id != new.id,
                 id,
             })
         }
         UserWrite::ChatClaim { by } => Ok(UserOutcome {
+            pending: false,
             id: crate::chat_actions::claim(tx, by, at, seq)?,
             repeat: false,
         }),
@@ -377,6 +391,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 seq,
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: action.clone(),
                 repeat: false,
             })
@@ -389,6 +404,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         } => {
             crate::chat_actions::decide(tx, action, *approve, by, detail.as_deref(), at, seq)?;
             Ok(UserOutcome {
+                pending: false,
                 id: action.clone(),
                 repeat: false,
             })
@@ -396,17 +412,20 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         UserWrite::BackfillStart(new) => {
             let id = crate::backfill_jobs::start(tx, new, at, seq)?;
             Ok(UserOutcome {
+                pending: false,
                 repeat: id != new.id,
                 id,
             })
         }
         UserWrite::BackfillClaim { by } => Ok(UserOutcome {
+            pending: false,
             id: crate::backfill_jobs::claim(tx, by, at, seq)?,
             repeat: false,
         }),
         UserWrite::BackfillReport { job, by, report } => {
             crate::backfill_jobs::report(tx, job, by, report, at, seq)?;
             Ok(UserOutcome {
+                pending: false,
                 id: job.clone(),
                 repeat: false,
             })
@@ -414,6 +433,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         UserWrite::BackfillCancel { job } => {
             crate::backfill_jobs::cancel(tx, job, at, seq)?;
             Ok(UserOutcome {
+                pending: false,
                 id: job.clone(),
                 repeat: false,
             })
@@ -425,8 +445,8 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             machine,
         } => {
             tx.execute(
-                "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &source.sql("INSERT INTO @source.setting(id, machine, key, value, author, set_at, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
                 params![
                     r.id,
                     machine.as_deref().unwrap_or("*"),
@@ -438,6 +458,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 ],
             )?;
             Ok(UserOutcome {
+                pending: false,
                 id: r.id.clone(),
                 repeat: false,
             })
@@ -461,9 +482,12 @@ pub(crate) fn first_note_of_request(
 }
 
 fn first_note_of(tx: &Transaction<'_>, note: &str) -> Result<String> {
-    tx.query_row("SELECT first_note FROM note WHERE id = ?1", [note], |r| {
-        r.get(0)
-    })
+    let source = crate::source::Source::of(tx)?;
+    tx.query_row(
+        &source.sql("SELECT first_note FROM @source.note WHERE id = ?1"),
+        [note],
+        |r| r.get(0),
+    )
     .optional()?
     .ok_or_else(|| StoreError::NotFound(format!("note {note}")))
 }
@@ -474,6 +498,7 @@ fn add_note(
     note: &NewNote,
     seq: i64,
 ) -> Result<UserOutcome> {
+    let source = crate::source::Source::of(tx)?;
     // A saved query or a signal rule is a definition, about nothing in
     // particular; every other note is about something.
     let definition = matches!(note.kind, NoteKind::SavedQuery | NoteKind::Signal);
@@ -487,8 +512,8 @@ fn add_note(
         None => r.id.clone(),
     };
     tx.execute(
-        "INSERT INTO note(id, first_note, kind, key, value, author, machine, created_at, valid_until, commit_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        &source.sql("INSERT INTO @source.note(id, first_note, kind, key, value, author, machine, created_at, valid_until, commit_seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"),
         params![
             r.id,
             first_note,
@@ -504,23 +529,24 @@ fn add_note(
     )?;
     for target in &note.targets {
         tx.execute(
-            "INSERT OR IGNORE INTO note_target(note_id, ref) VALUES (?1, ?2)",
+            &source.sql("INSERT OR IGNORE INTO @source.note_target(note_id, ref) VALUES (?1, ?2)"),
             params![r.id, target.to_string()],
         )?;
     }
     if let Some(prev) = &note.revises {
         tx.execute(
-            "INSERT INTO note_relation(note_id, kind, other) VALUES (?1, 'revises', ?2)",
+            &source.sql("INSERT INTO @source.note_relation(note_id, kind, other) VALUES (?1, 'revises', ?2)"),
             params![r.id, format!("note:{prev}")],
         )?;
     }
     for (relation, other) in &note.relations {
         tx.execute(
-            "INSERT OR IGNORE INTO note_relation(note_id, kind, other) VALUES (?1, ?2, ?3)",
+            &source.sql("INSERT OR IGNORE INTO @source.note_relation(note_id, kind, other) VALUES (?1, ?2, ?3)"),
             params![r.id, relation.as_str(), other],
         )?;
     }
     Ok(UserOutcome {
+        pending: false,
         id: r.id.clone(),
         repeat: false,
     })

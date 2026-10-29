@@ -119,8 +119,11 @@ struct PromptState {
 }
 
 static DOCUMENT_FIELDS: Fields = Fields::new(&[
-    ("runSettings", Rule::Read(T::Object)),
-    ("systemInstruction", Rule::Read(T::Object)),
+    ("runSettings", Rule::Kept("complete run settings event")),
+    ("runSettings.model", Rule::Read(T::String)),
+    ("systemInstruction", Rule::Read(T::StringOrObject)),
+    ("systemInstruction.text", Rule::Read(T::String)),
+    ("systemInstruction.parts[].text", Rule::Read(T::String)),
     ("chunkedPrompt", Rule::Read(T::Object)),
     ("chunkedPrompt.chunks", Rule::Read(T::Array)),
     (
@@ -295,7 +298,8 @@ impl ExportParser for AiStudio {
                         range: Some((0, self.state.length)),
                         data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
                     });
-                    let attrs = crate::fields::attributes(&doc, &DOCUMENT_FIELDS);
+                    let mut attrs = crate::fields::attributes(&doc, &DOCUMENT_FIELDS);
+                    attrs.remove("runSettings");
                     if !attrs.is_empty() {
                         sink.out.events.push(Event {
                             session: Some(sid.clone()),
@@ -378,6 +382,9 @@ fn chunk_role(chunk: &Json) -> Option<&str> {
 /// `{"parts": [{"text": …}]}`.
 fn system_text(value: Option<&Json>) -> Option<String> {
     let v = value?;
+    if let Some(text) = v.as_str() {
+        return Some(text.to_owned());
+    }
     if let Some(t) = str_of(v, "text") {
         return Some(t.to_owned());
     }

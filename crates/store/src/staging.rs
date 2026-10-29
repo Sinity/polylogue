@@ -77,7 +77,13 @@ impl crate::Archive {
         inspect: impl FnOnce(&mut std::fs::File) -> Result<T>,
     ) -> Result<(PreparedBytes, T)> {
         use std::io::Seek;
-        let mut scratch = tempfile::tempfile()?;
+        let mut scratch = if self.is_primary() {
+            let directory = self.parts_dir()?;
+            std::fs::create_dir_all(&directory)?;
+            tempfile::tempfile_in(directory)?
+        } else {
+            tempfile::tempfile()?
+        };
         std::io::copy(&mut reader, &mut scratch)?;
         scratch.rewind()?;
         let facts = inspect(&mut scratch)?;
@@ -89,8 +95,8 @@ impl crate::Archive {
     /// Dropping the returned handle deletes the file.
     pub fn prepare_bytes(&self, mut reader: impl std::io::Read) -> Result<PreparedBytes> {
         if self.is_primary() {
-            std::fs::create_dir_all(self.parts_dir())?;
-            let mut file = tempfile::NamedTempFile::new_in(self.parts_dir())?;
+            std::fs::create_dir_all(self.parts_dir()?)?;
+            let mut file = tempfile::NamedTempFile::new_in(self.parts_dir()?)?;
             let mut hasher = blake3::Hasher::new();
             let mut buffer = vec![0; 1 << 16];
             let mut length = 0u64;
@@ -113,7 +119,7 @@ impl crate::Archive {
                 },
             });
         }
-        let prepared = hashed_blobs::Preparation::new(self.parts_dir())?
+        let prepared = hashed_blobs::Preparation::new(self.parts_dir()?)?
             .plain_checked::<StoreError>(reader, crate::blobs::LEVEL, || Ok(()))?;
         Ok(PreparedBytes {
             owner: self.root.clone(),

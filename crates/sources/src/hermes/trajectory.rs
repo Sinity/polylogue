@@ -50,7 +50,7 @@ struct Item {
 }
 
 static ROOT: Fields = Fields::new(&[
-    ("schema_version", Rule::Read(T::Number)),
+    ("schema_version", Rule::Read(T::StringOrNumber)),
     ("session_id", Rule::Read(T::String)),
     ("trajectory_id", Rule::Read(T::String)),
     (
@@ -67,7 +67,7 @@ static ROOT: Fields = Fields::new(&[
 static STEP: Fields = Fields::new(&[
     ("step_id", Rule::Read(T::String)),
     ("timestamp", Rule::Read(T::StringOrNumber)),
-    ("source", Rule::Read(T::Object)),
+    ("source", Rule::Read(T::String)),
     ("message", Rule::Read(T::String)),
     ("model_name", Rule::Read(T::String)),
     ("reasoning_effort", Rule::Read(T::String)),

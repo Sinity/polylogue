@@ -11,7 +11,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, first_note, kind, key, value, author, created_at, valid_until
-             FROM a.note WHERE id = ?1 AND kind != 'withdrawal'",
+             FROM source_note WHERE id = ?1 AND kind != 'withdrawal'",
         )?;
         let mut rows = stmt.query([id])?;
         let Some(r) = rows.next()? else {
@@ -52,7 +52,7 @@ impl Reader<'_> {
             .transpose()?;
         let conn = self.conn()?;
         let targets = conn
-            .prepare_cached("SELECT ref FROM a.note_target WHERE note_id = ?1 ORDER BY ref")?
+            .prepare_cached("SELECT ref FROM source_note_target WHERE note_id = ?1 ORDER BY ref")?
             .query_map([&raw.id], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
@@ -63,7 +63,7 @@ impl Reader<'_> {
             .collect::<Result<Vec<_>>>()?;
         let relations = conn
             .prepare_cached(
-                "SELECT kind, other FROM a.note_relation
+                "SELECT kind, other FROM source_note_relation
                  WHERE note_id = ?1 AND kind NOT IN ('revises', 'withdraws') ORDER BY kind, other",
             )?
             .query_map([&raw.id], |r| {

@@ -97,6 +97,25 @@ impl crate::export::ExportParser for Export {
 }
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
+    ("content[].remaining", Rule::Read(T::Number)),
+    ("attachments[].file_name", Rule::Read(T::String)),
+    ("attachments[].file_type", Rule::Read(T::String)),
+    ("attachments[].file_size", Rule::Read(T::Number)),
+    ("attachments[].extracted_content", Rule::Read(T::String)),
+    ("attachments[].file_uuid", Rule::Read(T::String)),
+    ("attachments[].file_kind", Rule::Read(T::String)),
+    ("files[].file_name", Rule::Read(T::String)),
+    ("files[].file_type", Rule::Read(T::String)),
+    ("files[].file_size", Rule::Read(T::Number)),
+    ("files[].extracted_content", Rule::Read(T::String)),
+    ("files[].file_uuid", Rule::Read(T::String)),
+    ("files[].file_kind", Rule::Read(T::String)),
+    ("files_v2[].file_name", Rule::Read(T::String)),
+    ("files_v2[].file_type", Rule::Read(T::String)),
+    ("files_v2[].file_size", Rule::Read(T::Number)),
+    ("files_v2[].extracted_content", Rule::Read(T::String)),
+    ("files_v2[].file_uuid", Rule::Read(T::String)),
+    ("files_v2[].file_kind", Rule::Read(T::String)),
     ("content[].type", Rule::Read(T::String)),
     ("content[].text", Rule::Read(T::String)),
     ("content[].thinking", Rule::Read(T::String)),
@@ -166,7 +185,10 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("parent_message_uuid", Rule::Read(T::String)),
     ("stop_reason", Rule::Read(T::String)),
     ("input_mode", Rule::Kept("how the prompt was entered")),
-    ("compaction_summary", Rule::Read(T::String)),
+    (
+        "compaction_summary",
+        Rule::Kept("native compaction event and message attributes"),
+    ),
 ])
 .shape(
     &[],
@@ -190,6 +212,15 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         },
     ],
 );
+
+static CONVERSATION_FIELDS: Fields = Fields::new(&[
+    ("", Rule::Kept("conversation settings event")),
+    ("uuid", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
+    ("created_at", Rule::Read(T::StringOrNumber)),
+    ("updated_at", Rule::Read(T::StringOrNumber)),
+    ("chat_messages", Rule::Read(T::Array)),
+]);
 
 /// One claude.ai conversation object, shared with browser captures.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
@@ -227,7 +258,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     if let Some(obj) = conv.as_object() {
         let settings: serde_json::Map<String, Json> = obj
             .iter()
-            .filter(|(k, v)| k.as_str() != "chat_messages" && !v.is_null())
+            .filter(|(k, _)| k.as_str() != "chat_messages")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         sink.out.events.push(Event {
@@ -240,6 +271,11 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         });
     }
 
+    sink.records.fields(
+        "conversation",
+        &crate::fields::header(conv, &["chat_messages"]),
+        &CONVERSATION_FIELDS,
+    );
     let model = string_of(conv, "model");
     let mut rows: Vec<(Option<i64>, i64, usize, Message)> = Vec::new();
     for (i, m) in messages.iter().enumerate() {

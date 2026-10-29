@@ -97,6 +97,7 @@ fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider
     assert_blob(&engine, hash, &decoded);
 }
 
+#[cfg(feature = "faults")]
 #[test]
 fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
     use polylogue_store::fault::{self, Action};

@@ -240,7 +240,7 @@ fn code_sent_to_the_code_tool_is_its_command() {
 }
 
 #[test]
-fn citation_marks_are_stripped_from_the_text() {
+fn citation_marks_and_structured_references_are_kept_as_written() {
     let marked = "Per the brief. \u{e200}filecite\u{e202}turn0file0\u{e201} More text \u{e200}cite\u{e202}turn1search2\u{e202}L10-L20\u{e201} end.";
     let p = run(conversation(
         vec![node(
@@ -255,9 +255,11 @@ fn citation_marks_are_stripped_from_the_text() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(!t.contains(['\u{e200}', '\u{e201}', '\u{e202}']), "{t:?}");
-    assert!(!t.contains("filecite"));
-    assert!(t.starts_with("Per the brief.") && t.ends_with("end."));
+    assert_eq!(t, marked);
+    assert_eq!(
+        message(&p, ":a")["blocks"][1],
+        json!({"type":"other","type_name":"citations","data":[{"start_ix":15,"end_ix":43,"metadata":{"title":"brief.md"}}]})
+    );
 }
 
 #[test]

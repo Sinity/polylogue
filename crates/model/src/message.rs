@@ -196,7 +196,13 @@ impl Production {
             &mut self.response_boundary_unknown,
             later.response_boundary_unknown,
         );
-        take(&mut self.server_tool_use, later.server_tool_use);
+        if let Some(server) = later.server_tool_use {
+            let current = self
+                .server_tool_use
+                .get_or_insert_with(ServerToolUse::default);
+            take(&mut current.web_search_requests, server.web_search_requests);
+            take(&mut current.web_fetch_requests, server.web_fetch_requests);
+        }
         take(&mut self.iterations, later.iterations);
         take(&mut self.phase, later.phase);
         take(&mut self.effort, later.effort);

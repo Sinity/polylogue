@@ -28,6 +28,9 @@ mod attachments;
 mod batch;
 mod bytes;
 mod chain;
+mod confirmed;
+pub(crate) use confirmed::apply_confirmed_readings;
+pub(crate) mod resolve;
 mod rows;
 mod search;
 mod staging;
@@ -36,13 +39,12 @@ pub use chain::ChainReading;
 #[cfg(test)]
 use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
-use crate::encoding::{block_text, pack_event, unpack_block};
+use crate::encoding::{block_text, unpack_block};
 pub use batch::{
     Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
 };
 pub(crate) use bytes::observation_id;
 use bytes::*;
-use excluded::*;
 use rows::*;
 use search::*;
 
@@ -85,6 +87,7 @@ pub struct Writer {
     /// The index was empty when the writer started: its first pass is a
     /// first build.
     started_empty: bool,
+    resolver: Arc<resolve::Resolver>,
 }
 
 /// Orders new work against shutdown. Once the stop message is queued,
@@ -99,6 +102,7 @@ pub struct Writer {
 struct WriterQueue {
     bulk: Arc<Mutex<Option<SyncSender<Msg>>>>,
     users: Arc<Mutex<Option<SyncSender<UserMsg>>>>,
+    resolver: Arc<resolve::Resolver>,
 }
 
 type UserMsg = (
@@ -110,10 +114,15 @@ type UserMsg = (
 const USER_QUEUE: usize = 64;
 
 impl WriterQueue {
-    fn new(bulk: SyncSender<Msg>, users: SyncSender<UserMsg>) -> Self {
+    fn new(
+        bulk: SyncSender<Msg>,
+        users: SyncSender<UserMsg>,
+        resolver: Arc<resolve::Resolver>,
+    ) -> Self {
         Self {
             bulk: Arc::new(Mutex::new(Some(bulk))),
             users: Arc::new(Mutex::new(Some(users))),
+            resolver,
         }
     }
 
@@ -284,13 +293,14 @@ impl Writer {
         };
         let archive_conn = crate::archive::open_archive_writer(archive)?;
         let first_build = building
-            .then(|| crate::first_build::FirstBuild::load(&index))
+            .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
             .transpose()?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
             None
         };
+        let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
         let mut inner = Inner {
             segment,
             archive: archive_conn,
@@ -316,9 +326,10 @@ impl Writer {
             .name("polylogue-writer".into())
             .spawn(move || inner.run(&rx, &users_rx))?;
         Ok(Self {
-            tx: Some(WriterQueue::new(tx, users)),
+            tx: Some(WriterQueue::new(tx, users, Arc::clone(&resolver))),
             handle: Some(handle),
             started_empty: empty,
+            resolver,
         })
     }
 
@@ -329,7 +340,8 @@ impl Writer {
 
     /// Queues one batch. Blocks while the writer is busy and its queue is
     /// full, which is what holds the parse pool back.
-    pub fn send(&self, batch: Batch) -> Result<()> {
+    pub fn send(&self, mut batch: Batch) -> Result<()> {
+        self.resolver.batches(&mut [&mut batch])?;
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
@@ -443,9 +455,11 @@ impl WriterSender {
     /// Queue a group; parsing can continue while the writer commits it.
     pub fn enqueue_group(
         &self,
-        group: Vec<crate::staging::PreparedBatch>,
+        mut group: Vec<crate::staging::PreparedBatch>,
         store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
+        let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
+        self.0.resolver.batches(&mut batches)?;
         let (reply, wait) = sync_channel(1);
         self.0
             .send(Msg::StoreGroup(group, store, reply))
@@ -453,7 +467,8 @@ impl WriterSender {
         Ok(wait)
     }
 
-    pub fn send(&self, batch: Batch) -> Result<()> {
+    pub fn send(&self, mut batch: Batch) -> Result<()> {
+        self.0.resolver.batches(&mut [&mut batch])?;
         self.0
             .send(Msg::Batch(Box::new(batch)))
             .map_err(|_| StoreError::WriterGone)
@@ -481,6 +496,7 @@ impl WriterSender {
         mut reading: ChainReading,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
+        reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
         crate::timing::reading_commit_queue(1);
         if self
@@ -545,7 +561,7 @@ struct Inner {
     report: WriteReport,
     /// Set while the index is being built from nothing, without syncs
     /// ([`Writer::start`]).
-    first_build: Option<crate::first_build::FirstBuild>,
+    first_build: Option<Arc<crate::first_build::FirstBuild>>,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
     /// This writer wrote index rows since the last derive, or none has run
@@ -971,9 +987,7 @@ impl Inner {
             crate::fault::check("write.between_commits", "")?;
         }
 
-        let indexed = batches
-            .map(|b| attachments::with_stored_blobs(b, &self.archive))
-            .collect::<Result<Vec<_>>>()?;
+        let indexed = batches.collect::<Vec<_>>();
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -982,7 +996,7 @@ impl Inner {
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
-                    stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_ref())?;
+                    stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_deref())?;
                 }
                 if b.parse.iter().any(|p| p.at_end) {
                     rows::prune_sessions(&itx, &b.input.id, chain)?;

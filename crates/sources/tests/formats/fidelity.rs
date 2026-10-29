@@ -119,3 +119,39 @@ fn import_single_conversations_preserves_provider_metadata_and_token_budget() {
         json!([{"text":"summary"}])
     );
 }
+
+#[test]
+fn agent_progress_embedded_transcript_keeps_native_message_and_spawn_identity() {
+    let input = jsonl(&[
+        json!({"type":"progress","sessionId":"morrow","parentToolUseID":"spawn","timestamp":"2026-10-01T12:00:00Z","data":{"type":"agent_progress","agentId":"child","message":{"type":"assistant","uuid":"child-answer","timestamp":"2026-10-01T12:00:01Z","message":{"id":"response","role":"assistant","content":[{"type":"text","text":"Checked."}]}}}}),
+    ]);
+    let parsed = parse("claude-code", "projects/morrow/morrow.jsonl", &input);
+    let answer = message(&parsed, ":child-answer");
+    assert_eq!(answer["session"], "claude-code:agent-child");
+    assert_eq!(answer["blocks"], json!([{"type":"text","text":"Checked."}]));
+    assert_eq!(answer["at"], "2026-10-01T12:00:01Z");
+    assert_eq!(parsed["output"]["links"][0]["parent"], "claude-code:morrow");
+    assert_eq!(
+        parsed["output"]["links"][0]["child"],
+        "claude-code:agent-child"
+    );
+    assert_eq!(parsed["output"]["links"][0]["call_id"], "spawn");
+    assert_eq!(parsed["counts"]["records"], 1);
+    assert_eq!(parsed["counts"]["used"]["progress/agent_progress"], 1);
+}
+
+#[test]
+fn nested_export_record_accounts_unknown_leaf_once_at_its_record_path() {
+    let parsed = parse("chatgpt", "one.json", br#"{"conversation_id":"morrow","mapping":{"u":{"id":"u","message":{"id":"u","author":{"role":"user"},"content":{"content_type":"text","parts":["Hi"],"future":{"leaf":1}}}}}}"#);
+    assert_eq!(
+        parsed["counts"]["unread_fields"]["text.content.future.leaf"],
+        1
+    );
+    assert!(
+        !parsed["counts"]["unread_fields"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|key| key.starts_with("node.message"))
+    );
+}

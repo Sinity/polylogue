@@ -19,6 +19,7 @@ pub enum ExpectedType {
     StringOrArray,
     StringOrObject,
     StringOrNumber,
+    NumberOrObject,
     /// Tool inputs and results have an explicitly open JSON value shape.
     Any,
 }
@@ -44,7 +45,7 @@ pub struct Fields {
     rules: &'static [(&'static str, Rule)],
     pub dynamic_maps: &'static [&'static str],
     pub known_kinds: &'static [KnownKinds],
-    compiled: OnceLock<HashMap<&'static str, Rule>>,
+    compiled: OnceLock<HashMap<String, Rule>>,
 }
 impl Fields {
     pub const fn new(rules: &'static [(&'static str, Rule)]) -> Self {
@@ -67,9 +68,13 @@ impl Fields {
     pub fn declarations(&self) -> &'static [(&'static str, Rule)] {
         self.rules
     }
-    fn compiled(&self) -> &HashMap<&'static str, Rule> {
-        self.compiled
-            .get_or_init(|| self.rules.iter().copied().collect())
+    fn compiled(&self) -> &HashMap<String, Rule> {
+        self.compiled.get_or_init(|| {
+            self.rules
+                .iter()
+                .map(|(path, rule)| (declared_path(path), *rule))
+                .collect()
+        })
     }
 }
 
@@ -88,9 +93,10 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
     let mut shapes: BTreeMap<String, polylogue_model::WireShape> = BTreeMap::new();
     let mut pending = vec![(value, String::new(), String::new(), false)];
     while let Some((value, path, shape_path, inherited)) = pending.pop() {
-        let rule = fields.compiled().get(path.as_str());
+        let rule = fields.compiled().get(&shape_path);
         let kept = inherited || matches!(rule, Some(Rule::Kept(_)));
         let shape = shapes.entry(shape_path.clone()).or_default();
+        shape.path.clone_from(&shape_path);
         *shape.types.entry(type_name(value).into()).or_default() += 1;
         if let Some(Rule::Read(expected)) = rule {
             shape.expected = expected
@@ -99,8 +105,16 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
                 .map(|kind| (*kind).to_owned())
                 .collect();
         }
-        shape.dynamic_map = fields.dynamic_maps.contains(&path.as_str());
-        if let Some(known) = fields.known_kinds.iter().find(|known| known.path == path) {
+        let dynamic = fields
+            .dynamic_maps
+            .iter()
+            .any(|map| declared_path(map) == shape_path);
+        shape.dynamic_map = dynamic;
+        if let Some(known) = fields
+            .known_kinds
+            .iter()
+            .find(|known| declared_path(known.path) == shape_path)
+        {
             shape.known_kinds = known.values.iter().map(|kind| (*kind).to_owned()).collect();
         }
         match value {
@@ -111,29 +125,87 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
                     } else {
                         format!("{path}.{key}")
                     };
-                    let name = if fields.dynamic_maps.contains(&path.as_str()) {
-                        "*"
+                    let name = if dynamic { "*" } else { key.as_str() };
+                    let name = if name == "*" && dynamic {
+                        "*".to_owned()
                     } else {
-                        key.as_str()
+                        escape(name)
                     };
-                    let child_shape = if shape_path.is_empty() {
-                        name.to_owned()
-                    } else {
-                        format!("{shape_path}.{name}")
-                    };
+                    let child_shape = format!("{shape_path}/{name}");
                     pending.push((child, child_path, child_shape, kept));
                 }
             }
             Json::Array(items) if !items.is_empty() => {
                 for child in items.iter().rev() {
-                    pending.push((child, format!("{path}[]"), format!("{shape_path}[]"), kept));
+                    pending.push((child, format!("{path}[]"), format!("{shape_path}/[]"), kept));
                 }
             }
             _ if !kept && !matches!(rule, Some(Rule::Read(_))) => unused.push(path),
             _ => {}
         }
     }
+    unused.sort();
     Accounting { unused, shapes }
+}
+
+fn declared_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for part in path.split('.') {
+        let mut rest = part;
+        loop {
+            if let Some(at) = rest.find("[]") {
+                if at > 0 {
+                    out.push('/');
+                    out.push_str(&escape(&rest[..at]));
+                }
+                out.push_str("/[]");
+                rest = &rest[at + 2..];
+                if rest.is_empty() {
+                    break;
+                }
+            } else {
+                out.push('/');
+                out.push_str(&escape(rest));
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn escape(name: &str) -> String {
+    name.replace('~', "~0")
+        .replace('/', "~1")
+        .replace('*', "~2")
+        .replace("[]", "~3")
+}
+
+/// Parent records expose their own fields; each child record is accounted by
+/// its own parser table. Empty placeholders retain the container's wire type.
+pub fn header(value: &Json, records: &[&str]) -> Json {
+    let Some(object) = value.as_object() else {
+        return value.clone();
+    };
+    Json::Object(
+        object
+            .iter()
+            .map(|(key, value)| {
+                let value = if records.contains(&key.as_str()) {
+                    match value {
+                        Json::Object(_) => Json::Object(Default::default()),
+                        Json::Array(_) => Json::Array(Vec::new()),
+                        other => other.clone(),
+                    }
+                } else {
+                    value.clone()
+                };
+                (key.clone(), value)
+            })
+            .collect(),
+    )
 }
 
 fn type_name(value: &Json) -> &'static str {
@@ -157,6 +229,7 @@ impl ExpectedType {
             Self::StringOrArray => &["null", "string", "array"],
             Self::StringOrObject => &["null", "string", "object"],
             Self::StringOrNumber => &["null", "string", "number"],
+            Self::NumberOrObject => &["null", "number", "object"],
             Self::Any => &["null", "boolean", "number", "string", "array", "object"],
         }
     }

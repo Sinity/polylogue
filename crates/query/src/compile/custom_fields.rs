@@ -207,9 +207,9 @@ pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
         Unit::Events => format!("{} < {end}", fields::event_first_seen(a)),
         Unit::Notes => format!(
             "({r}.created_at < {end} \
-             AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.first_note = {r}.first_note \
+             AND NOT EXISTS (SELECT 1 FROM source_note later WHERE later.first_note = {r}.first_note \
                AND later.commit_seq > {r}.commit_seq AND later.created_at < {end}) \
-             AND NOT EXISTS (SELECT 1 FROM a.note_relation nw JOIN a.note wn ON wn.id = nw.note_id \
+             AND NOT EXISTS (SELECT 1 FROM source_note_relation nw JOIN source_note wn ON wn.id = nw.note_id \
                WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {r}.first_note AND wn.created_at < {end}))",
             r = x.row()
         ),
@@ -414,7 +414,7 @@ pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     for v in x.values() {
         let p = c.text_param(&v.to_lowercase());
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM a.note tn JOIN a.note_target tt ON tt.note_id = tn.id \
+            "EXISTS (SELECT 1 FROM source_note tn JOIN source_note_target tt ON tt.note_id = tn.id \
              WHERE tn.kind = 'tag' AND tt.ref = 'session:' || {s}.id AND {} \
              AND ((tn.key IS NULL AND lower(tn.value) = {p}) \
                OR lower(tn.key) || ':' || lower(tn.value) = {p} \
@@ -663,7 +663,7 @@ pub(crate) fn recipient(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
 pub(crate) fn note_target(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let p = c.text_param(&x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM a.note_target nt WHERE nt.note_id = {r}.id AND (nt.ref = {p} OR nt.ref = 'session:' || {p}))",
+        "EXISTS (SELECT 1 FROM source_note_target nt WHERE nt.note_id = {r}.id AND (nt.ref = {p} OR nt.ref = 'session:' || {p}))",
         r = x.row()
     ))
 }

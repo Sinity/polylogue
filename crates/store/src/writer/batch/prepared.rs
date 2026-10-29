@@ -9,30 +9,29 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) texts: HashMap<[u8; 32], Vec<u8>>,
     pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
     pub(in crate::writer) released: bool,
+    pub(in crate::writer) keys: Option<Arc<super::super::resolve::ResolvedKeys>>,
+    pub(in crate::writer) chain: Option<i64>,
+    pub(in crate::writer) choices: Option<super::super::resolve::versions::Choices>,
 }
 
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
-        if !self.released
-            && (!self.messages.is_empty()
-                || !self.documents.is_empty()
-                || !self.events.is_empty()
-                || !self.texts.is_empty())
-        {
-            return Err(StoreError::Invalid("prepared rows are incomplete".into()));
+        if !self.released {
+            return Err(StoreError::Invalid("reading rows were not prepared".into()));
         }
-        if self.released
-            && (self.messages.len() != output.messages.len()
-                || self.documents.len() != output.documents.len()
-                || self.documents.iter().zip(&output.documents).any(|(p, r)| {
-                    p.id != r.document.id || p.blocks.len() != r.document.blocks.len()
-                })
-                || self.events.len() != output.events.len()
-                || self
-                    .messages
-                    .iter()
-                    .zip(&output.messages)
-                    .any(|(p, r)| p.id != r.message.id || p.blocks.len() != r.message.blocks.len()))
+        if self.messages.len() != output.messages.len()
+            || self.documents.len() != output.documents.len()
+            || self
+                .documents
+                .iter()
+                .zip(&output.documents)
+                .any(|(p, r)| p.id != r.document.id || p.blocks.len() != r.document.blocks.len())
+            || self.events.len() != output.events.len()
+            || self
+                .messages
+                .iter()
+                .zip(&output.messages)
+                .any(|(p, r)| p.id != r.message.id || p.blocks.len() != r.message.blocks.len())
         {
             return Err(StoreError::Invalid(
                 "prepared rows no longer match their parsed records".into(),
@@ -110,6 +109,9 @@ impl ParseStep {
             texts,
             events,
             released: true,
+            keys: None,
+            chain: None,
+            choices: None,
         };
         for blocks in self
             .output

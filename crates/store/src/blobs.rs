@@ -12,7 +12,7 @@ mod copy;
 pub(crate) use copy::copy_plain;
 
 mod segments;
-pub use segments::Blobs;
+pub use segments::{Blobs, BlobCatalog};
 pub(crate) use segments::{insert_extent, load_extent, open_writer};
 
 /// The read operations used by stored chains.
@@ -114,7 +114,7 @@ pub struct NewBlob {
 pub fn read(archive: &rusqlite::Connection, store: &Blobs, hash: &BlobHash) -> Result<Vec<u8>> {
     let extent = load_extent(archive, "", &hashed_blobs::Hash(hash.0))?
         .ok_or_else(|| crate::StoreError::NotFound(format!("blob {hash}")))?;
-    Ok(crate::blobs::Blobs::new(store.root()).read(&[extent], None)?)
+    Ok(hashed_blobs::Reader::new(store.root()).read(&[extent], None)?)
 }
 
 #[cfg(test)]

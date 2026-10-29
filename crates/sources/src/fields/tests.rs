@@ -94,18 +94,43 @@ fn wire_observation_counts_types_and_declarations_without_scalar_bodies() {
         &FIELDS,
     );
     assert_eq!(
-        observed.shapes["items[].n"].types,
+        observed.shapes["/items/[]/n"].types,
         BTreeMap::from([("number".into(), 1), ("string".into(), 1)])
     );
-    assert_eq!(observed.shapes["items[].n"].expected, ["null", "number"]);
+    assert_eq!(observed.shapes["/items/[]/n"].expected, ["null", "number"]);
     assert_eq!(
-        observed.shapes["map.*"].types,
+        observed.shapes["/map/*"].types,
         BTreeMap::from([("boolean".into(), 2)])
     );
-    assert!(observed.shapes["map"].dynamic_map);
-    assert_eq!(observed.shapes["type"].known_kinds, ["message"]);
+    assert!(observed.shapes["/map"].dynamic_map);
+    assert_eq!(observed.shapes["/type"].known_kinds, ["message"]);
     let encoded = serde_json::to_string(&observed.shapes).unwrap();
     assert!(!encoded.contains("distinctive-secret"));
     assert!(!encoded.contains("first"));
     assert!(!encoded.contains("second"));
+}
+
+#[test]
+fn observed_paths_distinguish_literal_keys_arrays_and_nested_fields() {
+    static EMPTY: Fields = Fields::new(&[]);
+    let observed = inspect(
+        &json!({"a.b":1,"a":{"b":2},"[]":3,"*":4,"/":5,"~":6,"list":[7]}),
+        &EMPTY,
+    );
+    for path in ["/a.b", "/a/b", "/~3", "/~2", "/~1", "/~0", "/list/[]"] {
+        assert!(observed.shapes.contains_key(path), "{path}");
+    }
+}
+
+#[test]
+fn literal_keys_do_not_impersonate_declared_nested_or_array_paths() {
+    static FIELDS: Fields = Fields::new(&[
+        ("a.b", Rule::Read(T::Number)),
+        ("list[].n", Rule::Read(T::Number)),
+    ]);
+    let source = json!({"a.b":1,"a":{"b":2},"list[].n":3,"list":[{"n":4}]});
+    assert_eq!(unaccounted(&source, &FIELDS), ["a.b", "list[].n"]);
+    let observed = inspect(&source, &FIELDS);
+    assert!(observed.shapes["/a.b"].expected.is_empty());
+    assert_eq!(observed.shapes["/a/b"].expected, ["null", "number"]);
 }

@@ -163,6 +163,10 @@ Building the archive overlaps every stage:
   parallel, with the archive searchable before the trigram index finishes;
 - live inputs ahead of bulk work.
 
+A worker acquires all the natural keys its group can change as one lease before opening its read snapshot. It holds that lease through the commit result, including a failed commit, so another worker that overlaps those keys reads the resulting committed state. Shared value hashes retain their assigned identities while older snapshots can still resolve them. The writer applies the prepared row identities and selected readings; missing preparation is an error.
+
+Chain replacement uses the same resolver and one index transaction. Its private scratch holds independently compressed steps. Workers keep source memberships and hash-to-offset references in memory and fetch a selected earlier payload from scratch, rather than retaining the chain's decoded content.
+
 **Targets**, on the full corpus of an active user (about 40 GB): at least
 40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input
 byte; no stage idle while another holds a queue for it. Results are reported

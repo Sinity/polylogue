@@ -22,7 +22,10 @@ fn current_blocks_reuse_stored_text_identities() {
         })
         .collect();
     let b = batch("input", 0, 100, rows, &["session"]);
-    assert_eq!(write_rows(&tx, &b, &b.parse[0], 1, 1, None).unwrap(), 32);
+    assert_eq!(
+        write_test_rows(&tx, &b, &b.parse[0], 1, 1, None).unwrap(),
+        32
+    );
     let reads = tx
         .prepare_cached("SELECT id FROM text WHERE hash = ?1")
         .unwrap()

@@ -48,6 +48,7 @@ pub fn message(id: &str, session: &str, role: Role, at: i64, blocks: Vec<Block>)
         reported_cost_usd: None,
         duration_ms: None,
         production: Default::default(),
+        attrs: Default::default(),
     }
 }
 

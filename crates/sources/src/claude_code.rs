@@ -1264,6 +1264,11 @@ impl Parser for ClaudeCode {
                 let data = v.get("data").unwrap_or(&Json::Null);
                 match str_field(data, "type") {
                     Some("agent_progress") => {
+                        records.fields(
+                            "progress/agent_progress",
+                            v,
+                            &fields::AGENT_PROGRESS_FIELDS,
+                        );
                         let parent = self.session(parser_state, v, out).map(|s| s.id.clone());
                         let child = str_field(data, "agentId")
                             .and_then(|a| session_id(&format!("agent-{a}")));

@@ -287,7 +287,7 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "note",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
+                "EXISTS (SELECT 1 FROM source_note hn JOIN source_note_target ht ON ht.note_id = hn.id \
                  WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
                  AND {})",
                 live_note("hn")
@@ -298,7 +298,7 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "conflict",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
+                "EXISTS (SELECT 1 FROM source_note hn JOIN source_note_target ht ON ht.note_id = hn.id \
                  WHERE ht.ref = 'session:' || {s}.id AND {} \
                  GROUP BY hn.first_note HAVING count(*) > 1)",
                 current_note("hn")
@@ -737,7 +737,7 @@ pub static FIELDS: &[Field] = &[
         "the operator's judgment of this revision: accepted or rejected",
     ).sql_fn(notes_judged),
     sp(Notes, "target", "a reference it is about: session:ID, repo:NAME, cwd:PATH, …", custom::note_target)
-        .sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM a.note_target nt WHERE nt.note_id = {r}.id ORDER BY nt.ref))"),
+        .sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_note_target nt WHERE nt.note_id = {r}.id ORDER BY nt.ref))"),
     f(
         Notes,
         "write_counter",
@@ -1088,7 +1088,7 @@ fn sessions_hidden(a: &Aliases) -> String {
 
 fn sessions_outcome(a: &Aliases) -> String {
     format!(
-        "COALESCE((SELECT lower(n.value) FROM a.note n JOIN a.note_target nt ON nt.note_id = n.id \
+        "COALESCE((SELECT lower(n.value) FROM source_note n JOIN source_note_target nt ON nt.note_id = n.id \
          WHERE n.kind = 'outcome' AND nt.ref = 'session:' || {s}.id AND {} ORDER BY n.commit_seq DESC LIMIT 1), 'none')",
         live_note("n"),
         s = a.s
@@ -1098,7 +1098,7 @@ fn sessions_outcome(a: &Aliases) -> String {
 /// The latest delivery event's `col` for delivery `r`.
 fn latest_delivery_event(r: &str, col: &str) -> String {
     format!(
-        "(SELECT e.{col} FROM a.delivery_event e WHERE e.delivery = {r}.id ORDER BY e.at DESC LIMIT 1)"
+        "(SELECT e.{col} FROM source_delivery_event e WHERE e.delivery = {r}.id ORDER BY e.at DESC LIMIT 1)"
     )
 }
 
@@ -1115,7 +1115,7 @@ fn deliveries_detail(a: &Aliases) -> String {
 
 fn turns_corrected(a: &Aliases) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM a.note nc JOIN a.note_target nct ON nct.note_id = nc.id \
+        "EXISTS (SELECT 1 FROM source_note nc JOIN source_note_target nct ON nct.note_id = nc.id \
          WHERE nc.kind = 'correction' AND nct.ref = 'message:' || {r}.answer \
          AND {} AND NOT {})",
         current_note("nc"),
@@ -1211,7 +1211,7 @@ fn notes_current(a: &Aliases) -> String {
 /// revision: `accepted` or `rejected`.
 fn notes_judged(a: &Aliases) -> String {
     format!(
-        "(SELECT j.key FROM a.note j JOIN a.note_target jt ON jt.note_id = j.id \
+        "(SELECT j.key FROM source_note j JOIN source_note_target jt ON jt.note_id = j.id \
          WHERE jt.ref = 'note:' || {r}.id AND j.kind = 'judgment' AND j.author = 'operator' \
          AND {live} ORDER BY j.commit_seq DESC LIMIT 1)",
         r = a.row,
@@ -1235,9 +1235,9 @@ pub use polylogue_model::note_sql::{current_note, live_note, withdrawn_note};
 pub fn first_seen_of(m: &str) -> String {
     format!(
         "(SELECT min(fo.seen_at) FROM message_source fs JOIN input_ref fi ON fi.pk = fs.input_pk \
-         JOIN a.revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
+         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
-         JOIN a.observation fo ON fo.input = fr.input AND fo.revision = fr.number \
+         JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
          WHERE fs.message_pk = {m}.pk)"
     )
 }
@@ -1250,9 +1250,9 @@ fn session_first_seen(a: &Aliases) -> String {
     format!(
         "(SELECT min(fo.seen_at) FROM message fm JOIN message_source fs ON fs.message_pk = fm.pk \
          JOIN input_ref fi ON fi.pk = fs.input_pk \
-         JOIN a.revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
+         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
-         JOIN a.observation fo ON fo.input = fr.input AND fo.revision = fr.number \
+         JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
          WHERE fm.session_pk = {}.pk)",
         a.s
     )
@@ -1262,9 +1262,9 @@ fn session_first_seen(a: &Aliases) -> String {
 pub fn event_first_seen(a: &Aliases) -> String {
     format!(
         "(SELECT min(fo.seen_at) FROM input_ref fi \
-         JOIN a.revision fr ON fr.input = fi.id AND fr.chain = {r}.source_chain \
+         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = {r}.source_chain \
          AND fr.length > {r}.source_start AND fr.length >= coalesce({r}.source_end, {r}.source_start) \
-         JOIN a.observation fo ON fo.input = fr.input AND fo.revision = fr.number \
+         JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
          WHERE fi.pk = {r}.input_pk)",
         r = a.row
     )
@@ -1273,7 +1273,7 @@ pub fn event_first_seen(a: &Aliases) -> String {
 /// A current `hidden` note targets the session.
 pub fn hidden(s: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
+        "EXISTS (SELECT 1 FROM source_note hn JOIN source_note_target ht ON ht.note_id = hn.id \
          WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
         live_note("hn")
     )

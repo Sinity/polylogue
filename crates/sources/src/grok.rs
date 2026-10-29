@@ -137,8 +137,11 @@ impl Export {
             );
             return;
         };
-        sink.records
-            .fields("conversation wrapper", value, &WRAPPER_FIELDS);
+        sink.records.fields(
+            "conversation wrapper",
+            &crate::fields::header(value, &["conversation", "responses"]),
+            &WRAPPER_FIELDS,
+        );
         sink.records
             .fields("conversation", conversation, &CONVERSATION_FIELDS);
         let mut warnings = Vec::new();
@@ -185,8 +188,11 @@ impl Export {
         let mut occurrences = HashMap::<String, usize>::new();
         for entry in responses {
             let fields = if let Some(response) = entry.get("response") {
-                sink.records
-                    .fields("response wrapper", entry, &RESPONSE_WRAPPER);
+                sink.records.fields(
+                    "response wrapper",
+                    &crate::fields::header(entry, &["response"]),
+                    &RESPONSE_WRAPPER,
+                );
                 response
             } else {
                 entry

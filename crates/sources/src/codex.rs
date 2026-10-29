@@ -300,8 +300,10 @@ impl Rollout {
         &self,
         parser_state: &mut ParserState,
         p: &Json,
+        at: Option<polylogue_model::Timestamp>,
         out: &mut Output,
     ) -> RecordOutcome {
+        let at = at.or_else(|| p.get("timestamp").and_then(time::rfc3339));
         let Some(thread) = str_field(p, "id").or(self.thread.as_deref()) else {
             return RecordOutcome::unreadable("session_meta without a thread ID");
         };
@@ -311,7 +313,7 @@ impl Rollout {
         if parser_state.session.as_ref().is_some_and(|s| s.id != id) {
             // A resumed rollout names the thread it came from; this file's
             // thread was already set by an earlier header.
-            return self.event(parser_state, p, "session_meta", None, out);
+            return self.event(parser_state, p, "session_meta", at, out);
         }
         let subagent = str_field(p, "thread_source") == Some("subagent")
             || p.get("source").and_then(|s| s.get("subagent")).is_some();
@@ -394,26 +396,7 @@ impl Rollout {
                 Self::unknown_boundaries(parent, out);
             }
         }
-        self.event(parser_state, p, "session_meta", None, out)
-    }
-
-    fn older_header(&self, parser_state: &mut ParserState, v: &Json) -> RecordOutcome {
-        let Some(id) = str_field(v, "id")
-            .or(self.thread.as_deref())
-            .and_then(session_id)
-        else {
-            return RecordOutcome::unreadable("header without a thread ID");
-        };
-        let s = parser_state
-            .session
-            .get_or_insert_with(|| Session::new(id, SessionKind::Main));
-        if let Some(at) = v.get("timestamp").and_then(time::rfc3339) {
-            s.offer_start(at);
-        }
-        if let Some(branch) = v.get("git").and_then(|g| str_field(g, "branch")) {
-            s.git_branch = Some(branch.to_owned());
-        }
-        RecordOutcome::Used
+        self.event(parser_state, p, "session_meta", at, out)
     }
 
     fn event(
@@ -463,7 +446,6 @@ impl Rollout {
         matches!((parser_state.copied_until, ordinal), (Some(until), Some(o)) if o > 1 && o < until)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn response_item(
         &self,
         parser_state: &mut ParserState,
@@ -472,10 +454,8 @@ impl Rollout {
         at: Option<polylogue_model::Timestamp>,
         ordinal: Option<u64>,
         out: &mut Output,
-        records: &mut Records,
     ) -> RecordOutcome {
         let ty = str_field(item, "type").unwrap_or("?");
-        records.fields(&format!("response_item/{ty}"), item, fields::for_item(ty));
         let copied = Self::copied(parser_state, ordinal);
         let session = if copied {
             // Stored once, in the parent; only items with an ID can be
@@ -869,6 +849,7 @@ impl Rollout {
         p: &Json,
         at: Option<polylogue_model::Timestamp>,
         out: &mut Output,
+        records: &mut Records,
     ) -> RecordOutcome {
         let sub = str_field(p, "type").unwrap_or("?");
         match sub {
@@ -919,7 +900,10 @@ impl Rollout {
                 }
                 RecordOutcome::Used
             }
-            "item_completed" => self.item_completed(parser_state, record, p, at, out),
+            "item_completed" => {
+                records.fields("event_msg/item_completed", p, &fields::ITEM_COMPLETED);
+                self.item_completed(parser_state, record, p, at, out)
+            }
             "agent_message"
             | "agent_reasoning"
             | "agent_reasoning_raw_content"
@@ -1078,6 +1062,13 @@ impl Parser for Rollout {
         }
         let rec = unwrap(v);
         let p = rec.payload;
+        if rec.ty == "response_item" && str_field(p, "type") != Some("token_count") {
+            let ty = str_field(p, "type").unwrap_or("?");
+            records.fields(&format!("response_item/{ty}"), p, fields::for_item(ty));
+        }
+        if rec.ty == "event_msg" && str_field(p, "type") == Some("user_message") {
+            records.fields("event_msg/user_message", p, &fields::USER_MESSAGE);
+        }
         parser_state.current = Some((record.offset, record.offset + record.bytes.len() as u64));
         if record.offset == 0 {
             parser_state.usage.start(0, false);
@@ -1122,7 +1113,7 @@ impl Parser for Rollout {
                     "same prompt as the user_message event before it, which is stored",
                 );
             }
-            let d = self.response_item(parser_state, record, p, rec.at, rec.ordinal, out, records);
+            let d = self.response_item(parser_state, record, p, rec.at, rec.ordinal, out);
             if d == RecordOutcome::Used {
                 parser_state.prompt = Some(Prompt {
                     text,
@@ -1153,15 +1144,7 @@ impl Parser for Rollout {
             if let Some(id) = str_field(p, "client_id") {
                 item["id"] = Json::String(id.to_owned());
             }
-            let d = self.response_item(
-                parser_state,
-                record,
-                &item,
-                rec.at,
-                rec.ordinal,
-                out,
-                records,
-            );
+            let d = self.response_item(parser_state, record, &item, rec.at, rec.ordinal, out);
             if d == RecordOutcome::Used {
                 parser_state.prompt = Some(Prompt {
                     text,
@@ -1171,15 +1154,14 @@ impl Parser for Rollout {
             return d;
         }
         match rec.ty {
-            "session_meta" => self.session_meta(parser_state, p, out),
-            "older_header" => self.older_header(parser_state, p),
+            "session_meta" | "older_header" => self.session_meta(parser_state, p, rec.at, out),
             "state" => {
                 RecordOutcome::skipped("turn-state marker of 2025 rollouts; holds no content")
             }
             "response_item" => {
-                self.response_item(parser_state, record, p, rec.at, rec.ordinal, out, records)
+                self.response_item(parser_state, record, p, rec.at, rec.ordinal, out)
             }
-            "event_msg" => self.event_msg(parser_state, record, p, rec.at, out),
+            "event_msg" => self.event_msg(parser_state, record, p, rec.at, out, records),
             "turn_context" => {
                 if let Some(model) = str_field(p, "model") {
                     parser_state.model = Some(model.to_owned());

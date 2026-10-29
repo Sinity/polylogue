@@ -146,19 +146,19 @@ impl Reader<'_> {
     pub fn chat_actions(&self) -> Result<Vec<ChatAction>> {
         let conn = self.conn()?;
         let ids: Vec<String> = conn
-            .prepare_cached("SELECT id FROM a.chat_action ORDER BY created_at, id")?
+            .prepare_cached("SELECT id FROM source_chat_action ORDER BY created_at, id")?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         ids.iter()
             .map(|id| {
-                read(conn, "a.", id)?
+                read(conn, "source_", id)?
                     .ok_or_else(|| StoreError::NotFound(format!("chat action {id}")))
             })
             .collect()
     }
 
     pub fn chat_action(&self, id: &str) -> Result<Option<ChatAction>> {
-        read(self.conn()?, "a.", id)
+        read(self.conn()?, "source_", id)
     }
 
     /// A chat action attachment's bytes, checked against their hash.
@@ -287,9 +287,10 @@ fn refused(code: &'static str) -> StoreError {
 
 /// Stores a new action, or finds the one a resent request made.
 pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -> Result<String> {
+    let source = crate::source::Source::of(tx)?;
     let known: Option<(String, Vec<u8>)> = tx
         .query_row(
-            "SELECT id, request_hash FROM chat_action WHERE request_key = ?1",
+            &source.sql("SELECT id, request_hash FROM @source.chat_action WHERE request_key = ?1"),
             [&new.request_key],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -302,9 +303,9 @@ pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -
         };
     }
     tx.execute(
-        "INSERT INTO chat_action(id, request_key, request_hash, request_json, stage_only,
+        &source.sql("INSERT INTO @source.chat_action(id, request_key, request_hash, request_json, stage_only,
              needs_approval, created_at, commit_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
         params![
             new.id,
             new.request_key,
@@ -318,17 +319,19 @@ pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -
     )?;
     for a in &new.attachments {
         let present: bool = tx
-            .query_row("SELECT 1 FROM blob WHERE hash = ?1", [&a.blob.0[..]], |r| {
-                r.get(0)
-            })
+            .query_row(
+                &source.sql("SELECT 1 FROM @source.blob WHERE hash = ?1"),
+                [&a.blob.0[..]],
+                |r| r.get(0),
+            )
             .optional()?
             .unwrap_or(false);
         if !present {
             return Err(refused("unknown_attachment"));
         }
         tx.execute(
-            "INSERT INTO chat_action_attachment(action, id, blob, name, media_type, size)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            &source.sql("INSERT INTO @source.chat_action_attachment(action, id, blob, name, media_type, size)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
             params![
                 new.id,
                 a.id,
@@ -350,13 +353,14 @@ pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -
 
 /// Hands the oldest queued action to `by`, unless another action is out.
 pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<String> {
+    let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
-        .prepare_cached("SELECT id FROM chat_action ORDER BY created_at, id")?
+        .prepare_cached(&source.sql("SELECT id FROM @source.chat_action ORDER BY created_at, id"))?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut next = None;
     for id in ids {
-        let Some(action) = read(tx, "", &id)? else {
+        let Some(action) = read(tx, source.prefix(), &id)? else {
             continue;
         };
         match action.status(at).0 {
@@ -383,7 +387,8 @@ pub(crate) fn report(
     at: i64,
     seq: i64,
 ) -> Result<()> {
-    let action = read(tx, "", id)?.ok_or_else(|| refused("unknown_chat_action"))?;
+    let source = crate::source::Source::of(tx)?;
+    let action = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_chat_action"))?;
     let next = outcome(kind).ok_or_else(|| refused("unknown_outcome"))?;
     let (status, holder) = action.status(at);
     if status.finished() {
@@ -408,7 +413,8 @@ pub(crate) fn decide(
     at: i64,
     seq: i64,
 ) -> Result<()> {
-    let action = read(tx, "", id)?.ok_or_else(|| refused("unknown_chat_action"))?;
+    let source = crate::source::Source::of(tx)?;
+    let action = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_chat_action"))?;
     if action.status(at).0 != ChatStatus::AwaitingApproval {
         return Err(refused("not_awaiting_approval"));
     }
@@ -432,10 +438,11 @@ fn add_event(
     receipt: Option<&serde_json::Value>,
     seq: i64,
 ) -> Result<()> {
+    let source = crate::source::Source::of(tx)?;
     tx.execute(
-        "INSERT INTO chat_action_event(action, n, at, kind, phase, detail, by, receipt_json, commit_seq)
-         VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM chat_action_event WHERE action = ?1),
-                 ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        &source.sql("INSERT INTO @source.chat_action_event(action, n, at, kind, phase, detail, by, receipt_json, commit_seq)
+         VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM @source.chat_action_event WHERE action = ?1),
+                 ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
         params![
             id,
             at,

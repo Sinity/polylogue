@@ -200,7 +200,7 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
         .collect();
     let rel = MatchRel {
         sql: format!(
-            "SELECT j.key AS _pk, {} FROM a.kept_result k, json_each(k.rows_json, '$.{part}') j \
+            "SELECT j.key AS _pk, {} FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j \
              WHERE k.id = {id_param} ORDER BY j.key",
             select.join(", ")
         ),
