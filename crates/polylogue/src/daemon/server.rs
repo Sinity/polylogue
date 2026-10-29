@@ -93,6 +93,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
         }
         let typed = match &request {
             Request::Status => Some(("status", serde_json::json!({}))),
+            Request::Sql { statement } => Some(("sql", serde_json::json!({"statement":statement}))),
             request => crate::protocol::query::Arguments::from_request(request).map(|arguments| {
                 (
                     "query",

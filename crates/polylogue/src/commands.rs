@@ -607,16 +607,18 @@ const WRITTEN: &[Command] = &[
         writes: true,
         ..CLI
     },
-    Command {
+    typed_command!(ListOperation, crate::protocol::query_aliases::List, crate::protocol::query::Answer, {
         name: "list",
         help: "Sessions matching a query, newest first",
+        reason: "List archive rows through the query language",
+        latency: command_surface::LatencyClass::Read,
         args: QUERY_ARGS,
         action: Action::Request(requests::list),
         print: print::query,
         mcp: true,
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "outline",
         help: "Page prompt, tool failure, compaction and branch references without loading message bodies",
@@ -988,14 +990,16 @@ const WRITTEN: &[Command] = &[
         print: print::query,
         ..CLI
     },
-    Command {
+    typed_command!(LiveOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
         name: "live",
         help: "Sessions running now and what each is doing: the query `sessions where -live:ended | sort by live_rank, last_event_at desc`",
+        reason: "Show the current running-session view",
+        latency: command_surface::LatencyClass::Read,
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::live),
         print: print::query,
         ..CLI
-    },
+    }),
     Command {
         name: "changes",
         help: "A finite JSON-lines change feed; persist its new position only after applying the complete batch",
@@ -1017,9 +1021,11 @@ const WRITTEN: &[Command] = &[
         http: true,
         ..CLI
     },
-    Command {
+    typed_command!(NoticesOperation, crate::protocol::query_aliases::Notices, crate::protocol::query::Rows, {
         name: "notices",
         help: "Signal notices and what happened to each: the query `deliveries where sender:signal | sort by at desc`",
+        reason: "Read recorded signal deliveries and their outcomes",
+        latency: command_surface::LatencyClass::Read,
         args: &[
             Arg {
                 default: Some("50"),
@@ -1032,7 +1038,7 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::notices),
         print: print::query,
         ..CLI
-    },
+    }),
     Command {
         name: "save",
         help: "Save a query under a name, to run as `query:NAME`, alone or among other conditions. A `$word` standing for a value is a parameter, given when it runs: `query:NAME(word=VALUE)`. Saving a name again revises it",
@@ -1098,14 +1104,16 @@ const WRITTEN: &[Command] = &[
         writes: true,
         ..CLI
     },
-    Command {
+    typed_command!(SqlOperation, crate::protocol::query_aliases::Sql, crate::protocol::query_aliases::SqlRows, {
         name: "sql",
         help: "Read-only SQL. Programs read the views v1_sessions, v1_messages, v1_tool_calls, v1_links and v1_notes, whose names and columns stay; the tables change with the index format",
+        reason: "Run expert read-only queries over the stable archive views",
+        latency: command_surface::LatencyClass::Aggregate,
         args: &[pos("statement", Kind::Text, "One SQL statement")],
         action: Action::Request(requests::sql),
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "embed preview",
         help: "What a build would embed and what it would cost",

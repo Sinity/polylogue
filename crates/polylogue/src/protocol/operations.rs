@@ -72,10 +72,16 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                 json: true,
             };
             let values = serde_json::to_value(arguments).expect("typed arguments serialize");
-            let values = values
+            let mut values = values
                 .as_object()
                 .expect("command arguments are objects")
                 .clone();
+            if command.writes {
+                values.insert(
+                    "request_id".into(),
+                    Value::String(context.request_id.clone()),
+                );
+            }
             let values = match Values::from_json(command, caller.surface, values) {
                 Ok(values) => values,
                 Err(error) => return Answer::error(Failure::new(FailureKind::BadRequest, error)),
@@ -186,14 +192,14 @@ impl<C: CommandType> Operation for TypedCommand<C> {
 
 pub fn table(daemon: Arc<Daemon>) -> OperationTable {
     let mut deadlines = command_surface::Deadlines::default();
-    deadlines.set(
-        LatencyClass::Search,
-        Some(crate::daemon::execution::timeout()),
-    );
-    deadlines.set(
-        LatencyClass::Status,
-        Some(std::time::Duration::from_millis(500)),
-    );
+    for (class, milliseconds) in [
+        (LatencyClass::Status, 80),
+        (LatencyClass::Read, 250),
+        (LatencyClass::Search, 2000),
+        (LatencyClass::Aggregate, 400),
+    ] {
+        deadlines.set(class, Some(std::time::Duration::from_millis(milliseconds)));
+    }
     let mut table = OperationTable::new("polylogue", deadlines);
     for (kind, codes) in super::FAILURE_CLASSES {
         for code in *codes {

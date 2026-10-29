@@ -2,6 +2,7 @@
 pub mod caller;
 pub mod operations;
 pub mod query;
+pub mod query_aliases;
 pub mod status;
 use command_surface::{Answer, Failure, FailureKind, Position};
 use serde_json::Value;
@@ -138,7 +139,10 @@ pub fn answer(value: Value) -> Answer<Value> {
             notes: vec![],
             next: vec![],
         }
-    } else if value["empty"].as_bool() == Some(true) || value["outcome"].as_str() == Some("empty") {
+    } else if value.as_array().is_some_and(Vec::is_empty)
+        || value["empty"].as_bool() == Some(true)
+        || value["outcome"].as_str() == Some("empty")
+    {
         Answer::Empty {
             value,
             notes: vec![],

@@ -124,3 +124,42 @@ fn status_operation_uses_its_typed_answer_on_the_shared_socket_path() {
             .is_err()
     );
 }
+
+#[test]
+fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
+    for command in crate::commands::COMMANDS
+        .iter()
+        .filter(|command| command.register.is_some())
+    {
+        let declared = command
+            .args_for(Surface::Mcp)
+            .filter(|arg| arg.name != "request_id")
+            .map(|arg| arg.name.to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        let schema = (command.typed_schemas.unwrap())().0;
+        let typed = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(typed, declared, "{}", command.name);
+        assert_eq!(schema["additionalProperties"], false, "{}", command.name);
+    }
+}
+
+#[test]
+fn typed_sql_empty_rows_are_successful_empty_reads() {
+    let daemon = crate::test_daemon::start("SQL operation witness");
+    let socket = crate::client::send(
+        &daemon.daemon.archive.socket(),
+        &crate::daemon::Request::Sql {
+            statement: "SELECT 1 AS witness WHERE 0".into(),
+        },
+    )
+    .unwrap()
+    .answer();
+    assert_eq!(socket.exit_code(), 1, "{socket:?}");
+    assert_eq!(socket.http_status(), Some(200));
+    assert_eq!(socket.value(), Some(&json!([])));
+}
