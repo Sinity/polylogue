@@ -1253,6 +1253,25 @@ impl Runtime {
         self.daemon.reads.close();
     }
 
+    /// A finished continuous worker is a failure; slow work remains live.
+    pub fn worker_failure(&self) -> Option<&'static str> {
+        if self.daemon.stopping.load(Ordering::Acquire) {
+            return None;
+        }
+        if self.engine.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Some("engine worker terminated");
+        }
+        if self.signals.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Some("signal worker terminated");
+        }
+        if self.counts.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Some("count worker terminated");
+        }
+        self.completion
+            .as_ref()
+            .and_then(|worker| worker.worker_failure())
+    }
+
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
         self.completion.take();
