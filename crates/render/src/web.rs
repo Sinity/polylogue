@@ -89,7 +89,7 @@ fn follow(call: &ReadyCall, label: &str, next: bool) -> Markup {
 }
 /// Encode the operation's complete HTTP form; no cursor parsing, target
 /// selection or option defaults occur here. Complex fields use JSON.
-pub(crate) fn http_url(call: &HttpCall) -> Result<String, Failure> {
+pub fn http_url(call: &HttpCall) -> Result<String, Failure> {
     if call.method != "GET"
         || !call.path.starts_with('/')
         || call.path.starts_with("//")
