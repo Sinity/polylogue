@@ -7,45 +7,23 @@
 //! missing), and the writer and the loop send everything to Sinex before they
 //! write it locally. When Sinex cannot be reached at start, reads use the
 //! local copy and writes pause.
-use crate::daemon::service::ArchiveMode;
-use polylogue_sinex::{Config as SinexConfig, Mode, Sinex};
+use polylogue_sinex::{Authentication, Config as SinexConfig, Sinex};
 use polylogue_store::primary::{Held, Part, RegisterChange};
 use polylogue_store::{Archive, ArchiveLock, ReadPool, StoreError};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Resolves operator configuration only at the production entry point.
-pub fn configured() -> ArchiveMode {
-    configured_at(&SinexConfig::path())
-}
-
-pub fn configured_at(path: &Path) -> ArchiveMode {
-    match SinexConfig::load_from(path) {
-        Ok(Some(config)) if config.mode == Mode::Primary => ArchiveMode::Primary {
-            config,
-            path: path.to_owned(),
-        },
-        Ok(_) => ArchiveMode::Standalone,
-        Err(error) => ArchiveMode::Blocked {
-            configured: None,
-            path: path.to_owned(),
-            error: error.to_string(),
-        },
-    }
-}
-
-/// The archive at `root` that Sinex holds, with the connection to it, or
-/// with why Sinex cannot be reached. Without Sinex a missing local copy
-/// cannot be rebuilt, and opening fails.
 pub fn open(
     root: &Path,
     config: &SinexConfig,
+    authentication: &Authentication,
+    host: &str,
 ) -> std::io::Result<(Archive, ArchiveLock, Result<Arc<Sinex>, String>)> {
     let opened = |sinex: &dyn polylogue_store::primary::Sinex| {
         Archive::open_primary(root, &config.store, sinex)
             .map_err(|e| std::io::Error::other(format!("opening the archive Sinex holds: {e}")))
     };
-    match Sinex::connect(config, root) {
+    match Sinex::connect(config, authentication, root, host) {
         Ok(sinex) => {
             let sinex = Arc::new(sinex);
             let (archive, lock) = opened(sinex.as_ref())?;
