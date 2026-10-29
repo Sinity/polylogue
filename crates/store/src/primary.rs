@@ -122,12 +122,6 @@ pub trait Sinex: Send + Sync {
         &self,
         visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
     ) -> Result<()>;
-    /// Visits only matching named products already retained in durable custody.
-    fn visit_named_products(
-        &self,
-        selector: &NamedProductSelector,
-        visit: &mut dyn FnMut(&Product) -> Result<()>,
-    ) -> Result<()>;
     fn visit_pending_blobs(
         &self,
         visit: &mut dyn FnMut(&crate::NewBlob) -> Result<()>,
