@@ -160,7 +160,7 @@ fn item_markup(item: &ReadItem, inline_limit: usize) -> Markup {
         ItemKind::Omission { count,unit,why,continue_call } => { aside class="omission" { "… " (value(count)) " " (unit) ": " (why) @if let Some(call)=continue_call { " " (ready(call)) } } },
         ItemKind::Card { card:c } => { (card(c)) },
         ItemKind::Raw { record } => { p { (&record.reference) " · " (&record.input) " · " (&record.media_type) } @if let Ok(text)=std::str::from_utf8(&record.bytes) { pre { (text) } } @else { @let encoded = { use base64::Engine; base64::engine::general_purpose::STANDARD.encode(&record.bytes) }; p { "binary bytes (base64)" } pre { (encoded) } } },
-        ItemKind::Fragment { encoding,text,from,until,total } => { pre data-encoding=(format!("{encoding:?}")) { (text) } p class="fragment-position" { "… characters " (from) ".." (until) " of " (total) } },
+        ItemKind::Fragment { text,position,until,total } => { p { "Encoded ReadItem JSON fragment" } pre data-encoding="read_item_json" { (text) } p class="fragment-position" { "… encoded characters " (position.character) ".." (until) " of " (total) } },
     } } }
 }
 /// Ordinary navigation consumes the daemon's sealed calls, never guesses URLs.
