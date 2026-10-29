@@ -2,8 +2,9 @@
 //! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
 //! everything else. Every command takes `--json` for programs and agents.
 
-pub(crate) mod attachment;
+mod attachment;
 pub mod changes;
+pub(crate) mod completion;
 pub mod local;
 pub mod print;
 pub(crate) mod schema;
@@ -121,7 +122,9 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::FlagOrText => arg.num_args(0..=1),
     };
     if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
-        arg = arg.add(clap_complete::engine::ArgValueCompleter::new(query_word));
+        arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+            completion::Query,
+        ));
     }
     if let Some(d) = a.default {
         arg = arg.default_value(d);
@@ -412,39 +415,6 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
             other => return other,
         }
     }
-}
-
-/// Query completion runs in the CLI process from the last published vocabulary.
-fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
-    let Some(text) = current.to_str() else {
-        return Vec::new();
-    };
-    let data = crate::completion_catalog::read(&Archive::default_root()).unwrap_or_default();
-    let values = crate::daemon::warm::completions(&data, text)
-        .into_iter()
-        .map(|(value, help)| serde_json::json!({"value":value,"help":help}))
-        .collect::<Vec<_>>();
-    completion_candidates(&Value::Array(values))
-}
-
-fn completion_candidates(data: &Value) -> Vec<clap_complete::CompletionCandidate> {
-    data.as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|c| {
-            let value = c["value"].as_str()?;
-            if value.chars().any(char::is_control)
-                || polylogue_render::terminal::escape(value) != value
-            {
-                return None;
-            }
-            let help = c["help"].as_str().filter(|h| !h.is_empty());
-            Some(
-                clap_complete::CompletionCandidate::new(value)
-                    .help(help.map(|h| polylogue_render::terminal::escape(h).into())),
-            )
-        })
-        .collect()
 }
 
 pub(crate) fn fail(json: bool, kind: &str, message: &str, _code: u8) -> ExitCode {

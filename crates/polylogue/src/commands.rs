@@ -1383,8 +1383,15 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "complete",
-        help: "Completions for one word of a query: field names, values seen, unit names and recent session IDs",
-        args: &[pos_opt("word", Kind::Text, "The word being typed")],
+        help: "Complete a query at a UTF-8 byte offset using its full scope and suffix",
+        args: &[
+            pos_opt("text", Kind::Text, "The full query text"),
+            opt(
+                "position",
+                Kind::Integer,
+                "UTF-8 byte offset of the cursor (default: end of text)",
+            ),
+        ],
         action: Action::Request(requests::complete),
         cli: Cli::Hidden,
         http: true,

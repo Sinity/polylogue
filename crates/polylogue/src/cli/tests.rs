@@ -114,7 +114,7 @@ fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
                 assert!(left > timeout.as_millis() as i64 - 5000);
             }
             stream
-                .write_all(b"{\"result\":\"ok\",\"data\":{}}\n")
+                .write_all(b"{\"outcome\":\"ok\",\"value\":{},\"notes\":[],\"next\":[]}\n")
                 .unwrap();
         });
         send_with_timeout(&archive, &request, timeout).unwrap();
@@ -132,7 +132,17 @@ fn shell_completion_escapes_daemon_help_and_omits_control_values() {
         {"value": "tag:bad\n", "help": ""},
         {"value": "tag:bad\t", "help": ""}
     ]);
-    let found = completion_candidates(&data);
+    let found = data
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| {
+            completion::candidate(
+                item["value"].as_str().unwrap().into(),
+                item["help"].as_str().unwrap().into(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].get_value(), "tag:ordinary");
     assert_eq!(
