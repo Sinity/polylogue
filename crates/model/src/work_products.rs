@@ -245,6 +245,20 @@ pub struct Derived<T> {
     pub parents: Vec<String>,
 }
 
+// Missing source fields do not conflict with explicit evidence. Different
+// observed values remain unavailable rather than choosing by arrival or clock.
+fn agreed<T: PartialEq>(values: impl IntoIterator<Item = T>) -> Result<Option<T>, ()> {
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    if values.all(|value| value == first) {
+        Ok(Some(first))
+    } else {
+        Err(())
+    }
+}
+
 fn add_u64(
     total: &mut Option<u64>,
     value: Option<u64>,
@@ -373,8 +387,8 @@ pub fn derive(
     derive_with_background(messages, std::iter::empty())
 }
 
-/// Native IDs establish associations only when exactly one selected definition
-/// and one outcome observation exist. Arrival order and clocks do not disambiguate.
+/// Native IDs associate evidence only with a unique selected definition.
+/// Conflicting observations stay unavailable; clocks and arrival do not resolve them.
 pub fn derive_with_background(
     messages: impl IntoIterator<Item = SelectedMessage>,
     backgrounds: impl IntoIterator<Item = SelectedBackground>,
@@ -565,32 +579,63 @@ pub fn derive_with_background(
             .flat_map(|&index| calls[index].parents.clone())
             .collect();
         evidence.extend(results.iter().map(|result| result.event.clone()));
-        let ambiguous = if definitions.len() > 1 {
-            Some("ambiguous_native_call_id")
-        } else if results.len() > 1 {
-            Some("ambiguous_result_evidence")
-        } else {
-            None
-        };
+        let ambiguous = definitions.len() > 1;
         for index in definitions {
             let call = &mut calls[index];
             call.parents.extend(evidence.iter().cloned());
-            if let Some(reason) = ambiguous {
+            if ambiguous {
                 call.facts.outcome = None;
-                call.facts.outcome_reason = Some(reason.into());
-                call.facts.unavailable.push(reason.into());
-            } else if let Some(result) = results.first() {
-                call.facts.result = result.result.clone();
-                call.facts.result_at = result.at;
-                call.facts.result_at_evidence = result.evidence;
-                call.facts.outcome = Some(result.outcome.clone());
-                call.facts.outcome_reason = None;
-                call.facts.reported_duration_ms = result.duration;
+                call.facts.outcome_reason = Some("ambiguous_native_call_id".into());
+                call.facts
+                    .unavailable
+                    .push("ambiguous_native_call_id".into());
+            } else if !results.is_empty() {
+                match agreed(results.iter().map(|result| &result.outcome)) {
+                    Ok(outcome) => {
+                        call.facts.outcome = outcome.cloned();
+                        call.facts.outcome_reason = None;
+                    }
+                    Err(()) => {
+                        call.facts.outcome = None;
+                        call.facts.outcome_reason = Some("ambiguous_result_evidence".into());
+                        call.facts
+                            .unavailable
+                            .push("ambiguous_result_evidence".into());
+                    }
+                }
+                match agreed(results.iter().filter_map(|result| result.result.as_ref())) {
+                    Ok(result) => call.facts.result = result.cloned(),
+                    Err(()) => call
+                        .facts
+                        .unavailable
+                        .push("result_message_ambiguous".into()),
+                }
+                match agreed(
+                    results
+                        .iter()
+                        .filter_map(|result| result.at.map(|at| (at, result.evidence))),
+                ) {
+                    Ok(Some((at, evidence))) => {
+                        call.facts.result_at = Some(at);
+                        call.facts.result_at_evidence = evidence;
+                    }
+                    Ok(None) => {}
+                    Err(()) => call.facts.unavailable.push("result_time_ambiguous".into()),
+                }
+                match agreed(results.iter().filter_map(|result| result.duration)) {
+                    Ok(duration) => call.facts.reported_duration_ms = duration,
+                    Err(()) => call
+                        .facts
+                        .unavailable
+                        .push("reported_duration_ambiguous".into()),
+                }
             }
         }
     }
     for (index, call) in calls.iter_mut().enumerate() {
-        if matches!(call.facts.outcome, Some(ToolOutcome::NoResult)) {
+        if matches!(call.facts.outcome, Some(ToolOutcome::NoResult))
+            && call.facts.outcome_reason.as_deref() == Some("no_result")
+        {
             let (ordinal, unknown) = call_boundaries[index];
             if !unknown
                 && last_response

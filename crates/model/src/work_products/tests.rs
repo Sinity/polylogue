@@ -552,3 +552,39 @@ fn a_sibling_agent_response_does_not_advance_another_physical_calls_boundary() {
     assert_eq!(calls[0].facts.outcome, Some(ToolOutcome::NoResult));
     assert_eq!(calls[0].facts.outcome_reason.as_deref(), Some("no_result"));
 }
+
+#[test]
+fn consistent_native_observations_preserve_known_values_without_inventing_final_order() {
+    let update = crate::BackgroundUpdate {
+        session: SessionId::parse("codex:morrow").unwrap(),
+        task_id: "task".into(),
+        call_id: Some("call-1".into()),
+        outcome: ToolOutcome::Ok,
+        result_at: None,
+        result_at_evidence: crate::TimeEvidence::UNKNOWN,
+        reported_duration_ms: None,
+        output_file: None,
+    };
+    let (calls, _) = derive_with_background(
+        [
+            message("call", "assistant", "model", call()),
+            message("result", "user", "harness", result()),
+        ],
+        [SelectedBackground {
+            logical_session: SessionId::parse("codex:morrow").unwrap(),
+            update,
+            event: "background".into(),
+        }],
+    );
+    assert_eq!(calls[0].facts.outcome, Some(ToolOutcome::Ok));
+    assert_eq!(
+        calls[0].facts.result.as_ref().unwrap().to_string(),
+        "codex:result"
+    );
+    assert_eq!(calls[0].facts.reported_duration_ms, Some(27));
+    assert!(calls[0].facts.unavailable.is_empty());
+    assert_eq!(
+        calls[0].parents,
+        ["background", "event-call", "event-result"]
+    );
+}
