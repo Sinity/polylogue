@@ -374,9 +374,18 @@ impl polylogue_store::primary::Sinex for Sinex {
         &self,
         after: i64,
         cache: &str,
+        scope: Option<&str>,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        self.resume_publication();
-        Ok(self.with(async |client| client.confirmed(after, cache).await)?)
+        let page = self.with(async |client| client.confirmed(after, cache, scope).await)?;
+        if !page.iter().any(|item| {
+            matches!(
+                item.change,
+                polylogue_store::primary::ConfirmedChange::ScopeReset { .. }
+            )
+        }) {
+            self.resume_publication();
+        }
+        Ok(page)
     }
     fn acknowledge(&self, position: i64) -> polylogue_store::Result<()> {
         Ok(self.with(async |client| client.acknowledge(position).await)?)

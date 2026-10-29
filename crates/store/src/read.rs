@@ -596,6 +596,10 @@ impl Reader<'_> {
         crate::primary::projection::checkpoint(self.conn()?)
     }
 
+    pub fn confirmed_scope(&self) -> Result<Option<String>> {
+        crate::primary::scope::current(self.conn()?)
+    }
+
     pub fn primary_cache_identity(&self) -> Result<String> {
         crate::primary::cache_identity(self.conn()?)
     }
