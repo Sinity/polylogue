@@ -8,6 +8,13 @@ pub use acquisition::{
     SourceSnapshot, SourceStatus, SourceSubject,
 };
 pub mod products;
+pub mod replay;
+pub use replay::{
+    ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeFactContext, NativeKind,
+    NativeSource, ProjectionAvailability, ProjectionCoverage, ProjectionIdentity, RawInputCoverage,
+    RawInputProof, ReplayBasisStatus, ReplayContinuation, ReplayControl, ReplayCursor, ReplayPage,
+    ReplayState,
+};
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
