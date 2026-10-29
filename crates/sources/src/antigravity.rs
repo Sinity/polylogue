@@ -76,7 +76,8 @@ static FIELDS: Fields = Fields::new(&[
         "snippet",
         Rule::Excluded("preview repeated in the transcript"),
     ),
-]);
+])
+.for_kind("record");
 
 impl DocumentParser for Antigravity {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {

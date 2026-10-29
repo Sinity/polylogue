@@ -34,15 +34,17 @@ fn unpacked<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     crate::encoding::unpack_json(bytes)
 }
 
-pub(crate) fn position(index: &Connection) -> Result<i64> {
+pub(crate) fn checkpoint(index: &Connection) -> Result<Option<i64>> {
     Ok(index
         .query_row(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key='confirmed_position'",
             [],
             |row| row.get(0),
         )
-        .optional()?
-        .unwrap_or(0))
+        .optional()?)
+}
+pub(crate) fn position(index: &Connection) -> Result<i64> {
+    Ok(checkpoint(index)?.unwrap_or(0))
 }
 
 /// Each successfully staged page may be acknowledged. Only a complete position is visible.
@@ -50,9 +52,13 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let applied = position(&tx)?;
     for event in events {
+        if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
+            tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
+            continue;
+        }
         if event.position <= 0 {
             return Err(StoreError::Invalid(
-                "a confirmed position must be positive".into(),
+                "a confirmed data position must be positive".into(),
             ));
         }
         if event.position <= applied {
@@ -151,6 +157,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
         Product::Request(request) => Some(format!("request:{}", request.id)),
+        Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         _ => None,
     };
     if let Some(reading) = product.reading() {
@@ -173,6 +180,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         ),
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_) => (None, None, reference, "request"),
+        Product::Coverage(_) => (None, None, reference, "coverage"),
         _ => unreachable!(),
     }
 }
@@ -329,6 +337,7 @@ struct Plan {
     materials: BTreeSet<polylogue_model::BlobHash>,
     available: HashMap<polylogue_model::BlobHash, Option<u64>>,
     requests: bool,
+    coverage: bool,
 }
 
 fn attachments(
@@ -361,6 +370,7 @@ fn step(
     step.order_from = reading.order_from;
     step.reading_version = reading.reading_version.clone();
     step.repeats_whole_conversations = reading.repeats_whole_conversations;
+    step.no_parser_yet = reading.no_parser_yet;
     step
 }
 
@@ -371,6 +381,7 @@ fn plan(index: &Connection) -> Result<Plan> {
         materials: BTreeSet::new(),
         available: HashMap::new(),
         requests: false,
+        coverage: false,
     };
     let mut chains = BTreeMap::<(String, i64), crate::InputKey>::new();
     let mut new_materials = HashMap::new();
@@ -390,6 +401,9 @@ fn plan(index: &Connection) -> Result<Plan> {
             }
             if matches!(product, Product::Request(_)) {
                 out.requests = true;
+            }
+            if matches!(product, Product::Coverage(_)) {
+                out.coverage = true;
             }
             if let Some(material) = material(&product) {
                 descriptor(material)?;
@@ -436,7 +450,10 @@ fn plan(index: &Connection) -> Result<Plan> {
             length = length.max(reading.parsed_upto);
             match product {
                 Product::Session { facts, .. } => output.sessions.push(facts),
-                Product::Message { facts, .. } => {
+                Product::Message { facts, order, .. } => {
+                    if let Some(order) = order {
+                        output.message_order.insert(output.messages.len(), order);
+                    }
                     attachments(&facts.message.blocks, &mut needed);
                     output.messages.push(facts);
                 }
@@ -534,7 +551,7 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     drop(rows);
     drop(q);
     for input in &plan.inputs {
-        tx.execute("DELETE FROM source_observation_zip WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
+        tx.execute("DELETE FROM source_observation_container WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
         tx.execute("DELETE FROM source_observation WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_extent WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_revision WHERE input=?1", [input])?;
@@ -592,6 +609,17 @@ pub(crate) fn apply(
         let counter = crate::archive::bump_counter(&tx)?;
         sources(&tx, &plan)?;
         requests(&tx, &plan)?;
+        if plan.coverage {
+            crate::coverage::clear(&tx)?;
+            let mut q=tx.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='coverage' ORDER BY admitted,source_order,event")?;
+            let mut rows = q.query([])?;
+            while let Some(row) = rows.next()? {
+                let bytes: Vec<u8> = row.get(0)?;
+                if let Product::Coverage(coverage) = unpacked(&bytes)? {
+                    crate::coverage::apply(&tx, &coverage)?;
+                }
+            }
+        }
         crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
         tx.execute(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",

@@ -9,8 +9,8 @@
 pub mod products;
 pub(crate) mod projection;
 pub use products::{
-    Capture, CapturedInput, Confirmed, ConfirmedChange, Material, PendingCapture, PreparedInput,
-    PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
+    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, Material, PendingCapture,
+    PreparedInput, PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
 };
 
 use crate::input_rows::InputRows;
@@ -33,10 +33,17 @@ pub trait Sinex: Send + Sync {
         length: u64,
         bytes: &mut dyn std::io::Read,
     ) -> Result<PreparedWrite>;
+    fn canonical_publisher(&self) -> bool {
+        false
+    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
-    fn complete_capture(&self, identity: &str, products: &[ProductWrite]) -> Result<PreparedWrite>;
+    fn complete_captures(
+        &self,
+        identities: &[String],
+        products: &[ProductWrite],
+    ) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
-    fn prepare_request(&self, request: &UserRequest) -> Result<crate::UserOutcome>;
+    fn prepare_request(&self, request: &UserRequest) -> Result<polylogue_model::user::UserOutcome>;
     fn confirmed(&self, after: i64, cache: &str) -> Result<Vec<Confirmed>>;
     fn acknowledge(&self, position: i64) -> Result<()>;
 }
@@ -358,7 +365,7 @@ fn forget_uncommitted(
 ) -> Result<()> {
     if let Some(id) = observation {
         tx.execute(
-            "DELETE FROM observation_zip WHERE observation_id = ?1",
+            "DELETE FROM observation_container WHERE observation_id = ?1",
             [id],
         )?;
         tx.execute("DELETE FROM observation WHERE id = ?1", [id])?;

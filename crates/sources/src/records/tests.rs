@@ -3,8 +3,8 @@ use crate::fields::ExpectedType as T;
 use crate::fields::Rule;
 use serde_json::json;
 
-static KNOWN: Fields = Fields::new(&[("known", Rule::Read(T::String))]);
-static EMPTY: Fields = Fields::new(&[]);
+static KNOWN: Fields = Fields::new(&[("known", Rule::Read(T::String))]).for_kind("known");
+static EMPTY: Fields = Fields::new(&[]).for_kind("empty");
 
 #[test]
 fn line_and_document_records_keep_the_same_classifications_and_field_counts() {
@@ -63,7 +63,8 @@ fn unused_leaf_counted_without_changing_record_outcomes() {
         ("kept", Rule::Kept("kept as event data")),
         ("excluded", Rule::Excluded("not parsed")),
         ("items[].known", Rule::Read(T::String)),
-    ]);
+    ])
+    .for_kind("record");
     records.fields("event", &value, &FIELDS);
     let counts = records.finish().unwrap();
     assert_eq!(counts.records, 0);
@@ -74,5 +75,31 @@ fn unused_leaf_counted_without_changing_record_outcomes() {
             ("event.items[].extra".into(), 2),
             ("event.excluded".into(), 1)
         ])
+    );
+}
+
+#[test]
+fn public_shape_kind_uses_declarations_instead_of_wire_discriminator_values() {
+    static FIELDS: Fields = Fields::new(&[("type", Rule::Read(T::String))]).shape(
+        &[],
+        &[crate::fields::KnownKinds {
+            path: "type",
+            values: &["message"],
+        }],
+    );
+    let mut records = Records::default();
+    records.fields(
+        "response_item/distinctive-private-kind",
+        &json!({"type":"distinctive-private-kind"}),
+        &FIELDS,
+    );
+    let got = records.finish().unwrap();
+    let shape = &got.wire_shapes[&serde_json::to_string(&("*", "/type")).unwrap()];
+    assert_eq!(shape.record_kind, "*");
+    assert_eq!(shape.unknown_kind_count, 1);
+    assert!(
+        !serde_json::to_string(&got.wire_shapes)
+            .unwrap()
+            .contains("distinctive-private-kind")
     );
 }

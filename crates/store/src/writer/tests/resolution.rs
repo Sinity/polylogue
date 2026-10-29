@@ -260,7 +260,10 @@ fn collection_without_a_parser_commits_its_explicit_status() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(progress, ("no_parser_yet".into(), 100, String::new()));
+    assert_eq!(
+        progress,
+        ("no_parser_yet".into(), 100, "synthetic=1".into())
+    );
 }
 
 #[test]
@@ -459,6 +462,159 @@ fn confirmed_readings_require_the_confirmed_chain_identity() {
     ));
     assert!(!archive.archive_db().exists());
 }
+#[test]
+fn continuing_readings_require_the_committed_prefix_and_retry_once() {
+    let w = test_archive();
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    let first = batch(
+        "cursor",
+        0,
+        0,
+        vec![row(
+            1,
+            text_message("first", "s", Role::User, "first", None),
+        )],
+        &["s"],
+    );
+    write_test_rows(&tx, &first, &first.parse[0], 1, 1, None).unwrap();
+    let gap = batch(
+        "cursor",
+        0,
+        200,
+        vec![row(
+            201,
+            text_message("last", "s", Role::User, "last", None),
+        )],
+        &["s"],
+    );
+    assert!(write_test_rows(&tx, &gap, &gap.parse[0], 1, 2, None).is_err());
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM message", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    let middle = batch(
+        "cursor",
+        0,
+        100,
+        vec![row(
+            101,
+            text_message("middle", "s", Role::User, "middle", None),
+        )],
+        &["s"],
+    );
+    assert_eq!(
+        write_test_rows(&tx, &middle, &middle.parse[0], 1, 3, None).unwrap(),
+        1
+    );
+    assert_eq!(
+        write_test_rows(&tx, &middle, &middle.parse[0], 1, 4, None).unwrap(),
+        0
+    );
+    assert_eq!(
+        write_test_rows(&tx, &gap, &gap.parse[0], 1, 5, None).unwrap(),
+        1
+    );
+    assert_eq!(
+        tx.query_row("SELECT records FROM parse_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
+    let w = test_archive();
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    let mut partial = batch("metadata", 0, 0, Vec::new(), &[]);
+    partial.parse[0].no_parser_yet = true;
+    partial.parse[0].parsed_upto = 40;
+    write_test_rows(&tx, &partial, &partial.parse[0], 1, 1, None).unwrap();
+    let state: (String, String, String) = tx
+        .query_row(
+            "SELECT status,detail,reading_version FROM parse_state",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        state,
+        ("waiting".into(), "100".into(), "synthetic=1".into())
+    );
+    let mut append = batch("metadata", 0, 40, Vec::new(), &[]);
+    append.parse[0].no_parser_yet = true;
+    write_test_rows(&tx, &append, &append.parse[0], 1, 2, None).unwrap();
+    let state: (String, i64, Option<String>) = tx
+        .query_row(
+            "SELECT status,parsed_upto,detail FROM parse_state",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("no_parser_yet".into(), 140, None));
+    tx.commit().unwrap();
+}
+
+#[test]
+fn imported_message_order_is_independent_of_local_byte_ranges() {
+    let w = test_archive();
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    let mut input = batch(
+        "bundle",
+        2,
+        0,
+        vec![
+            row(
+                10,
+                text_message(
+                    "late-commit",
+                    "s",
+                    Role::Assistant,
+                    "first",
+                    Some("end_turn"),
+                ),
+            ),
+            row(
+                20,
+                text_message("early-commit", "s", Role::User, "second", None),
+            ),
+        ],
+        &["s"],
+    );
+    input.parse[0].order_from = Some(100);
+    input.parse[0].output.message_order.extend([(0, 1), (1, 0)]);
+    write_test_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
+    let rows = tx
+        .prepare("SELECT id,seq,source_start FROM message ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("claude-code:early-commit".into(), 0, 20),
+            ("claude-code:late-commit".into(), 1, 10)
+        ]
+    );
+    let mut invalid = input.clone();
+    invalid.parse[0].output.message_order.insert(0, u64::MAX);
+    assert!(write_test_rows(&tx, &invalid, &invalid.parse[0], 1, 2, None).is_err());
+    tx.commit().unwrap();
+}
+
 
 fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
     [

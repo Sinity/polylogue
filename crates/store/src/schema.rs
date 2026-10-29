@@ -45,8 +45,14 @@ fn add_primary(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
+fn base_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
+    conn.execute_batch(crate::coverage::SCHEMA)?;
+    Ok(())
+}
+
+fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    base_index(conn)?;
     conn.execute_batch(READ_INDEXES)?;
     if primary {
         add_primary(conn)?;
@@ -195,7 +201,7 @@ pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
 }
 fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
+    base_index(&expected)?;
     if primary {
         add_primary(&expected)?;
     }
@@ -220,7 +226,7 @@ pub(crate) fn same_build_schema(conn: &Connection) -> Result<bool> {
 }
 fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
+    base_index(&expected)?;
     expected.execute_batch(READ_INDEXES)?;
     if primary {
         add_primary(&expected)?;

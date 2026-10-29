@@ -45,6 +45,7 @@ pub struct Fields {
     rules: &'static [(&'static str, Rule)],
     pub dynamic_maps: &'static [&'static str],
     pub known_kinds: &'static [KnownKinds],
+    record_kind: Option<&'static str>,
     compiled: OnceLock<HashMap<String, Rule>>,
 }
 impl Fields {
@@ -53,6 +54,7 @@ impl Fields {
             rules,
             dynamic_maps: &[],
             known_kinds: &[],
+            record_kind: None,
             compiled: OnceLock::new(),
         }
     }
@@ -64,6 +66,22 @@ impl Fields {
         self.dynamic_maps = maps;
         self.known_kinds = kinds;
         self
+    }
+    pub const fn for_kind(mut self, kind: &'static str) -> Self {
+        self.record_kind = Some(kind);
+        self
+    }
+    /// Public shape kinds come from declarations, never arbitrary wire scalars.
+    pub fn kind(&self, supplied: &str) -> &'static str {
+        if let Some(kind) = self.record_kind {
+            return kind;
+        }
+        let tail = supplied.rsplit('/').next().unwrap_or(supplied);
+        self.known_kinds
+            .iter()
+            .filter(|known| known.path == "type")
+            .find_map(|known| known.values.iter().copied().find(|kind| *kind == tail))
+            .unwrap_or("*")
     }
     pub fn declarations(&self) -> &'static [(&'static str, Rule)] {
         self.rules
@@ -91,8 +109,8 @@ pub fn unaccounted(value: &Json, fields: &Fields) -> Vec<String> {
 pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
     let mut unused = Vec::new();
     let mut shapes: BTreeMap<String, polylogue_model::WireShape> = BTreeMap::new();
-    let mut pending = vec![(value, String::new(), String::new(), false)];
-    while let Some((value, path, shape_path, inherited)) = pending.pop() {
+    let mut pending = vec![(value, String::new(), String::new(), false, false)];
+    while let Some((value, path, shape_path, inherited, open_map)) = pending.pop() {
         let rule = fields.compiled().get(&shape_path);
         let kept = inherited || matches!(rule, Some(Rule::Kept(_)));
         let shape = shapes.entry(shape_path.clone()).or_default();
@@ -104,6 +122,22 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
                 .iter()
                 .map(|kind| (*kind).to_owned())
                 .collect();
+        } else if rule.is_some() || open_map {
+            shape.expected = ExpectedType::Any
+                .types()
+                .iter()
+                .map(|kind| (*kind).to_owned())
+                .collect();
+        } else if shape_path.is_empty() && !fields.rules.is_empty() {
+            shape.expected = if fields.rules.iter().any(|(path, _)| path.starts_with("[]")) {
+                ExpectedType::Array
+            } else {
+                ExpectedType::Object
+            }
+            .types()
+            .iter()
+            .map(|kind| (*kind).to_owned())
+            .collect();
         }
         let dynamic = fields
             .dynamic_maps
@@ -116,6 +150,12 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
             .find(|known| declared_path(known.path) == shape_path)
         {
             shape.known_kinds = known.values.iter().map(|kind| (*kind).to_owned()).collect();
+            if value
+                .as_str()
+                .is_some_and(|value| !known.values.contains(&value))
+            {
+                shape.unknown_kind_count += 1;
+            }
         }
         match value {
             Json::Object(map) if !map.is_empty() => {
@@ -132,15 +172,24 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
                         escape(name)
                     };
                     let child_shape = format!("{shape_path}/{name}");
-                    pending.push((child, child_path, child_shape, kept));
+                    pending.push((child, child_path, child_shape, kept, open_map || dynamic));
                 }
             }
             Json::Array(items) if !items.is_empty() => {
                 for child in items.iter().rev() {
-                    pending.push((child, format!("{path}[]"), format!("{shape_path}/[]"), kept));
+                    pending.push((
+                        child,
+                        format!("{path}[]"),
+                        format!("{shape_path}/[]"),
+                        kept,
+                        open_map || dynamic,
+                    ));
                 }
             }
-            _ if !kept && !matches!(rule, Some(Rule::Read(_))) => unused.push(path),
+            _ if !kept && !matches!(rule, Some(Rule::Read(_))) => {
+                unused.push(path);
+                shape.unused_count += 1;
+            }
             _ => {}
         }
     }
@@ -152,6 +201,9 @@ fn declared_path(path: &str) -> String {
     if path.is_empty() {
         return String::new();
     }
+    if path.starts_with('/') {
+        return path.to_owned();
+    }
     let mut out = String::new();
     for part in path.split('.') {
         let mut rest = part;
@@ -159,7 +211,11 @@ fn declared_path(path: &str) -> String {
             if let Some(at) = rest.find("[]") {
                 if at > 0 {
                     out.push('/');
-                    out.push_str(&escape(&rest[..at]));
+                    out.push_str(&if &rest[..at] == "*" {
+                        "*".to_owned()
+                    } else {
+                        escape(&rest[..at])
+                    });
                 }
                 out.push_str("/[]");
                 rest = &rest[at + 2..];
@@ -168,7 +224,11 @@ fn declared_path(path: &str) -> String {
                 }
             } else {
                 out.push('/');
-                out.push_str(&escape(rest));
+                out.push_str(&if rest == "*" {
+                    "*".to_owned()
+                } else {
+                    escape(rest)
+                });
                 break;
             }
         }
@@ -242,12 +302,32 @@ pub fn attributes(value: &Json, fields: &Fields) -> serde_json::Map<String, Json
         .rules
         .iter()
         .filter_map(|(path, rule)| {
-            if !matches!(rule, Rule::Kept(_)) || path.contains("[]") {
+            if !matches!(rule, Rule::Kept(_)) {
                 return None;
             }
             let mut current = value;
-            for part in path.split('.') {
-                current = current.get(part)?;
+            if path.is_empty() {
+                return Some((String::new(), current.clone()));
+            }
+            if path.starts_with('/') {
+                for part in path[1..].split('/') {
+                    if matches!(part, "[]" | "*") {
+                        return None;
+                    }
+                    let key = part
+                        .replace("~3", "[]")
+                        .replace("~2", "*")
+                        .replace("~1", "/")
+                        .replace("~0", "~");
+                    current = current.get(&key)?;
+                }
+            } else {
+                if path.contains("[]") || path.split('.').any(|part| part == "*") {
+                    return None;
+                }
+                for part in path.split('.') {
+                    current = current.get(part)?;
+                }
             }
             Some(((*path).to_owned(), current.clone()))
         })

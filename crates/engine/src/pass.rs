@@ -250,6 +250,7 @@ impl Engine {
                     facts: None,
                     seen_at_ms: now_ms(),
                     import: None,
+                    container: None,
                 }),
                 continues: false,
                 new_blob: None,
@@ -310,6 +311,18 @@ impl Engine {
             };
             pass.inputs_seen += 1;
             let now = FileFacts::of(&meta);
+            if compressed::is_rollout(&f) {
+                match self.capture_rollout(&f, now, pass) {
+                    Ok(Some(plan)) if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) => {
+                        plans.push(plan)
+                    }
+                    Ok(_) => {}
+                    Err(error) => pass
+                        .errors
+                        .push(format!("capture {}: {error}", f.path.display())),
+                }
+                continue;
+            }
             if !self.track(&f) {
                 continue;
             }
@@ -413,10 +426,25 @@ impl Engine {
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;
             };
+            let now = FileFacts::of(&meta);
+            if compressed::is_rollout(f) {
+                match self.capture_rollout(f, now, pass) {
+                    Ok(Some(mut plan))
+                        if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) =>
+                    {
+                        plan.priority = Priority::Live;
+                        plans.push(plan);
+                    }
+                    Ok(_) => {}
+                    Err(error) => pass
+                        .errors
+                        .push(format!("capture {}: {error}", f.path.display())),
+                }
+                continue;
+            }
             if !self.track(f) {
                 continue;
             }
-            let now = FileFacts::of(&meta);
             if self.inputs[&f.path].facts == Some(now) {
                 continue;
             }
@@ -449,7 +477,7 @@ impl Engine {
         if st.failed == Some(now) {
             return Ok(None);
         }
-        let parsed = st.origin.support == Support::Parsed;
+        let parsed = st.origin.support != Support::Kept;
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
@@ -550,7 +578,7 @@ impl Engine {
         let behind = self.reads.reader()?.chains_behind_index(
             &ORIGINS
                 .iter()
-                .filter(|o| o.support == Support::Parsed)
+                .filter(|o| o.support != Support::Kept)
                 .map(|o| (o.name.to_owned(), o.reading_version()))
                 .collect::<Vec<_>>(),
         )?;
@@ -570,7 +598,7 @@ impl Engine {
             let (path, origin) = match &c.imported {
                 Some(imported) => {
                     let Some(origin) = polylogue_sources::origin::by_name(&imported.format)
-                        .filter(|origin| origin.support == Support::Parsed)
+                        .filter(|origin| origin.support != Support::Kept)
                     else {
                         continue;
                     };
@@ -580,7 +608,7 @@ impl Engine {
                             c.input
                         ))
                     })?);
-                    if (origin.open)(&path).is_none() {
+                    if origin.support == Support::Parsed && (origin.open)(&path).is_none() {
                         return Err(std::io::Error::other(format!(
                             "stored import {} has no parser for its recorded path",
                             c.input
@@ -660,7 +688,7 @@ impl Engine {
         let Some(chain) = st.chain else {
             return Ok(None);
         };
-        if st.origin.support != Support::Parsed
+        if st.origin.support == Support::Kept
             || st.stored == 0
             || !behind
             || st.failed.is_some()
@@ -789,6 +817,13 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
+            if let Err(error) = self.observe_local_references(&plan, pass) {
+                pass.errors
+                    .push(format!("local references {}: {error}", plan.path.display()));
+                plan.failed = true;
+                self.finish_plan(plan);
+                continue;
+            }
             let store_first = matches!(plan.source, pool::Bytes::File)
                 && plan.parse_pos == 0
                 && plan.stored_upto > 0
@@ -939,7 +974,7 @@ impl Engine {
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
             }
-            let parsed = plan.origin.support == Support::Parsed;
+            let parsed = plan.origin.support != Support::Kept;
             plan.apply(d, parsed);
             if plan.finished() {
                 self.finish_plan(plan);

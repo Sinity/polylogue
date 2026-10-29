@@ -37,7 +37,6 @@ use polylogue_model::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -51,6 +50,9 @@ pub const LOCATIONS: &[&str] = &[
     "history.jsonl",
     "session_index.jsonl",
 ];
+
+mod header;
+pub use header::rollout_id;
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     File::from_path(path).is_some()
@@ -130,6 +132,7 @@ pub enum File {
 impl File {
     pub fn from_path(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_str()?;
+        let name = name.strip_suffix(".zst").unwrap_or(name);
         match name {
             "history.jsonl" => Some(Self::History),
             "session_index.jsonl" => Some(Self::SessionIndex),
@@ -158,12 +161,6 @@ pub fn session_id(native: &str) -> Option<SessionId> {
 
 fn message_id(native: &str) -> Option<MessageId> {
     Some(MessageId::new(origin(), NativeId::new(native).ok()?))
-}
-
-fn digest(v: &Json) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    v.to_string().hash(&mut h);
-    h.finish()
 }
 
 pub struct Rollout {

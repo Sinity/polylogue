@@ -47,6 +47,12 @@ pub struct Document {
     /// The provider's time for the source record, not an inferred writing time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_time: Option<Timestamp>,
+    #[serde(default = "crate::time::unknown_quality")]
+    pub source_time_quality: crate::TimeQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_time_precision: Option<crate::Precision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_time_until: Option<Timestamp>,
     #[serde(default)]
     pub authorship: DocumentAuthorship,
     pub blocks: Vec<Block>,
@@ -56,12 +62,36 @@ pub struct Document {
 }
 
 impl Document {
+    pub fn time_evidence(&self) -> crate::TimeEvidence {
+        crate::TimeEvidence {
+            quality: self.source_time_quality,
+            precision: self.source_time_precision,
+            until: self.source_time_until,
+        }
+    }
+
+    pub fn set_time(
+        &mut self,
+        at: Option<Timestamp>,
+        evidence: crate::TimeEvidence,
+    ) -> Result<(), crate::TimeEvidenceError> {
+        evidence.validate(at)?;
+        self.source_time = at;
+        self.source_time_quality = evidence.quality;
+        self.source_time_precision = evidence.precision;
+        self.source_time_until = evidence.until;
+        Ok(())
+    }
+
     pub fn new(id: DocumentId, purpose: DocumentPurpose) -> Self {
         Self {
             id,
             purpose,
             title: None,
             source_time: None,
+            source_time_quality: crate::TimeQuality::Unknown,
+            source_time_precision: None,
+            source_time_until: None,
             authorship: DocumentAuthorship::Unknown,
             blocks: Vec::new(),
             metadata: Json::Null,

@@ -222,7 +222,12 @@ pub struct LinkPrefix {
 impl OriginSpec {
     /// Stable, ordered tuple of module names and versions.
     pub fn reading_version(&self) -> String {
-        self.modules
+        let modules = if self.support == Support::NoParser && self.capture == Capture::RowDump {
+            modules!(crate::row_dump::VERSION)
+        } else {
+            self.modules
+        };
+        modules
             .iter()
             .map(|m| format!("{}={}", m.name, m.version))
             .collect::<Vec<_>>()
@@ -553,7 +558,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(
             crate::browser_capture::VERSION,
             crate::chatgpt::VERSION,
-            crate::claude_ai::VERSION
+            crate::claude_ai::VERSION,
+            crate::codex_cloud::VERSION,
+            crate::grok::VERSION
         ),
         support: Support::Parsed,
         arrival: Arrival::Spool,
@@ -689,6 +696,46 @@ pub static ORIGINS: &[OriginSpec] = &[
         database: None,
         recognize: |_, _| true,
         open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "codex-cloud",
+        harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::codex_cloud::VERSION),
+        support: Support::Parsed,
+        arrival: Arrival::Import,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        database: None,
+        recognize: crate::codex_cloud::recognize,
+        open: crate::codex_cloud::open,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "aider",
+        harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::aider::VERSION),
+        support: Support::Parsed,
+        arrival: Arrival::Import,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        database: None,
+        recognize: crate::aider::recognize,
+        open: crate::aider::open,
         resume: None,
         bare_uuid_ids: false,
         quota: None,

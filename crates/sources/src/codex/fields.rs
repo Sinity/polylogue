@@ -135,6 +135,7 @@ static CALL: Fields = Fields::new(&[
 
 static OUTPUT: Fields = Fields::new(&[
     ("type", Read(T::String)),
+    ("timestamp", Read(T::StringOrNumber)),
     ("id", Read(T::String)),
     ("call_id", Read(T::String)),
     ("output", Kept("complete structured output in tool result")),
@@ -200,7 +201,25 @@ static AGENT_MESSAGE: Fields = Fields::new(&[
     }],
 );
 
-static TYPE_ONLY: Fields = Fields::new(&[("type", Read(T::String))]);
+static TYPE_ONLY: Fields = Fields::new(&[("type", Read(T::String))]).shape(
+    &[],
+    &[crate::fields::KnownKinds {
+        path: "type",
+        values: &[
+            "message",
+            "reasoning",
+            "function_call",
+            "custom_tool_call",
+            "local_shell_call",
+            "tool_search_call",
+            "function_call_output",
+            "custom_tool_call_output",
+            "tool_search_output",
+            "web_search_call",
+            "agent_message",
+        ],
+    }],
+);
 
 pub static ITEM_COMPLETED: Fields = Fields::new(&[
     ("type", Read(T::String)),
@@ -250,7 +269,8 @@ pub static ITEM_COMPLETED: Fields = Fields::new(&[
             "SubAgentActivity",
         ],
     }],
-);
+)
+.for_kind("item_completed");
 
 pub static USER_MESSAGE: Fields = Fields::new(&[
     ("type", Read(T::String)),
@@ -258,4 +278,5 @@ pub static USER_MESSAGE: Fields = Fields::new(&[
     ("message", Read(T::String)),
     ("images", Read(T::Array)),
     ("images[]", Read(T::String)),
-]);
+])
+.for_kind("user_message");

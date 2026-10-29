@@ -26,6 +26,7 @@ impl Test {
                 facts: None,
                 seen_at_ms: 1,
                 import: None,
+                container: None,
             },
             dir,
             archive,

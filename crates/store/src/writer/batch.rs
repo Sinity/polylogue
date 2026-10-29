@@ -28,6 +28,8 @@ pub struct Observation {
     pub seen_at_ms: i64,
     /// Membership established by this explicit import, independent of byte deduplication.
     pub import: Option<ImportMember>,
+    /// Exact membership in original container bytes, independent of imports.
+    pub container: Option<InContainer>,
 }
 
 /// Engine-authored membership of one import. It does not assert that
@@ -41,15 +43,14 @@ pub struct ImportMember {
     /// The format chosen for this import, separate from the input's own metadata.
     #[serde(skip)]
     pub format: Option<String>,
-    /// Persisted by the Writer in observation_zip, not ignorable JSON metadata.
-    #[serde(skip)]
-    pub zip: Option<InZip>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InZip {
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InContainer {
     pub input: String,
     pub member_index: u64,
+    pub kind: String,
+    pub path_bytes: Vec<u8>,
 }
 
 /// One parse step's rows and where they sit in the input's chain.
@@ -211,4 +212,15 @@ pub struct WriteReport {
     /// Batches the writer could not store, with the reason. The rest of
     /// their transaction was retried one batch at a time.
     pub errors: Vec<String>,
+}
+
+impl InContainer {
+    pub fn display_path(&self) -> String {
+        String::from_utf8(self.path_bytes.clone()).unwrap_or_else(|_| {
+            self.path_bytes
+                .iter()
+                .map(|byte| format!("%{byte:02X}"))
+                .collect()
+        })
+    }
 }

@@ -168,6 +168,7 @@ pub static TOOLS: &[Tool] = &[
             "conversation_summaries.db",
             "history.jsonl",
             "brain/**",
+            "brain/*/.system_generated/logs/*.jsonl",
             "annotations/**",
             "implicit/**",
             "knowledge/**",

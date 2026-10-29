@@ -2,7 +2,6 @@
 //! the rows that cite them commit. The index then saves its parsed position.
 use super::*;
 use crate::staging::{PreparedBatch, PreparedBytes, StoredInput};
-use polylogue_model::BlobHash;
 use std::collections::BTreeSet;
 
 /// A parse-pool group waiting for the writer, with the store its files go
@@ -50,14 +49,14 @@ impl Inner {
 
     /// Stores the groups that were waiting together, so their files and
     /// rows share syncs and commits ([`Self::store_group`]), and answers
-    /// each. A group with a ZIP member is stored alone: a failure keeps the
-    /// ZIP's group whole, which would fail the others with it.
+    /// each. A group with a container member is stored alone: a failure keeps the
+    /// container's group whole, which would fail the others with it.
     pub(super) fn store_groups(&mut self, groups: Vec<WaitingGroup>) {
         let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) =
             groups.into_iter().partition(|(items, _, _)| {
                 items
                     .iter()
-                    .any(|item| crate::zip_members::zip_of(&item.batch).is_some())
+                    .any(|item| crate::container_members::container_of(&item.batch).is_some())
             });
         for (items, store, reply) in alone {
             let _ = reply.send(self.store_group(items, store));
@@ -208,17 +207,17 @@ impl Inner {
         group: &mut [PreparedBatch],
         synced: Option<&hashed_blobs::SyncedGroup>,
     ) -> Result<Vec<StoredInput>> {
-        // A member read from a ZIP needs its ZIP stored, earlier in this group
+        // A member read from a container needs its container stored, earlier in this group
         // or before.
         let staged: BTreeSet<&str> = group
             .iter()
             .map(|item| item.batch.input.id.as_str())
             .collect();
         for item in group.iter() {
-            if let Some(zip) = crate::zip_members::zip_of(&item.batch)
+            if let Some(zip) = crate::container_members::container_of(&item.batch)
                 && !staged.contains(zip.input.as_str())
             {
-                crate::zip_members::require_original(&self.archive, &zip.input)?;
+                crate::container_members::require_original(&self.archive, &zip.input)?;
             }
         }
         let tx = self.archive.transaction()?;
@@ -236,7 +235,7 @@ impl Inner {
         for item in group.iter_mut() {
             let PreparedBatch { batch: b, files } = item;
             // An immutable import named by its bytes may be stored already, or
-            // appear twice in a group (equal ZIP members).
+            // appear twice in a group (equal container members).
             let known: Option<(i64, i64)> = tx
                 .query_row(
                     "SELECT chain, length FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1",

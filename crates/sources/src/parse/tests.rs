@@ -41,7 +41,8 @@ impl Parser for ClassifiedLines {
         static FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[(
             "kind",
             crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-        )]);
+        )])
+        .for_kind("record");
         records.fields(&kind, value, &FIELDS);
         match kind.as_str() {
             "message" => RecordOutcome::Used,

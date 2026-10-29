@@ -13,6 +13,22 @@ use polylogue_model::{Event, Json, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+static NAME_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
+    (
+        "id",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "thread_name",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "updated_at",
+        crate::fields::Rule::Excluded("native index edit time; receipt order chooses the name"),
+    ),
+])
+.for_kind("name");
+
 pub struct History;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,7 +91,7 @@ impl Parser for SessionIndex {
         _: Record<'_>,
         v: &Json,
         _: &mut Output,
-        _: &mut Records,
+        records: &mut Records,
     ) -> RecordOutcome {
         let (Some(id), Some(name)) = (str_field(v, "id"), str_field(v, "thread_name")) else {
             return RecordOutcome::skipped("index line without a thread ID or name");
@@ -83,6 +99,7 @@ impl Parser for SessionIndex {
         if session_id(id).is_none() {
             return RecordOutcome::unreadable("thread ID is empty");
         }
+        records.fields("thread_name", v, &NAME_FIELDS);
         parser_state.names.insert(id.to_owned(), name.to_owned());
         RecordOutcome::Used
     }

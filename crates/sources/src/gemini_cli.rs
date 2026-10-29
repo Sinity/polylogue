@@ -62,6 +62,25 @@ struct SessionState {
 }
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
+    ("content[].text", Rule::Read(T::String)),
+    ("thoughts[].subject", Rule::Read(T::String)),
+    ("thoughts[].description", Rule::Read(T::String)),
+    (
+        "thoughts[].timestamp",
+        Rule::Excluded("native thought time not interpreted as message time"),
+    ),
+    ("tokens.input", Rule::Read(T::Number)),
+    ("tokens.output", Rule::Read(T::Number)),
+    ("tokens.cached", Rule::Read(T::Number)),
+    ("tokens.thoughts", Rule::Read(T::Number)),
+    (
+        "tokens.tool",
+        Rule::Excluded("native tool-token lane has no domain usage lane"),
+    ),
+    (
+        "tokens.total",
+        Rule::Excluded("reported aggregate; individual lanes are read"),
+    ),
     ("id", Rule::Read(T::String)),
     ("timestamp", Rule::Read(T::StringOrNumber)),
     ("type", Rule::Read(T::String)),

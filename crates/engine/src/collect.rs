@@ -34,13 +34,8 @@ fn collected() -> impl Iterator<Item = &'static OriginSpec> {
     ORIGINS.iter().filter(|o| o.arrival != Arrival::Import)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Class {
-    Collected,
-    Ignored,
-    Unrecognized,
-}
+pub use polylogue_model::capture::Classification as Class;
+use polylogue_model::capture::{Accessibility, Entry, RootCoverage};
 
 /// Aggregated during the discovery walk, without reopening source trees.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -48,6 +43,7 @@ pub struct Coverage {
     pub root: PathBuf,
     pub class: Class,
     pub pattern: String,
+    pub reason: Option<String>,
     pub files: u64,
     pub bytes: u64,
     pub newest_mtime_ms: Option<u64>,
@@ -57,6 +53,7 @@ pub struct Scan {
     pub found: Vec<Found>,
     pub unreadable: Vec<PathBuf>,
     pub coverage: Vec<Coverage>,
+    pub roots: Vec<RootCoverage>,
 }
 
 pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
@@ -78,7 +75,15 @@ pub fn scan_paths(
             let segs: Vec<_> = pattern.split('/').filter(|s| !s.is_empty()).collect();
             let mut matched = Vec::new();
             walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
-            found.extend(matched.into_iter().map(|path| Found { path, origin }));
+            found.extend(
+                matched
+                    .into_iter()
+                    .filter(|path| {
+                        path.strip_prefix(&root)
+                            .is_ok_and(|relative| matches_location(relative, pattern))
+                    })
+                    .map(|path| Found { path, origin }),
+            );
         }
     }
     for tool in polylogue_sources::locations::TOOLS {
@@ -98,6 +103,9 @@ pub fn scan_paths(
                 walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
                 for path in matched {
                     let relative = path.strip_prefix(&root).expect("location under root");
+                    if !matches_location(relative, pattern) {
+                        continue;
+                    }
                     if git_metadata(relative, Some(tool))
                         || tool
                             .ignored
@@ -114,6 +122,8 @@ pub fn scan_paths(
             }
         }
     }
+    let claude_root = config.root(polylogue_sources::claude_code::ROOT);
+    found.retain(|file| !user_project(&claude_root, &file.path));
     found.sort_by(|a, b| a.path.cmp(&b.path));
     found.dedup_by(|a, b| a.path == b.path);
     (found, unreadable)
@@ -271,23 +281,35 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
         found: Vec::new(),
         unreadable: Vec::new(),
         coverage: Vec::new(),
+        roots: Vec::new(),
     };
     let mut rows = BTreeMap::new();
     for (root, tool) in areas {
         let mut files = Vec::new();
-        all_files(&root, &root, &roots, &mut files, &mut scan.unreadable);
+        let before = scan.unreadable.len();
+        let mut status = Accessibility::Accessible;
+        all_files(
+            &root,
+            &root,
+            &roots,
+            &mut files,
+            &mut scan.unreadable,
+            &mut status,
+        );
         for path in files {
             let relative = path.strip_prefix(&root).unwrap_or(&path);
-            let ignored = git_metadata(relative, tool)
-                .then_some("git metadata")
-                .or_else(|| {
-                    tool.and_then(|tool| {
-                        tool.ignored
-                            .iter()
-                            .find(|(p, _)| matches_path(relative, p))
-                            .map(|(_, reason)| *reason)
-                    })
-                });
+            let ignored = (tool.is_some_and(|tool| tool.name == "claude-code")
+                && user_project(&root, &path))
+            .then_some(("**", "user project under tool home"))
+            .or_else(|| git_metadata(relative, tool).then_some((".git/**", "git metadata")))
+            .or_else(|| {
+                tool.and_then(|tool| {
+                    tool.ignored
+                        .iter()
+                        .find(|(p, _)| matches_path(relative, p))
+                        .map(|(pattern, reason)| (*pattern, *reason))
+                })
+            });
             let matched = if ignored.is_none() {
                 collected()
                     .find_map(|origin| {
@@ -295,28 +317,28 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                         origin
                             .locations
                             .iter()
-                            .find(|p| matches_path(relative, p))
+                            .find(|p| matches_location(relative, p))
                             .map(|pattern| (origin, *pattern))
                     })
                     .or_else(|| {
                         tool.and_then(|tool| {
                             tool.locations
                                 .iter()
-                                .find(|p| matches_path(relative, p))
+                                .find(|p| matches_location(relative, p))
                                 .map(|pattern| (context_origin(tool, &path), *pattern))
                         })
                     })
             } else {
                 None
             };
-            let (class, pattern) = if let Some(reason) = ignored {
-                (Class::Ignored, reason.to_owned())
+            let (class, pattern, reason) = if let Some((pattern, reason)) = ignored {
+                (Class::Ignored, pattern.to_owned(), Some(reason.to_owned()))
             } else if let Some((origin, pattern)) = matched {
                 scan.found.push(Found {
                     path: path.clone(),
                     origin,
                 });
-                (Class::Collected, pattern.to_owned())
+                (Class::Collected, pattern.to_owned(), None)
             } else {
                 (
                     Class::Unrecognized,
@@ -325,6 +347,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                         relative.parent().unwrap_or(Path::new("")).display(),
                         relative.extension().and_then(|e| e.to_str()).unwrap_or("")
                     ),
+                    None,
                 )
             };
             match fs::metadata(&path) {
@@ -335,6 +358,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                             root: root.clone(),
                             class,
                             pattern,
+                            reason,
                             files: 0,
                             bytes: 0,
                             newest_mtime_ms: None,
@@ -351,13 +375,48 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                 Err(_) => scan.unreadable.push(path),
             }
         }
+        if status == Accessibility::Accessible && scan.unreadable.len() > before {
+            status = Accessibility::Incomplete;
+        }
+        scan.roots.push(RootCoverage {
+            path_bytes: root.as_os_str().as_encoded_bytes().to_vec(),
+            status,
+            entries: Vec::new(),
+            unavailable_paths: scan.unreadable[before..]
+                .iter()
+                .map(|p| p.as_os_str().as_encoded_bytes().to_vec())
+                .collect(),
+        });
     }
     scan.found.sort_by(|a, b| a.path.cmp(&b.path));
     scan.found.dedup_by(|a, b| a.path == b.path);
     scan.unreadable.sort();
     scan.unreadable.dedup();
     scan.coverage = rows.into_values().collect();
+    for row in &scan.coverage {
+        if let Some(root) = scan
+            .roots
+            .iter_mut()
+            .find(|root| root.path_bytes == row.root.as_os_str().as_encoded_bytes())
+        {
+            root.entries.push(Entry {
+                class: row.class,
+                pattern: row.pattern.clone(),
+                reason: row.reason.clone(),
+                files: row.files,
+                bytes: row.bytes,
+                newest_mtime_ms: row.newest_mtime_ms,
+            });
+        }
+    }
     scan
+}
+
+fn user_project(root: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .take_while(|ancestor| ancestor.starts_with(root) && *ancestor != root)
+        .any(|ancestor| std::fs::symlink_metadata(ancestor.join(".git")).is_ok())
 }
 
 fn git_metadata(relative: &Path, tool: Option<&polylogue_sources::locations::Tool>) -> bool {
@@ -393,6 +452,7 @@ fn all_files(
     roots: &std::collections::BTreeSet<PathBuf>,
     files: &mut Vec<PathBuf>,
     unreadable: &mut Vec<PathBuf>,
+    status: &mut Accessibility,
 ) {
     if path != root && roots.contains(path) {
         return;
@@ -402,10 +462,17 @@ fn all_files(
     } else {
         fs::symlink_metadata(path)
     };
+    if path == root {
+        *status = match &metadata {
+            Ok(_) => Accessibility::Accessible,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Accessibility::Absent,
+            Err(_) => Accessibility::Unavailable,
+        };
+    }
     match metadata {
         Ok(meta) if meta.is_dir() => {
             for child in entries(path, unreadable) {
-                all_files(root, &child, roots, files, unreadable);
+                all_files(root, &child, roots, files, unreadable, status);
             }
         }
         Ok(meta) if meta.is_file() => files.push(path.to_path_buf()),
@@ -418,21 +485,40 @@ fn all_files(
 /// A location matches the complete relative path, never a suffix guessed
 /// from another tool's directory.
 pub fn matches_path(path: &Path, pattern: &str) -> bool {
-    fn matches(names: &[&str], segs: &[&str]) -> bool {
+    match_path(path, pattern, false)
+}
+fn matches_location(path: &Path, pattern: &str) -> bool {
+    match_path(path, pattern, true)
+}
+fn match_path(path: &Path, pattern: &str, explicit_hidden: bool) -> bool {
+    fn matches(names: &[&str], segs: &[&str], explicit_hidden: bool) -> bool {
         match segs.split_first() {
             None => names.is_empty(),
-            Some((&"**", rest)) => (0..=names.len()).any(|n| matches(&names[n..], rest)),
-            Some((seg, rest)) => names
-                .split_first()
-                .is_some_and(|(name, names)| wildcard(seg, name) && matches(names, rest)),
+            Some((&"**", rest)) => (0..=names.len())
+                .take_while(|count| {
+                    !explicit_hidden
+                        || !names[..*count]
+                            .iter()
+                            .enumerate()
+                            .any(|(index, name)| index + 1 < names.len() && name.starts_with('.'))
+                })
+                .any(|count| matches(&names[count..], rest, explicit_hidden)),
+            Some((seg, rest)) => names.split_first().is_some_and(|(name, tail)| {
+                (!explicit_hidden
+                    || names.len() == 1
+                    || !name.starts_with('.')
+                    || seg.starts_with('.'))
+                    && wildcard(seg, name)
+                    && matches(tail, rest, explicit_hidden)
+            }),
         }
     }
     let names: Vec<_> = path
         .components()
-        .filter_map(|p| p.as_os_str().to_str())
+        .filter_map(|part| part.as_os_str().to_str())
         .collect();
-    let segs: Vec<_> = pattern.split('/').filter(|p| !p.is_empty()).collect();
-    matches(&names, &segs)
+    let segs: Vec<_> = pattern.split('/').filter(|part| !part.is_empty()).collect();
+    matches(&names, &segs, explicit_hidden)
 }
 
 /// Whether `found.origin` claims the file, from its path and first bytes.
@@ -538,7 +624,15 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
 
 fn entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     match fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Ok(rd) => rd
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(entry.path()),
+                Err(_) => {
+                    unreadable.push(dir.to_path_buf());
+                    None
+                }
+            })
+            .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(_) => {
             unreadable.push(dir.to_path_buf());

@@ -272,13 +272,15 @@ CREATE TABLE chat_action_event (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
 
--- Which export ZIP a member observation was read from, and where in it.
-CREATE TABLE observation_zip (
+-- Exact member names and positions in retained container bytes.
+CREATE TABLE observation_container (
     observation_id TEXT PRIMARY KEY REFERENCES observation(id),
-    zip_input TEXT NOT NULL REFERENCES input(id),
-    member_index INTEGER NOT NULL CHECK(member_index>=0)
+    container_input TEXT NOT NULL REFERENCES input(id),
+    member_index INTEGER NOT NULL CHECK(member_index>=0),
+    kind TEXT NOT NULL,
+    path_bytes BLOB NOT NULL
 ) STRICT;
-CREATE INDEX observation_zip_input ON observation_zip(zip_input);
+CREATE INDEX observation_container_input ON observation_container(container_input);
 
 -- Backfill jobs: the operator asks the browser extension to capture a web
 -- chat's older conversations. The job is stored once; what happened to it is

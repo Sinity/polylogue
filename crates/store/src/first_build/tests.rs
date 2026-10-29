@@ -140,7 +140,8 @@ fn startup_key_snapshot_never_reads_payload_columns() {
             ..
         } => Authorization::Deny,
         _ => Authorization::Allow,
-    }));
+    }))
+    .unwrap();
     let keys = FirstBuild::load(&conn).unwrap();
     assert_eq!(keys.event(&conn, "kept").unwrap(), Some(pk));
     assert!(keys.text(&conn, &hash).unwrap().is_some());

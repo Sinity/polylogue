@@ -123,7 +123,8 @@ static NODE_FIELDS: Fields = Fields::new(&[
         "children",
         Rule::Excluded("the parent links carry the same tree"),
     ),
-]);
+])
+.for_kind("node");
 
 /// A message's fields. `metadata` holds dozens of provider keys (search
 /// results, citations, task state); it is kept whole in the stored export
@@ -186,7 +187,8 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
             ],
         },
     ],
-);
+)
+.for_kind("message");
 
 static CONVERSATION_FIELDS: Fields = Fields::new(&[
     ("", Rule::Kept("conversation settings event")),
@@ -196,7 +198,8 @@ static CONVERSATION_FIELDS: Fields = Fields::new(&[
     ("create_time", Rule::Read(T::StringOrNumber)),
     ("update_time", Rule::Read(T::StringOrNumber)),
     ("mapping", Rule::Read(T::Object)),
-]);
+])
+.for_kind("conversation");
 
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both

@@ -18,6 +18,7 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
             facts: None,
             seen_at_ms: 1,
             import: None,
+            container: None,
         }),
         continues: false,
         new_blob: Some(new_blob),
@@ -141,17 +142,13 @@ fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let mut status = 0;
         let pid = child.id() as libc::pid_t;
-        assert_eq!(
-            unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) },
-            pid
-        );
+        let status = wait_stopped(pid);
         assert!(
             libc::WIFSTOPPED(status),
             "child exited before {point}: {status}"
         );
-        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+        child.kill().unwrap();
         assert!(!child.wait().unwrap().success());
         let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
         let writer = Writer::start(&archive).unwrap();
@@ -188,5 +185,18 @@ fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
         )
         .unwrap();
         assert!(blobs.scan().unwrap().is_empty());
+    }
+}
+
+#[cfg(feature = "faults")]
+#[allow(unsafe_code)]
+fn wait_stopped(pid: libc::pid_t) -> i32 {
+    let mut status = 0;
+    // This test owns pid; status is a live, uniquely borrowed output cell.
+    loop {
+        let result = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
+        if result == pid { return status; }
+        let error=std::io::Error::last_os_error();
+        assert_eq!(error.kind(),std::io::ErrorKind::Interrupted,"waitpid: {error}");
     }
 }

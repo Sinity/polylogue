@@ -36,7 +36,7 @@ static FIELDS: Fields = Fields::new(&[
     ("name", Rule::Read(T::String)),
     ("scope_category", Rule::Read(T::String)),
     ("category", Rule::Read(T::String)),
-    ("data", Rule::Read(T::Object)),
+    ("data", Rule::Kept("complete native observation event data")),
     ("data_schema", Rule::Kept("native observation schema")),
     (
         "metadata",
@@ -44,7 +44,8 @@ static FIELDS: Fields = Fields::new(&[
     ),
     ("attributes", Rule::Kept("native observation attributes")),
     ("category_profile", Rule::Kept("native observation profile")),
-]);
+])
+.for_kind("atof");
 
 fn kind(value: &Json) -> Option<&'static str> {
     match value.get("kind")?.as_str()? {
