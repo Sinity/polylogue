@@ -47,7 +47,7 @@ fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
     let mut writer =
         hashed_blobs::SegmentWriter::open(root, "segments/test.zst", 0, &[], 0o600).unwrap();
     let group = writer
-        .append_group(vec![prepared], |_| Ok(None))
+        .append_group([Ok(prepared)], |_| Ok(None))
         .unwrap()
         .wait()
         .unwrap();
