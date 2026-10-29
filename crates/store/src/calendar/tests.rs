@@ -125,6 +125,16 @@ fn calendar_sql_daily_series_and_pooled_reads_agree_at_fractional_dst_boundaries
                 ("2026-03-08".into(), 1.0)
             ]
         );
+        let rhythm = crate::measure::daily::rhythm(
+            &reader,
+            &crate::measure::Selection::default(),
+            &clock.day,
+        )
+        .unwrap();
+        assert_eq!(rhythm.prompts, 4);
+        assert_eq!(rhythm.grid[4][6], 1); // Friday's logical day, Saturday's clock hour.
+        assert_eq!(rhythm.grid[5][6], 2);
+        assert_eq!(rhythm.grid[6][6], 1);
         let calendar =
             crate::timeline::calendar(&reader, &clock, "2026-03-07".parse().unwrap()).unwrap();
         assert_eq!(
