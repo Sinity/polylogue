@@ -14,14 +14,18 @@ impl CommitEvents {
     /// between the snapshot and the next incremental read.
     pub fn subscribe(&self) -> CommitSubscription {
         let (wake, receiver) = mpsc::sync_channel(1);
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(wake.clone());
         CommitSubscription { receiver, wake }
     }
 
     /// Called after a successful logical index commit, including derivations.
     pub(crate) fn committed(&self) {
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|wake| !matches!(wake.try_send(()), Err(mpsc::TrySendError::Disconnected(()))));
     }
 }
@@ -39,7 +43,9 @@ impl CommitSubscription {
 }
 
 mod catalog;
-pub use catalog::{CatalogReader, CatalogWriter, Kept, Metadata, Parameter, Saved, Session, Setting, ValueCount};
+pub use catalog::{
+    CatalogReader, CatalogWriter, Kept, Metadata, Parameter, Saved, Session, Setting, ValueCount,
+};
 
 mod projection;
-pub use projection::{SessionChange, DefinitionChange, NativeSaved, NativeKept};
+pub use projection::{DefinitionChange, NativeKept, NativeSaved, SessionChange};
