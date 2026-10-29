@@ -989,6 +989,9 @@ pub(crate) fn capture_header(capture: &Capture) -> Capture {
     match capture {
         Capture::Input(input) => {
             Capture::Input(Box::new(polylogue_store::primary::CapturedInput {
+                generation: input.generation.clone(),
+                raw_total: input.raw_total,
+                raw_predecessor: input.raw_predecessor.clone(),
                 input: input.input.clone(),
                 rows: input.rows.clone(),
                 index: input.index,
