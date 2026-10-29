@@ -142,8 +142,16 @@ fn replace(d: &test_daemon::TestDaemon, texts: &[(&str, &str)]) {
         .map(|(id, text)| polylogue_testkit::claude_user(id, "s1", text))
         .collect::<String>();
     std::fs::write(d.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
+    let started = std::time::Instant::now();
     d.wait_for(|status| {
-        status["store"]["messages"] == texts.len() && status["store"]["search_pending"] == 0
+        let ready = status["store"]["messages"] == texts.len()
+            && status["store"]["search_pending"] == 0;
+        assert!(
+            ready || started.elapsed() < std::time::Duration::from_secs(20),
+            "replacement did not reach {} messages with no pending search work; final status: {status}",
+            texts.len()
+        );
+        ready
     });
 }
 
