@@ -482,7 +482,7 @@ fn handle_inner(
                 let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
                     return error("bad_request", "expression is required for query");
                 };
-                super::query::with_ranking(&reader, &d.warm, |embeddings, _near| {
+                super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, _near| {
                     super::query::explain(
                         &reader,
                         super::query::Ask {
@@ -554,7 +554,7 @@ fn handle_inner(
             model,
             cursor,
             page_size,
-        } => super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+        } => super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
             match super::calendar::cost(
                 &reader,
                 super::calendar::Cost {
@@ -597,7 +597,7 @@ fn handle_inner(
             if let Some(data) = d.warm.answer(&key, &position) {
                 return query_answer(d, &reader, data);
             }
-            super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
+            super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
                 let ask = super::query::Ask {
                     text: &text,
                     cursor: cursor.as_deref(),
@@ -723,23 +723,24 @@ fn handle_inner(
                 Err(response) => return response,
                 Ok(None) => {}
             }
-            let kept = super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
-                let ask = super::query::Ask {
-                    text: &text,
-                    cursor: None,
-                    page_size: None,
-                    why: false,
-                    session: None,
-                    clock: clock
-                        .as_ref()
-                        .expect("query operations resolve a clock")
-                        .clone(),
-                    embeddings,
-                    near: Some(near),
-                    fields: &[],
-                };
-                super::query::keep(&reader, ask)
-            });
+            let kept =
+                super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
+                    let ask = super::query::Ask {
+                        text: &text,
+                        cursor: None,
+                        page_size: None,
+                        why: false,
+                        session: None,
+                        clock: clock
+                            .as_ref()
+                            .expect("query operations resolve a clock")
+                            .clone(),
+                        embeddings,
+                        near: Some(near),
+                        fields: &[],
+                    };
+                    super::query::keep(&reader, ask)
+                });
             let kept = match kept {
                 Ok(k) => k,
                 Err(f) => {
@@ -1055,7 +1056,7 @@ fn query_targets(
     query: &str,
 ) -> Result<Vec<polylogue_model::Reference>, Response> {
     use polylogue_model::Reference;
-    super::query::with_ranking(reader, &d.warm, |embeddings, near| {
+    super::query::with_ranking(reader, &d.warm, &d.config, |embeddings, near| {
         let clock = d.query_clock()?;
         let mut targets = Vec::new();
         let mut seen = HashSet::new();
