@@ -148,6 +148,7 @@ impl Client {
         scope: Option<&str>,
     ) -> Result<Vec<Confirmed>> {
         let result = self.confirmed_page(after, cache, scope).await;
+        self.refresh_context().await;
         if result.is_err() {
             for message in &self.pending {
                 let _ = message

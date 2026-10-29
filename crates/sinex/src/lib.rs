@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 mod client;
+mod context;
+pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
 pub mod kinds;
 mod material;
 pub(crate) mod native;

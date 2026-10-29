@@ -43,6 +43,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let mut ingress=client.subscribe("auth.ingress.polylogue").await.unwrap();
             let mut recorded=client.subscribe("auth.recorded.polylogue").await.unwrap();
             let mut consumers=client.subscribe("auth.confirmed_consumer.polylogue").await.unwrap();
+            let mut contexts=client.subscribe("auth.public_context.polylogue").await.unwrap();
             client.flush().await.unwrap();ready.send(()).unwrap();
             let request=hello.next().await.unwrap();let inbox=request.reply.unwrap();
             assert!(inbox.starts_with("_INBOX.polylogue."));
@@ -55,6 +56,11 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),sinex_protocol::RecordedPage{acknowledgments:vec![receipt],next:None},Duration::from_secs(5)).await.unwrap();
+            let request=contexts.next().await.unwrap();
+            let query:sinex_protocol::PublicContextRequest=serde_json::from_slice(&request.payload).unwrap();assert!(query.coverage.is_none());
+            assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
+            let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","context_token":"synthetic-context-token","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z","coverage":{"state":"not_requested"}})).unwrap();
+            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
             let subjects=Subjects::new("auth");
             let response=sinex_protocol::ConfirmedConsumerReply{stream:subjects.confirmed_stream(),consumer:subjects.consumer_name("test-scope"),scope:"test-scope".into(),position:Some(42),refusal:None,gap:None};
             let request=consumers.next().await.unwrap();
@@ -81,6 +87,19 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     .unwrap();
     assert_eq!(sinex.status().unwrap().family.as_deref(), Some("polylogue"));
     assert!(sinex.status().unwrap().canonical_publisher);
+    let context = sinex
+        .context(|zone| jiff::tz::TimeZone::get(zone).map_err(|error| error.to_string()))
+        .unwrap();
+    assert_eq!(context.settings_identity, "owner-settings");
+    assert_eq!(context.owner_revision, 7);
+    assert_eq!(context.day.zone_name(), "Europe/Warsaw");
+    assert_eq!(context.interrupt_budget.remaining, 2);
+    assert!(
+        !serde_json::to_string(&context)
+            .unwrap()
+            .contains("synthetic-context-token")
+    );
+    assert!(!format!("{context:?}").contains("synthetic-context-token"));
     let control =
         polylogue_store::primary::Sinex::confirmed(&sinex, 42, "cache-test", Some("old-scope"))
             .unwrap();

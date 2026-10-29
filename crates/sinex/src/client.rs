@@ -157,7 +157,31 @@ impl Client {
                 "Sinex acknowledged different kind definitions".into(),
             ));
         }
+        connected.refresh_context().await;
         Ok(connected)
+    }
+
+    async fn refresh_context(&self) {
+        let due = self
+            .health
+            .lock()
+            .map(|health| health.context.refresh_due())
+            .unwrap_or(false);
+        if !due {
+            return;
+        }
+        let result = sinex_transport::replies::request_json::<sinex_protocol::PublicContext>(
+            &self.client,
+            self.subjects.public_context(&self.producer),
+            &self.producer,
+            &sinex_protocol::PublicContextRequest::default(),
+            Duration::from_secs(2),
+        )
+        .await
+        .map_err(|error| error.to_string());
+        if let Ok(mut health) = self.health.lock() {
+            health.context.record(result);
+        }
     }
 
     /// What Sinex recorded under these frame names.

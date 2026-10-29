@@ -18,6 +18,7 @@ polylogue-render = { path = "crates/render" }
 polylogue-sinex = { path = "crates/sinex" }
 polylogue-testkit = { path = "crates/testkit" }
 query-language = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
+signals = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master", default-features = false }
 serde = { version = "1", features = ["derive"] }

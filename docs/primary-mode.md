@@ -150,6 +150,12 @@ perform no settings or timezone I/O. Missing, pending, refused and stale
 contexts remain typed failures. A cached earlier context retains its identity
 and age without becoming a current fallback.
 
+The producer observes this context when connecting and while polling confirmed
+changes. Reading the cached context performs no network request. An operation
+captures its resolved day and public policy together with the settings identity,
+owner revision, owner observation time and local receipt age. The private issued
+context token is excluded from serialized read answers and debug output.
+
 ## Degraded primary
 
 When Sinex is unreachable or refuses this producer:

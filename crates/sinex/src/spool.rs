@@ -999,7 +999,8 @@ impl Spool {
         let acquisition = identity.rsplit_once(':').and_then(|(batch, ordinal)| {
             (batch.starts_with("acquisition:") && ordinal.parse::<u64>().is_ok()).then_some(batch)
         });
-        let batch = acquisition.map(|batch| self.root.join("operations").join(hash(batch.as_bytes())));
+        let batch =
+            acquisition.map(|batch| self.root.join("operations").join(hash(batch.as_bytes())));
         if let Some(batch) = &batch {
             if let Some(metadata) = read_checked::<Acquisition>(&batch.join("acquisition.json"))? {
                 if Some(metadata.identity.as_str()) != acquisition {
@@ -1012,9 +1013,12 @@ impl Spool {
         }
         self.retire_path(&path)?;
         if let Some(batch) = batch.filter(|batch| batch.exists()) {
-            if fs::read_dir(batch.join("operations"))?.try_fold(true, |empty, entry| -> Result<bool> {
-                Ok(empty && !entry?.file_name().to_str().is_some_and(hex_name))
-            })? {
+            if fs::read_dir(batch.join("operations"))?.try_fold(
+                true,
+                |empty, entry| -> Result<bool> {
+                    Ok(empty && !entry?.file_name().to_str().is_some_and(hex_name))
+                },
+            )? {
                 self.retire_path(&batch)?;
             }
         }
