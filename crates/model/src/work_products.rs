@@ -71,6 +71,8 @@ pub struct ReadingSource {
     pub event: String,
     pub input: String,
     pub chain: i64,
+    /// The enclosing parser step; a compound record may cover the whole input.
+    /// The causal fact retains its exact native record range and output identity.
     pub start: u64,
     pub end: u64,
     pub selected: bool,
