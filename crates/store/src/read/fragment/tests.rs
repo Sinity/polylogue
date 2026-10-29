@@ -137,6 +137,23 @@ fn fragment_only_utf8_union_preserves_unknown_outside_and_never_attests_a_full_h
         FragmentAvailability::Declared { .. }
     ));
     assert_eq!(text, "héllo");
+    let selected = reader
+        .select_fragment_span(
+            &Reference::parse("message:claude-code:s-m").unwrap(),
+            None,
+            0,
+            6,
+        )
+        .unwrap();
+    assert_eq!(
+        selected.coverage,
+        TextCoverage {
+            start: 0,
+            end: 6,
+            total_bytes: Some(6)
+        }
+    );
+    assert_eq!(selected.admitted, Some(150));
     assert!(
         reader
             .message_with_projection(&source().id)
@@ -484,4 +501,183 @@ fn matching_full_document_attests_fragments_without_using_a_message_container() 
         }
     ));
     assert_eq!(text, "hé");
+    let selected = reader.select_fragment_span(&container, None, 0, 3).unwrap();
+    let Reference::Document(id) = &container else {
+        unreachable!()
+    };
+    assert_eq!(selected.admitted, reader.document_commit(id).unwrap());
+    assert_eq!(selected.coverage.total_bytes, Some(6));
+}
+
+#[test]
+fn fragment_selection_keeps_unknown_receipt_instead_of_using_sender_or_read_position() {
+    let mut w = WriterArchive::new();
+    let version = BlobHash::of(b"unavailable complete source");
+    capture(
+        &mut w,
+        "proven",
+        record(0, "hello", Some(5), version),
+        Some(130),
+    );
+    capture(
+        &mut w,
+        "historical",
+        record(0, "hello", Some(5), version),
+        None,
+    );
+    crate::archive::open_write(&w.archive.archive_db(), 1)
+        .unwrap()
+        .execute("DELETE FROM extent WHERE input='historical'", [])
+        .unwrap();
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let selected = reader
+        .select_fragment_span(
+            &Reference::parse("message:claude-code:s-m").unwrap(),
+            None,
+            0,
+            5,
+        )
+        .unwrap();
+    assert!(matches!(
+        selected.availability,
+        FragmentAvailability::Declared { .. }
+    ));
+    assert_eq!(selected.coverage.total_bytes, Some(5));
+    assert_eq!(selected.admitted, None);
+    assert_eq!(read(&reader, None, 0, 5).1, "hello");
+}
+
+#[test]
+fn predecessor_note_is_not_a_canonical_assertion_fragment_authority() {
+    let w = WriterArchive::new();
+    let conn = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
+    conn.execute("INSERT INTO note(id,first_note,kind,value,author,machine,created_at,commit_seq) VALUES ('legacy','legacy','note','legacy body',?1,'machine',1,100)",[polylogue_model::Author::Agent(None).to_string()]).unwrap();
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(reader.note("legacy").unwrap().is_some());
+    let selected = reader
+        .select_fragment_span(
+            &Reference::parse("assertion:legacy@legacy").unwrap(),
+            None,
+            0,
+            6,
+        )
+        .unwrap();
+    assert_eq!(selected.availability, FragmentAvailability::Unknown);
+    assert_eq!(selected.admitted, None);
+    assert_eq!(selected.coverage.total_bytes, None);
+}
+
+#[test]
+fn exact_variant_part_bytes_do_not_borrow_the_earlier_header_admission() {
+    use polylogue_model::{Variant, VariantEffect, VariantKind, VariantPart, VariantRelation};
+    let w = WriterArchive::new();
+    let conn = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
+    let header = Variant {
+        id: "variant-rev".into(),
+        root: "variant-root".into(),
+        base: None,
+        source: "message:codex:source".into(),
+        source_hash: BlobHash::of(b"source"),
+        kind: VariantKind::Translation,
+        from_lang: Some("en".into()),
+        to_lang: Some("pl".into()),
+        author: polylogue_model::Author::Agent(None),
+        via: "mcp".into(),
+        method: None,
+        machine: "machine".into(),
+        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+        commit_seq: 999,
+    };
+    crate::variants::apply(
+        &conn,
+        &VariantEffect {
+            variants: vec![header],
+            variant_parts: vec![],
+        },
+        10,
+    )
+    .unwrap();
+    crate::variants::apply(
+        &conn,
+        &VariantEffect {
+            variants: vec![],
+            variant_parts: vec![VariantPart {
+                variant: "variant-rev".into(),
+                n: 0,
+                of: "block:codex:source#0".into(),
+                of_hash: BlobHash::of(b"original"),
+                relation: VariantRelation::Translates,
+                body: "late".into(),
+            }],
+        },
+        20,
+    )
+    .unwrap();
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader.variant("variant-rev").unwrap().unwrap().commit_seq,
+        10
+    );
+    let selected = reader
+        .select_fragment_span(
+            &Reference::parse("variant:variant-root@variant-rev#0").unwrap(),
+            None,
+            0,
+            4,
+        )
+        .unwrap();
+    assert!(matches!(
+        selected.availability,
+        FragmentAvailability::Canonical { .. }
+    ));
+    assert_eq!(selected.coverage.total_bytes, Some(4));
+    assert_eq!(selected.admitted, None);
+}
+
+#[test]
+fn fragment_claim_ordinal_skips_poisoned_prefix_before_decoding() {
+    let mut w = WriterArchive::new();
+    let version = BlobHash::of(b"complete value");
+    capture(
+        &mut w,
+        "earlier",
+        record(0, "ab", Some(4), version),
+        Some(130),
+    );
+    capture(
+        &mut w,
+        "later",
+        record(2, "cd", Some(4), version),
+        Some(140),
+    );
+    let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    conn.execute(
+        "UPDATE text_fragment SET record=x'00' WHERE start=?1",
+        [0u64.to_be_bytes().as_slice()],
+    )
+    .unwrap();
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let owner = Reference::parse("message:claude-code:s-m").unwrap();
+    assert!(
+        reader
+            .visit_fragment_claims(&owner, None, |_| ControlFlow::Continue(()))
+            .is_err()
+    );
+    let mut found = Vec::new();
+    reader
+        .visit_fragment_claims_from_ordinal(&owner, None, 1, |claim| {
+            found.push(claim.record.fragment.text);
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(found, vec!["cd"]);
+    for ordinal in [2, u64::MAX] {
+        reader
+            .visit_fragment_claims_from_ordinal(&owner, None, ordinal, |_| panic!("past claim end"))
+            .unwrap();
+    }
 }

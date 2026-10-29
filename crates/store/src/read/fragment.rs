@@ -52,6 +52,15 @@ pub struct FragmentClaim {
     pub admitted: Option<u64>,
 }
 
+/// Snapshot evidence for the exact normalized selection. Missing admission
+/// remains unknown; neither sender receipts nor the read position supply it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FragmentSelection {
+    pub availability: FragmentAvailability,
+    pub coverage: polylogue_model::bundle::fragments::TextCoverage,
+    pub admitted: Option<u64>,
+}
+
 fn coordinate(bytes: Vec<u8>) -> Result<u64> {
     Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| {
         StoreError::Invalid("invalid stored fragment coordinate".into())
@@ -69,23 +78,124 @@ fn hash(bytes: Vec<u8>) -> Result<BlobHash> {
 }
 
 impl Reader<'_> {
+    pub fn select_fragment_span(
+        &self,
+        container: &Reference,
+        version: Option<&TextSourceVersion>,
+        start: u64,
+        end: u64,
+    ) -> Result<FragmentSelection> {
+        use polylogue_model::bundle::fragments::TextCoverage;
+        let availability = self.fragment_availability(container, version, start, end)?;
+        let (total_bytes, admitted) = match &availability {
+            FragmentAvailability::Canonical { .. } => {
+                let total = self.visit_reference_text(container, |_| Ok(()))?;
+                let admitted = match container {
+                    Reference::Message(id) | Reference::Block { message: id, .. } => {
+                        self.message_admission(id)?
+                    }
+                    Reference::Document(id) => self.document_commit(id)?,
+                    // The canonical source owner must supply exact revision
+                    // evidence; a variant header cannot date a later part.
+                    _ => None,
+                };
+                (total, admitted)
+            }
+            FragmentAvailability::Declared { version } => {
+                let key = crate::fragment::version_key(version)?;
+                let from = start.to_be_bytes();
+                let until = end.to_be_bytes();
+                let total: Option<Vec<u8>> = self.conn()?.query_row(
+                    "SELECT f.total FROM text_fragment f WHERE f.container=?1 AND f.version=?2 AND f.total IS NOT NULL
+                     AND EXISTS(SELECT 1 FROM text_fragment_source s WHERE s.hash=f.hash) LIMIT 1",
+                    params![container.to_string(),key], |row| row.get(0),
+                ).optional()?.flatten();
+                let mut statement = self.conn()?.prepare_cached(
+                    "SELECT i.id,s.chain,s.end,s.admitted FROM text_fragment f JOIN text_fragment_source s ON s.hash=f.hash
+                     JOIN input_ref i ON i.pk=s.input_pk WHERE f.container=?1 AND f.version=?2 AND f.start<=?4 AND f.end>=?3",
+                )?;
+                let mut rows = statement.query(params![
+                    container.to_string(),
+                    key,
+                    from.as_slice(),
+                    until.as_slice()
+                ])?;
+                let mut admitted = None;
+                let mut complete = true;
+                while let Some(row) = rows.next()? {
+                    let receipt = match row.get::<_, Option<i64>>(3)? {
+                        Some(n) => {
+                            Some(u64::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
+                                StoreError::Invalid("invalid fragment source admission".into())
+                            })?)
+                        }
+                        None => {
+                            let through = u64::try_from(row.get::<_, i64>(2)?).map_err(|_| {
+                                StoreError::Invalid("negative fragment source endpoint".into())
+                            })?;
+                            self.source_commit(
+                                &row.get::<_, String>(0)?,
+                                row.get(1)?,
+                                Some(through),
+                            )?
+                        }
+                    };
+                    if let Some(receipt) = receipt {
+                        admitted = Some(admitted.map_or(receipt, |prior: u64| prior.max(receipt)));
+                    } else {
+                        complete = false;
+                    }
+                }
+                (
+                    total.map(coordinate).transpose()?,
+                    complete.then_some(admitted).flatten(),
+                )
+            }
+            _ => (None, None),
+        };
+        Ok(FragmentSelection {
+            availability,
+            coverage: TextCoverage {
+                start,
+                end,
+                total_bytes,
+            },
+            admitted,
+        })
+    }
+
     /// Streams retained foreign claims, including conflicts and every actual
     /// receiving source. It does not require the complete container to exist.
     pub fn visit_fragment_claims(
         &self,
         container: &Reference,
         version: Option<&TextSourceVersion>,
+        visit: impl FnMut(FragmentClaim) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_fragment_claims_from_ordinal(container, version, 0, visit)
+    }
+
+    /// Ordinals count actual source memberships in the same stable snapshot
+    /// order as `visit_fragment_claims`; SQL skips before payload decoding.
+    pub fn visit_fragment_claims_from_ordinal(
+        &self,
+        container: &Reference,
+        version: Option<&TextSourceVersion>,
+        ordinal: u64,
         mut visit: impl FnMut(FragmentClaim) -> ControlFlow<()>,
     ) -> Result<()> {
+        let Ok(ordinal) = i64::try_from(ordinal) else {
+            return Ok(());
+        };
         let version = version.map(crate::fragment::version_key).transpose()?;
         let mut statement = self.conn()?.prepare_cached(
             "SELECT f.record,i.id,s.chain,s.start,s.end,s.admitted
              FROM text_fragment f JOIN text_fragment_source s ON s.hash=f.hash
              JOIN input_ref i ON i.pk=s.input_pk WHERE f.container=?1
              AND (?2 IS NULL OR f.version=?2)
-             ORDER BY f.version,f.start,f.end,f.hash,i.id,s.chain,s.start,s.end",
+             ORDER BY f.version,f.start,f.end,f.hash,i.id,s.chain,s.start,s.end LIMIT -1 OFFSET ?3",
         )?;
-        let mut rows = statement.query(params![container.to_string(), version])?;
+        let mut rows = statement.query(params![container.to_string(), version, ordinal])?;
         while let Some(row) = rows.next()? {
             let input: String = row.get(1)?;
             let chain: i64 = row.get(2)?;
@@ -379,14 +489,6 @@ impl Reader<'_> {
                         })
                     })
                     .transpose()
-            }
-            Reference::Assertion(revision) if revision.revision.is_some() => {
-                let present = self
-                    .note(revision.revision.as_deref().expect("checked revision"))?
-                    .is_some_and(|note| note.first_note == revision.root);
-                Ok(present.then(|| TextSourceVersion::ExactRevision {
-                    reference: container.clone(),
-                }))
             }
             Reference::Variant {
                 revision,
