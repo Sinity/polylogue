@@ -4,7 +4,7 @@ use polylogue_model::user::{
     BackfillCounts, BackfillReport, ChatAttachment, Delivery, NewBackfillJob, NewChatAction,
     UserWrite,
 };
-use polylogue_model::{Author, BlobHash, NewNote, NoteKind, Target, Timestamp};
+use polylogue_model::{Author, BlobHash, NewNote, NoteKind, Reference, Timestamp};
 
 fn cache() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -29,7 +29,7 @@ fn note(value: &str) -> NewNote {
         author: Author::Agent(Some(
             polylogue_model::SessionId::parse("codex:session-a").unwrap(),
         )),
-        targets: vec![Target::parse("repo:example").unwrap()],
+        targets: vec![Reference::parse("repo:example").unwrap()],
         relations: vec![],
         revises: None,
         valid_until: None,
@@ -530,7 +530,7 @@ fn retry_reuses_frozen_annotation_targets_and_rejects_changed_machine() {
     commit(&mut conn, &p, 1);
     let mut retry = r.clone();
     if let UserWrite::AnnotateQuery { note, .. } = &mut retry.write {
-        note.targets = vec![Target::parse("repo:changed").unwrap()];
+        note.targets = vec![Reference::parse("repo:changed").unwrap()];
     }
     assert_eq!(prepare_with(&conn, &retry, &[], &[]).unwrap(), p);
     retry.machine = "machine-b".into();
