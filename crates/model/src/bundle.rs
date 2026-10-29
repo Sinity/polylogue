@@ -149,6 +149,8 @@ pub struct VariantRecord {
     pub reference: String,
     pub commit: u64,
     pub variant: crate::Variant,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::authored::ImportAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -158,6 +160,8 @@ pub struct VariantPartRecord {
     pub reference: String,
     pub commit: u64,
     pub part: crate::VariantPart,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::authored::ImportAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
