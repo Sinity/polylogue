@@ -165,6 +165,16 @@ impl crate::primary::Sinex for Producer {
     fn capture(&self, _: &str) -> Result<Capture> {
         Self::unavailable()
     }
+    fn pending_group_headers(
+        &self,
+        _: &str,
+        _: Option<u64>,
+        _: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        Err(StoreError::Invalid(
+            "synthetic authored adapter has no acquisition journal".into(),
+        ))
+    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         Ok(vec![])
     }
