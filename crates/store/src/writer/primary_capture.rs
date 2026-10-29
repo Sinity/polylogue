@@ -127,6 +127,7 @@ fn capture_group_identity(group: &[PreparedBatch]) -> Result<String> {
                 &o.machine,
                 &o.host,
                 &o.path,
+                &o.path_bytes,
                 o.facts
                     .as_ref()
                     .map(|f| (f.device, f.inode, f.size, f.mtime_ns, f.ctime_ns)),

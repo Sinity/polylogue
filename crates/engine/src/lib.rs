@@ -462,6 +462,7 @@ impl Engine {
             machine: self.config.machine.clone(),
             host: self.config.host.clone(),
             path: path.display().to_string(),
+            path_bytes: path.as_os_str().as_encoded_bytes().to_vec(),
             facts,
             seen_at_ms: now_ms(),
             import: None,

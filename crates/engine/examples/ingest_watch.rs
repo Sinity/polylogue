@@ -239,6 +239,7 @@ fn seed_restart(dir: &Path) {
                 machine: config(dir).machine,
                 host: "test".into(),
                 path: source.display().to_string(),
+                path_bytes: source.as_os_str().as_encoded_bytes().to_vec(),
                 facts: None,
                 seen_at_ms: 1,
                 import: None,
