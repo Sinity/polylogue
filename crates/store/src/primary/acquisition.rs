@@ -105,6 +105,8 @@ pub struct PendingCheckpoint {
 #[serde(deny_unknown_fields)]
 pub struct PendingSource {
     pub status: SourceStatus,
+    /// Latest durable acquisition of any kind, including observation-only records.
+    pub head: Option<PendingCapture>,
     pub raw: Option<PendingCapture>,
     pub continuation: Option<PendingCheckpoint>,
 }
