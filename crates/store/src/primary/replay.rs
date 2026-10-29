@@ -132,9 +132,16 @@ pub enum ReplayBasisStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "control", rename_all = "snake_case")]
 pub enum ReplayControl {
-    Reset { scope: String, policy_epoch: i64 },
-    Delivered { delivery: NativeDeliveryCursor },
-    Coverage { coverage: RawInputCoverage },
+    Reset {
+        scope: String,
+        policy_epoch: i64,
+    },
+    Delivered {
+        delivery: NativeDeliveryCursor,
+    },
+    Coverage {
+        coverage: RawInputCoverage,
+    },
     Page {
         page: ReplayPage,
     },
@@ -197,6 +204,6 @@ impl ReplayState {
             && applied >= coverage.projection.position
             && self.policy_epoch == Some(coverage.policy_epoch)
             && self.scope.as_deref() == Some(coverage.projection.scope.as_str()))
-            .then_some(applied)
+        .then_some(applied)
     }
 }

@@ -17,19 +17,31 @@ impl Inner {
         }
         if let Some((scope, policy_epoch)) = events.iter().find_map(|event| match &event.change {
             crate::primary::ConfirmedChange::Control(control) => match control.as_ref() {
-                crate::primary::ReplayControl::Reset { scope, policy_epoch } => Some((scope, *policy_epoch)),
+                crate::primary::ReplayControl::Reset {
+                    scope,
+                    policy_epoch,
+                } => Some((scope, *policy_epoch)),
                 _ => None,
             },
             _ => None,
         }) {
             if events.len() != 1 || policy_epoch < 0 {
-                return Err(StoreError::Invalid("owner replay reset must be a separate valid control page".into()));
+                return Err(StoreError::Invalid(
+                    "owner replay reset must be a separate valid control page".into(),
+                ));
             }
             crate::primary::scope::restart(&mut self.index, &self.location, &self.resolver, scope)?;
-            let tx = self.index.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            crate::primary::projection::save_replay(&tx, &crate::primary::ReplayState {
-                scope: Some(scope.clone()), policy_epoch: Some(policy_epoch), ..Default::default()
-            })?;
+            let tx = self
+                .index
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            crate::primary::projection::save_replay(
+                &tx,
+                &crate::primary::ReplayState {
+                    scope: Some(scope.clone()),
+                    policy_epoch: Some(policy_epoch),
+                    ..Default::default()
+                },
+            )?;
             tx.commit()?;
             self.commits.committed();
             self.derive_due = false;
@@ -37,13 +49,19 @@ impl Inner {
             return Ok(0);
         }
         let invalidates = events.iter().any(|event| match &event.change {
-            crate::primary::ConfirmedChange::Control(control) => matches!(control.as_ref(),
+            crate::primary::ConfirmedChange::Control(control) => matches!(
+                control.as_ref(),
                 crate::primary::ReplayControl::BasisStatus { .. }
-                | crate::primary::ReplayControl::ErasedThrough { .. }
-                | crate::primary::ReplayControl::Coverage { coverage: crate::primary::RawInputCoverage::Incomplete { .. } }),
+                    | crate::primary::ReplayControl::ErasedThrough { .. }
+                    | crate::primary::ReplayControl::Coverage {
+                        coverage: crate::primary::RawInputCoverage::Incomplete { .. }
+                    }
+            ),
             _ => false,
         });
-        if invalidates { crate::primary::scope::invalidate(&self.index, &self.location)?; }
+        if invalidates {
+            crate::primary::scope::invalidate(&self.index, &self.location)?;
+        }
         if let Some(reset) = events.iter().find(|event| {
             matches!(
                 event.change,
@@ -71,9 +89,16 @@ impl Inner {
             }
             return crate::primary::projection::position(&self.index);
         }
-        let before = crate::primary::projection::checkpoint(&self.index)?;
+        let before = (
+            crate::primary::projection::checkpoint(&self.index)?,
+            crate::primary::projection::replay_state(&self.index)?.certified_position(),
+        );
         let position = crate::primary::projection::apply(&mut self.index, &self.resolver, events)?;
-        if crate::primary::projection::checkpoint(&self.index)? != before {
+        let after = (
+            crate::primary::projection::checkpoint(&self.index)?,
+            crate::primary::projection::replay_state(&self.index)?.certified_position(),
+        );
+        if after != before {
             self.commits.committed();
             self.derive_due = true;
             self.search.wake();

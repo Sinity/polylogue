@@ -31,9 +31,9 @@ pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_inde
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
-pub(crate) use replay::{native_context, replay_state};
-pub(crate) use replay::save as save_replay;
 use crate::{Result, StoreError};
+pub(crate) use replay::save as save_replay;
+pub(crate) use replay::{native_context, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -67,7 +67,9 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     for event in events {
         if let ConfirmedChange::Control(control) = &event.change {
             if !event.event.is_empty() || event.native.is_some() || event.output_index != 0 {
-                return Err(StoreError::Invalid("owner replay controls cannot carry a fact identity".into()));
+                return Err(StoreError::Invalid(
+                    "owner replay controls cannot carry a fact identity".into(),
+                ));
             }
             replay::stage_control(&tx, &mut state, control)?;
             continue;
@@ -80,8 +82,11 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
                 "scope reset must precede confirmed data application".into(),
             ));
         }
-        if matches!(event.change, ConfirmedChange::PositionComplete) && state.policy_epoch.is_some() {
-            return Err(StoreError::Invalid("a native replay requires its delivered owner completion receipt".into()));
+        if matches!(event.change, ConfirmedChange::PositionComplete) && state.policy_epoch.is_some()
+        {
+            return Err(StoreError::Invalid(
+                "a native replay requires its delivered owner completion receipt".into(),
+            ));
         }
         if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
             tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
@@ -105,7 +110,9 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
         }
         if matches!(event.change, ConfirmedChange::Ignored) {
             if state.policy_epoch.is_some() {
-                return Err(StoreError::Invalid("an indexed owner replay cannot ignore an unsupported fact".into()));
+                return Err(StoreError::Invalid(
+                    "an indexed owner replay cannot ignore an unsupported fact".into(),
+                ));
             }
             continue;
         }
@@ -205,7 +212,9 @@ impl Fact {
 
 fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, &'static str) {
     let reference = match product {
-        Product::AttachmentBinding { record } => Some(format!("attachment-binding:{}", record.context().message)),
+        Product::AttachmentBinding { record } => {
+            Some(format!("attachment-binding:{}", record.context().message))
+        }
         Product::Link { facts, .. } => Some(facts.selection_tag()),
         Product::Session { facts, .. } => Some(format!("session:{}", facts.id)),
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
@@ -239,7 +248,10 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
             "input",
         ),
         Product::AttachmentBinding { record } => (
-            Some(record.context().input.clone()), Some(record.context().chain), reference, "attachment_binding",
+            Some(record.context().input.clone()),
+            Some(record.context().chain),
+            reference,
+            "attachment_binding",
         ),
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_) | Product::RestoredRequest { .. } => (None, None, reference, "request"),
@@ -247,7 +259,9 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. } => {
             (None, None, reference, "query")
         }
-        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => (None, None, reference, "derived"),
+        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => {
+            (None, None, reference, "derived")
+        }
         _ => unreachable!(),
     }
 }
@@ -299,7 +313,9 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 }
                 if let Some(old) = &old {
                     if old.native != native {
-                        return Err(StoreError::Invalid("a fact changed its original owner context".into()));
+                        return Err(StoreError::Invalid(
+                            "a fact changed its original owner context".into(),
+                        ));
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
@@ -531,7 +547,8 @@ fn plan(index: &Connection) -> Result<Plan> {
                 );
             }
             if let Product::AttachmentBinding { record } = &product {
-                out.binding_messages.insert(record.context().message.to_string());
+                out.binding_messages
+                    .insert(record.context().message.to_string());
             }
             if let Product::Input { rows, .. } = &product {
                 out.inputs.insert(rows.input.clone());
