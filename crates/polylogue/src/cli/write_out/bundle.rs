@@ -591,7 +591,7 @@ fn describe(root: &Path, path: &str) -> std::result::Result<FileDescriptor, Stri
     }
     Ok(FileDescriptor {
         path: path.into(),
-        hash: BlobHash::parse(&hash.finalize().to_hex().to_string()).map_err(string)?,
+        hash: BlobHash::parse(hash.finalize().to_hex().as_ref()).map_err(string)?,
         size,
     })
 }

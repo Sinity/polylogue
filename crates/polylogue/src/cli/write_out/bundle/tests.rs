@@ -170,13 +170,13 @@ fn blob_hash_failure_never_publishes_and_chunk_offsets_are_checked() {
     let destination = root.path().join("bundle");
     let mut sink = Bundle::new(&destination, begin(), Format::Json, true).unwrap();
     let hash = BlobHash::of(b"correct");
-    sink.blob_chunk(hash.clone(), 0, b"wrong").unwrap();
+    sink.blob_chunk(hash, 0, b"wrong").unwrap();
     sink.push(ReadRecord {
         record: Record::Blob(BlobRecord {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {
                 path: format!("blobs/{hash}"),
-                hash: hash.clone(),
+                hash: hash,
                 size: 7,
             },
         }),
@@ -227,24 +227,100 @@ fn long_opaque_names_have_bounded_distinct_components() {
 #[test]
 fn sparse_records_union_and_later_partial_does_not_downgrade_content() {
     let message:polylogue_model::Message=serde_json::from_value(serde_json::json!({"id":"codex:message","session":"codex:session","role":"assistant","blocks":[{"type":"text","text":"first"},{"type":"text","text":"second"}]})).unwrap();
-    let full=MessageRecord{reference:"message:codex:message".into(),commit:2,order:0,source_version:message.content_hash().unwrap(),block_count:2,block_ordinals:vec![0,1],message};
-    let mut first=full.clone();first.message.blocks.pop();first.block_ordinals.pop();
-    let mut second=full.clone();second.message.blocks.remove(0);second.block_ordinals.remove(0);
-    let root=tempfile::tempdir().unwrap();let destination=root.path().join("bundle");let mut sink=Bundle::new(&destination,begin(),Format::Json,false).unwrap();sink.push(session("session")).unwrap();
-    for record in [second,first.clone(),full.clone(),first] {sink.push(ReadRecord{record:Record::Message(Box::new(record)),parts:vec![]}).unwrap();}
-    sink.finish(ReadComplete{footer:ReadFooter::default(),counts:Counts{sessions:1,messages:4,..Default::default()}}).unwrap();
-    let records:Vec<Record>=serde_json::from_reader(File::open(destination.join("codex/session.json")).unwrap()).unwrap();assert_eq!(records.len(),2);assert_eq!(records[1],Record::Message(Box::new(full)));assert_eq!(manifest(&destination).counts.messages,1);
+    let full = MessageRecord {
+        reference: "message:codex:message".into(),
+        commit: 2,
+        order: 0,
+        source_version: message.content_hash().unwrap(),
+        block_count: 2,
+        block_ordinals: vec![0, 1],
+        message,
+    };
+    let mut first = full.clone();
+    first.message.blocks.pop();
+    first.block_ordinals.pop();
+    let mut second = full.clone();
+    second.message.blocks.remove(0);
+    second.block_ordinals.remove(0);
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("bundle");
+    let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
+    sink.push(session("session")).unwrap();
+    for record in [second, first.clone(), full.clone(), first] {
+        sink.push(ReadRecord {
+            record: Record::Message(Box::new(record)),
+            parts: vec![],
+        })
+        .unwrap();
+    }
+    sink.finish(ReadComplete {
+        footer: ReadFooter::default(),
+        counts: Counts {
+            sessions: 1,
+            messages: 4,
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    let records: Vec<Record> =
+        serde_json::from_reader(File::open(destination.join("codex/session.json")).unwrap())
+            .unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1], Record::Message(Box::new(full)));
+    assert_eq!(manifest(&destination).counts.messages, 1);
 }
 
 #[test]
 fn valid_blob_chunks_are_pinned_and_unclaimed_bytes_refuse_publication() {
-    let root=tempfile::tempdir().unwrap();let destination=root.path().join("bundle");let hash=BlobHash::of(b"complete");let mut sink=Bundle::new(&destination,begin(),Format::Jsonl,true).unwrap();
-    sink.blob_chunk(hash.clone(),0,b"com").unwrap();sink.blob_chunk(hash.clone(),3,b"plete").unwrap();sink.push(ReadRecord{record:Record::Blob(BlobRecord{reference:format!("blob:{hash}"),file:FileDescriptor{path:format!("blobs/{hash}"),hash:hash.clone(),size:8}}),parts:vec![]}).unwrap();sink.finish(ReadComplete{footer:ReadFooter::default(),counts:Counts{blobs:1,..Default::default()}}).unwrap();assert_eq!(fs::read(destination.join(format!("blobs/{hash}"))).unwrap(),b"complete");
-    let mut sink=Bundle::new(&destination,begin(),Format::Jsonl,true).unwrap();sink.blob_chunk(hash,0,b"unclaimed").unwrap();assert!(sink.finish(complete(0)).is_err());assert_eq!(manifest(&destination).counts.blobs,1);
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("bundle");
+    let hash = BlobHash::of(b"complete");
+    let mut sink = Bundle::new(&destination, begin(), Format::Jsonl, true).unwrap();
+    sink.blob_chunk(hash, 0, b"com").unwrap();
+    sink.blob_chunk(hash, 3, b"plete").unwrap();
+    sink.push(ReadRecord {
+        record: Record::Blob(BlobRecord {
+            reference: format!("blob:{hash}"),
+            file: FileDescriptor {
+                path: format!("blobs/{hash}"),
+                hash: hash,
+                size: 8,
+            },
+        }),
+        parts: vec![],
+    })
+    .unwrap();
+    sink.finish(ReadComplete {
+        footer: ReadFooter::default(),
+        counts: Counts {
+            blobs: 1,
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read(destination.join(format!("blobs/{hash}"))).unwrap(),
+        b"complete"
+    );
+    let mut sink = Bundle::new(&destination, begin(), Format::Jsonl, true).unwrap();
+    sink.blob_chunk(hash, 0, b"unclaimed").unwrap();
+    assert!(sink.finish(complete(0)).is_err());
+    assert_eq!(manifest(&destination).counts.blobs, 1);
 }
 
 #[test]
 fn injected_member_write_failure_retains_previous_destination() {
-    let root=tempfile::tempdir().unwrap();let destination=root.path().join("bundle");let mut sink=Bundle::new(&destination,begin(),Format::Json,false).unwrap();sink.push(session("old")).unwrap();sink.finish(complete(1)).unwrap();
-    let mut sink=Bundle::new(&destination,begin(),Format::Json,false).unwrap();let staging=sink.staging().to_owned();sink.push(session("new")).unwrap();fs::write(staging.join("codex"),b"fault: directory cannot be created").unwrap();let error=sink.finish(complete(1)).unwrap_err();assert_eq!(error.staging,staging);assert!(destination.join("codex/old.json").exists());assert!(!destination.join("codex/new.json").exists());
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("bundle");
+    let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
+    sink.push(session("old")).unwrap();
+    sink.finish(complete(1)).unwrap();
+    let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
+    let staging = sink.staging().to_owned();
+    sink.push(session("new")).unwrap();
+    fs::write(staging.join("codex"), b"fault: directory cannot be created").unwrap();
+    let error = sink.finish(complete(1)).unwrap_err();
+    assert_eq!(error.staging, staging);
+    assert!(destination.join("codex/old.json").exists());
+    assert!(!destination.join("codex/new.json").exists());
 }
