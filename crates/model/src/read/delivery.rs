@@ -4,6 +4,17 @@ use super::{ReadDocument, ReadFooter, ReadHeader, ReadOptions, ReadPart};
 use crate::bundle::{Counts, ReadSnapshot, Record};
 use serde::{Deserialize, Serialize};
 
+/// Paging and streaming share selection and view; only transfer changes.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadDelivery {
+    #[default]
+    Page,
+    Stream,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadPage {
