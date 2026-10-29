@@ -132,9 +132,9 @@ pub(crate) fn http_url(call: &HttpCall) -> Result<String, Failure> {
 fn currency(currency: &IndexCurrency) -> Markup {
     html! { @match currency {
         IndexCurrency::Standalone=>{span data-mode="standalone" {"Standalone archive"}},
-        IndexCurrency::Primary {applied_position,owner_position,owner_position_seconds_ago,reachable,lag_positions,state,error}=>{
+        IndexCurrency::Primary {scope,applied_position,owner_position,owner_position_seconds_ago,reachable,lag_positions,state,error}=>{
             span data-mode="primary" data-state=(match state {CurrencyState::Current=>"current",CurrencyState::Behind=>"behind",CurrencyState::Unknown=>"unknown",CurrencyState::Unavailable=>"unavailable"}) {
-                "Primary: " (format!("{state:?}")) " · applied " (applied_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · owner " (owner_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · observed " (owner_position_seconds_ago.map_or_else(||"age unknown".into(),|age|format!("{age} seconds ago"))) " · reachable " (reachable.map_or_else(||"unknown".into(),|reachable|reachable.to_string())) " · lag " (lag_positions.map_or_else(||"unknown".into(),|lag|lag.to_string())) @if let Some(error)=error {" · " (error)}
+                "Primary: " @if let Some(scope)=scope { (scope) " · " } (format!("{state:?}")) " · applied " (applied_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · owner " (owner_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · observed " (owner_position_seconds_ago.map_or_else(||"age unknown".into(),|age|format!("{age} seconds ago"))) " · reachable " (reachable.map_or_else(||"unknown".into(),|reachable|reachable.to_string())) " · lag " (lag_positions.map_or_else(||"unknown".into(),|lag|lag.to_string())) @if let Some(error)=error {" · " (error)}
             }
         }
     } }

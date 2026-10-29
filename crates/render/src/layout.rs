@@ -826,33 +826,27 @@ fn variant_indicator(
     evidence: &ProjectionEvidence,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> bool {
-    for (_, variant) in evidence.variants.iter() {
-        if variant.mark.stale && !options.variants.contains(&variant.mark.key) {
+    let mut shown = std::collections::BTreeSet::new();
+    for (original, variant) in evidence.variants.for_source(source) {
+        if !shown.insert(original)
+            || variant.mark.stale && !options.variants.contains(&variant.mark.key)
+        {
             continue;
         }
-        let applies = if variant.alignment.is_empty() {
-            variant.mark.original == source.reference
-        } else {
-            variant.alignment.iter().any(|range| {
-                range.source.reference == source.reference && range.source.block == source.block
-            })
-        };
-        if applies
-            && !visit(ReadItem {
-                source: source.clone(),
-                kind: ItemKind::Indicator {
-                    indicator: IndicatorKind::Variant,
-                    text: format!(
-                        "[variant {} · {} · {}{}]",
-                        variant.mark.key,
-                        variant.relation.as_str(),
-                        variant.mark.reference,
-                        if variant.mark.stale { " · stale" } else { "" }
-                    ),
-                    expand: variant.mark.show_original.clone().map(Box::new),
-                },
-            })
-        {
+        if !visit(ReadItem {
+            source: source.clone(),
+            kind: ItemKind::Indicator {
+                indicator: IndicatorKind::Variant,
+                text: format!(
+                    "[variant {} · {} · {}{}]",
+                    variant.mark.key,
+                    variant.relation.as_str(),
+                    variant.mark.reference,
+                    if variant.mark.stale { " · stale" } else { "" }
+                ),
+                expand: variant.mark.show_original.clone().map(Box::new),
+            },
+        }) {
             return false;
         }
     }

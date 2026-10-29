@@ -12,11 +12,6 @@ pub struct TextAlignment {
     pub start: u64,
     pub end: u64,
 }
-impl TextAlignment {
-    fn same_body(&self, other: &Self) -> bool {
-        same_body(&self.source, &other.source)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -24,18 +19,31 @@ pub struct VariantText {
     pub mark: VariantMark,
     pub relation: VariantRelation,
     pub text: String,
-    /// Original body ranges in source order. The replacement is emitted at the
-    /// first range; subsequent covered ranges are removed. Empty means the key
-    /// names exactly one complete text body. Multi-body targets need alignment.
+    /// Original body ranges in source order. Replacement is emitted at the first
+    /// range; subsequent covered ranges are removed. Empty means the key names
+    /// exactly one complete text body. Multi-body targets need alignment.
     #[serde(default)]
     pub alignment: Vec<TextAlignment>,
 }
 
-/// Checked construction and deserialization reject ambiguous overlays. Parts of
-/// one rendition for the same original must be grouped before insertion.
+/// Checked construction rejects ambiguity. The private index is derived from
+/// the one public reference map, so a record with N bodies needs N body lookups.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
-pub struct PresentationMap(BTreeMap<Reference, VariantText>);
+pub struct PresentationMap(
+    BTreeMap<Reference, VariantText>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    BTreeMap<BodyKey, Vec<Patch>>,
+);
+type BodyKey = (String, Option<u64>);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Patch {
+    original: Reference,
+    start: u64,
+    end: Option<u64>,
+    first: bool,
+}
 impl PresentationMap {
     pub fn insert(&mut self, original: Reference, variant: VariantText) -> Result<(), ReadError> {
         if self.0.contains_key(&original) {
@@ -44,36 +52,63 @@ impl PresentationMap {
         if variant.mark.original != original.to_string() {
             return Err(invalid("variant mark and original reference disagree"));
         }
-        if variant.alignment.is_empty()
-            && !matches!(
-                original,
-                Reference::Block { .. }
-                    | Reference::Assertion(_)
-                    | Reference::Variant { part: Some(_), .. }
-            )
-        {
-            return Err(invalid(
-                "multi-body variant target needs original body alignment",
-            ));
-        }
-        for (n, range) in variant.alignment.iter().enumerate() {
-            Reference::parse(&range.source.reference).map_err(|e| invalid(&e.to_string()))?;
-            if range.start > range.end {
-                return Err(invalid("reversed variant body range"));
+        let mut pending: BTreeMap<BodyKey, Vec<Patch>> = BTreeMap::new();
+        if variant.alignment.is_empty() {
+            let exact = match &original {
+                Reference::Block { .. } => true,
+                Reference::Assertion(revision)
+                | Reference::Variant {
+                    revision,
+                    part: Some(_),
+                } => revision.revision.is_some(),
+                _ => false,
+            };
+            if !exact {
+                return Err(invalid(
+                    "multi-body or unresolved variant target needs original body alignment",
+                ));
             }
-            if variant.alignment[..n]
-                .iter()
-                .any(|other| overlaps(range, other))
+            pending
+                .entry(body_key(&Source::record(original.to_string())))
+                .or_default()
+                .push(Patch {
+                    original: original.clone(),
+                    start: 0,
+                    end: None,
+                    first: true,
+                });
+        } else {
+            for (n, range) in variant.alignment.iter().enumerate() {
+                Reference::parse(&range.source.reference).map_err(|e| invalid(&e.to_string()))?;
+                if range.start > range.end {
+                    return Err(invalid("reversed variant body range"));
+                }
+                let patch = Patch {
+                    original: original.clone(),
+                    start: range.start,
+                    end: Some(range.end),
+                    first: n == 0,
+                };
+                let ranges = pending.entry(body_key(&range.source)).or_default();
+                if ranges.iter().any(|prior| overlap(prior, &patch)) {
+                    return Err(invalid("overlapping variant body ranges"));
+                }
+                ranges.push(patch);
+            }
+        }
+        for (body, patches) in &pending {
+            if let Some(prior) = self.1.get(body)
+                && patches
+                    .iter()
+                    .any(|patch| prior.iter().any(|prior| overlap(patch, prior)))
             {
-                return Err(invalid("overlapping variant body ranges"));
-            }
-        }
-        for (key, prior) in &self.0 {
-            if conflicts(key, prior, &original, &variant) {
                 return Err(invalid("overlapping distinct variant replacements"));
             }
         }
         self.0.insert(original, variant);
+        for (body, patches) in pending {
+            self.1.entry(body).or_default().extend(patches);
+        }
         Ok(())
     }
     pub fn get(&self, original: &Reference) -> Option<&VariantText> {
@@ -85,18 +120,28 @@ impl PresentationMap {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+    pub fn for_source<'a>(
+        &'a self,
+        source: &Source,
+    ) -> impl Iterator<Item = (&'a Reference, &'a VariantText)> {
+        self.1
+            .get(&body_key(source))
+            .into_iter()
+            .flatten()
+            .map(|patch| (&patch.original, &self.0[&patch.original]))
+    }
     pub fn mark_for<'a>(
         &'a self,
         source: &Source,
         options: &ReadOptions,
     ) -> Option<&'a VariantMark> {
-        self.0
-            .iter()
-            .find(|(key, value)| active(value, options) && targets(key, value, source))
-            .map(|(_, value)| &value.mark)
+        self.for_source(source)
+            .map(|(_, variant)| variant)
+            .find(|variant| active(variant, options))
+            .map(|variant| &variant.mark)
     }
-    /// Applies ranges simultaneously against original bytes, never the output
-    /// of another replacement. Scalar boundaries are checked before slicing.
+    /// Apply simultaneously against original bytes. Never use offsets in the
+    /// output of another replacement; reject non-scalar UTF-8 boundaries.
     pub fn apply<'a>(
         &self,
         source: &Source,
@@ -104,38 +149,30 @@ impl PresentationMap {
         options: &ReadOptions,
     ) -> Result<Cow<'a, str>, ReadError> {
         let mut patches = Vec::new();
-        for (key, variant) in &self.0 {
+        for patch in self.1.get(&body_key(source)).into_iter().flatten() {
+            let variant = &self.0[&patch.original];
             if !active(variant, options) {
                 continue;
             }
-            let replacement = if variant.relation == VariantRelation::Omits {
+            let replacement = if variant.relation == VariantRelation::Omits || !patch.first {
                 ""
             } else {
                 &variant.text
             };
-            if variant.alignment.is_empty() {
-                if key.to_string() == source.reference {
-                    patches.push((0, original.len(), replacement));
-                }
-            } else {
-                for (n, range) in variant
-                    .alignment
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| same_body(&r.source, source))
-                {
-                    let start = usize::try_from(range.start)
-                        .map_err(|_| invalid("variant range exceeds address space"))?;
-                    let end = usize::try_from(range.end)
-                        .map_err(|_| invalid("variant range exceeds address space"))?;
-                    if original.get(start..end).is_none() {
-                        return Err(invalid(
-                            "variant range is outside original UTF-8 body boundaries",
-                        ));
-                    }
-                    patches.push((start, end, if n == 0 { replacement } else { "" }));
-                }
+            let start = usize::try_from(patch.start)
+                .map_err(|_| invalid("variant range exceeds address space"))?;
+            let end = patch
+                .end
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| invalid("variant range exceeds address space"))?
+                .unwrap_or(original.len());
+            if original.get(start..end).is_none() {
+                return Err(invalid(
+                    "variant range is outside original UTF-8 body boundaries",
+                ));
             }
+            patches.push((start, end, replacement));
         }
         if patches.is_empty() {
             return Ok(Cow::Borrowed(original));
@@ -158,35 +195,18 @@ impl PresentationMap {
 fn active(variant: &VariantText, options: &ReadOptions) -> bool {
     !variant.mark.stale || options.variants.contains(&variant.mark.key)
 }
-fn same_body(a: &Source, b: &Source) -> bool {
-    a.reference == b.reference && a.block == b.block
+fn body_key(source: &Source) -> BodyKey {
+    let block = match Reference::parse(&source.reference) {
+        Ok(Reference::Block { n, .. }) => Some(n),
+        _ => source.block,
+    };
+    (source.reference.clone(), block)
 }
-fn targets(key: &Reference, value: &VariantText, source: &Source) -> bool {
-    if value.alignment.is_empty() {
-        key.to_string() == source.reference
-    } else {
-        value.alignment.iter().any(|r| same_body(&r.source, source))
-    }
-}
-fn overlaps(a: &TextAlignment, b: &TextAlignment) -> bool {
-    a.same_body(b) && (a.start < b.end && b.start < a.end || a.start == b.start)
-}
-fn conflicts(ak: &Reference, a: &VariantText, bk: &Reference, b: &VariantText) -> bool {
-    if a.alignment.is_empty() {
-        return targets(bk, b, &Source::record(ak.to_string()))
-            || b.alignment
-                .iter()
-                .any(|r| r.source.reference == ak.to_string());
-    }
-    if b.alignment.is_empty() {
-        return a
-            .alignment
-            .iter()
-            .any(|r| r.source.reference == bk.to_string());
-    }
-    a.alignment
-        .iter()
-        .any(|a| b.alignment.iter().any(|b| overlaps(a, b)))
+fn overlap(a: &Patch, b: &Patch) -> bool {
+    a.end.is_none()
+        || b.end.is_none()
+        || (a.start < b.end.unwrap() && b.start < a.end.unwrap())
+        || a.start == b.start
 }
 fn invalid(why: &str) -> ReadError {
     ReadError::InvalidEvidence(why.into())
@@ -206,7 +226,6 @@ impl From<PresentationMap> for BTreeMap<Reference, VariantText> {
         value.0
     }
 }
-
 impl<'de> Deserialize<'de> for PresentationMap {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Checked;
