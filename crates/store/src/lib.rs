@@ -116,6 +116,11 @@ pub enum StoreError {
     ReadIndexReplaced,
     #[error("request {0} was already used for different content")]
     Conflict(String),
+    #[error("{reference} is ambiguous: {candidates:?}")]
+    Ambiguous {
+        reference: String,
+        candidates: Vec<String>,
+    },
     #[error("the session's parents are incomplete: {0}")]
     IncompleteParents(read::ParentIssue),
     #[error("{0} not found")]

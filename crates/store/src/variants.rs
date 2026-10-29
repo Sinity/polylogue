@@ -231,11 +231,21 @@ impl Reader<'_> {
             }
         }
         for preference in enabled {
-            let mut matched = candidates.iter().filter(|v| key(v) == *preference);
-            if let Some(v) = matched.next() {
-                if matched.next().is_none() {
-                    return Ok(Some(v.clone()));
-                }
+            let matched: Vec<_> = candidates
+                .iter()
+                .filter(|v| key(v) == *preference)
+                .collect();
+            if matched.len() > 1 {
+                return Err(StoreError::Ambiguous {
+                    reference: preference.clone(),
+                    candidates: matched
+                        .iter()
+                        .map(|v| format!("variant:{}@{}", v.root, v.id))
+                        .collect(),
+                });
+            }
+            if let Some(v) = matched.first() {
+                return Ok(Some((*v).clone()));
             }
         }
         Ok(None)
