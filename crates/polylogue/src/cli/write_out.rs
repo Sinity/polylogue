@@ -89,8 +89,7 @@ fn deliver(
     };
     let destination = values.text("to").map(PathBuf::from);
     if destination.is_none() && *delivery == ReadDelivery::Page {
-        let answer = crate::client::call_ready(&archive, &call(&request, accepted)?)
-            .map_err(|e| e.to_string())?;
+        let answer = crate::client::call_ready(&archive, accepted).map_err(|e| e.to_string())?;
         let code = answer.exit_code();
         if values.flag("json") {
             println!(
