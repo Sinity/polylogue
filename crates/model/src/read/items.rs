@@ -238,6 +238,8 @@ pub enum ItemKind {
         availability: ValueState<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         link: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_bytes: Option<Vec<u8>>,
     },
     Other {
         type_name: String,
@@ -262,6 +264,22 @@ pub enum ItemKind {
     Raw {
         record: Box<RawRecord>,
     },
+    /// A budget may split one oversized item without discarding fields.
+    /// Concatenate the text fragments and decode according to `encoding`.
+    Fragment {
+        encoding: FragmentEncoding,
+        text: String,
+        from: u64,
+        until: u64,
+        total: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FragmentEncoding {
+    Text,
+    ReadItemJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -293,6 +311,11 @@ pub enum IndicatorKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CallItem {
+    /// A result with no prepared call, distinct from a call whose tool name is unknown.
+    #[serde(default)]
+    pub orphan: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
     pub tool: ValueState<String>,
     pub target: ValueState<String>,
     pub action: crate::ToolAction,
@@ -307,12 +330,39 @@ pub struct CallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_excerpt: Option<OutputExcerpt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_source: Option<Source>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child: Option<Box<DelegationCard>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit: Option<EditView>,
 }
+/// Explicitly omitted middle of a tool result. Original bytes remain in the
+/// canonical record; `open` reads that exact source block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutputExcerpt {
+    pub parts: Vec<OutputPart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<ReadyCall>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OutputPart {
+    Text {
+        text: String,
+        from: u64,
+        until: u64,
+    },
+    Omission {
+        lines: u64,
+        characters: u64,
+        from: u64,
+        until: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DelegationCard {
@@ -420,6 +470,8 @@ pub struct ReferencedBy {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadFooter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimator: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coverage: Vec<Coverage>,
     #[serde(default)]
@@ -430,7 +482,9 @@ pub struct ReadFooter {
     pub previous: Option<ReadyCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<ReadPosition>,
+    /// Layout items emitted on this page. Selection counts belong in header figures.
     pub shown: u64,
+    /// Total layout items, only when known without scanning the selection.
     pub count: ValueState<u64>,
 }
 
