@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const VERSION: u32 = 2;
+pub mod component;
 pub mod membership;
+pub use component::ComponentStatus;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolCallProduct {

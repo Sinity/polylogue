@@ -94,6 +94,9 @@ pub(crate) struct Prepared {
     pub control: Option<Control>,
     #[serde(default)]
     pub named: bool,
+    /// Derived from the immutable Events envelope, never its operation name.
+    pub canonical: bool,
+    pub canonical_scope: Option<String>,
     pub request: bool,
     pub group: Option<Group>,
     #[serde(skip)]
@@ -1200,6 +1203,15 @@ impl Spool {
             captured,
             control: full_capture.and_then(control),
             named: named(&frame),
+            canonical: matches!(&frame, Ingress::Events { source: None, .. }),
+            canonical_scope: match &frame {
+                Ingress::Events {
+                    source: None,
+                    coverage: Some(proof),
+                    ..
+                } => Some(proof.scope.clone()),
+                _ => None,
+            },
             request,
             group,
             acknowledged: false,

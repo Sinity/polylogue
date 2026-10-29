@@ -6,6 +6,13 @@ use polylogue_model::{Block, WrittenBy};
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
 
+pub(crate) fn canonical(product: &Product) -> bool {
+    matches!(
+        product,
+        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. }
+    )
+}
+
 pub(crate) fn kind(product: &Product) -> &'static str {
     match product {
         Product::Input { .. } => "polylogue.input_observation",
@@ -24,6 +31,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::QueryRunOutcome { .. } => "polylogue.query_run_outcome",
         Product::Coverage(_) => "polylogue.coverage",
         Product::WorkSnapshot { .. } => "polylogue.work_snapshot",
+        Product::WorkComponentStatus { .. } => "polylogue.work_component_status",
         Product::Request(request) => match &request.request.write {
             UserWrite::AddNote { .. }
             | UserWrite::SaveQuery { .. }
@@ -76,6 +84,9 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::Coverage(coverage) => json!([coverage.machine]),
         Product::WorkSnapshot { snapshot } => {
             json!([snapshot.session_id, snapshot.reducer_version])
+        }
+        Product::WorkComponentStatus { status } => {
+            json!([status.component_kind, status.sessions().collect::<Vec<_>>()])
         }
     };
     let source = product
@@ -214,6 +225,10 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             "run": outcome.run, "binding_hash": outcome.binding_hash, "at": outcome.at,
         }),
         Product::Coverage(_) => json!({}),
+        Product::WorkComponentStatus { status } => json!({
+            "component_kind":status.component_kind,"component_sessions":status.sessions().collect::<Vec<_>>(),
+            "reducer_version":status.reducer_version,"source_position":status.position,
+        }),
         Product::WorkSnapshot { snapshot } => json!({
             "session":snapshot.session_id,"reducer_version":snapshot.reducer_version,"source_position":snapshot.position,
             "complete":true,"repo":snapshot.session.as_ref().and_then(|session|session.repo.as_ref()),"branch":snapshot.session.as_ref().and_then(|session|session.git_branch.as_ref()),"kind":snapshot.session.as_ref().map(|session|session.kind),"mode":snapshot.session.as_ref().and_then(|session|session.mode.as_ref()),
@@ -249,6 +264,24 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
             ));
         }
     }
+    if let Product::WorkComponentStatus { status } = &product {
+        status
+            .validate()
+            .map_err(|error| Error::Invalid(error.into()))?;
+        if payload.get("component_kind") != Some(&serde_json::to_value(status.component_kind)?)
+            || payload.get("component_sessions")
+                != Some(&serde_json::to_value(
+                    status.sessions().collect::<Vec<_>>(),
+                )?)
+            || payload.get("reducer_version").and_then(Value::as_u64)
+                != Some(u64::from(status.reducer_version))
+            || payload.get("source_position").and_then(Value::as_i64) != Some(status.position)
+        {
+            return Err(Error::Invalid(
+                "component status wrapper differs from its physical evidence".into(),
+            ));
+        }
+    }
     if kind(&product) != event_type {
         return Err(Error::Invalid(format!(
             "confirmed {event_type} carries another product kind"
@@ -275,6 +308,15 @@ struct WorkSnapshotMetadata {
     boot_id: Option<String>,
     native_sources: Vec<crate::kinds::RecordRef>,
     native_unavailable: Vec<String>,
+}
+
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct WorkComponentMetadata {
+    component_kind: polylogue_model::work_products::component::ComponentKind,
+    component_sessions: Vec<polylogue_model::SessionId>,
+    reducer_version: u32,
+    source_position: i64,
 }
 
 fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
@@ -345,6 +387,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.query_run_outcome", "query_run_outcome"),
         ("polylogue.coverage", "coverage"),
         ("polylogue.work_snapshot", "work_snapshot"),
+        ("polylogue.work_component_status", "work_component_status"),
     ];
     let complete =
         serde_json::to_value(schemars::schema_for!(Product)).expect("product schema serializes");
@@ -370,9 +413,18 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 },
                 "required":["record_key","record"], "$defs":definitions,
             });
-            if *product == "work_snapshot" {
-                let metadata = serde_json::to_value(schemars::schema_for!(WorkSnapshotMetadata))
-                    .expect("metadata schema serializes");
+            let metadata = match *product {
+                "work_snapshot" => Some(
+                    serde_json::to_value(schemars::schema_for!(WorkSnapshotMetadata))
+                        .expect("metadata schema serializes"),
+                ),
+                "work_component_status" => Some(
+                    serde_json::to_value(schemars::schema_for!(WorkComponentMetadata))
+                        .expect("metadata schema serializes"),
+                ),
+                _ => None,
+            };
+            if let Some(metadata) = metadata {
                 let object = schema["properties"]
                     .as_object_mut()
                     .expect("schema properties");
@@ -402,7 +454,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     name: (*name).into(),
                     version: match *product {
                         "work_snapshot" => 4,
-                        "query" | "query_run" | "query_run_outcome" => 1,
+                        "query" | "query_run" | "query_run_outcome" | "work_component_status" => 1,
                         _ => 3,
                     },
                 },
@@ -412,6 +464,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 key_rule: Some(KeyRule::Fields {
                     fields: if *product == "work_snapshot" {
                         vec!["session".into(), "reducer_version".into()]
+                    } else if *product == "work_component_status" {
+                        vec!["component_kind".into(), "component_sessions".into()]
                     } else {
                         vec!["record_key".into()]
                     },
@@ -431,14 +485,16 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         ReplaceRule::ReplaceWhenNewer
                     },
                 ),
-                time_rule: Some(if *product == "work_snapshot" {
-                    TimeRule::Unknown
-                } else {
-                    TimeRule::FirstPresent {
-                        fields: vec!["at".into(), "started".into()],
-                        quality: TimeQuality::Intrinsic,
-                    }
-                }),
+                time_rule: Some(
+                    if matches!(*product, "work_snapshot" | "work_component_status") {
+                        TimeRule::Unknown
+                    } else {
+                        TimeRule::FirstPresent {
+                            fields: vec!["at".into(), "started".into()],
+                            quality: TimeQuality::Intrinsic,
+                        }
+                    },
+                ),
                 field_hints: [
                     "record", "text", "value", "targets", "query", "rows", "refs",
                 ]
@@ -555,7 +611,11 @@ pub(crate) fn events(
                             .map_err(|error| Error::Invalid(format!("parent event: {error}")))
                     })
                     .collect::<Result<Vec<_>>>()?,
-                reading_order: None,
+                reading_order: match &write.product {
+                    Product::WorkSnapshot { snapshot } => Some(snapshot.position),
+                    Product::WorkComponentStatus { status } => Some(status.position),
+                    _ => None,
+                },
                 class: Class::Open,
             })
         })

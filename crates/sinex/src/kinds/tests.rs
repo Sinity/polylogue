@@ -112,7 +112,10 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
             declaration.kind.version,
             match declaration.kind.name.as_str() {
                 "polylogue.work_snapshot" => 4,
-                "polylogue.query" | "polylogue.query_run" | "polylogue.query_run_outcome" => 1,
+                "polylogue.query"
+                | "polylogue.query_run"
+                | "polylogue.query_run_outcome"
+                | "polylogue.work_component_status" => 1,
                 _ => 3,
             }
         );
@@ -125,4 +128,77 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(declaration.search, sinex_model::kinds::Search::None);
     }
     assert!(kind_reference("polylogue.unknown").is_err());
+}
+
+#[test]
+fn component_replacement_keeps_its_physical_key_across_copy_arrival_and_resolution() {
+    use polylogue_model::work_products::component::*;
+    let mut status = ComponentStatus {
+        version: VERSION,
+        reducer_version: polylogue_model::work_products::VERSION,
+        position: 42,
+        component_kind: ComponentKind::LogicalWork,
+        physical: vec![PhysicalRef {
+            session: polylogue_model::SessionId::parse("codex:physical").unwrap(),
+            evidence: vec![PhysicalEvidence {
+                event: "00000000-0000-7000-8000-000000000001".into(),
+                field: PhysicalField::MessageSession,
+            }],
+        }],
+        links: vec![],
+        status: ComponentState::Unavailable {
+            reasons: vec!["logical_membership_root_unavailable".into()],
+        },
+    };
+    let unavailable = Product::WorkComponentStatus {
+        status: Box::new(status.clone()),
+    };
+    status.position = 43;
+    status.physical[0].evidence.push(PhysicalEvidence {
+        event: "00000000-0000-7000-8000-000000000002".into(),
+        field: PhysicalField::SessionId,
+    });
+    status.status = ComponentState::Resolved {
+        superseding_root_refs: vec![RootRef {
+            session: polylogue_model::SessionId::parse("codex:established-root").unwrap(),
+            reducer_version: polylogue_model::work_products::VERSION,
+        }],
+        basis: MembershipBasis {
+            membership_version: polylogue_model::work_products::membership::VERSION,
+            selection_version: "confirmed-selection-1".into(),
+            completed_position: 43,
+            scope: "owner-scope".into(),
+            membership_hash: "confirmed-membership".into(),
+        },
+    };
+    let resolved = Product::WorkComponentStatus {
+        status: Box::new(status),
+    };
+    assert_eq!(
+        products::key(&unavailable, 0).unwrap(),
+        products::key(&resolved, 0).unwrap()
+    );
+    let declaration = declarations("polylogue")
+        .into_iter()
+        .find(|declaration| declaration.kind.name == "polylogue.work_component_status")
+        .unwrap();
+    assert_eq!(declaration.kind.version, 1);
+    assert_eq!(
+        declaration.key_rule,
+        Some(sinex_model::kinds::KeyRule::Fields {
+            fields: vec!["component_kind".into(), "component_sessions".into()]
+        })
+    );
+    let validator =
+        jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap()).unwrap();
+    for product in [unavailable, resolved] {
+        let payload = products::payload(&product, 0).unwrap();
+        validator.validate(&payload).unwrap();
+        assert!(payload.get("session").is_none());
+        assert!(payload.get("complete").is_none());
+        assert_eq!(
+            products::decode("polylogue.work_component_status", payload).unwrap(),
+            product
+        );
+    }
 }

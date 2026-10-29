@@ -282,6 +282,15 @@ impl Sinex {
         identity: &str,
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
+        if writes
+            .iter()
+            .any(|write| crate::products::canonical(&write.product))
+        {
+            return Err(Error::Refused {
+                name: identity.into(),
+                reason: "canonical products require an owner-certified publication".into(),
+            });
+        }
         let queue = self.queue()?;
         let unlocated = writes
             .iter()

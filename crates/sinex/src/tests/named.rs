@@ -223,3 +223,43 @@ fn source_material_identity_preserves_distinct_receiving_producers() {
         crate::material_id("receiver-one", name)
     );
 }
+
+#[test]
+fn canonical_component_cannot_bypass_owner_proof_through_a_generic_operation_name() {
+    use polylogue_model::work_products::component::*;
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let status = ComponentStatus {
+        version: VERSION,
+        reducer_version: polylogue_model::work_products::VERSION,
+        position: 42,
+        component_kind: ComponentKind::LogicalWork,
+        physical: vec![PhysicalRef {
+            session: SessionId::parse("codex:physical").unwrap(),
+            evidence: vec![PhysicalEvidence {
+                event: "00000000-0000-7000-8000-000000000001".into(),
+                field: PhysicalField::SessionId,
+            }],
+        }],
+        links: vec![],
+        status: ComponentState::Unavailable {
+            reasons: vec!["logical_membership_root_unavailable".into()],
+        },
+    };
+    let write = ProductWrite {
+        product: Product::WorkComponentStatus {
+            status: Box::new(status),
+        },
+        location: None,
+        parents: vec![],
+        machine: None,
+        output_index: 0,
+    };
+    assert!(matches!(
+        sinex.prepare_named_products("ordinary-name", &[write]),
+        Err(crate::Error::Refused { .. })
+    ));
+    let status = sinex.status().unwrap();
+    assert_eq!(status.prepared_materials, 0);
+    assert_eq!(status.prepared_writes, 0);
+}

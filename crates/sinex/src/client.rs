@@ -243,7 +243,7 @@ impl Client {
                 if prepared.acknowledged {
                     continue;
                 }
-                if !self.publication_allowed(&prepared.identity) {
+                if !self.publication_allowed(&prepared) {
                     continue;
                 }
                 self.publish_prepared(prepared).await?;
@@ -273,7 +273,7 @@ impl Client {
         if let Some(receipt) = receipt {
             return checked(verified_receipt(&prepared, receipt)?);
         }
-        if !self.publication_allowed(&prepared.identity) {
+        if !self.publication_allowed(&prepared) {
             return Err(Error::Refused {
                 name: prepared.identity,
                 reason: "canonical output belongs to another or unknown confirmed read scope"
@@ -318,14 +318,12 @@ impl Client {
         checked(acknowledgment)
     }
 
-    fn publication_allowed(&self, identity: &str) -> bool {
-        !identity.starts_with("work-snapshot:")
-            || self.publication_scope.as_ref().is_some_and(|scope| {
-                identity.starts_with(&format!(
-                    "work-snapshot:{}:",
-                    blake3::hash(scope.as_bytes()).to_hex()
-                ))
-            })
+    fn publication_allowed(&self, prepared: &crate::spool::Prepared) -> bool {
+        !prepared.canonical
+            || prepared
+                .canonical_scope
+                .as_ref()
+                .is_some_and(|scope| self.publication_scope.as_ref() == Some(scope))
     }
 
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
