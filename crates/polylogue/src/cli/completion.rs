@@ -76,7 +76,7 @@ pub(super) fn candidate(value: String, help: String) -> Option<CompletionCandida
         return None;
     }
     let help = (!help.is_empty()).then(|| polylogue_render::terminal::escape(&help));
-    Some(CompletionCandidate::new(value).help(help))
+    Some(CompletionCandidate::new(value).help(help.map(Into::into)))
 }
 
 /// Shell arguments are already decoded. Their query spelling is the same join

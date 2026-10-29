@@ -838,10 +838,7 @@ fn handle_inner(
             };
             drop(reader);
             match write(d, request_id, resolved) {
-                Response::Ok {
-                    mut data,
-                    references,
-                } => {
+                Response::Ok {mut data} => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
                     });
@@ -850,7 +847,7 @@ fn handle_inner(
                         Ok(None) => return error("not_found", "the committed note is absent"),
                         Err(e) => return store_error(&e),
                     }
-                    Response::Ok { data, references }
+                    Response::Ok { data }
                 }
                 other => other,
             }

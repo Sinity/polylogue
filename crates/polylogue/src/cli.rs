@@ -9,7 +9,6 @@ pub mod local;
 pub mod print;
 pub(crate) mod schema;
 pub(crate) mod staged_file;
-pub(crate) mod staged_file;
 pub(crate) mod write_out;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};

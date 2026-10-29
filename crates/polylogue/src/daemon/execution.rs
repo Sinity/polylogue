@@ -61,13 +61,13 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLi
 }
 
 /// Limits cover read phases, including context preparation before its receipt.
-/// Export waits until done unless asked otherwise.
+/// Unbudgeted streams and inference have cancellation without a default deadline.
 pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i64> {
     if !request.has_read_phase() {
         None
     } else if matches!(
         request,
-        Request::Export { .. } | Request::SchemaInfer { .. }
+        Request::Read{delivery:polylogue_model::read::ReadDelivery::Stream,..} | Request::SchemaInfer { .. }
     ) {
         deadline_ms
     } else {

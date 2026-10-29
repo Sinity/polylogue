@@ -383,7 +383,7 @@ pub(super) fn page(
                     deadline: command_surface::Deadline::Default,
                 };
                 footer.next = Some(d.ready_call(&call).map_err(|e| Response::Error {
-                    kind: e.kind.code().into(),
+                    kind: e.code.clone().unwrap_or_else(||serde_json::to_value(e.kind).expect("closed failure kind serializes").as_str().expect("failure kind is a string").to_owned()),
                     message: e.message.clone(),
                     detail: serde_json::to_value(e).ok(),
                 })?);

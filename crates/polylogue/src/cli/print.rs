@@ -48,19 +48,14 @@ pub fn query_plain(data: &Value) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A session in a view, or one budgeted page with the cursor of the next.
-pub fn read(data: &Value) -> String {
-    let notice = if data["parents"]["complete"] == false && !data["content"].is_string() {
-        "Parents incomplete; --json describes the missing links.\n"
-    } else {
-        ""
-    };
-    let content = match data["next"].as_str() {
-        _ if data["content"].is_string() => s(&data["content"]),
-        Some(next) => format!("{}\n(next page: --cursor {})\n", s(&data["text"]), next),
-        None => s(&data["text"]),
-    };
-    polylogue_render::terminal::heading(&format!("{notice}{content}"))
+/// The same typed read document, rendered for an MCP/model-facing transcript.
+pub fn read(data:&Value)->String {
+    let page:polylogue_model::read::ReadPage=serde_json::from_value(data.clone()).expect("read operation returns its declared page type");
+    let mut bytes=Vec::new();
+    polylogue_render::encode_document(&page.document,polylogue_render::Format::Markdown,
+        polylogue_render::EncodeOptions{model_facing:true,..Default::default()},&mut bytes)
+        .expect("typed read document writes to a byte vector");
+    String::from_utf8(bytes).expect("read encoder writes UTF-8")
 }
 
 /// A prepared brief, takeover or recall.

@@ -4,7 +4,7 @@
 
 use crate::briefing::Ask;
 use polylogue_model::DeliveryOutcome;
-use polylogue_model::{Author, DocumentId, NewNote, SessionId};
+use polylogue_model::{Author, NewNote, SessionId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

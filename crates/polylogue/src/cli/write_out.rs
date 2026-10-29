@@ -190,10 +190,10 @@ fn consume(
             }
             "complete" => {
                 let complete: ReadComplete = serde_json::from_str(&frame.data).map_err(invalid)?;
-                let completed = sink
+                let finished_sink = sink
                     .take()
                     .ok_or_else(|| invalid("the read completed before its header"))?;
-                match completed {
+                match finished_sink {
                     Sink::Directory(bundle) => {
                         let summary = bundle.finish(complete).map_err(invalid)?;
                         eprintln!("polylogue: wrote {}", summary.destination.display());
