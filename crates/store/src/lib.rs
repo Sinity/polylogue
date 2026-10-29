@@ -29,6 +29,7 @@ pub mod fault;
 pub(crate) mod first_build;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
+mod fragment;
 pub mod input_rows;
 pub mod legacy_import;
 mod live;

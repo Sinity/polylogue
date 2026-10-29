@@ -196,6 +196,9 @@ fn apply_rows(
             .or(rows.source_admitted);
         crate::documents::write(tx, &source, row, prepared, admitted)?;
     }
+    p.prepared
+        .fragments
+        .apply(tx, input_pk, chain, p.parsed_upto, rows.source_admitted)?;
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
     // Messages one record holds share its offset; their order in the
