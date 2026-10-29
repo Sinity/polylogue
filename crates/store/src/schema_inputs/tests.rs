@@ -60,7 +60,7 @@ fn primary_selection_uses_the_typed_store_without_a_standalone_archive() {
         .schema_inputs_page(None, None, None, None, 1)
         .unwrap();
     assert_eq!(page.inputs[0].input, "primary-input");
-    assert_eq!(page.unknown_time_inputs, 1);
+    assert_eq!(page.unknown_time_inputs, Some(1));
     assert!(page.next.is_none());
 }
 
@@ -80,12 +80,13 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
         .unwrap();
     assert_eq!(first.inputs[0].input, "a");
     assert_eq!(first.next.as_deref(), Some("a"));
-    assert_eq!(first.unknown_time_inputs, 1);
+    assert_eq!(first.unknown_time_inputs, Some(1));
     let second = reader
         .schema_inputs_page(None, None, None, first.next.as_deref(), 1)
         .unwrap();
     assert_eq!(second.inputs[0].input, "b");
     assert_eq!(second.inputs[0].revision, 2);
+    assert_eq!(second.unknown_time_inputs, None);
     let third = reader
         .schema_inputs_page(None, None, None, second.next.as_deref(), 1)
         .unwrap();
@@ -102,7 +103,7 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
             .collect::<Vec<_>>(),
         ["b"]
     );
-    assert_eq!(since.unknown_time_inputs, 1);
+    assert_eq!(since.unknown_time_inputs, Some(1));
     let missing = reader
         .schema_inputs_page(Some("claude-code"), Some(2), None, None, 1)
         .unwrap();
@@ -120,4 +121,31 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
         .unwrap();
     assert_eq!(tail.missing_revisions, ["c"]);
     assert!(tail.next.is_none());
+}
+
+#[test]
+fn exact_revision_time_selection_reports_missing_separately_from_unobserved_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
+    conn.execute_batch("INSERT INTO input VALUES('missing','fixture'),('recent','fixture'),('unknown','fixture');
+      INSERT INTO revision VALUES('missing',1,'first',1,1,1),('recent',2,'first',2,1,2),('unknown',2,'first',2,1,3);
+      INSERT INTO observation(id,input,machine,path,class,revision,length,polylogue_version,seen_at,commit_seq)
+      VALUES('o','recent','m','recent.json','first',2,1,'test',200,2);").unwrap();
+    let pool = fixture.reads().unwrap();
+    let page = pool
+        .reader()
+        .unwrap()
+        .schema_inputs_page(Some("fixture"), Some(2), Some(150), None, 10)
+        .unwrap();
+    assert_eq!(
+        page.inputs
+            .iter()
+            .map(|input| input.input.as_str())
+            .collect::<Vec<_>>(),
+        ["recent"]
+    );
+    assert_eq!(page.missing_revisions, ["missing"]);
+    assert_eq!(page.unknown_time_inputs, Some(1));
+    assert!(page.next.is_none());
 }

@@ -28,7 +28,9 @@
           "id": "claude-code:u1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:s1"
+          "session": "claude-code:s1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -63,7 +65,9 @@
             "input": 12,
             "output": 40,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 196
       },
@@ -94,7 +98,9 @@
           "parent": "claude-code:a1",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:s1"
+          "session": "claude-code:s1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 847
       },
@@ -126,7 +132,9 @@
             "input": 12,
             "output": 40,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1179
       },
@@ -152,7 +160,9 @@
           "parent": "claude-code:a3",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:s1"
+          "session": "claude-code:s1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1548
       },
@@ -169,7 +179,9 @@
           "id": "claude-code:u4",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:s1"
+          "session": "claude-code:s1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1847
       },
@@ -186,7 +198,9 @@
           "id": "claude-code:u5",
           "prompt_kind": "command",
           "role": "user",
-          "session": "claude-code:s1"
+          "session": "claude-code:s1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 2008
       },
@@ -211,7 +225,9 @@
             "input": 20,
             "output": 15,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 2162
       }
@@ -225,7 +241,9 @@
         "id": "claude-code:s1",
         "kind": "main",
         "started": "2026-03-01T10:00:00Z",
-        "tool_version": "2.1.200"
+        "tool_version": "2.1.200",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

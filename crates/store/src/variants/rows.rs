@@ -1,5 +1,17 @@
 use super::*;
 
+pub(super) fn reading(conn: &Connection) -> Result<Source> {
+    if conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name='source_variant')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? {
+        Ok(Source::Cache)
+    } else {
+        Source::of(conn)
+    }
+}
+
 const COLUMNS: &str = "id,root,base,source,source_hash,kind,from_lang,to_lang,author,via,method,machine,created_at,commit_seq";
 
 fn hash(value: Vec<u8>) -> Result<BlobHash> {
@@ -16,7 +28,7 @@ fn variant(row: &rusqlite::Row<'_>) -> Result<Variant> {
         base: row.get(2)?,
         source: row.get(3)?,
         source_hash: hash(row.get(4)?)?,
-        kind: VariantKind::parse(&kind)
+        kind: VariantKind::from_name(&kind)
             .ok_or_else(|| StoreError::Invalid("unknown variant kind".into()))?,
         from_lang: row.get(6)?,
         to_lang: row.get(7)?,
@@ -27,11 +39,14 @@ fn variant(row: &rusqlite::Row<'_>) -> Result<Variant> {
         machine: row.get(11)?,
         created_at: Timestamp::from_unix_ms(row.get(12)?)
             .ok_or_else(|| StoreError::Invalid("variant time is out of range".into()))?,
-        commit_seq: row.get(13)?,
+        commit_seq: row
+            .get::<_, i64>(13)?
+            .try_into()
+            .map_err(|_| StoreError::Invalid("negative variant counter".into()))?,
     })
 }
 pub(super) fn get(conn: &Connection, id: &str) -> Result<Option<Variant>> {
-    let source = Source::of(conn)?;
+    let source = reading(conn)?;
     let mut statement = conn.prepare(&source.sql(&format!(
         "SELECT {COLUMNS} FROM @source.variant WHERE id=?1"
     )))?;
@@ -44,7 +59,7 @@ pub(super) fn visit(
     value: Option<i64>,
     mut f: impl FnMut(Variant) -> Result<()>,
 ) -> Result<()> {
-    let source = Source::of(conn)?;
+    let source = reading(conn)?;
     let mut statement = conn.prepare(&source.sql(&format!(
         "SELECT {COLUMNS} FROM @source.variant {filter} ORDER BY id"
     )))?;
@@ -63,17 +78,20 @@ pub(super) fn parts(
     id: &str,
     mut f: impl FnMut(VariantPart) -> Result<()>,
 ) -> Result<()> {
-    let source = Source::of(conn)?;
+    let source = reading(conn)?;
     let mut statement=conn.prepare(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 ORDER BY n"))?;
     let mut rows = statement.query([id])?;
     while let Some(row) = rows.next()? {
         let relation: String = row.get(4)?;
         f(VariantPart {
             variant: row.get(0)?,
-            n: row.get(1)?,
+            n: row
+                .get::<_, i64>(1)?
+                .try_into()
+                .map_err(|_| StoreError::Invalid("negative variant part number".into()))?,
             of: row.get(2)?,
             of_hash: hash(row.get(3)?)?,
-            relation: VariantRelation::parse(&relation)
+            relation: VariantRelation::from_name(&relation)
                 .ok_or_else(|| StoreError::Invalid("unknown variant relation".into()))?,
             body: crate::encoding::unpack_text(&row.get::<_, Vec<u8>>(5)?)?,
         })?;
@@ -87,6 +105,6 @@ pub(super) fn insert(conn: &Connection, v: &Variant, counter: i64) -> Result<()>
 }
 pub(super) fn insert_part(conn: &Connection, p: &VariantPart) -> Result<()> {
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.variant_part(variant,n,of,of_hash,relation,body) VALUES(?1,?2,?3,?4,?5,?6)"),params![p.variant,p.n,p.of,&p.of_hash.0[..],p.relation.as_str(),crate::encoding::pack_text(&p.body)?])?;
+    conn.execute(&source.sql("INSERT INTO @source.variant_part(variant,n,of,of_hash,relation,body) VALUES(?1,?2,?3,?4,?5,?6)"),params![p.variant,i64::try_from(p.n).map_err(|_|StoreError::Invalid("variant part number is out of range".into()))?,p.of,&p.of_hash.0[..],p.relation.as_str(),crate::encoding::pack_text(&p.body)?])?;
     Ok(())
 }

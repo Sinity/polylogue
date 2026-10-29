@@ -4,6 +4,13 @@ use polylogue_model::authored::*;
 use polylogue_model::user::{BackfillJob, ChatAction, UserWrite};
 use polylogue_model::{Author, Note, NoteKind, Relation, Target, Timestamp};
 
+fn event_index(n: i64) -> Result<usize> {
+    usize::try_from(
+        n.checked_sub(1)
+            .ok_or_else(|| StoreError::Invalid("event order is out of range".into()))?,
+    )
+    .map_err(|_| StoreError::Invalid("event order starts at one".into()))
+}
 fn time(at: i64) -> Result<Timestamp> {
     Timestamp::from_unix_ms(at)
         .ok_or_else(|| StoreError::Invalid("authored timestamp is out of range".into()))
@@ -195,19 +202,17 @@ pub(super) fn capture(
     for id in touched("chat_action", "chat_action_event", "action")? {
         let action = crate::chat_actions::read(conn, source.prefix(), &id)?
             .ok_or_else(|| StoreError::NotFound(id.clone()))?;
-        let ns:Vec<usize>=conn.prepare(&source.sql("SELECT n FROM @source.chat_action_event WHERE action=?1 AND commit_seq=?2 ORDER BY n"))?.query_map(params![id,counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
-        let added_events =
-            ns.into_iter()
-                .map(|n| {
-                    action
-                        .events
-                        .get(n.checked_sub(1).ok_or_else(|| {
-                            StoreError::Invalid("event order starts at one".into())
-                        })?)
-                        .cloned()
-                        .ok_or_else(|| StoreError::Invalid("chat event order has a gap".into()))
-                })
-                .collect::<Result<_>>()?;
+        let ns:Vec<i64>=conn.prepare(&source.sql("SELECT n FROM @source.chat_action_event WHERE action=?1 AND commit_seq=?2 ORDER BY n"))?.query_map(params![id,counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let added_events = ns
+            .into_iter()
+            .map(|n| {
+                action
+                    .events
+                    .get(event_index(n)?)
+                    .cloned()
+                    .ok_or_else(|| StoreError::Invalid("chat event order has a gap".into()))
+            })
+            .collect::<Result<_>>()?;
         effect.chats.push(ChatChange {
             action,
             added_events,
@@ -216,18 +221,16 @@ pub(super) fn capture(
     for id in touched("backfill_job", "backfill_job_event", "job")? {
         let job = crate::backfill_jobs::read(conn, source.prefix(), &id)?
             .ok_or_else(|| StoreError::NotFound(id.clone()))?;
-        let ns:Vec<usize>=conn.prepare(&source.sql("SELECT n FROM @source.backfill_job_event WHERE job=?1 AND commit_seq=?2 ORDER BY n"))?.query_map(params![id,counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
-        let added_events =
-            ns.into_iter()
-                .map(|n| {
-                    job.events
-                        .get(n.checked_sub(1).ok_or_else(|| {
-                            StoreError::Invalid("event order starts at one".into())
-                        })?)
-                        .cloned()
-                        .ok_or_else(|| StoreError::Invalid("backfill event order has a gap".into()))
-                })
-                .collect::<Result<_>>()?;
+        let ns:Vec<i64>=conn.prepare(&source.sql("SELECT n FROM @source.backfill_job_event WHERE job=?1 AND commit_seq=?2 ORDER BY n"))?.query_map(params![id,counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let added_events = ns
+            .into_iter()
+            .map(|n| {
+                job.events
+                    .get(event_index(n)?)
+                    .cloned()
+                    .ok_or_else(|| StoreError::Invalid("backfill event order has a gap".into()))
+            })
+            .collect::<Result<_>>()?;
         effect.backfills.push(BackfillChange { job, added_events });
     }
     effect.variants = crate::variants::capture(conn, request, counter)?;
@@ -512,7 +515,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         let _: UserRequest = crate::encoding::unpack_json(request.as_ref().ok_or_else(missing)?)?;
         let _: UserOutcome = crate::encoding::unpack_json(outcome.as_ref().ok_or_else(missing)?)?;
         let _: AuthoredEffect = crate::encoding::unpack_json(effect.as_ref().ok_or_else(missing)?)?;
-        let _: Vec<ImportAttribution> = serde_json::from_str(&imports)?;
+        let _: ImportHistory = serde_json::from_str(&imports)?;
         to.execute(&target.sql("INSERT INTO @source.client_request(id,content_hash,created_at,request,outcome,effect,imports,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,0)"),params![id,hash,at,request,outcome,effect,imports])?;
     }
     Ok(())

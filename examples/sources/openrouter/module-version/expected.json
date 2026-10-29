@@ -23,7 +23,8 @@
           0,
           244
         ],
-        "session": "openrouter:prompt"
+        "session": "openrouter:prompt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -40,7 +41,8 @@
           "id": "openrouter:prompt",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "openrouter:prompt"
+          "session": "openrouter:prompt",
+          "at_quality": "unknown"
         },
         "offset": 59
       }
@@ -48,7 +50,8 @@
     "sessions": [
       {
         "id": "openrouter:prompt",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

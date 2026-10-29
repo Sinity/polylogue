@@ -160,6 +160,14 @@ AI Studio stores its prompts in Google Drive, which is a known location like a t
 - The collector is on whenever the user has authorized a token; the one-time OAuth consent is the only gate, because a known location is never dark behind a setting. Without a token, status shows "not authorized" with the command to run.
 - A prompt deleted in Drive keeps its archived revisions and is marked gone.
 
+## Source clocks
+
+Native parsers carry a decoded time together with its quality, reported precision and any source-declared interval end. Whole epoch seconds and offset timestamps without fractions have second precision; fractional timestamps, epoch milliseconds and native nanoseconds retain subsecond instants. A missing or unreadable native clock has no instant and unknown quality. Capture observations and file metadata keep their own quality and never fill a missing message clock.
+
+Where a native format records events rather than a separate session creation time, the earliest native record or activity time supplies the session start. That start describes the first recorded activity. An OTLP span event retains its native start and end as a bounded interval. Its output message uses the call start and records that basis and both original clock fields in `otel_span_clock`; input history without message times stays unknown.
+
+Gemini activity times retain their original text and zone. Explicit unambiguous source offsets are resolved independently of the host timezone; ambiguous abbreviations without source timezone settings remain unknown. AI Studio chunk times are intrinsic; the Drive listing's file clock is file metadata, separate from message times.
+
 ## Capture status
 
 `polylogue status` (CLI, MCP, HTTP and web) answers "is everything being captured?" in one place. Its capture section holds:

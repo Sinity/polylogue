@@ -161,14 +161,8 @@ impl Parser for HookSpool {
                     .get("observed_at_ms")
                     .and_then(crate::time::epoch_millis)
             })
-            .or_else(|| {
-                let ns = value.get("at_ns")?;
-                let ns = ns
-                    .as_str()
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .or_else(|| ns.as_u64())?;
-                polylogue_model::Timestamp::from_unix_ms((ns / 1_000_000) as i64)
-            });
+            .or_else(|| value.get("at_ns").and_then(crate::time::epoch_nanos))
+            .map(crate::time::SourceTime::captured);
         let mut data = match value.get("payload") {
             Some(Json::Object(map)) => Json::Object(map.clone()),
             Some(Json::Null) | None => Json::Object(Default::default()),
@@ -190,13 +184,19 @@ impl Parser for HookSpool {
                 }
             }
         }
-        out.events.push(Event {
-            session: Some(sid),
-            kind: event_kind(event_type),
-            at,
-            after: None,
-            range: Some((record.offset, record.offset + record.bytes.len() as u64)),
-            data,
+        out.events.push({
+            let (at, time_evidence) = crate::time::parts(at);
+            Event {
+                session: Some(sid),
+                kind: event_kind(event_type),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: Some((record.offset, record.offset + record.bytes.len() as u64)),
+                data,
+            }
         });
         RecordOutcome::Used
     }

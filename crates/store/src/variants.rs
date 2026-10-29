@@ -1,6 +1,8 @@
 //! Canonical rendition rows, revision currency and typed reads. Confirmation
 //! applies exact prepared records through the same codec as standalone writes.
 mod rows;
+mod search;
+pub use search::{SCHEMA, VariantMatch, project};
 #[cfg(test)]
 mod tests;
 
@@ -29,7 +31,7 @@ struct Withdrawals {
 }
 impl Withdrawals {
     fn read(conn: &Connection) -> Result<Self> {
-        let source = Source::of(conn)?;
+        let source = rows::reading(conn)?;
         let mut statement=conn.prepare(&source.sql("SELECT r.note_id,r.other FROM @source.note_relation r JOIN @source.note n ON n.id=r.note_id WHERE r.kind='withdraws' AND n.kind='withdrawal'"))?;
         let mut rows = statement.query([])?;
         let mut by_target: HashMap<String, Vec<String>> = HashMap::new();

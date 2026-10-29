@@ -114,7 +114,7 @@ CREATE TABLE client_request (
   request       BLOB,                    -- the original request as JSON, zstd
   outcome       BLOB,                    -- the original typed outcome, zstd
   effect        BLOB,                    -- the immutable typed authored effect, zstd
-  imports       TEXT NOT NULL DEFAULT '[]', -- local import attributions, JSON
+  imports       TEXT NOT NULL DEFAULT '{"observed":[],"declared":[]}', -- import evidence and historical claims, JSON
   commit_seq    INTEGER NOT NULL DEFAULT 0  -- the write counter of the transaction that wrote it
 ) STRICT, WITHOUT ROWID;
 
@@ -227,6 +227,7 @@ CREATE TABLE delivery_event (
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
+CREATE UNIQUE INDEX delivery_event_request ON delivery_event(delivery,request);
 
 -- Chat actions: turns the operator asks the browser extension to draft or
 -- submit in a chat web page (`browser.actions`). The request is stored once;
@@ -240,7 +241,6 @@ CREATE TABLE chat_action (
   stage_only        INTEGER NOT NULL,       -- 1: fill the composer and stop; a submit is refused
   needs_approval    INTEGER NOT NULL,       -- 1: a submit into an existing conversation waits for the operator
   created_at        INTEGER NOT NULL,
-  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
@@ -249,7 +249,7 @@ CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
 CREATE TABLE chat_action_attachment (
   action            TEXT NOT NULL REFERENCES chat_action(id),
   id                TEXT NOT NULL,          -- UUIDv7, for the extension to fetch it by
-  blob              BLOB NOT NULL,
+  blob              BLOB NOT NULL REFERENCES blob(hash),
   name              TEXT NOT NULL,          -- a file name, never a path
   media_type        TEXT NOT NULL,
   size              INTEGER NOT NULL,
@@ -274,6 +274,7 @@ CREATE TABLE chat_action_event (
   PRIMARY KEY (action, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
+CREATE UNIQUE INDEX chat_action_event_request ON chat_action_event(action,request);
 
 -- Exact member names and positions in retained container bytes.
 CREATE TABLE observation_container (
@@ -294,7 +295,6 @@ CREATE TABLE backfill_job (
   provider          TEXT NOT NULL,          -- the web chat, by the extension's name for it (chatgpt, claude-ai, grok)
   since             INTEGER,                -- only conversations the provider changed at or after this time; NULL: all
   created_at        INTEGER NOT NULL,
-  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX backfill_job_commit_seq ON backfill_job(commit_seq);
@@ -319,6 +319,7 @@ CREATE TABLE backfill_job_event (
   PRIMARY KEY (job, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX backfill_job_event_commit_seq ON backfill_job_event(commit_seq);
+CREATE UNIQUE INDEX backfill_job_event_request ON backfill_job_event(job,request);
 
 -- How many inputs and revisions the archive holds and the bytes of its present
 -- blobs, kept by the triggers below so that status does not scan the tables.

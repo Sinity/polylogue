@@ -205,13 +205,19 @@ impl Parser for GrokCli {
         }
         if kind == "backend_tool_call" {
             // A tool the provider ran itself (web search).
-            out.events.push(Event {
-                session: Some(sid),
-                kind: "backend_tool_call".into(),
-                at: None,
-                after: parser_state.last.clone(),
-                range: Some((record.offset, end)),
-                data: value.get("kind").cloned().unwrap_or(Json::Null),
+            out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(sid),
+                    kind: "backend_tool_call".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: parser_state.last.clone(),
+                    range: Some((record.offset, end)),
+                    data: value.get("kind").cloned().unwrap_or(Json::Null),
+                }
             });
             return RecordOutcome::Used;
         }
@@ -300,21 +306,27 @@ impl Parser for GrokCli {
         out.messages.push(MessageRow {
             offset: record.offset,
             end,
-            message: Message {
-                id: id.clone(),
-                session: sid,
-                parent: parser_state.last.replace(id),
-                role,
-                at: None,
-                model: string_of(value, "model_id"),
-                prompt_kind,
-                blocks,
-                usage: Default::default(),
-                stop_reason: None,
-                reported_cost_usd: None,
-                duration_ms: None,
-                attrs: crate::fields::attributes(value, &FIELDS),
-                production,
+            message: {
+                let (at, time_evidence) = crate::time::parts(None);
+                Message {
+                    id: id.clone(),
+                    session: sid,
+                    parent: parser_state.last.replace(id),
+                    role,
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    model: string_of(value, "model_id"),
+                    prompt_kind,
+                    blocks,
+                    usage: Default::default(),
+                    stop_reason: None,
+                    reported_cost_usd: None,
+                    duration_ms: None,
+                    attrs: crate::fields::attributes(value, &FIELDS),
+                    production,
+                }
             },
         });
         RecordOutcome::Used

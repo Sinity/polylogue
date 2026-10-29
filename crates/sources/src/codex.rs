@@ -230,7 +230,7 @@ struct Rec<'a> {
     /// `session_meta`, `response_item`, `event_msg`, `turn_context`, ...
     ty: &'a str,
     payload: &'a Json,
-    at: Option<polylogue_model::Timestamp>,
+    at: Option<crate::time::SourceTime>,
     ordinal: Option<u64>,
 }
 
@@ -275,13 +275,19 @@ fn unwrap(v: &Json) -> Rec<'_> {
 
 impl Rollout {
     fn unknown_boundaries(session: SessionId, out: &mut Output) {
-        out.events.push(Event {
-            session: Some(session),
-            kind: "response_boundaries_unknown".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: serde_json::json!({}),
+        out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(session),
+                kind: "response_boundaries_unknown".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: serde_json::json!({}),
+            }
         });
     }
 
@@ -297,7 +303,7 @@ impl Rollout {
         &self,
         parser_state: &mut ParserState,
         p: &Json,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         out: &mut Output,
     ) -> RecordOutcome {
         let at = at.or_else(|| p.get("timestamp").and_then(time::rfc3339));
@@ -323,7 +329,8 @@ impl Rollout {
             .session
             .get_or_insert_with(|| Session::new(id.clone(), kind));
         if let Some(at) = p.get("timestamp").and_then(time::rfc3339) {
-            s.offer_start(at);
+            s.offer_start(at.timestamp(), at.evidence())
+                .expect("decoded source time is valid");
         }
         if let Some(cwd) = str_field(p, "cwd") {
             s.offer_cwd(cwd);
@@ -401,19 +408,25 @@ impl Rollout {
         parser_state: &mut ParserState,
         data: &Json,
         kind: &str,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         out: &mut Output,
     ) -> RecordOutcome {
         let Some(session) = self.own(parser_state) else {
             return RecordOutcome::unreadable("no thread ID in the file name or its header");
         };
-        out.events.push(Event {
-            session: Some(session),
-            kind: kind.to_owned(),
-            at,
-            after: parser_state.last.clone(),
-            range: parser_state.current,
-            data: data.clone(),
+        out.events.push({
+            let (at, time_evidence) = crate::time::parts(at);
+            Event {
+                session: Some(session),
+                kind: kind.to_owned(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: parser_state.last.clone(),
+                range: parser_state.current,
+                data: data.clone(),
+            }
         });
         RecordOutcome::Used
     }
@@ -423,7 +436,7 @@ impl Rollout {
         parser_state: &mut ParserState,
         data: &Json,
         kind: &str,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         out: &mut Output,
     ) -> RecordOutcome {
         let outcome = self.event(parser_state, data, kind, at, out);
@@ -448,7 +461,7 @@ impl Rollout {
         parser_state: &mut ParserState,
         record: Record<'_>,
         item: &Json,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         ordinal: Option<u64>,
         out: &mut Output,
     ) -> RecordOutcome {
@@ -486,30 +499,36 @@ impl Rollout {
         else {
             return RecordOutcome::skipped("item with no content");
         };
-        let message = Message {
-            id: id.clone(),
-            session,
-            parent: None,
-            role,
-            at,
-            model: (role == Role::Assistant)
-                .then(|| parser_state.model.clone())
-                .flatten(),
-            prompt_kind,
-            blocks,
-            usage: Usage::default(),
-            stop_reason: None,
-            reported_cost_usd: None,
-            duration_ms: None,
-            attrs: Default::default(),
-            production: Production {
-                phase: str_field(item, "phase").map(str::to_owned),
-                response_boundary_unknown: (role == Role::Assistant).then_some(true),
-                effort: (role == Role::Assistant && !copied)
-                    .then(|| parser_state.effort.clone())
+        let message = {
+            let (at, time_evidence) = crate::time::parts(at);
+            Message {
+                id: id.clone(),
+                session,
+                parent: None,
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: (role == Role::Assistant)
+                    .then(|| parser_state.model.clone())
                     .flatten(),
-                ..Production::default()
-            },
+                prompt_kind,
+                blocks,
+                usage: Usage::default(),
+                stop_reason: None,
+                reported_cost_usd: None,
+                duration_ms: None,
+                attrs: Default::default(),
+                production: Production {
+                    phase: str_field(item, "phase").map(str::to_owned),
+                    response_boundary_unknown: (role == Role::Assistant).then_some(true),
+                    effort: (role == Role::Assistant && !copied)
+                        .then(|| parser_state.effort.clone())
+                        .flatten(),
+                    ..Production::default()
+                },
+            }
         };
         let row = MessageRow {
             offset: record.offset,
@@ -534,7 +553,7 @@ impl Rollout {
         session: &SessionId,
         ty: &str,
         item: &Json,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         out: &mut Output,
     ) -> Option<(Role, Option<PromptKind>, Vec<Block>)> {
         let call_id = || {
@@ -671,7 +690,7 @@ impl Rollout {
         session: &SessionId,
         call_id: Option<&str>,
         text: &str,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         out: &mut Output,
     ) -> (ToolOutcome, Option<u64>) {
         let call = call_id
@@ -703,7 +722,7 @@ impl Rollout {
             && let Some(original) = parser_state.running.remove(handle)
         {
             out.background.push(BackgroundUpdate {
-                result_at: at,
+                result_at: at.map(crate::time::SourceTime::timestamp),
                 reported_duration_ms: None,
                 session: session.clone(),
                 task_id: handle.clone(),
@@ -744,7 +763,7 @@ impl Rollout {
         parser_state: &mut ParserState,
         record: Record<'_>,
         p: &Json,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         out: &mut Output,
     ) -> RecordOutcome {
         let item = p.get("item").unwrap_or(&Json::Null);
@@ -769,7 +788,7 @@ impl Rollout {
                     };
                     if call.answered {
                         out.background.push(BackgroundUpdate {
-                            result_at: at,
+                            result_at: at.map(crate::time::SourceTime::timestamp),
                             reported_duration_ms: done.duration_ms,
                             session,
                             task_id: id.to_owned(),
@@ -793,21 +812,27 @@ impl Rollout {
                 out.messages.push(MessageRow {
                     offset: record.offset,
                     end: record.offset + record.bytes.len() as u64,
-                    message: Message {
-                        id: mid.clone(),
-                        session,
-                        parent: None,
-                        role: Role::Assistant,
-                        at,
-                        model: None,
-                        prompt_kind: Some(PromptKind::Harness),
-                        blocks,
-                        usage: Usage::default(),
-                        stop_reason: None,
-                        reported_cost_usd: None,
-                        duration_ms: duration,
-                        attrs: Default::default(),
-                        production: Production::default(),
+                    message: {
+                        let (at, time_evidence) = crate::time::parts(at);
+                        Message {
+                            id: mid.clone(),
+                            session,
+                            parent: None,
+                            role: Role::Assistant,
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            model: None,
+                            prompt_kind: Some(PromptKind::Harness),
+                            blocks,
+                            usage: Usage::default(),
+                            stop_reason: None,
+                            reported_cost_usd: None,
+                            duration_ms: duration,
+                            attrs: Default::default(),
+                            production: Production::default(),
+                        }
                     },
                 });
                 parser_state.last = Some(mid);
@@ -844,7 +869,7 @@ impl Rollout {
         parser_state: &mut ParserState,
         record: Record<'_>,
         p: &Json,
-        at: Option<polylogue_model::Timestamp>,
+        at: Option<crate::time::SourceTime>,
         out: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
@@ -860,7 +885,8 @@ impl Rollout {
                     );
                 };
                 let session = parser_state.copied_session.clone().unwrap_or(session);
-                let report_id = usage::identity(&(session, at, p));
+                let report_id =
+                    usage::identity(&(session, at.map(crate::time::SourceTime::timestamp), p));
                 if let Some(info) = p.get("info").filter(|info| !info.is_null())
                     && let Some(reading) = parser_state.usage.read(
                         info,
@@ -917,7 +943,7 @@ impl Rollout {
                         && let Some(session) = parser_state.session.as_ref().map(|s| s.id.clone())
                     {
                         out.background.push(BackgroundUpdate {
-                            result_at: at,
+                            result_at: at.map(crate::time::SourceTime::timestamp),
                             reported_duration_ms: done.duration_ms,
                             session,
                             task_id: id.to_owned(),

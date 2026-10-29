@@ -259,3 +259,33 @@ fn a_gemini_capture_and_a_gemini_app_export_of_one_conversation_are_one_session(
     assert_eq!(&captured.output.messages[0].message.session, exported);
     assert_eq!(session_for("gemini", "abc123").as_ref(), Some(exported));
 }
+
+#[test]
+fn observation_clock_never_fills_missing_native_turn_or_session_time() {
+    use polylogue_model::{Precision, TimeQuality};
+    let bytes = capture(
+        Json::Null,
+        json!({"provider":"chatgpt","provider_session_id":"missing-time",
+        "turns":[{"provider_turn_id":"m","role":"user","text":"q","ordinal":0}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    assert_eq!(step.output.sessions[0].started, None);
+    assert_eq!(
+        step.output.sessions[0].started_quality,
+        TimeQuality::Unknown
+    );
+    assert_eq!(step.output.messages[0].message.at, None);
+    assert_eq!(
+        step.output.messages[0].message.at_quality,
+        TimeQuality::Unknown
+    );
+    let observation = step
+        .output
+        .events
+        .iter()
+        .find(|e| e.kind == "browser_capture")
+        .unwrap();
+    assert_eq!(observation.at_quality, TimeQuality::Captured);
+    assert_eq!(observation.at_precision, Some(Precision::Second));
+    assert_eq!(observation.at.unwrap().to_string(), "2026-02-01T00:00:00Z");
+}

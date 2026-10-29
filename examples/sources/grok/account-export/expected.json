@@ -31,7 +31,9 @@
           "id": "grok:synthetic-question",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "grok:synthetic-account"
+          "session": "grok:synthetic-account",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 18
       },
@@ -49,7 +51,9 @@
           "model": "supplied-model",
           "parent": "grok:synthetic-question",
           "role": "assistant",
-          "session": "grok:synthetic-account"
+          "session": "grok:synthetic-account",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 18
       }
@@ -62,7 +66,9 @@
         "title": {
           "source": "generated",
           "text": "Synthetic conversation"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }
