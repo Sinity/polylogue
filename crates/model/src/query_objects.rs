@@ -94,13 +94,13 @@ pub struct ExecutionBinding {
     pub accepted_request: Option<serde_json::Value>,
 }
 
-/// A query execution has no fabricated read header or document options.
+/// Selected source facts are read under the authenticated snapshot, not copied here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionPresentation {
     Query,
     Read {
-        begin: Box<crate::read::ReadBegin>,
+        options: crate::read::ReadOptions,
         delivery: crate::read::ReadDelivery,
     },
 }

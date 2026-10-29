@@ -154,18 +154,12 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
             "a query run's replay context contradicts its grant scope",
         ));
     }
-    if let polylogue_model::query_objects::ExecutionPresentation::Read { begin, .. } =
+    if let polylogue_model::query_objects::ExecutionPresentation::Read { options, .. } =
         &run.binding.presentation
     {
-        begin
-            .options
+        options
             .validate()
             .map_err(|error| invalid(error.to_string()))?;
-        if begin.snapshot.read_at != run.read_at || begin.header.view != begin.options.view {
-            return Err(invalid(
-                "a read beginning contradicts its execution snapshot or view",
-            ));
-        }
     }
     if polylogue_model::ChangePosition::parse(&run.read_at.to_string()).as_ref()
         != Some(&run.read_at)

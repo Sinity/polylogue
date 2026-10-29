@@ -282,7 +282,12 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
             pool.reader().unwrap().change_position().unwrap(),
         );
         binding.binding.replay.original_text = text.clone();
-        binding.binding.query_options.fields = vec!["uncapped-field".repeat(3000)];
+        binding.binding.query_options.self_session =
+            Some(SessionId::parse(&format!("codex:{}", "synthetic-session".repeat(3000))).unwrap());
+        binding.binding.presentation = ExecutionPresentation::Read {
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Page,
+        };
         binding.binding.accepted_request = Some(
             serde_json::json!({"id":"caller".repeat(10000),"operation":"read","arguments":{"target":text}}),
         );
