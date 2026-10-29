@@ -52,6 +52,7 @@ pub(super) fn read(request: Request, d: &Daemon) -> Response {
         Ok(reader) => reader,
         Err(e) => return store_error(&e),
     };
+    let scope = reader.scope_token();
     let resolution = match reader.attachment(&message, block, attachment) {
         Ok(value) => value,
         Err(e) => return store_error(&e),
@@ -151,7 +152,12 @@ pub(super) fn read(request: Request, d: &Daemon) -> Response {
         next,
     };
     match serde_json::to_value(page) {
-        Ok(data) => Response::Ok { data },
+        Ok(data) => {
+            if let Err(error) = scope.check() {
+                return store_error(&error);
+            }
+            Response::Ok { data }
+        }
         Err(e) => error("internal", e),
     }
 }

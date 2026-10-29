@@ -116,8 +116,24 @@ fn context_uses_the_configured_archive_socket_and_clock() {
     let dir = tempfile::tempdir().unwrap();
     let startup = Startup::for_test(startup().engine, dir.path());
     let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
     let peer = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < until =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("configured archive was not contacted: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut request = String::new();
         BufReader::new(&stream).read_line(&mut request).unwrap();
         let request: Value = serde_json::from_str(&request).unwrap();
