@@ -263,3 +263,5 @@ fn composition_edges_are_read_from_the_canonical_source() {
     stored.sort_by_key(|edge| serde_json::to_string(edge).unwrap());
     assert_eq!(stored, expected);
 }
+
+mod migrations;
