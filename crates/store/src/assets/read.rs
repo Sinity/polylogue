@@ -63,17 +63,41 @@ impl Reader<'_> {
                 ));
             }
         };
-        let bound = self.attachment_binding_contexts(message,block as u64,attachment_index as u64)?;
+        let bound =
+            self.attachment_binding_contexts(message, block as u64, attachment_index as u64)?;
         if bound.namespace_count != 0 {
             let mut matches = Vec::new();
             for context in &bound.contexts {
-                if source.blob.is_some() || source.source_id.as_deref() != Some(context.claim.source_id.as_str()) {
-                    return Err(StoreError::Invalid("binding claim differs from the selected attachment".into()));
+                if source.blob.is_some()
+                    || source.source_id.as_deref() != Some(context.claim.source_id.as_str())
+                {
+                    return Err(StoreError::Invalid(
+                        "binding claim differs from the selected attachment".into(),
+                    ));
                 }
-                for member in &context.members { matches.push(super::bindings::asset_match(conn,member)?); }
+                for member in &context.members {
+                    matches.push(super::bindings::asset_match(conn, member)?);
+                }
             }
-            let binding = blake3::hash(&serde_json::to_vec(&(message,block,attachment_index,&version,&source,&bound))?).to_hex().to_string();
-            return Ok(AttachmentResolution { message:message.clone(),block,attachment_index,source,state:bound.state,matches,binding });
+            let binding = blake3::hash(&serde_json::to_vec(&(
+                message,
+                block,
+                attachment_index,
+                &version,
+                &source,
+                &bound,
+            ))?)
+            .to_hex()
+            .to_string();
+            return Ok(AttachmentResolution {
+                message: message.clone(),
+                block,
+                attachment_index,
+                source,
+                state: bound.state,
+                matches,
+                binding,
+            });
         }
         let mut scopes = conn.prepare(
             "SELECT DISTINCT own.import_id FROM import_member own
@@ -84,7 +108,9 @@ impl Reader<'_> {
             ORDER BY own.import_id",
         )?;
         let scopes = scopes
-            .query_map(params![source_input,source_chain], |r| r.get::<_, String>(0))?
+            .query_map(params![source_input, source_chain], |r| {
+                r.get::<_, String>(0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut matches = std::collections::BTreeMap::<String, AssetMatch>::new();
         let mut known = std::collections::HashMap::<String, Option<AssetSource>>::new();
