@@ -162,20 +162,18 @@ pub enum Request {
         #[serde(default)]
         fields: Vec<String>,
     },
-    /// Reads one session, document or event in a view and format.
-    /// `with_parents` (sessions only): the parent sessions' messages first.
+    /// Read one canonical reference or a query through the shared selection.
     Read {
-        target: ReadTarget,
+        target: String,
         #[serde(default)]
-        slices: bool,
-        view: String,
+        options: polylogue_model::read::ReadOptions,
+        #[serde(default)]
+        delivery: polylogue_model::read::ReadDelivery,
         format: String,
-        #[serde(default)]
-        with_parents: bool,
         budget: Option<usize>,
         cursor: Option<String>,
         #[serde(default)]
-        selection: Option<PageSelection>,
+        with_blobs: bool,
     },
     /// One exact note revision, including a superseded or withdrawn revision.
     Note {
