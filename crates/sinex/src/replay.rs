@@ -57,12 +57,27 @@ impl Replay<'_> {
     ) -> Result<Acknowledgment> {
         self.with(async |client| {
             let reader = hashed_blobs::Reader::new(client.store_root.clone());
+            let mut source = None;
             for material in &selection.materials {
                 let hex = material
                     .blob
                     .strip_prefix("blake3:")
                     .ok_or_else(|| Error::Invalid("invalid material digest".into()))?;
                 let fetched = client.fetch_material(material.id).await?;
+                let actual = fetched
+                    .material
+                    .as_ref()
+                    .ok_or_else(|| {
+                        Error::Invalid("replay material has no registered source".into())
+                    })?
+                    .source
+                    .clone();
+                if source.as_ref().is_some_and(|source| source != &actual) {
+                    return Err(Error::Invalid(
+                        "replay materials span different registered sources".into(),
+                    ));
+                }
+                source = Some(actual);
                 let extents = crate::material::decode_extents(&fetched.extents)?;
                 if extents.is_empty()
                     || extents.iter().try_fold(0u64, |length, extent| {
@@ -81,7 +96,9 @@ impl Replay<'_> {
                 }
             }
             let sequence = ProducerReplay {
-                source: crate::source_reference(),
+                source: source.ok_or_else(|| {
+                    Error::Invalid("replay has no material source evidence".into())
+                })?,
                 operation,
                 root: selection.root,
                 materials: selection.materials,
