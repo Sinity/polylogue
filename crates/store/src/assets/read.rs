@@ -3,7 +3,7 @@ use crate::encoding::unpack_block;
 use polylogue_model::{Attachment, BlobHash, Block, MessageId};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentState {
     Available,
@@ -12,7 +12,7 @@ pub enum AttachmentState {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AssetMatch {
     pub input: String,
     pub chain: i64,
@@ -25,7 +25,7 @@ pub struct AssetMatch {
     pub declared_sizes: Vec<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AttachmentResolution {
     pub message: MessageId,
     pub block: usize,
@@ -37,41 +37,6 @@ pub struct AttachmentResolution {
 }
 
 impl Reader<'_> {
-    /// Standalone display replays ordered source-prefix masking without
-    /// changing the stored Attachment or its binding.
-    pub fn masked_attachment(
-        &self,
-        message: &MessageId,
-        block: usize,
-        attachment_index: usize,
-    ) -> Result<AttachmentResolution> {
-        let mut resolution = self.attachment(message, block, attachment_index)?;
-        let conn = self.conn()?;
-        let (selected,session):(i64,i64)=conn.query_row("SELECT b.pk,m.session_pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
-            params![message.to_string(),block.to_string()],|row|Ok((row.get(0)?,row.get(1)?)))?;
-        let mut masker = polylogue_model::masking::MessageMasker::default();
-        crate::ordered_blocks::visit(conn, session, |mut stored| {
-            masker.block(&mut stored.block);
-            if stored.pk != selected {
-                return Ok(std::ops::ControlFlow::Continue(()));
-            }
-            resolution.source = match stored.block {
-                Block::Image(attachment) | Block::File(attachment) => attachment,
-                Block::ToolResult { attachments, .. } => attachments
-                    .into_iter()
-                    .nth(attachment_index)
-                    .ok_or_else(|| StoreError::NotFound("attachment index".into()))?,
-                _ => {
-                    return Err(StoreError::Invalid(
-                        "selected block is not an attachment".into(),
-                    ));
-                }
-            };
-            Ok(std::ops::ControlFlow::Break(()))
-        })?;
-        Ok(resolution)
-    }
-
     /// Resolve a recorded attachment through only current sources of the shown
     /// message version. Historical observations cannot authorize removed bytes.
     pub fn attachment(
