@@ -136,9 +136,12 @@ fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answ
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
     });
-    match (&body["error"], &body["message"]) {
-        (Value::String(kind), Value::String(message)) => Err(format!("{kind}: {message}")),
-        _ => Ok(body),
+    let answer: command_surface::Answer<Value> = serde_json::from_value(body).unwrap();
+    match answer {
+        command_surface::Answer::Error { error, .. } => {
+            Err(format!("{}: {}", error.code.unwrap(), error.message))
+        }
+        answer => Ok(answer.value().unwrap().clone()),
     }
 }
 

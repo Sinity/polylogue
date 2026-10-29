@@ -46,7 +46,7 @@ fn paged_reader_http_measurements() {
         .collect::<String>();
     std::fs::write(r.w.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
     r.w.wait_for(|data| data["store"]["messages"] == 1000 && data["store"]["search_pending"] == 0);
-    let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
+    let mut server = start_on(Arc::clone(&r.web.daemon), Arc::clone(&r.web.operations), 0).unwrap();
     let report = serde_json::json!({
         "population":{"messages":1000,"characters_per_message":text.chars().count(),"source_text_bytes":text.len()*1000},
         "host_load":std::fs::read_to_string("/proc/loadavg").ok().map(|line|line.split_whitespace().take(3).collect::<Vec<_>>().join(" ")),

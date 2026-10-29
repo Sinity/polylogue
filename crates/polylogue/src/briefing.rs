@@ -29,7 +29,7 @@ mod advice;
 use crate::daemon::query::{NearFn, notes};
 use polylogue_model::DeliveryEvent;
 use polylogue_model::user::LeftOut;
-use polylogue_model::{Note, NoteKind, SessionId, Target, Timestamp};
+use polylogue_model::{Note, NoteKind, Reference, SessionId, Timestamp};
 use polylogue_store::search;
 use polylogue_store::{Reader, StoreError};
 use serde::{Deserialize, Serialize};
@@ -251,7 +251,7 @@ pub fn prepare(
 /// accepted.
 fn operator_notes(
     reader: &Reader<'_>,
-    targets: Vec<Target>,
+    targets: Vec<Reference>,
     after_seq: Option<i64>,
     now: Timestamp,
 ) -> Result<Vec<Note>, StoreError> {
@@ -278,7 +278,7 @@ fn operator_notes(
 /// Agent-written notes here the operator has not judged yet.
 fn unjudged_agent_notes(
     reader: &Reader<'_>,
-    targets: &[Target],
+    targets: &[Reference],
     now: Timestamp,
 ) -> Result<u64, StoreError> {
     notes::count(
@@ -642,10 +642,10 @@ fn session_start(
 ) -> Result<Prepared, StoreError> {
     let dirs = scope_dirs(cwd);
     let here = cwd.display().to_string();
-    let mut targets: Vec<Target> = dirs.iter().map(|d| Target::Cwd(d.clone())).collect();
-    targets.extend(repo_names(reader, &dirs)?.into_iter().map(Target::Repo));
+    let mut targets: Vec<Reference> = dirs.iter().map(|d| Reference::Cwd(d.clone())).collect();
+    targets.extend(repo_names(reader, &dirs)?.into_iter().map(Reference::Repo));
     if let Some(s) = session {
-        targets.push(Target::Session(s.clone()));
+        targets.push(Reference::Session(s.clone()));
     }
 
     // On resume and after compaction, only what changed since this
@@ -669,7 +669,7 @@ fn session_start(
     let more_sessions = recent.len() as u64 > RECENT_SESSIONS;
     recent.truncate(RECENT_SESSIONS as usize);
     // Handoffs and blockers on the sessions listed belong with them.
-    targets.extend(recent.iter().map(|s| Target::Session(s.id.clone())));
+    targets.extend(recent.iter().map(|s| Reference::Session(s.id.clone())));
     let notes = operator_notes(
         reader,
         targets.clone(),
@@ -904,7 +904,7 @@ fn takeover(
         reader,
         &format!(
             "{} agent:false",
-            notes::about(&[Target::Session(session.clone())])
+            notes::about(&[Reference::Session(session.clone())])
         ),
         now,
     )?;
@@ -1015,7 +1015,7 @@ fn recall_query(
     if similarity {
         lists.push((
             "semantic",
-            format!("messages where near:{}", notes::quoted(text)),
+            format!("messages where similar:{}", notes::quoted(text)),
         ));
     }
     let ((_, first), rest) = lists.split_first()?;
@@ -1181,7 +1181,11 @@ fn recall(
         }
         // Notes on the session: the operator's as they are, agents'
         // fenced and labelled as an agent's note, never as instructions.
-        let notes = notes::list(reader, &notes::about(&[Target::Session(id.clone())]), now)?;
+        let notes = notes::list(
+            reader,
+            &notes::about(&[Reference::Session(id.clone())]),
+            now,
+        )?;
         for n in notes {
             let body = n.value.as_deref().unwrap_or("").trim();
             if n.author.is_agent() {

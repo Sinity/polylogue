@@ -1,7 +1,7 @@
 //! An explicit browser selection becomes an ordinary operator note.
 use super::BrowserHost;
 use crate::daemon::{Request, Response};
-use polylogue_model::{Author, MessageId, NewNote, NoteKind, Target};
+use polylogue_model::{Author, MessageId, NewNote, NoteKind, Reference};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -107,7 +107,7 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Response {
             json!({"body":input.body,"quote":input.quote,"source":input.source}).to_string(),
         ),
         author: Author::Operator,
-        targets: vec![Target::Session(session), Target::Message(message)],
+        targets: vec![Reference::Session(session), Reference::Message(message)],
         relations: vec![],
         revises: None,
         valid_until: None,

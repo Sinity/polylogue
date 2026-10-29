@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{BlobHash, Target};
+use polylogue_model::{BlobHash, Reference};
 use rusqlite::{Connection, params, types::Value};
 
 fn rows(conn: &Connection, sql: &str) -> Vec<Vec<Value>> {
@@ -83,7 +83,7 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
     let note = reader.note("authored").unwrap().unwrap();
     assert_eq!(
         note.targets,
-        [Target::Message(
+        [Reference::Message(
             polylogue_model::MessageId::parse("claude-code:stable").unwrap()
         )]
     );

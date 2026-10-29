@@ -6,7 +6,7 @@ use super::*;
 use polylogue_model::user::NewChatAction;
 use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
 use polylogue_model::user::{Delivery, UserRequest, UserWrite};
-use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Target, Timestamp};
+use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Reference, Timestamp};
 
 /// The user-state tables, row by row, without the write counter, which
 /// counts this archive's own transactions.
@@ -75,7 +75,7 @@ fn note(kind: NoteKind, author: Author, target: &str, revises: Option<String>) -
             key: None,
             value: Some(format!("synthetic {}", kind.as_str())),
             author,
-            targets: vec![Target::parse(target).unwrap()],
+            targets: vec![Reference::parse(target).unwrap()],
             relations: vec![],
             revises,
             valid_until: None,
@@ -138,7 +138,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     write(note(
         NoteKind::Judgment,
         Author::Operator,
-        &format!("note:{finding}"),
+        &format!("assertion:{finding}@{finding}"),
         None,
     ));
     let withdrawn = write(note(NoteKind::Lesson, agent, "repo:synthetic", None));

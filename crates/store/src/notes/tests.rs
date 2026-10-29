@@ -9,7 +9,7 @@ fn note(kind: NoteKind, author: Author, target: &str, value: &str) -> NewNote {
         key: None,
         value: Some(value.into()),
         author,
-        targets: vec![Target::parse(target).unwrap()],
+        targets: vec![Reference::parse(target).unwrap()],
         relations: vec![],
         revises: None,
         valid_until: None,
@@ -114,7 +114,7 @@ fn a_withdrawal_names_the_family_it_withdraws() {
 #[test]
 fn a_note_needs_a_target_and_a_revision_needs_its_family() {
     let (_dir, _a, _lock, writer, _reads) = setup();
-    let mut n = note(NoteKind::Note, Author::Operator, "work:1", "x");
+    let mut n = note(NoteKind::Note, Author::Operator, "repo:synthetic", "x");
     n.targets.clear();
     assert!(matches!(
         writer.user(crate::user_writes::request_now(
@@ -123,7 +123,7 @@ fn a_note_needs_a_target_and_a_revision_needs_its_family() {
         )),
         Err(crate::StoreError::Invalid(_))
     ));
-    let mut n = note(NoteKind::Note, Author::Operator, "work:1", "x");
+    let mut n = note(NoteKind::Note, Author::Operator, "repo:synthetic", "x");
     n.revises = Some("missing".into());
     assert!(matches!(
         writer.user(crate::user_writes::request_now(
@@ -186,7 +186,7 @@ fn annotation_retries_and_replay_keep_the_original_targets() {
         Some(request.clone())
     );
     let mut changed = original.clone();
-    changed.targets = vec![Target::parse("repo:other").unwrap()];
+    changed.targets = vec![Reference::parse("repo:other").unwrap()];
     assert!(
         writer
             .user(crate::user_writes::request_now(

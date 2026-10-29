@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::authored::*;
 use polylogue_model::user::{BackfillJob, ChatAction, UserWrite};
-use polylogue_model::{Author, Note, NoteKind, Relation, Target, Timestamp};
+use polylogue_model::{Author, Note, NoteKind, Relation, Reference, Timestamp};
 
 fn event_index(n: i64) -> Result<usize> {
     usize::try_from(
@@ -78,7 +78,7 @@ fn note(conn: &Connection, id: &str) -> Result<std::result::Result<NoteRevision,
         .prepare(&source.sql("SELECT ref FROM @source.note_target WHERE note_id=?1 ORDER BY ref"))?
         .query_map([id], |r| r.get::<_, String>(0))?
         .map(|r| {
-            Target::parse(&r?)
+            Reference::parse(&r?)
                 .map_err(|_| StoreError::Invalid("unsupported frozen note target".into()))
         })
         .collect::<Result<Vec<_>>>()?;

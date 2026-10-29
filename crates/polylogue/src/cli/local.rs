@@ -74,8 +74,17 @@ pub fn completions(_: &Command, v: &Values, _: bool) -> ExitCode {
     // A wrapper on PATH that runs this binary (Sinnix's `polylogue-live`)
     // is completed and asked under its own name, so it keeps its archive.
     let name = v.text("program").unwrap_or_else(|| "polylogue".into());
-    match completer.write_registration("COMPLETE", &name, &name, &name, &mut std::io::stdout()) {
-        Ok(()) => ExitCode::SUCCESS,
+    let mut registration = Vec::new();
+    match completer.write_registration("COMPLETE", &name, &name, &name, &mut registration) {
+        Ok(()) => {
+            let registration = String::from_utf8_lossy(&registration);
+            let registration = registration.replace(
+                "COMPLETE=\"zsh\"",
+                "_POLYLOGUE_COMPLETE_PREFIX=\"$PREFIX\" COMPLETE=\"zsh\"",
+            );
+            print!("{registration}");
+            ExitCode::SUCCESS
+        }
         Err(e) => fail(false, "io", &e.to_string(), 1),
     }
 }

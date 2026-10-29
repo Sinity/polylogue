@@ -403,14 +403,14 @@ pub fn build(
     Ok(out)
 }
 
-/// For `near:`: the query text as a unit vector, embedded as a query.
+/// For `similar:`: the query text as a unit vector, embedded as a query.
 pub fn query_vector(provider: &Provider, text: &str) -> Result<Vec<f32>, EmbedError> {
     let nfc: String = text.nfc().collect();
     Ok(provider.embed(&[nfc], true)?.remove(0))
 }
 
-/// The embedding key `near:` ranks by: the provider's model with vectors,
-/// if any. `near:` is unavailable without one.
+/// The embedding key `similar:` ranks by: the provider's model with vectors,
+/// if any. `similar:` is unavailable without one.
 pub fn ranking_key(reader: &Reader<'_>, provider: Option<&Provider>) -> Option<String> {
     let p = provider?;
     reader

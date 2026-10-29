@@ -60,9 +60,9 @@ fn response_errors_keep_credential_shaped_messages_and_details() {
     let response = Response::Error {
         kind: "synthetic".into(),
         message: token.clone(),
-        detail: Some(serde_json::json!({"source":token.clone()})),
+        detail: Some(serde_json::json!({"hint":token.clone()})),
     };
     let encoded = serde_json::to_value(response).unwrap();
-    assert_eq!(encoded["message"], token);
-    assert_eq!(encoded["detail"]["source"], token);
+    assert_eq!(encoded["error"]["message"], token);
+    assert_eq!(encoded["error"]["hint"], token);
 }

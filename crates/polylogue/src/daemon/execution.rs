@@ -24,6 +24,7 @@ pub struct Incoming {
     #[serde(flatten)]
     pub request: Request,
     pub deadline_ms: Option<i64>,
+    pub caller: polylogue_model::authorship::CallerEvidence,
 }
 
 #[derive(Serialize)]
@@ -32,6 +33,17 @@ pub struct Outgoing<'a> {
     pub request: &'a Request,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<i64>,
+    pub caller: polylogue_model::authorship::CallerEvidence,
+}
+
+impl<'a> Outgoing<'a> {
+    pub fn new(request: &'a Request, deadline_ms: Option<i64>) -> Self {
+        Self {
+            request,
+            deadline_ms,
+            caller: crate::protocol::caller::evidence(),
+        }
+    }
 }
 
 pub fn deadline(duration: Duration) -> i64 {
@@ -53,7 +65,10 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLi
 pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i64> {
     if !request.has_read_phase() {
         None
-    } else if matches!(request, Request::Export { .. }) {
+    } else if matches!(
+        request,
+        Request::Export { .. } | Request::SchemaInfer { .. }
+    ) {
         deadline_ms
     } else {
         Some(deadline_ms.unwrap_or_else(|| deadline(timeout())))
@@ -95,6 +110,8 @@ pub fn run(
         Request::Changes { .. } => ("changes", None),
         Request::Attachment { .. } => ("attachment", None),
         Request::Export { .. } => ("export", None),
+        Request::SchemaInfer { .. } => ("schema_infer", None),
+        Request::SchemaUnread { .. } => ("schema_unread", None),
         _ => ("request", None),
     };
     let mut info = serde_json::to_value(&request).expect("requests serialize");
@@ -143,17 +160,16 @@ pub fn refusal(
             "hint": "restrict the query to a shorter time range or one session",
             "retryable": true,
         })),
-    }.masked()
+    }
 }
 
-fn narrower(query: &str) -> Option<String> {
+pub(crate) fn narrower(query: &str) -> Option<String> {
     use polylogue_query::ast::Source;
     let parsed = polylogue_query::parse(query).ok()?;
     let suggestion = match parsed.source {
-        Source::Empty => "since:1d".to_owned(),
-        Source::Sessions { cond }
-        | Source::Unit {
-            cond: Some(cond), ..
+        Source::Unit {
+            condition: Some(cond),
+            ..
         } => {
             let span = cond.span;
             let condition = &query[span.start..span.end];
@@ -165,24 +181,23 @@ fn narrower(query: &str) -> Option<String> {
                 &query[span.end..]
             )
         }
-        Source::Unit { cond: None, .. } => {
+        Source::Unit {
+            condition: None, ..
+        } => {
             let start = query.len() - query.trim_start().len();
             let end = query[start..]
                 .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
                 .map_or(query.len(), |end| start + end);
             format!("{} where since:1d{}", &query[..end], &query[end..])
         }
+        _ => return None,
     };
     polylogue_query::parse(&suggestion).ok().map(|_| suggestion)
 }
 
-/// Timeout follows the operations exit table; cancellation is a refusal.
+/// Product codes use the shared exit and HTTP table.
 pub fn exit_code(kind: &str) -> u8 {
-    match kind {
-        "deadline_exceeded" => 7,
-        "cancelled" => 3,
-        _ => 1,
-    }
+    crate::protocol::kind(kind).exit_code()
 }
 
 #[cfg(test)]

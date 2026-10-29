@@ -4,15 +4,11 @@ use serde_json::{Value, json};
 fn wire(lines: &[Value]) -> Vec<u8> {
     let mut out = Vec::new();
     for data in lines {
-        serde_json::to_writer(
-            &mut out,
-            &Response::Ok {
-                data: data.clone(),
-                references: Default::default(),
-            },
-        )
-        .unwrap();
-        out.push(b'\n');
+        let name = match data["type"].as_str().unwrap() {
+            "change" => "record",
+            name => name,
+        };
+        crate::protocol::stream::event(&mut out, name, data).unwrap();
     }
     out
 }
@@ -186,7 +182,6 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
             since,
             0,
             tempfile::tempfile().unwrap(),
-            |response| response,
         )
         .unwrap();
         let mut bytes = Vec::new();
@@ -280,18 +275,16 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
 
 #[test]
 fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
-    use std::io::Read;
     let daemon = crate::test_daemon::start("synthetic finite delivery");
-    let mut file = crate::daemon::service::change_feed(
+    let mut wire = Vec::new();
+    crate::daemon::service::change_feed(
         &Request::Changes { since: None },
         &daemon.daemon,
-        None,
+        &mut wire,
     )
     .unwrap()
     .unwrap();
     drop(daemon);
-    let mut wire = Vec::new();
-    file.read_to_end(&mut wire).unwrap();
     let mut output = Vec::new();
     assert_eq!(receive(&wire[..], &mut output, None).unwrap(), 0);
     assert_eq!(completed(&output).len(), 1);
@@ -352,13 +345,11 @@ fn request(v: &crate::commands::Values) -> Result<Request, String> {
 #[test]
 fn a_change_feed_deadline_uses_timeout_exit_code() {
     let mut output = Vec::new();
-    let response = serde_json::to_vec(&Response::Error {
-        kind: "deadline_exceeded".into(),
-        message: "read deadline exceeded".into(),
-        detail: None,
-    })
+    let mut wire = Vec::new();
+    crate::protocol::stream::error(
+        &mut wire,
+        &crate::daemon::service::error("deadline_exceeded", "read deadline exceeded"),
+    )
     .unwrap();
-    let mut wire = response;
-    wire.push(b'\n');
     assert_eq!(receive(&wire[..], &mut output, None).unwrap(), 7);
 }

@@ -102,7 +102,11 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
         &reader,
         &Selection::default(),
         "tokens",
-        &polylogue_model::LogicalDay::named("UTC", 0).unwrap(),
+        &query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::midnight(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(daily.days.iter().map(|d| d.1).sum::<f64>(), 12.0);
@@ -116,7 +120,11 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
         &reader,
         &Selection::default(),
         "api_cost",
-        &polylogue_model::LogicalDay::named("UTC", 0).unwrap(),
+        &query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::midnight(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -331,7 +339,11 @@ fn ordinary_complete_request_usage_keeps_its_daily_values_and_baseline() {
         &reader,
         &Selection::default(),
         "tokens",
-        &polylogue_model::LogicalDay::named("UTC", 0).unwrap(),
+        &query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::midnight(),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(daily.days.len(), 8);

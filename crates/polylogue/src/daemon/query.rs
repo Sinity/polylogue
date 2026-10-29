@@ -3,10 +3,10 @@
 //! explain an empty result when asked. Every step reads through one reader, so the count, the page and
 //! the attachments agree.
 
-use polylogue_model::LogicalDay;
-use polylogue_query::{ColKind, Options, Param, Program, QueryError, Shape};
+use polylogue_store::query::{ColKind, Options, Param, Program, QueryError, Shape};
 use polylogue_store::search::Within;
 use polylogue_store::{Reader, SqlValue};
+use query_language::time::{Clock, DaySetting};
 
 use serde_json::{Value, json};
 
@@ -46,7 +46,7 @@ impl From<QueryError> for Failure {
 pub(crate) mod feed;
 pub(crate) mod notes;
 mod page;
-use page::Cursor;
+use query_language::cursor::CursorSeal;
 
 /// What a request asks besides the text.
 pub struct Ask<'a> {
@@ -55,19 +55,16 @@ pub struct Ask<'a> {
     pub page_size: Option<u64>,
     pub why: bool,
     pub session: Option<String>,
-    /// Unix ms; the reader's `now` unless a cursor fixes it.
-    pub now: i64,
-    /// The logical day times resolve in; `None` reads the operator's
-    /// settings ([`logical_day`]).
-    pub day: Option<LogicalDay>,
+    /// One resolved operation context, retained by every continuation.
+    pub clock: Clock,
     pub embeddings: bool,
-    /// For `near:`: every stored text's similarity to a text.
+    /// For `similar:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
     /// The columns to show instead of the unit's defaults.
     pub fields: &'a [String],
 }
 
-/// Every stored text's similarity to a text, for `near:`.
+/// Every stored text's similarity to a text, for `similar:`.
 pub type NearFn<'a> =
     dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
@@ -97,7 +94,7 @@ fn with_similarity<T>(
     near: Option<&NearFn<'_>>,
     read: impl FnOnce() -> Result<T, Failure>,
 ) -> Result<T, Failure> {
-    match &program.near {
+    reader.with_clock(&program.clock, || match &program.near {
         Some(request) => {
             let near = near.ok_or_else(|| Failure {
                 kind: "embed".into(),
@@ -112,7 +109,7 @@ fn with_similarity<T>(
             reader.with_similarity(similarity, read)
         }
         None => read(),
-    }
+    })
 }
 
 /// The current saved queries by name (`saved_query` notes, newest
@@ -125,8 +122,8 @@ pub(crate) fn saved_queries(
         "SELECT n.key AS k, n.value AS v, n.id AS id, n.first_note AS first \
          FROM source_note n WHERE n.kind = 'saved_query' \
          AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {} ORDER BY n.first_note",
-        polylogue_query::fields::current_note("n"),
-        polylogue_query::fields::withdrawn_note("n"),
+        polylogue_store::note_sql::current_note("n"),
+        polylogue_store::note_sql::withdrawn_note("n"),
     );
     let mut saved: std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>> =
         Default::default();
@@ -194,48 +191,9 @@ fn kept_results(
         .collect()
 }
 
-/// The operator's logical day: `day.zone` (an IANA zone; the machine's
-/// unless set) and `day.logical_start` (`HH:MM`; 04:00 unless set).
-pub fn logical_day(reader: &Reader<'_>) -> Result<LogicalDay, Failure> {
-    let machine = polylogue_store::user_writes::machine_id();
-    let invalid = |message: String| Failure {
-        kind: "invalid".into(),
-        message,
-        detail: None,
-    };
-    let start = match reader.setting("day.logical_start", &machine)? {
-        None => LogicalDay::DEFAULT_START_MINUTES,
-        Some(text) => text
-            .split_once(':')
-            .and_then(|(h, m)| Some((h.parse::<u16>().ok()?, m.parse::<u16>().ok()?)))
-            .filter(|(h, m)| *h < 24 && *m < 60)
-            .map(|(h, m)| h * 60 + m)
-            .ok_or_else(|| {
-                invalid(format!(
-                    "day.logical_start is {text:?}; it is a time of day such as 04:00"
-                ))
-            })?,
-    };
-    match reader.setting("day.zone", &machine)? {
-        None => Ok(LogicalDay {
-            start_minutes: start,
-            ..LogicalDay::system()
-        }),
-        Some(zone) => LogicalDay::named(&zone, start).ok_or_else(|| {
-            invalid(format!(
-                "day.zone is {zone:?}; it is a time zone such as Europe/Warsaw"
-            ))
-        }),
-    }
-}
-
-fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Options, Failure> {
-    let day = match &ask.day {
-        Some(day) => day.clone(),
-        None => logical_day(reader)?,
-    };
+pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<Options, Failure> {
     Ok(Options {
-        clock: polylogue_query::Clock::new(now, day),
+        clock: ask.clock.clone(),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|o| o.name.to_owned())
@@ -271,9 +229,9 @@ fn chat_pages() -> Vec<polylogue_query::ChatPage> {
 /// top-level exists or seq and no stages, its match rows too. The values
 /// are what was shown; a kept result is read back, never re-run.
 pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
-    let mut opts = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
+    let mut opts = options(reader, &ask, uuid::Uuid::now_v7().as_u128() as u64)?;
     opts.page_size = None;
-    let program = polylogue_query::compile(ask.text, &opts)?;
+    let program = polylogue_store::query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     let mut rows = with_similarity(reader, &program, ask.near, || {
         Ok(reader.query(&program.sql, &values(&program.params))?)
@@ -287,11 +245,11 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "columns": program.columns,
         "rows": rows,
         "query": ask.text,
-        "now": program.now,
+        "now": program.clock.now,
         "definitions": program.definitions,
     });
     if polylogue_query::parse(ask.text)?.stages.is_empty()
-        && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
+        && let Ok(m) = polylogue_store::query::compile(&format!("{} | matches", ask.text), &opts)
     {
         validate(reader, &m)?;
         let mut matches = with_similarity(reader, &m, ask.near, || {
@@ -308,27 +266,49 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
 
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
-    let cursor = ask.cursor.map(Cursor::decode).transpose()?;
-    let seed = cursor
-        .as_ref()
-        .map_or_else(|| uuid::Uuid::now_v7().as_u128() as u64, |c| c.seed);
-    let opts = options(
-        reader,
-        &ask,
-        cursor.as_ref().map_or(ask.now, |c| c.now),
-        seed,
-    )?;
-    let mut program = polylogue_query::compile(ask.text, &opts)?;
+    let seal = CursorSeal::new(reader.cursor_key()?);
+    let position = reader.change_position()?;
+    let index_file = reader.index_identity()?;
+    let mut opts = options(reader, &ask, 0)?;
+    let question = page::identity(ask.text, &opts)?;
+    let cursor = ask
+        .cursor
+        .map(|text| page::open(text, &seal, question, &position, index_file, &opts))
+        .transpose()?;
+    let seed = cursor.as_ref().map_or_else(
+        || uuid::Uuid::now_v7().as_u128() as u64,
+        |cursor| cursor.context.random_seed,
+    );
+    if let Some(cursor) = &cursor {
+        opts.clock = cursor.context.clock.clone();
+    }
+    opts.random_seed = Some(seed);
+    let mut program = polylogue_store::query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    let question = page::question(&program, &opts, ask.why)?;
     let after = cursor
         .as_ref()
-        .map(|cursor| cursor.check(&program, &question).map(<[Value]>::to_vec))
+        .map(|cursor| page::check(cursor, &program, &opts, ask.why))
         .transpose()?;
-    let day = opts.clock.day.clone();
+    let context = match cursor {
+        Some(cursor) => cursor.context,
+        None => page::context(
+            question, &position, index_file, &opts, &program, seed, ask.why,
+        )?,
+    };
+    let paging = page::Paging {
+        seal: &seal,
+        context,
+    };
     with_similarity(reader, &program, ask.near, || {
-        answer(reader, &program, &day, after, seed, question, ask.why)
+        answer(
+            reader,
+            &program,
+            &program.clock.day,
+            after,
+            &paging,
+            ask.why,
+        )
     })
 }
 
@@ -337,10 +317,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
 fn answer(
     reader: &Reader<'_>,
     program: &Program,
-    day: &LogicalDay,
+    day: &DaySetting,
     after: Option<Vec<Value>>,
-    seed: u64,
-    question: String,
+    paging: &page::Paging<'_>,
     why_asked: bool,
 ) -> Result<Value, Failure> {
     let params = values(&program.params);
@@ -349,7 +328,7 @@ fn answer(
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let (definition, _) = super::measure::find_checked(&m.what)?;
         if let Some(paging) = definition.paging {
-            let (rows, count, next, _) = read_page(reader, program, &after, seed, question)?;
+            let (rows, count, next, _) = read_page(reader, program, &after, paging)?;
             let session_order: std::collections::BTreeMap<_, _> = rows
                 .iter()
                 .enumerate()
@@ -385,7 +364,7 @@ fn answer(
                         reader,
                         &m.what,
                         selection.sessions,
-                        program.now,
+                        program.clock.now.as_millisecond(),
                         day,
                         None,
                     )?;
@@ -443,12 +422,19 @@ fn answer(
         } else {
             None
         };
-        let data = super::measure::run(reader, &m.what, sessions, program.now, day, population)?;
+        let data = super::measure::run(
+            reader,
+            &m.what,
+            sessions,
+            program.clock.now.as_millisecond(),
+            day,
+            population,
+        )?;
         return Ok(
             json!({ "outcome": "measure", "measure": m.what, "data": data, "read_at": read_at }),
         );
     }
-    let (mut rows, count, next, without) = read_page(reader, program, &after, seed, question)?;
+    let (mut rows, count, next, without) = read_page(reader, program, &after, paging)?;
 
     polylogue_store::read::limit::ReadLimit::set_stage("attached rows");
     if program.shape == Shape::Rows {
@@ -487,9 +473,8 @@ fn answer(
         "notes": notes,
         "incomplete": program.incomplete,
         "resolved": {
-            "now": polylogue_model::Timestamp::from_unix_ms(program.now),
-            "zone": program.zone,
-            "day_start_minutes": program.day_start_minutes,
+            "clock": program.clock,
+            "times": program.resolved_times,
         },
         "read_at": read_at,
     });
@@ -524,8 +509,6 @@ fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), 
                 &m.selection_sql,
                 &m.population_sql,
                 options,
-                &program.zone,
-                program.day_start_minutes,
             )?;
             program.order = vec![
                 polylogue_query::OrderKey {
@@ -548,8 +531,7 @@ fn read_page(
     reader: &Reader<'_>,
     program: &Program,
     after: &Option<Vec<Value>>,
-    seed: u64,
-    question: String,
+    paging: &page::Paging<'_>,
 ) -> Result<(Vec<Value>, u64, Option<String>, u64), Failure> {
     let params = values(&program.params);
     polylogue_store::read::limit::ReadLimit::set_stage("count");
@@ -568,7 +550,7 @@ fn read_page(
     let more = rows.len() as u64 > page_size;
     rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
     let next = match rows.last() {
-        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
+        Some(last) if more => Some(page::after_row(program, last, paging)?),
         _ => None,
     };
 
@@ -807,7 +789,7 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
 pub(crate) fn usage_selection(
     reader: &Reader<'_>,
     text: &str,
-    now: i64,
+    clock: &Clock,
     embeddings: bool,
     near: Option<&NearFn<'_>>,
 ) -> Result<(polylogue_store::measure::Selection, String), Failure> {
@@ -818,14 +800,13 @@ pub(crate) fn usage_selection(
         page_size: None,
         why: false,
         session: None,
-        now,
-        day: None,
+        clock: clock.clone(),
         embeddings,
         near,
         fields: &[],
     };
-    let opts = options(reader, &ask, now, 0)?;
-    let program = polylogue_query::compile(&text, &opts)?;
+    let opts = options(reader, &ask, 0)?;
+    let program = polylogue_store::query::compile(&text, &opts)?;
     validate(reader, &program)?;
     let question = page::question(&program, &opts, false)?;
     let m = program.measure.as_ref().ok_or_else(|| Failure {
@@ -869,8 +850,8 @@ mod tests;
 
 /// Compile with the same archive settings and calling session as execution.
 pub fn explain(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
-    let options = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
+    let options = options(reader, &ask, uuid::Uuid::now_v7().as_u128() as u64)?;
     Ok(
-        json!({"subject": "query", "explanation": polylogue_query::explain::query(ask.text, &options)?}),
+        json!({"subject": "query", "explanation": polylogue_store::query::explain::query(ask.text, &options)?}),
     )
 }

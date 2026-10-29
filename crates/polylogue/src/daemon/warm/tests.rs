@@ -42,10 +42,9 @@ fn a_first_page_is_reused_only_briefly() {
 #[test]
 fn completions_cover_fields_values_and_sessions() {
     let data = Completion {
-        units: vec!["sessions".into(), "messages".into()],
-        fields: vec!["repo:".into(), "origin:".into()],
-        values: vec!["repo:polylogue".into(), "repo:sinex".into()],
+        values: BTreeMap::from([("repo".into(), vec!["polylogue".into(), "sinex".into()])]),
         sessions: vec![("claude-code:abc".into(), "a title".into())],
+        ..Completion::default()
     };
     let values = |word: &str| -> Vec<String> {
         completions(&data, word)
@@ -53,17 +52,24 @@ fn completions_cover_fields_values_and_sessions() {
             .map(|(v, _)| v)
             .collect()
     };
-    assert_eq!(values("re"), vec!["repo:"]);
+    assert!(values("re").contains(&"repo:".into()));
     assert_eq!(values("repo:p"), vec!["repo:polylogue"]);
-    assert_eq!(values("ses"), vec!["sessions"]);
-    assert_eq!(values("claude"), vec!["claude-code:abc"]);
+    assert!(values("ses").contains(&"sessions".into()));
+    assert!(values("claude").contains(&"claude-code:abc".into()));
     assert_eq!(values("claude-code:a"), vec!["claude-code:abc"]);
 }
 
 #[test]
 fn values_with_spaces_are_quoted() {
-    assert_eq!(quoted("polylogue"), "polylogue");
-    assert_eq!(quoted("two words"), "\"two words\"");
+    let data = Completion {
+        values: BTreeMap::from([("repo".into(), vec!["two words".into()])]),
+        ..Default::default()
+    };
+    assert!(
+        completions(&data, "repo:two")
+            .iter()
+            .any(|(value, _)| value == "repo:\"two words\"")
+    );
 }
 
 #[test]
@@ -96,23 +102,29 @@ fn count_failures_are_visible_and_a_success_clears_them() {
 #[test]
 fn completions_escape_help_and_omit_values_with_controls() {
     let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
-    let mut values = vec!["tag:ordinary".into(), format!("query:{hostile}")];
+    let mut tags = vec!["ordinary".into()];
     for code in 0..=159 {
         let c = char::from_u32(code).unwrap();
         if c.is_control() {
-            values.push(format!("tag:{c}"));
+            tags.push(c.to_string());
         }
     }
     let data = Completion {
-        values,
+        values: BTreeMap::from([("tag".into(), tags), ("query".into(), vec![hostile.into()])]),
         sessions: vec![("claude-code:abc".into(), hostile.into())],
         ..Completion::default()
     };
-    assert_eq!(
-        completions(&data, "tag:"),
-        vec![("tag:ordinary".into(), "".into())]
+    let tags = completions(&data, "tag:");
+    assert!(tags.iter().any(|(value, _)| value == "tag:ordinary"));
+    assert!(
+        tags.iter()
+            .all(|(value, _)| ["tag:ordinary", "tag:unknown", "tag:*"].contains(&value.as_str()))
     );
-    assert!(completions(&data, "query:").is_empty());
+    assert!(
+        completions(&data, "query:")
+            .iter()
+            .all(|(value, _)| !value.contains(hostile))
+    );
     assert_eq!(
         completions(&data, "claude-code:"),
         vec![(
@@ -125,21 +137,25 @@ fn completions_escape_help_and_omit_values_with_controls() {
 #[test]
 fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
     let data = Completion {
-        values: vec![
-            format!("repo:{}", quoted("two words")),
-            format!("repo:{}", quoted("path\\part \"λ\"")),
-        ],
+        values: BTreeMap::from([(
+            "repo".into(),
+            vec!["two words".into(), "path\\part \"λ\"".into()],
+        )]),
         ..Completion::default()
     };
     assert_eq!(completions(&data, "repo:two")[0].0, "repo:\"two words\"");
     assert_eq!(completions(&data, "repo:\"two")[0].0, "repo:\"two words\"");
     let value = &completions(&data, "repo:path")[0].0;
     let parsed = polylogue_query::parse(value).unwrap();
-    let polylogue_query::ast::Source::Sessions { cond } = parsed.source else {
+    let polylogue_query::ast::Source::Unit {
+        condition: Some(cond),
+        ..
+    } = parsed.source
+    else {
         panic!()
     };
-    let polylogue_query::ast::CondKind::Match {
-        value: polylogue_query::ast::Value::One { text, .. },
+    let polylogue_query::ast::ConditionKind::Match {
+        value: polylogue_query::ast::Value::Scalar { text, .. },
         ..
     } = cond.kind
     else {
@@ -152,7 +168,10 @@ fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
 fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
     let values = |word: &str| match crate::daemon::service::handle(
-        crate::daemon::Request::Complete { word: word.into() },
+        crate::daemon::Request::Complete {
+            text: word.into(),
+            position: word.len(),
+        },
         &d.daemon,
     ) {
         crate::daemon::Response::Ok { data, .. } => data,
@@ -163,9 +182,17 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["value"] == "live:waiting")
+            .any(|v| v["value"] == "waiting"
+                && v["replace"]["start"] == 5
+                && v["replace"]["end"] == 5)
     );
-    assert!(values("model:").as_array().unwrap().is_empty());
+    assert!(
+        !values("model:")
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["value"] == "\"model with spaces\"")
+    );
     let mut message: serde_json::Value = serde_json::from_str(
         &polylogue_testkit::claude_assistant("a1", "s1", "synthetic answer"),
     )
@@ -186,6 +213,54 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["value"] == "model:\"model with spaces\"")
+            .any(|v| v["value"] == "\"model with spaces\"")
     );
+}
+
+#[test]
+fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries() {
+    let daemon = crate::test_daemon::start("synthetic prompt");
+    let text = "tool_calls where outcome:err | count";
+    let position = text.find(" | ").unwrap();
+    match crate::daemon::service::handle(
+        crate::daemon::Request::Complete {
+            text: text.into(),
+            position,
+        },
+        &daemon.daemon,
+    ) {
+        crate::daemon::Response::Ok { data, .. } => {
+            let candidate = data
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|candidate| candidate["value"] == "error")
+                .unwrap();
+            let start = candidate["replace"]["start"].as_u64().unwrap() as usize;
+            let end = candidate["replace"]["end"].as_u64().unwrap() as usize;
+            assert_eq!(candidate["kind"], "value");
+            assert_eq!(
+                format!(
+                    "{}{}{}",
+                    &text[..start],
+                    candidate["value"].as_str().unwrap(),
+                    &text[end..]
+                ),
+                "tool_calls where outcome:error | count"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    for position in [6, 8] {
+        match crate::daemon::service::handle(
+            crate::daemon::Request::Complete {
+                text: "repo:λ".into(),
+                position,
+            },
+            &daemon.daemon,
+        ) {
+            crate::daemon::Response::Error { kind, .. } => assert_eq!(kind, "bad_request"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

@@ -15,7 +15,9 @@ pub(crate) fn call(
         arguments,
         None,
         &tokio_util::sync::CancellationToken::new(),
+        None,
     )
+    .and_then(|(text, _, failed)| if failed { Err(text) } else { Ok(text) })
 }
 
 fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {

@@ -21,7 +21,7 @@ fn note(author: Author, target: &str, value: &str) -> NewNote {
         key: None,
         value: Some(value.into()),
         author,
-        targets: vec![Target::parse(target).unwrap()],
+        targets: vec![Reference::parse(target).unwrap()],
         relations: vec![],
         revises: None,
         valid_until: None,
@@ -57,7 +57,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
         note(Author::Operator, "repo:morrowland", "another repository"),
     );
     let reader = w.daemon.reads.reader().unwrap();
-    let about = about(&[Target::parse("repo:morrow").unwrap()]);
+    let about = about(&[Reference::parse("repo:morrow").unwrap()]);
     assert_eq!(
         values(&list(&reader, &format!("{about} agent:false"), now).unwrap()),
         ["run cargo nextest"],
