@@ -29,7 +29,9 @@ fn scope_reset_interrupts_a_statement_without_a_deadline() {
     let limit = ReadLimit::without_deadline(Default::default());
     std::thread::scope(|threads| {
         let (ready, waiting) = std::sync::mpsc::channel();
-        let work = threads.spawn(|| limit.scope(|| {
+        let pool = &pool;
+        let limit = &limit;
+        let work = threads.spawn(move || limit.scope(|| {
             let reader = pool.reader().unwrap();
             ready.send(()).unwrap();
             reader.query("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n", &[])
