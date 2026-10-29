@@ -315,6 +315,10 @@ fn keys(unit: Unit, v: &Value) -> Vec<String> {
                 r["command"].as_str(),
                 r["outcome"].as_str().unwrap_or_default(),
                 r["exit_code"].as_i64(),
+                r["at"]
+                    .as_str()
+                    .and_then(polylogue_model::Timestamp::parse_rfc3339)
+                    .map(polylogue_model::Timestamp::unix_ms),
             ),
         })
         .collect()
