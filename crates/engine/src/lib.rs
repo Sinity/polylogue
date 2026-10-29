@@ -316,9 +316,6 @@ pub struct Engine {
     lookups: repo_lookup::Cache,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
-    /// In primary mode, the Sinex that holds the archive: sessions go to it
-    /// as events once derived.
-    sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
 }
 
 fn now_ms() -> i64 {
@@ -337,7 +334,7 @@ impl Engine {
     /// Starts the writer on an archive the caller has locked.
     pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
         let writer = Writer::start(&archive)?;
-        Self::with_writer(config, archive, writer, None)
+        Self::with_writer(config, archive, writer)
     }
 
     /// Starts the writer on an archive Sinex holds (primary mode), opened
@@ -347,16 +344,11 @@ impl Engine {
         archive: Archive,
         sinex: Arc<dyn polylogue_store::primary::Sinex>,
     ) -> Result<Self, EngineError> {
-        let writer = Writer::start_on_sinex(&archive, Arc::clone(&sinex))?;
-        Self::with_writer(config, archive, writer, Some(sinex))
+        let writer = Writer::start_on_sinex(&archive, sinex)?;
+        Self::with_writer(config, archive, writer)
     }
 
-    fn with_writer(
-        config: Config,
-        archive: Archive,
-        writer: Writer,
-        sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
-    ) -> Result<Self, EngineError> {
+    fn with_writer(config: Config, archive: Archive, writer: Writer) -> Result<Self, EngineError> {
         let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(archive.blobs()?);
@@ -380,7 +372,6 @@ impl Engine {
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
-            sinex,
         })
     }
 
