@@ -98,3 +98,18 @@ fn conflicting_environment_identities_without_a_harness_ancestor_stay_unattribut
         polylogue_model::Author::Unattributed
     );
 }
+
+#[test]
+fn concurrent_request_identity_distinguishes_the_accepting_channel() {
+    let registry = hooks::Registry::default();
+    let evidence = CallerEvidence {
+        controlling_terminal: true,
+        ..Default::default()
+    };
+    let cli = accept(&registry, &evidence, Channel::Cli, Default::default());
+    let web = accept(&registry, &evidence, Channel::Web, Default::default());
+    assert_eq!(cli.authorship.author, web.authorship.author);
+    assert_ne!(cli.scope(), web.scope());
+    let repeated_cli = accept(&registry, &evidence, Channel::Cli, Default::default());
+    assert_eq!(cli.scope(), repeated_cli.scope());
+}

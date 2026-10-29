@@ -159,10 +159,8 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     } else {
                         command_surface::Origin::Socket
                     };
-                    let trusted = command_surface::Caller::authenticated(
-                        accepted.authorship.author.to_string(),
-                        accepted,
-                    );
+                    let trusted =
+                        command_surface::Caller::authenticated(accepted.scope(), accepted);
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -281,7 +279,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     },
                 ),
             };
-            let scope = accepted.authorship.author.to_string();
+            let scope = accepted.scope();
             let trusted = command_surface::Caller::authenticated(scope, accepted.clone());
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

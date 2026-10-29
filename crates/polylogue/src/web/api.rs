@@ -177,7 +177,7 @@ async fn answer(
                 .invocation(&accepted.authorship)
                 .with_accepted_request(Some(Arc::new(request.clone()))),
         );
-        let scope = accepted.authorship.author.to_string();
+        let scope = accepted.scope();
         let trusted = command_surface::Caller::authenticated(scope, accepted);
         let answer = table
             .call_as(

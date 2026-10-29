@@ -30,6 +30,13 @@ pub struct Accepted {
     pub admitted_request: Option<crate::daemon::Request>,
 }
 
+impl Accepted {
+    /// Coalescing must use the same actor and channel as durable request identity.
+    pub fn scope(&self) -> String {
+        serde_json::to_string(&self.authorship).expect("computed authorship serializes")
+    }
+}
+
 pub fn accept(
     registry: &hooks::Registry,
     evidence: &CallerEvidence,
