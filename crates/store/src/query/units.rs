@@ -928,9 +928,9 @@ pub fn turns() -> String {
     format!(
         "(SELECT g.*, \
      (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
-        AND ax.written_by = 'model') AS attempts, \
+        AND ax.role = 'assistant' AND ax.written_by = 'model') AS attempts, \
      (SELECT min(lx.at) FROM message lx WHERE lx.session_pk = g.session_pk \
-        AND lx.written_by = 'model' AND lx.at >= g.last_prompt_at) - g.last_prompt_at AS latency, \
+        AND lx.role = 'assistant' AND lx.written_by = 'model' AND lx.at >= g.last_prompt_at) - g.last_prompt_at AS latency, \
      (g.answer IS NULL AND g.turn = max(g.turn) OVER (PARTITION BY g.session_pk)) AS abandoned \
    FROM (SELECT tm.session_pk AS session_pk, tm.turn AS turn, min(tm.pk) AS pk, \
        substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS first_prompt, \
@@ -943,7 +943,7 @@ pub fn turns() -> String {
        sum(tm.hp) AS burst, \
        json_group_array(tm.id ORDER BY tm.ord) FILTER (WHERE tm.hp) AS prompts, \
        substr(min(printf('%012d ', tm.ord) || COALESCE(tm.prompt_kind, '')), 14) = 'command' AS slash_command, \
-       substr(max(CASE WHEN tm.written_by = 'model' THEN printf('%012d ', tm.ord) || tm.id END), 14) AS answer, \
+       substr(max(CASE WHEN tm.role = 'assistant' AND tm.written_by = 'model' THEN printf('%012d ', tm.ord) || tm.id END), 14) AS answer, \
        CASE WHEN min(COALESCE(tm.on_active_path, -1)) < 0 THEN 'unknown' ELSE 'active' END AS path, \
        sum(tm.tc) AS tool_calls, sum(tm.te) AS errors, \
        sum(tm.input_tokens) AS input_tokens, sum(tm.output_tokens) AS output_tokens, \
@@ -953,7 +953,7 @@ pub fn turns() -> String {
            OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id \
                  ROWS UNBOUNDED PRECEDING) AS turn, \
          row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_id, o.seq, o.record_position, o.id) AS ord \
-       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.record_position, m.written_by, m.prompt_kind, \
+       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_id, m.seq, m.record_position, m.role, m.written_by, m.prompt_kind, \
              m.at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
              (m.written_by = 'human') AS hp, \
              COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \

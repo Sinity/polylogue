@@ -1,5 +1,6 @@
 //! Shared independent cases through the product compiler, fixture store and pager.
 use super::super::*;
+use super::fixture_clock;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use query_language::cursor::{PageRequest, SealedCursor};
 use query_language::{
@@ -21,8 +22,7 @@ fn error(message: impl ToString) -> Error {
 }
 fn options() -> Options {
     Options {
-        clock: polylogue_store::query::time::clock(0, LogicalDay::named("UTC", 240).unwrap())
-            .unwrap(),
+        clock: fixture_clock(0, "UTC", 240),
         origins: vec!["claude-code".into()],
         command_words: vec![],
         page_size: None,
@@ -236,8 +236,7 @@ impl laws::Executor<Plan> for Execution {
                 page_size: Some(request.page_size.get() as u64),
                 why: false,
                 session: None,
-                now: 0,
-                day: Some(LogicalDay::named("UTC", 240).unwrap()),
+                clock: fixture_clock(0, "UTC", 240),
                 embeddings: false,
                 near: None,
                 fields: &["id".into(), "cost".into(), "repo".into()],

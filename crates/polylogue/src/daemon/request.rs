@@ -377,7 +377,7 @@ impl Request {
 }
 
 fn attachment_chunk() -> usize {
-    super::attachment::PAGE_BYTES
+    64 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

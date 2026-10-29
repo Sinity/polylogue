@@ -517,6 +517,7 @@ pub fn live_state(s: &str, now: i64) -> String {
     format!(
         "(CASE \
          WHEN {s}.live_last_event = 'hook_session_end' THEN 'ended' \
+         WHEN {s}.live_last_event_at IS NULL AND {s}.last_activity_at IS NULL THEN 'unknown' \
          WHEN {live} AND {s}.live_waiting_on IS NOT NULL THEN 'waiting' \
          WHEN {live} AND {s}.live_last_event IN ('hook_stop', 'hook_notification') THEN 'idle' \
          WHEN {live} THEN 'working' \
@@ -765,3 +766,10 @@ pub fn subtree(s: &str) -> String {
          WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
     )
 }
+
+/// Every native working directory, with the currently selected value retained.
+pub(crate) fn working_directories(s: &str) -> String {
+    format!("json_each(json_insert(COALESCE({s}.cwd_json,'[]'),'$[#]',{s}.cwd))")
+}
+#[cfg(test)]
+mod tests;

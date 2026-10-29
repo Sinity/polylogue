@@ -44,13 +44,7 @@ pub fn families(options: &str) -> Result<Vec<&'static str>> {
 }
 
 /// Group the selection and the unit's defaults in one read transaction.
-pub fn query(
-    selection_sql: &str,
-    population_sql: &str,
-    options: &str,
-    zone: &str,
-    day_start: u16,
-) -> Result<String> {
+pub fn query(selection_sql: &str, population_sql: &str, options: &str) -> Result<String> {
     let own = session_sql::own_messages("m", None);
     let mut parts = vec![];
     for family in families(options)? {
@@ -61,7 +55,7 @@ pub fn query(
                 UNION SELECT s.pk,coalesce(rl.root_commit,rl.remote) FROM session s JOIN json_each(s.cwd_json) cwd
                 JOIN repo_lookup rl ON rl.path=(SELECT r.path FROM repo_lookup r WHERE r.path=cwd.value OR substr(cwd.value,1,length(r.path)+1)=r.path||'/' ORDER BY length(r.path) DESC LIMIT 1)".into(),
             "tags"=>tags_sql(),
-            "months"=>format!("SELECT pk,pl_month(started_at,'{}',{day_start}) AS value FROM session",zone.replace('\'',"''")),
+            "months"=>"SELECT pk,pl_month(started_at) AS value FROM session".into(),
             "ends_with"=>format!("SELECT s.pk,{} AS value FROM session s",session_sql::span("s","ends_with")),
             "roles"=>format!("SELECT DISTINCT m.session_pk AS pk,m.role AS value FROM message m WHERE {own}"),
             "written_by"=>format!("SELECT DISTINCT m.session_pk AS pk,m.written_by AS value FROM message m WHERE {own}"),

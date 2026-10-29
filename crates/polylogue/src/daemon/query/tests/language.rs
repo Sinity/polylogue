@@ -1,5 +1,4 @@
 //! Query-language behavior over the archive built through the real loop.
-use polylogue_model::LogicalDay;
 use polylogue_store::query::{Options, Param, QueryError, compile};
 use polylogue_store::{Reader, SqlValue};
 use polylogue_testkit::{Morrow, Set, short};
@@ -8,11 +7,14 @@ use std::collections::BTreeSet;
 
 fn options() -> Options {
     Options {
-        clock: polylogue_store::query::time::clock(
-            1_791_453_600_000,
-            LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        )
-        .unwrap(),
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_791_453_600_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
+        ),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|origin| origin.name.to_owned())
