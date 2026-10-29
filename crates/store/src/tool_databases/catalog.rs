@@ -1,7 +1,9 @@
 use super::*;
 
 /// The row-dump records whose comparison hashes commit with this step.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct Comparison {
     rows: Vec<(String, String, Option<Vec<u8>>)>,
     schema: Option<Value>,

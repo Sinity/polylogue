@@ -395,6 +395,7 @@ fn finish_step(
     counts: polylogue_model::RecordCounts,
     receipt: Option<crate::wire_shapes::ReadingReceipt>,
     published_reset: bool,
+    comparison: Option<crate::tool_databases::Comparison>,
     through: &mut u64,
     missing: &mut bool,
 ) -> Result<()> {
@@ -406,6 +407,7 @@ fn finish_step(
     let mut step = step(reading, output, counts);
     step.receipt = receipt;
     step.reset = published_reset;
+    step.comparison = comparison;
     step.source_prefix_missing = *missing || step.receipt.is_none();
     *through = (*through).max(reading.parsed_upto);
     file.push_confirmed(&mut step)
@@ -466,6 +468,7 @@ fn plan(index: &Connection) -> Result<Plan> {
         let mut counts = polylogue_model::RecordCounts::default();
         let mut receipt = None;
         let mut published_reset = false;
+        let mut comparison = None;
         let mut through = 0;
         let mut missing = false;
         let mut length = index.query_row(
@@ -488,6 +491,7 @@ fn plan(index: &Connection) -> Result<Plan> {
                     std::mem::take(&mut counts),
                     receipt.take(),
                     published_reset,
+                    comparison.take(),
                     &mut through,
                     &mut missing,
                 )?;
@@ -497,7 +501,17 @@ fn plan(index: &Connection) -> Result<Plan> {
             length = length.max(reading.parsed_upto);
             match product {
                 Product::Session { facts, .. } => output.sessions.push(facts),
-                Product::Message { facts, order, .. } => {
+                Product::Message {
+                    facts,
+                    order,
+                    projection,
+                    ..
+                } => {
+                    if let Some(projection) = projection {
+                        output
+                            .message_projections
+                            .insert(output.messages.len(), projection);
+                    }
                     if let Some(order) = order {
                         output.message_order.insert(output.messages.len(), order);
                     }
@@ -509,8 +523,12 @@ fn plan(index: &Connection) -> Result<Plan> {
                     output.documents.push(facts);
                 }
                 Product::Event {
-                    facts, imported, ..
+                    id,
+                    facts,
+                    imported,
+                    ..
                 } => {
+                    output.event_ids.insert(output.events.len(), id);
                     if let Some(imported) = imported {
                         output.imported_events.insert(output.events.len(), imported);
                     }
@@ -522,10 +540,12 @@ fn plan(index: &Connection) -> Result<Plan> {
                 Product::ParseProgress {
                     counts: record_counts,
                     reset,
+                    comparison: source_comparison,
                     ..
                 } => {
                     counts = record_counts;
                     published_reset = reset;
+                    comparison = source_comparison;
                     receipt = Some(crate::wire_shapes::ReadingReceipt {
                         sequence: row.get(2)?,
                         id: Some(row.get(1)?),
@@ -544,6 +564,7 @@ fn plan(index: &Connection) -> Result<Plan> {
                 counts,
                 receipt,
                 published_reset,
+                comparison,
                 &mut through,
                 &mut missing,
             )?;
