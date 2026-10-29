@@ -104,7 +104,7 @@ fn hermes_session_uses_the_resolved_source_profile_and_machine() {
     )
     .unwrap();
     assert_eq!(
-        session_of(Harness::Hermes, &json!({"session_id":"turn-1"}), &startup()),
+        session_of(Harness::Hermes, &json!({"session_id":"turn-1"}), &startup),
         Some(expected)
     );
 }

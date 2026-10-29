@@ -40,7 +40,7 @@ pub(super) fn answer(
     });
     let object = serde_json::to_value(crate::protocol::operations::McpArguments {
         arguments: &arguments,
-        request_id: uuid::Uuid::new_v4().to_string(),
+        request_id: uuid::Uuid::now_v7().to_string(),
         deadline,
     })
     .expect("completion envelope serializes")

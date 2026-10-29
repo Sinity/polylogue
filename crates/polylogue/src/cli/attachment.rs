@@ -3,6 +3,7 @@
 use super::*;
 use base64::Engine as _;
 use std::io::Write;
+use std::path::PathBuf;
 
 pub(crate) fn output(
     values: &Values,
@@ -58,7 +59,7 @@ fn write(
         values,
         &Caller {
             surface: Surface::Cli,
-            cwd: Some(current_dir()),
+            cwd: None,
             json: true,
         },
     )?;
