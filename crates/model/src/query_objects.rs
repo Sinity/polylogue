@@ -108,9 +108,49 @@ pub enum ExecutionPresentation {
     Read {
         options: crate::read::ReadOptions,
         delivery: crate::read::ReadDelivery,
+        format: crate::read::Format,
+        /// Logical limits before reserving this response's envelope bytes.
+        page_budget: Option<crate::read::PageBudget>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        normalized_span: Option<NormalizedReadSpan>,
+        direct_source: Option<Box<ReadSpanBinding>>,
     },
+}
+
+/// One actual selected span source, never a native/fragment fallback on replay.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadSpanBinding {
+    Native {
+        span: NormalizedReadSpan,
+    },
+    Fragments {
+        origin: TextSpanOrigin,
+        version: TextSourceVersion,
+        /// Digest of the actual indexed stored-grain metadata, not permissions.
+        membership: crate::BlobHash,
+    },
+}
+impl ReadSpanBinding {
+    pub fn origin(&self) -> &TextSpanOrigin {
+        match self {
+            Self::Native { span } => &span.origin,
+            Self::Fragments { origin, .. } => origin,
+        }
+    }
+    pub fn version(&self) -> &TextSourceVersion {
+        match self {
+            Self::Native { span } => &span.version,
+            Self::Fragments { version, .. } => version,
+        }
+    }
+    pub fn validate(&self) -> Result<(), TextFragmentError> {
+        match self {
+            Self::Native { span } => span.validate(),
+            Self::Fragments {
+                origin, version, ..
+            } => version.validate_container(span_container(origin)?),
+        }
+    }
 }
 
 /// Resolver-produced coordinates kept in acknowledged Run custody. Source
@@ -147,28 +187,32 @@ impl NormalizedReadSpan {
     /// Metadata checks only. The authenticated Reader validates current grant,
     /// source version/content and the indexed field/UTF-8 boundary mapping.
     pub fn validate(&self) -> Result<(), TextFragmentError> {
-        let crate::Reference::Span {
-            container,
-            unit,
-            start,
-            end,
-        } = &self.origin.reference
-        else {
-            return Err(TextFragmentError::Origin);
-        };
-        if crate::Reference::parse(&self.origin.reference.to_string())
-            .ok()
-            .as_ref()
-            != Some(&self.origin.reference)
-            || self.origin.start > self.origin.end
-            || matches!(unit, crate::SpanUnit::Bytes)
-                && (*start != self.origin.start || *end != self.origin.end)
-        {
-            return Err(TextFragmentError::Origin);
-        }
+        let container = span_container(&self.origin)?;
         self.version.validate_container(container)?;
         self.seek.validate(container, &self.coverage())
     }
+}
+
+fn span_container(origin: &TextSpanOrigin) -> Result<&crate::Reference, TextFragmentError> {
+    let crate::Reference::Span {
+        container,
+        unit,
+        start,
+        end,
+    } = &origin.reference
+    else {
+        return Err(TextFragmentError::Origin);
+    };
+    if crate::Reference::parse(&origin.reference.to_string())
+        .ok()
+        .as_ref()
+        != Some(&origin.reference)
+        || origin.start > origin.end
+        || matches!(unit, crate::SpanUnit::Bytes) && (*start != origin.start || *end != origin.end)
+    {
+        return Err(TextFragmentError::Origin);
+    }
+    Ok(container)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -188,7 +232,53 @@ pub struct QueryRun {
     pub read_at: ChangePosition,
     pub machine: String,
     pub authorship: Authorship,
-    pub binding: ExecutionBinding,
+    pub binding: RunBinding,
+}
+
+/// A continuation retains one bounded reference to the original execution.
+/// Its own envelope is provenance of this invocation, never old authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RunBinding {
+    Original {
+        execution: Box<ExecutionBinding>,
+    },
+    Continuation {
+        root: crate::RunId,
+        binding_hash: crate::BlobHash,
+        position: crate::read::ReadPosition,
+        accepted_request: Option<serde_json::Value>,
+    },
+}
+impl RunBinding {
+    pub fn original(&self) -> Option<&ExecutionBinding> {
+        match self {
+            Self::Original { execution } => Some(execution),
+            Self::Continuation { .. } => None,
+        }
+    }
+    pub fn original_mut(&mut self) -> Option<&mut ExecutionBinding> {
+        match self {
+            Self::Original { execution } => Some(execution),
+            Self::Continuation { .. } => None,
+        }
+    }
+    /// Stable action identity belongs to the original execution, not the page.
+    pub fn binding_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        match self {
+            Self::Original { execution } => execution.hash(),
+            Self::Continuation { binding_hash, .. } => Ok(*binding_hash),
+        }
+    }
+}
+impl QueryRun {
+    pub fn binding_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        self.binding.binding_hash()
+    }
+    /// Integrity of this exact invocation, including its position and envelope.
+    pub fn record_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        metadata_hash(b"polylogue-query-run-begin-v1\0", self)
+    }
 }
 
 /// Completion never replaces the immutable execution inputs.
@@ -197,36 +287,80 @@ pub struct QueryRun {
 pub struct QueryRunOutcome {
     pub run: crate::RunId,
     pub binding_hash: crate::BlobHash,
+    pub run_hash: crate::BlobHash,
     pub at: Timestamp,
     pub outcome: RunOutcome,
     pub count: Option<u64>,
     pub exact: bool,
+    /// Observed page result; this does not certify receipt by the client.
+    pub next: Option<crate::read::ReadyCall>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ExecutionBindingError {
+    #[error(transparent)]
+    Read(#[from] crate::read::ReadError),
+    #[error(transparent)]
+    Span(#[from] TextFragmentError),
+    #[error("paged reading requires its resolved logical budget; streaming has none")]
+    PageBudget,
+    #[error("span-source metadata differs from the accepted direct presentation")]
+    SpanTarget,
+}
 impl ExecutionBinding {
-    /// Stable identity across JSON map insertion orders and feature unions.
-    pub fn hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
-        fn ordered(value: serde_json::Value) -> serde_json::Value {
-            match value {
-                serde_json::Value::Object(fields) => {
-                    let fields: BTreeMap<_, _> = fields.into_iter().collect();
-                    serde_json::Value::Object(
-                        fields
-                            .into_iter()
-                            .map(|(key, value)| (key, ordered(value)))
-                            .collect(),
-                    )
+    /// Shape only. Raw serialized bindings never establish custody or authority.
+    pub fn validate_presentation(&self) -> Result<(), ExecutionBindingError> {
+        if let ExecutionPresentation::Read {
+            options,
+            delivery,
+            page_budget,
+            direct_source,
+            ..
+        } = &self.presentation
+        {
+            options.validate()?;
+            if matches!(delivery, crate::read::ReadDelivery::Page) != page_budget.is_some() {
+                return Err(ExecutionBindingError::PageBudget);
+            }
+            if let Some(source) = direct_source {
+                source.validate()?;
+                if self.query_options.direct_reference.as_ref() != Some(&source.origin().reference)
+                {
+                    return Err(ExecutionBindingError::SpanTarget);
                 }
-                serde_json::Value::Array(values) => {
-                    serde_json::Value::Array(values.into_iter().map(ordered).collect())
-                }
-                value => value,
             }
         }
-        let mut bytes = b"polylogue-execution-binding-v1\0".to_vec();
-        bytes.extend(serde_json::to_vec(&ordered(serde_json::to_value(self)?))?);
-        Ok(crate::BlobHash::of(&bytes))
+        Ok(())
     }
+    /// Stable identity across JSON map insertion orders and feature unions.
+    pub fn hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        metadata_hash(b"polylogue-execution-binding-v1\0", self)
+    }
+}
+fn metadata_hash(
+    domain: &[u8],
+    value: &impl Serialize,
+) -> Result<crate::BlobHash, serde_json::Error> {
+    fn ordered(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(fields) => {
+                let fields: BTreeMap<_, _> = fields.into_iter().collect();
+                serde_json::Value::Object(
+                    fields
+                        .into_iter()
+                        .map(|(key, value)| (key, ordered(value)))
+                        .collect(),
+                )
+            }
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(ordered).collect())
+            }
+            value => value,
+        }
+    }
+    let mut bytes = domain.to_vec();
+    bytes.extend(serde_json::to_vec(&ordered(serde_json::to_value(value)?))?);
+    Ok(crate::BlobHash::of(&bytes))
 }
 
 /// Composition is recorded in semantic question coordinates, not mutable names.
