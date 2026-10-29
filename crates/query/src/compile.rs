@@ -229,6 +229,8 @@ pub struct Program {
     pub now: i64,
     pub zone: String,
     pub day_start_minutes: u16,
+    /// Shared expression resolutions carried unchanged by every continuation.
+    pub resolved_times: Vec<query_language::time::ResolvedTime>,
     /// `| measure WHAT`: the measurement to run over the sessions `sql`
     /// selects, instead of returning its rows.
     pub measure: Option<Measure>,
@@ -403,6 +405,7 @@ struct MatchRel {
 }
 
 pub(crate) struct Compiler<'a> {
+    resolved_times: std::cell::RefCell<Vec<query_language::time::ResolvedTime>>,
     text: &'a str,
     opts: &'a Options,
     params: Vec<Param>,
@@ -457,6 +460,7 @@ impl<'a> Compiler<'a> {
             notes: vec![],
             incomplete: vec![],
             text_terms: vec![],
+            resolved_times: Default::default(),
             id_checks: vec![],
             change_generations: vec![],
             shown: vec![],

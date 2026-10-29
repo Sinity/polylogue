@@ -763,7 +763,12 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn time(&self, field: &str, text: &str, span: Span) -> Result<Time, QueryError> {
         let _ = field;
-        time::resolve(text, &self.opts.clock).map(|resolved| resolved.value).map_err(|mut error| { error.position = span.start; QueryError::language(error, self.text) })
+        time::resolve(text, &self.opts.clock).map(|resolved| {
+            let value = resolved.value;
+            let mut resolutions = self.resolved_times.borrow_mut();
+            if !resolutions.contains(&resolved) { resolutions.push(resolved); }
+            value
+        }).map_err(|mut error| { error.position = span.start; QueryError::language(error, self.text) })
     }
 
     /// `path` and the directories below it, by whole components, exactly.
