@@ -120,7 +120,6 @@ impl Sinex {
     }
 
     pub(crate) fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
-        self.with(async |client| client.retry_prepared().await)?;
         let entries = self
             .spool
             .lock()
