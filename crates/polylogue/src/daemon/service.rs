@@ -546,25 +546,31 @@ fn handle_inner(
                 let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
                     return error("bad_request", "expression is required for query");
                 };
-                super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, _near| {
-                    super::query::explain(
-                        &reader,
-                        super::query::Ask {
-                            text,
-                            cursor: None,
-                            page_size: None,
-                            why: false,
-                            session,
-                            context: operation
-                                .as_ref()
-                                .expect("evaluated operation context")
-                                .clone(),
-                            embeddings,
-                            near: None,
-                            fields: &[],
-                        },
-                    )
-                })
+                super::query::with_ranking(
+                    &reader,
+                    &d.warm,
+                    &d.config,
+                    |embeddings, ranking_identity, _near| {
+                        super::query::explain(
+                            &reader,
+                            super::query::Ask {
+                                text,
+                                cursor: None,
+                                page_size: None,
+                                why: false,
+                                session,
+                                context: operation
+                                    .as_ref()
+                                    .expect("evaluated operation context")
+                                    .clone(),
+                                embeddings,
+                                ranking_identity,
+                                near: None,
+                                fields: &[],
+                            },
+                        )
+                    },
+                )
             } else {
                 crate::explain::answer(
                     &subject,
@@ -618,11 +624,15 @@ fn handle_inner(
             model,
             cursor,
             page_size,
-        } => super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
-            match super::calendar::cost(
+        } => super::query::with_ranking(
+            &reader,
+            &d.warm,
+            &d.config,
+            |embeddings, ranking_identity, near| match super::calendar::cost(
                 &reader,
                 super::calendar::Cost {
                     embeddings,
+                    ranking_identity,
                     near: Some(near),
                     month: month.as_deref(),
                     query: &query,
@@ -641,8 +651,8 @@ fn handle_inner(
                     message: f.message,
                     detail: f.detail,
                 },
-            }
-        }),
+            },
+        ),
         Request::Status => status::answer(d, &reader),
         Request::Query {
             text,
@@ -651,30 +661,36 @@ fn handle_inner(
             why,
             session,
             fields,
-        } => super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
-            let ask = super::query::Ask {
-                text: &text,
-                cursor: cursor.as_deref(),
-                page_size,
-                why,
-                session,
-                context: operation
-                    .as_ref()
-                    .expect("evaluated operation context")
-                    .clone(),
-                embeddings,
-                near: Some(near),
-                fields: &fields,
-            };
-            match super::query::run(&reader, ask) {
-                Ok(data) => query_answer(d, &reader, data),
-                Err(f) => Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                },
-            }
-        }),
+        } => super::query::with_ranking(
+            &reader,
+            &d.warm,
+            &d.config,
+            |embeddings, ranking_identity, near| {
+                let ask = super::query::Ask {
+                    text: &text,
+                    cursor: cursor.as_deref(),
+                    page_size,
+                    why,
+                    session,
+                    context: operation
+                        .as_ref()
+                        .expect("evaluated operation context")
+                        .clone(),
+                    embeddings,
+                    ranking_identity,
+                    near: Some(near),
+                    fields: &fields,
+                };
+                match super::query::run(&reader, ask) {
+                    Ok(data) => query_answer(d, &reader, data),
+                    Err(f) => Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    },
+                }
+            },
+        ),
         Request::Complete { .. } => {
             unreachable!("completion is handled before opening an archive reader")
         }
@@ -782,8 +798,11 @@ fn handle_inner(
                 Ok(operation) => operation,
                 Err(response) => return response,
             };
-            let kept =
-                super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
+            let kept = super::query::with_ranking(
+                &reader,
+                &d.warm,
+                &d.config,
+                |embeddings, ranking_identity, near| {
                     let ask = super::query::Ask {
                         text: &text,
                         cursor: None,
@@ -792,11 +811,13 @@ fn handle_inner(
                         session: None,
                         context: operation.clone(),
                         embeddings,
+                        ranking_identity,
                         near: Some(near),
                         fields: &[],
                     };
                     super::query::keep(&reader, ask)
-                });
+                },
+            );
             let kept = match kept {
                 Ok(k) => k,
                 Err(f) => {
@@ -883,6 +904,7 @@ fn handle_inner(
                     .expect("evaluated operation context")
                     .clone(),
                 embeddings: false,
+                ranking_identity: None,
                 near: None,
                 fields: &[],
             };
@@ -1155,77 +1177,83 @@ fn query_targets(
     invocation: &crate::operation::Invocation,
 ) -> Result<Vec<polylogue_model::Reference>, Response> {
     use polylogue_model::Reference;
-    super::query::with_ranking(reader, &d.warm, &d.config, |embeddings, near| {
-        let operation = d.resolve_operation_context(invocation.clone())?;
-        let mut targets = Vec::new();
-        let mut seen = HashSet::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let ask = super::query::Ask {
-                text: query,
-                cursor: cursor.as_deref(),
-                page_size: Some(1_000),
-                why: false,
-                session: None,
-                context: operation.clone(),
-                embeddings,
-                near: Some(near),
-                fields: &[],
-            };
-            let page = super::query::run(reader, ask).map_err(|f| Response::Error {
-                kind: f.kind,
-                message: f.message,
-                detail: f.detail,
-            })?;
-            let unit = page["unit"].as_str().unwrap_or("");
-            if !matches!(unit, "sessions" | "messages" | "documents" | "notes")
-                || page["shape"] != "rows"
-            {
-                return Err(error(
-                    "bad_request",
-                    format!(
-                        "a note needs session, message, document or note rows; the query returned {unit} in another form"
-                    ),
-                ));
-            }
-            for row in page["rows"].as_array().into_iter().flatten() {
-                let Some(id) = row["id"].as_str() else {
-                    continue;
+    super::query::with_ranking(
+        reader,
+        &d.warm,
+        &d.config,
+        |embeddings, ranking_identity, near| {
+            let operation = d.resolve_operation_context(invocation.clone())?;
+            let mut targets = Vec::new();
+            let mut seen = HashSet::new();
+            let mut cursor: Option<String> = None;
+            loop {
+                let ask = super::query::Ask {
+                    text: query,
+                    cursor: cursor.as_deref(),
+                    page_size: Some(1_000),
+                    why: false,
+                    session: None,
+                    context: operation.clone(),
+                    embeddings,
+                    ranking_identity: ranking_identity.clone(),
+                    near: Some(near),
+                    fields: &[],
                 };
-                let target = match unit {
-                    "sessions" => polylogue_model::SessionId::parse(id)
-                        .map(Reference::Session)
-                        .ok(),
-                    "messages" => polylogue_model::MessageId::parse(id)
-                        .map(Reference::Message)
-                        .ok(),
-                    "documents" => polylogue_model::DocumentId::parse(id)
-                        .map(Reference::Document)
-                        .ok(),
-                    _ => Some(Reference::Assertion(polylogue_model::RevisionReference {
-                        root: id.to_owned(),
-                        revision: None,
-                    })),
-                };
-                if let Some(target) = target
-                    && seen.insert(target.clone())
+                let page = super::query::run(reader, ask).map_err(|f| Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                })?;
+                let unit = page["unit"].as_str().unwrap_or("");
+                if !matches!(unit, "sessions" | "messages" | "documents" | "notes")
+                    || page["shape"] != "rows"
                 {
-                    targets.push(target);
+                    return Err(error(
+                        "bad_request",
+                        format!(
+                            "a note needs session, message, document or note rows; the query returned {unit} in another form"
+                        ),
+                    ));
+                }
+                for row in page["rows"].as_array().into_iter().flatten() {
+                    let Some(id) = row["id"].as_str() else {
+                        continue;
+                    };
+                    let target = match unit {
+                        "sessions" => polylogue_model::SessionId::parse(id)
+                            .map(Reference::Session)
+                            .ok(),
+                        "messages" => polylogue_model::MessageId::parse(id)
+                            .map(Reference::Message)
+                            .ok(),
+                        "documents" => polylogue_model::DocumentId::parse(id)
+                            .map(Reference::Document)
+                            .ok(),
+                        _ => Some(Reference::Assertion(polylogue_model::RevisionReference {
+                            root: id.to_owned(),
+                            revision: None,
+                        })),
+                    };
+                    if let Some(target) = target
+                        && seen.insert(target.clone())
+                    {
+                        targets.push(target);
+                    }
+                }
+                match page["next"].as_str() {
+                    Some(next) => cursor = Some(next.to_owned()),
+                    None => break,
                 }
             }
-            match page["next"].as_str() {
-                Some(next) => cursor = Some(next.to_owned()),
-                None => break,
+            if targets.is_empty() {
+                return Err(error(
+                    "empty",
+                    "the query returns no rows; nothing was noted",
+                ));
             }
-        }
-        if targets.is_empty() {
-            return Err(error(
-                "empty",
-                "the query returns no rows; nothing was noted",
-            ));
-        }
-        Ok(targets)
-    })
+            Ok(targets)
+        },
+    )
 }
 
 /// Owns the application workers and writer lock. Transports must stop
