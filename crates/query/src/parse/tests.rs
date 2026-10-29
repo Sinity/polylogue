@@ -4,7 +4,7 @@ fn p(text: &str) -> Query {
     parse(text).unwrap_or_else(|e| panic!("{text:?}: {e}"))
 }
 
-fn cond(text: &str) -> CondKind {
+fn cond(text: &str) -> ConditionKind {
     match p(text).source {
         Source::Sessions { cond } => cond.kind,
         other => panic!("{text:?}: {other:?}"),
@@ -59,46 +59,46 @@ fn every_spec_example_parses() {
 
 #[test]
 fn juxtaposition_is_and_and_capitals_are_operators() {
-    let CondKind::And { all } = cond("repo:x \"a b\" refactor*") else {
+    let ConditionKind::And { conditions: all } = cond("repo:x \"a b\" refactor*") else {
         panic!()
     };
     assert_eq!(all.len(), 3);
-    assert!(matches!(&all[1].kind, CondKind::Text { phrase: true, text } if text == "a b"));
-    assert!(matches!(&all[2].kind, CondKind::Text { phrase: false, text } if text == "refactor*"));
+    assert!(matches!(&all[1].kind, ConditionKind::Text { phrase: true, text } if text == "a b"));
+    assert!(matches!(&all[2].kind, ConditionKind::Text { phrase: false, text } if text == "refactor*"));
     // Lower-case `and`/`or` are words to search for.
-    let CondKind::And { all } = cond("cats and dogs") else {
+    let ConditionKind::And { conditions: all } = cond("cats and dogs") else {
         panic!()
     };
     assert_eq!(all.len(), 3);
-    assert!(matches!(cond("a OR b"), CondKind::Or { .. }));
-    assert!(matches!(cond("NOT tag:x"), CondKind::Not { .. }));
-    assert!(matches!(cond("-tag:x"), CondKind::Not { .. }));
+    assert!(matches!(cond("a OR b"), ConditionKind::Or { .. }));
+    assert!(matches!(cond("NOT tag:x"), ConditionKind::Not { .. }));
+    assert!(matches!(cond("-tag:x"), ConditionKind::Not { .. }));
 }
 
 #[test]
 fn values_and_compact_comparisons() {
     assert!(matches!(
         cond("origin:(a|b|c)"),
-        CondKind::Match { value: Value::Alternatives { any }, .. } if any.len() == 3
+        ConditionKind::Match { value: Value::Set { any }, .. } if any.len() == 3
     ));
     assert!(matches!(
         cond("kind:*"),
-        CondKind::Match {
+        ConditionKind::Match {
             value: Value::Any,
             ..
         }
     ));
     assert!(matches!(
         cond("messages:>=10"),
-        CondKind::Compare { op: Op::Ge, value, .. } if value == "10"
+        ConditionKind::Compare { op: Op::Ge, value, .. } if value == "10"
     ));
     assert!(matches!(
         cond("tag:project:morrow"),
-        CondKind::Match { value: Value::One { text, .. }, .. } if text == "project:morrow"
+        ConditionKind::Match { value: Value::Scalar { text, .. }, .. } if text == "project:morrow"
     ));
     assert!(matches!(
         cond("started > last week"),
-        CondKind::Compare { value, .. } if value == "last week"
+        ConditionKind::Compare { value, .. } if value == "last week"
     ));
 }
 
@@ -106,28 +106,28 @@ fn values_and_compact_comparisons() {
 fn references_parse_as_their_own_conditions() {
     assert!(matches!(
         cond("https://chatgpt.com/c/abc"),
-        CondKind::Url { .. }
+        ConditionKind::Url { .. }
     ));
-    assert!(matches!(cond("@3.2"), CondKind::Position { .. }));
+    assert!(matches!(cond("@3.2"), ConditionKind::Position { .. }));
 }
 
 #[test]
 fn a_pasted_call_is_one_search_word() {
     assert!(matches!(
         cond("weekday_offset()"),
-        CondKind::Text { text, phrase: false } if text == "weekday_offset()"
+        ConditionKind::Text { text, phrase: false } if text == "weekday_offset()"
     ));
-    assert!(matches!(cond("parse(x) fails"), CondKind::And { all } if all.len() == 2));
+    assert!(matches!(cond("parse(x) fails"), ConditionKind::And { conditions: all } if all.len() == 2));
     // Parentheses with spaces inside still group.
-    assert!(matches!(cond("a (b OR c)"), CondKind::And { all } if all.len() == 2));
+    assert!(matches!(cond("a (b OR c)"), ConditionKind::And { conditions: all } if all.len() == 2));
 }
 
 #[test]
 fn seq_records_its_gaps() {
     let q = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within:5m] tool:Bash)");
     let Source::Unit {
-        cond: Some(Cond {
-            kind: CondKind::Seq { steps, gaps },
+        cond: Some(Condition {
+            kind: ConditionKind::Seq { steps, gaps },
             ..
         }),
         ..
@@ -156,7 +156,7 @@ fn a_session_query_can_scope_a_row_query() {
 #[test]
 fn a_unit_name_that_is_also_a_field_still_compares() {
     // `messages` is a unit and a session field.
-    assert!(matches!(cond("messages >= 10"), CondKind::Compare { .. }));
+    assert!(matches!(cond("messages >= 10"), ConditionKind::Compare { .. }));
     assert!(matches!(
         p("messages").source,
         Source::Unit {
@@ -292,14 +292,14 @@ fn queries_inside_parentheses_parse_as_queries() {
         [(Combination::Union, false), (Combination::Except, true)]
     );
     match cond("count(tool_call where outcome:error) >= 3") {
-        CondKind::Count { unit, op, n, cond } => {
+        ConditionKind::Count { unit, op, n, cond } => {
             assert_eq!((unit, op, n), (Unit::ToolCalls, Op::Ge, 3));
             assert!(cond.is_some());
         }
         other => panic!("{other:?}"),
     }
     match cond("id in (messages where chrono | group by session)") {
-        CondKind::In { field, query } => {
+        ConditionKind::In { field, query } => {
             assert_eq!(field, "id");
             assert_eq!(query.stages.len(), 1);
         }
@@ -318,7 +318,7 @@ fn queries_inside_parentheses_parse_as_queries() {
 #[test]
 fn a_saved_query_takes_values_for_its_parameters() {
     match cond("query:failing(repo=morrow, phrase=\"two words\")") {
-        CondKind::Saved { name, arguments } => {
+        ConditionKind::Saved { name, arguments } => {
             assert_eq!(name, "failing");
             let given: Vec<(&str, &str, bool)> = arguments
                 .iter()
@@ -333,7 +333,7 @@ fn a_saved_query_takes_values_for_its_parameters() {
     }
     assert!(matches!(
         cond("query:failing"),
-        CondKind::Saved { arguments, .. } if arguments.is_empty()
+        ConditionKind::Saved { arguments, .. } if arguments.is_empty()
     ));
 }
 
@@ -345,8 +345,8 @@ fn the_words_count_and_in_are_still_searched() {
             panic!("{text}: {q:?}")
         };
         let words = match &cond.kind {
-            CondKind::And { all } => all.iter().all(|c| matches!(c.kind, CondKind::Text { .. })),
-            CondKind::Text { .. } => true,
+            ConditionKind::And { conditions: all } => all.iter().all(|c| matches!(c.kind, ConditionKind::Text { .. })),
+            ConditionKind::Text { .. } => true,
             _ => false,
         };
         assert!(words, "{text}: {cond:?}");

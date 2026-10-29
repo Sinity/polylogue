@@ -11,7 +11,46 @@
 //! aliases with an `n` prefix (`{ns}`, `{nt}`, `{nr}`, …), its FROM clause as
 //! `{from}` and the condition on it as `{cond}`.
 
-use crate::ast::Unit;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    Sessions,
+    Documents,
+    Messages,
+    Blocks,
+    ToolCalls,
+    Files,
+    Events,
+    Notes,
+    Links,
+    Turns,
+    Deliveries,
+    Work,
+    Changes,
+}
+
+impl Unit {
+    /// Every unit, in the registry's order.
+    pub fn all() -> impl Iterator<Item = Unit> {
+        crate::units::UNITS.iter().map(|s| s.unit)
+    }
+
+    pub fn name(self) -> &'static str {
+        crate::units::spec(self).name
+    }
+
+    /// The singular form `exists` and `seq` use.
+    pub fn singular(self) -> &'static str {
+        crate::units::spec(self).singular
+    }
+
+    pub fn from_name(name: &str) -> Option<Unit> {
+        let name = name.to_ascii_lowercase();
+        Unit::all().find(|u| u.name() == name || u.singular() == name)
+    }
+}
+
+
 use crate::compile::{ColKind, ColumnReference};
 use crate::fields::{self, Aliases, Expr};
 use polylogue_model::SessionKind;

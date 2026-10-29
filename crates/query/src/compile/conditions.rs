@@ -4,17 +4,17 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
-    pub(super) fn is_reference(&self, c: &Cond) -> bool {
+    pub(super) fn is_reference(&self, c: &Condition) -> bool {
         match &c.kind {
-            CondKind::Url { .. } | CondKind::Position { .. } => true,
-            CondKind::Match { field, .. } => {
+            ConditionKind::Reference { .. } => true,
+            ConditionKind::Match { field, .. } => {
                 let f = field.to_ascii_lowercase();
                 self.opts.origins.contains(&f)
                     || matches!(f.as_str(), "session" | "message" | "block" | "note")
             }
-            CondKind::Text {
+            ConditionKind::Text {
                 text,
-                phrase: false,
+                mode: TextMode::Word,
             } => matches!(text.as_str(), "last" | "latest" | "self") || id_shaped(text),
             _ => false,
         }
@@ -24,21 +24,21 @@ impl<'a> Compiler<'a> {
     /// top-level text term ranks the rows.
     pub(super) fn cond(
         &mut self,
-        c: &Cond,
+        c: &Condition,
         scope: &RowContext,
         top: bool,
     ) -> Result<String, QueryError> {
         Ok(match &c.kind {
-            CondKind::And { all } => {
+            ConditionKind::And { conditions: all } => {
                 // Several words in one AND must occur in the same message.
                 let mut parts = vec![];
                 let mut words = vec![];
                 for x in all {
                     match &x.kind {
-                        CondKind::Text { text, phrase }
+                        ConditionKind::Text { text, mode }
                             if !self.is_reference(x) && text_unit(scope.unit) =>
                         {
-                            words.push((text.clone(), *phrase, x.span));
+                            words.push((text.clone(), *mode == TextMode::Phrase, x.span));
                         }
                         _ => parts.push(self.cond(x, scope, top)?),
                     }
@@ -48,46 +48,52 @@ impl<'a> Compiler<'a> {
                 }
                 format!("({})", parts.join(" AND "))
             }
-            CondKind::Or { any } => {
+            ConditionKind::Or { conditions: any } => {
                 let parts = any
                     .iter()
                     .map(|x| self.cond(x, scope, false))
                     .collect::<Result<Vec<_>, _>>()?;
                 format!("({})", parts.join(" OR "))
             }
-            CondKind::Not { cond } => format!("NOT ({})", self.cond(cond, scope, false)?),
-            CondKind::Text { text, phrase } => {
+            ConditionKind::Not { condition: cond } => format!("NOT ({})", self.cond(cond, scope, false)?),
+            ConditionKind::Text { text, mode } => {
                 if self.is_reference(c) {
                     self.reference_word(text, scope, c.span)?
                 } else {
-                    self.text(&[(text.clone(), *phrase, c.span)], scope, Index::Prose, top)?
+                    self.text(&[(text.clone(), *mode == TextMode::Phrase, c.span)], scope, Index::Prose, top)?
                 }
             }
-            CondKind::Url { url } => self.url(url, scope, c.span)?,
-            CondKind::Position { .. } => {
-                return Err(QueryError::Invalid {
-                    message: "@N refers to a position in the last listing, which only an interactive surface keeps".into(),
-                    position: c.span.start,
-                });
+            ConditionKind::Reference { reference } => {
+                if reference.starts_with("http") { self.url(reference, scope, c.span)? }
+                else if reference.starts_with('@') { return Err(QueryError::Invalid { message: "@N requires an interactive listing context".into(), position: c.span.start }); }
+                else if let Some((field, text)) = reference.split_once(':') {
+                    let value = Value::scalar(text);
+                    self.field_cond(field, FieldOp::Match(&value), scope, c.span, top)?
+                } else { self.reference_word(reference, scope, c.span)? }
             }
-            CondKind::Exists { unit, cond } => self.exists(*unit, cond, scope, c.span)?,
-            CondKind::Count { unit, cond, op, n } => {
-                self.counted(*unit, cond.as_deref(), *op, *n, scope, c.span)?
+            ConditionKind::Exists { unit, condition } => {
+                let condition = condition.as_deref().cloned().unwrap_or_else(|| Condition { span: c.span, kind: ConditionKind::And { conditions: vec![] } });
+                self.exists(bind_unit(unit)?, &condition, scope, c.span)?
             }
-            CondKind::In { field, query } => self.member_of(field, query, scope, c.span)?,
-            CondKind::Saved { name, arguments } => {
+            ConditionKind::Count { unit, condition, op, count } => {
+                self.counted(bind_unit(unit)?, condition.as_deref(), *op, *count, scope, c.span)?
+            }
+            ConditionKind::In { operand, query } => self.member_of(field_operand(operand)?, query, scope, c.span)?,
+            ConditionKind::Saved { name, arguments } => {
                 self.saved_cond(name, arguments, scope, c.span)?
             }
-            CondKind::Seq { steps, gaps } => self.seq(steps, gaps, scope, c.span)?,
-            CondKind::Match { field, value } => {
+            ConditionKind::Sequence { steps, gaps, all: false, unit } if bind_unit(unit)? == Unit::ToolCalls => self.seq(steps, gaps, scope, c.span)?,
+            ConditionKind::Match { field, value } => {
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
             }
-            CondKind::Compare { field, op, value } => {
-                self.field_cond(field, FieldOp::Compare(*op, value), scope, c.span, top)?
+            ConditionKind::Compare { operand, op, value } => {
+                self.field_cond(field_operand(operand)?, FieldOp::Compare(*op, value_text(value)?), scope, c.span, top)?
             }
-            CondKind::Between { field, from, to } => {
-                self.field_cond(field, FieldOp::Between(from, to), scope, c.span, top)?
+            ConditionKind::Between { operand, from, to } => {
+                self.field_cond(field_operand(operand)?, FieldOp::Between(value_text(from)?, value_text(to)?), scope, c.span, top)?
             }
+            ConditionKind::Similar { value } => self.field_cond("near", FieldOp::Match(value), scope, c.span, top)?,
+            _ => return Err(not_built("this shared condition")),
         })
     }
 
@@ -373,7 +379,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<String, QueryError> {
         let lower = field.to_ascii_lowercase();
         // A known origin or a reference prefix before `:` is a reference.
-        if let FieldOp::Match(Value::One { text, .. }) = &op {
+        if let FieldOp::Match(Value::Scalar { text, .. }) = &op {
             if self.opts.origins.contains(&lower) {
                 return self.session_ref(&format!("{lower}:{text}"), scope, span);
             }
@@ -439,7 +445,7 @@ impl<'a> Compiler<'a> {
             return compile(self, &call);
         }
         let expr = def
-            .expr(&a, self.opts.clock.now)
+            .expr(&a, self.opts.clock.now.as_millisecond())
             .expect("non-special fields have SQL");
         if top && matches!(op, FieldOp::Compare(..) | FieldOp::Between(..)) {
             self.show(
@@ -586,15 +592,15 @@ impl<'a> Compiler<'a> {
             (_, FieldOp::Match(Value::Any)) => Ok("1".into()),
             (
                 _,
-                FieldOp::Match(Value::One {
+                FieldOp::Match(Value::Scalar {
                     text,
                     quoted: false,
                 }),
             ) if text.eq_ignore_ascii_case("unknown") => Ok(format!("({expr}) IS NULL")),
             (Kind::Match, FieldOp::Match(v)) => {
                 let values = match v {
-                    Value::One { text, .. } => vec![text.clone()],
-                    Value::Alternatives { any } => any.clone(),
+                    Value::Scalar { text, .. } => vec![text.clone()],
+                    Value::Set { any } => any.clone(),
                     Value::Any => unreachable!("handled above"),
                 };
                 if let Some(set) = def.values {
@@ -657,7 +663,7 @@ impl<'a> Compiler<'a> {
                 }
                 Ok(format!("({})", parts.join(" OR ")))
             }
-            (Kind::Bool, FieldOp::Match(Value::One { text, .. })) => {
+            (Kind::Bool, FieldOp::Match(Value::Scalar { text, .. })) => {
                 let b = match text.to_ascii_lowercase().as_str() {
                     "true" | "yes" | "1" => 1,
                     "false" | "no" | "0" => 0,
@@ -667,7 +673,7 @@ impl<'a> Compiler<'a> {
             }
             (
                 Kind::Number | Kind::Money | Kind::Duration,
-                FieldOp::Match(Value::One { text, .. }),
+                FieldOp::Match(Value::Scalar { text, .. }),
             ) => {
                 let v = self.scalar(def, text, span)?;
                 Ok(format!("({expr}) = {v}"))
@@ -681,23 +687,23 @@ impl<'a> Compiler<'a> {
                 let b = self.scalar(def, to, span)?;
                 Ok(format!("(({expr}) >= {a} AND ({expr}) <= {b})"))
             }
-            (Kind::Time, FieldOp::Match(Value::One { text, .. })) => {
+            (Kind::Time, FieldOp::Match(Value::Scalar { text, .. })) => {
                 let t = self.time(name, text, span)?;
                 Ok(format!(
                     "(({expr}) >= {} AND ({expr}) < {})",
-                    t.start(),
-                    t.end()
+                    t.start_ms(),
+                    t.end_ms()?
                 ))
             }
             (Kind::Time, FieldOp::Compare(op, value)) => {
                 let t = self.time(name, value, span)?;
                 Ok(match op {
-                    Op::Gt => format!("({expr}) >= {}", t.end()),
-                    Op::Ge => format!("({expr}) >= {}", t.start()),
-                    Op::Lt => format!("({expr}) < {}", t.start()),
-                    Op::Le => format!("({expr}) < {}", t.end()),
-                    Op::Eq => format!("(({expr}) >= {} AND ({expr}) < {})", t.start(), t.end()),
-                    Op::Ne => format!("(({expr}) < {} OR ({expr}) >= {})", t.start(), t.end()),
+                    Op::Gt => format!("({expr}) >= {}", t.end_ms()?),
+                    Op::Ge => format!("({expr}) >= {}", t.start_ms()),
+                    Op::Lt => format!("({expr}) < {}", t.start_ms()),
+                    Op::Le => format!("({expr}) < {}", t.end_ms()?),
+                    Op::Eq => format!("(({expr}) >= {} AND ({expr}) < {})", t.start_ms(), t.end_ms()?),
+                    Op::Ne => format!("(({expr}) < {} OR ({expr}) >= {})", t.start_ms(), t.end_ms()?),
                 })
             }
             (Kind::Time, FieldOp::Between(from, to)) => {
@@ -705,8 +711,8 @@ impl<'a> Compiler<'a> {
                 let b = self.time(name, to, span)?;
                 Ok(format!(
                     "(({expr}) >= {} AND ({expr}) < {})",
-                    a.start(),
-                    b.end()
+                    a.start_ms(),
+                    b.end_ms()?
                 ))
             }
             (kind, op) => Err(QueryError::Invalid {
@@ -757,14 +763,8 @@ impl<'a> Compiler<'a> {
     }
 
     pub(super) fn time(&self, field: &str, text: &str, span: Span) -> Result<Time, QueryError> {
-        time::resolve(text, &self.opts.clock).ok_or_else(|| QueryError::BadValue {
-            field: field.to_owned(),
-            value: text.to_owned(),
-            position: span.start,
-            message: format!(
-                "{text:?} is not a time: use a date (2026-10-05), today, yesterday, this week, last month, 7d, 3h or 09:00"
-            ),
-        })
+        let _ = field;
+        time::resolve(text, &self.opts.clock).map(|resolved| resolved.value).map_err(|mut error| { error.position = span.start; QueryError::language(error, self.text) })
     }
 
     /// `path` and the directories below it, by whole components, exactly.

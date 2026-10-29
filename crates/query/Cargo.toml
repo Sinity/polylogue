@@ -9,8 +9,8 @@ publish.workspace = true
 [dependencies]
 schemars = "1"
 polylogue-model.workspace = true
-pest.workspace = true
-pest_derive.workspace = true
+query-language.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 jiff.workspace = true
