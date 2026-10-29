@@ -29,6 +29,8 @@ pub enum Error {
     Unreachable(String),
     #[error("Sinex refused {name}: {reason}")]
     Refused { name: String, reason: String },
+    #[error("historical event {event} was erased at {position}")]
+    Erased { event: String, position: i64 },
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]
@@ -421,23 +423,34 @@ impl polylogue_store::primary::Sinex for Sinex {
     }
     fn confirmed(
         &self,
-        after: i64,
+        state: &polylogue_store::primary::ReplayState,
         cache: &str,
-        scope: Option<&str>,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        let page = self.with(async |client| client.confirmed(after, cache, scope).await)?;
-        if !page.iter().any(|item| {
-            matches!(
-                item.change,
-                polylogue_store::primary::ConfirmedChange::ScopeReset { .. }
-            )
-        }) {
-            self.resume_publication();
-        }
+        let page = match self.with(async |client| client.confirmed(state, cache).await) {
+            Ok(page) => page,
+            Err(Error::Unreachable(_) | Error::Refused { .. }) => {
+                vec![polylogue_store::primary::Confirmed {
+                    position: 0,
+                    event: String::new(),
+                    output_index: 0,
+                    native: None,
+                    change: polylogue_store::primary::ConfirmedChange::Control(Box::new(
+                        polylogue_store::primary::ReplayControl::BasisStatus {
+                            status: polylogue_store::primary::ReplayBasisStatus::Unverified,
+                        },
+                    )),
+                }]
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.resume_publication();
         Ok(page)
     }
-    fn acknowledge(&self, position: i64) -> polylogue_store::Result<()> {
-        Ok(self.with(async |client| client.acknowledge(position).await)?)
+    fn acknowledge(
+        &self,
+        state: &polylogue_store::primary::ReplayState,
+    ) -> polylogue_store::Result<()> {
+        Ok(self.with(async |client| client.acknowledge(state).await)?)
     }
 }
 

@@ -8,6 +8,7 @@ fn private_context_token_is_not_in_the_public_schema() {
 
 fn available() -> PublicContext {
     PublicContext::Available {
+        offline_emergency: None,
         settings_identity: "settings-1".into(),
         context_token: "synthetic-owner-context-proof".into(),
         owner_revision: 7,
