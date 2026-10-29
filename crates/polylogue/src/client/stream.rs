@@ -11,7 +11,7 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] io::Error),
     #[error("{0:?}")]
-    Answer(Answer<serde_json::Value>),
+    Answer(Box<Answer<serde_json::Value>>),
 }
 
 pub fn run(
@@ -98,7 +98,7 @@ pub(crate) fn receive(
         first = false;
         for frame in decoder
             .push(&bytes[..count])
-            .map_err(|error| Error::Answer(Answer::error(error)))?
+            .map_err(|error| Error::Answer(Box::new(Answer::error(error))))?
         {
             if frame.event == "error" {
                 return Err(failure(frame.data.as_bytes())?);
@@ -114,7 +114,7 @@ fn failure(bytes: &[u8]) -> io::Result<Error> {
     let answer: Answer<serde_json::Value> =
         serde_json::from_slice(bytes).map_err(io::Error::other)?;
     match answer {
-        answer @ Answer::Error { .. } => Ok(Error::Answer(answer)),
+        answer @ Answer::Error { .. } => Ok(Error::Answer(Box::new(answer))),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "an error frame must contain a failure answer",

@@ -217,17 +217,17 @@ fn complete_snapshot(
         .ok()
         .map(|at| at.to_string());
     for candidate in &mut candidates {
-        if candidate.kind == CompletionKind::Value {
-            if let Some(written_at) = &written_at {
-                let separator = if candidate.help.is_empty() {
-                    ""
-                } else {
-                    " · "
-                };
-                candidate
-                    .help
-                    .push_str(&format!("{separator}values as of {written_at}"));
-            }
+        if candidate.kind == CompletionKind::Value
+            && let Some(written_at) = &written_at
+        {
+            let separator = if candidate.help.is_empty() {
+                ""
+            } else {
+                " · "
+            };
+            candidate
+                .help
+                .push_str(&format!("{separator}values as of {written_at}"));
         }
         candidate.help = polylogue_render::terminal::escape(&candidate.help);
     }
@@ -293,10 +293,10 @@ pub(crate) fn settings_file(
             .filter(|setting| setting.key == key)
             .flat_map(|setting| {
                 let mut choices = setting.choices;
-                if let Some(value) = setting.value.as_str() {
-                    if !choices.iter().any(|choice| choice == value) {
-                        choices.insert(0, value.into());
-                    }
+                if let Some(value) = setting.value.as_str()
+                    && !choices.iter().any(|choice| choice == value)
+                {
+                    choices.insert(0, value.into());
                 }
                 choices
                     .into_iter()

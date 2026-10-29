@@ -114,7 +114,9 @@ fn paging(
             let [position] = cursor.after.values.as_slice() else {
                 return Err(invalid("the calendar cursor position is invalid"));
             };
-            if cursor.after.row_identity != position.to_string() {
+            let identity = serde_json::to_string(position)
+                .map_err(|_| invalid("the calendar cursor position cannot be encoded"))?;
+            if cursor.after.row_identity != identity {
                 return Err(invalid("the calendar cursor row identity is invalid"));
             }
             (
@@ -438,7 +440,7 @@ pub fn cost(
         Ok(count) => json!({"count":count}),
         Err(error) => json!({"error":"store","message":error.to_string()}),
     };
-    let quota = match super::measure::run(reader, "quota", None, now, &day, None) {
+    let quota = match super::measure::run(reader, "quota", None, now, day, None) {
         Ok(data) => json!({"data":data}),
         Err(error) => json!({"error":error.kind,"message":error.message}),
     };

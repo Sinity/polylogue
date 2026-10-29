@@ -26,7 +26,7 @@ fn an_early_canonical_refusal_keeps_its_kind_and_notes_through_split_reads() {
     let Err(Error::Answer(actual)) = result else {
         panic!("expected refusal")
     };
-    assert_eq!(actual, expected);
+    assert_eq!(*actual, expected);
 }
 
 #[test]
@@ -43,5 +43,5 @@ fn a_late_refusal_after_split_unicode_never_delivers_completion() {
     let Err(Error::Answer(actual)) = result else {
         panic!("expected late refusal")
     };
-    assert_eq!(actual, refusal());
+    assert_eq!(*actual, refusal());
 }

@@ -92,6 +92,7 @@ impl Bundle {
             frames: 0,
         })
     }
+    #[cfg(test)]
     pub fn staging(&self) -> &Path {
         &self.staging
     }

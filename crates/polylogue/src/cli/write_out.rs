@@ -15,7 +15,7 @@ use std::{
 #[derive(Debug)]
 enum DeliveryError {
     Text(String),
-    Answer(command_surface::Answer<serde_json::Value>),
+    Answer(Box<command_surface::Answer<serde_json::Value>>),
 }
 impl From<String> for DeliveryError {
     fn from(value: String) -> Self {
@@ -47,7 +47,7 @@ pub(crate) fn run(
                         false
                     )
                 );
-            } else if let command_surface::Answer::Error { error, notes, .. } = &answer {
+            } else if let command_surface::Answer::Error { error, notes, .. } = answer.as_ref() {
                 eprintln!(
                     "polylogue: {}",
                     polylogue_render::terminal::escape(&error.message)
@@ -104,7 +104,7 @@ fn deliver(
             return Ok(code);
         }
         let Some(value) = answer.value() else {
-            return Err(DeliveryError::Answer(answer));
+            return Err(DeliveryError::Answer(Box::new(answer)));
         };
         let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
         polylogue_render::encode_document(
@@ -155,7 +155,7 @@ fn deliver(
 }
 
 enum Sink {
-    Directory(bundle::Bundle),
+    Directory(Box<bundle::Bundle>),
     Encoded {
         begin: Box<ReadBegin>,
         items: ExportItems,
@@ -193,7 +193,7 @@ fn consume(
                     code = 5;
                 }
                 sink = Some(if directory {
-                    Sink::Directory(
+                    Sink::Directory(Box::new(
                         bundle::Bundle::new(
                             destination.ok_or_else(|| invalid("directory destination missing"))?,
                             begin,
@@ -201,7 +201,7 @@ fn consume(
                             with_blobs,
                         )
                         .map_err(invalid)?,
-                    )
+                    ))
                 } else {
                     Sink::Encoded {
                         begin: Box::new(begin),
@@ -340,10 +340,10 @@ fn consume(
         };
         return Err(match error {
             crate::client::stream::Error::Answer(mut answer)
-                if matches!(answer, command_surface::Answer::Error { .. }) =>
+                if matches!(answer.as_ref(), command_surface::Answer::Error { .. }) =>
             {
                 if let (Some(note), command_surface::Answer::Error { notes, .. }) =
-                    (retained, &mut answer)
+                    (retained, answer.as_mut())
                 {
                     notes.push(note);
                 }

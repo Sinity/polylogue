@@ -1,25 +1,70 @@
 //! Real typed read delivery, independent of the retired rendered-session wire.
 use super::*;
-use polylogue_model::read::{FragmentEncoding, ItemKind, ReadPage};
+use polylogue_model::BlobHash;
+use polylogue_model::read::{ItemKind, ReadItem, ReadPage, SelectionLocator};
+use std::collections::BTreeMap;
 
 fn typed_page(output: &Output) -> ReadPage {
     assert!(output.status.success(), "{output:?}");
     serde_json::from_value(json(output)).unwrap()
 }
-fn words(page: &ReadPage) -> String {
-    page.document
-        .items
-        .iter()
-        .filter_map(|item| match &item.kind {
-            ItemKind::Text { text }
-            | ItemKind::Fragment {
-                encoding: FragmentEncoding::Text,
+#[derive(Default)]
+struct Items {
+    values: Vec<ReadItem>,
+    partial: BTreeMap<(SelectionLocator, u64, BlobHash), (String, u64)>,
+}
+impl Items {
+    fn push(&mut self, page: &ReadPage) {
+        for item in &page.document.items {
+            if let ItemKind::Fragment {
                 text,
-                ..
-            } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
+                position,
+                until,
+                total,
+            } = &item.kind
+            {
+                let key = (position.selection, position.item, position.item_hash);
+                let (encoded, characters) = self.partial.entry(key).or_default();
+                assert_eq!(
+                    position.character, *characters,
+                    "fragment gap or repeated prefix"
+                );
+                assert!(*until > *characters && *until <= *total);
+                assert_eq!(*until - *characters, text.chars().count() as u64);
+                encoded.push_str(text);
+                *characters = *until;
+                if until == total {
+                    let (encoded, _) = self.partial.remove(&key).unwrap();
+                    assert_eq!(BlobHash::of(encoded.as_bytes()), position.item_hash);
+                    let item: ReadItem = serde_json::from_str(&encoded).unwrap();
+                    assert!(!matches!(item.kind, ItemKind::Fragment { .. }));
+                    assert!(!self.values.contains(&item), "duplicate source item");
+                    self.values.push(item);
+                }
+            } else {
+                assert!(!self.values.contains(item), "duplicate source item");
+                self.values.push(item.clone());
+            }
+        }
+    }
+    fn text(&self) -> String {
+        assert!(
+            self.partial.is_empty(),
+            "delivery ended within an encoded item"
+        );
+        self.values
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+fn words(page: &ReadPage) -> String {
+    let mut items = Items::default();
+    items.push(page);
+    items.text()
 }
 
 #[test]
@@ -76,14 +121,14 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
             "1",
         ],
     );
-    let mut reconstructed = String::new();
+    let mut reconstructed = Items::default();
     for page_number in 0..1000 {
         assert!(
             output.stdout.len() <= 25_000,
             "page exceeds the transfer bound"
         );
         let page = typed_page(&output);
-        reconstructed.push_str(&words(&page));
+        reconstructed.push(&page);
         let Some(next) = page.document.footer.next else {
             break;
         };
@@ -95,7 +140,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
         arguments.extend(stages[0].args.iter().map(String::as_str));
         output = cli(&fixture, &arguments);
     }
-    assert_eq!(reconstructed, expected);
+    assert_eq!(reconstructed.text(), expected);
     let destination = directory.as_path().join("bundle");
     std::fs::create_dir(&destination).unwrap();
     let delivered = cli(

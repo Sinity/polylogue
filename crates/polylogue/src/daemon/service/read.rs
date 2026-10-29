@@ -398,10 +398,10 @@ fn visit(
     options: &ReadOptions,
     start: Option<ReadPosition>,
     near: Option<&polylogue_store::selection::NearFn<'_>>,
-    mixed: bool,
     footer: &mut ReadFooter,
     mut emit: impl FnMut(ReadRecord, SelectionLocator) -> Result<bool, Response>,
 ) -> Result<(), Response> {
+    let mixed = selection.direct_reference().is_none();
     let start_row = start.map_or(0, |p| p.selection.row);
     let mut pending = start.map(|p| p.selection);
     reader.visit_selection_from::<Response>(selection, start_row, near, |row_number, row| {
@@ -511,7 +511,7 @@ fn next_call(
         operation: "read".into(),
         arguments,
         request_id: format!("read-page-{}", blake3::hash(&identity).to_hex()),
-        deadline: execution.deadline.clone(),
+        deadline: execution.deadline,
     };
     d.ready_call(&call)
         .map_err(|error| command_surface::Answer::<serde_json::Value>::error(error).into())
@@ -584,26 +584,24 @@ pub(super) fn page(
                         }) {
                             continue;
                         }
-                        if let ReadPart::Item(item) = part {
-                            if pager
+                        if let ReadPart::Item(item) = part
+                            && pager
                                 .push_at(at, ordinal as u64, item.clone())
                                 .map_err(page_error)?
                                 == Push::Full
-                            {
-                                return Ok(false);
-                            }
+                        {
+                            return Ok(false);
                         }
                     }
                 } else {
                     for (ordinal, part) in parts.iter().enumerate() {
-                        if let ReadPart::Item(item) = part {
-                            if pager
+                        if let ReadPart::Item(item) = part
+                            && pager
                                 .push_at(at, ordinal as u64, item.clone())
                                 .map_err(page_error)?
                                 == Push::Full
-                            {
-                                return Ok(false);
-                            }
+                        {
+                            return Ok(false);
                         }
                     }
                 }
@@ -626,7 +624,6 @@ pub(super) fn page(
                     &execution.options,
                     anchor,
                     near,
-                    selection.direct_reference().is_none(),
                     &mut footer,
                     &mut emit,
                 )?;
@@ -723,7 +720,6 @@ pub(crate) fn produce(
                     &execution.options,
                     start.map(|seek| seek.anchor),
                     near,
-                    selection.direct_reference().is_none(),
                     &mut footer,
                     |record, _| {
                         stream.record(&record)?;
