@@ -294,7 +294,7 @@ fn a_later_record_of_the_same_chain_can_supply_a_newer_document_time() {
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let mut newer = doc_batch("a", document("ordered", "newer", 2000), true);
-    newer.change = Change::Reparse { chain: 1 };
+    newer.change = Change::Appended { from: 100 };
     newer.parse[0].reset = false;
     newer.parse[0].start = 100;
     newer.parse[0].parsed_upto = 200;
