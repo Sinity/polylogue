@@ -295,6 +295,14 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
 
 /// Runs a request on a blocking thread, as the socket would.
 pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
+    let scope = if request.read_only() {
+        match web.daemon.reads.scope_token() {
+            Ok(scope) => Some(scope),
+            Err(error) => return crate::daemon::service::store_error(&error),
+        }
+    } else {
+        None
+    };
     let d = Arc::clone(&web.daemon);
     let (deadline_ms, cancellation) = READ_LIMIT.try_with(Clone::clone).unwrap_or_default();
     let limit = crate::daemon::execution::limit_for(&request, deadline_ms, cancellation);
@@ -310,7 +318,8 @@ pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     .await
     .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
     cancel.0.take();
-    browser_response(response, &web.daemon.archive.root)
+    let answer = crate::protocol::scope_answer(response.answer(), scope.as_ref());
+    browser_response(answer.into(), &web.daemon.archive.root)
 }
 
 pub(super) fn request_limit() -> polylogue_store::read::limit::ReadLimit {
@@ -562,13 +571,24 @@ fn error_status(kind: &str) -> StatusCode {
 }
 
 /// The data as the socket gives it, or a typed error with its HTTP status.
-pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
-    let answer = browser_response(response, &web.daemon.archive.root).answer();
+pub fn json_answer(
+    web: &Web,
+    response: impl Into<command_surface::Answer<serde_json::Value>>,
+) -> HttpResponse {
+    let answer = response.into();
     let status = answer
         .http_status()
-        .and_then(|s| StatusCode::from_u16(s).ok())
+        .and_then(|status| StatusCode::from_u16(status).ok())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, axum::Json(answer)).into_response()
+    let mut value = serde_json::to_value(answer).expect("answer serializes");
+    if let Some(data) = value
+        .get_mut("value")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        data.remove("archive");
+    }
+    access::scrub_value(&mut value, &web.daemon.archive.root);
+    (status, axum::Json(value)).into_response()
 }
 
 #[cfg(test)]

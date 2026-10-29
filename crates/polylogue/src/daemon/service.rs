@@ -105,7 +105,7 @@ impl Daemon {
             ModeState::Standalone => Ok(IndexCurrency::Standalone),
             #[cfg(feature = "sinex")]
             ModeState::Primary { connection } => connection
-                .currency(reader.confirmed_checkpoint()?)
+                .currency(reader.confirmed_checkpoint()?, reader.confirmed_scope()?)
                 .map_err(StoreError::from),
             #[cfg(feature = "sinex")]
             ModeState::Blocked { error, .. } => Ok(IndexCurrency::primary(
@@ -114,7 +114,8 @@ impl Daemon {
                 None,
                 Some(false),
                 Some(error.clone()),
-            )),
+            )
+            .with_scope(reader.confirmed_scope()?)),
         }
     }
 }
@@ -154,25 +155,13 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::PrimaryPending { identity } => ok(serde_json::json!({
             "identity": identity, "pending": true,
         })),
-        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => error("conflict", e),
-        StoreError::Ambiguous { .. } => error("ambiguous", e),
-        StoreError::Projection(issue) => match issue {
-            polylogue_model::bundle::BundleError::ProjectionConflict
-            | polylogue_model::bundle::BundleError::SourceVersionMismatch => error("conflict", e),
-            _ => error("bad_request", e),
-        },
-        StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
-        StoreError::ReadCancelled => error("cancelled", e),
-        StoreError::ReadPoolClosed => error("daemon_stopping", e),
-        StoreError::NotFound(_) => error("not_found", e),
-        StoreError::Invalid(_) => error("bad_request", e),
         StoreError::IncompleteParents(issue) => Response::Error {
             kind: "incomplete_parents".into(),
             message: e.to_string(),
             detail: Some(serde_json::json!({"issue": issue})),
         },
 
-        _ => error("store", e),
+        _ => error(crate::protocol::store_code(e), e),
     }
 }
 

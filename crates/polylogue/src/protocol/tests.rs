@@ -19,6 +19,7 @@ fn failures_follow_the_shared_table() {
         ("not_built", 2, Some(501)),
         ("refused", 3, Some(403)),
         ("conflict", 4, Some(409)),
+        ("scope_changed", 4, Some(409)),
         ("io", 4, Some(500)),
         ("stopped_early", 5, Some(500)),
         ("daemon_required", 6, None),
