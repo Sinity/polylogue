@@ -1,11 +1,11 @@
-//! Offline structure and counts, with dynamic map keys grouped together.
+//! Stored structure and counts, with dynamic map keys grouped together.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, Read};
 
 mod diff;
 mod observe;
-pub use diff::{Change, ChangeKind, Diff, Sample, compare};
+pub use diff::{Change, ChangeKind, Diff, Sample, TableChange, compare};
 
 pub const RULE_VERSION: u32 = 2;
 
@@ -45,6 +45,50 @@ pub struct Schema {
     pub unreadable_inputs: u64,
     pub unreadable_records: u64,
     pub fields: BTreeMap<String, Field>,
+    /// Native row-dump table identities; scalar cell values and SQL are discarded.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tables: BTreeMap<String, Table>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Column {
+    pub cid: i64,
+    pub name: String,
+    pub declared_type: String,
+    pub not_null: bool,
+    pub primary_key: i64,
+    pub hidden: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TableMetadata {
+    pub columns: Vec<Column>,
+    pub without_rowid: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Table {
+    pub records: u64,
+    pub deleted_records: u64,
+    pub headers: u64,
+    pub metadata_headers: u64,
+    /// Distinct producer declarations, separate from observed JSON types.
+    pub metadata: BTreeSet<TableMetadata>,
+    pub unobserved_columns: bool,
+    pub fields: BTreeMap<String, Field>,
+}
+
+#[derive(Default)]
+struct ObservedTable {
+    deleted_records: u64,
+    root: Tree,
+    records: u64,
+    headers: u64,
+    metadata_headers: u64,
+    metadata: BTreeSet<TableMetadata>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,6 +97,7 @@ pub enum Framing {
     Json,
     Array,
     CaptureLog,
+    RowDump,
 }
 
 #[derive(Default)]
@@ -61,6 +106,7 @@ pub struct Observer {
     root: Tree,
     records: u64,
     unreadable: u64,
+    tables: BTreeMap<String, ObservedTable>,
 }
 
 #[derive(Default)]
@@ -123,12 +169,13 @@ impl Tree {
         name: &str,
         object: u64,
         names: &BTreeSet<String>,
+        fixed: bool,
     ) -> usize {
-        let forced = names.contains(name);
+        let forced = fixed || names.contains(name);
         let key = field_name(name);
         let node = &mut self.nodes[parent];
         let was_grouped = node.grouped;
-        if !node.grouped {
+        if !node.grouped && !fixed {
             node.members.insert(key.clone());
             if node.members.len() > 50 {
                 node.grouped = true;
@@ -318,7 +365,8 @@ impl Observer {
 
     pub fn read(&mut self, reader: impl BufRead, framing: Framing) -> io::Result<()> {
         match framing {
-            Framing::Lines => self.lines(reader),
+            Framing::Lines => self.lines(reader, false),
+            Framing::RowDump => self.lines(reader, true),
             Framing::Json => self.json(reader).map_err(io::Error::other),
             Framing::Array => {
                 let whole = observe::array(reader, &self.names).map_err(io::Error::other)?;
@@ -329,7 +377,7 @@ impl Observer {
         }
     }
 
-    fn lines(&mut self, mut reader: impl BufRead) -> io::Result<()> {
+    fn lines(&mut self, mut reader: impl BufRead, row_dump: bool) -> io::Result<()> {
         while !reader.fill_buf()?.is_empty() {
             // Draining a failed record starts the next read at its own newline.
             let mut line = observe::Line {
@@ -337,7 +385,32 @@ impl Observer {
                 ended: false,
                 nonwhite: false,
             };
-            let result = self.json(&mut line);
+            let result = if row_dump {
+                observe::row_dump(&mut line, &self.names).map(|record| {
+                    for (name, metadata) in record.tables {
+                        let table = self.tables.entry(name).or_default();
+                        table.headers += 1;
+                        if let Some(metadata) = metadata {
+                            table.metadata_headers += 1;
+                            table.metadata.insert(metadata);
+                        }
+                    }
+                    if record.gone {
+                        self.tables
+                            .entry(record.table.clone().expect("validated table"))
+                            .or_default()
+                            .deleted_records += 1;
+                    }
+                    if let (Some(name), Some(row)) = (record.table, record.row) {
+                        let table = self.tables.entry(name).or_default();
+                        table.root.merge(row, &self.names);
+                        table.records += 1;
+                        self.records += 1;
+                    }
+                })
+            } else {
+                self.json(&mut line)
+            };
             io::copy(&mut line, &mut io::sink())?;
             if let Err(error) = result {
                 if error.is_io() {
@@ -390,6 +463,15 @@ impl Observer {
             return Err("observer field-name selections differ");
         }
         self.root.merge(other.root, &self.names);
+        for (name, other) in other.tables {
+            let table = self.tables.entry(name).or_default();
+            table.root.merge(other.root, &self.names);
+            table.records += other.records;
+            table.deleted_records += other.deleted_records;
+            table.headers += other.headers;
+            table.metadata_headers += other.metadata_headers;
+            table.metadata.extend(other.metadata);
+        }
         self.records += other.records;
         self.unreadable += other.unreadable;
         Ok(())
@@ -397,7 +479,7 @@ impl Observer {
 
     pub fn finish(self, origin: String, mut selection: Vec<Selection>) -> Schema {
         selection.sort_by(|a, b| (&a.input, a.revision).cmp(&(&b.input, b.revision)));
-        let fields = if self.records > 0 {
+        let fields = if !self.root.nodes.is_empty() {
             self.root.flatten(self.records)
         } else {
             BTreeMap::new()
@@ -412,6 +494,29 @@ impl Observer {
             records: self.records,
             unreadable_records: self.unreadable,
             fields,
+            tables: self
+                .tables
+                .into_iter()
+                .map(|(name, table)| {
+                    let fields = if table.records > 0 {
+                        table.root.flatten(table.records)
+                    } else {
+                        BTreeMap::new()
+                    };
+                    (
+                        name,
+                        Table {
+                            records: table.records,
+                            deleted_records: table.deleted_records,
+                            headers: table.headers,
+                            metadata_headers: table.metadata_headers,
+                            metadata: table.metadata,
+                            unobserved_columns: table.records == 0,
+                            fields,
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }

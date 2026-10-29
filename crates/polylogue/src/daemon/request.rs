@@ -88,6 +88,13 @@ pub enum Request {
         conversation: String,
     },
     Status,
+    SchemaInfer {
+        #[serde(flatten)]
+        selection: super::schema::Infer,
+    },
+    SchemaUnread {
+        origin: Option<String>,
+    },
     Explain {
         subject: String,
         expression: Option<String>,
@@ -318,6 +325,8 @@ impl Request {
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::SchemaInfer { .. }
+            | Self::SchemaUnread { .. }
             | Self::Timeline { .. }
             | Self::Cost { .. }
             | Self::Complete { .. }

@@ -31,6 +31,7 @@ pub struct Daemon {
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
     stopping: AtomicBool,
+    pub(super) schema_admission: super::schema::Admission,
     #[cfg(test)]
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
@@ -246,6 +247,10 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
+    if let Request::SchemaInfer { selection } = request {
+        return super::schema::infer(d, selection);
+    }
+    let _foreground = d.schema_admission.foreground();
     let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
@@ -564,6 +569,10 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the loop has stopped"),
             }
         }
+        Request::SchemaInfer { .. } => {
+            unreachable!("inference is admitted before acquiring a reader")
+        }
+        Request::SchemaUnread { origin } => super::schema::unread(&reader, origin.as_deref()),
         Request::Export {
             targets,
             format,
@@ -1286,6 +1295,7 @@ pub fn start(
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
         stopping: AtomicBool::new(false),
+        schema_admission: super::schema::Admission::default(),
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });

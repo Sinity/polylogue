@@ -310,7 +310,7 @@ const CLI: Command = Command {
 pub const GROUPS: &[Group] = &[
     Group {
         name: "schema",
-        help: "Offline structure and counts over explicitly selected stored revisions",
+        help: "Structure, counts and unread paths from stored revisions",
     },
     Group {
         name: "demo",
@@ -409,44 +409,64 @@ fn query_help() -> &'static str {
 const WRITTEN: &[Command] = &[
     Command {
         name: "schema infer",
-        help: "Observe selected stored inputs without ingestion; dynamic map keys become *",
+        help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
         args: &[
-            pos("origin", Kind::Text, "The origin declaration"),
-            Arg {
-                required: true,
-                ..opt(
-                    "input",
-                    Kind::List,
-                    "Explicit stored input IDs (repeatable)",
-                )
-            },
+            pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
+            opt("all", Kind::Flag, "Select every origin"),
+            opt(
+                "input",
+                Kind::List,
+                "Explicit stored input IDs (repeatable)",
+            ),
+            opt(
+                "since",
+                Kind::Text,
+                "Observation time lower bound, RFC 3339 with an offset",
+            ),
             opt(
                 "revision",
                 Kind::Integer,
-                "An exact revision number (default: latest for each selected input)",
+                "Exact revision (default: latest for each input)",
             ),
             opt(
                 "field",
                 Kind::List,
-                "Force these names into paths even when they look like dynamic keys (repeatable)",
+                "Keep these field names instead of grouping them as dynamic keys",
             ),
-            opt(
-                "archive",
-                Kind::Text,
-                "Archive or primary index directory (default: Polylogue's data directory)",
-            ),
-            opt(
-                "sinex_store",
-                Kind::Text,
-                "Read bytes from this Sinex store using primary-mode typed Store reads",
-            ),
-            opt(
-                "output",
-                Kind::Text,
-                "Write the result only to this explicit path (default: stdout)",
-            ),
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "output",
+                    Kind::Text,
+                    "Write the result to this explicit local path",
+                )
+            },
         ],
-        action: Action::Local(crate::cli::schema::infer),
+        action: Action::Request(requests::schema_infer),
+        output: Some(crate::cli::schema::output),
+        mcp: true,
+        http: true,
+        ..CLI
+    },
+    Command {
+        name: "schema unread",
+        help: "Show stored wire paths neither read nor kept, with drift and coverage",
+        args: &[
+            pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
+            opt("all", Kind::Flag, "Select every origin"),
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "output",
+                    Kind::Text,
+                    "Write the result to this explicit local path",
+                )
+            },
+        ],
+        action: Action::Request(requests::schema_unread),
+        output: Some(crate::cli::schema::output),
+        mcp: true,
+        http: true,
         ..CLI
     },
     Command {

@@ -53,7 +53,10 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLi
 pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i64> {
     if !request.has_read_phase() {
         None
-    } else if matches!(request, Request::Export { .. }) {
+    } else if matches!(
+        request,
+        Request::Export { .. } | Request::SchemaInfer { .. }
+    ) {
         deadline_ms
     } else {
         Some(deadline_ms.unwrap_or_else(|| deadline(timeout())))
@@ -95,6 +98,8 @@ pub fn run(
         Request::Changes { .. } => ("changes", None),
         Request::Attachment { .. } => ("attachment", None),
         Request::Export { .. } => ("export", None),
+        Request::SchemaInfer { .. } => ("schema_infer", None),
+        Request::SchemaUnread { .. } => ("schema_unread", None),
         _ => ("request", None),
     };
     let mut info = serde_json::to_value(&request).expect("requests serialize");

@@ -37,7 +37,7 @@ pub fn command() -> clap::Command {
             .value_name("SECONDS")
             .value_parser(clap::value_parser!(u64).range(1..))
             .help(
-                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export: none)",
+                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export and schema infer: none)",
             ),
     );
     let mut globals: Vec<&str> = Vec::new();

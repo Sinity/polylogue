@@ -615,3 +615,34 @@ pub fn cost(_: &Command, v: &Values, _: &Caller) -> Built {
         page_size: v.integer("limit"),
     })
 }
+
+fn schema_origin(v: &Values) -> Result<Option<String>, String> {
+    let origin = v.text("origin");
+    if origin.is_some() && v.flag("all") {
+        return Err("choose an origin or --all".into());
+    }
+    Ok(origin)
+}
+
+pub fn schema_infer(_: &Command, v: &Values, _: &Caller) -> Built {
+    let revision = v
+        .integer("revision")
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "revision exceeds signed range")?;
+    let request = crate::daemon::schema::Infer {
+        origin: schema_origin(v)?,
+        inputs: v.list("input").into_iter().collect(),
+        revision,
+        since: v.text("since"),
+        fields: v.list("field").into_iter().collect(),
+    };
+    request.validate()?;
+    Ok(Request::SchemaInfer { selection: request })
+}
+
+pub fn schema_unread(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::SchemaUnread {
+        origin: schema_origin(v)?,
+    })
+}
