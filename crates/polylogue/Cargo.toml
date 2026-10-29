@@ -12,6 +12,8 @@ publish.workspace = true
 sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
+command-surface.workspace = true
+schemars = "1"
 rustix = { workspace = true, features = ["event"] }
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
@@ -35,6 +37,7 @@ uuid.workspace = true
 tower.workspace = true
 base64.workspace = true
 blake3.workspace = true
+zstd.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
 unicode-normalization.workspace = true

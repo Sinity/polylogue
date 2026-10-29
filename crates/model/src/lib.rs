@@ -5,6 +5,7 @@
 mod stored_names;
 
 pub mod atomic_write;
+pub mod authorship;
 pub mod authored;
 pub mod authorship;
 pub mod batch;
@@ -24,6 +25,8 @@ mod message;
 mod note;
 pub mod price;
 mod quota;
+mod reference;
+pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
 pub mod read;
 mod reference;
 pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
@@ -90,3 +93,5 @@ string_schema!(
 );
 
 pub mod work_products;
+
+pub mod currency;

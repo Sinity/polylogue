@@ -2,7 +2,7 @@
 //! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
 //! everything else. Every command takes `--json` for programs and agents.
 
-pub(crate) mod attachment;
+mod attachment;
 pub mod changes;
 pub(crate) mod completion;
 pub mod local;
@@ -38,7 +38,7 @@ pub fn command() -> clap::Command {
             .value_name("SECONDS")
             .value_parser(clap::value_parser!(u64).range(1..))
             .help(
-                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export: none)",
+                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export and schema infer: none)",
             ),
     );
     let mut globals: Vec<&str> = Vec::new();
@@ -221,10 +221,26 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         .copied()
         .map(std::time::Duration::from_secs);
     if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&request, timeout);
+        return cli(&values, &request, timeout);
     }
     let root = Archive::default_root();
-    let response = match send_with_timeout(&Archive::at(&root), &request, timeout) {
+    let result = if cmd.register.is_some() {
+        let deadline = timeout.map_or(command_surface::Deadline::Default, |duration| {
+            command_surface::Deadline::Milliseconds(
+                duration.as_millis().try_into().unwrap_or(u64::MAX),
+            )
+        });
+        let call = crate::protocol::operations::request(
+            cmd,
+            values.clone(),
+            values.request_id(),
+            deadline,
+        );
+        crate::client::call_ready(&Archive::at(&root), &call)
+    } else {
+        send_with_timeout(&Archive::at(&root), &request, timeout).map(|response| response.answer())
+    };
+    let answer = match result {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
@@ -247,6 +263,18 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         }
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
+    let outcome_code = answer.exit_code();
+    if json && cmd.output.is_none() {
+        println!(
+            "{}",
+            polylogue_render::terminal::json(
+                &serde_json::to_value(&answer).expect("answer serializes"),
+                false
+            )
+        );
+        return ExitCode::from(outcome_code);
+    }
+    let response: Response = answer.into();
     match response {
         Response::Ok { data, .. } => {
             if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
@@ -256,11 +284,18 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 Some(output) => output(&values, &data, json),
                 None => {
                     if json {
-                        println!("{}", polylogue_render::terminal::json(&data, false));
+                        println!(
+                            "{}",
+                            polylogue_render::terminal::json(
+                                &serde_json::to_value(crate::protocol::answer(data.clone()))
+                                    .expect("answer serializes"),
+                                false
+                            )
+                        );
                     } else {
                         print!("{}", (cmd.print)(&data));
                     }
-                    ExitCode::SUCCESS
+                    ExitCode::from(outcome_code)
                 }
             }
         }
@@ -373,7 +408,7 @@ fn send_with_timeout(
     crate::client::send_when_ready(archive, request, deadline_ms)
 }
 
-fn wait_for_ready<T>(
+pub(crate) fn wait_for_ready<T>(
     archive: &Archive,
     deadline_ms: Option<i64>,
     mut call: impl FnMut() -> std::io::Result<T>,
@@ -418,21 +453,7 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 }
 
 pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
-    if json {
-        println!(
-            "{}",
-            polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message } }),
-                false
-            )
-        );
-    } else {
-        eprintln!(
-            "{}",
-            polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
-        );
-    }
-    ExitCode::from(code)
+    fail_detail(json, kind, message, None, code)
 }
 
 /// An error with structured detail: printed whole for programs; for a
@@ -442,13 +463,18 @@ fn fail_detail(
     kind: &str,
     message: &str,
     detail: Option<serde_json::Value>,
-    code: u8,
+    _code: u8,
 ) -> ExitCode {
     if json {
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message, "detail": detail } }),
+                &serde_json::to_value(Response::Error {
+                    kind: kind.into(),
+                    message: message.into(),
+                    detail: detail.clone()
+                })
+                .expect("failure serializes"),
                 false
             )
         );
@@ -464,7 +490,7 @@ fn fail_detail(
             );
         }
     }
-    ExitCode::from(code)
+    ExitCode::from(crate::protocol::kind(kind).exit_code())
 }
 
 #[cfg(test)]

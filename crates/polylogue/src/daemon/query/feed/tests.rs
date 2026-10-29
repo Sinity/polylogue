@@ -1,17 +1,16 @@
 use super::*;
 use polylogue_store::fixture::{Fixture, SessionFacts};
 use serde_json::json;
-use std::io::{BufRead, BufReader};
 
-fn lines(file: File) -> Vec<Value> {
-    BufReader::new(file)
-        .lines()
-        .map(
-            |s| match serde_json::from_str::<Response>(&s.unwrap()).unwrap() {
-                Response::Ok { data, .. } => data,
-                other => panic!("{other:?}"),
-            },
-        )
+fn lines(mut file: File) -> Vec<Value> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    command_surface::SseDecoder::new()
+        .push(&bytes)
+        .unwrap()
+        .into_iter()
+        .map(|frame| serde_json::from_str(&frame.data).unwrap())
         .collect()
 }
 
@@ -207,5 +206,5 @@ fn prepare(
     now: i64,
     file: File,
 ) -> Result<File, Failure> {
-    prepare_with(reader, since, now, file, |response| response)
+    prepare_with(reader, since, now, file)
 }

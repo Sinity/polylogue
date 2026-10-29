@@ -114,7 +114,7 @@ fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
                 assert!(left > timeout.as_millis() as i64 - 5000);
             }
             stream
-                .write_all(b"{\"result\":\"ok\",\"data\":{}}\n")
+                .write_all(b"{\"outcome\":\"ok\",\"value\":{},\"notes\":[],\"next\":[]}\n")
                 .unwrap();
         });
         send_with_timeout(&archive, &request, timeout).unwrap();

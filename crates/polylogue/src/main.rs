@@ -1,6 +1,6 @@
 //! The `polylogue` binary: daemon, CLI, MCP server, hook command and
-//! browser-extension host. Interactive reads and writes go through the daemon;
-//! offline schema commands read explicit stored revisions directly. Commands
+//! browser-extension host. Archive reads and writes go through the daemon;
+//! schema diff compares explicit local artifacts. Commands
 //! requiring a stopped daemon exit with code 6 (`daemon_required`).
 
 mod briefing;
@@ -16,6 +16,7 @@ mod explain;
 mod hook;
 mod manual;
 mod mcp;
+mod protocol;
 mod resume;
 mod row_numbers;
 mod runtime_dir;
@@ -45,6 +46,7 @@ pub const EXIT_DAEMON_REQUIRED: u8 = 6;
 pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 
 fn main() -> ExitCode {
+    protocol::caller::initialize();
     // Chrome runs a native messaging host with the calling extension's
     // origin as its only argument; the host manifest names this binary.
     if std::env::args()

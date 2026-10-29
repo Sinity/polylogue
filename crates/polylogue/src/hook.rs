@@ -110,7 +110,16 @@ pub fn append_to_spool(
 ) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
-    let process = std::os::unix::process::parent_id();
+    let caller = crate::protocol::caller::evidence();
+    let process = caller
+        .harness_pid
+        .filter(|_| {
+            caller
+                .harness
+                .as_ref()
+                .is_some_and(|origin| origin.as_str() == harness.origin())
+        })
+        .unwrap_or_else(std::os::unix::process::parent_id);
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());

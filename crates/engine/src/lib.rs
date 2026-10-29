@@ -182,7 +182,7 @@ impl Config {
 }
 
 /// What one pass of the loop found and did, for `status`.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Pass {
     /// Historical effects accepted during ordinary stored-input replay.
     pub authored: UserStateReport,

@@ -64,7 +64,8 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
-    let server = server::Server::start(Arc::clone(&daemon)).unwrap();
+    let server =
+        server::Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
     let daemon = TestDaemon {
         _dir: dir,
         home,
@@ -113,7 +114,15 @@ impl TestDaemon {
         )
         .unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);
-        self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
+        self.server = server::Server::start(
+            Arc::clone(&self.daemon),
+            Arc::clone(&self.runtime.operations),
+        )
+        .unwrap();
+    }
+
+    pub fn operations(&self) -> &Arc<command_surface::OperationTable> {
+        &self.runtime.operations
     }
 
     pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {

@@ -15,7 +15,7 @@ fn query_request(text: String, page_size: Option<u64>, v: &Values) -> Request {
         cursor: v.text("cursor"),
         page_size,
         why: v.flag("why"),
-        session: None,
+        session: v.text("session"),
         fields: v.list("fields"),
     }
 }
@@ -69,16 +69,7 @@ pub fn complete(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Complete { text, position })
 }
 
-pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let reveal = v.flag("reveal");
-    if reveal {
-        if caller.surface != super::Surface::Cli || v.text("out").is_none() {
-            return Err("exact attachment output requires the CLI with --reveal --out FILE".into());
-        }
-        crate::daemon::attachment::check_cli()?;
-    } else if v.text("out").is_some() || v.text("input").is_some() {
-        return Err("--out and --input require --reveal".into());
-    }
+pub fn attachment(_: &Command, v: &Values, _: &Caller) -> Built {
     let index = |key: &str, default: u64| {
         usize::try_from(v.integer(key).unwrap_or(default))
             .map_err(|_| format!("{key} exceeds address space"))
@@ -92,9 +83,8 @@ pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
         block: index("block", 0)?,
         attachment: index("attachment", 0)?,
         input: v.text("input"),
-        reveal,
         length: index("length", 65536)?,
-        cursor: None,
+        cursor: v.text("cursor"),
     })
 }
 
@@ -621,5 +611,36 @@ pub fn cost(_: &Command, v: &Values, _: &Caller) -> Built {
         model: v.text("model").filter(|s| !s.is_empty()),
         cursor: v.text("cursor"),
         page_size: v.integer("limit"),
+    })
+}
+
+fn schema_origin(v: &Values) -> Result<Option<String>, String> {
+    let origin = v.text("origin");
+    if origin.is_some() && v.flag("all") {
+        return Err("choose an origin or --all".into());
+    }
+    Ok(origin)
+}
+
+pub fn schema_infer(_: &Command, v: &Values, _: &Caller) -> Built {
+    let revision = v
+        .integer("revision")
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "revision exceeds signed range")?;
+    let request = crate::daemon::schema::Infer {
+        origin: schema_origin(v)?,
+        inputs: v.list("input").into_iter().collect(),
+        revision,
+        since: v.text("since"),
+        fields: v.list("field").into_iter().collect(),
+    };
+    request.validate()?;
+    Ok(Request::SchemaInfer { selection: request })
+}
+
+pub fn schema_unread(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::SchemaUnread {
+        origin: schema_origin(v)?,
     })
 }

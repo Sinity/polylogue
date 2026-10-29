@@ -20,6 +20,7 @@ fn reader() -> Reader {
     let w = test_daemon::start("look at <script>alert(1)</script> & the parser");
     let web = Arc::new(Web {
         daemon: Arc::clone(&w.daemon),
+        operations: Arc::clone(w.operations()),
         key: "abc123def456".into(),
         token: TOKEN.into(),
         port: PORT,
@@ -57,7 +58,23 @@ async fn send(r: &Reader, req: Http<Body>) -> (StatusCode, HeaderMap, String) {
     let status = resp.status();
     let headers = resp.headers().clone();
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    (status, headers, String::from_utf8_lossy(&body).into_owned())
+    let body = String::from_utf8_lossy(&body).into_owned();
+    (status, headers, application_body(body))
+}
+
+/// Domain assertions use the payload; protocol tests inspect the wire envelope.
+pub(super) fn application_body(body: String) -> String {
+    let Ok(answer) = serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&body)
+    else {
+        return body;
+    };
+    match answer {
+        command_surface::Answer::Error { error, .. } => serde_json::json!({
+            "error": error.code, "message": error.message,
+            "detail": {"position": error.position, "suggestion": error.suggestion, "hint": error.hint, "retryable": error.retryable},
+        }).to_string(),
+        answer => answer.value().unwrap().to_string(),
+    }
 }
 
 fn rt() -> tokio::runtime::Runtime {
@@ -429,7 +446,12 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
     use std::io::Write;
     let daemon = test_daemon::start("HTTP lifecycle fixture");
     let weak = Arc::downgrade(&daemon.daemon);
-    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
+    let mut server = start_on(
+        Arc::clone(&daemon.daemon),
+        Arc::clone(daemon.operations()),
+        0,
+    )
+    .unwrap();
     let _idle = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     let mut partial = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     partial
@@ -465,7 +487,7 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    let mut server = start_on(Arc::clone(&daemon), 0).unwrap();
+    let mut server = start_on(Arc::clone(&daemon), Arc::clone(&runtime.operations), 0).unwrap();
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     write!(
         peer,
@@ -648,7 +670,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
 fn cost_is_served_through_the_owned_loopback_http_listener() {
     use std::io::{Read, Write};
     let r = reader();
-    let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
+    let mut server = start_on(Arc::clone(&r.web.daemon), Arc::clone(&r.web.operations), 0).unwrap();
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     write!(peer, "GET /cost?q=id%3Aclaude-code%3As1 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n", server.port, server.token).unwrap();
     let mut response = String::new();

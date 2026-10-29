@@ -7,6 +7,7 @@ The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table
 ## Command table
 
 - **One typed operation table** drives every surface. Each row declares the operation's arguments, answer type, latency class, failure kinds, one-sentence help, its reason for existing ([below](#discipline)) and one to four examples on the Morrow archive. The CLI, socket, HTTP and MCP (with `outputSchema`) are generated from it; a new operation is a row, not code on each surface.
+- **Finite transfers use shared SSE framing** on the socket and HTTP. Producers deliver begin, record and complete events from one selected snapshot. A failure before HTTP headers uses the shared failure status; a later failure ends with a canonical error answer event and no completion. A client publishes a staged directory bundle only after validating completion. The `changes` CLI renders its validated events as JSON lines and advances its checkpoint only at completion.
 - **Answers are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach.
 - **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. Ruling, 2026-10-27: "the CLI is supposed to be thin client for the daemon, which is supposed to have advanced caching, indexing whatnot to enalbe the CLI to be snappy" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:dad489d4-a1b8-48bd-bbc0-26262f34b262). Ruling, 2026-09-14: "there is no requirement or need for CLI to ever work 'standalone'. Daemon is the standard, not some sort of optional addon" (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245). Ruling, 2026-05-03: "we do not do non-daemonic writes" (cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:55).
 - **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker-based ones, and each names its non-interactive form ([Picker](#picker)).
@@ -143,7 +144,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI in particular _CERTAINLY_ requires advanced autocomplete, otherwise it is going to be ~pointless. Ideally that includes integrated fuzzyfinding somehow" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). Ruling, 2026-09-14, on completion with the daemon down: "yes. everything is supposed to be usable." (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
 
-- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The socket `complete` request serves MCP `completion/complete`, HTTP and the web query box through the same read-only catalog lookup.
+- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The typed `complete` operation serves MCP `completion/complete`, HTTP and the web query box through the same read-only catalog lookup. MCP supplies the full query in `argument.value`; `_meta["polylogue/position"]` is an optional UTF-8 byte offset, defaulting to the end. Its standard completion values apply each replacement to that full query, preserving the suffix; `_meta["polylogue/completions"]` retains the typed replacement span, kind and help.
 - **The grammar-position completer** is the shared `query-language` function: it takes the whole query text and a cursor offset and returns candidates with their replace range. Polylogue supplies the catalog.
 - **Never** does completion run a search, open the archive or write.
 
@@ -275,7 +276,7 @@ The exit and HTTP table is the common `command-surface`'s, shared with Sinex; ea
 | 2 | `invalid_query`, `unknown_field`, `bad_value`, `not_a_query`, `bad_request`, `ambiguous`, `stale_cursor`, `not_built` |
 | 3 | `refused`, with the operation's stated reason |
 | 4 | `not_found`, `conflict`, `io` |
-| 5 | `degraded`: an `incomplete` answer, rows printed, part of what was needed missing |
+| 5 | `degraded`: an `incomplete` answer or an authored write accepted into the local primary spool but awaiting Sinex confirmation; `stopped_early`: an operation that did not finish |
 | 6 | `not_running`: the daemon is down |
 | 7 | `timeout`, `cancelled` |
 
