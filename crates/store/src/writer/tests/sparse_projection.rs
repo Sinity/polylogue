@@ -195,6 +195,29 @@ fn sparse_observation_cannot_replace_a_complete_native_value() {
 }
 
 #[test]
+fn sparse_parts_at_later_records_of_one_input_still_union() {
+    let w = test_archive();
+    let message = original();
+    let first = selected(&message, &[0]);
+    let second = selected(&message, &[1, 2, 3]);
+    let mut input = batch(
+        "same-input",
+        0,
+        0,
+        vec![row(0, first.0), row(50, second.0)],
+        &["s"],
+    );
+    input.parse[0].output.message_projections.insert(0, first.1);
+    input.parse[0]
+        .output
+        .message_projections
+        .insert(1, second.1);
+    input.parse[0].prepare();
+    write(&w, input);
+    assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
+}
+
+#[test]
 fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
     let dir = tempfile::tempdir().unwrap();
     let archive = Archive::at(dir.path());
@@ -238,7 +261,9 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
             release: InFlight::default(),
         };
         reading
-            .visit(|step| rows::write_confirmed_rows(&tx, &input, step, *chain, 1, None).map(drop))
+            .visit(|step| {
+                rows::write_confirmed_rows(&tx, &input, step, *chain, 1, None, None).map(drop)
+            })
             .unwrap();
     }
     tx.commit().unwrap();
