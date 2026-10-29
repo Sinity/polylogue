@@ -52,13 +52,6 @@ pub struct PreparedBody {
     pub path: Option<std::path::PathBuf>,
 }
 
-/// Restricts immutable product lookup to its existing named custody identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NamedProductSelector {
-    Exact(String),
-    Prefix(String),
-}
-
 /// The connection to Sinex the writer and the loop send through.
 pub trait Sinex: Send + Sync {
     fn prepare_input(&self, captured: &CapturedInput, body: PreparedBody) -> Result<PreparedInput>;
