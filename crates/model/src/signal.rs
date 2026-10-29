@@ -59,9 +59,16 @@ pub struct Outbox {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
-    HostDecision { delivery: Delivery },
-    Desktop { receipt: NotificationReceipt },
-    Outlet { receipt: DeliveryReceipt },
+    HostDecision {
+        #[serde(deserialize_with = "buffered_delivery")]
+        delivery: Delivery,
+    },
+    Desktop {
+        receipt: NotificationReceipt,
+    },
+    Outlet {
+        receipt: DeliveryReceipt,
+    },
 }
 impl Event {
     pub fn delivery_id(&self) -> &str {
@@ -136,4 +143,13 @@ impl<'de> Deserialize<'de> for Commit {
             events: fields.events,
         })
     }
+}
+
+// An internally tagged event receives serde's buffered content. With JSON
+// arbitrary precision enabled, normalize numbers before decoding shared f64s.
+fn buffered_delivery<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Delivery, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }

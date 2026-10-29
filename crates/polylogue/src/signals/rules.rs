@@ -5,7 +5,7 @@ pub(super) fn author_name(author: &shared_signals::Author) -> &str {
     match author {
         shared_signals::Author::Operator => "operator",
         shared_signals::Author::Shipped => "shipped",
-        shared_signals::Author::Agent(_) => "agent",
+        shared_signals::Author::Agent(author) => author,
     }
 }
 
@@ -45,7 +45,7 @@ pub(super) fn active(
         },
         rule,
         author,
-        via: "assertion".into(),
+        via: "unavailable".into(),
         live: true,
     })
 }

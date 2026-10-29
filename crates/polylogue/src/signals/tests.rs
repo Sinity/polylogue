@@ -99,3 +99,164 @@ fn rule_withdrawal_and_restore_cannot_reuse_an_adopted_revision() {
     assert_eq!(again.version.id, first.version.id);
     assert_eq!(again.version.revision, first.version.revision + 1);
 }
+
+#[test]
+fn incomplete_timer_does_not_write_a_clock_heartbeat() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let at = Arc::new(AtomicI64::new(1_792_332_000_000));
+    let sampled = Arc::clone(&at);
+    let clock = polylogue_model::WallClock::new(move || {
+        jiff::Timestamp::from_millisecond(sampled.load(Ordering::SeqCst)).unwrap()
+    });
+    let mut fixture = crate::test_daemon::start_with_clock("synthetic", clock);
+    fixture.pause_signals();
+    tick(&fixture.daemon).unwrap();
+    let before = load(&fixture.daemon).unwrap().unwrap().identity().unwrap();
+    at.fetch_add(30_000, Ordering::SeqCst);
+    tick(&fixture.daemon).unwrap();
+    assert_eq!(
+        load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
+        before
+    );
+}
+
+fn outbox(name: &str) -> Outbox {
+    use shared_signals::{Channel, Occurrence, RuleVersion, Trigger};
+    let trigger = Trigger {
+        rule: RuleVersion {
+            product: "polylogue".into(),
+            id: "synthetic".into(),
+            revision: 1,
+        },
+        occurrence: Occurrence {
+            id: name.into(),
+            episode: "one".into(),
+        },
+    };
+    let id = trigger.delivery_id();
+    let delivery = shared_signals::Delivery {
+        id: id.clone(),
+        trigger,
+        matched: 0,
+        at: 0,
+        basis: vec![],
+        channel: Channel::Interrupt,
+        downgrade: None,
+        change: None,
+        value: None,
+        scope: None,
+    };
+    let notice = shared_signals::notifications::Notice {
+        delivery_id: id,
+        product: "polylogue".into(),
+        icon: String::new(),
+        rule: name.into(),
+        occurrence: name.into(),
+        summary: name.into(),
+        body: String::new(),
+        reference: "repo:synthetic".into(),
+        command_hint: String::new(),
+        interrupt: true,
+        current: false,
+        data_loss: false,
+        budget_passive_count: None,
+    };
+    Outbox {
+        record: Delivery {
+            recipient_kind: "operator".into(),
+            recipient_id: None,
+            sender: "signal".into(),
+            event: "signal".into(),
+            cwd: None,
+            text: name.into(),
+            refs: vec![],
+            left_out: vec![],
+        },
+        metadata: Metadata {
+            delivery,
+            notice,
+            forward: None,
+            outlet: None,
+            execution: ExecutionEligibility::Live,
+        },
+    }
+}
+
+#[test]
+fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
+    use shared_signals::notifications::{NotificationState, Route};
+    let mut fixture = crate::test_daemon::start_with_clock(
+        "synthetic",
+        polylogue_model::WallClock::fixed(
+            jiff::Timestamp::from_millisecond(1_792_332_000_000).unwrap(),
+        ),
+    );
+    fixture.pause_signals();
+    let ready = outbox("confirmed-before-worker");
+    let unknown = outbox("interrupted-after-unknown");
+    let ready_id = ready.metadata.delivery.id.clone();
+    let unknown_id = unknown.metadata.delivery.id.clone();
+    let mut state = NotificationState::default();
+    let began = state.begin(unknown.metadata.notice.clone(), Route::Dbus);
+    let clock = fixture.daemon.query_clock().unwrap();
+    let mut checkpoint = load(&fixture.daemon)
+        .unwrap()
+        .unwrap_or_else(|| initial(&fixture.daemon, &clock).unwrap());
+    let prior = load(&fixture.daemon)
+        .unwrap()
+        .map(|c| c.identity().unwrap());
+    checkpoint.notifications = Some(state);
+    assert!(
+        persist(
+            &fixture.daemon,
+            prior,
+            checkpoint,
+            vec![ready, unknown],
+            began
+                .into_iter()
+                .map(|receipt| Event::Desktop { receipt })
+                .collect()
+        )
+        .unwrap()
+        .1
+    );
+    fixture.restart();
+    fixture.wait_for(|_| {
+        load(&fixture.daemon)
+            .unwrap()
+            .and_then(|c| c.notifications)
+            .and_then(|state| state.attempt(&ready_id).cloned())
+            .is_some_and(|attempt| {
+                attempt.dbus
+                    == Some(shared_signals::DeliveryOutcome::NotSent(
+                        "no_notification_server".into(),
+                    ))
+            })
+    });
+    fixture.pause_signals();
+    let state = load(&fixture.daemon)
+        .unwrap()
+        .unwrap()
+        .notifications
+        .unwrap();
+    let preserved = state.attempt(&unknown_id).unwrap();
+    assert_eq!(
+        preserved.dbus,
+        Some(shared_signals::DeliveryOutcome::Unknown)
+    );
+    assert!(!preserved.retried);
+    let mut receipts = Vec::new();
+    fixture
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .visit_signals(|stored| {
+            if stored.id == unknown_id {
+                receipts = stored.events;
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(receipts.len(), 1);
+}

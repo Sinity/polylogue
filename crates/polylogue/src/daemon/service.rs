@@ -1244,6 +1244,19 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn pause_signals(&mut self) -> std::io::Result<()> {
+        if let Some(stop) = self.signals_stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(worker) = self.signals.take() {
+            worker
+                .join()
+                .map_err(|_| std::io::Error::other("signal worker panicked"))?;
+        }
+        Ok(())
+    }
+
     /// Refuses new requests and wakes readers waiting for a reader slot,
     /// before transports and workers are joined. Readers and writes already
     /// running finish as usual.

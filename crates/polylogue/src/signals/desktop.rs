@@ -146,26 +146,83 @@ fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held>
     Ok(persist(d, prior, checkpoint, vec![], events)?.1)
 }
 
+fn recover(
+    d: &Daemon,
+    state: &NotificationState,
+    requests: &mpsc::UnboundedSender<NotificationRequest>,
+) -> Result<(), String> {
+    let reader = d.reads.reader().map_err(|e| e.to_string())?;
+    reader
+        .visit_signals(|stored| {
+            let metadata = stored.outbox.metadata;
+            let attempted = state.attempt(&stored.id).is_some()
+                || stored
+                    .events
+                    .iter()
+                    .any(|event| matches!(event.event, Event::Desktop { .. }));
+            if metadata.execution == ExecutionEligibility::Live
+                && metadata.delivery.channel == shared_signals::Channel::Interrupt
+                && !attempted
+            {
+                requests
+                    .send(NotificationRequest::Deliver(Box::new(metadata.notice)))
+                    .map_err(|_| polylogue_store::StoreError::WriterGone)?;
+            }
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
+}
+
 pub(super) async fn run(d: Arc<Daemon>, stop: &std::sync::mpsc::Receiver<()>) {
-    if d.writes.is_none() {
+    let Some(writes) = &d.writes else {
         return;
+    };
+    // The subscription precedes both startup snapshots. It carries wakeups,
+    // not work counters or authoritative observation timestamps.
+    let commits = writes.completion_commits();
+    let wake = commits.wake_handle();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = Arc::clone(&done);
+    let (changed, mut changes) = mpsc::channel(1);
+    let bridge = tokio::task::spawn_blocking(move || {
+        while !stopped.load(std::sync::atomic::Ordering::Acquire) {
+            if commits.recv().is_err() {
+                break;
+            }
+            if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            if matches!(
+                changed.try_send(()),
+                Err(mpsc::error::TrySendError::Closed(()))
+            ) {
+                break;
+            }
+        }
+    });
+    let result = drive(&d, stop, &mut changes).await;
+    done.store(true, std::sync::atomic::Ordering::Release);
+    let _ = wake.try_send(());
+    let _ = bridge.await;
+    if let Err(error) = result {
+        report(&d, error);
     }
+}
+
+async fn drive(
+    d: &Arc<Daemon>,
+    stop: &std::sync::mpsc::Receiver<()>,
+    changes: &mut mpsc::Receiver<()>,
+) -> Result<(), Held> {
     let (requests, receiver) = mpsc::unbounded_channel();
     let (updates, mut returned) = mpsc::unbounded_channel();
     let worker = if d.archive.is_primary() {
         None
     } else {
-        let state = match load(&d) {
-            Ok(value) => value
-                .and_then(|c| c.notifications)
-                .unwrap_or_else(NotificationState::default),
-            Err(error) => {
-                held(&d, &error);
-                return;
-            }
-        };
+        let state = load(d)?.and_then(|c| c.notifications).unwrap_or_default();
+        recover(d, &state, &requests)?;
         let deliverer = Deliverer::new(
-            connect(&d).await,
+            connect(d).await,
             d.config.signals.notification_config(),
             state,
         );
@@ -174,34 +231,64 @@ pub(super) async fn run(d: Arc<Daemon>, stop: &std::sync::mpsc::Receiver<()>) {
             deliverer,
             receiver,
             updates,
-            policy(Arc::clone(&d)),
+            policy(Arc::clone(d)),
             Arc::new(move || wall.now().unix_ms()),
         )))
     };
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut stop_probe = tokio::time::interval(std::time::Duration::from_millis(250));
+    let mut evaluate = true;
+    let mut due = d.config.requests.now().unix_ms();
+    let mut failure = None;
     loop {
         if !matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
             break;
         }
+        if evaluate {
+            let now = d.config.requests.now().unix_ms();
+            due = now.saturating_add(30_000);
+            match tick(d) {
+                Ok(tick) => {
+                    if let Some(next) = tick.next {
+                        due = due.min(next);
+                    }
+                    for notice in tick.notices {
+                        if requests
+                            .send(NotificationRequest::Deliver(Box::new(notice)))
+                            .is_err()
+                        {
+                            failure = Some(Held::from("desktop worker stopped"));
+                            break;
+                        }
+                    }
+                }
+                Err(error) => report(d, error),
+            }
+            if failure.is_some() {
+                break;
+            }
+            evaluate = false;
+        }
+        let wait = due.saturating_sub(d.config.requests.now().unix_ms()).max(1) as u64;
         tokio::select! {
-         Some(update)=returned.recv(),if worker.is_some()=>{
-          match persist_update(&d,&update) {
-           Ok(true)=>{let _=update.persisted.send(());}
-           Ok(false)=>held(&d,"notification receipt is pending canonical confirmation"),
-           Err(error)=>report(&d,error),
-          }
-         }
-         _=interval.tick()=>{
-          match tick(&d){
-           Ok(notices)=>{for notice in notices {let _=requests.send(NotificationRequest::Deliver(Box::new(notice)));}}
-           Err(error)=>report(&d,error),
-          }
-         }
+            Some(update)=returned.recv(),if worker.is_some()=>{
+                match persist_update(d,&update) {
+                    Ok(true)=>{let _=update.persisted.send(());}
+                    Ok(false)=>{failure=Some(Held::from("notification receipt is pending canonical confirmation"));break;}
+                    Err(error)=>{failure=Some(error);break;}
+                }
+            }
+            changed=changes.recv()=>{if changed.is_none(){break;}evaluate=true;}
+            _=tokio::time::sleep(std::time::Duration::from_millis(wait))=>evaluate=true,
+            _=stop_probe.tick()=>{}
         }
     }
     drop(requests);
     if let Some(worker) = worker {
         worker.abort();
         let _ = worker.await;
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }

@@ -145,7 +145,11 @@ fn admit(conn: &mut Connection, p: &polylogue_model::authored::PreparedRequest, 
 
 #[test]
 fn signal_checkpoint_outbox_and_receipt_freeze_once_across_pending_and_restart() {
-    let mut conn = cache();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.db");
+    let mut conn = Connection::open(&path).unwrap();
+    conn.execute_batch(&crate::source::schema().unwrap().ddl)
+        .unwrap();
     let first = initial();
     let id = first.outbox[0].metadata.delivery.id.clone();
     let p = prepare_pending(&conn, &request("first", first.clone()), &[]).unwrap();
@@ -178,6 +182,8 @@ fn signal_checkpoint_outbox_and_receipt_freeze_once_across_pending_and_restart()
     );
     admit(&mut conn, &p, 1);
     admit(&mut conn, &q, 2);
+    drop(conn);
+    let conn = Connection::open(&path).unwrap();
     let reopened = prepare_pending(&conn, &request("next", next.clone()), &[]).unwrap();
     assert_eq!(reopened, q);
     let mut conflict = next;
@@ -272,4 +278,18 @@ fn signal_source_schema_is_shared_by_ledger_and_cache_and_rollback_is_atomic() {
     committed.outbox[0].metadata.notice.delivery_id = "forged".into();
     let tx = conn.transaction().unwrap();
     assert!(crate::user_writes::apply(&tx, &request("invalid", committed), 2).is_err());
+}
+
+#[test]
+fn signal_numeric_host_decision_survives_tagged_request_round_trip() {
+    let mut commit = initial();
+    let delivery = commit.outbox[0].metadata.delivery.clone();
+    commit.events.push(Event::HostDecision { delivery });
+    let request = request("host-decision", commit);
+    let encoded = serde_json::to_vec(&request).unwrap();
+    let decoded: UserRequest = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, request);
+    let conn = cache();
+    let prepared = prepare_pending(&conn, &request, &[]).unwrap();
+    super::validate(&prepared).unwrap();
 }

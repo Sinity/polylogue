@@ -34,7 +34,7 @@ fn held(d: &Daemon, reason: &str) {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 struct Held {
     reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,7 +136,12 @@ fn persist(
     Ok((id, !outcome.pending))
 }
 
-fn tick(d: &Daemon) -> Result<Vec<shared_signals::notifications::Notice>, Held> {
+struct Tick {
+    notices: Vec<shared_signals::notifications::Notice>,
+    next: Option<i64>,
+}
+
+fn tick(d: &Daemon) -> Result<Tick, Held> {
     let clock = d.query_clock().map_err(Held::from)?;
     let now = clock.now.as_millisecond();
     let calendar = DayCalendar::new(clock.day.clone());
@@ -150,6 +155,10 @@ fn tick(d: &Daemon) -> Result<Vec<shared_signals::notifications::Notice>, Held> 
         Some(value) => value,
         None => initial(d, &clock)?,
     };
+    let previous_rules = checkpoint.rules.clone();
+    let previous_host = checkpoint.host.clone();
+    let previous_incomplete = checkpoint.evaluator.incomplete();
+    let previous_pending = checkpoint.evaluator.pending_count();
     if now < checkpoint.evaluator.now() {
         return Err("clock precedes the durable evaluator checkpoint".into());
     }
@@ -300,15 +309,32 @@ fn tick(d: &Daemon) -> Result<Vec<shared_signals::notifications::Notice>, Held> 
     if let Ok(mut status) = d.signals.lock() {
         *status = json!({"rules":checkpoint.rules.iter().map(|r|json!({"id":r.version.id,"name":r.rule.name,"query":r.rule.query,"author":rules::author_name(&r.author)})).collect::<Vec<_>>(),"unusable":unusable,"held":held_rules});
     }
-    let current = checkpoint.identity().map_err(|e| e.to_string())?;
-    if prior == Some(current) {
-        return Ok(vec![]);
+    let next = checkpoint
+        .evaluator
+        .next_due()
+        .into_iter()
+        .chain(checkpoint.host.as_ref().and_then(HostPolicy::next_due))
+        .filter(|due| *due > now)
+        .min();
+    // No complete producer observation is available in this adapter yet.
+    // A later timer alone cannot turn that unknown input into a durable step.
+    let clock_only = prior.is_some()
+        && outbox.is_empty()
+        && previous_rules == checkpoint.rules
+        && previous_host == checkpoint.host
+        && previous_incomplete == checkpoint.evaluator.incomplete()
+        && previous_pending == checkpoint.evaluator.pending_count();
+    if clock_only {
+        return Ok(Tick {
+            notices: vec![],
+            next,
+        });
     }
     let (_, confirmed) = persist(d, prior, checkpoint, outbox, vec![])?;
     if !confirmed {
         return Err("signal checkpoint is durably pending canonical confirmation".into());
     }
-    Ok(notices)
+    Ok(Tick { notices, next })
 }
 
 pub fn run(d: Arc<Daemon>, stop: &std::sync::mpsc::Receiver<()>) {
