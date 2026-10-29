@@ -22,6 +22,7 @@ fn generation() -> SourceGeneration {
 fn body(generation: &SourceGeneration, start: u64, end: u64) -> RawBodyRange {
     RawBodyRange {
         generation: generation.clone(), body: format!("body:{start}:{end}"),
+        predecessor: (start > 0).then(|| format!("body:0:{start}")),
         range: RawRange { start, end }, hash: BlobHash([start as u8; 32]),
         decoded_length: end - start, known_total: (end == 10).then_some(10),
     }
@@ -98,4 +99,17 @@ fn empty_custody_requires_an_actual_body_and_duplicate_ranges_keep_eof_evidence(
     proof.push(first).unwrap();
     proof.push(body(&generation, 0, 10)).unwrap();
     assert!(proof.finish().unwrap().is_complete_stream());
+}
+
+#[test]
+fn contiguous_coordinates_without_the_actual_predecessor_do_not_prove_custody() {
+    let generation = generation();
+    for predecessor in [None, Some("unrelated-body".into())] {
+        let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
+        proof.push(body(&generation, 0, 5)).unwrap();
+        let mut next = body(&generation, 5, 10);
+        next.predecessor = predecessor;
+        proof.push(next).unwrap();
+        assert!(proof.finish().is_none());
+    }
 }
