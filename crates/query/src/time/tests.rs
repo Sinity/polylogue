@@ -50,16 +50,18 @@ fn native_zone_and_valid_boundaries_are_required_at_the_adapter() {
         )
         .is_err()
     );
+    for start_minutes in [1500, 15360, u16::MAX] {
     assert!(
         clock(
             0,
             LogicalDay {
                 zone: jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
-                start_minutes: 1500
+                start_minutes
             }
         )
         .is_err()
     );
+    }
 }
 #[test]
 fn exact_shared_durations_and_product_money_keep_storage_units() {
