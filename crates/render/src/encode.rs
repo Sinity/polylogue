@@ -379,20 +379,16 @@ impl<'a> Encoder<'a> {
                 }
             }
             ItemKind::Fragment {
-                encoding,
                 text,
-                from,
+                position,
                 until,
                 total,
             } => {
-                if *encoding == FragmentEncoding::Text {
-                    self.line(text)?;
-                } else {
-                    self.literal(text, "json-fragment")?;
-                }
+                self.line("Encoded ReadItem JSON fragment")?;
+                self.literal(text, "json-fragment")?;
                 self.line(&format!(
-                    "… characters {from}..{until} of {total} · {}",
-                    item.source.reference
+                    "… encoded characters {}..{until} of {total} · {}",
+                    position.character, item.source.reference
                 ))?;
             }
         }

@@ -25,9 +25,45 @@ pub struct AcquisitionReceipt {
     pub range: RawRange,
     pub hash: polylogue_model::BlobHash,
     pub observed_at: polylogue_model::Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<super::SourceGeneration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_predecessor: Option<String>,
 }
 impl AcquisitionReceipt {
     pub const VERSION: u32 = 1;
+
+    pub fn validate_for(&self, input: &crate::InputKey) -> Result<()> {
+        let invalid = || StoreError::Invalid("acquisition evidence does not match its generation or input".into());
+        if self.version != Self::VERSION || self.source.origin != input.format {
+            return Err(invalid());
+        }
+        self.range.length()?;
+        let Some(generation) = &self.generation else {
+            return if self.raw_total.is_none() && self.raw_predecessor.is_none() {
+                Ok(())
+            } else {
+                Err(invalid())
+            };
+        };
+        generation.validate()?;
+        let stream = generation.stream();
+        let window = generation.window();
+        if stream.source != self.source
+            || stream.input.id != input.id || stream.input.format != input.format
+            || self.range.start < window.start || self.range.end > window.end
+            || self.raw_total.is_some_and(|end| end != window.end || end != self.range.end)
+            || self.raw_predecessor.as_ref().is_some_and(|body| body.is_empty() || self.range.start == window.start)
+            || matches!(generation,
+                super::SourceGeneration::File { stream: super::RawStream { role: super::RawStreamRole::ProviderBytes, .. }, observed, .. }
+                if self.raw_total.is_some_and(|end| end != observed.size))
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 
 /// The declared input format and exact native location. Display paths and
@@ -57,7 +93,20 @@ pub enum SourceStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SourceSubject {
+    pub input: String,
+    pub observation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SourceBasis {
+    /// Missing authority permits private custody, not source-coordinate claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<super::SourceBoundary>,
+    /// A native-ID alias resolved strictly within the pre-acquisition cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<SourceSubject>,
     pub source: SourceSelector,
     pub status: SourceStatus,
     pub confirmed: Option<String>,
@@ -96,6 +145,10 @@ pub struct CapturePlan {
     pub bases: Vec<SourceBasis>,
     pub count: u64,
     pub mode: CaptureMode,
+    /// Receiver constraint on new custody only. Exact retained retries keep
+    /// their original disposition; this cannot promote unresolved work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_disposition: Option<CaptureDisposition>,
 }
 impl CapturePlan {
     pub fn validate(&self) -> Result<()> {
@@ -103,6 +156,9 @@ impl CapturePlan {
             return Err(StoreError::Invalid(
                 "an acquisition group needs its content intent and members".into(),
             ));
+        }
+        if self.required_disposition == Some(CaptureDisposition::Prepared) {
+            return Err(StoreError::Invalid("an acquisition constraint cannot require acceptance".into()));
         }
         let mut seen = std::collections::BTreeSet::new();
         for basis in &self.bases {
@@ -149,6 +205,43 @@ pub struct SourceSnapshot {
     pub basis: SourceBasis,
     pub confirmed: Option<ConfirmedSource>,
     pub pending: PendingSource,
+}
+
+/// Durable acquisition preparation is distinct from committed source semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CaptureReceipt {
+    Accepted { write: super::PreparedWrite },
+    UnresolvedBasisConflict { custody: RawCustodyReceipt },
+}
+
+/// Existing group identity and original count. Bodies are resolved one page at
+/// a time through group headers and capture_body, never by provider paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawCustodyReceipt {
+    pub identity: String,
+    pub count: u64,
+}
+
+/// A private custody disposition cannot acknowledge a byte cursor or revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureDisposition {
+    Prepared,
+    UnresolvedBasisConflict,
+}
+
+/// One bounded page of retained original group members. Exhaustion says
+/// nothing about provider EOF or missing members already applied elsewhere.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PendingGroupPage {
+    /// None means no retained group disposition is known, not accepted EOF.
+    pub disposition: Option<CaptureDisposition>,
+    pub headers: Vec<PendingCapture>,
+    /// Original ordinal, exclusive, for the next page.
+    pub next: Option<u64>,
 }
 
 /// Enumerates owned encoded bodies one member at a time. The SDK stages every

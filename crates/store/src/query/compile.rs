@@ -271,6 +271,10 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
     lower(&plan, opts)
 }
 pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Program, QueryError> {
+    let mut captured = opts.clone();
+    captured.saved = plan.bindings().saved.clone();
+    captured.kept = plan.bindings().kept.clone();
+    let opts = &captured;
     let bound = plan.expanded_query();
     let catalog = plan.catalog();
     let rendered = query_language::format::format_query(bound.query(), catalog)

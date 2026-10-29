@@ -9,6 +9,7 @@ mod input_events;
 mod resolution;
 mod sparse_projection;
 mod tool_durations;
+mod scoped;
 
 fn write_test_rows(
     tx: &Transaction<'_>,
@@ -186,6 +187,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             step
         }],
         acquisition: None,
+        basis: None,
         release: InFlight::default(),
     }
 }
@@ -972,7 +974,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     let (reply, received) = sync_channel(1);
     sender
         .0
-        .send_user((
+        .send_user(UserMsg::Request(
             Box::new(crate::fixture::authored::operator_request(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
@@ -981,6 +983,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
                     machine: None,
                 },
             )),
+            None,
             reply,
         ))
         .unwrap();

@@ -1644,6 +1644,12 @@
                 "null"
               ]
             },
+            "scope": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "state": {
               "$ref": "#/$defs/CurrencyState"
             }
@@ -2061,7 +2067,7 @@
           "$ref": "#/$defs/Message"
         },
         "order": {
-          "description": "Reading position within the physical session, independent of commit\norder and of the receiving bundle's actual local byte extents.",
+          "description": "Snapshot ordinal over the canonical, unfiltered physical session's full\ndisplay order, including native ordering ties. Subsets never renumber it;\nit is independent of native counters, commit order and local byte extents.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
@@ -2191,7 +2197,7 @@
         "targets": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/Reference"
+            "$ref": "#/$defs/Target"
           }
         },
         "valid_until": {
@@ -2346,7 +2352,7 @@
         "targets": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/Reference"
+            "$ref": "#/$defs/Target"
           }
         },
         "valid_until": {
@@ -2767,9 +2773,6 @@
       },
       "additionalProperties": false
     },
-    "Reference": {
-      "type": "string"
-    },
     "Relation": {
       "description": "How one note relates to something else.",
       "type": "string",
@@ -3003,6 +3006,9 @@
         "author",
         "set_at"
       ]
+    },
+    "Target": {
+      "type": "string"
     },
     "TargetKind": {
       "type": "string",

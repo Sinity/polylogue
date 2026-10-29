@@ -35,4 +35,11 @@ fn link_parts_merge_from_either_side() {
     from_child.merge(&from_parent);
     assert_eq!(from_child.call_id.as_deref(), Some("toolu_1"));
     assert_eq!(from_child.evidence, "agentId");
+    assert_eq!(from_child.selection_tag(), from_parent.selection_tag());
+    let mut different = from_parent.clone();
+    different.kind = LinkKind::Continuation;
+    assert_ne!(from_child.selection_tag(), different.selection_tag());
+    different = from_parent;
+    different.child = s("claude-code:agent-2");
+    assert_ne!(from_child.selection_tag(), different.selection_tag());
 }

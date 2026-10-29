@@ -5,7 +5,19 @@ use polylogue_store::primary::{
 };
 use serde_json::json;
 
-fn client(root: &std::path::Path) -> Sinex {
+pub(crate) fn body(root: &std::path::Path, bytes: &[u8]) -> polylogue_store::primary::PreparedBody {
+    let prepared = hashed_blobs::Preparation::new(root.join("source-staging"))
+        .unwrap()
+        .plain(bytes, 3)
+        .unwrap();
+    polylogue_store::primary::PreparedBody {
+        descriptor: prepared.descriptor(),
+        file: prepared.into_file(),
+        path: None,
+    }
+}
+
+pub(crate) fn client(root: &std::path::Path) -> Sinex {
     Sinex::open(
         &Config {
             mode: Mode::Primary,
@@ -20,11 +32,11 @@ fn client(root: &std::path::Path) -> Sinex {
     )
     .unwrap()
 }
-fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInput {
+pub(crate) fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInput {
     serde_json::from_value(json!({
         "input":{"origin":"codex","path":"/home/op/session.jsonl","host":"fixture-host"},
         "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}},
-        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"group":null,"arrival_rank":0,"parsed":parsed
+        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"arrival_rank":0,"parsed":parsed
     })).unwrap()
 }
 fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
@@ -35,7 +47,7 @@ fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
     let mut writer =
         hashed_blobs::SegmentWriter::open(root, "segments/test.zst", 0, &[], 0o600).unwrap();
     let group = writer
-        .append_group(vec![prepared], |_| Ok(None))
+        .append_group([Ok(prepared)], |_| Ok(None))
         .unwrap()
         .wait()
         .unwrap();
@@ -59,7 +71,7 @@ fn offline_capture_keeps_complete_parser_facts_through_restart() {
     let captured = capture(bytes, vec![CapturedReading::from_step(&step).unwrap()]);
     let sinex = client(root.path());
     let prepared = sinex
-        .prepare_input(&captured, &mut bytes.as_slice())
+        .prepare_input(&captured, body(root.path(), bytes))
         .unwrap();
     assert!(matches!(
         prepared,
@@ -93,7 +105,7 @@ fn capture_retries_keep_identity_but_a_b_a_is_three_observations() {
         b"A".as_slice(),
     ] {
         sinex
-            .prepare_input(&capture(bytes, Vec::new()), &mut &bytes[..])
+            .prepare_input(&capture(bytes, Vec::new()), body(root.path(), bytes))
             .unwrap();
     }
     let pending = sinex.pending_captures().unwrap();
@@ -121,11 +133,11 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         .prepare_blob(
             BlobHash::of(bytes),
             bytes.len() as u64,
-            &mut bytes.as_slice(),
+            body(root.path(), bytes),
         )
         .unwrap();
     let physical = extent(root.path(), bytes);
-    let receipt=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id(&raw.identity),"material_extents":[physical.encode()],"admitted":[],"outcome":{},"refusal":null,"commit_seq":null})).unwrap();
+    let receipt=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[physical.encode()],"admitted":[],"outcome":{},"refusal":null,"commit_seq":null})).unwrap();
     sinex.spool.lock().unwrap().acknowledge(receipt).unwrap();
     let pending = sinex.pending_captures().unwrap();
     let material = pending[0].material.clone().unwrap();
@@ -149,3 +161,47 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
     sinex.spool.lock().unwrap().retire(10).unwrap();
     assert!(sinex.pending_captures().unwrap().is_empty());
 }
+
+#[test]
+fn complete_reading_custody_uses_the_encoded_plain_identity_and_survives_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let write = ProductWrite {
+        product: Product::Session {
+            reading: serde_json::from_value(json!({"input":{"id":"input-x","format":"codex","arrival_rank":0},"chain":1,"reading_version":"reading-2","order_from":null,"repeats_whole_conversations":false,"start":0,"parsed_upto":12,"at_end":true,"no_parser_yet":false})).unwrap(),
+            facts: polylogue_model::Session::new(polylogue_model::SessionId::parse("codex:session").unwrap(), polylogue_model::SessionKind::Main),
+        },
+        location: Some(SourceLocation {material:"00000000-0000-0000-0000-000000000001".into(),anchor:0}),
+        parents: Vec::new(), machine: Some("fixture-host".into()), output_index:0,
+    };
+    let prepare = || {
+        sinex
+            .prepare_reading(
+                "00000000-0000-0000-0000-000000000001",
+                "reading-2",
+                &mut |emit| emit(write.clone()),
+            )
+            .unwrap()
+    };
+    let first = prepare();
+    assert_eq!(prepare().identity, first.identity);
+    drop(sinex);
+    let reopened = client(root.path());
+    let queue = reopened.queue().unwrap();
+    let sinex_protocol::Ingress::Material { material, .. } =
+        queue.decode_frame(&first.identity).unwrap()
+    else {
+        panic!("reading material expected")
+    };
+    let body = queue.prepared_body(&first.identity).unwrap();
+    assert_eq!(material.blob, body.hash().to_string());
+    assert_eq!(material.length, body.decoded_len());
+    let mut reader = std::io::BufReader::new(
+        body.reader(None, hashed_blobs::ReadLimits::default())
+            .unwrap(),
+    );
+    let round_trip: ProductWrite = serde_json::from_reader(&mut reader).unwrap();
+    assert_eq!(round_trip, write);
+}
+
+mod named;

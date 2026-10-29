@@ -14,33 +14,58 @@ pub const ARCHIVE: &str = concat!(
     "\n",
     include_str!("schema/variants.sql"),
     "\n",
+    include_str!("schema/query_objects.sql"),
+    "\n",
     include_str!("schema/signals.sql")
 );
 pub const INDEX: &str = concat!(
     include_str!("schema/index.sql"),
     "\n",
-    include_str!("schema/wire_shapes.sql")
+    include_str!("schema/wire_shapes.sql"),
+    "\n",
+    include_str!("schema/index_9.sql"),
+    "\n",
+    include_str!("schema/attachment_bindings.sql"),
+    "\n",
+    include_str!("schema/index_12.sql")
 );
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// Numbered in-place steps after the version 1 format baseline.
-pub(crate) const INDEX_MIGRATIONS: &[&str] = &[
-    include_str!("schema/index_2.sql"),
-    include_str!("schema/index_3.sql"),
-    include_str!("schema/index_4.sql"),
-    include_str!("schema/index_5.sql"),
-    // Index6 updates only the primary source cache; standalone uses archive2.
-    include_str!("schema/archive_2.sql"),
+/// Published target versions are explicit. Unpublished reservations have no
+/// migration and cannot be mistaken for a database this build understands.
+struct IndexMigration {
+    version: u32,
+    target: IndexTarget,
+}
+#[derive(Clone, Copy)]
+enum IndexTarget {
+    Index(&'static str),
+    PrimarySource(&'static str),
+}
+const INDEX_MIGRATIONS: &[IndexMigration] = &[
+    IndexMigration { version: 2, target: IndexTarget::Index(include_str!("schema/index_2.sql")) },
+    IndexMigration { version: 3, target: IndexTarget::Index(include_str!("schema/index_3.sql")) },
+    IndexMigration { version: 4, target: IndexTarget::Index(include_str!("schema/index_4.sql")) },
+    IndexMigration { version: 5, target: IndexTarget::Index(include_str!("schema/index_5.sql")) },
+    IndexMigration { version: 6, target: IndexTarget::PrimarySource(include_str!("schema/archive_2.sql")) },
+    IndexMigration { version: 8, target: IndexTarget::PrimarySource(concat!(
+        include_str!("schema/variant_3.sql"), "\n", include_str!("schema/index_8.sql")
+    )) },
+    IndexMigration { version: 9, target: IndexTarget::Index(include_str!("schema/index_9.sql")) },
+    IndexMigration { version: 10, target: IndexTarget::Index(include_str!("schema/attachment_bindings.sql")) },
+    IndexMigration { version: 11, target: IndexTarget::PrimarySource(include_str!("schema/index_11.sql")) },
+    IndexMigration { version: 12, target: IndexTarget::Index(include_str!("schema/index_12.sql")) },
 ];
-pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[include_str!("schema/archive_2.sql")];
-const NATIVE_PATH_INDEX_VERSION: u32 = 6;
+pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
+    include_str!("schema/archive_2.sql"),
+    concat!(include_str!("schema/variant_3.sql"), "\n", include_str!("schema/archive_3.sql")),
+    include_str!("schema/archive_4.sql"),
+];
 
-/// The index schema and row encoding version. Parser changes carry their
-/// own reading versions and never advance this value.
-pub const INDEX_VERSION: u32 = 1 + INDEX_MIGRATIONS.len() as u32;
-
-/// The version `archive.sql` creates.
+/// The index schema and row encoding version. Reading versions are independent.
+pub const INDEX_VERSION: u32 = INDEX_MIGRATIONS[INDEX_MIGRATIONS.len() - 1].version;
+/// The version of the source declarations, including their numbered upgrades.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
 
 /// The `user_version` of a database: 0 for an empty file.
@@ -96,6 +121,7 @@ pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, true)
 }
 fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    legacy_variant_time(conn)?;
     let found = version(conn)?;
     if found > INDEX_VERSION {
         return Err(StoreError::IndexVersion {
@@ -107,13 +133,16 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     if found == 0 {
         create_index_in(&tx, primary)?;
     } else {
-        for (offset, step) in INDEX_MIGRATIONS[found as usize - 1..].iter().enumerate() {
-            if found + offset as u32 + 1 == NATIVE_PATH_INDEX_VERSION {
-                if primary {
-                    tx.execute_batch(&crate::source::Source::Cache.sql(step))?;
+        if found != 1 && !INDEX_MIGRATIONS.iter().any(|step| step.version == found) {
+            return Err(StoreError::NoMigration { database: "index", found });
+        }
+        for step in INDEX_MIGRATIONS.iter().filter(|step| step.version > found) {
+            match step.target {
+                IndexTarget::Index(sql) => tx.execute_batch(sql)?,
+                IndexTarget::PrimarySource(sql) if primary => {
+                    tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
                 }
-            } else {
-                tx.execute_batch(step)?;
+                IndexTarget::PrimarySource(_) => {}
             }
         }
         tx.execute_batch(READ_INDEXES)?;
@@ -154,7 +183,27 @@ pub fn building(conn: &Connection) -> Result<bool> {
 
 /// Creates `archive.db` in an empty file and brings an older one forward.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
+    legacy_variant_time(conn)?;
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
+}
+
+/// Migration uses the same timestamp parser and formatter as current variant rows.
+fn legacy_variant_time(conn: &Connection) -> Result<()> {
+    conn.create_scalar_function(
+        "polylogue_legacy_variant_time",
+        1,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let millis: i64 = context.get(0)?;
+            polylogue_model::Timestamp::from_unix_ms(millis)
+                .map(|at| at.to_string())
+                .ok_or_else(|| rusqlite::Error::UserFunctionError(Box::new(
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "legacy variant time is out of range"),
+                )))
+        },
+    )?;
+    Ok(())
 }
 
 /// Creates `embeddings.db` in an empty file; refuses one with other tables.

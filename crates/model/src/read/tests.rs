@@ -49,6 +49,8 @@ fn record(message: Message) -> Record {
         source_version,
         block_count: message.blocks.len() as u64,
         block_ordinals: (0..message.blocks.len() as u64).collect(),
+        injections: Vec::new(),
+        bindings: Vec::new(),
         message,
     }))
 }

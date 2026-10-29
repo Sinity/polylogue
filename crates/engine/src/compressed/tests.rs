@@ -187,3 +187,46 @@ fn a_proven_stale_alias_observes_its_old_revision_without_regressing_the_native_
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:alias-native'"),2);
 }
+
+#[test]
+fn equal_decoded_acquisition_keeps_its_actual_body_without_an_extra_revision() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rollout-body.jsonl");
+    let original = rollout("body-native");
+    std::fs::write(&path, &original).unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    assert!(e.run_pass().unwrap().errors.is_empty());
+    let tail = b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}\n";
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(tail)
+        .unwrap();
+    assert!(e.run_pass().unwrap().errors.is_empty());
+    let whole: Vec<u8> = original.bytes().chain(tail.iter().copied()).collect();
+    let hash = hashed_blobs::Hash(*blake3::hash(&whole).as_bytes());
+    // This chain comprises two blobs; its content hash is not a Blob address.
+    assert!(e.blobs.extent(&hash).is_err());
+    let compressed = dir.join("rollout-body-copy.jsonl.zst");
+    std::fs::write(
+        &compressed,
+        zstd::stream::encode_all(whole.as_slice(), 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let mut body = Vec::new();
+    e.blobs
+        .read_plain(&hash, Some(whole.len() as u64), || Ok(()))
+        .unwrap()
+        .read_to_end(&mut body)
+        .unwrap();
+    assert_eq!(body, whole);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:body-native'"),
+        2
+    );
+}

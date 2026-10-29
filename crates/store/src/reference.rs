@@ -8,27 +8,27 @@ use polylogue_model::{
 use rusqlite::{OptionalExtension, params};
 use std::ops::ControlFlow;
 
-type Visit<'a> = dyn FnMut(&str) -> Result<()> + 'a;
+type Visit<'a> = dyn FnMut(&str) -> Result<ControlFlow<()>> + 'a;
 struct Text<'a, 'v> {
     visit: &'a mut Visit<'v>,
     offsets: TextBodyOffsets,
     reference: String,
 }
 impl Text<'_, '_> {
-    fn body(&mut self, text: &str) -> Result<()> {
+    fn body(&mut self, text: &str) -> Result<ControlFlow<()>> {
         let range = self.offsets.push(text.len() as u64).map_err(span_error)?;
-        if range.start != 0 {
-            (self.visit)(TEXT_BODY_SEPARATOR)?;
+        if range.start != 0 && (self.visit)(TEXT_BODY_SEPARATOR)?.is_break() {
+            return Ok(ControlFlow::Break(()));
         }
         (self.visit)(text)
     }
-    fn block(&mut self, block: &Block) -> Result<()> {
+    fn block(&mut self, block: &Block) -> Result<ControlFlow<()>> {
         match text_body(block).map_err(|error| StoreError::ReferenceUnavailable {
             reference: self.reference.clone(),
             reason: error.to_string(),
         })? {
             Some(text) => self.body(text),
-            None => Ok(()),
+            None => Ok(ControlFlow::Continue(())),
         }
     }
 }
@@ -51,14 +51,38 @@ impl Reader<'_> {
         mut visit: impl FnMut(&str) -> Result<()>,
     ) -> Result<Option<u64>> {
         let mut bytes = 0u64;
-        let found = self.reference_text(reference, &mut |text| {
+        let found = self.reference_text(reference, true, &mut |text| {
             visit(text)?;
             bytes = bytes.checked_add(text.len() as u64).ok_or_else(|| {
                 StoreError::Invalid("reference text length exceeds its address space".into())
             })?;
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         })?;
         Ok(found.then_some(bytes))
+    }
+    /// Stop before loading another text body. Continue carries the complete
+    /// byte length; Break carries bytes visited before successful cancellation.
+    /// Completeness checks for full reference identities remain in force.
+    pub fn visit_reference_text_while(
+        &self,
+        reference: &Reference,
+        mut visit: impl FnMut(&str) -> Result<ControlFlow<()>>,
+    ) -> Result<Option<ControlFlow<u64, u64>>> {
+        let mut bytes = 0u64;
+        let mut stopped = false;
+        let found = self.reference_text(reference, true, &mut |text| {
+            bytes = bytes.checked_add(text.len() as u64).ok_or_else(|| {
+                StoreError::Invalid("reference text length exceeds its address space".into())
+            })?;
+            let flow = visit(text)?;
+            stopped = flow.is_break();
+            Ok(flow)
+        })?;
+        Ok(found.then_some(if stopped {
+            ControlFlow::Break(bytes)
+        } else {
+            ControlFlow::Continue(bytes)
+        }))
     }
     pub fn reference_hash(&self, reference: &Reference) -> Result<Option<BlobHash>> {
         let mut hash = blake3::Hasher::new();
@@ -69,7 +93,7 @@ impl Reader<'_> {
             })?
             .map(|_| BlobHash(*hash.finalize().as_bytes())))
     }
-    fn source_message_projection(
+    pub(crate) fn source_message_projection(
         &self,
         message: i64,
         reference: &Reference,
@@ -98,7 +122,19 @@ impl Reader<'_> {
         }
         Ok(())
     }
-    fn reference_text(&self, reference: &Reference, visit: &mut Visit<'_>) -> Result<bool> {
+    pub(crate) fn reference_text_while(
+        &self,
+        reference: &Reference,
+        visit: &mut Visit<'_>,
+    ) -> Result<bool> {
+        self.reference_text(reference, false, visit)
+    }
+    fn reference_text(
+        &self,
+        reference: &Reference,
+        complete: bool,
+        visit: &mut Visit<'_>,
+    ) -> Result<bool> {
         let conn = self.conn()?;
         match reference {
             Reference::Session(id) => {
@@ -122,10 +158,7 @@ impl Reader<'_> {
                     offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),
                 };
-                crate::ordered_blocks::visit_text(conn, pk, |block| {
-                    text.block(&block)?;
-                    Ok(ControlFlow::Continue(()))
-                })?;
+                crate::ordered_blocks::visit_text(conn, pk, |block| text.block(&block))?;
                 Ok(true)
             }
             Reference::Message(id) => {
@@ -137,17 +170,40 @@ impl Reader<'_> {
                     )
                     .optional()?;
                 let Some(pk) = pk else { return Ok(false) };
-                self.require_complete_message(pk, reference)?;
+                let projection = self.source_message_projection(pk, reference)?;
+                if complete {
+                    self.require_complete_message(pk, reference)?;
+                }
                 let mut text = Text {
                     visit,
                     offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),
                 };
-                let mut statement =
-                    conn.prepare_cached("SELECT pk FROM block WHERE message_pk=?1 AND kind IN ('text','thinking','tool_result') ORDER BY idx")?;
+                let mut statement = conn
+                    .prepare_cached("SELECT pk,idx FROM block WHERE message_pk=?1 ORDER BY idx")?;
                 let mut rows = statement.query([pk])?;
                 while let Some(row) = rows.next()? {
-                    text.block(&crate::ordered_blocks::one(conn, row.get(0)?)?)?;
+                    let index: usize = row.get(1)?;
+                    if !complete
+                        && projection.block_ordinals.get(index).copied() != Some(index as u64)
+                    {
+                        return Err(unavailable(
+                            reference,
+                            "an earlier original source block is unavailable",
+                        ));
+                    }
+                    if text
+                        .block(&crate::ordered_blocks::one(conn, row.get(0)?)?)?
+                        .is_break()
+                    {
+                        return Ok(true);
+                    }
+                }
+                if !complete && projection.block_count != projection.block_ordinals.len() as u64 {
+                    return Err(unavailable(
+                        reference,
+                        "some original source blocks are unavailable",
+                    ));
                 }
                 Ok(true)
             }
@@ -210,12 +266,11 @@ impl Reader<'_> {
                     reference: reference.to_string(),
                 };
                 let mut error = None;
-                document.visit_text_blocks(|block| {
-                    if let Err(failed) = text.block(&block) {
+                document.visit_text_blocks(|block| match text.block(&block) {
+                    Ok(flow) => flow,
+                    Err(failed) => {
                         error = Some(failed);
                         ControlFlow::Break(())
-                    } else {
-                        ControlFlow::Continue(())
                     }
                 })?;
                 if let Some(error) = error {
@@ -250,12 +305,12 @@ impl Reader<'_> {
                     reference: reference.to_string(),
                 };
                 let mut present = part.is_none();
-                self.visit_variant_parts(&variant.id, |value| {
+                self.visit_variant_parts_while(&variant.id, |value| {
                     if part.is_none_or(|n| value.n == n) {
                         present = true;
-                        text.body(&value.body)?;
+                        return Ok(text.body(&value.body)?.is_continue());
                     }
-                    Ok(())
+                    Ok(true)
                 })?;
                 Ok(present)
             }
@@ -272,7 +327,7 @@ impl Reader<'_> {
                 else {
                     return Ok(false);
                 };
-                visit(assertion.value.as_deref().unwrap_or(""))?;
+                let _ = visit(assertion.value.as_deref().unwrap_or(""))?;
                 Ok(true)
             }
             Reference::Span {
@@ -344,7 +399,12 @@ impl Reader<'_> {
             reference: reference.to_string(),
         };
         while let Some(row) = rows.next()? {
-            text.block(&crate::ordered_blocks::one(conn, row.get(0)?)?)?;
+            if text
+                .block(&crate::ordered_blocks::one(conn, row.get(0)?)?)?
+                .is_break()
+            {
+                return Ok(true);
+            }
         }
         Ok(true)
     }
@@ -357,25 +417,29 @@ impl Reader<'_> {
         visit: &mut Visit<'_>,
     ) -> Result<bool> {
         let mut bounds = SpanBounds::new(unit, start, end).map_err(span_error)?;
-        let found =
-            self.reference_text(container, &mut |text| bounds.push(text).map_err(span_error))?;
+        let found = self.reference_text(container, true, &mut |text| {
+            bounds.push(text).map_err(span_error)?;
+            Ok(ControlFlow::Continue(()))
+        })?;
         if !found {
             return Ok(false);
         }
         let range = bounds.finish().map_err(span_error)?;
         let mut position = 0u64;
-        self.reference_text(container, &mut |text| {
+        self.reference_text(container, true, &mut |text| {
             let next = position
                 .checked_add(text.len() as u64)
                 .ok_or(SpanError::Overflow)
                 .map_err(span_error)?;
             let begin = range.start.max(position);
             let end = range.end.min(next);
-            if begin < end {
-                visit(&text[(begin - position) as usize..(end - position) as usize])?;
+            if begin < end
+                && visit(&text[(begin - position) as usize..(end - position) as usize])?.is_break()
+            {
+                return Ok(ControlFlow::Break(()));
             }
             position = next;
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         })
     }
 }

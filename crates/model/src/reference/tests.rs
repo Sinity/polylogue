@@ -10,6 +10,7 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "tool:codex:thread#call:opaque",
         "document:codex:document",
         "event:origin:event:1",
+        "run:019a2f20-1234-7000-8000-0123456789ab",
         "attachment:blob:1",
         "assertion:root",
         "assertion:root@revision",
@@ -89,4 +90,28 @@ fn containers_preserve_exact_identity_without_guessing_message_sessions() {
         assert_eq!(parse(child).container(), Some(parse(parent)));
     }
     assert_eq!(parse("assertion:root@revision").container(), None);
+}
+
+#[test]
+fn run_references_are_explicit_native_identities() {
+    let id = RunId::parse("019a2f20-1234-7000-8000-0123456789ab").unwrap();
+    let reference = Reference::parse(&format!("run:{id}")).unwrap();
+    assert_eq!(reference, Reference::Run(id));
+    assert_eq!(reference.session(), None);
+    for text in [
+        "run:",
+        "run:codex:session",
+        "run:caller-key",
+        "run:019a2f201234700080000123456789ab",
+        "run:019A2F20-1234-7000-8000-0123456789AB",
+        "run:019a2f20-1234-7000-8000-0123456789ab#0",
+    ] {
+        assert!(
+            matches!(
+                Reference::parse(text),
+                Err(ReferenceError::Id(_, IdError::BadRun(_)))
+            ),
+            "{text}"
+        );
+    }
 }

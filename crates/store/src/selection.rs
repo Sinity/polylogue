@@ -13,6 +13,7 @@ use query_language::{
     identity::QuestionId,
 };
 use serde_json::Value;
+mod content;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +74,14 @@ pub struct PreparedSelection<'read> {
     direct: Option<Reference>,
 }
 impl PreparedSelection<'_> {
+    pub fn query_object(
+        &self,
+    ) -> Result<polylogue_model::query_objects::QueryObject, SelectionError> {
+        Ok(self.plan.query_object()?)
+    }
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
     pub fn question_id(&self) -> QuestionId {
         self.plan.question_id()
     }
@@ -92,6 +101,14 @@ impl PreparedSelection<'_> {
         self.scope.clone()
     }
 }
+/// Natural source coordinates emitted by the compiler's own selected relation.
+/// These are not Sinex parents; lifecycle evidence resolves their exact native facts.
+#[derive(Debug, Clone)]
+pub struct SelectionFactKey {
+    pub unit: Unit,
+    pub values: Vec<Value>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SelectionRow {
     pub reference: Option<Reference>,
@@ -224,13 +241,52 @@ impl Reader<'_> {
             polylogue_query::plan::prepare(&identity_text, &options.bindings(), |condition| {
                 self.resolve_question_reference(condition, &options)
             })?;
+        if direct.is_none() {
+            program = crate::query::lower(&plan, &options)?;
+        }
         program.query = target.to_owned();
+        self.finish_selection(plan, program, direct, &options)
+    }
+
+    /// Replay an acknowledged canonical object using its authenticated catalog
+    /// version and the caller's already captured operation clock.
+    pub fn prepare_query_object_selection<'read>(
+        &'read self,
+        object: &polylogue_model::query_objects::QueryObject,
+        options: &Options,
+        expected_catalog: &str,
+    ) -> Result<PreparedSelection<'read>, SelectionError> {
+        self.with_clock(&options.clock, || {
+            self.check()?;
+            let plan = polylogue_query::plan::replay(object, expected_catalog)?;
+            let program = crate::query::lower(&plan, options)?;
+            self.validate_selection(&program)?;
+            self.finish_selection(plan, program, None, options)
+        })
+    }
+
+    fn finish_selection<'read>(
+        &'read self,
+        plan: Plan,
+        program: Program,
+        direct: Option<Reference>,
+        options: &Options,
+    ) -> Result<PreparedSelection<'read>, SelectionError> {
+        let scope = self.scope_token();
+        scope.check()?;
         let position = self.change_position()?;
         let index_file = self.index_identity()?;
         let mut versions = BTreeMap::from([
             ("compiler".into(), "shared-query-v1".into()),
-            ("definitions".into(), digest(&plan.definitions())?),
+            (
+                "catalog".into(),
+                polylogue_query::plan::catalog_fingerprint(),
+            ),
+            ("definitions".into(), plan.question_id().to_string()),
         ]);
+        if let Some(scope) = self.query_scope_fingerprint()? {
+            versions.insert("scope".into(), scope);
+        }
         if program.near.is_some() {
             versions.insert("ranking".into(), crate::vectors::writes().to_string());
         }
@@ -367,16 +423,109 @@ impl Reader<'_> {
                 Err(VisitError::Selection(e)) => Err(E::from(e)),
             }
         };
+        self.in_selection_context(selection, near, run)
+    }
+
+    fn in_selection_context<T, E>(
+        &self,
+        selection: &PreparedSelection<'_>,
+        near: Option<&NearFn<'_>>,
+        run: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<SelectionError>,
+    {
+        selection
+            .scope
+            .check()
+            .map_err(SelectionError::from)
+            .map_err(E::from)?;
+        if selection.reader != std::ptr::from_ref(self).cast::<()>() as usize
+            || !selection.scope.same(&self.scope_token())
+        {
+            return Err(E::from(invalid(
+                "scope_changed",
+                "selection belongs to another access scope",
+            )));
+        }
+        self.validate_selection(&selection.program)
+            .map_err(E::from)?;
         self.with_clock(&selection.program.clock, || {
-            if let Some(request) = &selection.program.near {
+            let result = if let Some(request) = &selection.program.near {
                 let near =
                     near.ok_or_else(|| E::from(invalid("embed", "semantic search unavailable")))?;
                 let similarity = near(&request.text).map_err(|e| E::from(invalid("embed", e)))?;
                 self.with_similarity(similarity, run)
             } else {
                 run()
-            }
+            };
+            selection
+                .scope
+                .check()
+                .map_err(SelectionError::from)
+                .map_err(E::from)?;
+            result
         })
+    }
+
+    /// Stream the complete selected native population without answer projection
+    /// or body decoding. Aggregated populations need a retained compiler basis.
+    pub fn visit_selection_facts<E>(
+        &self,
+        selection: &PreparedSelection<'_>,
+        near: Option<&NearFn<'_>>,
+        mut visit: impl FnMut(SelectionFactKey) -> Result<ControlFlow<()>, E>,
+    ) -> Result<(), E>
+    where
+        E: From<SelectionError>,
+    {
+        self.in_selection_context(selection, near, || {
+            self.selection_facts_scoped(selection, &mut visit)
+        })
+    }
+    fn selection_facts_scoped<E>(
+        &self,
+        selection: &PreparedSelection<'_>,
+        visit: &mut impl FnMut(SelectionFactKey) -> Result<ControlFlow<()>, E>,
+    ) -> Result<(), E>
+    where
+        E: From<SelectionError>,
+    {
+        let RowBasis::Native { unit, columns } = &selection.program.row_basis else {
+            return Err(E::from(invalid(
+                "not_yet_available",
+                "the query does not retain its criterion population",
+            )));
+        };
+        let projection = columns
+            .iter()
+            .map(|c| format!("q.\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT {projection} FROM ({}) q ORDER BY q._pk",
+            selection.program.sql
+        );
+        let result = self.query_each(&sql, &values(&selection.program.params), |row| {
+            selection
+                .scope
+                .check()
+                .map_err(SelectionError::from)
+                .map_err(VisitError::Selection)?;
+            let fact = SelectionFactKey {
+                unit: *unit,
+                values: columns.iter().map(|c| row[c].clone()).collect(),
+            };
+            match visit(fact).map_err(VisitError::Consumer)? {
+                ControlFlow::Continue(()) => Ok(()),
+                ControlFlow::Break(()) => Err(VisitError::Stop),
+            }
+        });
+        match result {
+            Ok(()) | Err(VisitError::Stop) => Ok(()),
+            Err(VisitError::Consumer(e)) => Err(e),
+            Err(VisitError::Selection(e)) => Err(E::from(e)),
+        }
     }
     /// Membership uses the already-prepared selection, including its stages.
     /// Ranked membership is evaluated inside the visit callback's shared ranking scope.
@@ -549,18 +698,43 @@ impl Reader<'_> {
     pub fn selection_kept_results(
         &self,
     ) -> Result<BTreeMap<String, polylogue_query::Kept>, SelectionError> {
-        self.query("SELECT id,json_extract(rows_json,'$.unit') AS unit,json_extract(rows_json,'$.columns') AS columns,json_extract(rows_json,'$.match_columns') AS match_columns,json_type(rows_json,'$.match_columns') AS match_columns_type FROM source_kept_result",&[])?.into_iter().map(|row| {
-            let id=row["id"].as_str().ok_or_else(||invalid("store","kept result has no ID"))?.to_owned();
-            let unit=row["unit"].as_str().ok_or_else(||invalid("store","kept result has no row unit"))?.to_owned();
-            let columns=row["columns"].as_str().ok_or_else(||invalid("store","kept result has no column declaration"))?;
-            let columns=serde_json::from_str(columns).map_err(StoreError::from)?;
-            let match_columns=if row["match_columns_type"].is_null() { Vec::new() } else {
-                let text=row["match_columns"].as_str().ok_or_else(||invalid("store","kept result has invalid match columns"))?;
-                serde_json::from_str(text).map_err(StoreError::from)?
-            };
-            Ok((id,polylogue_query::Kept {unit,columns,match_columns}))
-        }).collect()
+        let conn = self.conn()?;
+        let values = kept_results(conn, crate::source::Source::Cache)?;
+        self.conn()?;
+        Ok(values)
     }
+}
+/// One canonical kept-column decoder serves pinned readers and writer admission.
+pub(crate) fn kept_results(
+    conn: &rusqlite::Connection,
+    source: crate::source::Source,
+) -> Result<BTreeMap<String, polylogue_query::Kept>, SelectionError> {
+    let sql = source.sql("SELECT id,json_extract(rows_json,'$.unit'),json_extract(rows_json,'$.columns'),json_extract(rows_json,'$.match_columns'),json_type(rows_json,'$.match_columns') FROM @source.kept_result");
+    let mut statement = conn.prepare_cached(&sql).map_err(StoreError::from)?;
+    let mut rows = statement.query([]).map_err(StoreError::from)?;
+    let mut values = BTreeMap::new();
+    while let Some(row) = rows.next().map_err(StoreError::from)? {
+        let id: String = row.get(0).map_err(StoreError::from)?;
+        let unit: String = row.get(1).map_err(StoreError::from)?;
+        let columns: String = row.get(2).map_err(StoreError::from)?;
+        let columns = serde_json::from_str(&columns).map_err(StoreError::from)?;
+        let kind: Option<String> = row.get(4).map_err(StoreError::from)?;
+        let match_columns = if kind.is_none() {
+            Vec::new()
+        } else {
+            let text: String = row.get(3).map_err(StoreError::from)?;
+            serde_json::from_str(&text).map_err(StoreError::from)?
+        };
+        values.insert(
+            id,
+            polylogue_query::Kept {
+                unit,
+                columns,
+                match_columns,
+            },
+        );
+    }
+    Ok(values)
 }
 struct VisitGuard<'a> {
     previous: bool,
@@ -580,10 +754,6 @@ impl<E> From<StoreError> for VisitError<E> {
     fn from(e: StoreError) -> Self {
         Self::Selection(e.into())
     }
-}
-fn digest(value: &impl serde::Serialize) -> Result<String, SelectionError> {
-    let bytes = serde_json::to_vec(value).map_err(StoreError::from)?;
-    Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 pub fn values(params: &[Param]) -> Vec<SqlValue> {
     params

@@ -1,12 +1,26 @@
 //! Durable primary producer intents and the confirmed cache contract.
+pub use crate::source::SourceBoundary;
 pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
-    AcquisitionReceipt, AcquisitionRoute, CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan,
-    ConfirmedSource, PendingCheckpoint, PendingSource, RawRange, SourceBasis, SourceSelector,
-    SourceSnapshot, SourceStatus,
+    AcquisitionReceipt, AcquisitionRoute, CaptureDisposition, CaptureEmitter, CaptureMembers,
+    CaptureMode, CapturePlan, CaptureReceipt, RawCustodyReceipt,
+    ConfirmedSource, PendingCheckpoint, PendingGroupPage, PendingSource, RawRange, SourceBasis,
+    SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
 };
 pub mod products;
+pub mod replay;
+pub mod raw_acquisition;
+pub use raw_acquisition::{
+    DatabaseSnapshotToken, FileSnapshot, FileTime, RawAcquisitionCursor, RawAcquisitionProof,
+    RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
+};
+pub use replay::{
+    ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeFactContext, NativeKind,
+    NativeSource, ProjectionAvailability, ProjectionCoverage, ProjectionIdentity, RawInputCoverage,
+    RawInputProof, ReplayBasisStatus, ReplayContinuation, ReplayControl, ReplayCursor, ReplayPage,
+    ReplayState,
+};
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
@@ -23,12 +37,26 @@ use serde::{Deserialize, Serialize};
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
 pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
 
+/// Logical names of immutable intents in the existing producer custody store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedProductSelector {
+    Exact(String),
+    Prefix(String),
+}
+
 /// A locally pinned encoded body. Its optional path is a same-host custody
 /// optimization; the file and descriptor determine the bytes.
 pub struct PreparedBody {
     pub file: std::fs::File,
     pub descriptor: hashed_blobs::EncodedBlob,
     pub path: Option<std::path::PathBuf>,
+}
+
+/// Restricts immutable product lookup to its existing named custody identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedProductSelector {
+    Exact(String),
+    Prefix(String),
 }
 
 /// The connection to Sinex the writer and the loop send through.
@@ -45,13 +73,27 @@ pub trait Sinex: Send + Sync {
         &self,
         plan: &CapturePlan,
         members: &mut CaptureMembers<'_>,
-    ) -> Result<PreparedWrite>;
+    ) -> Result<CaptureReceipt>;
     /// Reads only local durable source headers and one verified selected control.
     fn pending_source(
         &self,
         source: &SourceSelector,
         reading_version: &str,
     ) -> Result<PendingSource>;
+    /// Pages immutable accepted membership; headers contain no parsed outputs.
+    /// Zero limit is invalid. Missing applied members do not prove source EOF.
+    fn pending_group_headers(
+        &self,
+        group: &str,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<PendingGroupPage>;
+    /// Proves contiguous committed physical ranges in one exact generation.
+    /// This local custody cursor does not acknowledge logical source acceptance.
+    fn raw_acquisition_cursor(
+        &self,
+        generation: &SourceGeneration,
+    ) -> Result<Option<RawAcquisitionCursor>>;
     /// Pins the original encoded body for exact range comparison without network I/O.
     fn capture_body(&self, identity: &str) -> Result<PreparedBody>;
     fn canonical_publisher(&self) -> bool {
@@ -70,9 +112,21 @@ pub trait Sinex: Send + Sync {
         &self,
         request: &polylogue_model::authored::PreparedRequest,
     ) -> Result<UserOutcome>;
+    /// Existing named intents, including published but unapplied frames.
+    fn visit_named_products(
+        &self,
+        selector: &NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> Result<()>,
+    ) -> Result<()>;
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
+    ) -> Result<()>;
+    /// Visits only matching named products already retained in durable custody.
+    fn visit_named_products(
+        &self,
+        selector: &NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> Result<()>,
     ) -> Result<()>;
     fn visit_pending_blobs(
         &self,

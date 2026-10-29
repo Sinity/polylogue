@@ -34,6 +34,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod acquisition;
 mod collectors;
 mod databases;
 mod import;
@@ -424,6 +425,7 @@ impl Engine {
                     chain: k.chain,
                     failed: None,
                     failed_history: HashMap::new(),
+                    working: None,
                 },
             );
         }

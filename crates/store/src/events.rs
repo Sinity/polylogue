@@ -1,7 +1,7 @@
 //! Selected events keep the local input they were read from. Citations in an
 //! exported file name the sender's inputs and never decide local ones.
 use crate::{Reader, Result, StoreError};
-use polylogue_model::bundle::{SourceClaim, ImportedEventIdentity, InputEventRecord};
+use polylogue_model::bundle::{ImportedEventIdentity, InputEventRecord, SourceClaim};
 use polylogue_model::export::EventExport;
 use polylogue_model::{Event, SessionId};
 use rusqlite::OptionalExtension;
@@ -126,10 +126,23 @@ impl Reader<'_> {
     pub fn visit_event_records(
         &self,
         session: &SessionId,
+        visit: impl FnMut(InputEventRecord) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_event_records_from_ordinal(session, 0, visit)
+    }
+
+    /// Seek within the physical session's canonical event order before decoding.
+    pub fn visit_event_records_from_ordinal(
+        &self,
+        session: &SessionId,
+        ordinal: u64,
         mut visit: impl FnMut(InputEventRecord) -> std::ops::ControlFlow<()>,
     ) -> Result<()> {
-        let mut statement=self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.seq,e.id")?;
-        let mut rows = statement.query([session.to_string()])?;
+        let Ok(ordinal) = i64::try_from(ordinal) else {
+            return Ok(());
+        };
+        let mut statement=self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.seq,e.id LIMIT -1 OFFSET ?2")?;
+        let mut rows = statement.query(rusqlite::params![session.to_string(), ordinal])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             let record = self

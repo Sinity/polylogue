@@ -22,6 +22,11 @@ pub mod scope;
 
 mod behind_index;
 mod captured;
+mod native_hook_fields;
+mod fragment;
+pub use fragment::{
+    FragmentAvailability, FragmentClaim, FragmentClaims, FragmentConflict, FragmentSelection,
+};
 mod parser_checkpoint;
 pub use parser_checkpoint::StoredParserCheckpoint;
 mod import_attribution;

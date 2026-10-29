@@ -249,6 +249,7 @@ fn seed_restart(dir: &Path) {
             length,
             parse,
             acquisition: None,
+            basis: None,
             release: Default::default(),
         };
         for result in writer

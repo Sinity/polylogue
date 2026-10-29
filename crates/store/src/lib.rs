@@ -29,6 +29,7 @@ pub mod fault;
 pub(crate) mod first_build;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
+mod fragment;
 pub mod input_rows;
 pub mod legacy_import;
 mod live;
@@ -38,6 +39,7 @@ pub mod notes;
 mod ordered_blocks;
 pub mod primary;
 pub mod query;
+pub mod query_objects;
 pub mod read;
 pub mod reference;
 mod repo_lookup;
@@ -152,6 +154,8 @@ pub enum StoreError {
     /// Sinex could not be reached, or refused what was sent (primary mode).
     #[error("capture {identity} is durable and waiting for Sinex confirmation")]
     PrimaryPending { identity: String },
+    #[error("acquisition {custody:?} retained raw bytes after a source basis conflict")]
+    UnresolvedBasisConflict { custody: primary::RawCustodyReceipt },
     #[error("Sinex: {0}")]
     Sinex(String),
     #[error("{0}")]

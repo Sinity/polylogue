@@ -63,13 +63,14 @@ impl Sinex {
                 Ingress::Material {
                     frame: identity.clone(),
                     material: Box::new(MaterialFrame {
-                        id: crate::material_id(&identity),
+                        source: crate::source_reference(),
+                        id: crate::material_id(&self.config.producer, &identity),
                         input: InputRef {
                             kind: "polylogue-reading".into(),
                             locator: root.into(),
                             host: self.host.clone(),
                         },
-                        blob: format!("blake3:{hash}"),
+                        blob: hash.to_string(),
                         length,
                         parser: "polylogue-reading".into(),
                         parser_version: 3,
@@ -88,7 +89,11 @@ impl Sinex {
                         },
                     }),
                 },
-                body,
+                PreparedBody {
+                    descriptor: body.descriptor(),
+                    file: body.into_file(),
+                    path: None,
+                },
             )?;
             Ok(PreparedWrite {
                 identity,
@@ -169,7 +174,7 @@ impl Sinex {
                 until: None,
                 after: None,
             };
-            let (selection, declarations) = self.with(async |client| {
+            let (selection, declarations, source) = self.with(async |client| {
                 let mut selections = client.replay_scope(&query).await?;
                 if selections.len() != 1 || selections[0].root != root {
                     return Err(Error::Invalid(
@@ -177,9 +182,27 @@ impl Sinex {
                     ));
                 }
                 let selection = selections.remove(0);
+                let mut source = None;
                 for material in &selection.materials {
-                    client.fetch_material(material.id).await?;
+                    let fetched = client.fetch_material(material.id).await?;
+                    let actual = fetched
+                        .material
+                        .as_ref()
+                        .ok_or_else(|| {
+                            Error::Invalid("reading material has no registered source".into())
+                        })?
+                        .source
+                        .clone();
+                    if source.as_ref().is_some_and(|source| source != &actual) {
+                        return Err(Error::Invalid(
+                            "reading materials span different registered sources".into(),
+                        ));
+                    }
+                    source = Some(actual);
                 }
+                let source = source.ok_or_else(|| {
+                    Error::Invalid("reading has no material source evidence".into())
+                })?;
                 let declarations = crate::kinds::declarations(client.family())
                     .iter()
                     .map(|declaration| sinex_protocol::DeclarationHash {
@@ -187,12 +210,13 @@ impl Sinex {
                         hash: declaration.definition_hash(),
                     })
                     .collect();
-                Ok((selection, declarations))
+                Ok((selection, declarations, source))
             })?;
             let operation_hash = blake3::hash(identity.as_bytes());
             let mut operation = [0u8; 16];
             operation.copy_from_slice(&operation_hash.as_bytes()[..16]);
             let sequence = sinex_protocol::ProducerReplay {
+                source,
                 operation: sinex_model::OperationId(uuid::Uuid::from_bytes(operation)),
                 root: selection.root,
                 materials: selection.materials,

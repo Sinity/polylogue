@@ -169,6 +169,7 @@ impl Engine {
                         vec![step]
                     },
                     acquisition: None,
+                    basis: None,
                     release: Default::default(),
                 };
                 self.writer
@@ -192,6 +193,9 @@ impl Engine {
         path: &Path,
         pass: &mut Pass,
     ) -> Result<Option<String>, EngineError> {
+        let origin =
+            polylogue_sources::origin::by_name("codex-local-file").expect("declared origin");
+        let context = self.sampling_context(path, origin.name, &origin.reading_version())?;
         let mut file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -210,6 +214,13 @@ impl Engine {
         pass.bytes_read += prepared.len();
         let exists = self.reads.reader()?.input_progress(&id)?.is_some();
         let observation = self.observation(path, Some(facts));
+        let acquisition = context.finish(
+            polylogue_store::primary::RawRange {
+                start: 0,
+                end: prepared.len(),
+            },
+            prepared.hash(),
+        );
         let batch = polylogue_store::Batch {
             input: InputKey {
                 id: id.clone(),
@@ -227,7 +238,8 @@ impl Engine {
             blobs: Vec::new(),
             length: prepared.len(),
             parse: Vec::new(),
-            acquisition: None,
+            acquisition: Some(acquisition),
+            basis: context.basis,
             release: Default::default(),
         };
         if !exists {
