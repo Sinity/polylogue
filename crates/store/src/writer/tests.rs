@@ -7,9 +7,9 @@ use polylogue_model::{
 mod extent_checkpoint;
 mod input_events;
 mod resolution;
+mod scoped;
 mod sparse_projection;
 mod tool_durations;
-mod scoped;
 
 fn write_test_rows(
     tx: &Transaction<'_>,

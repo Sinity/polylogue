@@ -74,8 +74,8 @@ pub use context::{
     DeliveryRow, FailingCommand, NearbySession, OpenBead, OpenItems, Prompt, SessionWork,
 };
 pub use read::{
-    BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs, KnownInput,
-    ReadCompleteness, ReadingContract, ReadPool, Reader, SqlValue, Status,
+    BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
+    KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use writer::{
