@@ -598,6 +598,7 @@ const WRITTEN: &[Command] = &[
             command_surface::FailureKind::BadRequest, command_surface::FailureKind::Ambiguous,
             command_surface::FailureKind::StaleCursor, command_surface::FailureKind::NotYetAvailable,
             command_surface::FailureKind::NotFound, command_surface::FailureKind::Conflict,
+            command_surface::FailureKind::Refused, command_surface::FailureKind::NotRunning,
             command_surface::FailureKind::Io, command_surface::FailureKind::Timeout,
             command_surface::FailureKind::Cancelled,
         ],

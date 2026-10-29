@@ -53,7 +53,12 @@ impl Daemon {
         &self,
         authorship: &polylogue_model::authorship::Authorship,
     ) -> Result<Arc<crate::operation::Context>, Response> {
-        let invocation = self.invocation(authorship);
+        self.resolve_operation_context(self.invocation(authorship))
+    }
+    pub(crate) fn resolve_operation_context(
+        &self,
+        invocation: crate::operation::Invocation,
+    ) -> Result<Arc<crate::operation::Context>, Response> {
         let context = match &self.mode {
             ModeState::Standalone => crate::operation::Context::standalone(
                 invocation,
