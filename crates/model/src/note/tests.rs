@@ -10,7 +10,7 @@ fn targets_round_trip_through_their_reference_form() {
         "result:018f",
         "note:018f.1",
         "repo:polylogue",
-        "cwd:/realm/project/polylogue/repo",
+        "cwd:/workspace/project",
     ] {
         let t = Target::parse(text).unwrap();
         assert_eq!(t.to_string(), text);
