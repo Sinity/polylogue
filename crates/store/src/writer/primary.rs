@@ -82,6 +82,9 @@ impl Inner {
                         None,
                     ),
                     Product::Request(prepared) => (None, Some(prepared.request.machine.clone())),
+                    Product::RestoredRequest { current, .. } => {
+                        (None, Some(current.machine.clone()))
+                    }
                     _ => unreachable!(),
                 }
             };
