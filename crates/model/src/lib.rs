@@ -14,6 +14,7 @@ pub mod capture;
 pub mod capture_log;
 mod change_position;
 pub mod command;
+pub mod currency;
 mod delivery;
 mod document;
 mod event;
