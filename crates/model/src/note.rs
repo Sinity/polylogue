@@ -3,7 +3,7 @@
 //! a new note in the same family (`first_note`); the current revision of a
 //! family is its newest note that is not withdrawn.
 
-use crate::{IdError, MessageId, SessionId, Timestamp};
+use crate::{IdError, MessageId, Origin, SessionId, Timestamp};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
@@ -127,13 +127,17 @@ pub enum Author {
     Operator,
     /// An agent, by the session it wrote from when known.
     Agent(Option<SessionId>),
+    /// The harness is known but no session identity was recorded.
+    AgentOrigin(Origin),
+    /// No evidence identifies a person, agent or named program.
+    Unattributed,
     /// A program acting for the operator, by name.
     Script(String),
 }
 
 impl Author {
     pub fn is_agent(&self) -> bool {
-        matches!(self, Self::Agent(_))
+        matches!(self, Self::Agent(_) | Self::AgentOrigin(_))
     }
 
     /// The stored form: `operator`, `agent`, `agent:<session>`,
@@ -142,6 +146,10 @@ impl Author {
         match text.split_once(':') {
             None if text == "operator" => Ok(Self::Operator),
             None if text == "agent" => Ok(Self::Agent(None)),
+            None if text == "unattributed" => Ok(Self::Unattributed),
+            Some(("agent", origin)) if !origin.contains(':') => Ok(Self::AgentOrigin(
+                Origin::new(origin).map_err(|e| TargetError::Id(text.to_owned(), e))?,
+            )),
             Some(("agent", s)) => Ok(Self::Agent(Some(
                 SessionId::parse(s).map_err(|e| TargetError::Id(text.to_owned(), e))?,
             ))),
@@ -157,6 +165,8 @@ impl fmt::Display for Author {
             Self::Operator => f.write_str("operator"),
             Self::Agent(None) => f.write_str("agent"),
             Self::Agent(Some(s)) => write!(f, "agent:{s}"),
+            Self::AgentOrigin(origin) => write!(f, "agent:{origin}"),
+            Self::Unattributed => f.write_str("unattributed"),
             Self::Script(n) => write!(f, "script:{n}"),
         }
     }

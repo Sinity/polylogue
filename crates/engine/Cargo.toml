@@ -29,6 +29,7 @@ sha2 = "0.10"
 faults = ["polylogue-store/faults"]
 
 [dev-dependencies]
+libc.workspace = true
 mimalloc.workspace = true
 polylogue-store = { workspace = true, features = ["fixture"] }
 proptest.workspace = true

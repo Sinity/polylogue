@@ -417,7 +417,7 @@ mod ai_studio;
 mod gemini_cli;
 mod openai_chat;
 
-mod polylogue_export;
+mod polylogue_bundle;
 
 mod openrouter;
 
