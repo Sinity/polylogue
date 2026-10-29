@@ -1,7 +1,7 @@
 //! Primary mode: Sinex holds the archive. Each step of an input's appended
 //! bytes goes to Sinex as one part of that input, with the [`InputRows`]
 //! that place it; every other change to the register (a look that found no
-//! new bytes, a request a person or agent makes, an excision) goes as a
+//! new bytes or a request a person or agent makes) goes as a
 //! register material. The writer commits a register row only
 //! after Sinex acknowledged what it describes, so the local register
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
@@ -18,20 +18,47 @@ pub trait Sinex: Send + Sync {
     /// Sends `bytes` (`part.length` long, hashing to `part.hash`) as one part
     /// of its input and waits until Sinex acknowledged it. Returns the
     /// material Sinex registered.
-    fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<String>;
+    fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<ConfirmedBlob>;
+    /// Stores decoded or attached bytes as a material independently of an input.
+    fn send_blob(
+        &self,
+        hash: BlobHash,
+        length: u64,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<ConfirmedBlob>;
     /// Sends a register change and the events it makes, and waits until
     /// Sinex acknowledged them. Returns the register material holding it.
     fn send_change(&self, change: &RegisterChange) -> Result<String>;
-    /// Excises these materials, with everything read or derived from them,
-    /// through Sinex's excision with Polylogue as the actor. Sinex refuses
-    /// the whole request when it cannot remove one cleanly.
-    fn excise(&self, materials: &[String]) -> Result<()>;
     /// One page of what Sinex holds from this archive, in the order it was
     /// sent, after `after` (0 for the first page). An empty page is the end.
     fn held(&self, after: i64) -> Result<Vec<Held>>;
     /// Sends the events of every session whose rows changed since they were
     /// last sent, read from the index.
     fn send_sessions(&self, reads: &ReadPool) -> Result<()>;
+}
+
+/// The material and committed descriptors Sinex acknowledged for these bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmedBlob {
+    pub id: String,
+    pub extents: Vec<hashed_blobs::Extent>,
+}
+
+impl ConfirmedBlob {
+    /// Polylogue stores one prepared blob in one segment extent.
+    pub fn extent(&self, hash: BlobHash, length: u64) -> Result<&hashed_blobs::Extent> {
+        let [extent] = self.extents.as_slice() else {
+            return Err(StoreError::Sinex(
+                "a blob needs one committed extent".into(),
+            ));
+        };
+        if extent.hash.0 != hash.0 || extent.decoded_len != length || extent.len == 0 {
+            return Err(StoreError::Sinex(
+                "committed extent differs from its blob".into(),
+            ));
+        }
+        Ok(extent)
+    }
 }
 
 /// One part of an input's bytes.
@@ -74,24 +101,6 @@ pub enum RegisterChange {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         first_note: Option<String>,
     },
-    /// An excision: what it removed, by identity, so a rebuild keeps
-    /// refusing it.
-    Excision(ExcisionRows),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExcisionRows {
-    pub id: String,
-    /// `session:<id>`, `document:<id>` or `input:<id>`.
-    pub target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    pub created_at: i64,
-    /// The `excised` rows: what was removed, by kind and identity.
-    pub excised: Vec<(String, String)>,
-    /// What stays of the removed inputs: their observations, the last of
-    /// them `excised`.
-    pub observations: Vec<InputRows>,
 }
 
 /// One thing Sinex holds from this archive.
@@ -102,8 +111,16 @@ pub enum Held {
         material: String,
         hash: BlobHash,
         length: u64,
+        extents: Vec<hashed_blobs::Extent>,
         index: u32,
         rows: Box<InputRows>,
+    },
+    Blob {
+        number: i64,
+        material: String,
+        hash: BlobHash,
+        length: u64,
+        extents: Vec<hashed_blobs::Extent>,
     },
     Change {
         number: i64,
@@ -115,14 +132,16 @@ pub enum Held {
 impl Held {
     pub fn number(&self) -> i64 {
         match self {
-            Held::Part { number, .. } | Held::Change { number, .. } => *number,
+            Held::Part { number, .. } | Held::Blob { number, .. } | Held::Change { number, .. } => {
+                *number
+            }
         }
     }
 }
 
 /// The Sinex material holding each part, by where its bytes sit in their
 /// chain, and each register material, by the observation, request or
-/// excision it holds. Only `sinex.db` has them.
+/// it holds. Only `sinex.db` has them.
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE material (
   input         TEXT NOT NULL,
@@ -133,7 +152,7 @@ CREATE TABLE material (
   PRIMARY KEY (input, chain, offset)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE register_material (
-  id            TEXT PRIMARY KEY,        -- the observation, request or excision ID
+  id            TEXT PRIMARY KEY,        -- the observation, request ID
   input         TEXT,                    -- an observation's input
   material      TEXT NOT NULL UNIQUE     -- the Sinex material
 ) STRICT, WITHOUT ROWID;
@@ -181,7 +200,6 @@ pub(crate) fn change_material(
             Some(stored.input.as_str()),
         ),
         RegisterChange::Request { request, .. } => (request.id.as_str(), None),
-        RegisterChange::Excision(excision) => (excision.id.as_str(), None),
     };
     conn.prepare_cached(
         "INSERT OR REPLACE INTO register_material(id, input, material) VALUES (?1, ?2, ?3)",
@@ -221,7 +239,7 @@ pub(crate) fn part_material(
 pub(crate) fn load(
     conn: &mut Connection,
     sinex: &dyn Sinex,
-    store: &hashed_blobs::Store,
+    store: &hashed_blobs::Reader,
 ) -> Result<u64> {
     let tx = conn.transaction()?;
     let seq = crate::archive::bump_counter(&tx)?;
@@ -244,16 +262,19 @@ pub(crate) fn load(
                     material,
                     hash,
                     length,
+                    extents,
                     index,
                     rows,
                     ..
                 } => {
-                    let stored_size = store.stored_size(&hashed_blobs::Hash(hash.0))?;
-                    tx.prepare_cached(
-                        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state)
-                         VALUES (?1, ?2, ?3, 'file', 'plain', 'present')",
-                    )?
-                    .execute(params![&hash.0[..], length as i64, stored_size as i64])?;
+                    store_blob(&tx, store, hash, length, &extents)?;
+                    if rows.extent.as_ref().is_none_or(|extent| {
+                        extent.blob != hash || u64::try_from(extent.length).ok() != Some(length)
+                    }) {
+                        return Err(StoreError::Sinex(
+                            "part rows differ from their material bytes".into(),
+                        ));
+                    }
                     rows.insert(&tx, seq)?;
                     part_material(&tx, &rows, index, &material)?;
                     if let Some(extent) = &rows.extent {
@@ -266,6 +287,14 @@ pub(crate) fn load(
                         }
                     }
                 }
+                Held::Blob {
+                    hash,
+                    length,
+                    extents,
+                    ..
+                } => {
+                    store_blob(&tx, store, hash, length, &extents)?;
+                }
                 Held::Change {
                     material, change, ..
                 } => {
@@ -274,7 +303,6 @@ pub(crate) fn load(
                         RegisterChange::Request { request, .. } => {
                             crate::user_writes::apply(&tx, request, seq)?;
                         }
-                        RegisterChange::Excision(excision) => insert_excision(&tx, excision, seq)?,
                     }
                     change_material(&tx, &change, &material)?;
                 }
@@ -284,6 +312,36 @@ pub(crate) fn load(
     }
     tx.commit()?;
     Ok(loaded)
+}
+
+fn store_blob(
+    conn: &Connection,
+    store: &hashed_blobs::Reader,
+    hash: BlobHash,
+    length: u64,
+    extents: &[hashed_blobs::Extent],
+) -> Result<()> {
+    let confirmed = ConfirmedBlob {
+        id: String::new(),
+        extents: extents.to_vec(),
+    };
+    let extent = confirmed.extent(hash, length)?;
+    let mut bytes = store.open(extents, None)?;
+    let mut digest = blake3::Hasher::new();
+    let read = std::io::copy(&mut bytes, &mut digest)?;
+    if read != length || digest.finalize().as_bytes() != &hash.0 {
+        return Err(StoreError::BlobCorrupt(hash));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4)",
+        params![
+            &hash.0[..],
+            length as i64,
+            extent.len as i64,
+            extent.encode()
+        ],
+    )?;
+    Ok(())
 }
 
 /// Drops the rows of a part a stopped write sent but never committed: its
@@ -307,131 +365,6 @@ fn forget_uncommitted(
             [&blob.0[..]],
         )?;
     }
-    Ok(())
-}
-
-/// The Sinex materials holding `inputs`: their parts and the register
-/// materials of looks at them.
-pub(crate) fn materials_of_inputs(
-    conn: &Connection,
-    inputs: &std::collections::BTreeSet<String>,
-) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for input in inputs {
-        for sql in [
-            "SELECT id FROM material WHERE input = ?1 ORDER BY chain, offset",
-            "SELECT material FROM register_material WHERE input = ?1 ORDER BY id",
-        ] {
-            out.extend(
-                conn.prepare_cached(sql)?
-                    .query_map([input], |r| r.get::<_, String>(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
-            );
-        }
-    }
-    Ok(out)
-}
-
-/// The Sinex materials holding the requests that wrote `notes`.
-pub(crate) fn materials_of_requests(conn: &Connection, ids: &[String]) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for id in ids {
-        if let Some(material) = conn
-            .prepare_cached("SELECT material FROM register_material WHERE id = ?1")?
-            .query_row([id], |r| r.get::<_, String>(0))
-            .optional()?
-        {
-            out.push(material);
-        }
-    }
-    Ok(out)
-}
-
-/// Forgets the register materials of requests `ids` once Sinex excised them.
-pub(crate) fn forget_requests(conn: &Connection, ids: &[String]) -> Result<()> {
-    for id in ids {
-        conn.execute("DELETE FROM register_material WHERE id = ?1", [id])?;
-    }
-    Ok(())
-}
-
-/// Forgets the parts and register materials of `inputs` once Sinex excised
-/// them.
-pub(crate) fn forget_inputs(
-    conn: &Connection,
-    inputs: &std::collections::BTreeSet<String>,
-) -> Result<()> {
-    for input in inputs {
-        conn.execute("DELETE FROM material WHERE input = ?1", [input])?;
-        conn.execute("DELETE FROM register_material WHERE input = ?1", [input])?;
-    }
-    Ok(())
-}
-
-/// The rows of a committed excision `id`, as Sinex keeps them.
-pub(crate) fn excision_rows(conn: &Connection, id: &str) -> Result<ExcisionRows> {
-    let (target, reason, created_at) = conn.query_row(
-        "SELECT target, reason, created_at FROM excision WHERE id = ?1",
-        [id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
-    let excised: Vec<(String, String)> = conn
-        .prepare("SELECT kind, value FROM excised WHERE excision_id = ?1 ORDER BY kind, value")?
-        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut observations = Vec::new();
-    for (kind, input) in &excised {
-        if kind == "input" {
-            observations.extend(crate::input_rows::observations(conn, input)?);
-        }
-    }
-    Ok(ExcisionRows {
-        id: id.to_owned(),
-        target,
-        reason,
-        created_at,
-        excised,
-        observations,
-    })
-}
-
-/// Puts an excision's rows into the register, when rebuilding from Sinex or
-/// importing user state: its rows, and the note targets naming what it
-/// removed (the notes it removed whole went with their requests).
-pub(crate) fn insert_excision(tx: &Connection, excision: &ExcisionRows, seq: i64) -> Result<()> {
-    tx.execute(
-        "INSERT OR IGNORE INTO excision(id, target, reason, created_at, commit_seq)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            excision.id,
-            excision.target,
-            excision.reason,
-            excision.created_at,
-            seq
-        ],
-    )?;
-    for (kind, value) in &excision.excised {
-        tx.execute(
-            "INSERT OR IGNORE INTO excised(excision_id, kind, value) VALUES (?1, ?2, ?3)",
-            params![excision.id, kind, value],
-        )?;
-    }
-    for observed in &excision.observations {
-        observed.insert(tx, seq)?;
-    }
-    let of = |kind: &str| -> Vec<String> {
-        excision
-            .excised
-            .iter()
-            .filter(|(k, _)| k == kind)
-            .map(|(_, v)| v.clone())
-            .collect()
-    };
-    let sessions = of("session");
-    let messages: std::collections::BTreeSet<String> = of("message").into_iter().collect();
-    let mut references = crate::excise::index_rows::note_references(tx, &sessions, &messages)?;
-    references.extend(of("document").into_iter().map(|d| format!("document:{d}")));
-    crate::excise::index_rows::remove_notes_about(tx, &references)?;
     Ok(())
 }
 

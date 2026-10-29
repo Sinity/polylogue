@@ -48,17 +48,19 @@ pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
 
 /// One message's identity and packed rows, prepared together before its parsed
 /// payloads are released. The writer borrows these bytes without repacking.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
+    pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
 
 /// Encoded content rows shared by role-bearing messages and textual documents.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
+    pub(crate) texts: Vec<Option<[u8; 32]>>,
     /// Each block's structured value, packed for `block.data` ([`block_data`]).
     pub(crate) data: Vec<Option<Vec<u8>>>,
     /// What each block holds of PEM private key blocks
@@ -80,11 +82,12 @@ impl std::ops::DerefMut for PreparedMessage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedDocument {
     pub(crate) id: DocumentId,
     /// The document without its blocks, packed JSON.
     pub(crate) fields: Vec<u8>,
+    pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
 
@@ -107,8 +110,16 @@ impl PreparedMessage {
     }
 }
 
+pub(crate) fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    let mut reader = serde_json::Deserializer::from_slice(bytes);
+    reader.disable_recursion_limit();
+    let value = T::deserialize(&mut reader)?;
+    reader.end()?;
+    Ok(value)
+}
+
 pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
-    Ok(serde_json::from_slice(&unpack_bytes(packed)?)?)
+    read_json(&unpack_bytes(packed)?)
 }
 
 /// One independent frame per row; both encoders are reused for the batch.
@@ -151,6 +162,7 @@ impl RowPacker {
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
         Ok(PreparedMessage {
             id: message.id.clone(),
+            body: self.pack_version(message, &message.blocks)?,
             content: self.pack_content(message, &message.blocks, None)?,
         })
     }
@@ -167,6 +179,7 @@ impl RowPacker {
         };
         Ok(PreparedDocument {
             id: document.id.clone(),
+            body: self.pack_version(document, &document.blocks)?,
             fields: self.pack_json(&fields)?,
             content: self.pack_content(
                 document,
@@ -174,6 +187,26 @@ impl RowPacker {
                 Some(b"polylogue-document-v1\0"),
             )?,
         })
+    }
+
+    fn pack_version(&mut self, value: &impl Serialize, blocks: &[Block]) -> Result<Vec<u8>> {
+        let mut value = serde_json::to_value(value)?;
+        for (stored, block) in value["blocks"]
+            .as_array_mut()
+            .expect("blocks are an array")
+            .iter_mut()
+            .zip(blocks)
+        {
+            if block_text(block).is_some() {
+                let field = if matches!(block, Block::ToolResult { .. }) {
+                    "output"
+                } else {
+                    "text"
+                };
+                stored[field] = serde_json::Value::String(String::new());
+            }
+        }
+        self.pack_json(&value)
     }
 
     fn pack_content(
@@ -208,6 +241,12 @@ impl RowPacker {
         }
         Ok(PreparedContent {
             hash,
+            texts: blocks
+                .iter()
+                .map(|block| {
+                    block_text(block).map(|text| *blake3::hash(text.as_bytes()).as_bytes())
+                })
+                .collect(),
             blocks: packed,
             data,
             pem,
@@ -236,12 +275,14 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
             redacted: *redacted,
         },
         Block::ToolResult {
+            reported_duration_ms,
             call_id,
             outcome,
             output,
             data,
             attachments,
         } if output.is_some() || data.is_some() => Block::ToolResult {
+            reported_duration_ms: *reported_duration_ms,
             call_id: call_id.clone(),
             outcome: outcome.clone(),
             output: output.as_ref().map(|_| String::new()),
@@ -311,14 +352,6 @@ fn reading_id(e: &Event) -> Option<String> {
         h.update(part.as_bytes());
     }
     Some(h.finalize().to_hex().to_string())
-}
-
-/// Whether a reading's payload reports a measured completion, which wins
-/// over a copy that does not.
-pub(crate) fn reading_confirmed(data: &serde_json::Value) -> bool {
-    data.get("measured_completion")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
 }
 
 /// Reads a block back from `block.body`.

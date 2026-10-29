@@ -9,11 +9,13 @@ fn session_kind_reads(supplied: bool) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&conn).unwrap();
+    // Count executions rather than cached statement preparations.
+    conn.set_prepared_statement_cache_capacity(0);
     let first_build = crate::first_build::FirstBuild::default();
     let tx = conn.transaction().unwrap();
     let mut seed = batch("input1", 0, 0, vec![], &["main", "child"]);
     seed.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
-    write_rows(&tx, &seed, &seed.parse[0], 1, 1, Some(&first_build)).unwrap();
+    write_test_rows(&tx, &seed, &seed.parse[0], 1, 1, Some(&first_build)).unwrap();
     tx.execute(
         "UPDATE session SET kind='subagent' WHERE id=?1",
         [sid("child").to_string()],
@@ -26,8 +28,8 @@ fn session_kind_reads(supplied: bool) -> u64 {
         if matches!(
             context.action,
             AuthAction::Read {
-                table_name: "session",
-                column_name: "kind"
+                table_name: "session_record",
+                column_name: "facts"
             }
         ) {
             count.fetch_add(1, Ordering::Relaxed);
@@ -59,7 +61,7 @@ fn session_kind_reads(supplied: bool) -> u64 {
     if supplied {
         b.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
     }
-    write_rows(&tx, &b, &b.parse[0], 1, 2, Some(&first_build)).unwrap();
+    write_test_rows(&tx, &b, &b.parse[0], 1, 2, Some(&first_build)).unwrap();
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     observed.load(Ordering::Relaxed)
@@ -112,7 +114,7 @@ fn new_messages_do_not_read_a_previous_source() {
     let mut b = batch("input1", 0, 100, rows, &["main"]);
     b.parse[0].at_end = false;
     assert_eq!(
-        write_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
+        write_test_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
         messages
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
@@ -151,6 +153,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             path: None,
         });
         message.blocks.push(Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("call-1".into()),
             outcome: ToolOutcome::Ok,
             output: Some("Synthetic Ω output".into()),
@@ -208,60 +211,6 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             "{mode}"
         );
         assert_eq!(reader.events(&sid("s")).unwrap(), [event], "{mode}");
-    }
-}
-
-#[test]
-fn filtering_prepared_messages_keeps_original_hashes_and_structured_payloads() {
-    for removed in [vec![0], vec![1], vec![0, 1, 2]] {
-        let w = test_archive();
-        let messages = (0..3)
-            .map(|n| {
-                let mut m = text_message(
-                    &format!("m{n}"),
-                    "s",
-                    Role::Assistant,
-                    "Synthetic text",
-                    Some("end_turn"),
-                );
-                m.blocks.push(Block::Other {
-                    type_name: "synthetic".into(),
-                    data: serde_json::json!({"message":n,"nested":[false,"Ω"]}),
-                });
-                m
-            })
-            .collect::<Vec<_>>();
-        let mut b = batch(
-            "input1",
-            0,
-            0,
-            messages
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(i, m)| row(i as u64, m))
-                .collect(),
-            &["s"],
-        );
-        b.parse[0].prepare();
-        let mut refused = crate::excise::RefusedIds::default();
-        for n in &removed {
-            refused.messages.insert(messages[*n].id.to_string());
-        }
-        let mut filtered = without_refused(&b, &refused);
-        filtered.parse[0].prepare();
-        w.writer.send(filtered).unwrap();
-        let report = w.writer.flush().unwrap();
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
-        let pool = ReadPool::open(&w.archive).unwrap();
-        let reader = pool.reader().unwrap();
-        let expected = messages
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !removed.contains(i))
-            .map(|(_, m)| m.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(reader.messages(&sid("s"), false).unwrap(), expected);
     }
 }
 

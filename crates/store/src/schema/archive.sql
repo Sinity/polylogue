@@ -12,15 +12,19 @@ CREATE TABLE machine (
   PRIMARY KEY (id, host)
 ) STRICT, WITHOUT ROWID;
 
--- Bytes by content. Small blobs inline, large ones as files under blobs/.
+-- The committed end of each append-only segment. Bytes after it are an
+-- uncommitted tail, removed by the ordinary writer-open path.
+CREATE TABLE segment (
+  name          TEXT PRIMARY KEY,
+  committed_end INTEGER NOT NULL CHECK(committed_end >= 0)
+) STRICT, WITHOUT ROWID;
+
+-- The complete shared extent descriptor is the hash index's byte authority.
 CREATE TABLE blob (
-  hash          BLOB PRIMARY KEY,        -- BLAKE3 of the uncompressed bytes
-  size          INTEGER NOT NULL,        -- uncompressed bytes
-  stored_size   INTEGER NOT NULL,        -- compressed bytes
-  place         TEXT NOT NULL,           -- inline | file
-  encoding      TEXT NOT NULL,           -- plain (seekable zstd)
-  state         TEXT NOT NULL,           -- writing | present | deleting
-  data          BLOB                     -- zstd bytes, when place = 'inline'
+  hash          BLOB PRIMARY KEY,
+  size          INTEGER NOT NULL,
+  stored_size   INTEGER NOT NULL,
+  storage       BLOB NOT NULL
 ) STRICT;
 
 -- One file as Polylogue tracks it: one location's history, or one imported file.
@@ -32,7 +36,7 @@ CREATE TABLE input (
                                          --  named by content is the same row on every machine)
 ) STRICT;
 
--- Every distinct content of an input. Never deleted except by excision. The
+-- Every distinct content of an input. Never deleted. The
 -- observation that first saw a revision is a query (the earliest by seen_at, then
 -- id), not a column, so the rows of an input named by content are identical on
 -- every machine.
@@ -81,9 +85,8 @@ CREATE TABLE observation (
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   or 'capture:<id>'
-  class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported | excised
-  revision      INTEGER,                 -- the revision produced or confirmed (none for deleted and excised)
-  excision      TEXT REFERENCES excision(id),  -- excised: the excision that changed this input's stored bytes
+  class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported
+  revision      INTEGER,                 -- the revision produced or confirmed (none for deleted)
   length        INTEGER,                 -- that revision's length
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER,
@@ -101,8 +104,7 @@ CREATE INDEX observation_path ON observation(machine, path, seen_at);
 -- One row per client write request: its ID and the hash of its content, so a resent
 -- request (same ID, same content) writes nothing and a reused ID with other content is
 -- refused as `conflict`. Rows created by the request take their IDs
--- from it. The request itself is kept: replayed in commit order with the
--- excisions, the requests rebuild every row they wrote, which is how user
+-- from it. The request itself is kept: replayed in commit order the requests rebuild every row they wrote, which is how user
 -- state moves to another archive (`export user-state`).
 CREATE TABLE client_request (
   id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the client, once per user action
@@ -163,17 +165,6 @@ CREATE TABLE kept_result (
                                          -- and the match rows of each match
 ) STRICT;
 
--- Content removed on purpose (docs/excision.md). Recorded once; `excised`
--- names what it removed, never the content.
-CREATE TABLE excision (
-  id            TEXT PRIMARY KEY,        -- the request's ID
-  target        TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'document:<id>', 'text:<blake3>'
-  reason        TEXT,
-  created_at    INTEGER NOT NULL,
-  commit_seq    INTEGER NOT NULL         -- the write counter of the transaction that wrote it
-) STRICT;
-CREATE INDEX excision_commit_seq ON excision(commit_seq);
-
 -- Settings (day.zone, subscription.anthropic, embeddings, ...).
 -- The Sinex mode and address live in `$XDG_CONFIG_HOME/polylogue/sinex.toml`
 -- instead, so a rebuild from Sinex can start from an empty archive. Insert-only:
@@ -231,17 +222,6 @@ CREATE TABLE delivery_event (
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
-
--- What each excision removed, by identity: the writer never stores these
--- sessions, messages and documents again, and refuses these inputs, blob
--- hashes and locations ('["machine","path"]') on later reads.
-CREATE TABLE excised (
-  excision_id TEXT NOT NULL REFERENCES excision(id),
-  kind        TEXT NOT NULL CHECK(kind IN ('session','message','document','input','blob','location')),
-  value       TEXT NOT NULL,
-  PRIMARY KEY(kind, value, excision_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX excised_excision ON excised(excision_id, kind);
 
 -- Chat actions: turns the operator asks the browser extension to draft or
 -- submit in a chat web page (`browser.actions`). The request is stored once;
@@ -340,10 +320,5 @@ CREATE TRIGGER input_added AFTER INSERT ON input BEGIN UPDATE row_count SET n = 
 CREATE TRIGGER input_removed AFTER DELETE ON input BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'input'; END;
 CREATE TRIGGER revision_added AFTER INSERT ON revision BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'revision'; END;
 CREATE TRIGGER revision_removed AFTER DELETE ON revision BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'revision'; END;
-CREATE TRIGGER blob_added AFTER INSERT ON blob WHEN new.state = 'present' BEGIN UPDATE row_count SET n = n + new.size WHERE name = 'stored_bytes'; END;
-CREATE TRIGGER blob_changed AFTER UPDATE OF state, size ON blob BEGIN
-  UPDATE row_count SET n = n + (CASE WHEN new.state = 'present' THEN new.size ELSE 0 END)
-    - (CASE WHEN old.state = 'present' THEN old.size ELSE 0 END)
-  WHERE name = 'stored_bytes';
-END;
-CREATE TRIGGER blob_removed AFTER DELETE ON blob WHEN old.state = 'present' BEGIN UPDATE row_count SET n = n - old.size WHERE name = 'stored_bytes'; END;
+CREATE TRIGGER blob_added AFTER INSERT ON blob BEGIN UPDATE row_count SET n = n + new.size WHERE name = 'stored_bytes'; END;
+CREATE TRIGGER blob_removed AFTER DELETE ON blob BEGIN UPDATE row_count SET n = n - old.size WHERE name = 'stored_bytes'; END;

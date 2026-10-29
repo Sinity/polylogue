@@ -1,99 +1,148 @@
 //! Importing exports and other files by hand: a file, a
-//! directory of them, or a zip whose members are recognized one by one.
-//! An imported file's origin is decided by its content and, when several
-//! origins accept it, by the layout its path sits in.
+//! directory of them, or a nested container. A declared package structure
+//! fixes the origins of its members before any bytes are committed.
 
 use super::*;
 use polylogue_sources::origin::Arrival;
 
 mod assets;
-mod exports;
-mod zip_import;
+pub(crate) mod exports;
+mod package;
+mod recognition;
+mod user_state;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
     /// bytes. The bytes are hashed and compressed into a private file; the
-    /// writer stores them (row first, then file) before they are parsed.
+    /// writer commits their durable extents before they are parsed.
     /// Origins read as whole documents still parse one document in one job.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<ImportReport, EngineError> {
-        use std::io::{Read, Seek, SeekFrom};
+        self.import_with_options(paths, &ImportOptions::default())
+    }
+
+    pub fn import_with_options(
+        &mut self,
+        paths: &[PathBuf],
+        options: &ImportOptions,
+    ) -> Result<ImportReport, EngineError> {
         let started = Instant::now();
         let mut report = ImportReport::default();
-        let finished = self.writer.finish_writing(Arc::clone(&self.blobs))?;
-        report.pass.pending_inputs = finished.pending;
-        if finished.completed > 0 {
-            self.reparse_behind(None, &mut report.pass)?;
-        }
-        let mut files = Vec::new();
+        let scratch = self.archive.staging_dir();
+        std::fs::create_dir_all(&scratch)?;
         for path in paths {
-            let mut selected = Vec::new();
-            files_under(path, &mut selected)?;
-            let import_id = uuid::Uuid::now_v7().to_string();
-            let root = if path.is_dir() {
-                path.as_path()
-            } else {
-                path.parent().unwrap_or(Path::new(""))
-            };
-            for selected in selected {
-                let member = selected
-                    .strip_prefix(root)
-                    .map_err(std::io::Error::other)?
-                    .to_string_lossy()
-                    .into_owned();
-                files.push((
-                    selected,
-                    polylogue_store::ImportMember {
-                        version: 1,
-                        import_id: import_id.clone(),
-                        member,
-                        format: None,
-                        zip: None,
-                    },
-                ));
-            }
-        }
-        for (path, membership) in &files {
-            let mut file = std::fs::File::open(path)?;
-            let facts = FileFacts::of(&file.metadata()?);
-            let mut head = [0u8; 64];
-            let n = file.read(&mut head)?;
-            let head = &head[..n];
-            file.seek(SeekFrom::Start(0))?;
-            let polylogue_export =
-                polylogue_sources::polylogue_export::recognize_reader(&mut file)?;
-            let whole = if polylogue_export {
-                polylogue_sources::origin::by_name("polylogue-export")
-            } else {
-                recognize_import(path, head)
-            };
-            file.seek(SeekFrom::Start(0))?;
-            if whole.is_none() && head.starts_with(ZIP_MAGIC) {
-                self.import_zip(path, file, facts, membership, &mut report)?;
-            } else {
-                let mut captured = Captured::file(&self.archive, &mut file, polylogue_export)?;
-                captured.member = Some(membership.clone());
-                unchanged(&file, facts, captured.prepared.len())?;
-                let origin = self
-                    .recognize_captured(path, &captured)?
-                    .unwrap_or_else(|| {
-                        polylogue_sources::origin::by_name(KEPT).expect("declared origin")
-                    });
-                self.import_captured(path, origin, captured, Some(facts), &mut report)?;
-                if polylogue_export {
-                    self.import_user_state(path, &mut report)?;
+            let members = match package::stage(path, &scratch, options.format.as_deref()) {
+                Ok(members) => members,
+                Err(error) => {
+                    recognition::refuse(&mut report, path, error.to_string());
+                    continue;
                 }
+            };
+            let mut package = ImportPackage {
+                path: path.clone(),
+                ..Default::default()
+            };
+            let mut ids = Vec::new();
+            let mut user_states = Vec::new();
+            let mut items = Vec::new();
+            let mut hashes = std::collections::BTreeMap::new();
+            let import_id = uuid::Uuid::now_v7().to_string();
+            for (index, member) in members.into_iter().enumerate() {
+                let Some(origin) = member.origin else {
+                    recognition::refuse(&mut report, &member.path, "no declared structure matched");
+                    report.members.push(ImportClassification {
+                        path: member.path,
+                        origin: None,
+                        class: "refused".into(),
+                        reason: Some("no declared structure matched".into()),
+                    });
+                    continue;
+                };
+                report.members.push(ImportClassification {
+                    path: member.path.clone(),
+                    origin: Some(origin.name.into()),
+                    class: if origin.support == Support::Parsed {
+                        "parsed"
+                    } else {
+                        "asset"
+                    }
+                    .into(),
+                    reason: None,
+                });
+                if origin.support != Support::Parsed && !member.container {
+                    package.assets += 1;
+                }
+                if options.explain {
+                    continue;
+                }
+                let mut file = std::fs::File::open(&member.bytes)?;
+                let facts = FileFacts::of(&file.metadata()?);
+                let mut captured = Captured::file(&self.archive, &mut file)?;
+                unchanged(&file, facts, captured.prepared.len())?;
+                ids.push(captured.prepared.hash().to_string());
+                hashes.insert(index, captured.prepared.hash().to_string());
+                captured.member = Some(polylogue_store::ImportMember {
+                    version: 1,
+                    import_id: import_id.clone(),
+                    member: if member.parent.is_some() {
+                        member
+                            .path
+                            .to_string_lossy()
+                            .rsplit("!/")
+                            .next()
+                            .expect("member name")
+                            .to_owned()
+                    } else if member.path == *path {
+                        member
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    } else {
+                        member
+                            .path
+                            .strip_prefix(path)
+                            .unwrap_or(&member.path)
+                            .to_string_lossy()
+                            .into_owned()
+                    },
+                    format: None,
+                    zip: member.parent.and_then(|(parent, member_index)| {
+                        hashes.get(&parent).map(|input| polylogue_store::InZip {
+                            input: input.clone(),
+                            member_index,
+                        })
+                    }),
+                });
+                if origin.name == "polylogue-export" {
+                    user_states.push((
+                        member.path.clone(),
+                        captured.prepared.hash().to_string(),
+                        member.bytes,
+                    ));
+                }
+                items.push((member.path, origin, None, captured));
             }
+            if !options.explain {
+                self.store_import_group(items, &mut report)?;
+                for (at, id, bytes) in user_states {
+                    if self.reads.reader()?.input_progress(&id)?.is_some() {
+                        self.import_user_state(
+                            &at,
+                            &mut std::fs::File::open(&bytes)?,
+                            &mut report,
+                        )?;
+                    }
+                }
+                let counts = self.reads.reader()?.import_counts(&ids)?;
+                package.sessions = counts.sessions;
+                package.documents = counts.documents;
+            }
+            report.packages.push(package);
         }
-        self.restore_failed_writes()?;
-        for pending in self.reads.reader()?.status()?.pending_inputs {
-            if !report
-                .pass
-                .pending_inputs
-                .iter()
-                .any(|known| known.input == pending.input && known.blob == pending.blob)
-            {
-                report.pass.pending_inputs.push(pending);
-            }
+        if options.explain {
+            report.pass.seconds = started.elapsed().as_secs_f64();
+            return Ok(report);
         }
         self.refresh_import_assets(&mut report.pass)?;
         report.pass.sessions_derived = self.derive()?;
@@ -101,98 +150,128 @@ impl Engine {
         Ok(report)
     }
 
-    /// Replays the user state a Polylogue export carries, in its order,
-    /// through the writer: each request as the request it was, each excision
-    /// as a record that refuses what it removed. An entry already here counts
-    /// as present; the first entry that fails stops the replay, so a later
-    /// entry never lands without the one before it.
-    fn import_user_state(
+    fn store_import_group(
         &mut self,
-        path: &Path,
+        items: Vec<(PathBuf, &'static OriginSpec, Option<FileFacts>, Captured)>,
         report: &mut ImportReport,
     ) -> Result<(), EngineError> {
-        use polylogue_store::primary::RegisterChange;
-        #[derive(serde::Deserialize)]
-        struct UserState {
-            version: u32,
-            #[serde(default)]
-            user_state: Vec<serde_json::Value>,
-        }
-        // A file that is not a well-formed export was already reported
-        // unreadable by its parse.
-        let file = std::io::BufReader::new(std::fs::File::open(path)?);
-        let Ok(state) = serde_json::from_reader::<_, UserState>(file) else {
-            return Ok(());
-        };
-        if state.user_state.is_empty() || state.version < 4 {
-            return Ok(());
-        }
-        let entries = state.user_state.into_iter().map(|entry| {
-            serde_json::from_value::<RegisterChange>(entry).map_err(|e| {
-                polylogue_store::StoreError::Invalid(format!("not a user state entry: {e}"))
+        let existing = items
+            .iter()
+            .map(|(_, _, _, captured)| {
+                self.reads
+                    .reader()?
+                    .input_progress(&captured.prepared.hash().to_string())
             })
-        });
-        for (n, entry) in entries.enumerate() {
-            let applied = entry.and_then(|entry| match entry {
-                RegisterChange::Request { request, .. } => {
-                    self.writer.user(*request).map(|outcome| !outcome.repeat)
+            .collect::<Result<Vec<_>, polylogue_store::StoreError>>()?;
+        if existing.iter().all(Option::is_some) {
+            for ((at, origin, facts, captured), progress) in items.into_iter().zip(existing) {
+                let progress = progress.expect("existing input");
+                let id = captured.prepared.hash().to_string();
+                let stored = polylogue_store::staging::StoredInput {
+                    input: id.clone(),
+                    chain: progress.chain,
+                    length: progress.length,
+                    already_stored: true,
+                };
+                report.already_stored.push(at.clone());
+                let input = InputKey {
+                    id,
+                    format: origin.name.into(),
+                    arrival_rank: 2,
+                };
+                if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
+                    self.execute(vec![plan], &mut report.pass)?;
                 }
-                RegisterChange::Excision(excision) => {
-                    let locations: Vec<String> = excision
-                        .excised
-                        .iter()
-                        .filter(|(kind, _)| kind == "location")
-                        .map(|(_, value)| value.clone())
-                        .collect();
-                    let applied = self.writer.import_excision(excision);
-                    if applied.is_ok() {
-                        self.refuse_locations(&locations);
-                    }
-                    applied
-                }
-                RegisterChange::Observation { .. } => Err(polylogue_store::StoreError::Invalid(
-                    "an observation is not user state".into(),
-                )),
+            }
+            return Ok(());
+        }
+        let mut metadata = Vec::new();
+        let mut group = Vec::new();
+        for (at, origin, facts, captured) in items {
+            let mut batch = self.import_batch(
+                &at,
+                origin,
+                captured.member,
+                facts,
+                captured.prepared.hash().to_string(),
+                captured.prepared.len(),
+            );
+            batch.new_blob = Some(polylogue_store::NewBlob {
+                hash: captured.prepared.hash(),
+                size: captured.prepared.len(),
             });
-            match applied {
-                Ok(true) => report.user_state.applied += 1,
-                Ok(false) => report.user_state.present += 1,
+            metadata.push((at, origin, facts, batch.input.clone()));
+            group.push(polylogue_store::staging::PreparedBatch {
+                batch,
+                files: vec![captured.prepared],
+            });
+        }
+        if group.is_empty() {
+            return Ok(());
+        }
+        let outcomes = self
+            .writer
+            .sender()?
+            .store_group(group, Arc::clone(&self.blobs))?;
+        for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
+            let stored = match outcome {
+                Ok(stored) => stored,
                 Err(error) => {
-                    report
-                        .pass
-                        .errors
-                        .push(format!("{}: user state entry {n}: {error}", path.display()));
-                    break;
+                    report.pass.errors.push(error.to_string());
+                    continue;
                 }
+            };
+            if stored.already_stored {
+                report.already_stored.push(at.clone());
+            } else {
+                report.imported.push(at.clone());
+                report.pass.bytes_stored += stored.length;
+            }
+            if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
+                self.execute(vec![plan], &mut report.pass)?;
             }
         }
         Ok(())
     }
 
-    /// Stops collecting the excised locations (`["machine","path"]`) of this
-    /// machine.
-    fn refuse_locations(&mut self, locations: &[String]) {
-        for location in locations {
-            if let Ok((machine, path)) = serde_json::from_str::<(String, PathBuf)>(location)
-                && machine == self.config.machine
-            {
-                self.inputs.remove(&path);
-                self.refused.insert(path);
-            }
-        }
-    }
-
-    fn recognize_captured(
-        &self,
+    fn import_user_state(
+        &mut self,
         path: &Path,
-        captured: &Captured,
-    ) -> Result<Option<&'static OriginSpec>, EngineError> {
-        if captured.polylogue_export {
-            return Ok(polylogue_sources::origin::by_name("polylogue-export"));
+        file: &mut std::fs::File,
+        report: &mut ImportReport,
+    ) -> Result<(), EngineError> {
+        use polylogue_store::primary::RegisterChange;
+        use std::io::Seek;
+        // Validate the entire immutable document before applying its first request.
+        if serde_json::from_reader::<_, serde::de::IgnoredAny>(&mut *file).is_err() {
+            return Ok(());
         }
-        Ok(recognize_import(path, &captured.head))
+        file.rewind()?;
+        let result = user_state::replay(file, |entry| {
+            let RegisterChange::Request { request, .. } = entry else {
+                return Err("an entry is not a user request".into());
+            };
+            let outcome = self
+                .writer
+                .user(*request)
+                .map_err(|error| error.to_string())?;
+            if outcome.repeat {
+                report.user_state.present += 1;
+            } else {
+                report.user_state.applied += 1;
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            report
+                .pass
+                .errors
+                .push(format!("{}: user state: {error}", path.display()));
+        }
+        Ok(())
     }
 
+    #[cfg(test)]
     fn import_captured(
         &mut self,
         path: &Path,
@@ -209,6 +288,7 @@ impl Engine {
 
     /// Stores the complete import once, then parses it without making
     /// further new blobs. A retry can rebuild parser state from offset zero.
+    #[cfg(test)]
     fn import_plan(
         &mut self,
         path: &Path,
@@ -217,9 +297,6 @@ impl Engine {
         facts: Option<FileFacts>,
         report: &mut ImportReport,
     ) -> Result<Option<Plan>, EngineError> {
-        if origin.support != Support::Parsed {
-            report.unrecognized.push(path.to_path_buf());
-        }
         let size = captured.prepared.len();
         let id = captured.prepared.hash().to_string();
         let batch = self.import_batch(path, origin, captured.member, facts, id, size);
@@ -332,20 +409,26 @@ fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::R
 /// file, with their first bytes for recognition.
 struct Captured {
     prepared: polylogue_store::staging::PreparedBytes,
+    #[cfg(test)]
     head: Vec<u8>,
-    polylogue_export: bool,
     member: Option<polylogue_store::ImportMember>,
 }
 
 impl Captured {
-    /// A file already inspected in place.
-    fn file(
-        archive: &Archive,
-        file: &mut std::fs::File,
-        polylogue_export: bool,
-    ) -> polylogue_store::Result<Self> {
+    fn file(archive: &Archive, file: &mut std::fs::File) -> polylogue_store::Result<Self> {
+        Ok(Self {
+            prepared: archive.prepare_bytes(file)?,
+            member: None,
+            #[cfg(test)]
+            head: Vec::new(),
+        })
+    }
+
+    /// Bytes that can be read only once, inspected from a scratch copy.
+    #[cfg(test)]
+    fn stream(archive: &Archive, reader: impl std::io::Read) -> polylogue_store::Result<Self> {
         let mut reader = CaptureReader {
-            reader: file,
+            reader,
             size: 0,
             head: Vec::new(),
         };
@@ -353,38 +436,19 @@ impl Captured {
         Ok(Self {
             prepared,
             head: reader.head,
-            polylogue_export,
-            member: None,
-        })
-    }
-
-    /// Bytes that can be read only once, inspected from a scratch copy.
-    fn stream(archive: &Archive, reader: impl std::io::Read) -> polylogue_store::Result<Self> {
-        let mut reader = CaptureReader {
-            reader,
-            size: 0,
-            head: Vec::new(),
-        };
-        let (prepared, polylogue_export) = archive.prepare_stream(&mut reader, |scratch| {
-            Ok(polylogue_sources::polylogue_export::recognize_reader(
-                scratch,
-            )?)
-        })?;
-        Ok(Self {
-            prepared,
-            head: reader.head,
-            polylogue_export,
             member: None,
         })
     }
 }
 
+#[cfg(test)]
 struct CaptureReader<R> {
     reader: R,
     size: u64,
     head: Vec<u8>,
 }
 
+#[cfg(test)]
 impl<R: std::io::Read> std::io::Read for CaptureReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.reader.read(buf)?;
@@ -397,33 +461,6 @@ impl<R: std::io::Read> std::io::Read for CaptureReader<R> {
 
 /// The bytes a zip file starts with.
 pub(super) const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
-
-/// The origin an imported file belongs to. Several recognizers can accept
-/// one file (Claude Code takes any JSON-lines transcript, since an exported
-/// transcript can sit anywhere); the one whose own layout the path ends in
-/// wins, so a Grok CLI history or a hook spool file copied with its
-/// directories keeps its origin.
-pub(super) fn recognize_import(path: &Path, head: &[u8]) -> Option<&'static OriginSpec> {
-    let found = ORIGINS
-        .iter()
-        .filter(|o| o.support == Support::Parsed && (o.recognize)(path, head));
-    let first = found.clone().next()?;
-    // Provider layout wins; outside it, an export's content signature wins
-    // over a live parser that accepts arbitrary JSONL filenames.
-    found
-        .clone()
-        .find(|o| o.locations.iter().any(|l| collect::ends_in(path, l)))
-        .or_else(|| found.clone().find(|o| o.arrival == Arrival::Import))
-        .or_else(|| {
-            found.clone().find(|o| {
-                matches!(
-                    (o.open)(path),
-                    Some(polylogue_sources::parse::Parse::Export(_))
-                )
-            })
-        })
-        .or(Some(first))
-}
 
 /// The origin of export members no parser reads: kept as bytes.
 pub(super) const KEPT: &str = "export-file";

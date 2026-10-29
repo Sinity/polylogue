@@ -51,6 +51,7 @@ fn block_kind_names_are_the_serde_tags() {
             path: None,
         },
         Block::ToolResult {
+            reported_duration_ms: None,
             call_id: None,
             outcome: crate::ToolOutcome::Ok,
             output: None,

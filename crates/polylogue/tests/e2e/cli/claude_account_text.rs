@@ -127,13 +127,6 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     let after = cli(&env, &["--json", "read", reference]);
     assert!(after.status.success(), "{after:?}");
     assert_eq!(json(&after)["document"], before["document"]);
-    // The document's project file holds other documents too: excising it
-    // alone would rewrite that file, so it refuses and nothing changes.
-    let refused = cli(&env, &["--json", "excise", reference, "--yes"]);
-    assert!(!refused.status.success(), "{refused:?}");
-    assert_eq!(json(&refused)["error"]["kind"], "unsupported_excision");
-    let kept = cli(&env, &["--json", "read", reference]);
-    assert_eq!(json(&kept)["document"], before["document"]);
     drop(daemon);
 }
 

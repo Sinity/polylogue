@@ -46,7 +46,6 @@ impl Engine {
             // Bytes still being written are read in a later pass.
             let chain = match reader.stored_chain(&input, progress.chain, progress.length) {
                 Ok(chain) => chain,
-                Err(polylogue_store::StoreError::InputPending { .. }) => continue,
                 Err(error) => return Err(error.into()),
             };
             let mut staged = ExportItems::new()?;

@@ -1,164 +1,179 @@
 use super::*;
-use rusqlite::{OptionalExtension, params};
 
-/// Disposable row comparison state. SQLite spills the index and transaction
-/// journal to disk; Rust holds one decoded row at a time.
-pub(super) struct Catalog {
-    pub conn: Connection,
-    pub schema: Option<u64>,
-    pub binding: Option<super::binding::Binding>,
-    unbound: bool,
+/// The row-dump records whose comparison hashes commit with this step.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Comparison {
+    rows: Vec<(String, String, Option<Vec<u8>>)>,
+    schema: Option<Value>,
+    pub from: u64,
+    pub length: u64,
 }
-
-fn invalid(reason: &str) -> ExportError {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, reason).into()
-}
-
-impl Catalog {
-    pub fn load(
-        out: &Path,
-        checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
-    ) -> Result<Self, ExportError> {
-        let conn = Connection::open("").map_err(|e| ExportError::Sqlite(out.into(), e))?;
-        let mut catalog = Self {
-            conn,
-            schema: None,
-            binding: None,
-            unbound: false,
-        };
-        let sql_err = |e| ExportError::Sqlite(out.into(), e);
-        catalog
-            .conn
-            .execute_batch(
-                "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
-             CREATE TABLE row_state(t TEXT NOT NULL, k TEXT NOT NULL, kh TEXT NOT NULL,
-               h BLOB NOT NULL, seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(t,k)) WITHOUT ROWID;
-             CREATE INDEX row_hash ON row_state(t,kh);
-             BEGIN;",
+impl Comparison {
+    pub fn records(bytes: &[u8]) -> crate::Result<Self> {
+        let mut out = Self::default();
+        for line in bytes.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
+            let value: Value = serde_json::from_slice(line)
+                .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
+            if let Some(schema) = value.get("schema") {
+                out.schema = Some(schema.clone());
+                continue;
+            }
+            let table = value
+                .get("t")
+                .and_then(Value::as_str)
+                .ok_or_else(|| crate::StoreError::Invalid("row dump record has no table".into()))?;
+            let key = value
+                .get("k")
+                .ok_or_else(|| crate::StoreError::Invalid("row dump record has no key".into()))?
+                .to_string();
+            let hash = if value.get("gone") == Some(&Value::Bool(true)) {
+                None
+            } else {
+                let row = value.get("r").filter(|r| r.is_object()).ok_or_else(|| {
+                    crate::StoreError::Invalid("row dump record has no values".into())
+                })?;
+                Some(row_hash(row).as_bytes().to_vec())
+            };
+            out.rows.push((table.into(), key, hash));
+        }
+        Ok(out)
+    }
+    pub fn read(mut reader: impl std::io::BufRead) -> crate::Result<Self> {
+        let mut out = Self::default();
+        let mut line = Vec::new();
+        while reader.read_until(b'\n', &mut line)? > 0 {
+            let part = Self::records(&line)?;
+            out.rows.extend(part.rows);
+            if part.schema.is_some() {
+                out.schema = part.schema;
+            }
+            line.clear();
+        }
+        Ok(out)
+    }
+    pub(crate) fn write(&self, conn: &Connection, input_pk: i64) -> crate::Result<()> {
+        let length = i64::try_from(self.length).map_err(|_| {
+            crate::StoreError::Invalid("database comparison exceeds archive address space".into())
+        })?;
+        let previous: Option<i64> = conn
+            .query_row(
+                "SELECT length FROM tool_database WHERE input_pk=?1",
+                [input_pk],
+                |r| r.get(0),
             )
-            .map_err(sql_err)?;
-        match fs::File::open(out) {
-            Ok(file) => {
-                let mut reader = BufReader::new(file);
-                let mut bytes = Vec::new();
-                loop {
-                    bytes.clear();
-                    if reader.read_until(b'\n', &mut bytes)? == 0 {
-                        break;
-                    }
-                    if bytes.last() != Some(&b'\n') {
-                        return Err(invalid("incomplete SQLite export line"));
-                    }
-                    let value: Value =
-                        serde_json::from_slice(&bytes).map_err(std::io::Error::from)?;
-                    catalog.replay(out, value)?;
-                    checkpoint()?;
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        catalog.conn.execute_batch("COMMIT").map_err(sql_err)?;
-        Ok(catalog)
-    }
-
-    pub(super) fn bind(
-        &mut self,
-        requested: Option<super::binding::Binding>,
-    ) -> Result<(), ExportError> {
-        match (&self.binding, requested) {
-            (Some(previous), Some(current)) if previous == &current => Ok(()),
-            (None, None) => Ok(()),
-            (None, Some(current)) if !self.unbound => {
-                self.binding = Some(current);
-                Ok(())
-            }
-            _ => Err(invalid("row dump source binding differs or is missing")),
-        }
-    }
-
-    fn replay(&mut self, out: &Path, v: Value) -> Result<(), ExportError> {
-        let sql_err = |e| ExportError::Sqlite(out.into(), e);
-        if let Some(schema) = v.get("schema").filter(|v| v.is_object()) {
-            let binding = v
-                .get("source")
-                .filter(|value| !value.is_null())
-                .map(|value| serde_json::from_value(value.clone()).map_err(std::io::Error::from))
-                .transpose()?;
-            self.bind(binding)?;
-            self.unbound |= self.binding.is_none();
-            self.schema = Some(digest(&schema.to_string()));
+            .optional()?;
+        let previous = previous.map(u64::try_from).transpose().map_err(|_| {
+            crate::StoreError::Invalid("negative database comparison length".into())
+        })?;
+        // Domain parsing may finish after newer row-dump bytes. Its older
+        // values must not move the comparison state backwards.
+        if previous.is_some_and(|previous| previous >= self.length) {
             return Ok(());
         }
-        self.unbound |= self.binding.is_none();
-        let t = v
-            .get("t")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid("SQLite export row has no table"))?;
-        if v.get("gone") == Some(&Value::Bool(true)) {
-            let k = v
-                .get("k")
-                .ok_or_else(|| invalid("SQLite removal has no key"))?;
-            self.conn
-                .execute(
-                    "DELETE FROM row_state WHERE t=?1 AND k=?2",
-                    params![t, k.to_string()],
-                )
-                .map_err(sql_err)?;
-        } else {
-            let k = v
-                .get("k")
-                .ok_or_else(|| invalid("SQLite export row has no key"))?;
-            let row = v
-                .get("r")
-                .filter(|v| v.is_object())
-                .ok_or_else(|| invalid("SQLite export row has no values"))?;
-            let h = blake3::hash(row.to_string().as_bytes());
-            self.conn
-                .prepare_cached(
-                    "INSERT INTO row_state(t,k,kh,h) VALUES (?1,?2,?3,?4)
-                ON CONFLICT(t,k) DO UPDATE SET kh=excluded.kh,h=excluded.h",
-                )
-                .map_err(sql_err)?
-                .execute(params![
-                    t,
-                    k.to_string(),
-                    format!("{:016x}", row_key(t, k)),
-                    h.as_bytes().as_slice()
-                ])
-                .map_err(sql_err)?;
+        // Later queued groups can outlive an earlier failed transaction.
+        // Only a contiguous prefix can become the recovery position.
+        if self.from > previous.unwrap_or(0) {
+            return Err(crate::StoreError::Invalid(format!(
+                "database comparison starts at {} after acknowledged {}",
+                self.from,
+                previous.unwrap_or(0)
+            )));
         }
+        for (table, key, hash) in &self.rows {
+            if let Some(hash) = hash {
+                conn.prepare_cached("INSERT INTO tool_row(input_pk,tbl,key,hash) VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,tbl,key) DO UPDATE SET hash=excluded.hash")?.execute(params![input_pk,table,key,hash])?;
+            } else {
+                conn.prepare_cached(
+                    "DELETE FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND key=?3",
+                )?
+                .execute(params![input_pk, table, key])?;
+            }
+        }
+        if let Some((table, _, _)) = self.rows.first() {
+            crate::fault::check("tool_database.comparison_commit", table)?;
+        }
+        let schema = self
+            .schema
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        conn.execute("INSERT INTO tool_database(input_pk,length,schema) VALUES(?1,?2,COALESCE(?3,'{}')) ON CONFLICT(input_pk) DO UPDATE SET length=excluded.length,schema=COALESCE(?3,tool_database.schema)", params![input_pk,length,schema])?;
         Ok(())
     }
 }
 
-/// Mark a unique source key and compare its complete content hash.
-pub(super) fn changed(
-    conn: &Connection,
-    t: &str,
-    k: &Value,
-    h: &blake3::Hash,
-) -> rusqlite::Result<bool> {
-    let key = k.to_string();
-    let old: Option<(Vec<u8>, bool)> = conn
-        .prepare_cached("SELECT h,seen FROM row_state WHERE t=?1 AND k=?2")?
-        .query_row(params![t, key], |r| Ok((r.get(0)?, r.get(1)?)))
-        .optional()?;
-    if old.as_ref().is_some_and(|(_, seen)| *seen) {
-        return Err(rusqlite::Error::InvalidParameterName(format!(
-            "non-unique SQLite export key in {t}: {key}"
-        )));
+pub(super) struct Catalog {
+    conn: Connection,
+    pk: Option<i64>,
+    pub schema: Option<Value>,
+}
+impl Catalog {
+    pub fn open(archive: &Archive, input: &str) -> crate::Result<Self> {
+        let conn = crate::archive::open_read(&archive.index_db())?;
+        conn.pragma_update(None, "temp_store", "file")?;
+        conn.pragma_update(Some("temp"), "cache_size", -1024)?;
+        conn.execute_batch(
+            "CREATE TEMP TABLE seen(tbl TEXT,key TEXT,PRIMARY KEY(tbl,key)) WITHOUT ROWID; BEGIN;",
+        )?;
+        let pk = conn
+            .query_row("SELECT pk FROM input_ref WHERE id=?1", [input], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let schema: Option<String> = conn
+            .query_row(
+                "SELECT schema FROM tool_database WHERE input_pk=?1",
+                [pk],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let schema = schema.map(|s| serde_json::from_str(&s)).transpose()?;
+        Ok(Self { conn, pk, schema })
     }
-    let changed = old.as_ref().is_none_or(|(old, _)| old != h.as_bytes());
-    conn.prepare_cached(
-        "INSERT INTO row_state(t,k,kh,h,seen) VALUES (?1,?2,?3,?4,1)
-        ON CONFLICT(t,k) DO UPDATE SET h=excluded.h,seen=1",
-    )?
-    .execute(params![
-        t,
-        key,
-        format!("{:016x}", row_key(t, k)),
-        h.as_bytes().as_slice()
-    ])?;
-    Ok(changed)
+    pub fn changed(&self, table: &str, key: &Value, row: &Value) -> crate::Result<bool> {
+        let key = key.to_string();
+        self.conn
+            .prepare_cached("INSERT INTO temp.seen VALUES(?1,?2)")?
+            .execute(params![table, key])?;
+        let old: Option<Vec<u8>> = self
+            .conn
+            .prepare_cached("SELECT hash FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND key=?3")?
+            .query_row(params![self.pk, table, key], |r| r.get(0))
+            .optional()?;
+        Ok(old.as_deref() != Some(row_hash(row).as_bytes()))
+    }
+    pub fn gone(
+        &self,
+        table: &str,
+        visit: &mut dyn FnMut(Value) -> Result<(), DatabaseError>,
+    ) -> Result<(), DatabaseError> {
+        let mut stmt = self.conn.prepare("SELECT key FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND NOT EXISTS(SELECT 1 FROM temp.seen s WHERE s.tbl=tool_row.tbl AND s.key=tool_row.key) ORDER BY key").map_err(crate::StoreError::from)?;
+        let mut rows = stmt
+            .query(params![self.pk, table])
+            .map_err(crate::StoreError::from)?;
+        while let Some(row) = rows.next().map_err(crate::StoreError::from)? {
+            let key: String = row.get(0).map_err(crate::StoreError::from)?;
+            visit(serde_json::from_str(&key).map_err(std::io::Error::from)?)?;
+        }
+        Ok(())
+    }
+    pub fn dropped(
+        &self,
+        tables: &[&str],
+        visit: &mut dyn FnMut(&str, Value) -> Result<(), DatabaseError>,
+    ) -> Result<(), DatabaseError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT tbl FROM tool_row WHERE input_pk=?1 ORDER BY tbl")
+            .map_err(crate::StoreError::from)?;
+        let names = stmt
+            .query_map([self.pk], |r| r.get::<_, String>(0))
+            .map_err(crate::StoreError::from)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(crate::StoreError::from)?;
+        for table in names.iter().filter(|t| !tables.contains(&t.as_str())) {
+            self.gone(table, &mut |key| visit(table, key))?;
+        }
+        Ok(())
+    }
 }

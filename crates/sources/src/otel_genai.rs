@@ -9,6 +9,9 @@
 //! `gen_ai.output.messages` follow it, with the call's token usage. Spans
 //! that are not GenAI spans are counted and set aside.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState};
@@ -285,6 +288,7 @@ fn model_span(
                 (true, Some(a), Some(b)) if b >= a => Some((b - a) / 1_000_000),
                 _ => None,
             },
+            attrs: Default::default(),
             production: Default::default(),
         };
         let offset = sink.position();
@@ -348,6 +352,7 @@ fn parts(m: &Json) -> Vec<Block> {
                 path: None,
             }),
             Some("tool_call_response") => blocks.push(Block::ToolResult {
+                reported_duration_ms: None,
                 call_id: p.get("id").and_then(Json::as_str).map(str::to_owned),
                 outcome: ToolOutcome::Ok,
                 output: match p.get("response") {

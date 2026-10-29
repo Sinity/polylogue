@@ -46,7 +46,13 @@ fn raw_bytes_survive_the_source() {
     for rel in inputs.iter().map(|f| f.strip_prefix(&home).unwrap()) {
         let w = Morrow::build(Set::Main);
         let file = w.home.join(rel);
-        let bytes = fs::read(&file).unwrap();
+        let bytes = w.stored_bytes(&file).unwrap();
+        if !polylogue_sources::ORIGINS
+            .iter()
+            .any(|origin| origin.is_row_dump(&file))
+        {
+            assert_eq!(bytes, fs::read(&file).unwrap(), "{}", file.display());
+        }
         let before = w.view();
         fs::remove_file(&file).unwrap();
         w.run_pass();
@@ -259,7 +265,9 @@ fn compaction_keeps_the_tree_connected() {
 #[test]
 fn appended_steps_reassemble_exactly() {
     let whole = Morrow::build(Set::Main);
-    let new_blobs = Morrow::lay_out(Set::Main);
+    let mut new_blobs = Morrow::lay_out(Set::Main);
+    // Source IDs include paths, so both archives read the same home.
+    new_blobs.home = whole.home.clone();
     let files = jsonl_files(&new_blobs);
     let full: Vec<Vec<u8>> = files.iter().map(|f| fs::read(f).unwrap()).collect();
     // Grow every file in three steps, cut at line ends, running a pass after each.

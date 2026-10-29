@@ -51,10 +51,14 @@ pub struct InZip {
 }
 
 /// One parse step's rows and where they sit in the input's chain.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParseStep {
     /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
+    pub reading_version: String,
+    /// The bytes are collected, and their origin has no parser yet.
+    #[serde(default)]
+    pub no_parser_yet: bool,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
@@ -71,13 +75,33 @@ pub struct ParseStep {
     pub at_end: bool,
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
+    #[serde(skip)]
     pub(crate) prepared: PreparedRows,
+    pub(crate) comparison: Option<crate::tool_databases::Comparison>,
 }
 
 mod prepared;
 pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
+    /// The comparison hashes of the row-dump records parsed in this step.
+    pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::records(bytes)?;
+        update.from = self.start;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
+    /// Whole row-dump parsers commit their comparison with completion.
+    pub fn compare_reader(&mut self, reader: impl std::io::BufRead) -> crate::Result<()> {
+        let mut update = crate::tool_databases::Comparison::read(reader)?;
+        update.from = self.start;
+        update.length = self.parsed_upto;
+        self.comparison = Some(update);
+        Ok(())
+    }
+
     /// An unprepared parse over this byte range. A range beginning at zero
     /// replaces the record counts; row dumps may set `reset` independently.
     pub fn new(
@@ -88,6 +112,8 @@ impl ParseStep {
     ) -> Self {
         Self {
             order_from: None,
+            reading_version: String::new(),
+            no_parser_yet: false,
             reset: range.start == 0,
             repeats_whole_conversations: false,
             output,
@@ -96,6 +122,7 @@ impl ParseStep {
             parsed_upto: range.end,
             at_end,
             prepared: PreparedRows::default(),
+            comparison: None,
         }
     }
 }
@@ -175,10 +202,11 @@ pub struct WriteReport {
     pub batches: u64,
     pub messages: u64,
     pub transactions: u64,
+    pub segment_syncs: u64,
+    pub segment_bytes_written: u64,
+    pub blobs_appended: u64,
+    pub blobs_deduplicated: u64,
     /// Batches the writer could not store, with the reason. The rest of
     /// their transaction was retried one batch at a time.
     pub errors: Vec<String>,
-    /// Inputs whose progress must be reloaded from committed checkpoints.
-    /// Later batches for these inputs are held out until this report is taken.
-    pub failed_inputs: std::collections::BTreeSet<String>,
 }

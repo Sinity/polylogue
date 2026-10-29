@@ -31,7 +31,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
                     ) AS newest
              FROM event e LEFT JOIN message m ON m.pk = e.after_message_pk
              JOIN input_ref r ON r.pk = e.input_pk
-             WHERE e.session_pk = ?1 AND r.excised=0
+             WHERE e.session_pk = ?1
                AND ((e.kind = 'active_leaf' AND m.pk IS NOT NULL)
                  OR (e.kind IN ('active_path_empty','active_path_unknown') AND e.after_message_pk IS NULL))),
            marker(id, kind) AS (

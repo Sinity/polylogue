@@ -98,3 +98,50 @@ fn texts_and_messages_are_found_by_their_keys() {
     );
     assert_eq!(keys.message(&conn, "claude-code:n").unwrap(), None);
 }
+
+#[test]
+fn loading_committed_rows_restores_every_key_map() {
+    let conn = index();
+    insert_event(&conn, "event");
+    let hash = *blake3::hash(b"kept text").as_bytes();
+    conn.execute("INSERT INTO text(hash,body) VALUES (?1,X'00')", [&hash[..]])
+        .unwrap();
+    conn.execute("INSERT INTO message(id,session_pk,order_input_pk,order_input_id,seq,role,written_by,input_pk) VALUES ('claude-code:message',1,1,'input',0,'user','human',1)", []).unwrap();
+    let keys = FirstBuild::load(&conn).unwrap();
+    assert!(
+        keys.message(&conn, "claude-code:message")
+            .unwrap()
+            .is_some()
+    );
+    assert!(keys.event(&conn, "event").unwrap().is_some());
+    assert!(keys.text(&conn, &hash).unwrap().is_some());
+}
+
+#[test]
+fn startup_key_snapshot_never_reads_payload_columns() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use rusqlite::params;
+    let conn = index();
+    let pk = insert_event(&conn, "kept");
+    conn.execute(
+        "UPDATE event SET data=?1 WHERE pk=?2",
+        params![vec![7u8; 1024 * 1024], pk],
+    )
+    .unwrap();
+    let hash = *blake3::hash(b"text key").as_bytes();
+    conn.execute(
+        "INSERT INTO text(hash,body) VALUES (?1,?2)",
+        params![hash.as_slice(), vec![8u8; 1024 * 1024]],
+    )
+    .unwrap();
+    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Read {
+            column_name: "body" | "data",
+            ..
+        } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }));
+    let keys = FirstBuild::load(&conn).unwrap();
+    assert_eq!(keys.event(&conn, "kept").unwrap(), Some(pk));
+    assert!(keys.text(&conn, &hash).unwrap().is_some());
+}

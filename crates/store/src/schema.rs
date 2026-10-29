@@ -2,9 +2,8 @@
 //! older one is brought forward by numbered migrations
 //! ([`ARCHIVE_MIGRATIONS`]) when the archive opens. An archive newer than this
 //! build, or one whose tables match no version this build knows, is refused.
-//! `embeddings.db` has one version and no migrations yet. `index.db` is never
-//! migrated: a new version or a different base schema builds a new file and
-//! swaps it in. Read indexes can be added in place.
+//! `embeddings.db` has one version and no migrations yet. An incompatible
+//! index is refused without removing its rows.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -15,24 +14,13 @@ pub const INDEX: &str = include_str!("schema/index.sql");
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// A different version rebuilds the index into a new file. Raise it when the
-/// index schema, the row encoding, or what any parser produces from the same
-/// bytes changes.
-pub const INDEX_VERSION: u32 = 52;
+/// Numbered in-place steps after the version 1 format baseline.
+pub(crate) const INDEX_MIGRATIONS: &[&str] = &[];
+pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
 
-/// The steps that bring `archive.db` forward: the first takes version 1 to
-/// version 2, and so on. A change to `archive.sql` appends one step, which
-/// must leave exactly the tables `archive.sql` creates (where `ALTER TABLE`
-/// cannot, the step creates the new table, copies the rows and renames it).
-/// The schema tests check that version 1 and these steps give `archive.sql`.
-pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
-    // 2: backfill jobs.
-    include_str!("schema/archive_2.sql"),
-    // 3: requests kept whole.
-    include_str!("schema/archive_3.sql"),
-    // 4: row counts kept by triggers.
-    include_str!("schema/archive_4.sql"),
-];
+/// The index schema and row encoding version. Parser changes carry their
+/// own reading versions and never advance this value.
+pub const INDEX_VERSION: u32 = 1 + INDEX_MIGRATIONS.len() as u32;
 
 /// The version `archive.sql` creates.
 pub const ARCHIVE_VERSION: u32 = 1 + ARCHIVE_MIGRATIONS.len() as u32;
@@ -50,39 +38,54 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 pub fn create_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
     conn.execute_batch(READ_INDEXES)?;
+    conn.execute("INSERT INTO meta(key,value) VALUES ('building','1')", [])?;
     crate::archive::generation::create(conn)?;
     set_version(conn, INDEX_VERSION)?;
     Ok(())
 }
 
-/// Creates the index in an empty file. An index at another version is an
-/// error here; [`crate::Archive::open_or_create`] deletes such a file, or
-/// one with another schema, first, so the loop rebuilds the index from
-/// `archive.db`.
+/// Applies numbered index migrations without replacing committed rows.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
-    match version(conn)? {
-        0 => create_index(conn),
-        v if v == INDEX_VERSION => {
-            conn.execute_batch(READ_INDEXES)?;
-            Ok(())
-        }
-        found => Err(StoreError::IndexVersion {
+    let found = version(conn)?;
+    if found > INDEX_VERSION {
+        return Err(StoreError::IndexVersion {
             found,
             wanted: INDEX_VERSION,
-        }),
+        });
     }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    if found == 0 {
+        create_index(&tx)?;
+    } else {
+        for step in &INDEX_MIGRATIONS[found as usize - 1..] {
+            tx.execute_batch(step)?;
+        }
+        tx.execute_batch(READ_INDEXES)?;
+        let matches = if building(&tx)? {
+            same_build_schema(&tx)?
+        } else {
+            same_index_schema(&tx)?
+        };
+        if !matches {
+            return Err(StoreError::NoMigration {
+                database: "index",
+                found,
+            });
+        }
+        set_version(&tx, INDEX_VERSION)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
-/// Whether the index was being built without syncs and never finished
-/// (`meta.unsynced = 1`): after a crash such a file may be damaged, so it is
-/// rebuilt rather than trusted.
-pub fn unsynced(conn: &Connection) -> Result<bool> {
-    let v: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'unsynced'", [], |r| {
-            r.get(0)
+/// Whether the first build still has search and secondary indexes to finish.
+pub fn building(conn: &Connection) -> Result<bool> {
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'building'", [], |row| {
+            row.get(0)
         })
         .optional()?;
-    Ok(v.as_deref() == Some("1"))
+    Ok(value.as_deref() == Some("1"))
 }
 
 /// Creates `archive.db` in an empty file and brings an older one forward.
@@ -170,6 +173,21 @@ pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
         && expected.iter().all(|item| {
             (item.0 == "index" && read_indexes.contains(&item.1)) || found.contains(item)
         }))
+}
+
+/// A pending first build may lack only the indexes the writer deferred.
+pub(crate) fn same_build_schema(conn: &Connection) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(INDEX)?;
+    expected.execute_batch(READ_INDEXES)?;
+    let found = shape(conn)?;
+    let mut wanted = shape(&expected)?;
+    wanted.retain(|(kind, name, _)| {
+        kind != "index"
+            || !crate::writer::deferred_index_names().any(|deferred| deferred == name)
+            || found.iter().any(|(_, present, _)| present == name)
+    });
+    Ok(found == wanted)
 }
 
 fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {

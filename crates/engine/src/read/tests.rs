@@ -64,7 +64,7 @@ fn imported_ranges_verify_once_and_decode_once_even_with_an_oversized_frame() {
     use polylogue_model::BlobHash;
     let dir = tempfile::tempdir().unwrap();
     let size = 10 * 1024 * 1024;
-    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600)
+    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600)
         .unwrap()
         .with_frame_size(size);
     let hash = store
@@ -94,7 +94,7 @@ fn imported_ranges_verify_once_and_decode_once_even_with_an_oversized_frame() {
 fn imported_ranges_keep_only_the_incomplete_record_overlap() {
     use polylogue_model::BlobHash;
     let dir = tempfile::tempdir().unwrap();
-    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
+    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap();
     let hash = store.put(&b"complete\npartial\n"[..], 1).unwrap();
     let mut source = Imported::open(&store, BlobHash(hash.0), 17).unwrap();
     assert_eq!(source.read_range(0, 12).unwrap(), b"complete\npar");
@@ -109,7 +109,7 @@ fn imported_ranges_keep_only_the_incomplete_record_overlap() {
 #[test]
 fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
     let dir = tempfile::tempdir().unwrap();
-    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
+    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap();
     let hash = store.put(&b"0123456789abcdef"[..], 1).unwrap();
     let mut source = Imported::open(&store, polylogue_model::BlobHash(hash.0), 16).unwrap();
     assert_eq!(source.read_range(0, 14).unwrap(), b"0123456789abcd");
@@ -125,7 +125,7 @@ fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
 #[test]
 fn export_scanning_uses_one_forward_decode_after_verification() {
     let dir = tempfile::tempdir().unwrap();
-    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600)
+    let store = polylogue_store::blobs::Blobs::open(dir.path(), vec![], 0o600)
         .unwrap()
         .with_frame_size(4 << 20);
     let mut bytes = b"[{}".to_vec();

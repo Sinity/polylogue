@@ -10,6 +10,7 @@ fn source_document() -> Document {
     );
     doc.blocks = vec![
         Block::ToolResult {
+            reported_duration_ms: None,
             call_id: None,
             outcome: polylogue_model::ToolOutcome::Ok,
             output: Some("-----BEGIN PRIVATE KEY-----\n".into()),

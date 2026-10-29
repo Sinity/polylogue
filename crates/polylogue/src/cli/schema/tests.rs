@@ -160,9 +160,7 @@ impl polylogue_store::primary::Sinex for SinexStore {
     ) -> polylogue_store::Result<String> {
         Ok("synthetic-change".into())
     }
-    fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {
-        unreachable!()
-    }
+
     fn held(&self, _: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
         Ok(vec![])
     }

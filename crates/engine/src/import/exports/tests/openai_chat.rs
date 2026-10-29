@@ -30,7 +30,15 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
             if rebuild {
                 assert!(e.run_pass().unwrap().errors.is_empty());
             } else {
-                let report = e.import(std::slice::from_ref(&path)).unwrap();
+                let report = e
+                    .import_with_options(
+                        std::slice::from_ref(&path),
+                        &ImportOptions {
+                            format: Some("openai-chat".into()),
+                            explain: false,
+                        },
+                    )
+                    .unwrap();
                 assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
                 assert_eq!(report.imported.as_slice(), std::slice::from_ref(&path));
             }
@@ -86,7 +94,15 @@ fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
     )
     .unwrap();
     let (mut e, _lock) = engine(&w, 8);
-    let report = e.import(&[path]).unwrap();
+    let report = e
+        .import_with_options(
+            &[path],
+            &ImportOptions {
+                format: Some("openai-chat".into()),
+                explain: false,
+            },
+        )
+        .unwrap();
     assert!(report.pass.errors.is_empty());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
     assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);

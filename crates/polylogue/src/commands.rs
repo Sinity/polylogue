@@ -665,7 +665,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "export",
-        help: "Write sessions, text documents and events out as files. `user-state` adds every note, setting, kept result, delivery, chat action, backfill job and excision, which `import` replays into another archive",
+        help: "Write sessions, text documents and events out as files. `user-state` adds every note, setting, kept result, delivery, chat action, backfill job which `import` replays into another archive",
         args: &[
             pos_opt(
                 "sessions",
@@ -1041,18 +1041,6 @@ const WRITTEN: &[Command] = &[
         args: &[pos("statement", Kind::Text, "One SQL statement")],
         action: Action::Request(requests::sql),
         http: true,
-        ..CLI
-    },
-    Command {
-        name: "excise",
-        help: "Remove stored files permanently, with everything parsed from them: `session:<id>`, `document:<id>` or `input:<id>`. A session or document whose files hold anything else refuses. Without `--yes`, shows what would go and changes nothing",
-        args: &[
-            pos("target", Kind::Text, "What to remove"),
-            opt("yes", Kind::Bool, "Remove it"),
-            opt("reason", Kind::Text, "Why"),
-        ],
-        action: Action::Request(requests::excise),
-        writes: true,
         ..CLI
     },
     Command {

@@ -45,25 +45,14 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
     fixture
         .note("note", None, Some("synthetic note"), "session:test:000")
         .unwrap();
-    fixture
-        .excision(
-            "remove-a",
-            "session:test:gone",
-            &["test:gone"],
-            &["test:gone1"],
-        )
-        .unwrap();
-    fixture
-        .excision("remove-b", "input:synthetic", &[], &[])
-        .unwrap();
     fixture_counters(&fixture, 1, 3);
     let result = batch(&fixture, Some("old-generation:8:9"));
     assert_eq!(result[0]["type"], "begin");
     assert_eq!(result[0]["generation_changed"], true);
     assert_eq!(result[0]["replacement"], true);
     assert_eq!(result.last().unwrap()["type"], "complete");
-    assert_eq!(result.last().unwrap()["count"], 303);
-    assert_eq!(result.len(), 305);
+    assert_eq!(result.last().unwrap()["count"], 301);
+    assert_eq!(result.len(), 303);
     let events = &result[1..result.len() - 1];
     assert!(
         events
@@ -86,12 +75,8 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
             .iter()
             .map(|line| line["change"]["seq"].as_u64().unwrap())
             .collect::<Vec<_>>(),
-        vec![1, 2, 3]
+        vec![1]
     );
-    assert_eq!(archive[1]["change"]["sessions"], json!(["test:gone"]));
-    assert_eq!(archive[1]["change"]["messages"], json!(["test:gone1"]));
-    assert_eq!(archive[2]["change"]["sessions"], json!([]));
-    assert_eq!(archive[2]["change"]["messages"], json!([]));
 }
 
 #[test]

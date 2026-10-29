@@ -90,10 +90,10 @@ impl Drawn {
     }
 
     fn manifest(&self) -> PathBuf {
-        PathBuf::from(format!(
-            "/realm/project/polylogue/analysis/bench/polylogue-{}.json",
-            self.name
-        ))
+        env::var_os("POLYLOGUE_BENCH_MANIFEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/realm/project/polylogue/analysis/bench"))
+            .join(format!("polylogue-{}.json", self.name))
     }
 }
 

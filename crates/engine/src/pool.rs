@@ -12,7 +12,7 @@ use polylogue_store::writer::WriterSender;
 use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
@@ -88,6 +88,7 @@ pub struct Done {
     pub tail: Vec<u8>,
     pub stored: u64,
     pub error: Option<String>,
+    pub write_failed: bool,
 }
 
 struct Queue {
@@ -107,6 +108,7 @@ struct Shared {
 pub struct Pool {
     shared: Arc<Shared>,
     workers: Vec<JoinHandle<()>>,
+    acknowledgments: Option<JoinHandle<()>>,
 }
 
 impl Pool {
@@ -114,7 +116,7 @@ impl Pool {
         workers: usize,
         bytes_in_flight: u64,
         writer: WriterSender,
-        blobs: Arc<hashed_blobs::Store>,
+        blobs: Arc<polylogue_store::blobs::Blobs>,
         archive: polylogue_store::Archive,
         done: Sender<Done>,
     ) -> Self {
@@ -129,20 +131,31 @@ impl Pool {
             room: Condvar::new(),
             limit: bytes_in_flight.max(1),
         });
+        let (acknowledge, pending) = channel();
+        let acknowledged = done.clone();
+        let acknowledgments = std::thread::Builder::new()
+            .name("polylogue-acknowledgments".into())
+            .spawn(move || acknowledge_groups(pending, acknowledged))
+            .expect("spawn acknowledgment reader");
         let workers = (0..workers.max(1))
             .map(|i| {
                 let shared = Arc::clone(&shared);
                 let writer = writer.clone();
                 let blobs = Arc::clone(&blobs);
-                let done = done.clone();
                 let archive = archive.clone();
+                let acknowledge = acknowledge.clone();
                 std::thread::Builder::new()
                     .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || work(&shared, &writer, &blobs, &archive, &done))
+                    .spawn(move || work(&shared, &writer, &blobs, &archive, &acknowledge))
                     .expect("spawn a parse worker")
             })
             .collect();
-        Self { shared, workers }
+        drop(acknowledge);
+        Self {
+            shared,
+            workers,
+            acknowledgments: Some(acknowledgments),
+        }
     }
 
     /// Queues a job. Blocks while the bytes already in flight are at the
@@ -152,6 +165,7 @@ impl Pool {
         while q.in_flight > 0 && q.in_flight + job.bytes() > self.shared.limit {
             q = self.shared.room.wait(q).expect("pool lock");
         }
+        polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, 1);
         q.in_flight += job.bytes();
         match job.priority {
             Priority::Live => q.live.push_back(job),
@@ -169,6 +183,9 @@ impl Drop for Pool {
         self.shared.work.notify_all();
         for w in self.workers.drain(..) {
             let _ = w.join();
+        }
+        if let Some(thread) = self.acknowledgments.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -197,10 +214,11 @@ fn release(shared: &Shared, bytes: u64) {
 fn work(
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &Arc<hashed_blobs::Store>,
+    store: &Arc<polylogue_store::blobs::Blobs>,
     archive: &polylogue_store::Archive,
-    done: &Sender<Done>,
+    acknowledge: &Sender<PendingGroup>,
 ) {
+    let _worker = polylogue_store::timing::worker();
     let mut group = Group {
         waiting: Vec::new(),
         bytes: 0,
@@ -210,6 +228,7 @@ fn work(
             let mut q = shared.queue.lock().expect("pool lock");
             loop {
                 if let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front()) {
+                    polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -1);
                     break Some(j);
                 }
                 if !group.waiting.is_empty() {
@@ -224,18 +243,71 @@ fn work(
             }
         };
         let Some(job) = job else {
-            if !flush(&mut group, shared, writer, store, done) {
+            if !flush(&mut group, shared, writer, store, acknowledge) {
                 return;
             }
             continue;
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, archive, store);
+        let (batch, result) = run(job, archive, store, true);
         group.waiting.push((batch, result, size));
         group.bytes += size;
-        if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
+        if (live || group.bytes >= GROUP_BYTES)
+            && !flush(&mut group, shared, writer, store, acknowledge)
+        {
             return;
+        }
+    }
+}
+
+struct PendingGroup {
+    results: polylogue_store::Result<
+        Receiver<Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>>,
+    >,
+    waiting: Vec<Done>,
+    queued: Vec<bool>,
+}
+
+fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
+    for mut group in pending {
+        let results = group.results.and_then(|rx| {
+            rx.recv()
+                .map_err(|_| polylogue_store::StoreError::WriterGone)
+        });
+        match results {
+            Ok(results) => {
+                let mut results = results.into_iter();
+                for (result, queued) in group.waiting.iter_mut().zip(group.queued) {
+                    if queued {
+                        match results.next() {
+                            Some(Err(error)) => {
+                                result.error = Some(error.to_string());
+                                result.write_failed = true;
+                                result.stored = 0;
+                            }
+                            Some(Ok(_)) => {}
+                            None => {
+                                result.error = Some("the writer returned no result".into());
+                                result.write_failed = true;
+                                result.stored = 0;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                for result in &mut group.waiting {
+                    result.error.get_or_insert_with(|| error.to_string());
+                    result.write_failed = true;
+                    result.stored = 0;
+                }
+            }
+        }
+        for result in group.waiting {
+            if done.send(result).is_err() {
+                return;
+            }
         }
     }
 }
@@ -245,73 +317,42 @@ fn flush(
     group: &mut Group,
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &Arc<hashed_blobs::Store>,
-    done: &Sender<Done>,
+    store: &Arc<polylogue_store::blobs::Blobs>,
+    acknowledge: &Sender<PendingGroup>,
 ) -> bool {
     let mut waiting = std::mem::take(&mut group.waiting);
-    let durable = waiting
+    let queued: Vec<bool> = waiting
         .iter()
-        .any(|(batch, _, _)| batch.as_ref().is_some_and(|b| !b.files.is_empty()));
-    if durable {
-        let queued: Vec<bool> = waiting
-            .iter()
-            .map(|(batch, _, _)| batch.is_some())
-            .collect();
-        let mut batches = Vec::new();
-        for (batch, _, size) in &mut waiting {
-            if let Some(mut batch) = batch.take() {
-                let owner = Arc::clone(shared);
-                let bytes = *size;
-                batch.batch.release = InFlight::new(move || release(&owner, bytes));
-                batches.push(batch);
-            } else {
-                release(shared, *size);
-            }
-        }
-        let results = writer.store_group(batches, Arc::clone(store));
-        match results {
-            Ok(results) => {
-                let mut results = results.into_iter();
-                for ((_, result, _), queued) in waiting.iter_mut().zip(queued) {
-                    if queued {
-                        match results.next() {
-                            Some(Err(error)) => result.error = Some(error.to_string()),
-                            Some(Ok(_)) => {}
-                            None => result.error = Some("the writer returned no result".into()),
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                for (_, result, _) in &mut waiting {
-                    result.error.get_or_insert_with(|| error.to_string());
-                }
-            }
-        }
-    } else {
-        for (batch, result, size) in &mut waiting {
-            if let Some(mut batch) = batch.take() {
-                let owner = Arc::clone(shared);
-                let bytes = *size;
-                batch.batch.release = InFlight::new(move || release(&owner, bytes));
-                if let Err(error) = writer.send(batch.batch) {
-                    result.error = Some(error.to_string());
-                }
-            } else {
-                release(shared, *size);
-            }
+        .map(|(batch, _, _)| batch.is_some())
+        .collect();
+    let mut batches = Vec::new();
+    for (batch, _, size) in &mut waiting {
+        if let Some(mut batch) = batch.take() {
+            let owner = Arc::clone(shared);
+            let bytes = *size;
+            batch.batch.release = InFlight::new(move || release(&owner, bytes));
+            batches.push(batch);
+        } else {
+            release(shared, *size);
         }
     }
+    let results = writer.enqueue_group(batches, Arc::clone(store));
     group.bytes = 0;
-    waiting
-        .into_iter()
-        .all(|(_, result, _)| done.send(result).is_ok())
+    let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
+    acknowledge
+        .send(PendingGroup {
+            results,
+            waiting,
+            queued,
+        })
+        .is_ok()
 }
 
-fn run(
+pub(crate) fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
-    store: &hashed_blobs::Store,
+    store: &polylogue_store::blobs::Blobs,
+    prepare: bool,
 ) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
@@ -323,6 +364,7 @@ fn run(
         tail: Vec::new(),
         stored: 0,
         error: None,
+        write_failed: false,
     };
     let started = std::time::Instant::now();
     let read = match &job.source {
@@ -390,6 +432,9 @@ fn run(
                     out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {
+                        if step.consumed == step.start && !job.at_end {
+                            continue;
+                        }
                         for blob in std::mem::take(&mut step.output.blobs) {
                             match time(Stage::Store, || archive.prepare_decoded(&blob.bytes)) {
                                 Ok((p, file)) => {
@@ -412,9 +457,15 @@ fn run(
                         );
                         p.order_from = parser.is_document().then_some(0);
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
+                        if job.origin.is_row_dump(&job.path) {
+                            let start = step.start as usize;
+                            let end = step.consumed as usize;
+                            if let Err(error) = p.compare_records(&bytes[start..end]) { out.error=Some(error.to_string()); return Vec::new(); }
+                        }
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
-                        p.prepare();
+                        p.reading_version = job.origin.reading_version();
+                        if prepare { p.prepare(); }
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
                     }

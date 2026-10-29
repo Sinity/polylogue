@@ -14,6 +14,7 @@ fn expected(
     BehindChain {
         input: input.into(),
         current,
+        reading_changed: false,
         imported: imported.map(|(format, path)| ImportedAs {
             format: format.into(),
             path: path.map(str::to_owned),
@@ -44,7 +45,6 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
            ('b',1,'first',1,10,1),('c',1,'imported',1,10,1),
            ('z',1,'imported',1,10,1);
          INSERT INTO observation(id,input,machine,path,class,details_json,polylogue_version,seen_at) VALUES
-           ('excised','z','m','/home/op/excised','excised','{}','test',0),
            ('first','z','m','/home/op/first','first','{}','test',99),
            ('later','z','m','/home/op/later','first','{}','test',1),
            ('invalid','z','m','/home/op/invalid','imported','invalid','test',2),
@@ -68,7 +68,7 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     assert_eq!(
-        pool.reader().unwrap().chains_behind_index().unwrap(),
+        pool.reader().unwrap().chains_behind_index(&[]).unwrap(),
         vec![
             expected(
                 "a",
@@ -144,7 +144,7 @@ fn history_work(revisions: usize) -> usize {
             }),
         )
         .unwrap();
-    let found = reader.chains_behind_index().unwrap();
+    let found = reader.chains_behind_index(&[]).unwrap();
     reader
         .conn()
         .unwrap()

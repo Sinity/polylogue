@@ -58,16 +58,7 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
             message: e.to_string(),
             detail: Some(serde_json::json!({"issue": issue})),
         },
-        StoreError::ExcisionRefused { target, .. } => Response::Error {
-            kind: "unsupported_excision".into(),
-            message: e.to_string(),
-            detail: Some(serde_json::json!({"target": target})),
-        },
-        StoreError::ExcisionInsideZip { input, file } => Response::Error {
-            kind: "unsupported_excision".into(),
-            message: e.to_string(),
-            detail: Some(serde_json::json!({"input": input, "format": "zip", "file": file})),
-        },
+
         _ => error("store", e),
     }
 }
@@ -444,6 +435,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 ),
                 "busy": loop_status.busy,
                 "passes": loop_status.passes,
+                "full_scans": loop_status.full_scans,
                 "last_pass": loop_status.last_pass,
                 "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
                 "notices": crate::signals::recent(&reader, now_ms()),
@@ -584,44 +576,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             limit,
             yes,
         } => crate::embeddings::handle(&reader, &what, query.as_deref(), limit, yes),
-        Request::Excise {
-            request_id,
-            target,
-            reason,
-            dry_run,
-        } => {
-            drop(reader);
-            let target = match polylogue_engine::ExciseTarget::parse(&target) {
-                Ok(target) => target,
-                Err(e) => return error("bad_request", e),
-            };
-            let request = polylogue_engine::ExciseRequest {
-                id: request_id,
-                target,
-                reason,
-                dry_run,
-            };
-            let _invalidation = d.page_ends.mutation();
-            let (reply, wait) = sync_channel(1);
-            let sent = d
-                .loop_tx
-                .lock()
-                .map(|tx| tx.send(LoopMsg::Excise { request, reply }).is_ok())
-                .unwrap_or(false);
-            if !sent {
-                return error("internal", "the loop has stopped");
-            }
-            match wait.recv() {
-                Ok(Ok(done)) => ok(done),
-                Ok(Err(polylogue_engine::EngineError::Store(
-                    e @ (StoreError::NotFound(_)
-                    | StoreError::ExcisionRefused { .. }
-                    | StoreError::ExcisionInsideZip { .. }),
-                ))) => store_error(&e),
-                Ok(Err(e)) => error("excise", e),
-                Err(_) => error("internal", "the loop has stopped"),
-            }
-        }
+
         Request::Keep {
             request_id,
             text,
@@ -1040,8 +995,7 @@ fn query_targets(
 
 /// Whole sessions in the structured export format (`json`, read back by
 /// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
-/// With `user_state`, the `json` export also carries every request and
-/// excision, which `import` replays.
+/// With `user_state`, the `json` export also carries every request, which `import` replays.
 fn export(
     reader: &polylogue_store::Reader<'_>,
     targets: &[ReadTarget],

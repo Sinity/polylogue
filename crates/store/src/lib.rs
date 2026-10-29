@@ -2,10 +2,10 @@
 //! database files and a blob directory:
 //!
 //! - `archive.db`: what cannot be recomputed (inputs, revisions, notes,
-//!   excisions, deliveries, settings);
+//!   deliveries, settings);
 //! - `index.db`: everything parsed and derived, rebuilt by the loop;
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
-//! - `blobs/`: input bytes of 128 KiB and over.
+//! - `segments/`: every input blob, in append-only shared frame segments.
 
 pub mod archive;
 pub mod assets;
@@ -18,7 +18,6 @@ pub mod derive;
 pub mod documents;
 mod encoding;
 mod events;
-pub mod excise;
 pub mod export_items;
 pub mod fault;
 pub(crate) mod first_build;
@@ -47,6 +46,7 @@ pub mod tool_databases;
 pub mod user_state;
 pub mod user_writes;
 pub mod vectors;
+mod versions;
 mod write_lock;
 pub mod writer;
 mod zip_members;
@@ -67,10 +67,6 @@ pub use writer::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("input {input} is excluded by the archive's removal policy")]
-    InputRefused { input: String },
-    #[error("input {input} has bytes still being written: {reason}")]
-    InputPending { input: String, reason: String },
     #[error(transparent)]
     Sqlite(rusqlite::Error),
     #[error(transparent)]
@@ -94,7 +90,9 @@ pub enum StoreError {
         "{database}.db at version {found} has tables this Polylogue build has no migration from"
     )]
     NoMigration { database: &'static str, found: u32 },
-    #[error("index format {found} is not {wanted}; it is rebuilt")]
+    #[error(
+        "index format {found} is not {wanted}; stop the daemon, move index.db and its WAL/SHM files aside, then restart the daemon to rebuild from stored bytes"
+    )]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]
     BlobCorrupt(polylogue_model::BlobHash),
@@ -112,22 +110,12 @@ pub enum StoreError {
     ReadPoolNested,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
-    #[error("blob {0} is still in use and cannot be deleted")]
-    ExcisionBlobReferenced(polylogue_model::BlobHash),
-    #[error("the excision stopped part way; reopen the archive to finish it: {0}")]
-    ExcisionInterrupted(#[source] Box<StoreError>),
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("the session's parents are incomplete: {0}")]
     IncompleteParents(read::ParentIssue),
     #[error("{0} not found")]
     NotFound(String),
-    #[error("excision refused for {target}: {reason}")]
-    ExcisionRefused { target: String, reason: String },
-    #[error(
-        "{file} is an export ZIP; excision inside it is not supported, because removing it would also remove unrelated conversations"
-    )]
-    ExcisionInsideZip { input: String, file: String },
     #[error("chat action refused: {0}")]
     ChatAction(&'static str),
     #[error("backfill job refused: {0}")]

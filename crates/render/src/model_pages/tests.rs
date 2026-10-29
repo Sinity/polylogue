@@ -152,6 +152,7 @@ fn a_hidden_block_still_masks_a_visible_continuation_of_a_private_key() {
         None,
         vec![
             Block::ToolResult {
+                reported_duration_ms: None,
                 call_id: None,
                 outcome: ToolOutcome::Ok,
                 output: Some("-----BEGIN PRIVATE KEY-----hidden".into()),
@@ -250,6 +251,7 @@ fn one_large_tool_result_is_reachable_without_embedding_it_in_one_page() {
         Role::Assistant,
         None,
         vec![Block::ToolResult {
+            reported_duration_ms: None,
             call_id: None,
             outcome: ToolOutcome::Ok,
             output: Some(text.clone()),

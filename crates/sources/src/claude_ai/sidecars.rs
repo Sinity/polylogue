@@ -2,6 +2,7 @@
 use super::fields::{self, Field};
 use crate::document::Sink;
 use crate::export::{self, ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{Output, Parse, Step};
 use crate::{RecordOutcome, Records};
@@ -69,36 +70,36 @@ struct Sidecars {
     at: usize,
 }
 static ACCOUNT: Fields = Fields::new(&[
-    ("account_uuid", Rule::Read),
-    ("conversations_memory", Rule::Read),
-    ("project_memories", Rule::Read),
-    ("created_at", Rule::Read),
-    ("updated_at", Rule::Read),
+    ("account_uuid", Rule::Read(T::String)),
+    ("conversations_memory", Rule::Read(T::String)),
+    ("project_memories", Rule::Read(T::Object)),
+    ("created_at", Rule::Read(T::StringOrNumber)),
+    ("updated_at", Rule::Read(T::StringOrNumber)),
 ]);
 static PROJECT: Fields = Fields::new(&[
-    ("uuid", Rule::Read),
-    ("name", Rule::Read),
+    ("uuid", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
     (
         "description",
         Rule::Kept("project descriptor, not supplied document text"),
     ),
     ("is_private", Rule::Kept("project visibility")),
-    ("is_starter_project", Rule::Read),
-    ("prompt_template", Rule::Read),
-    ("docs", Rule::Read),
-    ("created_at", Rule::Read),
-    ("updated_at", Rule::Read),
+    ("is_starter_project", Rule::Read(T::Boolean)),
+    ("prompt_template", Rule::Read(T::String)),
+    ("docs", Rule::Read(T::Array)),
+    ("created_at", Rule::Read(T::StringOrNumber)),
+    ("updated_at", Rule::Read(T::StringOrNumber)),
     (
         "creator",
         Rule::Kept("project creator is not text authorship"),
     ),
 ]);
 static DOC: Fields = Fields::new(&[
-    ("uuid", Rule::Read),
-    ("filename", Rule::Read),
-    ("content", Rule::Read),
-    ("created_at", Rule::Read),
-    ("updated_at", Rule::Read),
+    ("uuid", Rule::Read(T::String)),
+    ("filename", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
+    ("created_at", Rule::Read(T::StringOrNumber)),
+    ("updated_at", Rule::Read(T::StringOrNumber)),
     (
         "file_type",
         Rule::Kept("reference descriptor; original bytes are not supplied"),

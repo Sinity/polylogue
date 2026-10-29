@@ -13,8 +13,12 @@
 //! attachment; a file whose bytes an earlier capture already stored is named
 //! by its blob hash instead.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -52,8 +56,8 @@ pub fn open(path: &Path) -> Option<Parse> {
 }
 
 static CAPTURE_FIELDS: Fields = Fields::new(&[
-    (KIND_KEY, Rule::Read),
-    ("schema_version", Rule::Read),
+    (KIND_KEY, Rule::Read(T::String)),
+    ("schema_version", Rule::Read(T::Number)),
     (
         "capture_id",
         Rule::Excluded("the extension's own key; the provider IDs identify the conversation"),
@@ -62,24 +66,24 @@ static CAPTURE_FIELDS: Fields = Fields::new(&[
         "source",
         Rule::Excluded("names the capturing program, always the extension"),
     ),
-    ("provenance", Rule::Read),
-    ("provider_meta", Rule::Read),
-    ("raw_provider_payload", Rule::Read),
-    ("session", Rule::Read),
+    ("provenance", Rule::Read(T::Object)),
+    ("provider_meta", Rule::Read(T::Object)),
+    ("raw_provider_payload", Rule::Read(T::Object)),
+    ("session", Rule::Read(T::Object)),
 ]);
 
 /// Fields of the extension's normalized turns. Only read when the page
 /// exposed no provider JSON.
 static TURN_FIELDS: Fields = Fields::new(&[
-    ("provider_turn_id", Rule::Read),
-    ("role", Rule::Read),
-    ("text", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("ordinal", Rule::Read),
-    ("parent_turn_id", Rule::Read),
-    ("model", Rule::Read),
-    ("blocks", Rule::Read),
-    ("attachments", Rule::Read),
+    ("provider_turn_id", Rule::Read(T::String)),
+    ("role", Rule::Read(T::String)),
+    ("text", Rule::Read(T::String)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("ordinal", Rule::Read(T::Number)),
+    ("parent_turn_id", Rule::Read(T::String)),
+    ("model", Rule::Read(T::String)),
+    ("blocks", Rule::Read(T::Array)),
+    ("attachments", Rule::Read(T::Array)),
     (
         "provider_meta",
         Rule::Kept("the adapter's page observations for the turn; no reader yet"),
@@ -296,6 +300,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             stop_reason: None,
             reported_cost_usd: None,
             duration_ms: None,
+            attrs: crate::fields::attributes(turn, &TURN_FIELDS),
             production: Default::default(),
         };
         let offset = sink.position();

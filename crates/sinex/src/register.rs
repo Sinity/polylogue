@@ -1,8 +1,8 @@
 //! Register materials: the changes to Polylogue's register that are not
 //! input bytes. A look at an input that found no new bytes is a material of
-//! that input; each request a person or agent makes, and each excision, is a
+//! that input; each request a person or agent makes,, is a
 //! material of Polylogue's requests on this host. The material's bytes are
-//! the change as JSON. A note, setting, kept result, delivery or excision
+//! the change as JSON. A note, setting, kept result, delivery
 //! also becomes its typed event, anchored at the material's start.
 use crate::client::Client;
 use crate::kinds as event;
@@ -42,7 +42,6 @@ pub(crate) async fn send(
         RegisterChange::Request { request, .. } => {
             (format!("request:{}", request.id), requests(host))
         }
-        RegisterChange::Excision(excision) => (format!("excision:{}", excision.id), requests(host)),
     };
     let bytes = serde_json::to_vec(change)?;
     let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
@@ -76,19 +75,6 @@ pub(crate) async fn send(
             first_note,
         } => request_event(request, first_note.as_deref())?
             .map(|(event_type, payload)| (event_type, payload, request.at.unix_ms())),
-        RegisterChange::Excision(excision) => Some((
-            "polylogue.excision",
-            serde_json::to_value(event::Excision {
-                excision: excision.id.clone(),
-                target: excision.target.clone(),
-                reason: excision.reason.clone(),
-                created_at: time(
-                    Timestamp::from_unix_ms(excision.created_at)
-                        .ok_or_else(|| Error::Invalid("an excision time out of range".into()))?,
-                )?,
-            })?,
-            excision.created_at,
-        )),
         RegisterChange::Observation { .. } => None,
     };
     let Some((event_type, payload, reading_order)) = event else {
@@ -140,7 +126,7 @@ pub(crate) async fn send(
     Ok(material.to_string())
 }
 
-/// What Polylogue's requests and excisions are read from: its requests on
+/// What Polylogue's requests are read from: its requests on
 /// this host.
 fn requests(host: &str) -> InputRef {
     InputRef {

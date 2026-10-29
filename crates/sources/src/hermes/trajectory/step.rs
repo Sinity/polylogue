@@ -73,6 +73,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                 // ATIF declares no success/failure field. A result's prose or
                 // provider-specific extra data cannot establish an outcome.
                 out.push(Block::ToolResult {
+                    reported_duration_ms: None,
                     call_id: native(result, "source_call_id").map(str::to_owned),
                     outcome: ToolOutcome::Unknown {
                         reason: UnknownReason::StatusFieldUnreadable,

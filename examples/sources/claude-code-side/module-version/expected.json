@@ -1,0 +1,36 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "todos": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": [
+          {
+            "activeForm": "Reading",
+            "content": "Read the module",
+            "id": "task-1",
+            "status": "pending"
+          }
+        ],
+        "kind": "todo_list",
+        "range": [
+          0,
+          88
+        ],
+        "session": "claude-code:synthetic"
+      }
+    ],
+    "links": [],
+    "messages": [],
+    "sessions": []
+  }
+}

@@ -6,6 +6,21 @@ use polylogue_model::{
 
 mod extent_checkpoint;
 mod input_events;
+mod resolution;
+
+fn write_test_rows(
+    tx: &Transaction<'_>,
+    batch: &Batch,
+    step: &ParseStep,
+    chain: i64,
+    counter: i64,
+    first: Option<&crate::first_build::FirstBuild>,
+) -> Result<u64> {
+    let mut batch = batch.clone();
+    batch.parse = vec![step.clone()];
+    resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
+    write_rows(tx, &batch, &batch.parse[0], chain, counter, first)
+}
 
 struct TestArchive {
     _dir: tempfile::TempDir,
@@ -45,6 +60,7 @@ fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&s
         reported_cost_usd: None,
         duration_ms: None,
         production: Default::default(),
+        attrs: Default::default(),
     }
 }
 
@@ -84,23 +100,22 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         new_blob: None,
         blobs: vec![],
         length: start + 100,
-        parse: vec![ParseStep {
-            order_from: None,
-            reset: start == 0,
-            repeats_whole_conversations: false,
-            output: Output {
-                sessions: sessions
-                    .iter()
-                    .map(|s| Session::new(sid(s), SessionKind::Main))
-                    .collect(),
-                messages: rows,
-                ..Output::default()
-            },
-            counts: counts(n),
-            start,
-            parsed_upto: start + 100,
-            at_end: true,
-            prepared: Default::default(),
+        parse: vec![{
+            let mut step = ParseStep::new(
+                Output {
+                    sessions: sessions
+                        .iter()
+                        .map(|s| Session::new(sid(s), SessionKind::Main))
+                        .collect(),
+                    messages: rows,
+                    ..Output::default()
+                },
+                counts(n),
+                start..start + 100,
+                true,
+            );
+            step.reading_version = "synthetic=1".into();
+            step
         }],
         release: InFlight::default(),
     }
@@ -238,6 +253,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         }];
         let mut result = text_message("r", "s", Role::User, "", None);
         result.blocks = vec![Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("t1".into()),
             outcome: ToolOutcome::Error {
                 reason: Some(ErrorReason::ExitCode(101)),
@@ -286,6 +302,7 @@ fn prose_and_tool_output_are_searchable_once_a_first_build_ends() {
     let w = test_archive();
     let mut m = text_message("a", "s", Role::User, "find the walrus", None);
     m.blocks.push(Block::ToolResult {
+        reported_duration_ms: None,
         call_id: None,
         outcome: ToolOutcome::Ok,
         output: Some("compiler said narwhal".into()),
@@ -907,7 +924,6 @@ mod prepared;
 
 mod observation_order;
 
-mod excluded;
 mod text_projection;
 
 mod failed_inputs;
@@ -923,7 +939,7 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
     );
     assert_eq!(
         reader
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "1"
     );
@@ -948,14 +964,14 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
     let current = reader_pool.reader().unwrap();
     assert_eq!(
         current
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "0"
     );
     assert_eq!(current.status().unwrap().messages, 1);
     assert_eq!(
         reader
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "1"
     );
@@ -1035,3 +1051,131 @@ fn a_user_write_goes_ahead_of_queued_batches() {
 }
 
 mod attachments;
+mod reparse;
+
+mod segments;
+#[test]
+fn parse_positions_and_rows_commit_atomically_during_first_build() {
+    let w = test_archive();
+    let index =
+        crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP).unwrap();
+    index.execute_batch("CREATE TRIGGER refuse_position BEFORE INSERT ON parse_state BEGIN SELECT RAISE(ABORT,'position write failed'); END;").unwrap();
+    let parsed = || {
+        batch(
+            "atomic-position",
+            0,
+            0,
+            vec![MessageRow {
+                offset: 0,
+                end: 100,
+                message: text_message(
+                    "atomic-message",
+                    "atomic-session",
+                    Role::User,
+                    "committed text",
+                    None,
+                ),
+            }],
+            &["atomic-session"],
+        )
+    };
+    w.writer.send(parsed()).unwrap();
+    assert!(!w.writer.flush().unwrap().errors.is_empty());
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status().unwrap().messages, 0);
+    let progress = reader.input_progress("atomic-position").unwrap().unwrap();
+    assert!(!progress.parsed);
+    assert_eq!(progress.parsed_upto, 0);
+    drop(reader);
+    index.execute_batch("DROP TRIGGER refuse_position").unwrap();
+    w.writer.send(parsed()).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status().unwrap().messages, 1);
+    assert_eq!(
+        reader
+            .input_progress("atomic-position")
+            .unwrap()
+            .unwrap()
+            .parsed_upto,
+        100
+    );
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn interrupted_secondary_index_finish_retries_ordinary_build() {
+    let w = test_archive();
+    w.writer
+        .send(batch(
+            "finish-input",
+            0,
+            0,
+            vec![MessageRow {
+                offset: 0,
+                end: 100,
+                message: text_message(
+                    "finish-message",
+                    "finish-session",
+                    Role::User,
+                    "searchableword",
+                    None,
+                ),
+            }],
+            &["finish-session"],
+        ))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    crate::fault::arm(
+        "index.deferred",
+        &w.archive.root.to_string_lossy(),
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    assert!(w.writer.derive().is_err());
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    assert!(crate::schema::building(&index).unwrap());
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='message_id'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    w.writer.derive().unwrap();
+    assert!(!crate::schema::building(&index).unwrap());
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'searchableword'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn a_completed_empty_index_does_not_begin_another_first_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    drop(writer);
+    drop(lock);
+    let (archive, _lock) = crate::Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let index = crate::archive::open_read(&archive.index_db()).unwrap();
+    assert!(!crate::schema::building(&index).unwrap());
+    assert!(
+        crate::schema::same_schema(&index, &[crate::schema::INDEX, crate::schema::READ_INDEXES])
+            .unwrap()
+    );
+    drop(writer);
+}

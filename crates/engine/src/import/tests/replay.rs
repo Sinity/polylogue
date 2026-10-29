@@ -17,11 +17,17 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
     ] {
         std::fs::write(&path, claude_user(id, "s", body)).unwrap();
         assert!(
-            e.import(std::slice::from_ref(&path))
-                .unwrap()
-                .pass
-                .errors
-                .is_empty()
+            e.import_with_options(
+                std::slice::from_ref(&path),
+                &ImportOptions {
+                    format: Some("claude-code".into()),
+                    explain: false
+                }
+            )
+            .unwrap()
+            .pass
+            .errors
+            .is_empty()
         );
     }
     let before = message_sources(&w);
@@ -109,7 +115,7 @@ fn an_import_observation_does_not_replace_mutable_source_discovery_state() {
 }
 
 #[test]
-fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observation() {
+fn refused_import_can_be_imported_under_its_declared_structure() {
     let w = ClaudeHome::new();
     let unknown = w.dir.path().join("renamed.json");
     let standard = w.dir.path().join("prod-grok-backend.json");
@@ -122,14 +128,12 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
     let id = blake3::hash(bytes.as_bytes()).to_hex().to_string();
     let (mut e, lock) = engine(&w, 1024);
     let opaque = e.import(std::slice::from_ref(&unknown)).unwrap();
-    assert_eq!(opaque.imported.as_slice(), std::slice::from_ref(&unknown));
+    assert_eq!(opaque.refused.len(), 1);
+    assert!(opaque.imported.is_empty());
     let prior = register(&w.root);
     let parsed = e.import(std::slice::from_ref(&standard)).unwrap();
     assert!(parsed.pass.errors.is_empty(), "{:?}", parsed.pass.errors);
-    assert_eq!(
-        parsed.already_stored.as_slice(),
-        std::slice::from_ref(&standard)
-    );
+    assert_eq!(parsed.imported.as_slice(), std::slice::from_ref(&standard));
     assert_eq!(
         w.count("SELECT count(*) AS n FROM session WHERE id='grok:recognized-later'"),
         1
@@ -143,7 +147,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
                 &[polylogue_store::SqlValue::Text(id.clone())]
             )
             .unwrap()[0]["format"],
-        "export-file"
+        "grok"
     );
     let after = register(&w.root);
     assert_eq!(
@@ -151,7 +155,7 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
         prior[..],
         "recognition must not change register rows already written"
     );
-    // A later opaque import must not discard the captured parser path.
+    // A later refused input leaves the declared parser path intact.
     e.import(std::slice::from_ref(&unknown)).unwrap();
     drop(e);
     drop(lock);
@@ -174,29 +178,19 @@ fn recognized_import_after_opaque_capture_rebuilds_from_the_recognized_observati
                 &[polylogue_store::SqlValue::Text(id)]
             )
             .unwrap()[0]["format"],
-        "export-file"
+        "grok"
     );
 }
 
 #[test]
-fn explicit_kept_only_imports_replay_without_errors() {
+fn unknown_bytes_are_refused_without_archive_rows() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("opaque.dat");
-    std::fs::write(&path, b"synthetic unparsed binary\0\xff").unwrap();
-    let (mut e, lock) = engine(&w, 1024);
-    let report = e.import(std::slice::from_ref(&path)).unwrap();
-    assert_eq!(report.unrecognized.as_slice(), std::slice::from_ref(&path));
-    assert_eq!(report.imported.as_slice(), std::slice::from_ref(&path));
-    let again = e.import(std::slice::from_ref(&path)).unwrap();
-    assert_eq!(again.unrecognized.as_slice(), std::slice::from_ref(&path));
-    assert_eq!(again.already_stored.as_slice(), std::slice::from_ref(&path));
-    drop(e);
-    drop(lock);
-    std::fs::remove_file(path).unwrap();
-    delete_index(&w.root);
+    std::fs::write(&path, b"unparsed binary\0\xff").unwrap();
     let (mut e, _lock) = engine(&w, 1024);
-    let pass = e.run_pass().unwrap();
-    assert!(pass.errors.is_empty());
+    let report = e.import(std::slice::from_ref(&path)).unwrap();
+    assert_eq!(report.refused.len(), 1);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
 }
 
 #[test]

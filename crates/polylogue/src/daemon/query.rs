@@ -616,11 +616,9 @@ fn validate(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
         if expected != &position.generation {
             return Err(Failure {
                 kind: "resync_required".into(),
-                message:
-                    "the index generation changed; read the current state and every excision again"
-                        .into(),
+                message: "the index generation changed; read the current state again".into(),
                 detail: Some(
-                    json!({"generation": position.generation, "excisions_query": "changes where kind:excision", "reason": "generation_changed"}),
+                    json!({"generation": position.generation, "reason": "generation_changed"}),
                 ),
             });
         }

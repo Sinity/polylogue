@@ -6,9 +6,13 @@
 //! Messages carry no IDs, so each keeps its identity by its place. The
 //! session is the object's `id` when it has one, else the file name.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -54,25 +58,40 @@ struct ChatState {
 }
 
 static DOCUMENT_FIELDS: Fields = Fields::new(&[
-    ("messages", Rule::Read),
-    ("id", Rule::Read),
-    ("model", Rule::Read),
-    ("title", Rule::Read),
+    ("messages", Rule::Read(T::Array)),
+    ("id", Rule::Read(T::String)),
+    ("model", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
 ]);
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("role", Rule::Read),
-    ("content", Rule::Read),
+    ("tool_calls[].id", Rule::Read(T::String)),
+    ("tool_calls[].type", Rule::Read(T::String)),
+    ("tool_calls[].function.name", Rule::Read(T::String)),
+    (
+        "tool_calls[].function.arguments",
+        Rule::Kept("complete parsed tool input"),
+    ),
+    ("function_call.name", Rule::Read(T::String)),
+    (
+        "function_call.arguments",
+        Rule::Kept("complete parsed tool input"),
+    ),
+    ("content[].type", Rule::Read(T::String)),
+    ("content[].text", Rule::Read(T::String)),
+    ("content[].image_url.url", Rule::Read(T::String)),
+    ("role", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
     (
         "name",
         Rule::Kept("the speaker's name in a multi-party chat"),
     ),
-    ("tool_calls", Rule::Read),
-    ("tool_call_id", Rule::Read),
-    ("reasoning", Rule::Read),
-    ("reasoning_content", Rule::Read),
-    ("refusal", Rule::Read),
-    ("function_call", Rule::Read),
+    ("tool_calls", Rule::Read(T::Array)),
+    ("tool_call_id", Rule::Read(T::String)),
+    ("reasoning", Rule::Read(T::StringOrArray)),
+    ("reasoning_content", Rule::Read(T::StringOrArray)),
+    ("refusal", Rule::Read(T::String)),
+    ("function_call", Rule::Read(T::Object)),
 ]);
 
 impl ExportParser for OpenAiChat {
@@ -172,6 +191,7 @@ impl ExportParser for OpenAiChat {
             stop_reason: None,
             reported_cost_usd: None,
             duration_ms: None,
+            attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
             production: Default::default(),
         };
         let offset = sink.position();
@@ -278,6 +298,7 @@ fn blocks(m: &Json, role: Role) -> Vec<Block> {
     }
     if let Some(call_id) = str_of(m, "tool_call_id") {
         blocks.push(Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some(call_id.to_owned()),
             outcome: ToolOutcome::Ok,
             output: Some(

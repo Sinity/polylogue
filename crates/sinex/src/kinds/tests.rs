@@ -204,8 +204,8 @@ fn parity<P: EventPayload>() {
 }
 
 #[test]
-fn all_ten_producer_declarations_preserve_typed_keys_clocks_and_classes() {
-    assert_eq!(super::declarations("polylogue").len(), 10);
+fn all_producer_declarations_preserve_typed_keys_clocks_and_classes() {
+    assert_eq!(super::declarations("polylogue").len(), 9);
     parity::<Session>();
     parity::<Message>();
     parity::<ToolCall>();
@@ -215,7 +215,6 @@ fn all_ten_producer_declarations_preserve_typed_keys_clocks_and_classes() {
     parity::<Note>();
     parity::<Setting>();
     parity::<KeptResult>();
-    parity::<Excision>();
 }
 
 #[test]

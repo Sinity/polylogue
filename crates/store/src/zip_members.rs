@@ -4,9 +4,6 @@
 use crate::{Batch, InZip, Result, StoreError};
 use rusqlite::Connection;
 
-mod excision;
-pub(crate) use excision::refuse_inside_zip;
-
 /// The ZIP a batch's member was read from.
 pub(crate) fn zip_of(batch: &Batch) -> Option<&InZip> {
     batch.observation.as_ref()?.import.as_ref()?.zip.as_ref()

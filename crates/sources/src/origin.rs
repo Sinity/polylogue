@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 pub enum Support {
     /// Parsed into sessions and messages.
     Parsed,
-    /// Declared only: where the tool writes is known; nothing is collected
-    /// or parsed yet.
-    Declared,
+    /// Collected as raw bytes or committed row dumps, with parse state
+    /// `no_parser_yet` until the origin has a parser.
+    NoParser,
     /// Bytes kept with no records in them: the images, audio and HTML an
     /// export carries beside its conversations. Messages refer to them.
     Kept,
@@ -68,11 +68,47 @@ pub enum Capture {
     RowDump,
 }
 
+impl Arrival {
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Live => 0,
+            Self::Spool => 1,
+            Self::Import => 2,
+        }
+    }
+}
+
 /// A tool's resume command line (program first) from a session's native
 /// ID, or `None` when that session cannot be resumed on its own.
 pub type Resume = fn(&str) -> Option<Vec<String>>;
 
+pub struct Database {
+    pub is_input: fn(&Path) -> bool,
+}
+
+/// One module contributing to an origin's reading.
+#[derive(Debug, Clone, Copy)]
+pub struct ParserModule {
+    pub name: &'static str,
+    pub version: u32,
+}
+
+// Every parser runs through the shared framing, accounting and value readers.
+macro_rules! modules {
+    ($($module:path),* $(,)?) => { &[
+        ParserModule{name:"parse",version:crate::parse::VERSION},
+        ParserModule{name:"lines",version:crate::lines::VERSION},
+        ParserModule{name:"records",version:crate::records::VERSION},
+        ParserModule{name:"fields",version:crate::fields::VERSION},
+        ParserModule{name:"document",version:crate::document::VERSION},
+        ParserModule{name:"time",version:crate::time::VERSION},
+        ParserModule{name:"command",version:polylogue_model::command::VERSION},
+        $(ParserModule{name:stringify!($module),version:$module}),*
+    ] };
+}
+
 pub struct OriginSpec {
+    pub modules: &'static [ParserModule],
     pub name: &'static str,
     /// Text prefixes written by this harness in user-role messages.
     pub harness_prefixes: &'static [&'static str],
@@ -83,6 +119,8 @@ pub struct OriginSpec {
     /// writes. Empty for imports.
     pub locations: &'static [&'static str],
     pub capture: Capture,
+    /// Which inputs are row dumps.
+    pub database: Option<Database>,
     /// Whether a file is this origin's, from its path and first bytes. Runs
     /// before the origin is decided; a suffix alone never decides it.
     pub recognize: fn(&Path, &[u8]) -> bool,
@@ -182,6 +220,21 @@ pub struct LinkPrefix {
 }
 
 impl OriginSpec {
+    /// Stable, ordered tuple of module names and versions.
+    pub fn reading_version(&self) -> String {
+        self.modules
+            .iter()
+            .map(|m| format!("{}={}", m.name, m.version))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    pub fn is_row_dump(&self, path: &Path) -> bool {
+        self.database
+            .as_ref()
+            .is_some_and(|database| (database.is_input)(path))
+    }
+
     /// Where Polylogue's own writer puts a spool origin's files, relative
     /// to its root: the directory every location lies under, up to the
     /// first wildcard (`polylogue/hooks`). `None` for other arrivals.
@@ -232,11 +285,13 @@ pub static ORIGINS: &[OriginSpec] = &[
             "This session is being continued from a previous session that ran out of context.",
             "Base directory for this skill:",
         ],
+        modules: modules!(crate::claude_code::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::claude_code::recognize,
         open: crate::claude_code::open,
         resume: Some(crate::claude_code::resume),
@@ -250,11 +305,16 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code-side",
         harness_prefixes: &[],
+        modules: modules!(
+            crate::claude_code::VERSION,
+            crate::claude_code::side::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::claude_code::side::SIDE_ROOT,
         locations: crate::claude_code::side::SIDE_LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::claude_code::side::recognize_side,
         open: crate::claude_code::side::open_side,
         resume: None,
@@ -268,11 +328,16 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code-history",
         harness_prefixes: &[],
+        modules: modules!(
+            crate::claude_code::VERSION,
+            crate::claude_code::side::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::side::HISTORY_LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::claude_code::side::recognize_history,
         open: crate::claude_code::side::open_history,
         resume: None,
@@ -297,11 +362,13 @@ pub static ORIGINS: &[OriginSpec] = &[
             "<user_action>",
             "<permissions instructions>",
         ],
+        modules: modules!(crate::codex::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::codex::ROOT,
         locations: crate::codex::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::codex::recognize,
         open: crate::codex::open,
         resume: Some(crate::codex::resume),
@@ -315,11 +382,15 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "codex-database",
         harness_prefixes: &[],
+        modules: modules!(crate::codex::VERSION, crate::codex::database::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: crate::codex::database::ROOT,
         locations: crate::codex::database::LOCATIONS,
         capture: Capture::RowDump,
+        database: Some(Database {
+            is_input: crate::codex::database::is_row_dump,
+        }),
         recognize: crate::codex::database::recognize,
         open: crate::codex::database::open,
         resume: None,
@@ -333,11 +404,17 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "gemini-cli",
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::gemini_cli::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
         locations: crate::gemini_cli::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::gemini_cli::recognize,
         open: crate::gemini_cli::open,
         resume: Some(crate::gemini_cli::resume),
@@ -350,12 +427,14 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "antigravity",
+        modules: modules!(crate::antigravity::VERSION),
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
         locations: crate::antigravity::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::antigravity::recognize,
         open: crate::antigravity::open,
         resume: None,
@@ -368,12 +447,14 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "antigravity-exports",
+        modules: modules!(crate::antigravity::VERSION),
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
         locations: &["polylogue/antigravity/*.json"],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::antigravity::recognize,
         open: crate::antigravity::open,
         resume: None,
@@ -387,11 +468,15 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "hermes",
         harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::hermes::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
-        root: Root::HOME,
-        locations: crate::hermes::LOCATIONS,
+        root: crate::locations::HERMES_ROOT,
+        locations: &["state.db", "verification_evidence.db"],
         capture: Capture::RowDump,
+        database: Some(Database {
+            is_input: crate::hermes::is_database,
+        }),
         recognize: crate::hermes::recognize,
         open: crate::hermes::open,
         resume: None,
@@ -405,11 +490,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "grok-cli",
         harness_prefixes: &[],
+        modules: modules!(crate::grok_cli::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         root: Root::HOME,
         locations: crate::grok_cli::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::grok_cli::recognize,
         open: crate::grok_cli::open,
         resume: None,
@@ -423,11 +510,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "polylogue-repo-lookup",
         harness_prefixes: &[],
+        modules: modules!(crate::repo_lookup::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::repo_lookup::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::repo_lookup::recognize,
         open: crate::repo_lookup::open,
         resume: None,
@@ -441,11 +530,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::hook_spool::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(crate::hook_spool::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::hook_spool::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::hook_spool::recognize,
         open: crate::hook_spool::open,
         resume: None,
@@ -459,11 +550,17 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::browser_capture::VERSION,
+            crate::chatgpt::VERSION,
+            crate::claude_ai::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::browser_capture::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::browser_capture::recognize,
         open: crate::browser_capture::open,
         resume: None,
@@ -475,13 +572,141 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        name: "pi",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::NoParser,
+        arrival: Arrival::Live,
+        root: Root {
+            env: None,
+            default: ".pi/agent",
+        },
+        locations: &["sessions/**/*.jsonl"],
+        capture: Capture::Bytes,
+        database: None,
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "llm",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::NoParser,
+        arrival: Arrival::Live,
+        root: Root {
+            env: None,
+            default: ".config/io.datasette.llm",
+        },
+        locations: &["logs.db"],
+        capture: Capture::RowDump,
+        database: Some(Database { is_input: |_| true }),
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "tool-context",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::NoParser,
+        arrival: Arrival::Live,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        database: None,
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "tool-database",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::NoParser,
+        arrival: Arrival::Live,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::RowDump,
+        database: Some(Database { is_input: |_| true }),
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "codex-local-file",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::Kept,
+        arrival: Arrival::Live,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        database: None,
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
+        name: "codex-compressed",
+        harness_prefixes: &[],
+        modules: &[],
+        support: Support::Kept,
+        arrival: Arrival::Live,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        database: None,
+        recognize: |_, _| true,
+        open: none,
+        resume: None,
+        bare_uuid_ids: false,
+        quota: None,
+        agent_env: &[],
+        web: None,
+        assets: None,
+        collector: None,
+    },
+    OriginSpec {
         name: "export-file",
         harness_prefixes: &[],
+        modules: &[],
         support: Support::Kept,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: never,
         open: none,
         resume: None,
@@ -495,11 +720,17 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::export::VERSION,
+            crate::polylogue_export::VERSION,
+            polylogue_model::export::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::polylogue_export::recognize,
         open: crate::polylogue_export::open,
         resume: None,
@@ -513,11 +744,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "chatgpt",
         harness_prefixes: &[],
+        modules: modules!(crate::chatgpt::VERSION, crate::export::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::chatgpt::recognize,
         open: crate::chatgpt::open,
         resume: None,
@@ -541,11 +774,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-ai",
         harness_prefixes: &[],
+        modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::claude_ai::recognize,
         open: crate::claude_ai::open,
         resume: None,
@@ -566,11 +801,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-design",
         harness_prefixes: &[],
+        modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::claude_ai::recognize_design,
         open: crate::claude_ai::open_design,
         resume: None,
@@ -584,11 +821,17 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::ai_studio::VERSION,
+            crate::chatgpt::VERSION,
+            crate::export::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         root: Root::STATE,
         locations: crate::ai_studio::LOCATIONS,
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::ai_studio::recognize,
         open: crate::ai_studio::open,
         resume: None,
@@ -612,11 +855,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::gemini_app::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::gemini_app::recognize,
         open: crate::gemini_app::open,
         resume: None,
@@ -640,11 +885,13 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "grok",
         harness_prefixes: &[],
+        modules: modules!(crate::export::VERSION, crate::grok::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::grok::recognize,
         open: crate::grok::open,
         resume: None,
@@ -665,11 +912,17 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::otel_genai::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::otel_genai::recognize,
         open: crate::otel_genai::open,
         resume: None,
@@ -683,11 +936,17 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openrouter::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::openrouter::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::openrouter::recognize,
         open: crate::openrouter::open,
         resume: None,
@@ -703,11 +962,17 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openai_chat::ORIGIN,
         harness_prefixes: &[],
+        modules: modules!(
+            crate::chatgpt::VERSION,
+            crate::export::VERSION,
+            crate::openai_chat::VERSION
+        ),
         support: Support::Parsed,
         arrival: Arrival::Import,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
+        database: None,
         recognize: crate::openai_chat::recognize,
         open: crate::openai_chat::open,
         resume: None,
@@ -745,12 +1010,6 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
             .as_ref()
             .is_some_and(|w| w.extension_names.contains(&name))
     })
-}
-
-/// The export file name of a database found at a [`Capture::RowDump`]
-/// origin's location: `<db file name>.jsonl`.
-pub fn export_name(db: &Path) -> Option<String> {
-    Some(format!("{}.jsonl", db.file_name()?.to_str()?))
 }
 
 #[cfg(test)]

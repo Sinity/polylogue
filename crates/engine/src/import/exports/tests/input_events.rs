@@ -1,5 +1,4 @@
 use super::*;
-use crate::{ExciseRequest, ExciseTarget};
 
 fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
     w.reads()
@@ -14,7 +13,7 @@ fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn native_input_event_import_rebuild_and_input_excision_preserve_exact_scope() {
+fn native_input_event_import_and_rebuild_preserve_exact_scope() {
     for chunk in [1, 7, 64] {
         let w = ClaudeHome::new();
         let path = w.dir.path().join("synthetic.atof.jsonl");
@@ -50,27 +49,11 @@ fn native_input_event_import_rebuild_and_input_excision_preserve_exact_scope() {
             let (mut e, _lock) = engine(&w, chunk);
             assert!(e.run_pass().unwrap().errors.is_empty());
             assert_eq!(events(&w), first);
-            let removed = e
-                .excise(ExciseRequest {
-                    id: "remove-observer-input".into(),
-                    target: ExciseTarget::Input(first[0]["input"].as_str().unwrap().into()),
-                    reason: None,
-                    dry_run: false,
-                })
-                .unwrap();
-            assert!(removed.sessions.is_empty());
-            assert!(events(&w).is_empty());
-            assert_eq!(
-                w.count("SELECT COUNT(*) AS n FROM event"),
-                0,
-                "no orphan payload"
-            );
-            assert_eq!(w.count("SELECT COUNT(*) AS n FROM event"), 0);
         }
         polylogue_testkit::delete_index(&w.root);
         let (mut e, _lock) = engine(&w, chunk);
         assert!(e.run_pass().unwrap().errors.is_empty());
-        assert!(events(&w).is_empty());
+        assert_eq!(events(&w), first);
     }
 }
 

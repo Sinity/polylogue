@@ -20,6 +20,8 @@ pub mod limit;
 
 mod behind_index;
 mod captured;
+mod import_counts;
+pub use import_counts::ImportCounts;
 mod parents;
 mod tool_outcomes;
 pub use behind_index::{BehindChain, ImportedAs};
@@ -117,7 +119,6 @@ pub struct ChainProgress {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Status {
     /// Inputs whose bytes are still being written.
-    pub pending_inputs: Vec<crate::staging::PendingBlob>,
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -387,6 +388,43 @@ struct MessageContent<'a> {
 impl Reader<'_> {
     pub fn check(&self) -> Result<()> {
         self.limit.as_ref().map_or(Ok(()), limit::ReadLimit::check)
+    }
+
+    /// A row dump names its native source independently of its observations.
+    pub fn tool_database_source(
+        &self,
+        input: &str,
+        blobs: &crate::blobs::Blobs,
+    ) -> Result<Option<(String, String)>> {
+        let Some(progress) = self.input_progress(input)? else {
+            return Ok(None);
+        };
+        let chain = self.stored_chain(input, progress.chain, progress.length)?;
+        let mut bytes = Vec::new();
+        let mut offset = 0;
+        while offset < progress.length {
+            let end = progress.length.min(offset + 4096);
+            bytes.extend(chain.read_range(blobs, offset, end)?);
+            if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
+                let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes[..end]) else {
+                    return Ok(None);
+                };
+                if !header
+                    .get("schema")
+                    .is_some_and(serde_json::Value::is_object)
+                {
+                    return Ok(None);
+                }
+                return Ok(header.get("source").and_then(|source| {
+                    Some((
+                        source.get("machine")?.as_str()?.to_owned(),
+                        source.get("path")?.as_str()?.to_owned(),
+                    ))
+                }));
+            }
+            offset = end;
+        }
+        Ok(None)
     }
 
     /// The optional embeddings read connection shares this reader's slot and
@@ -824,6 +862,12 @@ impl Reader<'_> {
                     .and_then(serde_json::Value::as_number)
                     .cloned(),
                 duration_ms: n(duration),
+                attrs: attrs
+                    .as_ref()
+                    .and_then(|value| value.get("attrs"))
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+                    .unwrap_or_default(),
                 production: attrs
                     .as_ref()
                     .and_then(|a| a.get("production"))
@@ -858,7 +902,6 @@ impl Reader<'_> {
             unused.push((w, n as u64));
         }
         Ok(Status {
-            pending_inputs: crate::staging::pending_blobs(c, "a.")?,
             sessions: count("SELECT n FROM main.row_count WHERE name = 'session'")?,
             messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
             documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
@@ -905,7 +948,7 @@ impl Reader<'_> {
         chain: i64,
         start: u64,
         end: u64,
-        store: &hashed_blobs::Store,
+        store: &crate::blobs::Blobs,
     ) -> Result<Vec<u8>> {
         self.check_bytes_present(input, chain, start..end)?;
         crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
@@ -929,12 +972,12 @@ impl Reader<'_> {
     }
 
     /// The content store the archive's bytes are read from.
-    pub fn blob_store(&self) -> Result<hashed_blobs::Store> {
+    pub fn blob_store(&self) -> Result<crate::blobs::Blobs> {
         self.pool.archive.blobs()
     }
 
     /// Existing content, with no writable handle or directory setup.
-    pub fn blob_reader(&self) -> hashed_blobs::Reader {
+    pub fn blob_reader(&self) -> crate::blobs::Blobs {
         self.pool.archive.blob_reader()
     }
 
@@ -985,8 +1028,7 @@ impl Reader<'_> {
         Ok(polylogue_model::BlobHash(*hasher.finalize().as_bytes()))
     }
 
-    /// Source file facts come from provider observations; an excision event
-    /// records archive housekeeping, never a fresh observation of the file.
+    /// Source file facts come from provider observations.
     #[cfg(any(test, feature = "fixture"))]
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
         self.known_inputs_at(machine, None, true)
@@ -1000,6 +1042,7 @@ impl Reader<'_> {
 
     /// Mutable source observations used by discovery, excluding manual imports.
     pub fn known_watched_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
+        crate::fault::check("read.watched_inputs", machine)?;
         self.known_inputs_at(machine, None, false)
     }
     pub fn known_watched_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
@@ -1036,7 +1079,6 @@ impl Reader<'_> {
              FROM (
                  SELECT MAX(x.rowid) AS latest FROM a.observation x
                  WHERE {location}
-                   AND x.class <> 'excised'
                    AND (?3 OR x.input NOT IN ({imported}))
                  GROUP BY x.path
              ) latest

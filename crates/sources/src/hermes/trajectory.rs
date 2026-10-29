@@ -1,6 +1,7 @@
 //! ATIF trajectory files: each becomes a transcript document and a
 //! `hermes_trajectory` event. Its run ID is not a session ID, and a step's
 //! role does not say who wrote it.
+use crate::fields::ExpectedType as T;
 mod step;
 
 use super::{Event, Json, Parse, Sink, identity};
@@ -49,33 +50,33 @@ struct Item {
 }
 
 static ROOT: Fields = Fields::new(&[
-    ("schema_version", Rule::Read),
-    ("session_id", Rule::Read),
-    ("trajectory_id", Rule::Read),
+    ("schema_version", Rule::Read(T::StringOrNumber)),
+    ("session_id", Rule::Read(T::String)),
+    ("trajectory_id", Rule::Read(T::String)),
     (
         "agent",
         Rule::Kept("native agent configuration; only name/version/model descriptors are projected"),
     ),
-    ("steps", Rule::Read),
-    ("subagent_trajectories", Rule::Read),
+    ("steps", Rule::Read(T::Array)),
+    ("subagent_trajectories", Rule::Read(T::Array)),
     ("notes", Rule::Kept("native annotation")),
-    ("final_metrics", Rule::Read),
-    ("continued_trajectory_ref", Rule::Read),
+    ("final_metrics", Rule::Read(T::Object)),
+    ("continued_trajectory_ref", Rule::Read(T::String)),
     ("extra", Rule::Kept("native trajectory metadata")),
 ]);
 static STEP: Fields = Fields::new(&[
-    ("step_id", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("source", Rule::Read),
-    ("message", Rule::Read),
-    ("model_name", Rule::Read),
-    ("reasoning_effort", Rule::Read),
-    ("reasoning_content", Rule::Read),
-    ("tool_calls", Rule::Read),
-    ("observation", Rule::Read),
-    ("metrics", Rule::Read),
-    ("llm_call_count", Rule::Read),
-    ("is_copied_context", Rule::Read),
+    ("step_id", Rule::Read(T::String)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("source", Rule::Read(T::String)),
+    ("message", Rule::Read(T::String)),
+    ("model_name", Rule::Read(T::String)),
+    ("reasoning_effort", Rule::Read(T::String)),
+    ("reasoning_content", Rule::Read(T::StringOrArray)),
+    ("tool_calls", Rule::Read(T::Array)),
+    ("observation", Rule::Read(T::Object)),
+    ("metrics", Rule::Read(T::Object)),
+    ("llm_call_count", Rule::Read(T::Number)),
+    ("is_copied_context", Rule::Read(T::Boolean)),
     ("extra", Rule::Kept("native step extensions")),
 ]);
 

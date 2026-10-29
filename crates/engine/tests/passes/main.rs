@@ -1,7 +1,7 @@
 //! The loop over files a test writes: first builds, appends, rewrites,
-//! chunked reads, imports, excision and export round trips.
+//! chunked reads, imports and export round trips.
 
-use polylogue_engine::{Engine, ExciseRequest, ExciseTarget, Excised};
+use polylogue_engine::Engine;
 use polylogue_model::{Message, SessionId};
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{
@@ -10,12 +10,12 @@ use polylogue_testkit::{
 use std::fs;
 use std::path::Path;
 
-mod excision_selected;
 mod export_round_trip;
 mod hook_events;
 mod large_sessions;
 mod live_first;
 mod older_chains;
+mod reading_version;
 mod tool_captures;
 
 #[test]
@@ -366,79 +366,11 @@ fn a_capture_rewritten_in_place_is_parsed_again_whole() {
     assert_eq!(texts(&w.root), ["one", "two"]);
 }
 
-fn excise(e: &mut Engine, target: &str, dry_run: bool) -> Excised {
-    e.excise(ExciseRequest {
-        id: format!("req-{target}-{dry_run}"),
-        target: ExciseTarget::parse(target).unwrap(),
-        reason: Some("test".into()),
-        dry_run,
-    })
-    .unwrap()
-}
-
 /// Whether any stored input byte range holds `needle`.
 fn stored(root: &Path, needle: &str) -> bool {
     !polylogue_store::fixture::text_search::stored_blobs_containing(&Archive::at(root), needle)
         .unwrap()
         .is_empty()
-}
-
-#[test]
-fn an_excised_session_is_gone_from_every_file_and_never_comes_back() {
-    let w = ClaudeHome::new();
-    w.append(
-        "s1.jsonl",
-        &(user("u1", "s1", "the launch code is zebra42") + &assistant("a1", "s1", "noted")),
-    );
-    w.append(
-        "s2.jsonl",
-        &(user("u2", "s2", "unrelated") + &assistant("a2", "s2", "fine")),
-    );
-    let (mut e, lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    assert!(stored(&w.root, "zebra42"));
-
-    let preview = excise(&mut e, "session:claude-code:s1", true);
-    assert!(preview.dry_run);
-    assert_eq!(preview.messages, 2);
-    assert_eq!(w.texts("s1"), ["the launch code is zebra42", "noted"]);
-
-    let done = excise(&mut e, "session:claude-code:s1", false);
-    assert_eq!(done.sessions, ["claude-code:s1"]);
-    assert_eq!(done.inputs_removed.len(), 1);
-    assert!(done.blobs_deleted >= 1, "{done:?}");
-    assert!(w.texts("s1").is_empty());
-    assert_eq!(w.texts("s2"), ["unrelated", "fine"]);
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:s1'"),
-        0
-    );
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'zebra42'"),
-        0
-    );
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM removed_session WHERE session_id = 'claude-code:s1'"),
-        1
-    );
-    assert!(!stored(&w.root, "zebra42"));
-
-    // The file keeps growing; nothing of it is collected again.
-    w.append("s1.jsonl", &user("u3", "s1", "zebra42 again"));
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    assert!(w.texts("s1").is_empty());
-    // Nor after a restart.
-    drop(e);
-    drop(lock);
-    let (mut e, _lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    assert!(w.texts("s1").is_empty());
-    assert!(!stored(&w.root, "zebra42"));
-    // Nor by import of the same session from another file.
-    let copy = w.dir.path().join("copy.jsonl");
-    fs::write(&copy, user("u1", "s1", "the launch code is zebra42")).unwrap();
-    e.import(std::slice::from_ref(&copy)).unwrap();
-    assert!(w.texts("s1").is_empty());
 }
 
 /// Index columns holding `needle`.
@@ -477,61 +409,6 @@ fn secret_session(session: &str, secret: &str) -> String {
         })),
     ]
     .concat()
-}
-
-#[test]
-fn a_removed_session_leaves_no_index_column_or_stored_byte_holding_its_text() {
-    let w = ClaudeHome::new();
-    let secret = "sk-abc123-synthetic";
-    w.append("secret.jsonl", &secret_session("secret", secret));
-    w.append("kept.jsonl", &user("k1", "kept", "kept text"));
-    let (mut e, _lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    assert!(!indexed(&w.root, secret).is_empty());
-    assert!(stored(&w.root, secret));
-    let done = excise(&mut e, "session:claude-code:secret", false);
-    assert_eq!(done.inputs_removed.len(), 1, "{done:?}");
-    assert_eq!(indexed(&w.root, secret), Vec::<String>::new());
-    assert!(!stored(&w.root, secret));
-    assert_eq!(w.texts("kept"), ["kept text"]);
-}
-
-#[test]
-fn excising_a_session_from_a_file_holding_another_session_refuses() {
-    let w = ClaudeHome::new();
-    // One file holding records of two sessions (a resumed session's file
-    // names the session each record belongs to).
-    w.append(
-        "mix.jsonl",
-        &(user("u1", "keep", "keep this")
-            + &user("u2", "drop", "drop pelican77")
-            + &user("u3", "keep", "and this")),
-    );
-    let (mut e, _lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    let before = (w.export("claude-code:keep"), w.export("claude-code:drop"));
-    for dry_run in [true, false] {
-        let refused = e
-            .excise(ExciseRequest {
-                id: format!("drop-{dry_run}"),
-                target: ExciseTarget::parse("session:claude-code:drop").unwrap(),
-                reason: None,
-                dry_run,
-            })
-            .unwrap_err();
-        assert!(
-            refused
-                .to_string()
-                .contains("also holds session claude-code:keep"),
-            "{refused}"
-        );
-        assert_eq!(
-            (w.export("claude-code:keep"), w.export("claude-code:drop")),
-            before
-        );
-        assert!(stored(&w.root, "pelican77"));
-        assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
-    }
 }
 
 #[test]
@@ -670,13 +547,9 @@ fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title()
     assert_eq!(view(), before);
 }
 
-mod excision_exports;
-
 mod otel_exports;
 
 mod gemini_takeout;
-
-mod excision_recovery;
 
 mod empty_inputs;
 

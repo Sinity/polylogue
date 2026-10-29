@@ -86,28 +86,12 @@ fn linked(archive: &Archive, import_id: &str, duplicates: bool) -> Vec<PreparedB
     group
 }
 
-fn remove(
-    writer: &Writer,
-    store: Arc<hashed_blobs::Store>,
-    id: &str,
-) -> Result<crate::excise::Excised> {
-    writer.excise(
-        crate::excise::ExciseRequest {
-            id: id.into(),
-            target: crate::excise::ExciseTarget::Input(BlobHash::of(MEMBER).to_string()),
-            reason: None,
-            dry_run: false,
-        },
-        store,
-    )
-}
-
 #[test]
 fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
     for import_id in ["one", "two"] {
         let outcomes = writer
             .sender()
@@ -144,74 +128,6 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     );
 }
 
-#[test]
-fn prepared_linked_writes_and_member_exclusion_serialize_without_hidden_copies() {
-    for concurrent in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-        let writer = Arc::new(Writer::start(&archive).unwrap());
-        let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
-        let initial = stage(&archive, MEMBER, "initial", "initial.dat", None);
-        writer
-            .sender()
-            .unwrap()
-            .store_group(vec![initial], Arc::clone(&store))
-            .unwrap()
-            .pop()
-            .unwrap()
-            .unwrap();
-        let group = linked(&archive, "linked", false);
-        if !concurrent {
-            remove(&writer, Arc::clone(&store), "queued-remove").unwrap();
-            let outcomes = writer
-                .sender()
-                .unwrap()
-                .store_group(group, Arc::clone(&store))
-                .unwrap();
-            assert!(outcomes.iter().all(Result::is_err), "{outcomes:?}");
-            assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
-            continue;
-        }
-        let barrier = Arc::new(Barrier::new(3));
-        let writing = {
-            let sender = writer.sender().unwrap();
-            let store = Arc::clone(&store);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                sender.store_group(group, store).unwrap()
-            })
-        };
-        let exclusion = {
-            let writer = Arc::clone(&writer);
-            let store = Arc::clone(&store);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                remove(&writer, store, "concurrent-remove")
-            })
-        };
-        barrier.wait();
-        let outcomes = writing.join().unwrap();
-        let excised = exclusion.join().unwrap();
-        // Either the excision ran first and the ZIP is refused whole, or the
-        // ZIP was stored first and the excision, now inside it, is refused.
-        match excised {
-            Ok(_) => {
-                assert!(outcomes.iter().all(Result::is_err), "{outcomes:?}");
-                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
-                assert!(!store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
-            }
-            Err(StoreError::ExcisionInsideZip { .. }) => {
-                assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
-                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(ORIGINAL).0)));
-                assert!(store.contains(&hashed_blobs::Hash(BlobHash::of(MEMBER).0)));
-            }
-            Err(error) => panic!("{error}"),
-        }
-    }
-}
-
 #[cfg(feature = "faults")]
 mod pending;
 
@@ -220,7 +136,7 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
     let inner = BlobHash::of(ORIGINAL).to_string();
     let outer = b"synthetic outer container representation";
     let outer_id = BlobHash::of(outer).to_string();
@@ -259,5 +175,3 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
     names.sort();
     assert_eq!(names, ["file-Native.dat", "first.dat"]);
 }
-
-mod excision;

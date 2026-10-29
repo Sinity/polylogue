@@ -1,12 +1,14 @@
-//! Codex's SQLite databases, read from their row dumps (the engine
-//! writes `<archive>/exports/codex-database/<db>.jsonl`).
-//! Lines are a schema line, row lines `{t, k, r, h}` and gone lines
+//! Codex SQLite databases, parsed from their stored row-dump records.
+//! Lines are a schema line, row lines `{t, k, r}` and gone lines
 //! `{t, k, gone}`.
 //!
 //! What becomes rows: thread names, kinds and settings (`threads`), spawn
 //! edges (`thread_spawn_edges`), goals (`thread_goals`) and memories
 //! (`stage1_outputs`). The thread-history tables are derived from the
 //! rollouts, which are parsed; they stay in the stored export.
+
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
 
 use super::{items::str_field, session_id};
 use crate::lines::Record;
@@ -21,15 +23,14 @@ use std::path::Path;
 pub const ROOT: Root = super::ROOT;
 
 /// The databases captured, by file name prefix (`state_5.sqlite`). The
-/// `logs` database is Codex's own diagnostic log and `queue` its pending
-/// submissions; neither holds session content.
-const DATABASES: &[&str] = &["state_", "goals_", "memories_", "thread_history_"];
+/// Diagnostic logs and thread-history projections are outside this declaration.
+const DATABASES: &[&str] = &["state_", "goals_", "memories_", "queue_"];
 
 pub const LOCATIONS: &[&str] = &[
     "state_*.sqlite",
     "goals_*.sqlite",
     "memories_*.sqlite",
-    "thread_history_*.sqlite",
+    "queue_*.sqlite",
 ];
 
 /// The database a file is, or the database its export is of.
@@ -58,8 +59,12 @@ pub fn is_database(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "sqlite") && database(path).is_some()
 }
 
+pub fn is_row_dump(path: &Path) -> bool {
+    is_database(path) || recognize(path, b"{")
+}
+
 pub fn open(path: &Path) -> Option<Parse> {
-    recognize(path, b"{").then(|| Parse::Lines(Box::new(Database)))
+    is_row_dump(path).then(|| Parse::Lines(Box::new(Database)))
 }
 
 pub struct Database;

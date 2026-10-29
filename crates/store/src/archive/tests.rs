@@ -14,80 +14,7 @@ fn a_second_open_is_refused_while_the_lock_is_held() {
 }
 
 #[test]
-fn opening_adds_model_completion_index_without_rebuilding_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index
-        .execute_batch("DROP INDEX message_model; DROP INDEX message_model_at;")
-        .unwrap();
-    let completion_plan = |index: &Connection| -> Vec<String> {
-        index
-            .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT model FROM message WHERE model IS NOT NULL ORDER BY model")
-            .unwrap()
-            .query_map([], |r| r.get(3))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    let before = completion_plan(&index);
-    assert!(
-        before.iter().any(|step| step.contains("SCAN message")),
-        "{before:?}"
-    );
-    assert!(
-        before.iter().any(|step| step.contains("TEMP B-TREE")),
-        "{before:?}"
-    );
-    index
-        .execute("INSERT INTO meta VALUES ('example', 'kept')", [])
-        .unwrap();
-    let generation: String = index
-        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    drop(index);
-    drop(lock);
-    for _ in 0..2 {
-        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-        let index = open_read(&archive.index_db()).unwrap();
-        assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
-        for (key, expected) in [("example", "kept"), ("generation", generation.as_str())] {
-            assert_eq!(
-                index
-                    .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r
-                        .get::<_, String>(0))
-                    .unwrap(),
-                expected
-            );
-        }
-        let plan = completion_plan(&index);
-        assert!(
-            plan.iter()
-                .any(|step| step.contains("COVERING INDEX message_model")),
-            "{plan:?}"
-        );
-        assert!(
-            !plan
-                .iter()
-                .any(|step| step == "SCAN message" || step.contains("TEMP B-TREE")),
-            "{plan:?}"
-        );
-        drop(index);
-        drop(lock);
-    }
-}
-
-#[test]
-fn an_incorrect_model_completion_index_is_rebuilt() {
-    replaced_index_keeps_the_archive(
-        "DROP INDEX message_model; CREATE INDEX message_model ON message(role);",
-    );
-}
-
-#[test]
-fn an_index_left_unsynced_is_rebuilt() {
+fn a_same_boot_build_keeps_its_rows_and_resumes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
@@ -97,75 +24,29 @@ fn an_index_left_unsynced_is_rebuilt() {
     // A stop in the middle of a first build leaves the mark set.
     open_write(&archive.index_db(), cache::SETUP)
         .unwrap()
-        .execute("UPDATE meta SET value = '1' WHERE key = 'unsynced'", [])
+        .execute("UPDATE meta SET value = '1' WHERE key = 'building'", [])
         .unwrap();
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    assert!(!root.join("index.db.unsynced").exists());
-    assert!(!schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
+    assert!(schema::building(&open_read(&archive.index_db()).unwrap()).unwrap());
+    let writer = crate::Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    assert!(!schema::building(&open_read(&archive.index_db()).unwrap()).unwrap());
 }
 
 #[test]
-fn an_index_missing_an_excision_is_rebuilt_and_marked_blobs_go_on_open() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
-    let bytes = vec![7u8; crate::blobs::INLINE_LIMIT + 1];
-    let hash = store.put(bytes.as_slice(), 1).unwrap();
-    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index
-        .execute(
-            "INSERT INTO meta VALUES ('stale-marker', 'from before')",
-            [],
-        )
-        .unwrap();
-    drop(index);
-    // A stop after the archive's commit: the excision is recorded and its
-    // blob marked, but the index and the file were not reached.
-    let archive_db = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    archive_db.execute("INSERT INTO excision(id, target,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
-    archive_db
-        .execute(
-            "INSERT INTO blob(hash,size,stored_size,place,encoding,state) VALUES (?1,?2,?2,'file','plain','deleting')",
-            rusqlite::params![&hash.0[..], bytes.len() as i64],
-        )
-        .unwrap();
-    drop(archive_db);
-    drop(lock);
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    assert!(!store.contains(&hash));
-    let archive_db = open_read(&archive.archive_db()).unwrap();
-    assert_eq!(
-        archive_db
-            .query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    let index = open_read(&archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM meta WHERE key='stale-marker'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        0
-    );
-    assert!(!crate::excise::index_behind(&archive_db, &index).unwrap());
-}
-
-#[test]
-fn an_index_of_another_version_or_schema_is_replaced_and_the_archive_kept() {
+fn an_incompatible_index_is_refused_without_removing_its_rows() {
     for change in [
-        "PRAGMA user_version = 26",
-        "CREATE TABLE synthetic_older(value)",
+        "PRAGMA user_version = 26".to_owned(),
+        "CREATE TABLE synthetic_older(value)".to_owned(),
+        "UPDATE meta SET value='1' WHERE key='building'; CREATE TABLE synthetic_older(value)"
+            .to_owned(),
     ] {
-        replaced_index_keeps_the_archive(change);
+        refused_index_keeps_the_archive(&change);
     }
 }
 
-fn replaced_index_keeps_the_archive(change: &str) {
+fn refused_index_keeps_the_archive(change: &str) {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
@@ -180,26 +61,40 @@ fn replaced_index_keeps_the_archive(change: &str) {
     let archive_conn = open_archive_writer(&archive).unwrap();
     let value = "archive note value independent of row dictionary";
     archive_conn.execute("INSERT INTO note(id, first_note,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
+    archive_conn
+        .execute(
+            "INSERT INTO input(id,format) VALUES ('kept-input','synthetic')",
+            [],
+        )
+        .unwrap();
     drop(archive_conn);
+    let embeddings = open_write(&archive.embeddings_db(), cache::SETUP).unwrap();
+    embeddings.execute("INSERT INTO embedded(text_hash,model,dims,vector,embedded_at) VALUES (x'0102','paid/synthetic',1,x'0000803f',1)", []).unwrap();
+    drop(embeddings);
     drop(lock);
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let index = open_read(&archive.index_db()).unwrap();
-    assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
+    let error = Archive::open_or_create(dir.path()).unwrap_err();
     assert!(
-        schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap(),
-        "{change}"
+        matches!(
+            error,
+            StoreError::IndexVersion { .. }
+                | StoreError::NoMigration {
+                    database: "index",
+                    ..
+                }
+        ),
+        "{error}"
     );
+    let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM meta WHERE key='previous-index-marker'",
+                "SELECT value FROM meta WHERE key='previous-index-marker'",
                 [],
-                |r| r.get::<_, i64>(0)
+                |r| r.get::<_, String>(0)
             )
             .unwrap(),
-        0
+        "present"
     );
-    assert!(!dir.path().join("index.db.v26").exists());
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     assert_eq!(
         archive_conn
@@ -208,6 +103,25 @@ fn replaced_index_keeps_the_archive(change: &str) {
             .unwrap(),
         value
     );
+    assert_eq!(
+        archive_conn
+            .query_row("SELECT format FROM input WHERE id='kept-input'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        "synthetic"
+    );
+    let embeddings = open_read(&archive.embeddings_db()).unwrap();
+    assert_eq!(
+        embeddings
+            .query_row(
+                "SELECT vector FROM embedded WHERE model='paid/synthetic'",
+                [],
+                |r| r.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+        [0, 0, 128, 63]
+    );
 }
 
 #[test]
@@ -215,7 +129,7 @@ fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
     let newer = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION + 1);
     // The second as an archive written by a build that declared the current
     // version with other tables.
-    for (change, newer) in [(newer.as_str(), true), ("DROP TABLE excised", false)] {
+    for (change, newer) in [(newer.as_str(), true), ("DROP TABLE revision", false)] {
         let dir = tempfile::tempdir().unwrap();
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         drop(lock);
@@ -294,7 +208,7 @@ fn opening_clears_blob_files_a_stop_left_before_their_move() {
 fn opening_finishes_every_blob_row_left_writing() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+    let store = crate::blobs::Blobs::open(archive.root.clone(), vec![], 0o600).unwrap();
     let bytes = |fill: u8| vec![fill; crate::blobs::INLINE_LIMIT + 1];
     let put = |fill: u8| polylogue_model::BlobHash(store.put(bytes(fill).as_slice(), 1).unwrap().0);
     let absent = |fill: u8| polylogue_model::BlobHash::of(&bytes(fill));
@@ -353,6 +267,178 @@ fn opening_finishes_every_blob_row_left_writing() {
         crate::staging::pending_blobs(&conn, "").unwrap()[0].blob,
         used_missing
     );
+}
+
+#[test]
+fn a_build_from_another_boot_resumes_rows_with_a_new_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = crate::Writer::start(&archive).unwrap();
+    drop(writer);
+    let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    let before: String = conn
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    conn.execute_batch("UPDATE meta SET value='1' WHERE key='building'; UPDATE meta SET value='another-boot' WHERE key='boot_id'; INSERT INTO meta VALUES ('kept-marker','present')").unwrap();
+    drop(conn);
+    drop(lock);
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let conn = open_read(&archive.index_db()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT value FROM meta WHERE key='kept-marker'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "present"
+    );
+    let after: String = conn
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_ne!(after, before);
+    assert!(schema::building(&conn).unwrap());
+    drop(conn);
+    let writer = crate::Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    drop(writer);
+    drop(lock);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let conn = open_read(&archive.index_db()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        after
+    );
+    assert!(!schema::building(&conn).unwrap());
+}
+
+#[test]
+fn a_stopped_process_resumes_its_committed_parse_positions() {
+    const CHILD: &str = "POLYLOGUE_TEST_BUILD_RESUME";
+    if let Some(path) = std::env::var_os(CHILD) {
+        let (archive, _lock) = Archive::open_or_create(Path::new(&path)).unwrap();
+        let writer = crate::Writer::start(&archive).unwrap();
+        let output = polylogue_model::Output {
+            sessions: vec![polylogue_model::Session::new(
+                crate::fixture::writer::sid("resume"),
+                polylogue_model::SessionKind::Main,
+            )],
+            messages: vec![polylogue_model::MessageRow {
+                offset: 0,
+                end: 1,
+                message: crate::fixture::writer::prose("resume", 0, 1, "kept message").remove(0),
+            }],
+            ..Default::default()
+        };
+        writer
+            .send(crate::fixture::writer::step(
+                "resume-input",
+                "claude-code",
+                "/synthetic",
+                output,
+                0,
+                1,
+            ))
+            .unwrap();
+        assert!(writer.flush().unwrap().errors.is_empty());
+        // Exit without dropping the writer, as a stopped process does.
+        std::process::exit(0);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "archive::tests::a_stopped_process_resumes_its_committed_parse_positions",
+            "--nocapture",
+        ])
+        .env(CHILD, dir.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status().unwrap().messages, 1);
+    let position = reader.input_progress("resume-input").unwrap().unwrap();
+    assert_eq!(position.parsed_upto, 2);
+    drop(reader);
+    let writer = crate::Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    drop(writer);
+    let index = open_read(&archive.index_db()).unwrap();
+    assert!(schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap());
+    assert!(!schema::building(&index).unwrap());
+}
+
+#[test]
+fn opening_adds_model_completion_index_without_rebuilding_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    index
+        .execute_batch("DROP INDEX message_model; DROP INDEX message_model_at;")
+        .unwrap();
+    let completion_plan = |index: &Connection| -> Vec<String> {
+        index
+            .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT model FROM message WHERE model IS NOT NULL ORDER BY model")
+            .unwrap()
+            .query_map([], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let before = completion_plan(&index);
+    assert!(
+        before.iter().any(|step| step.contains("SCAN message")),
+        "{before:?}"
+    );
+    assert!(
+        before.iter().any(|step| step.contains("TEMP B-TREE")),
+        "{before:?}"
+    );
+    index
+        .execute("INSERT INTO meta VALUES ('example', 'kept')", [])
+        .unwrap();
+    let generation: String = index
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    drop(index);
+    drop(lock);
+    for _ in 0..2 {
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        let index = open_read(&archive.index_db()).unwrap();
+        assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
+        for (key, expected) in [("example", "kept"), ("generation", generation.as_str())] {
+            assert_eq!(
+                index
+                    .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                expected
+            );
+        }
+        let plan = completion_plan(&index);
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("COVERING INDEX message_model")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|step| step == "SCAN message" || step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+        drop(index);
+        drop(lock);
+    }
 }
 
 #[test]

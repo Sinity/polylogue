@@ -2,28 +2,43 @@
 //! in their own transaction; indexing consumes committed queue entries.
 
 use crate::Result;
-use crate::encoding::{pack_text, unpack_text};
+#[cfg(any(test, feature = "fixture"))]
+use crate::encoding::pack_text;
+use crate::encoding::unpack_text;
 use crate::first_build::FirstBuild;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+#[cfg(any(test, feature = "fixture"))]
+use rusqlite::OptionalExtension;
+use rusqlite::{Connection, TransactionBehavior, params};
+#[cfg(any(test, feature = "fixture"))]
 use std::collections::HashMap;
 
 /// The text row for `body`, stored once per distinct content, and its
 /// entry in the search index `bit` names (1 prose, 2 tool output). During a
 /// first build the text is found through `first_build`, not its hash index.
+#[cfg(any(test, feature = "fixture"))]
 pub(crate) fn intern(
     conn: &Connection,
     body: &str,
     bit: i64,
     prepared: Option<&HashMap<[u8; 32], Vec<u8>>>,
     first_build: Option<&FirstBuild>,
+    keys: Option<&crate::writer::resolve::ResolvedKeys>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
-    let id = match first_build {
-        Some(first_build) => first_build.text(conn, hash.as_bytes())?,
-        None => conn
-            .prepare_cached("SELECT id FROM text WHERE hash = ?1")?
-            .query_row([&hash.as_bytes()[..]], |r| r.get(0))
-            .optional()?,
+    let reserved = keys
+        .map(|keys| keys.get(crate::writer::resolve::Kind::Text, hash.as_bytes()))
+        .transpose()?;
+    let id = if let Some(key) = reserved {
+        conn.query_row("SELECT id FROM text WHERE id=?1", [key.pk], |r| r.get(0))
+            .optional()?
+    } else {
+        match first_build {
+            Some(first_build) => first_build.text(conn, hash.as_bytes())?,
+            None => conn
+                .prepare_cached("SELECT id FROM text WHERE hash = ?1")?
+                .query_row([&hash.as_bytes()[..]], |r| r.get(0))
+                .optional()?,
+        }
     };
     let bulk = first_build.is_some();
     let (id, indexed) = match id {
@@ -40,8 +55,13 @@ pub(crate) fn intern(
             // A first build marks the text for its search index now and
             // writes the entry when the build ends.
             let claimed = if bulk { bit } else { 0 };
-            conn.prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)")?
-                .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
+            conn.prepare_cached("INSERT INTO text(hash, body, indexed,id) VALUES (?1, ?2, ?3,?4)")?
+                .execute(params![
+                    &hash.as_bytes()[..],
+                    &*packed,
+                    claimed,
+                    reserved.map(|row| row.pk)
+                ])?;
             let id = conn.last_insert_rowid();
             if let Some(first_build) = first_build {
                 first_build.add_text(hash.as_bytes(), id);
@@ -56,6 +76,21 @@ pub(crate) fn intern(
         activate(conn, id, bit, bulk)?;
     }
     Ok(id)
+}
+
+pub(crate) fn store_prepared(
+    conn: &Connection,
+    id: i64,
+    hash: &[u8; 32],
+    body: &[u8],
+    first: Option<&FirstBuild>,
+) -> Result<()> {
+    conn.prepare_cached("INSERT OR IGNORE INTO text(id,hash,body,indexed) VALUES (?1,?2,?3,0)")?
+        .execute(params![id, hash.as_slice(), body])?;
+    if let Some(first) = first {
+        first.add_text(hash, id);
+    }
+    Ok(())
 }
 
 /// Marks an already stored text for current-block search membership.

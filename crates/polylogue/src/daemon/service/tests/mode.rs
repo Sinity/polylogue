@@ -35,9 +35,7 @@ impl polylogue_store::primary::Sinex for Empty {
     ) -> polylogue_store::Result<String> {
         Err(polylogue_store::StoreError::Sinex("synthetic".into()))
     }
-    fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {
-        Err(polylogue_store::StoreError::Sinex("synthetic".into()))
-    }
+
     fn held(&self, _: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
         Ok(vec![])
     }
@@ -115,12 +113,6 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
             request_id: "keep".into(),
             text: "sessions".into(),
             name: None,
-        },
-        Request::Excise {
-            request_id: "remove".into(),
-            target: "session:claude-code:s1".into(),
-            reason: None,
-            dry_run: false,
         },
         Request::Embed {
             what: "build".into(),

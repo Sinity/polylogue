@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 /// in a content store, and can refuse everything.
 struct Recorder {
     held: Mutex<Vec<Held>>,
-    store: hashed_blobs::Store,
+    store: Mutex<hashed_blobs::SegmentWriter>,
+    root: std::path::PathBuf,
+    blobs: Mutex<std::collections::HashMap<hashed_blobs::Hash, hashed_blobs::Extent>>,
     refuse: bool,
 }
 
@@ -16,9 +18,28 @@ impl Recorder {
     fn new(store: &std::path::Path, refuse: bool) -> Arc<Self> {
         Arc::new(Self {
             held: Mutex::new(Vec::new()),
-            store: hashed_blobs::Store::open(store, vec![], 0o600).unwrap(),
+            store: Mutex::new(
+                hashed_blobs::SegmentWriter::open(store, "segments/primary.zst", 0, &[], 0o600)
+                    .unwrap(),
+            ),
+            root: store.to_owned(),
+            blobs: Mutex::new(Default::default()),
             refuse,
         })
+    }
+
+    fn put(&self, bytes: impl std::io::Read) -> Result<hashed_blobs::Extent> {
+        let prepared =
+            hashed_blobs::Preparation::new(self.root.join("scratch"))?.plain(bytes, 1)?;
+        let mut writer = self.store.lock().unwrap();
+        let mut blobs = self.blobs.lock().unwrap();
+        let group = writer
+            .append_group(vec![prepared], |hash| Ok(blobs.get(hash).cloned()))?
+            .wait()?;
+        let extent = group.extents[0].clone();
+        blobs.insert(extent.hash, extent.clone());
+        writer.acknowledge(&group)?;
+        Ok(extent)
     }
 
     fn next(&self) -> i64 {
@@ -27,12 +48,12 @@ impl Recorder {
 }
 
 impl Sinex for Recorder {
-    fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<String> {
+    fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<ConfirmedBlob> {
         if self.refuse {
             return Err(StoreError::Sinex("synthetic outage".into()));
         }
-        let hash = self.store.put(bytes, 1)?;
-        assert_eq!(hash.0, part.hash.0);
+        let extent = self.put(bytes)?;
+        assert_eq!(extent.hash.0, part.hash.0);
         let material = uuid::Uuid::now_v7().to_string();
         let number = self.next();
         self.held.lock().unwrap().push(Held::Part {
@@ -40,10 +61,39 @@ impl Sinex for Recorder {
             material: material.clone(),
             hash: part.hash,
             length: part.length,
+            extents: vec![extent.clone()],
             index: part.index,
             rows: Box::new(part.rows.clone()),
         });
-        Ok(material)
+        Ok(ConfirmedBlob {
+            id: material,
+            extents: vec![extent],
+        })
+    }
+
+    fn send_blob(
+        &self,
+        hash: BlobHash,
+        length: u64,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<ConfirmedBlob> {
+        if self.refuse {
+            return Err(StoreError::Sinex("synthetic outage".into()));
+        }
+        let extent = self.put(bytes)?;
+        let material = uuid::Uuid::now_v7().to_string();
+        let number = self.next();
+        self.held.lock().unwrap().push(Held::Blob {
+            number,
+            material: material.clone(),
+            hash,
+            length,
+            extents: vec![extent.clone()],
+        });
+        Ok(ConfirmedBlob {
+            id: material,
+            extents: vec![extent],
+        })
     }
 
     fn send_change(&self, change: &RegisterChange) -> Result<String> {
@@ -58,15 +108,6 @@ impl Sinex for Recorder {
             change: change.clone(),
         });
         Ok(material)
-    }
-
-    fn excise(&self, materials: &[String]) -> Result<()> {
-        self.held.lock().unwrap().retain(|held| match held {
-            Held::Part { material, .. } | Held::Change { material, .. } => {
-                !materials.contains(material)
-            }
-        });
-        Ok(())
     }
 
     fn held(&self, after: i64) -> Result<Vec<Held>> {
@@ -118,7 +159,7 @@ fn register(archive: &Archive) -> Vec<String> {
         "SELECT input, chain, offset, length, hex(blob) FROM extent ORDER BY input, chain, offset",
         "SELECT id, input, class, revision, path FROM observation ORDER BY id",
         "SELECT input, chain, offset, part, id FROM material ORDER BY input, chain, offset",
-        "SELECT hex(hash), size, place, state FROM blob ORDER BY hash",
+        "SELECT hex(hash), size, stored_size, hex(storage) FROM blob ORDER BY hash",
         "SELECT id, kind, value FROM note ORDER BY id",
     ] {
         let mut statement = conn.prepare(sql).unwrap();
@@ -193,7 +234,7 @@ fn every_register_row_is_sent_first_and_a_lost_copy_is_rebuilt_from_sinex() {
             .iter()
             .filter_map(|h| match h {
                 Held::Part { index, rows, .. } => Some((*index, rows.input.as_str())),
-                Held::Change { .. } => None,
+                Held::Change { .. } | Held::Blob { .. } => None,
             })
             .collect();
         assert_eq!(parts, [(0, "synthetic-input"), (1, "synthetic-input")]);
@@ -250,87 +291,14 @@ fn nothing_is_written_locally_that_sinex_did_not_take() {
 }
 
 #[test]
-fn an_excision_in_primary_mode_is_sinex_excising_the_input_and_survives_a_rebuild() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("archive");
-    let store = dir.path().join("sinex-store");
-    let sinex = Recorder::new(&store, false);
-    let path = "/home/op/.claude/projects/p/s.jsonl";
-    let before = {
-        let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
-        let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
-        let prepared = archive
-            .prepare_bytes(b"{\"first\":1}\n".as_slice())
-            .unwrap();
-        writer
-            .store_bytes(prepared, observed(path, Change::First, 12))
-            .unwrap();
-        writer.user(note()).unwrap();
-        let excised = writer
-            .excise(
-                crate::excise::ExciseRequest {
-                    id: "0199d8a0-0000-7000-8000-00000000d001".into(),
-                    target: crate::excise::ExciseTarget::Input("synthetic-input".into()),
-                    reason: None,
-                    dry_run: false,
-                },
-                Arc::new(archive.blobs().unwrap()),
-            )
-            .unwrap();
-        assert_eq!(excised.inputs_removed, ["synthetic-input"]);
-        drop(writer);
-        register(&archive)
-    };
-    {
-        let held = sinex.held.lock().unwrap();
-        assert!(
-            !held.iter().any(|h| matches!(h, Held::Part { .. })),
-            "Sinex excised the input's part"
-        );
-        assert!(held.iter().any(|h| matches!(
-            h,
-            Held::Change {
-                change: RegisterChange::Excision(_),
-                ..
-            }
-        )));
-    }
-    assert!(
-        store.join("blobs").exists(),
-        "Polylogue never deletes from Sinex's content store"
-    );
-    for name in [
-        "sinex.db",
-        "sinex.db-wal",
-        "sinex.db-shm",
-        "index.db",
-        "index.db-wal",
-        "index.db-shm",
-    ] {
-        let _ = std::fs::remove_file(root.join(name));
-    }
-    let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
-    assert_eq!(register(&archive), before);
-    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
-    let excised: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM excised WHERE kind = 'input'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(excised, 1, "the rebuilt copy still refuses the input");
-}
-
-#[test]
 fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
     let store = dir.path().join("sinex-store");
     let sinex = Recorder::new(&store, false);
     let part = |id: &str, bytes: &[u8]| {
-        let hash = sinex.store.put(bytes, 1).unwrap();
-        let blob = polylogue_model::BlobHash(hash.0);
+        let extent = sinex.put(bytes).unwrap();
+        let blob = polylogue_model::BlobHash(extent.hash.0);
         let mut b = observed("/p/s.jsonl", Change::First, bytes.len() as u64);
         b.observation.as_mut().unwrap().seen_at_ms = 5;
         Held::Part {
@@ -338,6 +306,7 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
             material: uuid::Uuid::now_v7().to_string(),
             hash: blob,
             length: bytes.len() as u64,
+            extents: vec![extent],
             index: 0,
             rows: Box::new(crate::input_rows::InputRows {
                 input: "synthetic-input".into(),
@@ -370,7 +339,6 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
                     polylogue_version: "synthetic".into(),
                     seen_at: b.observation.unwrap().seen_at_ms,
                     details_json: None,
-                    excision: None,
                     zip: None,
                 }),
             }),
@@ -401,47 +369,60 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
 }
 
 #[test]
-fn an_imported_excision_in_primary_mode_goes_to_sinex_and_survives_a_rebuild() {
+fn decoded_attachment_bytes_rebuild_from_sinex_descriptors_without_input_rows() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("archive");
     let store = dir.path().join("sinex-store");
     let sinex = Recorder::new(&store, false);
-    let excision = ExcisionRows {
-        id: "0199d8a0-0000-7000-8000-00000000d002".into(),
-        target: "session:claude-code:gone".into(),
-        reason: None,
-        created_at: 1_790_000_000_000,
-        excised: vec![("session".into(), "claude-code:gone".into())],
-        observations: vec![],
-    };
-    {
-        let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
-        let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
-        assert!(writer.import_excision(excision.clone()).unwrap());
-        assert!(!writer.import_excision(excision.clone()).unwrap());
-    }
-    let sent: Vec<RegisterChange> = sinex
-        .held
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|held| match held {
-            Held::Change { change, .. } => Some(change.clone()),
-            Held::Part { .. } => None,
-        })
-        .collect();
-    assert_eq!(sent, [RegisterChange::Excision(excision)]);
-    for name in ["sinex.db", "sinex.db-wal", "sinex.db-shm"] {
-        let _ = std::fs::remove_file(root.join(name));
-    }
+    let bytes = b"decoded attachment bytes";
+    let hash = BlobHash::of(bytes);
+    let confirmed = sinex
+        .send_blob(hash, bytes.len() as u64, &mut bytes.as_slice())
+        .unwrap();
+    let root = dir.path().join("archive");
     let (archive, _lock) = Archive::open_primary(&root, &store, sinex.as_ref()).unwrap();
     let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
-    let excised: i64 = conn
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let storage: Vec<u8> = conn
         .query_row(
-            "SELECT count(*) FROM excised WHERE kind = 'session' AND value = 'claude-code:gone'",
-            [],
+            "SELECT storage FROM blob WHERE hash=?1",
+            [&hash.0[..]],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(excised, 1);
+    let extent = hashed_blobs::Extent::decode(&storage).unwrap();
+    assert_eq!(&extent, confirmed.extent(hash, bytes.len() as u64).unwrap());
+    assert_eq!(
+        hashed_blobs::Reader::new(&store)
+            .read(&[extent], None)
+            .unwrap(),
+        bytes
+    );
+    assert!(!root.join("segments").exists());
+}
+
+#[test]
+fn mismatched_attachment_descriptor_is_refused_before_register_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("sinex-store");
+    let sinex = Recorder::new(&store, false);
+    let extent = sinex.put(b"stored attachment".as_slice()).unwrap();
+    sinex.held.lock().unwrap().push(Held::Blob {
+        number: 1,
+        material: uuid::Uuid::now_v7().to_string(),
+        hash: BlobHash::of(b"different attachment"),
+        length: 17,
+        extents: vec![extent],
+    });
+    let root = dir.path().join("archive");
+    assert!(Archive::open_primary(&root, &store, sinex.as_ref()).is_err());
+    let conn = crate::archive::open_read(&root.join("sinex.db")).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }

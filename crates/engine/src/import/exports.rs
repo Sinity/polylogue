@@ -101,95 +101,33 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         if matches!(plan.source, pool::Bytes::File) {
-            self.store_export(plan, pass)?;
+            self.store_plan(plan, pass)?;
         }
-        let mut scratch = ExportItems::new()?;
-        let pool::Bytes::Stored(chain) = &plan.source else {
-            return Err(
-                std::io::Error::other("an export must be stored before it is parsed").into(),
-            );
-        };
-        let mut reader = Counted::new(|| chain.reader(Arc::clone(&self.blobs)));
-        let scanned = parser.scan(&plan.input.id, &mut reader, &mut ItemWriter(&mut scratch));
-        pass.bytes_read += reader.count;
-        if let Err(error) = scanned {
-            let export::ScanError::Malformed(error) = error else {
-                return Err(std::io::Error::other(error).into());
-            };
-            let step = export::refused(error.to_string(), plan.size);
-            self.write_export_step(plan, step.output, step.counts, 0, true, true, false, pass)?;
-            plan.parse_pos = plan.size;
-            return Ok(());
-        }
-        let mut next = next_record(&mut scratch)?;
-        let mut order_from = 0;
-        let mut first = true;
-        let mut repeats_whole_conversations = false;
-        if let Some(step) = parser
-            .begin(
-                plan.size,
-                next.as_ref().map(|record| record.bytes.as_slice()),
-            )
-            .map_err(std::io::Error::other)?
-        {
-            repeats_whole_conversations = step.repeats_whole_conversations;
-            order_from = (step.output.messages.len() as u64).max(1);
+        let bytes_read = parse_export(plan, parser, &self.blobs.clone(), |step| {
             self.write_export_step(
                 plan,
                 step.output,
                 step.counts,
-                0,
-                true,
-                false,
-                repeats_whole_conversations,
+                step.order_from,
+                step.reset,
+                step.done,
+                step.repeats,
                 pass,
-            )?;
-            first = false;
-        }
-        while let Some(ExportRecord { range, bytes }) = next {
-            polylogue_store::fault::check("parse", &plan.path.to_string_lossy())?;
-            let step = export::parse_item(
-                parser,
-                &bytes,
-                range.clone(),
-                &mut StateLookup(&mut scratch),
             )
-            .map_err(std::io::Error::other)?;
-            let count = step.output.messages.len() as u64;
-            // Flush is a commit acknowledgement. A second conversation is not
-            // decoded while the writer still holds the preceding one's output.
-            self.write_export_step(
-                plan,
-                step.output,
-                step.counts,
-                order_from,
-                first,
-                false,
-                repeats_whole_conversations,
-                pass,
-            )?;
-            first = false;
-            order_from += count.max(1);
-            next = next_record(&mut scratch)?;
-        }
-        self.write_export_step(
-            plan,
-            Output::default(),
-            RecordCounts::default(),
-            order_from,
-            first,
-            true,
-            repeats_whole_conversations,
-            pass,
-        )?;
+        })?;
+        pass.bytes_read += bytes_read;
         plan.parse_pos = plan.size;
         Ok(())
     }
 
-    /// A watched export's new bytes are stored before it is parsed: an
+    /// A watched file's new bytes are stored before it is parsed: an
     /// append extends the chain, a rewrite starts a new one. Parsing then
     /// reads the stored chain.
-    fn store_export(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+    pub(crate) fn store_plan(
+        &mut self,
+        plan: &mut Plan,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = std::fs::File::open(&plan.path)?;
         let before = FileFacts::of(&file.metadata()?);
@@ -238,8 +176,20 @@ impl Engine {
             .input_progress(&plan.input.id)?
             .ok_or_else(|| std::io::Error::other("a stored export has no revision"))?;
         let chain = r.stored_chain(&plan.input.id, progress.chain, progress.length)?;
-        plan.source = pool::Bytes::Stored(Arc::new(chain));
-        plan.change = Change::Unchanged;
+        plan.source = if matches!(
+            (plan.origin.open)(&plan.path),
+            Some(polylogue_sources::Parse::Export(_))
+        ) {
+            pool::Bytes::Stored(Arc::new(chain))
+        } else {
+            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
+                chain,
+                Arc::clone(&self.blobs),
+            ))))
+        };
+        plan.change = Change::Reparse {
+            chain: progress.chain,
+        };
         plan.stored_upto = plan.size;
         plan.storing_started = true;
         plan.parse_pos = 0;
@@ -278,6 +228,18 @@ impl Engine {
         parse.repeats_whole_conversations = repeats_whole_conversations;
         parse.order_from = Some(order_from);
         parse.reset = reset;
+        parse.reading_version = plan.origin.reading_version();
+        if done && plan.origin.is_row_dump(&plan.path) {
+            let pool::Bytes::Stored(chain) = &plan.source else {
+                return Err(
+                    std::io::Error::other("a row dump must be stored before comparison").into(),
+                );
+            };
+            parse.compare_reader(std::io::BufReader::new(
+                chain.reader(Arc::clone(&self.blobs)),
+            ))?;
+            pass.bytes_read += plan.size;
+        }
         parse.prepare();
         let batch = Batch {
             input: plan.input.clone(),
@@ -307,6 +269,98 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+pub(crate) struct ExportStep {
+    pub(crate) output: Output,
+    pub(crate) counts: RecordCounts,
+    pub(crate) order_from: u64,
+    pub(crate) reset: bool,
+    pub(crate) done: bool,
+    pub(crate) repeats: bool,
+}
+
+pub(crate) fn parse_export(
+    plan: &Plan,
+    parser: &mut dyn ExportParser,
+    blobs: &Arc<polylogue_store::blobs::Blobs>,
+    mut emit: impl FnMut(ExportStep) -> Result<(), EngineError>,
+) -> Result<u64, EngineError> {
+    let mut scratch = ExportItems::new()?;
+    let pool::Bytes::Stored(chain) = &plan.source else {
+        return Err(std::io::Error::other("an export must be stored before it is parsed").into());
+    };
+    let mut reader = Counted::new(|| chain.reader(Arc::clone(blobs)));
+    let scanned = parser.scan(&plan.input.id, &mut reader, &mut ItemWriter(&mut scratch));
+    if let Err(error) = scanned {
+        let export::ScanError::Malformed(error) = error else {
+            return Err(std::io::Error::other(error).into());
+        };
+        let step = export::refused(error.to_string(), plan.size);
+        emit(ExportStep {
+            output: step.output,
+            counts: step.counts,
+            order_from: 0,
+            reset: true,
+            done: true,
+            repeats: false,
+        })?;
+        return Ok(reader.count);
+    }
+    let mut next = next_record(&mut scratch)?;
+    let mut order_from = 0;
+    let mut first = true;
+    let mut repeats_whole_conversations = false;
+    if let Some(step) = parser
+        .begin(
+            plan.size,
+            next.as_ref().map(|record| record.bytes.as_slice()),
+        )
+        .map_err(EngineError::Parse)?
+    {
+        repeats_whole_conversations = step.repeats_whole_conversations;
+        order_from = (step.output.messages.len() as u64).max(1);
+        emit(ExportStep {
+            output: step.output,
+            counts: step.counts,
+            order_from: 0,
+            reset: true,
+            done: false,
+            repeats: repeats_whole_conversations,
+        })?;
+        first = false;
+    }
+    while let Some(ExportRecord { range, bytes }) = next {
+        polylogue_store::fault::check("parse", &plan.path.to_string_lossy())?;
+        let step = export::parse_item(
+            parser,
+            &bytes,
+            range.clone(),
+            &mut StateLookup(&mut scratch),
+        )
+        .map_err(EngineError::Parse)?;
+        let count = step.output.messages.len() as u64;
+        emit(ExportStep {
+            output: step.output,
+            counts: step.counts,
+            order_from,
+            reset: first,
+            done: false,
+            repeats: repeats_whole_conversations,
+        })?;
+        first = false;
+        order_from += count.max(1);
+        next = next_record(&mut scratch)?;
+    }
+    emit(ExportStep {
+        output: Output::default(),
+        counts: RecordCounts::default(),
+        order_from,
+        reset: first,
+        done: true,
+        repeats: repeats_whole_conversations,
+    })?;
+    Ok(reader.count)
 }
 
 struct ExportRecord {

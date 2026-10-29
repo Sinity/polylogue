@@ -139,21 +139,16 @@ fn input_rows(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>,
 }
 
 pub(super) fn insert_blob(tx: &Transaction<'_>, new_blob: &NewBlob) -> Result<()> {
-    let (place, stored_size, data) = match &new_blob.stored {
-        Stored::Inline(z) => ("inline", z.len() as u64, Some(z.as_slice())),
-        Stored::File { stored_size } => ("file", *stored_size, None),
-    };
-    tx.prepare_cached(
-        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state, data)
-         VALUES (?1, ?2, ?3, ?4, 'plain', 'present', ?5)",
-    )?
-    .execute(params![
-        &new_blob.hash.0[..],
-        new_blob.size as i64,
-        stored_size as i64,
-        place,
-        data
-    ])?;
+    let size: Option<i64> = tx
+        .query_row(
+            "SELECT size FROM blob WHERE hash=?1",
+            [&new_blob.hash.0[..]],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if size.is_some_and(|size| size != new_blob.size as i64) {
+        return Err(StoreError::BlobCorrupt(new_blob.hash));
+    }
     Ok(())
 }
 
@@ -235,7 +230,6 @@ pub(super) fn observation(
                 )
             })
             .transpose()?,
-        excision: None,
         zip,
     }))
 }

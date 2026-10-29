@@ -58,7 +58,7 @@ impl StoredChain {
     }
 
     /// Read a range-sized result; missing or corrupt selected bytes are errors.
-    pub fn read_range(&self, store: &hashed_blobs::Store, start: u64, end: u64) -> Result<Vec<u8>> {
+    pub fn read_range(&self, store: &crate::blobs::Blobs, start: u64, end: u64) -> Result<Vec<u8>> {
         let end = end.min(self.length);
         let length = end
             .checked_sub(start)

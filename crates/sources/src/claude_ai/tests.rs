@@ -63,7 +63,7 @@ fn a_turn_with_a_server_tool_keeps_call_and_result_together() {
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["thinking", "call", "result", "text"]);
+    assert_eq!(kinds, ["thinking", "call", "result", "other", "text"]);
     match &msgs[1].blocks[0] {
         Block::Thinking { text, redacted, .. } => {
             assert_eq!(text.as_deref(), Some("planning"));

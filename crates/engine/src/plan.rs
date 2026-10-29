@@ -57,6 +57,7 @@ pub(crate) struct Plan {
     /// A location the loop keeps watching (not a one-off import).
     pub(crate) tracked: bool,
     pub(crate) failed: bool,
+    pub(crate) replace: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     pub(crate) waiting: bool,
     /// Where the input's bytes come from.
@@ -66,7 +67,7 @@ pub(crate) struct Plan {
 impl Plan {
     /// A plan that parses bytes the archive stored, from `parse_pos`, and
     /// stores nothing: an index behind its archive (a rebuild, a file that
-    /// moved or went, an import), or an input an excision rewrote.
+    /// moved or went, an import).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn stored(
         path: PathBuf,
@@ -98,6 +99,7 @@ impl Plan {
             priority: Priority::Bulk,
             tracked,
             failed: false,
+            replace: false,
             waiting: false,
             source,
         }

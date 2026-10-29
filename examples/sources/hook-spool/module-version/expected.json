@@ -1,0 +1,40 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "SessionStart": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-10-27T00:00:00Z",
+        "data": {
+          "cwd": "/work/project"
+        },
+        "kind": "hook_session_start",
+        "range": [
+          0,
+          148
+        ],
+        "session": "claude-code:synthetic"
+      }
+    ],
+    "links": [],
+    "messages": [],
+    "sessions": [
+      {
+        "cwd": [
+          "/work/project"
+        ],
+        "id": "claude-code:synthetic",
+        "kind": "main"
+      }
+    ]
+  }
+}

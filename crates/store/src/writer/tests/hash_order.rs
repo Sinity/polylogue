@@ -1,6 +1,6 @@
 use super::*;
 
-fn structured_message(reverse: bool) -> Message {
+pub(super) fn structured_message(reverse: bool) -> Message {
     let entries = if reverse {
         [("z", Json::String("λ🙂".into())), ("a", Json::from(7))]
     } else {
@@ -31,6 +31,7 @@ fn structured_message(reverse: bool) -> Message {
             path: None,
         },
         Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("call".into()),
             outcome: polylogue_model::ToolOutcome::Ok,
             output: Some("Synthetic output".into()),

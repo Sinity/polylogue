@@ -83,7 +83,7 @@ fn check_change(
 ) -> Result<(), Failure> {
     let kind = change["kind"].as_str();
     let allowed = match component {
-        Component::Archive => matches!(kind, Some("note" | "excision")),
+        Component::Archive => matches!(kind, Some("note")),
         Component::Index => matches!(kind, Some("session" | "removed")),
     };
     let bound = match component {
@@ -93,7 +93,6 @@ fn check_change(
     if !allowed
         || !change["ref"].as_str().is_some_and(|s| !s.is_empty())
         || !change["seq"].as_i64().is_some_and(|n| n >= 0 && n <= bound)
-        || (kind == Some("excision") && !change["target"].as_str().is_some_and(|s| !s.is_empty()))
     {
         return Err(Failure {
             kind: "store".into(),
@@ -141,7 +140,7 @@ pub(crate) fn prepare_with(
     // Archive local order is meaningful only within archive.db. Index-side
     // references follow as a separate component, never a combined chronology.
     let components = [
-        (Component::Archive, "(kind:note OR kind:excision)"),
+        (Component::Archive, "kind:note"),
         (
             Component::Index,
             if replacement {
@@ -224,23 +223,8 @@ pub(super) fn reference_fields(
     let path = format!("{prefix}/ref");
     match change["kind"].as_str() {
         Some("session" | "removed") => references.field::<polylogue_model::SessionId>(data, path),
-        Some("note" | "excision") => references.opaque_field(data, path),
+        Some("note") => references.opaque_field(data, path),
         _ => {}
-    }
-    if let Some(target) = change["target"].as_str()
-        && polylogue_store::excise::ExciseTarget::parse(target).is_ok()
-    {
-        references.add(format!("{prefix}/target"), &target);
-    }
-    for (field, message) in [("sessions", false), ("messages", true)] {
-        for index in 0..change[field].as_array().map_or(0, Vec::len) {
-            let path = format!("{prefix}/{field}/{index}");
-            if message {
-                references.field::<polylogue_model::MessageId>(data, path);
-            } else {
-                references.field::<polylogue_model::SessionId>(data, path);
-            }
-        }
     }
 }
 

@@ -91,7 +91,7 @@ impl Fixture {
     /// Queues search work without committing it, for reader and index tests.
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
-        let id = crate::text_rows::intern(&tx, body, 1, None, None)?;
+        let id = crate::text_rows::intern(&tx, body, 1, None, None, None)?;
         tx.commit()?;
         Ok(id)
     }
@@ -158,7 +158,7 @@ impl Fixture {
             &self.index,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let id = crate::text_rows::intern(&tx, body, bit, None, None)?;
+        let id = crate::text_rows::intern(&tx, body, bit, None, None, None)?;
         tx.commit()?;
         crate::text_rows::index_pending(&self.index, || ())?;
         Ok(id)
@@ -441,28 +441,18 @@ impl Fixture {
         )?;
         Ok(id)
     }
-    /// An excision over this fixture's synthetic rows, naming the sessions
-    /// and messages it removed.
-    pub fn excision(
-        &mut self,
-        id: &str,
-        scope: &str,
-        sessions: &[&str],
-        messages: &[&str],
-    ) -> Result<()> {
-        self.commit_seq += 1;
-        self.notes.execute(
-            "INSERT INTO excision(id, target, created_at, commit_seq) VALUES (?1, ?2, ?3, ?3)",
-            params![id, scope, self.commit_seq],
-        )?;
-        for (kind, values) in [("session", sessions), ("message", messages)] {
-            for value in values {
-                self.notes.execute(
-                    "INSERT INTO excised(excision_id, kind, value) VALUES (?1, ?2, ?3)",
-                    params![id, kind, value],
-                )?;
-            }
-        }
-        crate::excise::mark_applied(&self.notes, &self.index)
-    }
+}
+
+/// Marks one origin's readings as older, in an isolated test or benchmark archive.
+/// The caller stops its writer first and keeps the archive lock.
+pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
+    let conn = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
+    conn.execute(
+        "ATTACH DATABASE ?1 AS a",
+        [archive.archive_db().to_string_lossy().as_ref()],
+    )?;
+    let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
+        FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
+    conn.execute("UPDATE parse_state SET reading_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    Ok(size)
 }

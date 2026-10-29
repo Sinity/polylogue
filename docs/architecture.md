@@ -136,6 +136,12 @@ Writes reach disk in one order:
 4. Source cursors (how far a growing file has been read) are saved only for
    committed rows.
 
+The first build commits its parsed rows and positions durably in each group. A
+saved `building` marker defers search and secondary indexes; reopening resumes
+the committed build, including an interrupted index finish. The same boot
+retains the index generation and read cursors. A changed boot rotates the
+generation and its cursor secret while keeping rows and parse positions.
+
 A crash therefore leaves at most these states, and ordinary code resumes from
 each: a segment tail past the last committed extent, which is truncated when
 the segment opens; `index.db` behind its saved position, which catches up; a
@@ -156,6 +162,10 @@ Building the archive overlaps every stage:
 - at the end of a first build, full-text and secondary indexes built in
   parallel, with the archive searchable before the trigram index finishes;
 - live inputs ahead of bulk work.
+
+A worker acquires all the natural keys its group can change as one lease before opening its read snapshot. It holds that lease through the commit result, including a failed commit, so another worker that overlaps those keys reads the resulting committed state. Shared value hashes retain their assigned identities while older snapshots can still resolve them. The writer applies the prepared row identities and selected readings; missing preparation is an error.
+
+Chain replacement uses the same resolver and one index transaction. Its private scratch holds independently compressed steps. Workers keep source memberships and hash-to-offset references in memory and fetch a selected earlier payload from scratch, rather than retaining the chain's decoded content.
 
 **Targets**, on the full corpus of an active user (about 40 GB): at least
 40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input

@@ -163,12 +163,6 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
     );
     assert!(out.status.success(), "{out:?}");
     assert_eq!(json(&out)["rows"], first["rows"]);
-    let target = format!("input:{}", first["rows"][0]["input"].as_str().unwrap());
-    let excised = cli(&env, &["--json", "excise", &target, "--yes"]);
-    assert!(excised.status.success(), "{excised:?}");
-    let remaining = cli(&env, &["--json", "events"]);
-    assert!(remaining.status.success(), "{remaining:?}");
-    assert_eq!(json(&remaining)["count"], 0);
 }
 
 fn ledger_rows(env: &[(&str, &Path)]) -> serde_json::Value {

@@ -1,0 +1,60 @@
+{
+  "counts": {
+    "records": 1,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "Prompted": 1
+    }
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 279,
+        "message": {
+          "at": "2026-07-27T20:59:30Z",
+          "blocks": [
+            {
+              "text": "Explain this",
+              "type": "text"
+            }
+          ],
+          "id": "gemini-app:synthetic#1785185970000-prompt",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "gemini-app:synthetic"
+        },
+        "offset": 12
+      },
+      {
+        "end": 279,
+        "message": {
+          "at": "2026-07-27T20:59:30Z",
+          "blocks": [
+            {
+              "text": "An answer.",
+              "type": "text"
+            }
+          ],
+          "id": "gemini-app:synthetic#1785185970000-response",
+          "parent": "gemini-app:synthetic#1785185970000-prompt",
+          "role": "assistant",
+          "session": "gemini-app:synthetic"
+        },
+        "offset": 12
+      }
+    ],
+    "sessions": [
+      {
+        "id": "gemini-app:synthetic",
+        "kind": "main",
+        "started": "2026-07-27T20:59:30Z"
+      }
+    ]
+  }
+}

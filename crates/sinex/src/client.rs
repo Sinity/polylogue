@@ -7,8 +7,8 @@ use crate::{Config, Error, Result};
 use async_nats::jetstream;
 use futures_util::StreamExt;
 use sinex_protocol::{
-    Acknowledgment, Excise, ExciseReply, Ingress, Materials, ProducerHello, ProducerMaterial,
-    ProducerWelcome, RecordedQuery, Subjects,
+    Acknowledgment, Ingress, Materials, ProducerHello, ProducerMaterial, ProducerWelcome,
+    RecordedQuery, Subjects,
 };
 use sinex_transport::frame_bytes;
 use std::collections::HashMap;
@@ -18,12 +18,6 @@ use std::time::Duration;
 
 /// How long a frame may wait for its acknowledgment.
 const ACKNOWLEDGMENT_WAIT: Duration = Duration::from_secs(120);
-
-/// How long an excision may wait for Sinex's answer. On a large store Sinex
-/// can take minutes to plan and apply one, far longer than NATS's default
-/// request timeout; giving up early would leave Sinex excising what
-/// Polylogue then keeps.
-const EXCISION_WAIT: Duration = Duration::from_secs(600);
 
 /// Room left in a NATS message for its subject and headers.
 const MESSAGE_OVERHEAD: usize = 4096;
@@ -175,34 +169,6 @@ impl Client {
             });
         }
         Ok(serde_json::from_value(value)?)
-    }
-
-    /// Asks Sinex to excise these materials this producer registered.
-    pub(crate) async fn excise(&self, materials: &[String]) -> Result<()> {
-        let materials = materials
-            .iter()
-            .map(|id| {
-                id.parse()
-                    .map(sinex_model::MaterialId)
-                    .map_err(|e| Error::Invalid(format!("material {id}: {e}")))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let request = async_nats::Request::new()
-            .payload(serde_json::to_vec(&Excise { materials })?.into())
-            .timeout(Some(EXCISION_WAIT));
-        let reply = self
-            .client
-            .send_request(self.subjects.excise(&self.producer), request)
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let reply: ExciseReply = serde_json::from_slice(&reply.payload)?;
-        match reply.refusal {
-            Some(reason) => Err(Error::Refused {
-                name: "excision".into(),
-                reason,
-            }),
-            None => Ok(()),
-        }
     }
 
     /// Writes `bytes` (`length` long, named `blob`) to the directory of

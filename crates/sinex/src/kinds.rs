@@ -7,7 +7,7 @@
 //! one record, and the newer reading replaces the older. Sinex never
 //! parses AI sessions.
 //!
-//! Notes, settings, kept results, deliveries and excisions are requests
+//! Notes, settings, kept results, deliveries are requests
 //! Polylogue writes: each is a small material holding the request (a request
 //! material) and one event below.
 use schemars::JsonSchema;
@@ -346,20 +346,6 @@ pub struct KeptResult {
     pub rows: Value,
 }
 
-/// The operator's request to remove something from Polylogue for good.
-#[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, sinex_model::EventPayload,
-)]
-#[serde(deny_unknown_fields)]
-#[event(version = 2, type = "polylogue.excision", key = ["excision"], replace = repeat, time = created_at, quality = operator)]
-pub struct Excision {
-    pub excision: String,
-    /// What it removed: `input:<id>`, `session:<id>` or `document:<id>`.
-    pub target: String,
-    pub reason: Option<String>,
-    pub created_at: Timestamp,
-}
-
 /// Kind references are independent of the configured producer identity.
 pub(crate) fn kind_reference(name: &str) -> crate::Result<sinex_model::KindRef> {
     static REFERENCES: std::sync::OnceLock<Vec<sinex_model::KindRef>> = std::sync::OnceLock::new();
@@ -398,7 +384,6 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
         Note::declaration(),
         Setting::declaration(),
         KeptResult::declaration(),
-        Excision::declaration(),
     ];
     for declaration in &mut declarations {
         declaration.declaring_producer = producer.to_string();

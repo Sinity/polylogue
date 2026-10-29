@@ -1,19 +1,16 @@
 use super::*;
-use crate::writer::attachments::with_stored_blobs;
+use crate::writer::attachments::normalize;
 use polylogue_model::Attachment;
 
 #[test]
 fn absent_and_present_blobs_keep_other_prepared_values() {
     let archive = Connection::open_in_memory().unwrap();
     archive
-        .execute_batch("CREATE TABLE blob(hash BLOB, size INTEGER, state TEXT)")
+        .execute_batch("CREATE TABLE blob(hash BLOB, size INTEGER)")
         .unwrap();
     let present = BlobHash::of(b"hello");
     archive
-        .execute(
-            "INSERT INTO blob VALUES (?1, 5, 'present')",
-            [&present.0[..]],
-        )
+        .execute("INSERT INTO blob VALUES (?1, 5)", [&present.0[..]])
         .unwrap();
     for prepared in [false, true] {
         let mut message = text_message("m", "s", Role::Assistant, "text", Some("end_turn"));
@@ -27,6 +24,7 @@ fn absent_and_present_blobs_keep_other_prepared_values() {
             run_by_script: false,
         });
         message.blocks.push(Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some("call".into()),
             outcome: ToolOutcome::Ok,
             output: Some("hello".into()),
@@ -50,7 +48,8 @@ fn absent_and_present_blobs_keep_other_prepared_values() {
         if prepared {
             original.parse[0].prepare();
         }
-        let indexed = with_stored_blobs(&original, &archive).unwrap();
+        normalize(&mut original, &archive, &HashMap::new()).unwrap();
+        let indexed = original;
         let actual = &indexed.parse[0].output.messages[0].message;
         if let Block::ToolResult { attachments, .. } = &mut message.blocks[2] {
             attachments[0].blob = None;

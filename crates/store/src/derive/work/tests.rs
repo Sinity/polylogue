@@ -248,8 +248,8 @@ fn deriving_again_changes_nothing() {
 }
 
 #[test]
-fn rows_an_excision_leaves_behind_are_swept() {
-    // Excision deletes a session's nodes by their session; their edges go
+fn rows_a_reparse_leaves_behind_are_swept() {
+    // Replacing a session reading removes its previous work nodes; edges go
     // with them, and a shared goal no one pursues any more goes at the next
     // derive.
     let mut w = WriterArchive::new();
@@ -262,7 +262,7 @@ fn rows_an_excision_leaves_behind_are_swept() {
         bash("b", 1, 2_000, "bd update demo-5 --claim", true, ""),
     );
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-    let excise = |s: &str| {
+    let retract = |s: &str| {
         index
             .execute(
                 "DELETE FROM work_node WHERE session_pk = (SELECT pk FROM session WHERE id = ?1)",
@@ -270,7 +270,7 @@ fn rows_an_excision_leaves_behind_are_swept() {
             )
             .unwrap();
     };
-    excise("b");
+    retract("b");
     w.writer.derive().unwrap();
     let dangling = "SELECT COUNT(*) AS n FROM work_edge e WHERE NOT EXISTS
         (SELECT 1 FROM work_node n WHERE n.pk = e.from_pk)";
@@ -280,7 +280,7 @@ fn rows_an_excision_leaves_behind_are_swept() {
         vec![json!({"n": 1})],
         "a still pursues the goal"
     );
-    excise("a");
+    retract("a");
     w.writer.derive().unwrap();
     assert_eq!(
         w.rows("SELECT COUNT(*) AS n FROM work_node"),
@@ -582,6 +582,7 @@ fn unknown_checks_stay_separate_from_failures_and_later_completion_updates_total
             Role::User,
             8_000,
             vec![Block::ToolResult {
+                reported_duration_ms: None,
                 call_id: Some("t5".into()),
                 outcome: ToolOutcome::Ok,
                 output: Some("finished".into()),

@@ -1,7 +1,7 @@
 //! The loop. One loop runs in the daemon:
 //!
 //! ```text
-//! collect -> store -> parse -> derive -> excise -> wait
+//! collect -> store -> parse -> derive -> wait
 //! ```
 //!
 //! Each step finds its work by comparing what exists with what should
@@ -18,10 +18,9 @@ pub mod read;
 pub mod repo_lookup;
 mod watch;
 
+use databases::Databases;
 use plan::{InputState, Plan};
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
-pub use polylogue_store::excise::{ExciseRequest, ExciseTarget, Excised};
-use polylogue_store::tool_databases::Captures;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -34,15 +33,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod collectors;
+mod databases;
 mod import;
 mod pass;
 mod plan;
+mod reparse;
 mod writes;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error(transparent)]
     Store(#[from] polylogue_store::StoreError),
+    #[error("parser: {0}")]
+    Parse(String),
     #[error(transparent)]
     Blobs(#[from] hashed_blobs::Error),
     #[error(transparent)]
@@ -75,7 +78,7 @@ pub struct Config {
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
     /// The running loop scans every watched location at least this often,
-    /// even when no change is reported (a minute).
+    /// even when no change is reported (four hours).
     pub rescan_every: Duration,
     /// While a pass runs, its spools and recently written files are looked
     /// at this often, and what changed there goes ahead of the pass's
@@ -170,7 +173,7 @@ impl Config {
             machine: read("/etc/machine-id"),
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
-            rescan_every: Duration::from_secs(60),
+            rescan_every: Duration::from_secs(4 * 3600),
             live_every: Duration::from_secs(2),
         }
     }
@@ -179,8 +182,8 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub pending_inputs: Vec<polylogue_store::staging::PendingBlob>,
+    /// Whole-location scans, excluding changed paths and live-file checks.
+    pub full_scans: u64,
     /// Input visits, summed across turns by run_pass.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
@@ -188,13 +191,17 @@ pub struct Pass {
     pub bytes_read: u64,
     /// New bytes stored.
     pub bytes_stored: u64,
+    pub segment_syncs: u64,
+    pub segment_bytes_written: u64,
+    pub blobs_appended: u64,
+    pub blobs_deduplicated: u64,
     pub messages_written: u64,
     /// Sessions whose derived products the pass recomputed.
     pub sessions_derived: u64,
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
-    /// A SQLite capture has more cooperative work to do.
+    /// A database reader has queued or pending work.
     pub capture_pending: bool,
 }
 
@@ -204,7 +211,8 @@ pub struct Pass {
 /// derived from them.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct LoopStatus {
-    /// A pass, an import or an excision is running, or a capture continues
+    pub full_scans: u64,
+    /// A pass or import is running, or a capture continues
     /// in the next pass.
     pub busy: bool,
     /// Passes finished since the loop started.
@@ -212,19 +220,49 @@ pub struct LoopStatus {
     pub last_pass: Pass,
 }
 
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]
+pub struct ImportOptions {
+    pub format: Option<String>,
+    pub explain: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportRefusal {
+    pub path: PathBuf,
+    pub reason: String,
+    pub structures_tried: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportClassification {
+    pub path: PathBuf,
+    pub origin: Option<String>,
+    pub class: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ImportPackage {
+    pub path: PathBuf,
+    pub sessions: u64,
+    pub documents: u64,
+    pub assets: u64,
+}
+
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct ImportReport {
+    pub packages: Vec<ImportPackage>,
+    pub refused: Vec<ImportRefusal>,
+    pub members: Vec<ImportClassification>,
     pub imported: Vec<PathBuf>,
     /// Files whose exact bytes are already in the archive.
     pub already_stored: Vec<PathBuf>,
-    /// Files no parsed origin recognizes; their bytes may also be imported or already stored.
-    pub unrecognized: Vec<PathBuf>,
     /// The user state Polylogue exports carried.
     pub user_state: UserStateReport,
     pub pass: Pass,
 }
 
-/// Requests and excisions replayed from Polylogue exports.
+/// Requests replayed from Polylogue exports.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct UserStateReport {
     /// Written into this archive.
@@ -241,10 +279,7 @@ pub enum LoopMsg {
         paths: Vec<PathBuf>,
         reply: SyncSender<Result<ImportReport, String>>,
     },
-    Excise {
-        request: ExciseRequest,
-        reply: SyncSender<Result<Excised, EngineError>>,
-    },
+
     Stop,
 }
 
@@ -254,22 +289,26 @@ pub struct Engine {
     pub archive: Archive,
     writer: Writer,
     reads: ReadPool,
-    blobs: Arc<hashed_blobs::Store>,
+    blobs: Arc<polylogue_store::blobs::Blobs>,
     inputs: HashMap<PathBuf, InputState>,
     /// Rejected writes awaiting checkpoint reload after their plans finish.
-    failed_writes: HashSet<String>,
+    /// Paths excluded from every nested live scan until their readings commit.
+    reparsing: HashMap<PathBuf, usize>,
     loaded: bool,
-    exporter: Captures,
-    /// Paths on this machine an excision removed: never collected again.
-    refused: HashSet<PathBuf>,
+    captures: Databases,
+    wake: Option<Sender<LoopMsg>>,
+    watcher: Option<watch::Roots>,
+    databases: BTreeMap<PathBuf, &'static str>,
+    live_checked: Instant,
+    pass_open: bool,
+    collectors_at: Option<Instant>,
+    capture_checked: Option<Instant>,
     lookups: repo_lookup::Cache,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
     /// In primary mode, the Sinex that holds the archive: sessions go to it
     /// as events once derived.
     sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
-    /// No pass has run since the engine started.
-    first_pass: bool,
 }
 
 fn now_ms() -> i64 {
@@ -318,15 +357,20 @@ impl Engine {
             reads,
             blobs,
             inputs: HashMap::new(),
-            failed_writes: HashSet::new(),
+            reparsing: HashMap::new(),
             loaded: false,
-            exporter: Captures::default(),
-            refused: HashSet::new(),
+            captures: Databases::default(),
+            wake: None,
+            watcher: None,
+            databases: BTreeMap::new(),
+            live_checked: Instant::now(),
+            pass_open: false,
+            collectors_at: None,
+            capture_checked: None,
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
             sinex,
-            first_pass: true,
         })
     }
 
@@ -339,26 +383,6 @@ impl Engine {
             sinex.send_sessions(&self.reads)?;
         }
         Ok(derived)
-    }
-
-    /// Runs an excision through the writer and stops collecting the paths
-    /// it removed ([`polylogue_store::excise`]).
-    pub fn excise(&mut self, request: ExciseRequest) -> Result<Excised, EngineError> {
-        self.load()?;
-        let done = self.writer.excise(request, Arc::clone(&self.blobs))?;
-        if done.dry_run {
-            return Ok(done);
-        }
-        self.derive()?;
-        let prefix = format!("{}:", self.config.machine);
-        for p in &done.refused_paths {
-            if let Some(path) = p.strip_prefix(&prefix) {
-                let path = PathBuf::from(path);
-                self.inputs.remove(&path);
-                self.refused.insert(path);
-            }
-        }
-        Ok(done)
     }
 
     /// A location's input id: stable for one path on one machine.
@@ -375,20 +399,46 @@ impl Engine {
             return Ok(());
         }
         let reader = self.reads.reader()?;
-        for (machine, path) in reader.refused_paths()? {
-            if machine == self.config.machine {
-                self.refused.insert(PathBuf::from(path));
+
+        let mut known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
+        let mut database_paths: HashMap<String, String> = self
+            .inputs
+            .iter()
+            .filter(|(path, state)| state.origin.is_row_dump(path))
+            .map(|(path, state)| (state.input_id.clone(), path.display().to_string()))
+            .collect();
+        for input in &mut known {
+            if ORIGINS
+                .iter()
+                .any(|origin| origin.name == input.format && origin.capture == Capture::RowDump)
+            {
+                if let Some(path) = database_paths.get(&input.input_id) {
+                    input.path = path.clone();
+                    input.facts = None;
+                    continue;
+                }
+                if let Some((machine, path)) =
+                    reader.tool_database_source(&input.input_id, &self.blobs)?
+                    && machine == self.config.machine
+                {
+                    database_paths.insert(input.input_id.clone(), path.clone());
+                    input.path = path;
+                    input.facts = None;
+                }
             }
         }
-        let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
         drop(reader);
+        self.inputs
+            .retain(|path, state| !state.origin.is_row_dump(path));
         for k in known {
-            if self.refused.contains(Path::new(&k.path)) {
-                continue;
-            }
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };
+            if !origin.is_row_dump(Path::new(&k.path))
+                && self.inputs.contains_key(Path::new(&k.path))
+            {
+                continue;
+            }
             self.inputs.insert(
                 PathBuf::from(&k.path),
                 InputState {

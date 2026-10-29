@@ -175,25 +175,11 @@ impl Reader<'_> {
             .into_iter()
             .find(|a| a.id == attachment)
             .ok_or_else(|| refused("unknown_chat_action_attachment"))?;
-        let conn = self.conn()?;
-        let (rowid, place): (i64, String) = conn
-            .query_row(
-                "SELECT rowid, place FROM a.blob WHERE hash = ?1 AND state = 'present'",
-                [&a.blob.0[..]],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?
-            .ok_or_else(|| refused("attachment_missing"))?;
+        let store = self.blob_store()?;
         let mut bytes = Vec::new();
-        if place == "inline" {
-            zstd::stream::read::Decoder::new(conn.blob_open(c"a", "blob", "data", rowid, true)?)?
-                .read_to_end(&mut bytes)?;
-        } else {
-            let store = self.blob_store()?;
-            store
-                .read_plain(&hashed_blobs::Hash(a.blob.0), Some(a.size), || Ok(()))?
-                .read_to_end(&mut bytes)?;
-        }
+        store
+            .read_plain(&hashed_blobs::Hash(a.blob.0), Some(a.size), || Ok(()))?
+            .read_to_end(&mut bytes)?;
         if BlobHash::of(&bytes) != a.blob {
             return Err(StoreError::BlobCorrupt(a.blob));
         }
@@ -332,11 +318,9 @@ pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -
     )?;
     for a in &new.attachments {
         let present: bool = tx
-            .query_row(
-                "SELECT state = 'present' FROM blob WHERE hash = ?1",
-                [&a.blob.0[..]],
-                |r| r.get(0),
-            )
+            .query_row("SELECT 1 FROM blob WHERE hash = ?1", [&a.blob.0[..]], |r| {
+                r.get(0)
+            })
             .optional()?
             .unwrap_or(false);
         if !present {

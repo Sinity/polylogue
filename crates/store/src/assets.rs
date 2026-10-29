@@ -39,7 +39,7 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
     let mut hash = blake3::Hasher::new();
     hash.update(&chain.to_le_bytes());
     hash.update(&length.to_le_bytes());
-    let mut stmt=conn.prepare_cached(&format!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size,b.state
+    let mut stmt=conn.prepare_cached(&format!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
         FROM {schema}extent e LEFT JOIN {schema}blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 ORDER BY e.offset"))?;
     let mut rows = stmt.query(params![input, chain])?;
     let mut end = 0u64;
@@ -49,13 +49,11 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
         let offset = row.get::<_, i64>(0)?;
         let size = row.get::<_, i64>(1)?;
         let stored = row.get::<_, Option<i64>>(4)?;
-        let state = row.get::<_, Option<String>>(5)?;
         let at = row.get::<_, i64>(3)?;
         if offset < 0
             || size < 0
             || at < 0
             || offset as u64 != end
-            || state.as_deref() != Some("present")
             || stored.is_none_or(|stored| {
                 stored < 0 || at.checked_add(size).is_none_or(|end| end > stored)
             })
@@ -175,7 +173,7 @@ impl Reader<'_> {
         }
         let mut stmt = conn.prepare(
             "SELECT o.id,o.input,o.details_json FROM a.observation o
-            WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL AND o.class<>'excised'",
+            WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL",
         )?;
         let mut out = Vec::new();
         for row in stmt.query_map([after, through], |row| {

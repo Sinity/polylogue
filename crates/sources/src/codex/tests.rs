@@ -240,7 +240,12 @@ fn the_thread_item_gives_the_call_its_exit_code_and_duration() {
     };
     assert_eq!(command.as_deref(), Some("cargo test"));
     assert_eq!(tool.as_deref(), Some("exec_command"));
-    let Block::ToolResult { outcome, data, .. } = &msgs[4].blocks[0] else {
+    let Block::ToolResult {
+        outcome,
+        reported_duration_ms,
+        ..
+    } = &msgs[4].blocks[0]
+    else {
         panic!()
     };
     assert_eq!(
@@ -249,7 +254,7 @@ fn the_thread_item_gives_the_call_its_exit_code_and_duration() {
             reason: Some(ErrorReason::ExitCode(101))
         }
     );
-    assert_eq!(data.as_ref().unwrap()["duration_ms"], 2000);
+    assert_eq!(*reported_duration_ms, Some(2000));
 }
 
 #[test]

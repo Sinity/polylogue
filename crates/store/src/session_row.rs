@@ -9,14 +9,13 @@ use polylogue_model::{Session, SessionId, Timestamp, TitleSource};
 use rusqlite::{Connection, Row, params};
 
 /// The columns [`read`] expects, in order, for a `SELECT`.
-pub(crate) const COLUMNS: &str =
-    "kind, title, title_source, cwd_json, branch, record_repo, harness_version, started_at, mode";
+pub(crate) const COLUMNS: &str = "kind, title, title_source, cwd_json, branch, record_repo, harness_version, started_at, mode, git_commit, model_provider, instructions";
 
 /// Writes `s`'s facts into the row `pk`; `cwd` is the last directory.
 pub(crate) fn write(conn: &Connection, pk: i64, s: &Session) -> Result<()> {
     conn.prepare_cached(
         "UPDATE session SET kind = ?2, title = ?3, title_source = ?4, cwd_json = ?5, cwd = ?6,
-             branch = ?7, record_repo = ?8, harness_version = ?9, started_at = ?10, mode = ?11
+             branch = ?7, record_repo = ?8, harness_version = ?9, started_at = ?10, mode = ?11, git_commit = ?12, model_provider = ?13, instructions = ?14
          WHERE pk = ?1",
     )?
     .execute(params![
@@ -31,6 +30,9 @@ pub(crate) fn write(conn: &Connection, pk: i64, s: &Session) -> Result<()> {
         s.tool_version,
         s.started.map(Timestamp::unix_ms),
         s.mode,
+        s.git_commit,
+        s.model_provider,
+        s.instructions,
     ])?;
     Ok(())
 }
@@ -59,6 +61,9 @@ pub(crate) fn read(id: SessionId, r: &Row<'_>) -> rusqlite::Result<Session> {
     s.tool_version = r.get(6)?;
     s.started = ts(r.get(7)?);
     s.mode = r.get(8)?;
+    s.git_commit = r.get(9)?;
+    s.model_provider = r.get(10)?;
+    s.instructions = r.get(11)?;
     Ok(s)
 }
 

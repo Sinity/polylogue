@@ -1,8 +1,9 @@
 use super::*;
+use crate::fields::ExpectedType as T;
 use crate::fields::Rule;
 use serde_json::json;
 
-static KNOWN: Fields = Fields::new(&[("known", Rule::Read)]);
+static KNOWN: Fields = Fields::new(&[("known", Rule::Read(T::String))]);
 static EMPTY: Fields = Fields::new(&[]);
 
 #[test]
@@ -28,7 +29,7 @@ fn line_and_document_records_keep_the_same_classifications_and_field_counts() {
     assert_eq!(lines.skipped["metadata: kept only as bytes"], 1);
     assert_eq!(lines.unreadable["message: missing identity"], 1);
     assert_eq!(lines.unread_fields["message.extra"], 2);
-    assert_eq!(lines.unread_fields["message.nested"], 1);
+    assert_eq!(lines.unread_fields["message.nested.extra"], 1);
 }
 
 #[test]
@@ -49,7 +50,7 @@ fn independent_line_framing_refuses_missing_and_extra_classifications() {
 }
 
 #[test]
-fn field_checks_do_not_frame_records_or_change_declared_exclusions() {
+fn unused_leaf_counted_without_changing_record_outcomes() {
     let mut records = Records::default();
     let value = json!({
         "read": 1,
@@ -58,10 +59,10 @@ fn field_checks_do_not_frame_records_or_change_declared_exclusions() {
         "items": [{"known": 1, "extra": 2}, {"known": 2, "extra": 3}],
     });
     static FIELDS: Fields = Fields::new(&[
-        ("read", Rule::Read),
+        ("read", Rule::Read(T::String)),
         ("kept", Rule::Kept("kept as event data")),
         ("excluded", Rule::Excluded("not parsed")),
-        ("items[].known", Rule::Read),
+        ("items[].known", Rule::Read(T::String)),
     ]);
     records.fields("event", &value, &FIELDS);
     let counts = records.finish().unwrap();
@@ -69,6 +70,9 @@ fn field_checks_do_not_frame_records_or_change_declared_exclusions() {
     assert!(counts.used.is_empty());
     assert_eq!(
         counts.unread_fields,
-        std::collections::BTreeMap::from([("event.items[].extra".into(), 2)])
+        std::collections::BTreeMap::from([
+            ("event.items[].extra".into(), 2),
+            ("event.excluded".into(), 1)
+        ])
     );
 }

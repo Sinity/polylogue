@@ -2,6 +2,9 @@
 //! state between records; [`run`] does everything around it: splitting into records,
 //! JSON decoding, record counts and their check.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::Records;
 use crate::lines::{self, Record};
 use polylogue_model::Json;
@@ -76,8 +79,18 @@ pub fn run<P: Parser>(
         match serde_json::from_slice::<Json>(record.bytes) {
             Ok(value) => {
                 let kind = parser.kind(&value);
+                let field_checks = sink.field_checks();
+                let event_start = output.events.len();
                 let outcome =
                     parser.parse_record(parser_state, record, &value, &mut output, &mut sink);
+                if sink.field_checks() == field_checks {
+                    let events = &output.events[event_start..];
+                    let root_kept = events.iter().any(|event| event.data == value);
+                    let payload_kept = value
+                        .get("payload")
+                        .is_some_and(|payload| events.iter().any(|event| &event.data == payload));
+                    sink.remaining_fields(&kind, &value, root_kept, payload_kept);
+                }
                 sink.record(&kind, &outcome);
             }
             Err(e) => sink.record(

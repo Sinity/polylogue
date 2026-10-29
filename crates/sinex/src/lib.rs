@@ -6,8 +6,8 @@
 //!   its real input (origin, path, host), a growing file a chain of parts,
 //!   named with the Polylogue parser that reads it ([`parts`]);
 //! - a look at a file that found no new bytes, each request a person or agent
-//!   makes and each excision is a small register material, with a typed event
-//!   for notes, settings, kept results, deliveries and excisions
+//!   makes is a small register material, with a typed event
+//!   for notes, settings, kept results, deliveries
 //!   ([`register`]);
 //! - parsed sessions, messages, tool calls and turns are events keyed by
 //!   Polylogue's IDs and anchored at their records ([`sessions`]).
@@ -234,8 +234,18 @@ impl polylogue_store::primary::Sinex for Sinex {
         &self,
         part: &polylogue_store::primary::Part,
         bytes: &mut dyn std::io::Read,
-    ) -> polylogue_store::Result<String> {
+    ) -> polylogue_store::Result<polylogue_store::primary::ConfirmedBlob> {
         Ok(self.with(async |client| parts::send(client, part, bytes).await)?)
+    }
+
+    fn send_blob(
+        &self,
+        hash: polylogue_model::BlobHash,
+        length: u64,
+        bytes: &mut dyn std::io::Read,
+    ) -> polylogue_store::Result<polylogue_store::primary::ConfirmedBlob> {
+        Ok(self
+            .with(async |client| parts::send_blob(client, &self.host, hash, length, bytes).await)?)
     }
 
     fn send_change(
@@ -245,14 +255,10 @@ impl polylogue_store::primary::Sinex for Sinex {
         Ok(self.with(async |client| register::send(client, &self.host, change).await)?)
     }
 
-    fn excise(&self, materials: &[String]) -> polylogue_store::Result<()> {
-        Ok(self.with(async |client| client.excise(materials).await)?)
-    }
-
     fn held(&self, after: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
         Ok(self.with(async |client| {
             let page = client.materials(after).await?;
-            let store = hashed_blobs::Reader::new(client.store_root.clone(), vec![]);
+            let store = hashed_blobs::Reader::new(client.store_root.clone());
             page.into_iter()
                 .map(|held| parts::held(&store, held))
                 .collect::<Result<Vec<_>>>()

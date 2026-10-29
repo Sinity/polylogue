@@ -39,6 +39,9 @@ pub enum Block {
     /// A tool's result. It lives in the message that carried it and points
     /// at its call by `call_id`; the call may be in an earlier message.
     ToolResult {
+        /// Elapsed time explicitly reported by the harness, distinct from timestamp differences.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reported_duration_ms: Option<u64>,
         call_id: Option<String>,
         outcome: ToolOutcome,
         output: Option<String>,

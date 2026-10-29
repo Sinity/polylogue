@@ -797,22 +797,19 @@ pub static FIELDS: &[Field] = &[
     v(
         Changes,
         "kind",
-        &["session", "removed", "note", "excision"],
+        &["session", "removed", "note"],
         "what changed",
     )
     .sql("{r}.kind"),
-    f(Changes, "ref", Prefix, "the session, note or excision ID").sql("{r}.ref"),
+    f(Changes, "ref", Prefix, "the session or note ID").sql("{r}.ref"),
     f(
         Changes,
         "seq",
         Number,
-        "the write counter of the change: index.db's for sessions, archive.db's for notes and excisions",
+        "the write counter of the change: index.db's for sessions, archive.db's for notes",
     )
     .sql("{r}.seq"),
     f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
-    f(Changes, "target", Prefix, "an excision's target: session:, document: or input:").sql("{r}.target"),
-    sp(Changes, "sessions", "the sessions an excision removed", custom::selection).sql("{r}.sessions").ids(),
-    sp(Changes, "messages", "the messages an excision removed", custom::selection).sql("{r}.messages").ids(),
     sp(Changes, "after", "changes after a cursor `GEN:COUNTER:ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
     // Turns, computed along the active path.
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
@@ -1280,11 +1277,6 @@ pub fn hidden(s: &str) -> String {
          WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
         live_note("hn")
     )
-}
-
-/// An excision row names the session.
-pub fn excised(s: &str) -> String {
-    format!("EXISTS (SELECT 1 FROM a.excision ex WHERE ex.target = 'session:' || {s}.id)")
 }
 
 /// The session and every session below it in its subagent tree.

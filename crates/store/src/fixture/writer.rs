@@ -48,6 +48,7 @@ pub fn message(id: &str, session: &str, role: Role, at: i64, blocks: Vec<Block>)
         reported_cost_usd: None,
         duration_ms: None,
         production: Default::default(),
+        attrs: Default::default(),
     }
 }
 
@@ -101,6 +102,7 @@ pub fn call(
         Role::User,
         at + 1,
         vec![Block::ToolResult {
+            reported_duration_ms: None,
             call_id: Some(call_id),
             outcome,
             output: Some(output.into()),
@@ -258,16 +260,10 @@ pub fn step(
         blobs: vec![],
         length,
         release: Default::default(),
-        parse: vec![ParseStep {
-            order_from: None,
-            reset: start == 0,
-            repeats_whole_conversations: false,
-            output,
-            counts,
-            start,
-            parsed_upto: length,
-            at_end: true,
-            prepared: Default::default(),
+        parse: vec![{
+            let mut step = ParseStep::new(output, counts, start..length, true);
+            step.reading_version = "synthetic=1".into();
+            step
         }],
     }
 }

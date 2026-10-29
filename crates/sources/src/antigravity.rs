@@ -1,6 +1,7 @@
 //! Antigravity language-server Markdown exports. Activity markers are agent
 //! actions even when the exporter places them inside a User Input section.
 use crate::document::{Sink, message_id, session_id, str_of};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -12,6 +13,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub mod server;
+
+pub const VERSION: u32 = 1;
 
 pub const ORIGIN: &str = "antigravity";
 pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb"];
@@ -59,12 +62,12 @@ impl DocumentParser for ConversationFile {
 }
 pub struct Antigravity;
 static FIELDS: Fields = Fields::new(&[
-    ("source", Rule::Read),
-    ("conversationFile", Rule::Read),
-    ("cascadeId", Rule::Read),
-    ("markdown", Rule::Read),
-    ("title", Rule::Read),
-    ("lastModifiedTime", Rule::Read),
+    ("source", Rule::Read(T::String)),
+    ("conversationFile", Rule::Read(T::String)),
+    ("cascadeId", Rule::Read(T::String)),
+    ("markdown", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("lastModifiedTime", Rule::Read(T::StringOrNumber)),
     (
         "workspaceName",
         Rule::Kept("workspace label, not a working directory"),
@@ -89,12 +92,12 @@ impl DocumentParser for Antigravity {
                 "conversion",
                 &value,
                 &Fields::new(&[
-                    ("source", Rule::Read),
-                    ("cascadeId", Rule::Read),
-                    ("conversationFile", Rule::Read),
-                    ("status", Rule::Read),
-                    ("server_pid", Rule::Read),
-                    ("error", Rule::Read),
+                    ("source", Rule::Read(T::String)),
+                    ("cascadeId", Rule::Read(T::String)),
+                    ("conversationFile", Rule::Read(T::String)),
+                    ("status", Rule::Read(T::String)),
+                    ("server_pid", Rule::Read(T::Number)),
+                    ("error", Rule::Read(T::String)),
                 ]),
             );
             let Some(id) = str_of(&value, "cascadeId").and_then(|id| session_id(ORIGIN, id)) else {
@@ -202,6 +205,7 @@ impl DocumentParser for Antigravity {
                     offset: position,
                     end: position + 1,
                     message: Message {
+                        attrs: Default::default(),
                         id: mid.clone(),
                         session: id.clone(),
                         parent: parent.replace(mid),

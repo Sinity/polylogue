@@ -104,6 +104,7 @@ fn directory_import_keeps_attachment_bytes_after_provider_removal() {
     let bytes = b"synthetic stored attachment\0\xff";
     let path = directory.join("file-native.dat");
     std::fs::write(&path, bytes).unwrap();
+    std::fs::write(directory.join("conversations.json"), conversation()).unwrap();
     let (mut engine, _lock) = engine(&w, 1024);
     let report = engine.import(&[directory]).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
@@ -135,13 +136,19 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
             .unwrap();
         zip.write_all(b"same stored bytes").unwrap();
     }
+    zip.start_file(
+        "conversations.json",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(&conversation()).unwrap();
     zip.finish().unwrap();
     let (mut engine, _lock) = engine(&w, 1024);
     let report = engine.import(&[path]).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 2);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 3);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_zip"), 2);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 3);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 4);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_zip"), 3);
 }
 
 #[test]

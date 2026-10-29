@@ -1,6 +1,10 @@
 //! Grok account exports. One stored conversation is decoded at a time;
 //! response order stays as supplied, independently of derived identity hashing.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+use crate::fields::ExpectedType as T;
 mod identity;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
@@ -40,27 +44,29 @@ pub struct Export {
     occurrences: HashMap<String, usize>,
 }
 
-static EXPORT_FIELDS: Fields = Fields::new(&[("conversations", Rule::Read)]);
+static EXPORT_FIELDS: Fields = Fields::new(&[("conversations", Rule::Read(T::Array))]);
 static CONVERSATION_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("conversationId", Rule::Read),
-    ("title", Rule::Read),
-    ("create_time", Rule::Read),
-    ("createTime", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("conversationId", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("create_time", Rule::Read(T::StringOrNumber)),
+    ("createTime", Rule::Read(T::StringOrNumber)),
 ]);
 static RESPONSE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("responseId", Rule::Read),
-    ("sender", Rule::Read),
-    ("message", Rule::Read),
-    ("create_time", Rule::Read),
-    ("createTime", Rule::Read),
-    ("model", Rule::Read),
-    ("parentResponseId", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("responseId", Rule::Read(T::String)),
+    ("sender", Rule::Read(T::String)),
+    ("message", Rule::Read(T::String)),
+    ("create_time", Rule::Read(T::StringOrNumber)),
+    ("createTime", Rule::Read(T::StringOrNumber)),
+    ("model", Rule::Read(T::String)),
+    ("parentResponseId", Rule::Read(T::String)),
 ]);
-static WRAPPER_FIELDS: Fields =
-    Fields::new(&[("conversation", Rule::Read), ("responses", Rule::Read)]);
-static RESPONSE_WRAPPER: Fields = Fields::new(&[("response", Rule::Read)]);
+static WRAPPER_FIELDS: Fields = Fields::new(&[
+    ("conversation", Rule::Read(T::Object)),
+    ("responses", Rule::Read(T::Array)),
+]);
+static RESPONSE_WRAPPER: Fields = Fields::new(&[("response", Rule::Read(T::Object))]);
 
 impl ExportParser for Export {
     fn scan(
@@ -131,8 +137,11 @@ impl Export {
             );
             return;
         };
-        sink.records
-            .fields("conversation wrapper", value, &WRAPPER_FIELDS);
+        sink.records.fields(
+            "conversation wrapper",
+            &crate::fields::header(value, &["conversation", "responses"]),
+            &WRAPPER_FIELDS,
+        );
         sink.records
             .fields("conversation", conversation, &CONVERSATION_FIELDS);
         let mut warnings = Vec::new();
@@ -179,8 +188,11 @@ impl Export {
         let mut occurrences = HashMap::<String, usize>::new();
         for entry in responses {
             let fields = if let Some(response) = entry.get("response") {
-                sink.records
-                    .fields("response wrapper", entry, &RESPONSE_WRAPPER);
+                sink.records.fields(
+                    "response wrapper",
+                    &crate::fields::header(entry, &["response"]),
+                    &RESPONSE_WRAPPER,
+                );
                 response
             } else {
                 entry
@@ -288,6 +300,7 @@ impl Export {
                     stop_reason: None,
                     reported_cost_usd: None,
                     duration_ms: None,
+                    attrs: Default::default(),
                     production: Default::default(),
                 },
             });

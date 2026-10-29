@@ -6,9 +6,13 @@
 //! events. A tool call carries its result in the same turn, so call and
 //! result sit together in the assistant message.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -58,28 +62,34 @@ struct SessionState {
 }
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read),
-    ("timestamp", Rule::Read),
-    ("type", Rule::Read),
-    ("content", Rule::Read),
+    ("id", Rule::Read(T::String)),
+    ("timestamp", Rule::Read(T::StringOrNumber)),
+    ("type", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
     (
         "displayContent",
         Rule::Excluded("the prompt as shown, with file references collapsed"),
     ),
-    ("thoughts", Rule::Read),
-    ("model", Rule::Read),
-    ("tokens", Rule::Read),
-    ("toolCalls", Rule::Read),
-    ("toolCalls[].id", Rule::Read),
-    ("toolCalls[].name", Rule::Read),
-    ("toolCalls[].args", Rule::Read),
-    ("toolCalls[].result", Rule::Read),
-    ("toolCalls[].status", Rule::Read),
+    ("thoughts", Rule::Read(T::Array)),
+    ("model", Rule::Read(T::String)),
+    ("tokens", Rule::Read(T::Object)),
+    ("toolCalls", Rule::Read(T::Array)),
+    ("toolCalls[].id", Rule::Read(T::String)),
+    ("toolCalls[].name", Rule::Read(T::String)),
+    ("toolCalls[].args", Rule::Kept("complete call input")),
+    (
+        "toolCalls[].result",
+        Rule::Kept("complete native result data"),
+    ),
+    ("toolCalls[].status", Rule::Read(T::String)),
     (
         "toolCalls[].timestamp",
         Rule::Excluded("the turn's time places the call"),
     ),
-    ("toolCalls[].resultDisplay", Rule::Read),
+    (
+        "toolCalls[].resultDisplay",
+        Rule::Kept("native result display data"),
+    ),
     (
         "toolCalls[].displayName",
         Rule::Excluded("label for the tool name"),
@@ -92,7 +102,14 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "toolCalls[].renderOutputAsMarkdown",
         Rule::Excluded("display setting"),
     ),
-]);
+])
+.shape(
+    &[],
+    &[crate::fields::KnownKinds {
+        path: "type",
+        values: &["user", "gemini", "info", "error"],
+    }],
+);
 
 impl ExportParser for GeminiCli {
     fn scan(
@@ -189,6 +206,7 @@ impl ExportParser for GeminiCli {
             stop_reason: None,
             reported_cost_usd: None,
             duration_ms: None,
+            attrs: Default::default(),
             production: Default::default(),
         };
         let offset = sink.position();

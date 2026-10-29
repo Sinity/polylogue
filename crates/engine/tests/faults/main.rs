@@ -10,6 +10,7 @@ use polylogue_testkit::{Morrow, Set, session};
 use std::fs;
 
 mod older_chains;
+mod reparse;
 
 /// a failure at any step of a write loses nothing. The writer fails
 /// at its n-th archive commit, between its archive and index commits, or at
@@ -18,7 +19,8 @@ mod older_chains;
 /// reading back byte for byte.
 #[test]
 fn a_failed_write_step_loses_nothing() {
-    let reference = Morrow::build(Set::Main).view();
+    let source = Morrow::build(Set::Main);
+    let reference = source.view();
     for point in [
         "write.archive_commit",
         "write.between_commits",
@@ -26,7 +28,9 @@ fn a_failed_write_step_loses_nothing() {
     ] {
         for skip in 0..4 {
             fault::clear();
-            let w = Morrow::lay_out(Set::Main);
+            let mut w = Morrow::lay_out(Set::Main);
+            // Source IDs include paths, so both builds read the same home.
+            w.home = source.home.clone();
             fault::arm(point, "", Action::Fail, skip, 1);
             {
                 let (mut engine, _lock) = w.engine();
@@ -42,6 +46,16 @@ fn a_failed_write_step_loses_nothing() {
             );
             for file in w.provider_files() {
                 if let Ok(stored) = w.stored_bytes(&file) {
+                    if polylogue_sources::ORIGINS
+                        .iter()
+                        .any(|origin| origin.is_row_dump(&file))
+                    {
+                        assert!(!stored.is_empty());
+                        for record in stored.split(|b| *b == b'\n').filter(|r| !r.is_empty()) {
+                            serde_json::from_slice::<serde_json::Value>(record).unwrap();
+                        }
+                        continue;
+                    }
                     assert_eq!(
                         stored,
                         fs::read(&file).unwrap(),
@@ -127,9 +141,6 @@ fn a_failed_read_is_never_empty() {
 }
 
 mod asset_lookup;
-mod excision;
-
-mod blob_cleanup;
 
 mod tool_exports;
 
