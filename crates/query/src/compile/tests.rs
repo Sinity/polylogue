@@ -364,12 +364,12 @@ fn near_builds_only_when_an_answer_needs_ranking() {
         let mut options = opts(&[]);
         options.embeddings = embeddings;
         for text in [
-            "near:dates | count",
-            "near:dates | group by origin",
-            "near:dates | agg sum:cost",
-            "near:dates | measure activity",
-            "near:dates | messages",
-            "near:dates | sort by started | limit 1 | count",
+            "similar:dates | count",
+            "similar:dates | group by origin",
+            "similar:dates | agg sum:cost",
+            "similar:dates | measure activity",
+            "similar:dates | messages",
+            "similar:dates | sort by started | limit 1 | count",
         ] {
             let program = compile(text, &options).unwrap();
             assert!(program.near.is_none(), "{text}");
@@ -377,35 +377,35 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             assert!(!program.sql.contains("pl_similarity"), "{text}");
         }
         for text in [
-            "near:dates",
-            "near:dates | limit 1 | count",
-            "near:dates | limit 1 | measure sessions",
-            "near:dates | union (origin:codex)",
+            "similar:dates",
+            "similar:dates | limit 1 | count",
+            "similar:dates | limit 1 | measure sessions",
+            "similar:dates | union (origin:codex)",
         ] {
             let program = compile(text, &options).unwrap();
             assert_eq!(program.near.is_some(), embeddings, "{text}");
             assert_eq!(program.incomplete.is_empty(), embeddings, "{text}");
         }
         for text in [
-            "sessions | where near:dates",
-            "sessions | messages where near:dates",
-            "near:dates near:times",
-            "sessions where NOT near:dates",
+            "sessions | where similar:dates",
+            "sessions | messages where similar:dates",
+            "similar:dates similar:times",
+            "sessions where NOT similar:dates",
         ] {
             assert!(compile(text, &options).is_err(), "{text}");
         }
         if embeddings {
-            assert!(compile("near:dates | union (near:times)", &options).is_err());
+            assert!(compile("similar:dates | union (similar:times)", &options).is_err());
         } else {
-            let counted = compile("near:dates | union (origin:codex) | count", &options).unwrap();
+            let counted = compile("similar:dates | union (origin:codex) | count", &options).unwrap();
             assert!(counted.incomplete.is_empty());
         }
     }
-    let text = "sessions | messages where near:dates";
+    let text = "sessions | messages where similar:dates";
     let QueryError::Invalid { position, .. } = compile(text, &opts(&[])).unwrap_err() else {
         panic!("expected invalid query")
     };
-    assert_eq!(position, text.find("near:").unwrap());
+    assert_eq!(position, text.find("similar:").unwrap());
 }
 
 #[test]

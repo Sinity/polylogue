@@ -61,13 +61,13 @@ pub struct Ask<'a> {
     /// settings ([`logical_day`]).
     pub day: Option<LogicalDay>,
     pub embeddings: bool,
-    /// For `near:`: every stored text's similarity to a text.
+    /// For `similar:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
     /// The columns to show instead of the unit's defaults.
     pub fields: &'a [String],
 }
 
-/// Every stored text's similarity to a text, for `near:`.
+/// Every stored text's similarity to a text, for `similar:`.
 pub type NearFn<'a> =
     dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
@@ -820,7 +820,7 @@ pub(crate) fn usage_selection(
     text: &str,
     now: i64,
     embeddings: bool,
-    near: Option<&NearFn<'_>>,
+    similar: Option<&NearFn<'_>>,
 ) -> Result<(polylogue_store::measure::Selection, String), Failure> {
     let text = format!("{text} | measure usage");
     let ask = Ask {

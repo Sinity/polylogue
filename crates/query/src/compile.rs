@@ -41,7 +41,7 @@ pub struct Options {
     pub page_size: Option<u64>,
     /// One seed for otherwise unseeded random order across pages.
     pub random_seed: Option<u64>,
-    /// Whether vectors exist to rank `near:` by.
+    /// Whether vectors exist to rank `similar:` by.
     pub embeddings: bool,
     /// The calling session, for `self`.
     pub self_session: Option<String>,
@@ -184,7 +184,7 @@ pub struct WhyClause {
     pub sql: String,
 }
 
-/// A `near:` term to rank by: the text whose similarity to each stored
+/// A `similar:` term to rank by: the text whose similarity to each stored
 /// text the caller computes and supplies while the query runs
 /// (`pl_similarity`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -218,7 +218,7 @@ pub struct Program {
     pub why: Vec<WhyClause>,
     pub why_of: String,
     pub page_size: u64,
-    /// `near:`: the text to embed and rank by.
+    /// `similar:`: the text to embed and rank by.
     pub near: Option<Near>,
     /// The answer rows have their own semantic similarities to count.
     pub counts_near: bool,
@@ -424,11 +424,11 @@ pub(crate) struct Compiler<'a> {
     /// The full-text ranking expression, when a top-level text term ranks
     /// the rows.
     rank: Option<String>,
-    /// The semantic ranking expression of a `near:` term, and the join
+    /// The semantic ranking expression of a `similar:` term, and the join
     /// that brings its similarities to the unit's rows.
     near_rank: Option<String>,
     near_join: Option<String>,
-    /// Rows ranked by reciprocal rank fusion (words and `near:` together,
+    /// Rows ranked by reciprocal rank fusion (words and `similar:` together,
     /// or a combining stage): the join bringing each row's fused rank.
     fusion: Option<Fusion>,
     near: Option<Near>,

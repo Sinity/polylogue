@@ -1346,7 +1346,7 @@ pub fn start(
             .name("polylogue-counts".into())
             .spawn(move || daemon.warm.count_worker(&daemon.reads, &stopped))?,
     );
-    // Load the vectors `near:` ranks by before the first query needs them.
+    // Load the vectors `similar:` ranks by before the first query needs them.
     let daemon = Arc::clone(&runtime.daemon);
     std::thread::Builder::new()
         .name("polylogue-warm".into())

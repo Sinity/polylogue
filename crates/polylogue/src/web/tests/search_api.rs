@@ -111,8 +111,8 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
     let provider = r.w.local_embeddings();
     let http = rt();
     for source in [
-        "sessions where -id:claude-code:s1 near:\"parser\"",
-        "sessions where -id:claude-code:s1 parser near:\"parser\"",
+        "sessions where -id:claude-code:s1 similar:\"parser\"",
+        "sessions where -id:claude-code:s1 parser similar:\"parser\"",
     ] {
         let text = format!("{source} origin:claude-code");
         let answer = data(&r, &text, None);
@@ -174,8 +174,8 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
     for text in [
         "messages where (parser OR absent) -role:assistant",
         "sessions where origin:claude-code parser",
-        "messages where origin:claude-code near:\"parser\"",
-        "messages where origin:claude-code parser near:\"parser\"",
+        "messages where origin:claude-code similar:\"parser\"",
+        "messages where origin:claude-code parser similar:\"parser\"",
     ] {
         let request = Request::Query {
             text: text.into(),

@@ -64,7 +64,7 @@ impl<'a> Compiler<'a> {
         ) {
             (Some(mine), Some(theirs)) if mine != theirs => {
                 return Err(QueryError::Invalid {
-                    message: "one query ranks by one near: text; this one has two".into(),
+                    message: "one query ranks by one similar: text; this one has two".into(),
                     position: at,
                 });
             }

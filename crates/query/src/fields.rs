@@ -518,7 +518,7 @@ pub static FIELDS: &[Field] = &[
     f(Sessions, "model_words", Number, "Own model words").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"model_word_count")),
     f(Sessions, "thinking_messages", Number, "Own thinking messages").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"thinking_count")),
     f(Sessions, "compactions", Number, "Own compactions").sql_fn(|a| polylogue_model::session_sql::count(&a.s,"compaction_count")),
-    sp(Sessions, "near", "semantic similarity (a ranking)", custom::near),
+    sp(Sessions, "similar", "semantic similarity (a ranking)", custom::near),
     sp(Sessions, "output", "words in tool output", custom::output),
     sp(Sessions, "thinking", "words in thinking", custom::thinking),
     // messages
@@ -577,7 +577,7 @@ pub static FIELDS: &[Field] = &[
     f(Messages, "stop_reason", Match, "").sql("{m}.stop_reason"),
     sp(Messages, "since", "at or after the time", custom::since),
     sp(Messages, "until", "at or before the time", custom::until),
-    sp(Messages, "near", "semantic similarity (a ranking)", custom::near),
+    sp(Messages, "similar", "semantic similarity (a ranking)", custom::near),
     sp(Messages, "output", "words in tool output", custom::output),
     sp(Messages, "thinking", "words in thinking", custom::thinking),
     // blocks

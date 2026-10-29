@@ -325,7 +325,7 @@ fn near_ranked_pages_continue_like_any_other() {
     let w = morrow();
     let s = similarity(&w, "%0003-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let text = "kind:* near:\"synthetic ranking\"";
+    let text = "kind:* similar:\"synthetic ranking\"";
     let mut whole = ask(text);
     whole.page_size = Some(100);
     whole.embeddings = true;

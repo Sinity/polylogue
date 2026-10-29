@@ -1,9 +1,9 @@
 //! Warm state: what the daemon keeps between requests so common answers
 //! come without reloading or recomputing.
 //!
-//! - **Vectors**: every vector of the embedding key `near:` ranks by, in
+//! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
 //!   memory, reloaded after a commit stored or removed vectors.
-//! - **Query vectors**: the provider's vector for each recent `near:` text,
+//! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
 //! - **Answers**: recent query pages, by request and read position. A page
@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 /// How long a first page is answered again from memory.
 pub const FIRST_PAGE_FOR: Duration = Duration::from_secs(5);
-/// Recent `near:` texts whose query vectors are kept.
+/// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
 /// Recent answers kept.
 const ANSWERS: usize = 128;
@@ -171,7 +171,7 @@ fn read_lock<'a, T>(
 }
 
 impl Warm {
-    /// The loaded vectors of the embedding key `near:` ranks by, loading
+    /// The loaded vectors of the embedding key `similar:` ranks by, loading
     /// them when absent or stale. `None`: no vectors for this provider.
     pub fn vectors(
         &self,
@@ -197,7 +197,7 @@ impl Warm {
         Ok(Some(loaded))
     }
 
-    /// Every stored text's similarity to `text`, for `near:`.
+    /// Every stored text's similarity to `text`, for `similar:`.
     pub fn similarity(
         &self,
         reader: &Reader<'_>,
