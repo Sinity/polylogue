@@ -163,6 +163,21 @@ impl TextFragmentRecord {
 }
 
 impl TextFragment {
+    /// A staging key for one exact source domain, version and covered value.
+    /// Provenance and a newly learned total do not change this key; it is not
+    /// proof of the complete source content or a receiving admission receipt.
+    pub fn content_key(&self) -> BlobHash {
+        let bytes = serde_json::to_vec(&(
+            &self.container,
+            &self.source_version,
+            self.coverage.start,
+            self.coverage.end,
+            self.text_hash,
+        ))
+        .expect("text fragment identity is serializable");
+        BlobHash::of(&bytes)
+    }
+
     pub fn reference(&self) -> Reference {
         Reference::Span {
             container: Box::new(self.container.clone()),
