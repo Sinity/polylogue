@@ -141,7 +141,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
         };
         assert!(
             sinex
-                .prepare_named_products(name, &[write.clone()])
+                .prepare_named_products(name, std::slice::from_ref(&write))
                 .unwrap()
                 .pending
         );

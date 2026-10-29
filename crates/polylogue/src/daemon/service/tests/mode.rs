@@ -238,9 +238,10 @@ fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day
         let ModeState::Primary { connection } = &runtime.daemon.mode else {
             panic!("primary mode required")
         };
-        while connection.pending_captures().unwrap().is_empty() {
+        while connection.status().unwrap().prepared_materials == 0 {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        assert!(connection.status().unwrap().prepared_bytes > 0);
         assert!(w.file("later.jsonl").exists());
         assert!(!w.root.join("archive.db").exists());
         let reader = runtime.daemon.reads.reader().unwrap();

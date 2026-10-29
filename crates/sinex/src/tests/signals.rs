@@ -77,11 +77,11 @@ fn generic_source_paths_refuse_live_and_restored_signal_state_before_spool_publi
             output_index: 0,
         };
         assert!(matches!(
-            sinex.prepare_named_products("signal-state", &[write.clone()]),
+            sinex.prepare_named_products("signal-state", std::slice::from_ref(&write)),
             Err(crate::Error::Refused { .. })
         ));
         assert!(matches!(
-            sinex.prepare_products(&[write.clone()]),
+            sinex.prepare_products(std::slice::from_ref(&write)),
             Err(crate::Error::Refused { .. })
         ));
         assert!(matches!(

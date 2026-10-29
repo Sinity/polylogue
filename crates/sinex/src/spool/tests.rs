@@ -557,7 +557,7 @@ fn request_and_blob_visitors_can_use_small_metadata_until_application() {
         material.manifest.details.insert(
             "polylogue_capture".into(),
             serde_json::to_value(Capture::Blob {
-                hash: polylogue_model::BlobHash::parse(&blake3::hash(bytes).to_hex().to_string())
+                hash: polylogue_model::BlobHash::parse(blake3::hash(bytes).to_hex().as_ref())
                     .unwrap(),
                 length: bytes.len() as u64,
             })

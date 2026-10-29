@@ -152,7 +152,7 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         output_index: 0,
     };
     let grouped = sinex
-        .complete_captures(&[raw.identity.clone()], &[write])
+        .complete_captures(std::slice::from_ref(&raw.identity), &[write])
         .unwrap();
     assert_eq!(sinex.pending_captures().unwrap()[0].identity, raw.identity);
     sinex.spool.lock().unwrap().acknowledge(serde_json::from_value(json!({"number":2,"frame":grouped.identity,"material":null,"admitted":[],"outcome":{},"refusal":null,"commit_seq":10})).unwrap()).unwrap();
