@@ -132,7 +132,17 @@ fn shell_completion_escapes_daemon_help_and_omits_control_values() {
         {"value": "tag:bad\n", "help": ""},
         {"value": "tag:bad\t", "help": ""}
     ]);
-    let found = completion_candidates(&data);
+    let found = data
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| {
+            completion::candidate(
+                item["value"].as_str().unwrap().into(),
+                item["help"].as_str().unwrap().into(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].get_value(), "tag:ordinary");
     assert_eq!(

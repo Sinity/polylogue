@@ -66,6 +66,7 @@ fn main() -> ExitCode {
         }
     }
     // `COMPLETE=<shell>` set: the shell asks for completions.
+    cli::completion::capture();
     clap_complete::CompleteEnv::with_factory(cli::command).complete();
     // `@N` names row N of the last list printed in this terminal.
     let argv: Option<Vec<String>> = std::env::args_os().map(|a| a.into_string().ok()).collect();
