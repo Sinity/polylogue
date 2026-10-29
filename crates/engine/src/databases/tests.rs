@@ -130,6 +130,7 @@ fn native_capture_continues_the_input_named_by_its_source_header() {
                     blobs: vec![],
                     length: bytes.len() as u64,
                     parse: vec![],
+                    acquisition: None,
                     release: Default::default(),
                 },
             )

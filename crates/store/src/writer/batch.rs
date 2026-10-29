@@ -171,6 +171,8 @@ pub struct Batch {
     /// commits (the writer keeps a transaction's batches to retry them one
     /// at a time), or when a batch is dropped unsent.
     pub release: InFlight,
+    /// Receiver-minted evidence of the body acquisition, not parsed payload data.
+    pub acquisition: Option<crate::primary::AcquisitionReceipt>,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The

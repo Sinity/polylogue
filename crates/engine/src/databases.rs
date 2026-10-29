@@ -262,6 +262,7 @@ impl<'a> InputWriter<'a> {
             blobs: vec![],
             length: self.length,
             parse: vec![],
+            acquisition: None,
             release: Default::default(),
         };
         self.exists = true;

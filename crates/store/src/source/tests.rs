@@ -210,6 +210,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
                     blobs: Vec::new(),
                     length: 8,
                     parse: Vec::new(),
+                    acquisition: None,
                     release: Default::default(),
                 },
                 files: prepared.into_iter().collect(),
