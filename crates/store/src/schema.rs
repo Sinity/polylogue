@@ -26,6 +26,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 pub(crate) const INDEX_MIGRATIONS: &[&str] = &[
     include_str!("schema/index_2.sql"),
     include_str!("schema/index_3.sql"),
+    include_str!("schema/index_4.sql"),
 ];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
 

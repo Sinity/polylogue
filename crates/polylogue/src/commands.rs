@@ -617,7 +617,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "attachment",
-        help: "Describe a message attachment and the stored export files that match it",
+        help: "Read a bounded range of the stored bytes for a message attachment",
         args: &[
             pos("message", Kind::Text, "The message ID"),
             pos("block", Kind::Integer, "Zero-based source block index"),
@@ -626,34 +626,19 @@ const WRITTEN: &[Command] = &[
                 Kind::Integer,
                 "Zero-based attachment within a tool result (default 0)",
             ),
+            opt(
+                "input",
+                Kind::Text,
+                "The stored input to read when several match",
+            ),
+            opt("cursor", Kind::Text, "Continue a previous byte range"),
             Arg {
-                cli_only: true,
-                ..opt(
-                    "input",
-                    Kind::Text,
-                    "The stored input to read the bytes from, when several match",
-                )
-            },
-            Arg {
-                cli_only: true,
                 default: Some("65536"),
-                ..opt("length", Kind::Integer, "Bytes per exact retrieval range")
+                ..opt("length", Kind::Integer, "Bytes per retrieval range")
             },
             Arg {
                 cli_only: true,
-                ..opt(
-                    "reveal",
-                    Kind::Bool,
-                    "Retrieve exact bytes with terminal stdout outside an agent harness",
-                )
-            },
-            Arg {
-                cli_only: true,
-                ..opt(
-                    "out",
-                    Kind::Text,
-                    "Write the verified bytes to FILE; requires --reveal",
-                )
+                ..opt("out", Kind::Text, "Write the verified bytes to FILE")
             },
         ],
         action: Action::Request(requests::attachment),

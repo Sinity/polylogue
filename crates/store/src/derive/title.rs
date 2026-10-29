@@ -1,18 +1,16 @@
 //! A title for a session whose records name none: the first line of the
-//! first prompt a person typed, masked in source context before truncation.
+//! first prompt a person typed.
 //! Kept apart from the recorded title, which always wins when present and
 //! is never replaced by this display fallback in exports.
 
 use super::{Derivation, Version};
 use crate::Result;
-use polylogue_model::Block;
 use rusqlite::{OptionalExtension, Transaction, params};
-use std::ops::ControlFlow;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "title",
     products: &[],
-    version: Version::Rules(3),
+    version: Version::Rules(4),
     after: &["duplicates", "session"],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -34,39 +32,15 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         .optional()?;
     let title = match first {
         None => None,
-        Some(pk) => {
-            let alone = crate::ordered_blocks::masked_alone(tx, session_pk, &[pk].into())?;
-            let block = if alone.contains(&pk) {
-                // No PEM block is open before it, so it masks the same alone.
-                let mut block = crate::ordered_blocks::one(tx, pk)?;
-                polylogue_model::masking::MessageMasker::default().block(&mut block);
-                Some(block)
-            } else {
-                masked_in_order(tx, session_pk, pk)?
-            };
-            block.as_ref().and_then(Block::text).and_then(title_of)
-        }
+        Some(pk) => crate::ordered_blocks::one(tx, pk)?
+            .text()
+            .and_then(title_of),
     };
     tx.prepare_cached(
         "UPDATE session SET derived_title = ?2 WHERE pk = ?1 AND derived_title IS NOT ?2",
     )?
     .execute(params![session_pk, title])?;
     Ok(())
-}
-
-/// Block `pk` masked after every earlier block of the session.
-fn masked_in_order(tx: &Transaction<'_>, session_pk: i64, pk: i64) -> Result<Option<Block>> {
-    let mut masker = polylogue_model::masking::MessageMasker::default();
-    let mut found = None;
-    crate::ordered_blocks::visit(tx, session_pk, |mut source| {
-        masker.block(&mut source.block);
-        if source.pk == pk {
-            found = Some(source.block);
-            return Ok(ControlFlow::Break(()));
-        }
-        Ok(ControlFlow::Continue(()))
-    })?;
-    Ok(found)
 }
 
 pub(crate) fn title_of(prompt: &str) -> Option<String> {
