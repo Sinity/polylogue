@@ -1290,9 +1290,18 @@ pub struct Runtime {
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
+    worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
 }
 
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn signal_stop_for_test(&self) -> Sender<()> {
+        self.signals_stop
+            .as_ref()
+            .expect("running signal worker")
+            .clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn pause_signals(&mut self) -> std::io::Result<()> {
         if let Some(stop) = self.signals_stop.take() {
@@ -1313,6 +1322,10 @@ impl Runtime {
         self.daemon.stopping.store(true, Ordering::Release);
         self.daemon.warm.clear();
         self.daemon.reads.close();
+    }
+
+    pub(crate) fn worker_events(&self) -> tokio::sync::watch::Receiver<Option<&'static str>> {
+        self.worker_events.subscribe()
     }
 
     /// A finished continuous worker is a failure; slow work remains live.
@@ -1399,7 +1412,6 @@ pub enum ArchiveMode {
     #[cfg(feature = "sinex")]
     Primary {
         config: polylogue_sinex::Config,
-        path: std::path::PathBuf,
     },
     #[cfg(feature = "sinex")]
     Blocked {
@@ -1574,6 +1586,7 @@ pub fn start(
         completion_scope: Some(completion_scope),
         engine: None,
         lock: Some(lock),
+        worker_events: tokio::sync::watch::channel(None).0,
     };
     // Subscribe before the initial snapshot or starting the ingest loop.
     let completion_commits = runtime
@@ -1585,16 +1598,23 @@ pub fn start(
         runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
             Arc::clone(&runtime.daemon),
             completion_commits,
+            runtime.worker_events.clone(),
         )?);
     }
     let Some(mut engine) = engine.take() else {
         return Ok(runtime);
     };
     let (ready, wait) = sync_channel(1);
+    let worker_events = runtime.worker_events.clone();
     runtime.engine = Some(
         std::thread::Builder::new()
             .name("polylogue-loop".into())
             .spawn(move || {
+                let _exit = super::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "engine worker terminated",
+                    None,
+                );
                 let started = ready.clone();
                 let result = engine.run(tx, &rx, &status, || {
                     let _ = started.send(Ok(()));
@@ -1611,18 +1631,34 @@ pub fn start(
     let (stop, stopped) = channel();
     runtime.signals_stop = Some(stop);
     let daemon = Arc::clone(&runtime.daemon);
+    let worker_events = runtime.worker_events.clone();
     runtime.signals = Some(
         std::thread::Builder::new()
             .name("polylogue-signals".into())
-            .spawn(move || crate::signals::run(daemon, &stopped))?,
+            .spawn(move || {
+                let _exit = super::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "signal worker terminated",
+                    None,
+                );
+                crate::signals::run(daemon, &stopped)
+            })?,
     );
     let (stop, stopped) = channel();
     runtime.counts_stop = Some(stop);
     let daemon = Arc::clone(&runtime.daemon);
+    let worker_events = runtime.worker_events.clone();
     runtime.counts = Some(
         std::thread::Builder::new()
             .name("polylogue-counts".into())
-            .spawn(move || daemon.warm.count_worker(&daemon.reads, &stopped))?,
+            .spawn(move || {
+                let _exit = super::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "count worker terminated",
+                    None,
+                );
+                daemon.warm.count_worker(&daemon.reads, &stopped)
+            })?,
     );
     // Load the vectors `similar:` ranks by before the first query needs them.
     let daemon = Arc::clone(&runtime.daemon);

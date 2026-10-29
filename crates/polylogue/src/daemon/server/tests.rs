@@ -124,7 +124,7 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
 }
 
 #[test]
-fn listener_wait_stops_accepting_requests_before_joining_clients() {
+fn listener_quiescence_is_observable_before_joining_clients() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
@@ -139,7 +139,7 @@ fn listener_wait_stops_accepting_requests_before_joining_clients() {
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    let server = Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut server = Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
     let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
     writeln!(
         stream,
@@ -151,8 +151,11 @@ fn listener_wait_stops_accepting_requests_before_joining_clients() {
         .unwrap()
     )
     .unwrap();
+    let quiescing = server.take_quiescing().unwrap();
+    runtime.stop_accepting();
     server.stop.as_ref().unwrap().send(()).unwrap();
-    server.wait(|| runtime.stop_accepting()).unwrap();
+    quiescing.blocking_recv().unwrap();
+    server.shutdown().unwrap();
     assert!(matches!(
         daemon.reads.reader(),
         Err(polylogue_store::StoreError::ReadPoolClosed)

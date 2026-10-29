@@ -51,6 +51,9 @@ impl EnvSnapshot {
             "POLYLOGUE_AUTH_TOKEN_FILE",
             "PAGER",
             "NO_COLOR",
+            "NOTIFY_SOCKET",
+            "WATCHDOG_USEC",
+            "WATCHDOG_PID",
             "COMPLETE",
             "_CLAP_COMPLETE_INDEX",
             "_POLYLOGUE_COMPLETE_PREFIX",
@@ -315,6 +318,7 @@ pub struct Startup {
     pub clock: WallClock,
     pub output: OutputConfig,
     pub hook: crate::hook::Inputs,
+    pub(crate) lifecycle: crate::daemon::lifecycle::Inputs,
 }
 #[derive(Debug, Clone, Default)]
 pub struct Overrides {
@@ -612,6 +616,10 @@ impl Startup {
             mode,
             clock: process.clock.clone(),
             output: process.output,
+            lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
+                &process.environment,
+                std::process::id(),
+            )?,
             hook: crate::hook::Inputs {
                 kitty_pid: process
                     .environment
@@ -683,6 +691,11 @@ impl Startup {
             engine,
             mode: crate::daemon::service::ArchiveMode::Standalone,
             output: OutputConfig::new(false, false, true),
+            lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
+                &EnvSnapshot::from_values([]),
+                0,
+            )
+            .expect("empty service environment"),
             hook: crate::hook::Inputs {
                 kitty_pid: None,
                 kitty_window: None,
@@ -740,13 +753,7 @@ pub(crate) fn load_mode(
                     },
                 },
             };
-            Ok((
-                ArchiveMode::Primary {
-                    config,
-                    path: path.into(),
-                },
-                auth,
-            ))
+            Ok((ArchiveMode::Primary { config }, auth))
         }
         Ok(_) => Ok((ArchiveMode::Standalone, Authentication::Anonymous)),
         Err(error) => Ok((

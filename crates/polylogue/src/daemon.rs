@@ -7,6 +7,7 @@ pub(crate) mod attachment;
 pub mod calendar;
 pub(crate) mod disconnect;
 pub mod execution;
+pub(crate) mod lifecycle;
 pub mod measure;
 pub mod query;
 pub mod request;

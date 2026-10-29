@@ -26,6 +26,7 @@ impl Publisher {
     pub fn start(
         daemon: Arc<Daemon>,
         subscription: Option<CommitSubscription>,
+        worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
@@ -35,6 +36,11 @@ impl Publisher {
         let thread = std::thread::Builder::new()
             .name("polylogue-completion".into())
             .spawn(move || {
+                let _exit = crate::daemon::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "completion worker terminated",
+                    Some(Arc::clone(&completed)),
+                );
                 let mut publisher =
                     State::new(daemon.archive.is_primary(), daemon.config.requests.clone());
                 let mut last_error = None;

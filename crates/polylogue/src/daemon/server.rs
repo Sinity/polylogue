@@ -374,6 +374,7 @@ fn raise_open_file_limit() {
 
 pub fn serve(startup: &crate::config::Startup) -> std::io::Result<()> {
     raise_open_file_limit();
+    let supervisor = super::lifecycle::Supervisor::start(&startup.lifecycle)?;
     let root = &startup.config.archive;
     let runtime = service::start(
         Arc::clone(&startup.config),
@@ -386,7 +387,7 @@ pub fn serve(startup: &crate::config::Startup) -> std::io::Result<()> {
         root.display(),
         runtime.daemon.archive.socket().display()
     );
-    let _web = match crate::web::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
+    let web = match crate::web::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
     {
         Ok(web) => {
             eprintln!("polylogue: web reader on http://127.0.0.1:{}/", web.port);
@@ -397,7 +398,7 @@ pub fn serve(startup: &crate::config::Startup) -> std::io::Result<()> {
             None
         }
     };
-    server.wait(|| runtime.stop_accepting())
+    supervisor.run(runtime, server, web)
 }
 
 /// Owns the socket listener and every accepted client thread.
@@ -405,7 +406,7 @@ pub struct Server {
     stop: Option<Sender<()>>,
     thread: Option<JoinHandle<std::io::Result<()>>>,
     socket: Option<PathBuf>,
-    quiescing: Receiver<()>,
+    quiescing: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Server {
@@ -415,12 +416,12 @@ impl Server {
     ) -> std::io::Result<Self> {
         let listener = bind(&daemon)?;
         let (stop, stopped) = channel();
-        let (quiesce, quiescing) = channel();
+        let (quiesce, quiescing) = tokio::sync::oneshot::channel();
         let mut server = Self {
             stop: Some(stop),
             thread: None,
             socket: Some(daemon.archive.socket()),
-            quiescing,
+            quiescing: Some(quiescing),
         };
         listener.set_nonblocking(true)?;
         server.thread = Some(
@@ -454,10 +455,10 @@ impl Server {
         result.and(cleanup)
     }
 
-    fn wait(mut self, before_join: impl FnOnce()) -> std::io::Result<()> {
-        let _ = self.quiescing.recv();
-        before_join();
-        self.join()
+    pub(crate) fn take_quiescing(&mut self) -> std::io::Result<tokio::sync::oneshot::Receiver<()>> {
+        self.quiescing
+            .take()
+            .ok_or_else(|| std::io::Error::other("socket lifecycle already observed"))
     }
 }
 
@@ -485,7 +486,7 @@ fn listen(
     daemon: Arc<Daemon>,
     operations: Arc<command_surface::OperationTable>,
     stopped: Receiver<()>,
-    quiesce: Sender<()>,
+    quiesce: tokio::sync::oneshot::Sender<()>,
 ) -> std::io::Result<()> {
     let mut clients: Vec<(UnixStream, JoinHandle<()>)> = Vec::new();
     let mut failure = None;

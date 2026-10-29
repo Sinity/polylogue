@@ -23,7 +23,18 @@ No step deletes the index or any store.
 
 **How each run ended:** `clean` (with the signal), `refused` (exit 78, with the reason), `failed` (with the error kind), or `unknown` (no record: killed or crashed). `status` shows it. An `unknown` end is never given a cause by closeness in time to another event.
 
-**Liveness.** With `WatchdogSec`, the daemon feeds the watchdog from its request loop, so a process that no longer answers its own socket is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
+The run-end observation is machine-local operational state in `index.meta`,
+under the versioned `daemon_run` key. It retains only the current run and the
+previous end. Its cache incarnation is bound to the actual machine and physical
+index file identity, separately from the per-start run ID. A missing, rebuilt,
+copied or mismatched index starts a new incarnation with previous end `unknown`;
+a reboot that changes the observed file identity also conservatively gives
+`unknown`. A clean end is recorded through the writer after accepted work has
+drained and checkpoint results are known, using the exact current run ID.
+An earlier run cannot finish a later one. This observation is not archive
+provenance, a query run or a primary acknowledgement.
+
+**Liveness.** A continuous engine, signal, count or completion worker terminating wakes supervision immediately, including ordinary runs without service notifications or a watchdog. A finite completion snapshot is an expected exit. The daemon stops admission, drains accepted responses and joins workers while preserving join errors. With `WatchdogSec`, the daemon feeds the watchdog only after its own socket answers a request and its continuous workers remain alive, so a process that no longer answers is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
 
 **Restart** resumes from committed positions; it does not rescan the archive, replay tool-database captures or re-read history. Target: socket ready within 2 s of start.
 
