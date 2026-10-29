@@ -60,7 +60,7 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
             for name in origins
                 .iter()
                 .map(String::as_str)
-                .chain(["session", "message", "block", "note"])
+                .chain(["session", "message", "block", "note", "query", "result", "similar"])
             {
                 if !declarations.iter().any(|f| f.name == name) {
                     declarations.push(Field {
