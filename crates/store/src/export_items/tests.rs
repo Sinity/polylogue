@@ -1,4 +1,80 @@
 use super::*;
+
+#[test]
+fn retained_items_reopen_payload_and_order_metadata_after_disconnect() {
+    let directory = tempfile::tempdir().unwrap();
+    {
+        let mut items = ExportItems::in_directory(directory.path()).unwrap();
+        items
+            .push_ordered(10..20, vec![2], vec![1], Some("second"), b"second bytes")
+            .unwrap();
+        items
+            .push_ordered(30..40, vec![1], vec![2], Some("first"), b"first bytes")
+            .unwrap();
+    }
+    let payload_size = fs::metadata(directory.path().join("payload.zst"))
+        .unwrap()
+        .len();
+    assert!(payload_size > 0);
+    let mut items = ExportItems::in_directory(directory.path()).unwrap();
+    let mut bytes = String::new();
+    items
+        .next_item()
+        .unwrap()
+        .unwrap()
+        .reader
+        .read_to_string(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, "first bytes");
+    items.reset(Order::Alternate).unwrap();
+    bytes.clear();
+    items
+        .next_item()
+        .unwrap()
+        .unwrap()
+        .reader
+        .read_to_string(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, "second bytes");
+    items
+        .push(50..60, vec![3], Some("third"), b"third bytes")
+        .unwrap();
+    items.close().unwrap();
+    assert!(
+        fs::metadata(directory.path().join("payload.zst"))
+            .unwrap()
+            .len()
+            > payload_size
+    );
+    let items = ExportItems::in_directory(directory.path()).unwrap();
+    bytes.clear();
+    items
+        .source_item("third")
+        .unwrap()
+        .unwrap()
+        .reader
+        .read_to_string(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, "third bytes");
+}
+
+#[test]
+fn retained_drop_discards_unaccepted_scan_group_and_preserves_prior_work() {
+    let directory = tempfile::tempdir().unwrap();
+    {
+        let mut items = ExportItems::in_directory(directory.path()).unwrap();
+        items
+            .push(0..1, vec![0], Some("kept"), b"accepted")
+            .unwrap();
+        items.begin_scan().unwrap();
+        items
+            .push(1..2, vec![1], Some("rejected"), b"unaccepted")
+            .unwrap();
+    }
+    let items = ExportItems::in_directory(directory.path()).unwrap();
+    assert!(items.source_item("kept").unwrap().is_some());
+    assert!(items.source_item("rejected").unwrap().is_none());
+}
 #[test]
 fn spilled_items_follow_byte_keys_and_claim_owners_once() {
     let mut scratch = ExportItems::new().unwrap();
