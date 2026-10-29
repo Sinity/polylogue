@@ -219,17 +219,13 @@ pub struct NewAssertionLink {
     pub reference: Reference,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "change", content = "value", rename_all = "snake_case")]
 pub enum Change<T> {
+    #[default]
     Keep,
     Set(T),
     Clear,
-}
-impl<T> Default for Change<T> {
-    fn default() -> Self {
-        Self::Keep
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
