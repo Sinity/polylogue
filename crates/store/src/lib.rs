@@ -37,6 +37,7 @@ pub mod notes;
 mod ordered_blocks;
 pub mod primary;
 pub mod query;
+pub mod query_objects;
 pub mod read;
 mod repo_lookup;
 pub mod schema;

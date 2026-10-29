@@ -50,6 +50,8 @@ pub trait Sinex: Send + Sync {
         &self,
         request: &polylogue_model::authored::PreparedRequest,
     ) -> Result<UserOutcome>;
+    /// Existing durable product intents, including published but unapplied frames.
+    fn visit_pending_products(&self, visit: &mut dyn FnMut(&Product) -> Result<()>) -> Result<()>;
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,

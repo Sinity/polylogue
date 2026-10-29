@@ -164,6 +164,14 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<PreparedWrite> {
         Self::unavailable()
     }
+    fn visit_pending_products(&self, visit: &mut dyn FnMut(&Product) -> Result<()>) -> Result<()> {
+        if let Some((_, writes)) = self.original() {
+            for write in writes {
+                visit(&write.product)?;
+            }
+        }
+        Ok(())
+    }
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&PendingAuthored) -> Result<()>,
