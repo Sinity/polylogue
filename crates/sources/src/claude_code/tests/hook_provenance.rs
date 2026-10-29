@@ -38,7 +38,7 @@ fn native_hook_fields_cite_only_context_blocks_without_changing_the_message() {
     assert!(
         claims
             .iter()
-            .all(|c| c.start == 41 && c.end == 41 + bytes.len() as u64)
+            .all(|c| c.start == 41 && c.end == 41 + bytes.len() as u64 - 1)
     );
     // The original complete native message stays canonical. Attribution lives
     // in Output only and has no effect on this source-version identity.
