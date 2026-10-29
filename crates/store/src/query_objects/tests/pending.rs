@@ -131,13 +131,23 @@ impl Sinex for PendingProducer {
             pending: true,
         })
     }
+    fn prepare_canonical_products(
+        &self,
+        _identity: &str,
+        _products: &[crate::primary::ProductWrite],
+        _proof: &crate::primary::RawInputProof,
+    ) -> crate::Result<crate::primary::PreparedWrite> {
+        Err(crate::StoreError::Invalid(
+            "fixture has no canonical publication authority".into(),
+        ))
+    }
     fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
         Ok(())
     }
-    fn confirmed(&self, _: i64, _: &str, _: Option<&str>) -> Result<Vec<Confirmed>> {
+    fn confirmed(&self, _: &crate::primary::ReplayState, _: &str) -> Result<Vec<Confirmed>> {
         Self::unavailable()
     }
-    fn acknowledge(&self, _: i64) -> Result<()> {
+    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
         Self::unavailable()
     }
 }

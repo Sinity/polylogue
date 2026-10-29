@@ -272,6 +272,16 @@ impl crate::primary::Sinex for OfflineProducer {
     ) -> Result<crate::primary::PreparedWrite> {
         Self::unavailable()
     }
+    fn prepare_canonical_products(
+        &self,
+        _identity: &str,
+        _products: &[crate::primary::ProductWrite],
+        _proof: &crate::primary::RawInputProof,
+    ) -> crate::Result<crate::primary::PreparedWrite> {
+        Err(crate::StoreError::Invalid(
+            "fixture has no canonical publication authority".into(),
+        ))
+    }
     fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
         Ok(())
     }
@@ -333,13 +343,12 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn confirmed(
         &self,
-        _: i64,
+        _: &crate::primary::ReplayState,
         _: &str,
-        _: Option<&str>,
     ) -> Result<Vec<crate::primary::Confirmed>> {
         Self::unavailable()
     }
-    fn acknowledge(&self, _: i64) -> Result<()> {
+    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
         Self::unavailable()
     }
 }
@@ -419,6 +428,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         assert!(snapshot.basis.boundary.is_none());
         writer
             .apply_confirmed(vec![crate::primary::Confirmed {
+                native: None,
                 position: 0,
                 output_index: 0,
                 event: String::new(),

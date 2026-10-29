@@ -29,6 +29,8 @@ pub(crate) struct Client {
     consumer_cache: Option<String>,
     consumer_scope: Option<String>,
     publication_scope: Option<String>,
+    publication_epoch: Option<i64>,
+    consumer_instance: Option<String>,
     health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     consumer: Option<async_nats::jetstream::consumer::PullConsumer>,
     pending: Vec<async_nats::jetstream::Message>,
@@ -143,6 +145,8 @@ impl Client {
             consumer_cache: None,
             consumer_scope: None,
             publication_scope: None,
+            publication_epoch: None,
+            consumer_instance: None,
             health,
             consumer: None,
             pending: Vec::new(),
@@ -320,11 +324,14 @@ impl Client {
 
     fn publication_allowed(&self, prepared: &crate::spool::Prepared) -> bool {
         !prepared.unresolved
+            && !prepared.refused
             && (!prepared.canonical
                 || prepared
                     .canonical_scope
                     .as_ref()
-                    .is_some_and(|scope| self.publication_scope.as_ref() == Some(scope)))
+                    .is_some_and(|scope| self.publication_scope.as_ref() == Some(scope))
+                    && prepared.canonical_epoch == self.publication_epoch
+                    && prepared.canonical_epoch.is_some())
     }
 
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted

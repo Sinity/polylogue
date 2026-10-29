@@ -51,13 +51,22 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
 
 /// Complete immutable adapter artifact. Installing it and granting native or
 /// canonical publication authority remain separate owner operations.
-pub fn source_declaration(producer: &str) -> sinex_model::SourceDeclaration {
+pub fn source_declaration() -> sinex_model::SourceDeclaration {
     sinex_model::SourceDeclaration {
         source: crate::source_reference(),
         family: "polylogue".into(),
-        kinds: declarations(producer),
+        kinds: declarations("polylogue"),
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// Export is unavailable until every indexed owner kind has a local projector.
+/// Native Source2 registration and write authority do not establish this read contract.
+pub fn projection_catalog() -> crate::Result<sinex_model::ProjectionCatalog> {
+    Err(crate::Error::Refused {
+        name: "indexed projection catalog".into(),
+        reason: "the foreign signal receipt projectors are not registered".into(),
+    })
+}

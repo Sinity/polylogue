@@ -43,6 +43,7 @@ enum IndexTarget {
     Index(&'static str),
     IndexAndPrimary(&'static str, &'static str),
     PrimarySource(&'static str),
+    PrimaryIndex(&'static [&'static str]),
 }
 const INDEX_MIGRATIONS: &[IndexMigration] = &[
     IndexMigration {
@@ -92,6 +93,13 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
         version: 12,
         target: IndexTarget::Index(include_str!("schema/index_12.sql")),
     },
+    IndexMigration {
+        version: 13,
+        target: IndexTarget::PrimaryIndex(&[
+            include_str!("schema/index_13.sql"),
+            crate::primary::derived::SCHEMA,
+        ]),
+    },
 ];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
     include_str!("schema/archive_2.sql"),
@@ -125,6 +133,7 @@ pub fn create_index(conn: &Connection) -> Result<()> {
 fn add_primary(conn: &Connection) -> Result<()> {
     conn.execute_batch(&crate::source::schema()?.ddl)?;
     conn.execute_batch(crate::primary::projection::SCHEMA)?;
+    conn.execute_batch(crate::primary::derived::SCHEMA)?;
     Ok(())
 }
 
@@ -192,6 +201,12 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                     tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
                 }
                 IndexTarget::PrimarySource(_) => {}
+                IndexTarget::PrimaryIndex(statements) if primary => {
+                    for sql in statements {
+                        tx.execute_batch(sql)?;
+                    }
+                }
+                IndexTarget::PrimaryIndex(_) => {}
             }
         }
         tx.execute_batch(READ_INDEXES)?;

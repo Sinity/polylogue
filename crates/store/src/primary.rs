@@ -8,6 +8,7 @@ pub use acquisition::{
     PendingSource, RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
     SourceStatus, SourceSubject,
 };
+pub mod derived;
 pub mod products;
 pub mod raw_acquisition;
 pub mod replay;
@@ -16,10 +17,10 @@ pub use raw_acquisition::{
     RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
 };
 pub use replay::{
-    ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeFactContext, NativeKind,
-    NativeSource, ProjectionAvailability, ProjectionCoverage, ProjectionIdentity, RawInputCoverage,
-    RawInputProof, ReplayBasisStatus, ReplayContinuation, ReplayControl, ReplayCursor, ReplayPage,
-    ReplayState,
+    ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeDeliveryCursor,
+    NativeFactContext, NativeKind, NativeSource, ProjectionAvailability, ProjectionCoverage,
+    ProjectionIdentity, RawInputCoverage, RawInputProof, ReplayBasisStatus, ReplayContinuation,
+    ReplayControl, ReplayCursor, ReplayPage, ReplayState,
 };
 pub(crate) mod projection;
 pub(crate) mod scope;
@@ -132,14 +133,21 @@ pub trait Sinex: Send + Sync {
         identity: &str,
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
+    /// Owner-certified canonical batch, separate from native acquisition facts.
+    fn prepare_canonical_products(
+        &self,
+        identity: &str,
+        products: &[ProductWrite],
+        proof: &RawInputProof,
+    ) -> Result<PreparedWrite>;
     fn discard_confirmed(
         &self,
         identities: &[String],
         tombstone_position: i64,
         applied: i64,
     ) -> Result<()>;
-    fn confirmed(&self, after: i64, cache: &str, scope: Option<&str>) -> Result<Vec<Confirmed>>;
-    fn acknowledge(&self, position: i64) -> Result<()>;
+    fn confirmed(&self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>>;
+    fn acknowledge(&self, state: &ReplayState) -> Result<()>;
 }
 
 /// What an input is, in words Sinex keeps: the origin that wrote it, its

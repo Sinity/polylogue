@@ -14,6 +14,7 @@ pub struct FullProjectionComplete {
 pub struct RawInputProof {
     pub stamp: String,
     pub position: i64,
+    pub policy_epoch: i64,
     pub scope: String,
 }
 
@@ -25,6 +26,7 @@ pub enum RawInputCoverage {
     },
     Incomplete {
         reason: String,
+        basis: ReplayBasisStatus,
     },
     #[default]
     NotRequested,
@@ -40,6 +42,13 @@ pub struct ProjectionCoverage {
 /// A native delivered marker is delivery eligibility, not local application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DeliveredCompletion {
+    pub stream_instance: String,
+    pub stream_sequence: u64,
+}
+
+/// A staged native delivery can be acknowledged without retiring producer work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NativeDeliveryCursor {
     pub stream_instance: String,
     pub stream_sequence: u64,
 }
@@ -78,6 +87,12 @@ pub struct ReplayState {
     pub cursor: Option<ReplayCursor>,
     pub coverage: Option<ProjectionCoverage>,
     pub completion: Option<DeliveredCompletion>,
+    #[serde(default)]
+    pub staged_delivery: Option<NativeDeliveryCursor>,
+    /// Only an authenticated PublicContext write-purpose reply supplies this.
+    /// The snapshot raw-input stamp above remains the request basis.
+    #[serde(default)]
+    pub publication: Option<RawInputProof>,
     /// Actual owner erasure Q. Only a real completed prefix at or beyond Q can
     /// clear this fence; it never advances the applied position itself.
     pub erasure_fence: Option<i64>,
@@ -117,6 +132,16 @@ pub enum ReplayBasisStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "control", rename_all = "snake_case")]
 pub enum ReplayControl {
+    Reset {
+        scope: String,
+        policy_epoch: i64,
+    },
+    Delivered {
+        delivery: NativeDeliveryCursor,
+    },
+    Coverage {
+        coverage: RawInputCoverage,
+    },
     Page {
         page: ReplayPage,
     },
@@ -166,4 +191,29 @@ pub struct NativeFactContext {
     pub kind_definition_hash: String,
     pub projection: ProjectionIdentity,
     pub origin: ConfirmedOrigin,
+}
+
+impl ReplayState {
+    /// The signed full basis remains at P while actual native completion can
+    /// extend its applied prefix to Q. No copied stamp is relabeled as Q.
+    pub fn certified_position(&self) -> Option<i64> {
+        let applied = self.applied_position?;
+        let coverage = self.coverage.as_ref()?;
+        (self.availability == ProjectionAvailability::Certified
+            && self.erasure_fence.is_none()
+            && applied >= coverage.projection.position
+            && self.policy_epoch == Some(coverage.policy_epoch)
+            && self.scope.as_deref() == Some(coverage.projection.scope.as_str()))
+        .then_some(applied)
+    }
+}
+
+impl RawInputProof {
+    /// Identity comparison for already authenticated proof envelopes. It does
+    /// not validate a stamp or establish its purpose or admission authority.
+    pub fn same_basis(&self, other: &Self) -> bool {
+        self.position == other.position
+            && self.policy_epoch == other.policy_epoch
+            && self.scope == other.scope
+    }
 }

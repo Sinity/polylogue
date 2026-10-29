@@ -15,6 +15,53 @@ impl Inner {
                 "confirmed facts require a primary cache".into(),
             ));
         }
+        if let Some((scope, policy_epoch)) = events.iter().find_map(|event| match &event.change {
+            crate::primary::ConfirmedChange::Control(control) => match control.as_ref() {
+                crate::primary::ReplayControl::Reset {
+                    scope,
+                    policy_epoch,
+                } => Some((scope, *policy_epoch)),
+                _ => None,
+            },
+            _ => None,
+        }) {
+            if events.len() != 1 || policy_epoch < 0 {
+                return Err(StoreError::Invalid(
+                    "owner replay reset must be a separate valid control page".into(),
+                ));
+            }
+            crate::primary::scope::restart(&mut self.index, &self.location, &self.resolver, scope)?;
+            let tx = self
+                .index
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            crate::primary::projection::save_replay(
+                &tx,
+                &crate::primary::ReplayState {
+                    scope: Some(scope.clone()),
+                    policy_epoch: Some(policy_epoch),
+                    ..Default::default()
+                },
+            )?;
+            tx.commit()?;
+            self.commits.committed();
+            self.derive_due = false;
+            self.derived_version = None;
+            return Ok(0);
+        }
+        let invalidates = events.iter().any(|event| match &event.change {
+            crate::primary::ConfirmedChange::Control(control) => matches!(
+                control.as_ref(),
+                crate::primary::ReplayControl::BasisStatus { .. }
+                    | crate::primary::ReplayControl::ErasedThrough { .. }
+                    | crate::primary::ReplayControl::Coverage {
+                        coverage: crate::primary::RawInputCoverage::Incomplete { .. }
+                    }
+            ),
+            _ => false,
+        });
+        if invalidates {
+            crate::primary::scope::invalidate(&self.index, &self.location)?;
+        }
         if let Some(reset) = events.iter().find(|event| {
             matches!(
                 event.change,
@@ -42,13 +89,23 @@ impl Inner {
             }
             return crate::primary::projection::position(&self.index);
         }
-        let before = crate::primary::projection::checkpoint(&self.index)?;
+        let before = (
+            crate::primary::projection::checkpoint(&self.index)?,
+            crate::primary::projection::replay_state(&self.index)?.certified_position(),
+        );
         let position = crate::primary::projection::apply(&mut self.index, &self.resolver, events)?;
-        if crate::primary::projection::checkpoint(&self.index)? != before {
+        let after = (
+            crate::primary::projection::checkpoint(&self.index)?,
+            crate::primary::projection::replay_state(&self.index)?.certified_position(),
+        );
+        if after != before {
             self.commits.committed();
             self.derive_due = true;
             self.search.wake();
             self.report.transactions += 1;
+        }
+        if crate::primary::scope::require_readable(&self.index).is_ok() {
+            self.location.read_scope.finish_reset();
         }
         Ok(position)
     }
@@ -59,13 +116,14 @@ impl Inner {
                 .as_ref()
                 .ok_or_else(|| StoreError::Invalid("this writer is standalone".into()))?,
         );
-        let after = crate::primary::projection::position(&self.index)?;
+        let state = crate::primary::projection::replay_state(&self.index)?;
         let identity = crate::primary::cache_identity(&self.index)?;
-        let scope = crate::primary::scope::current(&self.index)?;
-        let events = sinex.confirmed(after, &identity, scope.as_deref())?;
+        let events = sinex.confirmed(&state, &identity)?;
         let applied = self.apply_confirmed(&events)?;
         // Staging is durable even when a large position has not reached its barrier.
-        sinex.acknowledge(applied)?;
+        let state = crate::primary::projection::replay_state(&self.index)?;
+        sinex.acknowledge(&state)?;
+        crate::primary::derived::publish(&self.index, sinex.as_ref(), &state)?;
         Ok(applied)
     }
 

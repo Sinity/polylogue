@@ -9,10 +9,14 @@ fn cache(path: &std::path::Path) -> Connection {
         .unwrap();
     index.execute_batch(SCHEMA).unwrap();
     index
+        .execute_batch(crate::primary::derived::SCHEMA)
+        .unwrap();
+    index
 }
 
 fn input(position: i64, id: &str) -> Confirmed {
     Confirmed {
+        native: None,
         position,
         output_index: 0,
         event: format!("event-{id}"),
@@ -31,6 +35,7 @@ fn input(position: i64, id: &str) -> Confirmed {
 }
 fn barrier(position: i64) -> Confirmed {
     Confirmed {
+        native: None,
         position,
         output_index: 0,
         event: String::new(),
@@ -141,6 +146,7 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
         &[
             input(1, "source"),
             Confirmed {
+                native: None,
                 position: 2,
                 output_index: 0,
                 event: "authored".into(),
@@ -160,6 +166,7 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
             &resolver,
             &[
                 Confirmed {
+                    native: None,
                     position,
                     output_index: 0,
                     event: "event-source".into(),
@@ -193,6 +200,7 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
             &resolver,
             &[
                 Confirmed {
+                    native: None,
                     position: 6,
                     output_index: 0,
                     event: "event-source".into(),
@@ -239,6 +247,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         extents: vec![extent.encode()],
     };
     let facts = |position, id: &str, blob_offset| Confirmed {
+        native: None,
         position,
         output_index: 0,
         event: format!("event-{id}"),
@@ -365,6 +374,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
     };
     let products = crate::primary::products::parse(&key, 1, &step).unwrap();
     let mut changes = vec![Confirmed {
+        native: None,
         position: 1,
         output_index: 0,
         event: "input-fact".into(),
@@ -390,6 +400,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
             .into_iter()
             .enumerate()
             .map(|(index, product)| Confirmed {
+                native: None,
                 position: 1,
                 output_index: index as u64,
                 event: format!("parsed-{index}"),
@@ -428,6 +439,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         &resolver,
         &[
             Confirmed {
+                native: None,
                 position: 2,
                 output_index: 0,
                 event: "blob-fact".into(),
@@ -447,6 +459,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
             &resolver,
             &[
                 Confirmed {
+                    native: None,
                     position,
                     output_index: 0,
                     event: "blob-fact".into(),
@@ -509,6 +522,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
         .collect::<Vec<_>>();
     assert_ne!(ids[0], ids[1]);
     let mut changes = vec![Confirmed {
+        native: None,
         position: 1,
         output_index: 0,
         event: "input-fact".into(),
@@ -534,6 +548,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
             .into_iter()
             .enumerate()
             .map(|(index, product)| Confirmed {
+                native: None,
                 position: 1,
                 output_index: index as u64,
                 event: format!("parsed-{index}"),
@@ -547,6 +562,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
         &resolver,
         &[
             Confirmed {
+                native: None,
                 position: 2,
                 output_index: 0,
                 event: "parsed-0".into(),
@@ -565,6 +581,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
         &resolver,
         &[
             Confirmed {
+                native: None,
                 position: 3,
                 output_index: 0,
                 event: "parsed-0".into(),
@@ -588,3 +605,5 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
 
 mod checkpoints;
 mod receipts;
+
+mod replay;

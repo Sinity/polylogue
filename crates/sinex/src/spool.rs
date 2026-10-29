@@ -98,6 +98,8 @@ pub(crate) struct Prepared {
     /// Derived from the immutable Events envelope, never its operation name.
     pub canonical: bool,
     pub canonical_scope: Option<String>,
+    #[serde(default)]
+    pub canonical_epoch: Option<i64>,
     pub request: bool,
     pub group: Option<Group>,
     #[serde(skip)]
@@ -1259,6 +1261,14 @@ impl Spool {
                     coverage: Some(proof),
                     ..
                 } => Some(proof.scope.clone()),
+                _ => None,
+            },
+            canonical_epoch: match &frame {
+                Ingress::Events {
+                    source: None,
+                    coverage: Some(proof),
+                    ..
+                } => Some(proof.policy_epoch),
                 _ => None,
             },
             request,

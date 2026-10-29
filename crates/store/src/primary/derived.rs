@@ -4,25 +4,14 @@
 use super::{Product, ProductWrite, Sinex};
 use crate::{Result, StoreError};
 use polylogue_model::work_products::{
-    self, NativeEvidence, ReadingSource, SelectedBackground, SelectedMessage, WorkMessage,
-    WorkSnapshot,
+    self, ReadingSource, SelectedBackground, SelectedMessage, WorkMessage, WorkSnapshot,
 };
 use polylogue_model::{Message, Session, SessionId, WrittenBy};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-const SELECTION: &str = "polylogue-confirmed-selection-1";
-pub(crate) const SCHEMA: &str = "
-CREATE TABLE primary_derived (
- identity TEXT PRIMARY KEY, session TEXT NOT NULL, source_position INTEGER NOT NULL,
- body BLOB, cancelled_at INTEGER
-) STRICT;
-CREATE TABLE primary_derived_parent (
- identity TEXT NOT NULL REFERENCES primary_derived(identity) ON DELETE CASCADE,
- event TEXT NOT NULL, PRIMARY KEY(identity,event)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX primary_derived_source ON primary_derived(session,source_position);
-CREATE TABLE primary_work_dirty (session TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;
-";
+mod outbox;
+pub use outbox::stage_products;
+pub(crate) use outbox::{SCHEMA, publish};
 
 fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
     crate::encoding::pack_bytes(&serde_json::to_vec(value)?)
@@ -41,89 +30,28 @@ fn session(product: &Product) -> Option<&SessionId> {
 }
 
 /// Called after rematerialization and before the position transaction commits.
-/// Own snapshot confirmations only retire intents; they never become reducer input.
 pub(crate) fn stage(
     tx: &Transaction<'_>,
     position: i64,
     counter: i64,
-    publisher: bool,
+    proof: Option<&super::RawInputProof>,
 ) -> Result<()> {
-    tx.execute_batch("DROP TABLE IF EXISTS temp.primary_work_changed; CREATE TEMP TABLE primary_work_changed(session TEXT PRIMARY KEY) STRICT;")?;
+    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS primary_candidate AS SELECT * FROM primary_fact WHERE 0; CREATE TEMP VIEW IF NOT EXISTS primary_next AS SELECT * FROM primary_candidate UNION ALL SELECT f.* FROM main.primary_fact f WHERE NOT EXISTS(SELECT 1 FROM primary_candidate c WHERE c.event=f.event);")?;
+    outbox::confirmed(tx, position)?;
     tx.execute("INSERT OR IGNORE INTO primary_work_dirty SELECT session FROM primary_candidate WHERE kind='parsed' AND session IS NOT NULL UNION SELECT f.session FROM primary_fact f JOIN primary_candidate c ON c.event=f.event WHERE f.kind='parsed' AND f.session IS NOT NULL UNION SELECT f.session FROM primary_fact f JOIN primary_candidate c ON c.input=f.input WHERE c.kind='input' AND f.kind='parsed' AND f.session IS NOT NULL",[])?;
     tx.execute("INSERT OR IGNORE INTO primary_work_dirty SELECT id FROM session WHERE changed=?1 AND EXISTS(SELECT 1 FROM primary_candidate WHERE kind IN ('parsed','input','blob'))",[counter])?;
-    let mut query=tx.prepare("SELECT product FROM primary_candidate WHERE kind='derived' AND state='live' AND product IS NOT NULL")?;
-    let mut rows = query.query([])?;
-    while let Some(row) = rows.next()? {
-        if let Product::WorkSnapshot { snapshot } = product(&row.get::<_, Vec<u8>>(0)?)? {
-            let body = pack(&snapshot)?;
-            tx.execute(
-                "DELETE FROM primary_derived WHERE session=?1 AND source_position=?2 AND body=?3",
-                params![snapshot.session_id.to_string(), snapshot.position, body],
-            )?;
-        }
-    }
-    drop(rows);
-    drop(query);
-    // A later observation may invalidate an intent before it was admitted.
-    // Retain its exact identity until filesystem cleanup succeeds after commit.
-    tx.execute("UPDATE primary_derived SET body=NULL,cancelled_at=?1 WHERE cancelled_at IS NULL AND EXISTS(SELECT 1 FROM primary_derived_parent p LEFT JOIN primary_next f ON f.event=p.event WHERE p.identity=primary_derived.identity AND coalesce(f.state,'missing')<>'live')",[position])?;
-    if !publisher {
+    let Some(proof) = proof else {
         return Ok(());
+    };
+    if proof.position != position || proof.scope.is_empty() || proof.stamp.is_empty() {
+        return Err(StoreError::Invalid(
+            "canonical publication proof differs from the applied transaction".into(),
+        ));
     }
-    tx.execute(
-        "INSERT INTO primary_work_changed SELECT session FROM primary_work_dirty",
-        [],
-    )?;
-    let mut changed = tx.prepare("SELECT session FROM primary_work_changed ORDER BY session")?;
-    let mut rows = changed.query([])?;
-    while let Some(row) = rows.next()? {
-        let id = SessionId::parse(&row.get::<_, String>(0)?)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
-        if let Some(pk) = tx
-            .query_row(
-                "SELECT pk FROM session WHERE id=?1",
-                [id.to_string()],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-        {
-            crate::derive::select_confirmed(tx, pk)?;
-        }
-        let snapshot = snapshot(tx, &id, position)?;
-        snapshot
-            .validate()
-            .map_err(|error| StoreError::Invalid(error.into()))?;
-        let body = pack(&snapshot)?;
-        let mut causal = blake3::Hasher::new();
-        let mut parent_query =
-            tx.prepare("SELECT event FROM primary_work_parent ORDER BY event")?;
-        let mut parent_rows = parent_query.query([])?;
-        while let Some(row) = parent_rows.next()? {
-            let event: String = row.get(0)?;
-            causal.update(&(event.len() as u64).to_le_bytes());
-            causal.update(event.as_bytes());
-        }
-        let identity = format!(
-            "work-snapshot:{}:{}:{}:{}",
-            work_products::VERSION,
-            SELECTION,
-            position,
-            blake3::hash(&serde_json::to_vec(&(
-                &snapshot.session_id,
-                causal.finalize().to_hex().as_str(),
-                &body
-            ))?)
-            .to_hex()
-        );
-        tx.execute("INSERT OR IGNORE INTO primary_derived(identity,session,source_position,body) VALUES (?1,?2,?3,?4)",params![identity,id.to_string(),position,body])?;
-        tx.execute("INSERT OR IGNORE INTO primary_derived_parent(identity,event) SELECT ?1,event FROM primary_work_parent",[identity])?;
-        tx.execute(
-            "DELETE FROM primary_work_dirty WHERE session=?1",
-            [id.to_string()],
-        )?;
-    }
-    Ok(())
+    graph::stage(tx, proof)
 }
+
+mod graph;
 
 fn hash_message(message: &Message) -> Result<[u8; 32]> {
     Ok(message.content_hash()?.0)
@@ -148,25 +76,40 @@ fn selected(
     .then_some((input, seq, ordinal)))
 }
 
-fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSnapshot> {
+fn snapshot(
+    index: &Connection,
+    work: &work_products::membership::LogicalWork,
+    membership: work_products::SnapshotMembership,
+    position: i64,
+) -> Result<WorkSnapshot> {
+    let id = work
+        .root
+        .as_ref()
+        .ok_or_else(|| StoreError::Invalid("a selected work has no established root".into()))?;
+    index.execute_batch("DROP TABLE IF EXISTS temp.primary_work_physical; CREATE TEMP TABLE primary_work_physical(session TEXT PRIMARY KEY) STRICT;")?;
+    for session in &work.physical {
+        index.execute(
+            "INSERT INTO primary_work_physical VALUES (?1)",
+            [session.to_string()],
+        )?;
+    }
     index.execute_batch("DROP TABLE IF EXISTS temp.primary_work_message; CREATE TEMP TABLE primary_work_message(event TEXT PRIMARY KEY, input TEXT NOT NULL, seq INTEGER NOT NULL, ordinal INTEGER NOT NULL, id TEXT NOT NULL, product BLOB NOT NULL) STRICT; DROP TABLE IF EXISTS temp.primary_work_parent; CREATE TEMP TABLE primary_work_parent(event TEXT PRIMARY KEY) STRICT;")?;
     let mut session_facts: Option<Session> = None;
-    let mut alive = false;
     let mut sources = Vec::new();
-    let mut native = Vec::new();
+    let native = Vec::new();
+    let mut native_unavailable = Vec::new();
     let mut backgrounds = Vec::new();
-    let mut query=index.prepare("SELECT event,product,state FROM primary_next WHERE kind='parsed' AND session=?1 AND product IS NOT NULL ORDER BY input,chain,step_start,admitted,source_order,event")?;
-    let mut rows = query.query([id.to_string()])?;
+    let mut query=index.prepare("SELECT event,product,state FROM primary_next WHERE kind='parsed' AND session IN (SELECT session FROM primary_work_physical) AND product IS NOT NULL ORDER BY input,chain,step_start,admitted,source_order,event")?;
+    let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(1)?;
         let fact = product(&bytes)?;
-        if session(&fact) != Some(id) {
+        if session(&fact).is_none_or(|session| !work.physical.contains(session)) {
             continue;
         }
         if row.get::<_, String>(2)? != "live" {
             continue;
         }
-        alive = true;
         let event: String = row.get(0)?;
         let reading = fact.reading().expect("parsed fact has reading");
         let chosen = if let Product::Message {
@@ -179,10 +122,12 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
         };
         let contributes = match &fact {
             Product::Session { facts, .. } => {
-                if let Some(session) = &mut session_facts {
-                    session.merge(facts);
-                } else {
-                    session_facts = Some(facts.clone());
+                if &facts.id == id {
+                    if let Some(session) = &mut session_facts {
+                        session.merge(facts);
+                    } else {
+                        session_facts = Some(facts.clone());
+                    }
                 }
                 true
             }
@@ -223,17 +168,9 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
                 .iter()
                 .any(|key| facts.data.get(*key).is_some())
                 {
-                    if let Some(range) = &facts.range {
-                        let location:Option<(String,u64)>=index.query_row("SELECT id,?3-offset FROM source_material WHERE input=?1 AND chain=?2 AND offset<=?3 AND offset+length>=?3 ORDER BY offset DESC LIMIT 1",params![reading.input.id,reading.chain,range.0],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-                        if let Some((material, anchor)) = location {
-                            native.push(NativeEvidence {
-                                event: event.clone(),
-                                material,
-                                anchor,
-                                data: facts.data.clone(),
-                            });
-                        }
-                    }
+                    // SourceRef authenticates the receiver, but does not attest
+                    // native acquisition rather than imported hook claims.
+                    native_unavailable.push("native_acquisition_authority_unavailable".to_string());
                 }
                 true
             }
@@ -257,7 +194,7 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
             [event],
         )?;
     }
-    let retired = !alive;
+    let retired = false;
     let session = session_facts;
     let mut messages = Vec::new();
     let mut query = index.prepare(
@@ -317,7 +254,7 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
     if let Some(error) = error {
         return Err(error);
     }
-    let unavailable = if sources
+    let mut unavailable = if sources
         .iter()
         .any(|source| source.selected && source.projection.is_some())
     {
@@ -325,8 +262,12 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
     } else {
         Vec::new()
     };
+    unavailable.extend(native_unavailable);
+    unavailable.sort();
+    unavailable.dedup();
     let snapshot = WorkSnapshot {
         reducer_version: work_products::VERSION,
+        membership,
         position,
         session_id: id.clone(),
         session,
@@ -341,49 +282,88 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
     Ok(snapshot)
 }
 
-/// After the position transaction commits, publish immutable intents in order.
-/// Removing one requires its confirmed product, never its publication receipt.
-pub(crate) fn publish(index: &Connection, sinex: &dyn Sinex) -> Result<()> {
-    let applied = super::projection::position(index)?;
-    let mut query=index.prepare("SELECT identity,body,cancelled_at FROM primary_derived ORDER BY source_position,session,identity")?;
-    let mut rows = query.query([])?;
-    let mut discarded = Vec::new();
-    while let Some(row) = rows.next()? {
-        let identity: String = row.get(0)?;
-        if let Some(position) = row.get::<_, Option<i64>>(2)? {
-            sinex.discard_confirmed(
-                &[identity.clone(), format!("{identity}:observation")],
-                position,
-                applied,
-            )?;
-            discarded.push(identity);
-            continue;
-        }
-        let bytes: Vec<u8> = row.get(1)?;
-        let snapshot: WorkSnapshot = crate::encoding::unpack_json(&bytes)?;
-        let mut parents = index
-            .prepare("SELECT event FROM primary_derived_parent WHERE identity=?1 ORDER BY event")?;
-        let parents = parents
-            .query_map([&identity], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        sinex.prepare_named_products(
-            &identity,
-            &[ProductWrite {
-                product: Product::WorkSnapshot { snapshot },
-                location: None,
-                parents,
-                machine: None,
-                output_index: 0,
-            }],
-        )?;
-    }
-    drop(rows);
-    drop(query);
-    for identity in discarded {
-        index.execute("DELETE FROM primary_derived WHERE identity=?1", [identity])?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests;
+
+/// Internal indexed keys for retained canonical products, independent of UI references.
+pub(crate) fn reference(product: &Product) -> Result<Option<String>> {
+    let natural = match product {
+        Product::WorkSnapshot { snapshot } => serde_json::json!([
+            "work_snapshot",
+            snapshot.session_id,
+            snapshot.reducer_version
+        ]),
+        Product::WorkComponentStatus { status } => serde_json::json!([
+            "work_component_status",
+            status.component_kind,
+            status.sessions().collect::<Vec<_>>()
+        ]),
+        _ => return Ok(None),
+    };
+    Ok(Some(format!(
+        "canonical:{}",
+        blake3::hash(&serde_json::to_vec(&natural)?).to_hex()
+    )))
+}
+
+/// Canonical records are retained as typed facts, never fed back into raw rows.
+pub(crate) fn validate_confirmed(product: &Product) -> Result<()> {
+    let result = match product {
+        Product::WorkSnapshot { snapshot } => snapshot.validate(),
+        Product::WorkComponentStatus { status } => status.validate(),
+        _ => return Ok(()),
+    };
+    result.map_err(|reason| StoreError::Invalid(reason.into()))
+}
+
+pub(crate) fn component_status(
+    conn: &Connection,
+    sessions: &[SessionId],
+) -> Result<Option<work_products::ComponentStatus>> {
+    super::scope::require_readable(conn)?;
+    let state = super::projection::replay_state(conn)?;
+    if state.availability != super::ProjectionAvailability::Certified
+        || state.erasure_fence.is_some()
+    {
+        return Err(StoreError::Invalid(
+            "canonical component status has no current owner projection".into(),
+        ));
+    }
+    let mut sessions = sessions.to_vec();
+    sessions.sort_by_key(ToString::to_string);
+    sessions.dedup();
+    if sessions.is_empty() {
+        return Err(StoreError::Invalid(
+            "a component needs physical session IDs".into(),
+        ));
+    }
+    let natural = serde_json::json!([
+        "work_component_status",
+        work_products::component::ComponentKind::LogicalWork,
+        sessions
+    ]);
+    let reference = format!(
+        "canonical:{}",
+        blake3::hash(&serde_json::to_vec(&natural)?).to_hex()
+    );
+    let mut query = conn.prepare("SELECT product FROM primary_fact WHERE reference=?1 AND state='live' AND native_context IS NOT NULL ORDER BY admitted,event")?;
+    let mut rows = query.query([reference])?;
+    let mut found = None;
+    while let Some(row) = rows.next()? {
+        let Product::WorkComponentStatus { status } = product(&row.get::<_, Vec<u8>>(0)?)? else {
+            return Err(StoreError::Invalid(
+                "canonical component reference has another product".into(),
+            ));
+        };
+        status
+            .validate()
+            .map_err(|reason| StoreError::Invalid(reason.into()))?;
+        if found.is_some() {
+            return Err(StoreError::Invalid(
+                "canonical component has conflicting live readings".into(),
+            ));
+        }
+        found = Some(*status);
+    }
+    Ok(found)
+}
