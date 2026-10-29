@@ -94,7 +94,7 @@ fn time_comparison_and_facets_page_with_the_query_cursor() {
             match page["next"].as_str() {
                 Some(next) => {
                     let command = crate::commands::command("query").unwrap();
-                    assert!((command.print)(&page).contains(&format!("--cursor {next}")));
+                    assert!((command.print)(&page, false).contains(&format!("--cursor {next}")));
                     cursor = Some(next.into());
                 }
                 None => break page["count"].as_u64().unwrap(),
@@ -287,7 +287,7 @@ fn clustered_fields_print_the_parameter_in_query_output() {
             .iter()
             .any(|n| n.as_str().is_some_and(|n| n.contains("5-minute gap")))
     );
-    assert!(crate::cli::print::query(&result).contains("5-minute gap"));
+    assert!(crate::cli::print::query(&result, false).contains("5-minute gap"));
 }
 
 #[test]

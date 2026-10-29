@@ -43,7 +43,13 @@ fn manual_is_an_offline_topic() {
     let matches = command()
         .try_get_matches_from(["polylogue", "manual"])
         .unwrap();
-    assert_eq!(run_local(&matches), Some(std::process::ExitCode::SUCCESS));
+    assert_eq!(
+        run_local(
+            &matches,
+            crate::config::OutputConfig::new(false, false, false, None)
+        ),
+        Some(std::process::ExitCode::SUCCESS)
+    );
 }
 
 #[test]
@@ -309,4 +315,82 @@ fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
     let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
     assert_eq!(run(&matches, &startup, root.path()), ExitCode::from(3));
     peer.join().unwrap();
+}
+
+#[test]
+fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
+    use crate::config::OutputConfig;
+    let data = serde_json::json!({
+        "columns":[{"name":"text"}],
+        "rows":[{"text":"stored \x1b[31m λ", "snippet":{"text":"match stored \x1b[31m λ","marks":[[0,5]]}}],
+        "count":1
+    });
+    let original = data.clone();
+    for (stdout, stderr, no_color, term) in [
+        (false, false, false, Some("xterm")),
+        (true, false, false, Some("xterm")),
+        (false, true, false, Some("xterm")),
+        (true, true, false, Some("xterm")),
+        (true, true, true, Some("xterm")),
+        (true, true, false, Some("dumb")),
+    ] {
+        let output = OutputConfig::new(stdout, stderr, no_color, term);
+        let command = crate::commands::command("query").unwrap();
+        let text = (command.print)(&data, output.stdout_color());
+        assert_eq!(text.contains("\x1b[1m"), output.stdout_color());
+        assert!(
+            !text.contains("\x1b[31m"),
+            "archived ANSI must remain inert"
+        );
+        assert!(text.contains("\\x1b[31m"));
+        let error = print::diagnostic(
+            "invalid_query",
+            "stored \x1b[31m λ",
+            Some("query λ"),
+            output.stderr_color(),
+        );
+        assert_eq!(error.contains("\x1b[1m"), output.stderr_color());
+        assert!(!error.contains("\x1b[31m"));
+        assert!(error.contains("\\x1b[31m"));
+        assert!(error.ends_with("polylogue: try: query λ\n"));
+        let json = print::json(&data, output.stdout_color());
+        assert!(!json.contains('\x1b'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+            original
+        );
+    }
+    assert_eq!(data, original);
+}
+
+#[test]
+fn help_and_parse_errors_use_captured_stdout_and_stderr_policies() {
+    let help = command()
+        .try_get_matches_from(["polylogue", "--help"])
+        .unwrap_err();
+    let error = command()
+        .try_get_matches_from(["polylogue", "--unknown-option"])
+        .unwrap_err();
+    assert!(!help.use_stderr());
+    assert!(error.use_stderr());
+    // The parser produces plain text before the displaying client's styling.
+    assert!(!help.render().ansi().to_string().contains('\x1b'));
+    assert!(!error.render().ansi().to_string().contains('\x1b'));
+    for (stdout, stderr, no_color, term) in [
+        (true, false, false, Some("xterm")),
+        (false, true, false, Some("xterm")),
+        (false, false, false, Some("xterm")),
+        (true, true, true, Some("xterm")),
+        (true, true, false, Some("dumb")),
+    ] {
+        let output = crate::config::OutputConfig::new(stdout, stderr, no_color, term);
+        assert_eq!(
+            parse_text(&help, output).contains("\x1b[1m"),
+            output.stdout_color()
+        );
+        assert_eq!(
+            parse_text(&error, output).contains("\x1b[1m"),
+            output.stderr_color()
+        );
+    }
 }

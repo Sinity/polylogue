@@ -22,7 +22,7 @@ pub(crate) fn output(
                 )
             );
         } else {
-            print!("{}", print::json(data));
+            print!("{}", print::json(data, false));
         }
         return ExitCode::SUCCESS;
     }
@@ -39,7 +39,7 @@ pub(crate) fn output(
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(json, "attachment_output", &e, 1),
+        Err(e) => fail(startup.output, json, "attachment_output", &e, 1),
     }
 }
 

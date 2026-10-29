@@ -16,7 +16,7 @@ fn startup(home: &ClaudeHome) -> crate::config::Startup {
                     home.dir.path().join("config").into_os_string(),
                 ),
             ]),
-            output: crate::config::OutputConfig::new(false, false, true),
+            output: crate::config::OutputConfig::new(false, false, true, None),
             clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
             identity: Some(Identity {
                 machine: "synthetic-machine".into(),

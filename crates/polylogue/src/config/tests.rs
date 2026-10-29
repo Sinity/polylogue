@@ -9,7 +9,7 @@ fn process(root: &Path) -> ProcessInputs {
                 root.join("config").into_os_string(),
             ),
         ]),
-        output: OutputConfig::new(false, false, false),
+        output: OutputConfig::new(false, false, false, None),
         clock: WallClock::fixed("2026-03-07T18:00:00Z".parse().unwrap()),
         identity: Some(Identity {
             machine: "synthetic-machine".into(),
@@ -114,10 +114,10 @@ fn remote_listen_requires_a_loaded_token_and_never_reads_it_again() {
 }
 #[test]
 fn output_and_grammar_inputs_need_no_deployment_or_machine_identity() {
-    let output = OutputConfig::new(true, true, true);
+    let output = OutputConfig::new(true, true, true, None);
     assert!(!output.stdout_color());
     assert!(!output.stderr_color());
-    assert!(OutputConfig::new(true, false, false).stdout_color());
+    assert!(OutputConfig::new(true, false, false, None).stdout_color());
     let environment = EnvSnapshot::from_values([
         ("CODEX_THREAD_ID".into(), "synthetic-thread".into()),
         ("POLYLOGUE_AUTH_TOKEN_FILE".into(), "/secret-path".into()),
@@ -306,4 +306,29 @@ fn synthetic_archive_gets_an_explicit_day_without_operator_outlets() {
             .is_err()
     );
     assert_ne!(startup.config.archive, separate.archive);
+}
+
+#[test]
+fn captured_terminal_hints_disable_both_sinks_without_environment_rereads() {
+    let environment = EnvSnapshot::from_values([("TERM".into(), "dumb".into())]);
+    let output = OutputConfig::new(
+        true,
+        true,
+        environment.get_os("NO_COLOR").is_some(),
+        environment.text("TERM").unwrap(),
+    );
+    assert!(!output.stdout_color());
+    assert!(!output.stderr_color());
+    let environment = EnvSnapshot::from_values([
+        ("TERM".into(), "xterm".into()),
+        ("NO_COLOR".into(), "".into()),
+    ]);
+    let output = OutputConfig::new(
+        true,
+        true,
+        environment.get_os("NO_COLOR").is_some(),
+        environment.text("TERM").unwrap(),
+    );
+    assert!(!output.stdout_color());
+    assert!(!output.stderr_color());
 }

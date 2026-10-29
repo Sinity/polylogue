@@ -36,7 +36,13 @@ pub(crate) fn run(
 ) -> ExitCode {
     match deliver(values, request, startup, accepted) {
         Ok(code) => ExitCode::from(code),
-        Err(DeliveryError::Text(error)) => fail(values.flag("json"), "read_output", &error, 1),
+        Err(DeliveryError::Text(error)) => fail(
+            startup.output,
+            values.flag("json"),
+            "read_output",
+            &error,
+            1,
+        ),
         Err(DeliveryError::Answer(answer)) => {
             let code = answer.exit_code();
             if values.flag("json") {
@@ -48,9 +54,14 @@ pub(crate) fn run(
                     )
                 );
             } else if let command_surface::Answer::Error { error, notes, .. } = answer.as_ref() {
-                eprintln!(
-                    "polylogue: {}",
-                    polylogue_render::terminal::escape(&error.message)
+                eprint!(
+                    "{}",
+                    super::print::diagnostic(
+                        error.code.as_deref().unwrap_or("read_output"),
+                        &error.message,
+                        error.suggestion.as_deref(),
+                        startup.output.stderr_color()
+                    )
                 );
                 if let Some(hint) = &error.hint {
                     eprintln!("{}", polylogue_render::terminal::escape(hint));

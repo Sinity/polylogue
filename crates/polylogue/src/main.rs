@@ -48,7 +48,9 @@ pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 fn main() -> ExitCode {
     let process = match config::ProcessInputs::capture() {
         Ok(process) => process,
-        Err(error) => return startup_error(error),
+        Err(error) => {
+            return startup_error(error, config::OutputConfig::new(false, false, true, None));
+        }
     };
     let arguments = std::env::args_os().collect::<Vec<_>>();
     if process.environment.get_os("COMPLETE").is_some() {
@@ -108,14 +110,14 @@ fn main() -> ExitCode {
         Ok(matches) => matches,
         Err(error) => {
             client_pipe_signal();
-            error.exit();
+            return cli::parse_error(error, process.output);
         }
     };
     let native = native_host(&matches);
     if !daemon_command(&matches) {
         client_pipe_signal();
     }
-    if let Some(result) = cli::run_local(&matches) {
+    if let Some(result) = cli::run_local(&matches, process.output) {
         return result;
     }
     let overrides = config::Overrides::from_matches(&matches);
@@ -126,7 +128,7 @@ fn main() -> ExitCode {
     {
         let archive = match config::archive_location(&process, &overrides) {
             Ok(archive) => archive,
-            Err(error) => return startup_error(error),
+            Err(error) => return startup_error(error, process.output),
         };
         let text = arguments
             .iter()
@@ -134,14 +136,17 @@ fn main() -> ExitCode {
             .collect::<Option<Vec<_>>>();
         if let Some(text) = text {
             matches = match row_numbers::rewrite_args(text, &archive) {
-                Ok(arguments) => cli::command().get_matches_from(arguments),
-                Err(error) => return startup_error(error),
+                Ok(arguments) => match cli::command().try_get_matches_from(arguments) {
+                    Ok(matches) => matches,
+                    Err(error) => return cli::parse_error(error, process.output),
+                },
+                Err(error) => return startup_error(error, process.output),
             };
         }
     }
     let startup = match config::Startup::load(&process, overrides) {
         Ok(startup) => startup,
-        Err(error) => return startup_error(error),
+        Err(error) => return startup_error(error, process.output),
     };
     protocol::caller::initialize(&process.environment, startup.config.requests.machine());
     if native {
@@ -151,7 +156,7 @@ fn main() -> ExitCode {
         );
     }
     let Some(cwd) = process.cwd.as_deref() else {
-        return startup_error("the working directory is unavailable");
+        return startup_error("the working directory is unavailable", process.output);
     };
     cli::run(&matches, &startup, cwd)
 }
@@ -181,10 +186,10 @@ fn client_pipe_signal() {
     }
 }
 
-fn startup_error(error: impl std::fmt::Display) -> ExitCode {
-    eprintln!(
+fn startup_error(error: impl std::fmt::Display, output: config::OutputConfig) -> ExitCode {
+    eprint!(
         "{}",
-        polylogue_render::terminal::escape(&format!("polylogue: {error}"))
+        cli::print::diagnostic("", &error.to_string(), None, output.stderr_color())
     );
     ExitCode::from(2)
 }

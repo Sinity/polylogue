@@ -51,6 +51,7 @@ impl EnvSnapshot {
             "POLYLOGUE_AUTH_TOKEN_FILE",
             "PAGER",
             "NO_COLOR",
+            "TERM",
             "NOTIFY_SOCKET",
             "WATCHDOG_USEC",
             "WATCHDOG_PID",
@@ -100,6 +101,7 @@ impl EnvSnapshot {
             })
             .transpose()
     }
+    #[cfg(test)]
     pub fn caller_environment(&self) -> BTreeMap<String, String> {
         [
             "CLAUDE_CODE_SESSION_ID",
@@ -130,11 +132,16 @@ pub struct OutputConfig {
     no_color: bool,
 }
 impl OutputConfig {
-    pub fn new(stdout_terminal: bool, stderr_terminal: bool, no_color: bool) -> Self {
+    pub fn new(
+        stdout_terminal: bool,
+        stderr_terminal: bool,
+        no_color: bool,
+        term: Option<&str>,
+    ) -> Self {
         Self {
             stdout_terminal,
             stderr_terminal,
-            no_color,
+            no_color: no_color || term == Some("dumb"),
         }
     }
     pub fn stdout_color(self) -> bool {
@@ -165,6 +172,7 @@ impl ProcessInputs {
             std::io::stdout().is_terminal(),
             std::io::stderr().is_terminal(),
             environment.get_os("NO_COLOR").is_some(),
+            environment.get_os("TERM").and_then(OsStr::to_str),
         );
         Ok(Self {
             environment,
@@ -690,7 +698,7 @@ impl Startup {
             clock: engine.clock.clone(),
             engine,
             mode: crate::daemon::service::ArchiveMode::Standalone,
-            output: OutputConfig::new(false, false, true),
+            output: OutputConfig::new(false, false, true, None),
             lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
                 &EnvSnapshot::from_values([]),
                 0,

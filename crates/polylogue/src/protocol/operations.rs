@@ -232,7 +232,10 @@ impl<C: CommandType> Operation for TypedCommand<C> {
 
     fn render_text(&self, answer: &Self::Response) -> String {
         let command = crate::commands::command(C::NAME).expect("typed command exists");
-        (command.print)(&serde_json::to_value(answer).expect("typed answer serializes"))
+        (command.print)(
+            &serde_json::to_value(answer).expect("typed answer serializes"),
+            false,
+        )
     }
 }
 

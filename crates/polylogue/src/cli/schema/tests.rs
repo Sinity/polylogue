@@ -99,7 +99,15 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
         diff_output.to_str().unwrap(),
     ])
     .unwrap();
-    assert_eq!(diff(command, &values, true), ExitCode::SUCCESS);
+    assert_eq!(
+        diff(
+            command,
+            &values,
+            crate::config::OutputConfig::new(false, false, false, None),
+            true
+        ),
+        ExitCode::SUCCESS
+    );
     let diff: serde_json::Value =
         serde_json::from_slice(&std::fs::read(diff_output).unwrap()).unwrap();
     assert_eq!(diff["comparable"], false);
@@ -152,7 +160,15 @@ fn artifact_diff_reports_declared_type_changes_in_empty_native_tables() {
         result.to_str().unwrap(),
     ])
     .unwrap();
-    assert_eq!(diff(command, &values, true), ExitCode::SUCCESS);
+    assert_eq!(
+        diff(
+            command,
+            &values,
+            crate::config::OutputConfig::new(false, false, false, None),
+            true
+        ),
+        ExitCode::SUCCESS
+    );
     let bytes = std::fs::read(result).unwrap();
     let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let origin = &report["origins"]["tool-database"];

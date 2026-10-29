@@ -130,7 +130,7 @@ pub enum Action {
         ) -> ExitCode,
     },
     /// Runs in the calling process (the CLI only), with `--json`.
-    Local(fn(&Command, &Values, bool) -> ExitCode),
+    Local(fn(&Command, &Values, crate::config::OutputConfig, bool) -> ExitCode),
     ConfiguredLocal(fn(&Command, &Values, &crate::config::Startup, bool) -> ExitCode),
 }
 
@@ -160,7 +160,7 @@ pub struct Command {
     pub writes: bool,
     /// The answer as text for a person on the command line; `--json`
     /// prints the answer itself.
-    pub print: fn(&Value) -> String,
+    pub print: fn(&Value, bool) -> String,
     /// What the command line does with the answer in place of printing it
     /// (`export` writes a file, `continue --exec` runs the plan).
     pub output: Option<OutputHandler>,

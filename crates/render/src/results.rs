@@ -12,6 +12,11 @@ pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<(
     render_with_links(data, format, out, None, false)
 }
 
+/// The displaying client supplies its captured output policy.
+pub fn terminal_with_color(data: &Value, color: bool, out: &mut dyn Write) -> io::Result<()> {
+    render_with_links(data, Format::Terminal, out, None, color)
+}
+
 /// Plain text for a transcript whose displaying client chooses its styling.
 pub fn plain_terminal(data: &Value, out: &mut dyn Write) -> io::Result<()> {
     render_with_links(data, Format::Terminal, out, None, false)

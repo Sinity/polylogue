@@ -23,6 +23,8 @@ use std::process::ExitCode;
 /// their first word, and the bare query as the root's own arguments.
 pub fn command() -> clap::Command {
     let mut root = clap::Command::new("polylogue")
+        .color(clap::ColorChoice::Never)
+        .styles(clap::builder::Styles::plain())
         .version(env!("CARGO_PKG_VERSION"))
         .about("Search, read and measure your AI sessions")
         .arg(
@@ -217,7 +219,26 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
     Ok((c, values(c, m)))
 }
 
-pub fn run_local(matches: &ArgMatches) -> Option<ExitCode> {
+fn parse_text(error: &clap::Error, output: crate::config::OutputConfig) -> String {
+    let color = if error.use_stderr() {
+        output.stderr_color()
+    } else {
+        output.stdout_color()
+    };
+    polylogue_render::terminal::heading(&error.render().to_string(), color)
+}
+
+pub(crate) fn parse_error(error: clap::Error, output: crate::config::OutputConfig) -> ExitCode {
+    let text = parse_text(&error, output);
+    if error.use_stderr() {
+        eprint!("{text}");
+    } else {
+        print!("{text}");
+    }
+    ExitCode::from(u8::try_from(error.exit_code()).expect("Clap exit code fits u8"))
+}
+
+pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> Option<ExitCode> {
     let (command, matches) = chosen(matches)?;
     let Action::Local(run) = command.action else {
         return None;
@@ -225,6 +246,7 @@ pub fn run_local(matches: &ArgMatches) -> Option<ExitCode> {
     Some(run(
         command,
         &values(command, matches),
+        output,
         matches.get_flag("json"),
     ))
 }
@@ -234,9 +256,10 @@ pub fn run(
     startup: &crate::config::Startup,
     cwd: &std::path::Path,
 ) -> ExitCode {
+    let policy = startup.output;
     let json = matches.get_flag("json");
     let Some((cmd, m)) = chosen(matches) else {
-        return fail(json, "bad_request", "no such command", 2);
+        return fail(policy, json, "bad_request", "no such command", 2);
     };
     let mut values = values(cmd, m);
     values.0.insert("json".into(), Value::Bool(json));
@@ -252,6 +275,7 @@ pub fn run(
             .any(|argument| m.value_source(argument.name) == Some(ValueSource::CommandLine))
     {
         return fail(
+            policy,
             json,
             "bad_request",
             "--request cannot be mixed with operation arguments",
@@ -265,6 +289,7 @@ pub fn run(
             Ok(milliseconds) => command_surface::Deadline::Milliseconds(milliseconds),
             Err(_) => {
                 return fail(
+                    policy,
                     json,
                     "bad_request",
                     "deadline must be milliseconds or none",
@@ -281,6 +306,7 @@ pub fn run(
     let request = if let Some(raw) = raw {
         let Some(build) = cmd.build_typed else {
             return fail(
+                policy,
                 json,
                 "bad_request",
                 "this operation has no typed argument adapter",
@@ -289,14 +315,15 @@ pub fn run(
         };
         let arguments = match serde_json::from_str::<Value>(raw) {
             Ok(arguments) => arguments,
-            Err(error) => return fail(json, "bad_request", &error.to_string(), 2),
+            Err(error) => return fail(policy, json, "bad_request", &error.to_string(), 2),
         };
         let request = match build(arguments.clone(), &caller, &request_id) {
             Ok(request) => request,
-            Err(error) => return fail(json, "bad_request", &error.message, 2),
+            Err(error) => return fail(policy, json, "bad_request", &error.message, 2),
         };
         let Some(object) = arguments.as_object() else {
             return fail(
+                policy,
                 json,
                 "bad_request",
                 "operation arguments must be an object",
@@ -311,13 +338,13 @@ pub fn run(
         request
     } else {
         let build = match cmd.action {
-            Action::Local(run) => return run(cmd, &values, json),
+            Action::Local(run) => return run(cmd, &values, policy, json),
             Action::ConfiguredLocal(run) => return run(cmd, &values, startup, json),
             Action::Request(build) | Action::Stream { build, .. } => build,
         };
         match build(cmd, &values, &caller) {
             Ok(request) => request,
-            Err(message) => return fail(json, "bad_request", &message, 2),
+            Err(message) => return fail(policy, json, "bad_request", &message, 2),
         }
     };
     let call = match literal_arguments {
@@ -343,6 +370,7 @@ pub fn run(
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
+                policy,
                 json,
                 "daemon_required",
                 &format!(
@@ -358,9 +386,9 @@ pub fn run(
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
             ) =>
         {
-            return fail(json, "deadline_exceeded", &e.to_string(), 7);
+            return fail(policy, json, "deadline_exceeded", &e.to_string(), 7);
         }
-        Err(e) => return fail(json, "io", &e.to_string(), 1),
+        Err(e) => return fail(policy, json, "io", &e.to_string(), 1),
     };
     let outcome_code = answer.exit_code();
     if json && cmd.output.is_none() {
@@ -392,7 +420,7 @@ pub fn run(
                             )
                         );
                     } else {
-                        print!("{}", (cmd.print)(&data));
+                        print!("{}", (cmd.print)(&data, policy.stdout_color()));
                     }
                     ExitCode::from(outcome_code)
                 }
@@ -404,7 +432,7 @@ pub fn run(
             detail,
         } => {
             let code = crate::daemon::execution::exit_code(&kind);
-            fail_detail(json, &kind, &message, detail, code)
+            fail_detail(policy, json, &kind, &message, detail, code)
         }
     }
 }
@@ -414,34 +442,40 @@ pub fn run(
 pub fn resume_output(
     values: &Values,
     data: &Value,
-    _startup: &crate::config::Startup,
+    startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
     if !values.flag("exec") {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
         } else {
-            print!("{}", print::resume(data));
+            print!("{}", print::resume(data, startup.output.stdout_color()));
         }
         return ExitCode::SUCCESS;
     }
-    exec_plan(data)
+    exec_plan(data, startup.output)
 }
 
-fn exec_plan(data: &Value) -> ExitCode {
+fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
     use std::os::unix::process::CommandExt;
     let Some(native) = data.get("harness_command").filter(|n| !n.is_null()) else {
-        eprintln!(
+        eprint!(
             "{}",
-            polylogue_render::terminal::escape(&format!(
-                "polylogue: this session has no native resume; continue with context instead: {}",
-                data["context_assisted"]["program"]
-                    .as_str()
-                    .map_or_else(String::new, |_| format!(
-                        "polylogue takeover {}",
-                        data["session"].as_str().unwrap_or("")
-                    ))
-            ))
+            print::diagnostic(
+                "",
+                &format!(
+                    "this session has no native resume; continue with context instead: {}",
+                    data["context_assisted"]["program"].as_str().map_or_else(
+                        String::new,
+                        |_| format!(
+                            "polylogue takeover {}",
+                            data["session"].as_str().unwrap_or("")
+                        )
+                    )
+                ),
+                None,
+                output.stderr_color()
+            )
         );
         return ExitCode::from(1);
     };
@@ -458,9 +492,14 @@ fn exec_plan(data: &Value) -> ExitCode {
         cmd.current_dir(dir);
     }
     let err = cmd.exec();
-    eprintln!(
+    eprint!(
         "{}",
-        polylogue_render::terminal::escape(&format!("polylogue: could not run {program}: {err}"))
+        print::diagnostic(
+            "",
+            &format!("could not run {program}: {err}"),
+            None,
+            output.stderr_color()
+        )
     );
     ExitCode::FAILURE
 }
@@ -532,13 +571,20 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
     }
 }
 
-pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
-    fail_detail(json, kind, message, None, code)
+pub(crate) fn fail(
+    output: crate::config::OutputConfig,
+    json: bool,
+    kind: &str,
+    message: &str,
+    code: u8,
+) -> ExitCode {
+    fail_detail(output, json, kind, message, None, code)
 }
 
 /// An error with structured detail: printed whole for programs; for a
 /// person, the message and the corrected query when there is one.
 fn fail_detail(
+    output: crate::config::OutputConfig,
     json: bool,
     kind: &str,
     message: &str,
@@ -559,16 +605,17 @@ fn fail_detail(
             )
         );
     } else {
-        eprintln!(
+        eprint!(
             "{}",
-            polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
+            print::diagnostic(
+                kind,
+                message,
+                detail
+                    .as_ref()
+                    .and_then(|value| value["suggestion"].as_str()),
+                output.stderr_color()
+            )
         );
-        if let Some(s) = detail.as_ref().and_then(|d| d["suggestion"].as_str()) {
-            eprintln!(
-                "{}",
-                polylogue_render::terminal::escape(&format!("polylogue: try: {s}"))
-            );
-        }
     }
     ExitCode::from(crate::protocol::kind(kind).exit_code())
 }

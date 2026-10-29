@@ -141,7 +141,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
             let text = if command == "query" {
                 crate::cli::print::query_plain(&result)
             } else {
-                (declaration.print)(&result)
+                (declaration.print)(&result, false)
             };
             steps.push(Step {
                 title: title.into(),

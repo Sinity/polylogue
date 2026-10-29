@@ -32,9 +32,9 @@ pub fn run(
                 io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
             ) =>
         {
-            fail(true, "deadline_exceeded", &e.to_string(), 7)
+            fail(startup.output, true, "deadline_exceeded", &e.to_string(), 7)
         }
-        Err(e) => fail(true, "io", &e.to_string(), 1),
+        Err(e) => fail(startup.output, true, "io", &e.to_string(), 1),
     }
 }
 

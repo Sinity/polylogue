@@ -12,13 +12,13 @@ fn s(v: &Value) -> String {
 }
 
 /// The answer as indented JSON: commands without a text view.
-pub fn json(data: &Value) -> String {
+pub fn json(data: &Value, _color: bool) -> String {
     format!("{}\n", polylogue_render::terminal::json(data, true))
 }
 
 /// A query's rows as a table, or a measurement in its
 /// own text view.
-pub fn query(data: &Value) -> String {
+pub fn query(data: &Value, color: bool) -> String {
     if data["outcome"] == "measure" {
         let text = crate::daemon::measure::find(data["measure"].as_str().unwrap_or(""))
             .map_or(polylogue_render::measures::json as fn(&_) -> _, |(m, _)| {
@@ -34,14 +34,14 @@ pub fn query(data: &Value) -> String {
         return out;
     }
     let mut out = Vec::new();
-    let _ = polylogue_render::results::render(data, polylogue_render::Format::Terminal, &mut out);
+    let _ = polylogue_render::results::terminal_with_color(data, color, &mut out);
     String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Query text for the tour, whose final display handles styling.
 pub fn query_plain(data: &Value) -> String {
     if data["outcome"] == "measure" {
-        return query(data);
+        return query(data, false);
     }
     let mut out = Vec::new();
     let _ = polylogue_render::results::plain_terminal(data, &mut out);
@@ -49,7 +49,7 @@ pub fn query_plain(data: &Value) -> String {
 }
 
 /// The same typed read document, rendered for an MCP/model-facing transcript.
-pub fn read(data: &Value) -> String {
+pub fn read(data: &Value, _color: bool) -> String {
     let page: polylogue_model::read::ReadPage = serde_json::from_value(data.clone())
         .expect("read operation returns its declared page type");
     let mut bytes = Vec::new();
@@ -67,7 +67,7 @@ pub fn read(data: &Value) -> String {
 }
 
 /// A prepared brief, takeover or recall.
-pub fn context(data: &Value) -> String {
+pub fn context(data: &Value, _color: bool) -> String {
     polylogue_render::terminal::escape(&context_text(data))
 }
 
@@ -80,7 +80,7 @@ fn context_text(data: &Value) -> String {
 }
 
 /// `continue`: the sessions worth resuming here, or one session's plan.
-pub fn resume(data: &Value) -> String {
+pub fn resume(data: &Value, _color: bool) -> String {
     polylogue_render::terminal::escape(&resume_text(data))
 }
 
@@ -156,7 +156,7 @@ fn plan(data: &Value) -> String {
 }
 
 /// `chat list`: one line per chat action.
-pub fn chat_actions(data: &Value) -> String {
+pub fn chat_actions(data: &Value, _color: bool) -> String {
     polylogue_render::terminal::escape(&chat_actions_text(data))
 }
 
@@ -185,7 +185,7 @@ fn chat_actions_text(data: &Value) -> String {
 }
 
 /// `backfill start`, `list` and `cancel`: one line per job.
-pub fn backfill_jobs(data: &Value) -> String {
+pub fn backfill_jobs(data: &Value, _color: bool) -> String {
     polylogue_render::terminal::escape(&backfill_jobs_text(data))
 }
 
@@ -220,6 +220,28 @@ fn backfill_jobs_text(data: &Value) -> String {
         }
     }
     out
+}
+
+/// One escaped diagnostic for local and remote CLI failures. JSON uses its own encoder.
+pub(crate) fn diagnostic(
+    kind: &str,
+    message: &str,
+    suggestion: Option<&str>,
+    color: bool,
+) -> String {
+    let label = if kind.is_empty() {
+        format!("polylogue: {message}\n")
+    } else {
+        format!("polylogue: {kind}: {message}\n")
+    };
+    let mut text = polylogue_render::terminal::heading(&label, color);
+    if let Some(suggestion) = suggestion {
+        text.push_str(&polylogue_render::terminal::escape(&format!(
+            "polylogue: try: {suggestion}"
+        )));
+        text.push('\n');
+    }
+    text
 }
 
 #[cfg(test)]

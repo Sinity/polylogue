@@ -8,8 +8,13 @@ use std::{
     process::ExitCode,
 };
 
-pub fn diff(_: &Command, values: &Values, json: bool) -> ExitCode {
-    run(values, json, || {
+pub fn diff(
+    _: &Command,
+    values: &Values,
+    output: crate::config::OutputConfig,
+    json: bool,
+) -> ExitCode {
+    run(values, json, output, || {
         let read = |name| -> Result<Inference, String> {
             let file = File::open(values.text(name).unwrap_or_default())
                 .map_err(|_| format!("cannot read {name} schema"))?;
@@ -57,7 +62,7 @@ pub fn diff(_: &Command, values: &Values, json: bool) -> ExitCode {
 pub fn output(
     values: &Values,
     value: &serde_json::Value,
-    _startup: &crate::config::Startup,
+    startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
     if json && values.text("output").is_none() {
@@ -71,12 +76,13 @@ pub fn output(
         );
         return ExitCode::from(answer.exit_code());
     }
-    run(values, json, || Ok(value.clone()))
+    run(values, json, startup.output, || Ok(value.clone()))
 }
 
 fn run(
     values: &Values,
     json: bool,
+    output: crate::config::OutputConfig,
     action: impl FnOnce() -> Result<serde_json::Value, String>,
 ) -> ExitCode {
     let result = action().and_then(|value| {
@@ -97,7 +103,7 @@ fn run(
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => super::fail(json, "schema", &message, 1),
+        Err(message) => super::fail(output, json, "schema", &message, 1),
     }
 }
 
