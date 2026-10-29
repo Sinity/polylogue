@@ -63,10 +63,11 @@ impl TestArchive {
             Vec::new()
         };
         self.writer
+            .sender()?
             .store_group(
                 vec![crate::staging::PreparedBatch { batch, files }],
                 std::sync::Arc::new(self.archive.blobs()?),
-            )
+            )?
             .into_iter()
             .next()
             .expect("one source reading")
