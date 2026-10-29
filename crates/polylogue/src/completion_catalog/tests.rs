@@ -181,7 +181,7 @@ fn real_writer_deltas_publish_source_values_and_native_first_prompt() {
     let mut archive = WriterArchive::new();
     let subscription = archive.writer.sender().unwrap().completion_commits();
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let mut state = publisher::State::new(None, false);
+    let mut state = publisher::State::new(false);
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -316,7 +316,7 @@ fn unavailable_kept_schema_does_not_prevent_other_vocabulary_publication() {
         .kept_result("missing-shape", "sessions", "{}")
         .unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(None, false);
+    let mut publisher = publisher::State::new(false);
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -347,7 +347,7 @@ fn primary_unknown_checkpoint_does_not_activate_an_empty_catalog() {
     let fixture =
         polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(None, true);
+    let mut publisher = publisher::State::new(true);
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -432,4 +432,20 @@ fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates()
             .all(|candidate| !candidate.help.contains('\x1b')
                 && !candidate.help.contains('\u{202e}'))
     );
+}
+
+#[test]
+fn saved_output_fields_and_closed_values_publish_without_an_execution_clock() {
+    use polylogue_store::fixture::Fixture;
+    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("catalog");
+    let mut fixture=Fixture::new(&directory.path().join("archive")).unwrap();
+    fixture.note("saved_query",Some("by-action"),Some("tool_calls | group by action | count"),"session:codex:neutral").unwrap();
+    let reads=fixture.reads().unwrap();let mut publisher=publisher::State::new(false);
+    publisher.refresh(&reads.reader().unwrap(),&path,"synthetic").unwrap();
+    let reader=CatalogReader::open(&path,"synthetic").unwrap().unwrap();
+    let saved=reader.saved("by-action").unwrap().pop().unwrap();
+    let schema=saved.schema.unwrap();
+    let action=schema.fields.iter().find(|field|field.name=="action").unwrap();
+    assert!(action.values.iter().any(|value|value=="shell"));
+    assert!(schema.fields.iter().any(|field|field.name=="count"));
 }

@@ -1352,22 +1352,10 @@ pub(crate) fn start_with_catalog(
         .writes
         .as_ref()
         .map(WriterSender::completion_commits);
-    let completion_clock = if matches!(&runtime.daemon.mode, ModeState::Standalone) {
-        runtime
-            .daemon
-            .reads
-            .reader()
-            .ok()
-            .and_then(|reader| super::query::logical_day(&reader).ok())
-            .and_then(|day| polylogue_query::time::clock(now_ms(), day).ok())
-    } else {
-        None
-    };
     if !runtime.daemon.mode.blocked() {
         runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
             Arc::clone(&runtime.daemon),
             completion_commits,
-            completion_clock,
         )?);
     }
     let Some(mut engine) = engine.take() else {

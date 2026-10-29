@@ -6,8 +6,7 @@ use polylogue_store::{
     completion::{self, CatalogWriter, CommitSubscription, Metadata, SessionChange},
 };
 use query_language::{
-    ast::Source,
-    catalog::{Catalog, OutputSchema},
+    catalog::Catalog,
 };
 use std::{
     collections::BTreeMap,
@@ -28,7 +27,6 @@ impl Publisher {
     pub fn start(
         daemon: Arc<Daemon>,
         subscription: Option<CommitSubscription>,
-        clock: Option<polylogue_query::Clock>,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
@@ -36,7 +34,7 @@ impl Publisher {
         let thread = std::thread::Builder::new()
             .name("polylogue-completion".into())
             .spawn(move || {
-                let mut publisher = State::new(clock, daemon.archive.is_primary());
+                let mut publisher = State::new(daemon.archive.is_primary());
                 let mut last_error = None;
                 loop {
                     if stopped.load(Ordering::Acquire) {
@@ -102,18 +100,16 @@ pub(super) struct State {
     catalog: Catalog,
     definitions: BTreeMap<String, completion::Saved>,
     kept: BTreeMap<String, polylogue_query::Kept>,
-    clock: Option<polylogue_query::Clock>,
     requires_confirmed: bool,
 }
 impl State {
-    pub(super) fn new(clock: Option<polylogue_query::Clock>, requires_confirmed: bool) -> Self {
+    pub(super) fn new(requires_confirmed: bool) -> Self {
         Self {
             writer: None,
             position: None,
             catalog: super::base_catalog(),
             definitions: BTreeMap::new(),
             kept: BTreeMap::new(),
-            clock,
             requires_confirmed,
         }
     }
@@ -311,40 +307,18 @@ impl State {
                     first_note: definition.family.clone(),
                 });
         }
-        let options = self.clock.as_ref().map(|clock| polylogue_query::Options {
-            clock: clock.clone(),
-            origins: self
-                .catalog
-                .units
-                .first()
-                .map(|_| {
-                    polylogue_sources::origin::ORIGINS
-                        .iter()
-                        .map(|origin| origin.name.to_owned())
-                        .collect()
-                })
-                .unwrap_or_default(),
-            command_words: crate::commands::command_words(),
-            page_size: None,
-            random_seed: None,
-            embeddings: false,
-            self_session: None,
-            saved,
-            fields: vec![],
-            kept: self.kept.clone(),
-            chat_pages: vec![],
-        });
+        let bindings=polylogue_query::Bindings {
+            origins:polylogue_sources::origin::ORIGINS.iter().map(|origin|origin.name.to_owned()).collect(),
+            command_words:crate::commands::command_words(),saved,kept:self.kept.clone(),
+        };
         for definition in self.definitions.values_mut() {
             definition.parameters =
-                polylogue_query::compile::definition_parameters(&definition.text, &self.catalog)
+                bindings.definition_parameters(&definition.text)
                     .unwrap_or_default()
                     .into_iter()
                     .map(|name| completion::Parameter { name, kind: None })
                     .collect();
-            definition.schema = options
-                .as_ref()
-                .and_then(|options| options.output_schema(&definition.text).ok())
-                .or_else(|| native_schema(&definition.text, &self.catalog));
+            definition.schema=bindings.output_schema(&definition.text).ok();
             definition.help = if definition.parameters.is_empty() {
                 definition.text.clone()
             } else {
@@ -363,21 +337,6 @@ impl State {
         }
         Ok(())
     }
-}
-fn native_schema(text: &str, catalog: &Catalog) -> Option<OutputSchema> {
-    let query = polylogue_query::parse::with_catalog(text, catalog).ok()?;
-    if !query.stages.is_empty() || !query.attach.is_empty() {
-        return None;
-    }
-    let Source::Unit { unit, .. } = query.source else {
-        return None;
-    };
-    let unit = catalog.unit(&unit)?;
-    Some(OutputSchema {
-        unit: Some(unit.name.clone()),
-        fields: unit.fields.clone(),
-        main_time: unit.main_time.clone(),
-    })
 }
 const KNOWN_SETTINGS: &[(&str, &[&str])] = &[
     ("briefing.session_start", &["on", "off"]),
