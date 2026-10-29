@@ -322,9 +322,9 @@ fn http_callers_name_their_directory() {
 #[test]
 fn mcp_schemas_follow_the_arguments() {
     let s = schema(command("read").unwrap());
-    assert_eq!(s["required"], json!(["session"]));
-    assert_eq!(s["properties"]["budget"]["type"], "integer");
-    assert_eq!(s["properties"]["view"]["default"], "full");
+    assert!(s["properties"]["arguments"].is_object());
+    assert!(s["properties"]["request_id"].is_object());
+    assert!(s.to_string().contains("ResumeArguments"));
     assert_eq!(s["additionalProperties"], false);
     let s = schema(command("note add").unwrap());
     assert!(s["properties"]["request_id"].is_object());

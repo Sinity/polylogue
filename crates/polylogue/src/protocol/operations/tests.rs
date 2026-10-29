@@ -110,6 +110,35 @@ fn status_operation_uses_its_typed_answer_on_the_shared_socket_path() {
     );
 }
 
+fn closed_argument_names(
+    root: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> std::collections::BTreeSet<String> {
+    if let Some(reference) = schema["$ref"].as_str() {
+        let pointer = reference.strip_prefix('#').expect("local schema reference");
+        return closed_argument_names(
+            root,
+            root.pointer(pointer).expect("declared argument shape"),
+        );
+    }
+    if let Some(branches) = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(serde_json::Value::as_array)
+    {
+        return branches
+            .iter()
+            .flat_map(|branch| closed_argument_names(root, branch))
+            .collect();
+    }
+    assert_eq!(schema["type"], "object");
+    assert_eq!(schema["additionalProperties"], false);
+    schema["properties"]
+        .as_object()
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
 #[test]
 fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
     for command in crate::commands::COMMANDS
@@ -122,18 +151,8 @@ fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
             .map(|arg| arg.name.to_owned())
             .collect::<std::collections::BTreeSet<_>>();
         let schema = (command.typed_schemas.unwrap())().0;
-        assert_eq!(schema["type"], "object", "{}", command.name);
-        let typed = schema["properties"]
-            .as_object()
-            .map(|properties| {
-                properties
-                    .keys()
-                    .cloned()
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
-            .unwrap_or_default();
+        let typed = closed_argument_names(&schema, &schema);
         assert_eq!(typed, declared, "{}", command.name);
-        assert_eq!(schema["additionalProperties"], false, "{}", command.name);
     }
 }
 

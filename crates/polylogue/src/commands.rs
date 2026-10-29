@@ -684,7 +684,8 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Read,
         help: "Read a query or reference; write a consistent bundle with --to DIR",
         args: &[
-            pos("target", Kind::Text, "A query or canonical reference"),
+            pos_opt("target", Kind::Text, "A query or canonical reference; omitted only for a read continuation"),
+            opt("root_run", Kind::Text, "Original read run for an authenticated continuation"),
             Arg { default: Some("transcript"), ..opt("view", Kind::Choice(VIEWS), "The reading view") },
             opt("format", Kind::Choice(FORMATS), "The output format"),
             opt("delivery", Kind::Choice(&["page", "stream"]), "Page or finite SSE transfer"),
@@ -1480,7 +1481,11 @@ impl Values {
             }
         }
         let mut values = Values(object.into_iter().filter(|(_, v)| !v.is_null()).collect());
-        values.complete(command, surface)?;
+        // Typed argument schemas own conditional requirements and defaults.
+        // Completing a declaration here would mix disjoint argument forms.
+        if command.register.is_none() {
+            values.complete(command, surface)?;
+        }
         Ok(values)
     }
 
