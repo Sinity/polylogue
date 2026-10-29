@@ -1,5 +1,6 @@
 //! The one product SQL lowering backend and execution vocabulary.
 pub mod compile;
+pub mod continuation;
 pub mod execute;
 pub mod explain;
 pub mod facets;

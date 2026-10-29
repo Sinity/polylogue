@@ -304,7 +304,7 @@ impl Reader<'_> {
         if program.near.is_some() {
             versions.insert("ranking".into(), crate::vectors::writes().to_string());
         }
-        let context = CursorContext {
+        let mut context = CursorContext {
             question: plan.question_id(),
             clock: options.clock.clone(),
             resolved_times: program.resolved_times.clone(),
@@ -320,6 +320,7 @@ impl Reader<'_> {
             ]),
             versions,
         };
+        crate::query::continuation::compact_resolved_times(&mut context)?;
         scope.check()?;
         Ok(PreparedSelection {
             reader: std::ptr::from_ref(self).cast::<()>() as usize,
