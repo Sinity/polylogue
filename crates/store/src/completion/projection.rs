@@ -139,7 +139,7 @@ impl Reader<'_> {
         };
         let current = format!(
             "SELECT n.id,n.kind,n.key,n.value FROM source_note n WHERE n.first_note=?1 AND {}",
-            polylogue_model::note_sql::live_note("n")
+            crate::note_sql::live_note("n")
         );
         let mut live = conn.prepare(&current)?;
         while let Some(row) = rows.next()? {
