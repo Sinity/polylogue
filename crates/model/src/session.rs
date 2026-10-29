@@ -1,7 +1,9 @@
 use crate::{SessionId, Timestamp};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
     /// A conversation or agent run the operator started.
@@ -24,7 +26,9 @@ stored_names!(SessionKind {
 });
 
 /// Where a title came from, highest precedence first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleSource {
     /// The operator renamed it.
@@ -39,7 +43,7 @@ pub enum TitleSource {
     FileName,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Title {
     pub text: String,
     pub source: TitleSource,
@@ -47,7 +51,7 @@ pub struct Title {
 
 /// A session's own facts. Counts and times derived from its messages live
 /// in the index, not here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Session {
     pub id: SessionId,
     pub kind: SessionKind,
