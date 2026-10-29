@@ -218,7 +218,7 @@ struct Question<'a> {
 pub(super) fn question(program: &Program, options: &Options, why: bool) -> Result<String, Failure> {
     let failed = |_: serde_json::Error| invalid("the query context cannot be encoded");
     let mut compiled = serde_json::to_value(program).map_err(failed)?;
-// Presentation and execution-only count plans do not change selection.
+    // Presentation and execution-only count plans do not change selection.
 
     if let Some(fields) = compiled.as_object_mut() {
         for field in ["page_size", "query", "row_count_sql", "row_membership_sql"] {

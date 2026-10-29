@@ -102,13 +102,20 @@ impl Options {
 }
 
 /// Parameter metadata shares execution's AST visitor and never scans DSL text.
-pub fn definition_parameters(text: &str, catalog: &query_language::catalog::Catalog) -> Result<Vec<String>, QueryError> {
-    let mut query=crate::parse::with_catalog(text,catalog)?;
+pub fn definition_parameters(
+    text: &str,
+    catalog: &query_language::catalog::Catalog,
+) -> Result<Vec<String>, QueryError> {
+    let mut query = crate::parse::with_catalog(text, catalog)?;
     saved::Parameters::names(&mut query)
 }
 /// Output types for immutable kept columns, with no execution clock or I/O.
-pub fn columns_schema(catalog: &query_language::catalog::Catalog, unit: &str, columns: &[Column]) -> query_language::catalog::OutputSchema {
-    source::schema(catalog,unit,columns)
+pub fn columns_schema(
+    catalog: &query_language::catalog::Catalog,
+    unit: &str,
+    columns: &[Column],
+) -> query_language::catalog::OutputSchema {
+    source::schema(catalog, unit, columns)
 }
 
 /// A saved query's definition: the text of one revision of a

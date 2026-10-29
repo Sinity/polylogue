@@ -541,7 +541,19 @@ fn source_schema_exposes_native_relations_and_only_shaped_output_columns() {
 fn definition_metadata_uses_binding_visitor_and_preserves_quoted_dollars() {
     let text = "tool_calls where tool:$tool AND session.repo:$repo AND command:\"$literal\" | where outcome:$status";
     let options = opts(&[("activity", text)]);
-    assert_eq!(options.definition_parameters(text).unwrap(), ["tool", "repo", "status"]);
-    let program = compile("query:activity(tool=Bash,repo=morrow,status=error)", &options).unwrap();
-    assert!(program.params.iter().any(|parameter| matches!(parameter, Param::Text(value) if value.contains("$literal"))));
+    assert_eq!(
+        options.definition_parameters(text).unwrap(),
+        ["tool", "repo", "status"]
+    );
+    let program = compile(
+        "query:activity(tool=Bash,repo=morrow,status=error)",
+        &options,
+    )
+    .unwrap();
+    assert!(
+        program
+            .params
+            .iter()
+            .any(|parameter| matches!(parameter, Param::Text(value) if value.contains("$literal")))
+    );
 }
