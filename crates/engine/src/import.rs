@@ -412,7 +412,6 @@ impl Engine {
         hash: polylogue_model::BlobHash,
         size: u64,
     ) -> polylogue_store::Batch {
-        required_disposition: None,
         let mut observation = self.observation(path, facts);
         observation.import = member.map(|mut member| {
             member.format = Some(origin.name.into());
