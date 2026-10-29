@@ -134,7 +134,7 @@ fn prepared<T>(
     options.validate().map_err(|e| error("bad_request", e))?;
     let clock = d.query_clock()?;
     let ran_at: Timestamp = clock.now.into();
-    crate::daemon::query::with_ranking(reader, &d.warm, |embeddings, near| {
+    crate::daemon::query::with_ranking(reader, &d.warm, &d.config, |embeddings, near| {
         let ask = crate::daemon::query::Ask {
             text: target,
             cursor: None,
