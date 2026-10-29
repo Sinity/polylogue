@@ -238,3 +238,52 @@ fn typed_setting_catalog_is_a_real_table_answer() {
     ));
     assert!(invalid.value().is_none());
 }
+
+#[test]
+fn typed_import_uses_the_same_path_authority_and_recursive_answer_schema() {
+    let command = crate::commands::command("import").unwrap();
+    let build = command.build_typed.unwrap();
+    let remote = crate::commands::Caller {
+        surface: crate::commands::Surface::Mcp,
+        cwd: None,
+        json: true,
+    };
+    assert!(
+        build(
+            json!({"paths":["relative.json"]}),
+            &remote,
+            "import-witness"
+        )
+        .is_err()
+    );
+    let native = crate::commands::Caller {
+        cwd: Some("/synthetic/native".into()),
+        ..remote
+    };
+    let request = build(
+        json!({"paths":["relative.json"]}),
+        &native,
+        "import-witness",
+    )
+    .unwrap();
+    let crate::daemon::Request::Import { paths, request_id } = request else {
+        panic!("import operation");
+    };
+    assert_eq!(request_id, "import-witness");
+    assert_eq!(
+        paths,
+        vec![std::path::PathBuf::from("/synthetic/native/relative.json")]
+    );
+    let (_, answer) = command.typed_schemas.unwrap()();
+    let schema = answer.to_string();
+    assert!(schema.contains("ImportReport"));
+    assert!(schema.contains("user_state"));
+    assert!(
+        build(
+            json!({"paths":[],"author":"operator"}),
+            &native,
+            "import-witness"
+        )
+        .is_err()
+    );
+}

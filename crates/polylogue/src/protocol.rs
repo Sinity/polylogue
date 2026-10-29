@@ -2,6 +2,7 @@
 pub mod attachment;
 pub mod caller;
 pub mod complete;
+pub mod import;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;

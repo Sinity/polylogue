@@ -91,7 +91,7 @@ The commands this area owns, each with the reason it is a command rather than a 
 | bare `polylogue` | orientation |
 | `status [--json]` | a snapshot of the daemon, not of archive rows |
 | `daemon [--until-idle] [--json] [--archive DIR]` | runs the service |
-| `import PATH…` | brings an outside file into the archive ([capture.md#import](capture.md#import)) |
+| `import PATH…` | brings explicit daemon-host paths into the archive ([capture.md#import](capture.md#import)); relative paths require the accepting native caller’s working directory |
 | `verify` | an on-demand check of stored bytes |
 | `setting [NAME [VALUE]]` | writes an authored `setting` record |
 | `schema infer\|diff\|unread` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |

@@ -89,10 +89,15 @@ pub fn attachment(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn import(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let base = caller.cwd.clone().unwrap_or_default();
+    let paths = v.list("paths").into_iter().map(|path| {
+        let path = PathBuf::from(path);
+        if path.is_absolute() { Ok(path) }
+        else { caller.cwd.as_ref().map(|base| base.join(path)).ok_or_else(||
+            "relative import paths require a native caller working directory; supply an absolute path".to_string()) }
+    }).collect::<Result<Vec<_>, String>>()?;
     Ok(Request::Import {
         request_id: v.request_id(),
-        paths: v.list("paths").into_iter().map(|p| base.join(p)).collect(),
+        paths,
     })
 }
 
