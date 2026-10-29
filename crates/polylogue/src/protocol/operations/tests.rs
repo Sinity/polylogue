@@ -342,3 +342,46 @@ fn mixed_setting_reads_use_scope_fences_from_the_admitted_request() {
     assert!(read_scope_required(Some(command), Some(&read)));
     assert!(!read_scope_required(Some(command), Some(&write)));
 }
+
+#[test]
+fn typed_write_identity_comes_from_the_envelope_on_every_surface() {
+    let command = crate::commands::command("setting").unwrap();
+    let build = command.build_typed.unwrap();
+    for surface in [Surface::Cli, Surface::Http, Surface::Mcp] {
+        let caller = Caller {
+            surface,
+            cwd: None,
+            json: true,
+        };
+        assert!(
+            !command
+                .args_for(surface)
+                .any(|arg| arg.name == "request_id")
+        );
+        let read = build(json!({}), &caller, "catalog-envelope-id").unwrap();
+        assert!(matches!(
+            read,
+            crate::daemon::Request::Setting {
+                request_id: None,
+                ..
+            }
+        ));
+        let write = build(
+            json!({"key":"browser.actions","value":"on"}),
+            &caller,
+            "write-envelope-id",
+        )
+        .unwrap();
+        assert!(
+            matches!(write,crate::daemon::Request::Setting{request_id:Some(ref id),..} if id=="write-envelope-id")
+        );
+        assert!(
+            build(
+                json!({"key":"browser.actions","request_id":"in-arguments"}),
+                &caller,
+                "actual-envelope-id"
+            )
+            .is_err()
+        );
+    }
+}
