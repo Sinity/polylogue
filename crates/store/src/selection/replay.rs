@@ -58,7 +58,7 @@ impl Reader<'_> {
         // The current grant's root lookup supplies the question needed by the
         // existing seal. Its body is never executed before authentication.
         let run = self
-            .query_run(root_run, pending)?
+            .query_run_root(root_run, pending)?
             .ok_or_else(|| {
                 invalid(
                     "not_yet_available",
@@ -112,16 +112,22 @@ impl Reader<'_> {
             ));
         }
         crate::query_objects::validate_run(&run)?;
+        let binding = run.binding.original().ok_or_else(|| {
+            invalid(
+                "invalid_cursor",
+                "a continuation cannot be used as an original execution root",
+            )
+        })?;
         if run.id != root
             || run.question != question
-            || run.binding.hash().map_err(StoreError::from)? != expected_hash
+            || run.binding_hash().map_err(StoreError::from)? != expected_hash
         {
             return Err(invalid(
                 "stale_cursor",
                 "the acknowledged execution binding changed",
             ));
         }
-        let replay = &run.binding.replay.context;
+        let replay = &binding.replay.context;
         if replay.clock != captured.clock.wire()
             || replay.random_seed != captured.random_seed
             || replay.read_positions != captured.read_positions
@@ -151,7 +157,7 @@ impl Reader<'_> {
             context.ranking_identity,
             context.page_size,
         )?;
-        let inherited = match &run.binding.presentation {
+        let inherited = match &binding.presentation {
             polylogue_model::query_objects::ExecutionPresentation::Read { options, .. } => {
                 options.inherited
             }
@@ -165,7 +171,12 @@ impl Reader<'_> {
         selection.scope.check()?;
         selection.replay_authority = Some(ReplayAuthority {
             root,
-            binding: run.binding,
+            binding: match run.binding {
+                polylogue_model::query_objects::RunBinding::Original { execution } => *execution,
+                polylogue_model::query_objects::RunBinding::Continuation { .. } => {
+                    unreachable!("validated original root")
+                }
+            },
         });
         Ok((selection, opened.after))
     }

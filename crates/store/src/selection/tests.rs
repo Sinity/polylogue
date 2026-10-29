@@ -762,3 +762,54 @@ fn direct_authored_reference_uses_exact_family_revision_membership() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[test]
+fn native_event_read_target_uses_event_grain_without_rebinding_ordinary_queries() {
+    use crate::fixture::writer::WriterArchive;
+    use polylogue_model::{Event, Output, TimeQuality};
+    let mut archive = WriterArchive::new();
+    let output = Output {
+        events: vec![Event {
+            session: None,
+            kind: "native_event".into(),
+            at: None,
+            at_quality: TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: Some((0, 1)),
+            data: serde_json::json!({"synthetic":true}),
+        }],
+        ..Default::default()
+    };
+    archive.write_output("native-event", "claude-code", "synthetic/event", output, 1);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let semantic = reader
+        .prepare_query_selection("events", &options())
+        .unwrap();
+    let mut references = vec![];
+    reader
+        .visit_selection::<SelectionError>(&semantic, None, None, |row| {
+            references.push(row.reference.unwrap());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(references.len(), 1);
+    assert!(matches!(references[0], Reference::Event(_)));
+    let target = references[0].to_string();
+    let direct = reader.prepare_selection(&target, &options()).unwrap();
+    assert_eq!(direct.program().unit, Unit::Events);
+    assert_eq!(direct.direct_reference(), Some(&references[0]));
+    let mut selected = vec![];
+    reader
+        .visit_selection::<SelectionError>(&direct, None, None, |row| {
+            selected.push(row.reference.unwrap());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(selected, references);
+    let ordinary = reader.prepare_query_plan(&target, &options()).unwrap();
+    assert!(matches!(&ordinary.bound_query().query().source,
+        polylogue_query::ast::Source::Unit { unit, implicit: true, .. } if unit == "sessions"));
+}

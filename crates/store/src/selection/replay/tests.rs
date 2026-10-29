@@ -96,7 +96,9 @@ fn acknowledged_execution() -> (
                 },
                 None,
             ),
-            binding,
+            binding: polylogue_model::query_objects::RunBinding::Original {
+                execution: Box::new(binding),
+            },
         };
         let mut context = selection.cursor_context().clone();
         context
@@ -104,7 +106,7 @@ fn acknowledged_execution() -> (
             .insert("read_root_run".into(), run.id.to_string());
         context.versions.insert(
             "read_binding".into(),
-            run.binding.hash().unwrap().to_string(),
+            run.binding_hash().unwrap().to_string(),
         );
         context.versions.insert(
             "read_content".into(),

@@ -81,7 +81,9 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
             },
             None,
         ),
-        binding,
+        binding: polylogue_model::query_objects::RunBinding::Original {
+            execution: Box::new(binding),
+        },
     };
     let replay = reader
         .prepare_query_run_selection(
@@ -100,9 +102,11 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
         })
         .unwrap();
     assert_eq!(rows, vec![serde_json::json!({"id":"test:message"})]);
-    assert!(run.binding.query_options.why);
+    assert!(run.binding.original().unwrap().query_options.why);
     assert_eq!(
         run.binding
+            .original()
+            .unwrap()
             .query_options
             .self_session
             .as_ref()
@@ -111,7 +115,12 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
         "test:caller"
     );
     assert_eq!(
-        run.binding.accepted_request.as_ref().unwrap()["id"],
+        run.binding
+            .original()
+            .unwrap()
+            .accepted_request
+            .as_ref()
+            .unwrap()["id"],
         "accepted-operation"
     );
     assert_eq!(
@@ -131,6 +140,8 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
     let mut changed = run.clone();
     changed
         .binding
+        .original_mut()
+        .unwrap()
         .replay
         .context
         .versions
@@ -149,7 +160,7 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
             .kind(),
         "not_built"
     );
-    let mut wrong = run.binding.query_options.clone();
+    let mut wrong = run.binding.original().unwrap().query_options.clone();
     wrong.fields.push("role".into());
     assert_eq!(
         prepared
@@ -202,6 +213,9 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             ExecutionPresentation::Read {
                 options: Default::default(),
                 delivery: Default::default(),
+                format: Default::default(),
+                page_budget: Some(Default::default()),
+                direct_source: None,
             },
             None,
         )
@@ -225,7 +239,9 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             },
             None,
         ),
-        binding,
+        binding: polylogue_model::query_objects::RunBinding::Original {
+            execution: Box::new(binding),
+        },
     };
     let replay = reader
         .prepare_query_run_selection(&object, &run, &options.clock, None, None)

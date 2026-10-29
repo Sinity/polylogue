@@ -38,6 +38,21 @@ impl PreparedSelection<'_> {
                 "query execution requires semantic rows, not direct read presentation",
             ));
         }
+        if let ExecutionPresentation::Read {
+            direct_source: Some(source),
+            ..
+        } = &presentation
+        {
+            source
+                .validate()
+                .map_err(|error| invalid("invalid_query", error.to_string()))?;
+            if self.direct.as_ref() != Some(&source.origin().reference) {
+                return Err(invalid(
+                    "conflict",
+                    "span source differs from the accepted direct target",
+                ));
+            }
+        }
         query_options.direct_reference = self.direct.clone();
         let object = self.query_object()?;
         let definitions = self
@@ -104,36 +119,41 @@ impl Reader<'_> {
         page_size: Option<u64>,
     ) -> Result<PreparedSelection<'read>, SelectionError> {
         self.check()?;
+        let binding = run.binding.original().ok_or_else(|| {
+            invalid(
+                "invalid_cursor",
+                "execution replay requires the original root beginning",
+            )
+        })?;
         if run.question != object.id
-            || run.binding.replay.context.question != object.id
-            || run.binding.replay.bound_ast != object.identity_ast
-            || run.binding.replay.source_outputs != object.source_outputs
+            || binding.replay.context.question != object.id
+            || binding.replay.bound_ast != object.identity_ast
+            || binding.replay.source_outputs != object.source_outputs
         {
             return Err(invalid(
                 "invalid_query",
                 "execution binding names another query body",
             ));
         }
-        if clock.wire() != run.binding.replay.context.clock {
+        if clock.wire() != binding.replay.context.clock {
             return Err(invalid(
                 "stale_cursor",
                 "the authenticated execution clock changed",
             ));
         }
-        if run.binding.query_options.ranking_identity.as_deref() != ranking_identity {
+        if binding.query_options.ranking_identity.as_deref() != ranking_identity {
             return Err(invalid(
                 "stale_cursor",
                 "the captured ranking basis is unavailable",
             ));
         }
-        if self.query_scope_fingerprint()? != run.binding.replay.scope_fingerprint {
+        if self.query_scope_fingerprint()? != binding.replay.scope_fingerprint {
             return Err(invalid(
                 "scope_changed",
                 "the captured execution grant changed",
             ));
         }
-        let expected_catalog = run
-            .binding
+        let expected_catalog = binding
             .replay
             .context
             .versions
@@ -145,22 +165,22 @@ impl Reader<'_> {
                 )
             })?;
         let options = crate::query::execute::options_from_snapshot(
-            &run.binding.query_options,
+            &binding.query_options,
             clock.clone(),
-            run.binding.replay.context.random_seed,
+            binding.replay.context.random_seed,
             page_size,
         );
         let mut selection =
             self.prepare_query_object_selection(object, &options, expected_catalog)?;
         for key in ["compiler", "catalog", "scope", "ranking"] {
-            if selection.context.versions.get(key) != run.binding.replay.context.versions.get(key) {
+            if selection.context.versions.get(key) != binding.replay.context.versions.get(key) {
                 return Err(invalid(
                     "stale_cursor",
                     "the captured execution version is unavailable",
                 ));
             }
         }
-        let old = &run.binding.replay.context.read_positions;
+        let old = &binding.replay.context.read_positions;
         let current = &selection.context.read_positions;
         for key in ["generation", "index_file"] {
             if old.get(key) != current.get(key) {
@@ -180,18 +200,18 @@ impl Reader<'_> {
                 ));
             }
         }
-        if selection.program.resolved_times != run.binding.replay.context.resolved_times {
+        if selection.program.resolved_times != binding.replay.context.resolved_times {
             return Err(invalid("stale_cursor", "the resolved query times changed"));
         }
         if selection.context.versions.get("resolved_times")
-            != run.binding.replay.context.versions.get("resolved_times")
+            != binding.replay.context.versions.get("resolved_times")
         {
             return Err(invalid(
                 "stale_cursor",
                 "the resolved-time commitment changed",
             ));
         }
-        if let Some(reference) = &run.binding.query_options.direct_reference {
+        if let Some(reference) = &binding.query_options.direct_reference {
             let expected = polylogue_query::plan::prepare(
                 &reference_query(reference)?,
                 selection.plan.bindings(),
