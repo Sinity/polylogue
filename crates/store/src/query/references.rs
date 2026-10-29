@@ -93,6 +93,27 @@ pub(crate) fn membership(
             };
             format!("SELECT pk FROM event WHERE id={}", bind(id.clone()))
         }
+        Unit::Notes => {
+            let Reference::Assertion(revision) = reference else {
+                return None;
+            };
+            let root = bind(revision.root.clone());
+            let exact = revision
+                .revision
+                .as_ref()
+                .map(|id| format!(" AND n.id={}", bind(id.clone())))
+                .unwrap_or_default();
+            format!("SELECT n.rowid AS pk FROM source_note n WHERE n.first_note={root}{exact}")
+        }
+        Unit::Deliveries => {
+            let Reference::Delivery(id) = reference else {
+                return None;
+            };
+            format!(
+                "SELECT rowid AS pk FROM source_delivery WHERE id={}",
+                bind(id.clone())
+            )
+        }
         _ => return None,
     })
 }

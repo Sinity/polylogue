@@ -728,3 +728,37 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
         Some(Reference::MessageRange { .. })
     ));
 }
+
+#[test]
+fn direct_authored_reference_uses_exact_family_revision_membership() {
+    let (_dir, mut fixture) = fixture();
+    let first = fixture
+        .note("lesson", None, Some("first"), "session:test:one")
+        .unwrap();
+    let second = fixture
+        .note("lesson", None, Some("second"), "session:test:two")
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let reference = format!("assertion:{first}@{first}");
+    let prepared = reader.prepare_selection(&reference, &options()).unwrap();
+    let mut selected = Vec::new();
+    reader
+        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+            selected.push(row.reference.unwrap().to_string());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(selected, [reference]);
+    let wrong_family = reader
+        .prepare_selection(&format!("assertion:{first}@{second}"), &options())
+        .unwrap();
+    let mut count = 0;
+    reader
+        .visit_selection::<SelectionError>(&wrong_family, None, None, |_| {
+            count += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
