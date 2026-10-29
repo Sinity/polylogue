@@ -3,8 +3,6 @@
 
 use super::Request;
 use super::service::{self, Daemon, error};
-use polylogue_engine::Config;
-use polylogue_store::Archive;
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -283,14 +281,10 @@ fn raise_open_file_limit() {
     }
 }
 
-pub fn serve() -> std::io::Result<()> {
+pub fn serve(startup:&crate::config::Startup) -> std::io::Result<()> {
     raise_open_file_limit();
-    let root = Archive::default_root();
-    #[cfg(feature = "sinex")]
-    let mode = crate::sinex::configured();
-    #[cfg(not(feature = "sinex"))]
-    let mode = service::ArchiveMode::Standalone;
-    let runtime = service::start(&root, Config::from_env(), mode)?;
+    let root=&startup.config.archive;
+    let runtime=service::start(Arc::clone(&startup.config),startup.engine.clone(),startup.mode.clone())?;
     let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;
     eprintln!(
         "polylogue: serving {} on {}",

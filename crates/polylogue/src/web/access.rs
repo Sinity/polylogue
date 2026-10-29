@@ -14,27 +14,6 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-/// The default port of an archive's daemon.
-pub const DEFAULT_PORT: u16 = 8765;
-
-/// The port to listen on: `POLYLOGUE_HTTP_PORT` when set; a port the
-/// system assigns for an archive moved with `POLYLOGUE_ARCHIVE` (tests,
-/// demos, measurements), so it never takes the operator's 8765; otherwise
-/// 8765. Clients read the port from the `port` file either way.
-pub fn wanted_port() -> u16 {
-    if let Some(p) = std::env::var("POLYLOGUE_HTTP_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-    {
-        return p;
-    }
-    if std::env::var_os("POLYLOGUE_ARCHIVE").is_some() {
-        0
-    } else {
-        DEFAULT_PORT
-    }
-}
-
 /// A fresh random token, 32 bytes as hex.
 pub fn new_token() -> io::Result<String> {
     let mut bytes = [0u8; 32];
