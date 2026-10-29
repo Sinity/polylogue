@@ -90,3 +90,92 @@ fn fractional_query_bounds_select_exact_integer_index_instants() {
         [1]
     );
 }
+
+#[test]
+fn fractional_compiled_since_until_and_comparisons_keep_index_boundaries_exclusive() {
+    use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+    let temp = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(temp.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:fractional",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, at) in [("before", -1), ("zero", 0), ("one", 1), ("two", 2)] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role: "user",
+                    written_by: "human",
+                    at: Some(at),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let options = polylogue_query::Options {
+        clock: Clock::new(
+            "2026-10-07T10:00:00Z".parse().unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::UTC,
+                jiff::civil::Time::midnight(),
+            )
+            .unwrap(),
+        ),
+        origins: vec!["test".into()],
+        command_words: vec![],
+        page_size: None,
+        random_seed: Some(1),
+        embeddings: false,
+        self_session: None,
+        saved: Default::default(),
+        kept: Default::default(),
+        fields: vec!["id".into()],
+        chat_pages: vec![],
+    };
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (text, expected) in [
+        (
+            "messages where since 1970-01-01T00:00:00.0005Z | sort by at",
+            vec!["one", "two"],
+        ),
+        (
+            "messages where until 1970-01-01T00:00:00.0005Z | sort by at",
+            vec!["before", "zero"],
+        ),
+        (
+            "messages where at >= 1970-01-01T00:00:00.0005Z | sort by at",
+            vec!["one", "two"],
+        ),
+        (
+            "messages where at < 1970-01-01T00:00:00.0012Z | sort by at",
+            vec!["before", "zero", "one"],
+        ),
+        ("messages where at = 1970-01-01T00:00:00.0005Z", vec![]),
+    ] {
+        let program = crate::query::compile(text, &options).unwrap();
+        let params = program
+            .params
+            .iter()
+            .map(|param| match param {
+                crate::query::Param::Int(value) => crate::SqlValue::Int(*value),
+                crate::query::Param::Real(value) => crate::SqlValue::Real(*value),
+                crate::query::Param::Text(value) => crate::SqlValue::Text(value.clone()),
+            })
+            .collect::<Vec<_>>();
+        let rows = reader
+            .with_clock(&program.clock, || reader.query(&program.sql, &params))
+            .unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected,
+            "{text}"
+        );
+    }
+}

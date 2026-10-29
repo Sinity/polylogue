@@ -174,3 +174,51 @@ fn calendar_sql_daily_series_and_pooled_reads_agree_at_fractional_dst_boundaries
         )
     });
 }
+
+#[test]
+fn a_skipped_start_uses_the_first_valid_instant_and_a_skipped_date_is_empty() {
+    let gap = day("Europe/Warsaw", "02:30:01");
+    assert_eq!(
+        start(&gap, "2026-03-29".parse().unwrap()).unwrap(),
+        "2026-03-29T01:00:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_millisecond()
+    );
+    assert_eq!(
+        day_label(
+            &gap,
+            "2026-03-29T00:59:59.999Z"
+                .parse::<Timestamp>()
+                .unwrap()
+                .as_millisecond()
+        )
+        .unwrap(),
+        "2026-03-28"
+    );
+    assert_eq!(
+        day_label(
+            &gap,
+            "2026-03-29T01:00:00Z"
+                .parse::<Timestamp>()
+                .unwrap()
+                .as_millisecond()
+        )
+        .unwrap(),
+        "2026-03-29"
+    );
+    let apia = day("Pacific/Apia", "04:00:00");
+    let skipped = range(&apia, "2011-12-30".parse().unwrap()).unwrap();
+    assert_eq!(skipped.0, skipped.1);
+    assert_eq!(
+        day_label(
+            &apia,
+            "2011-12-30T12:00:00Z"
+                .parse::<Timestamp>()
+                .unwrap()
+                .as_millisecond()
+        )
+        .unwrap(),
+        "2011-12-29"
+    );
+}
