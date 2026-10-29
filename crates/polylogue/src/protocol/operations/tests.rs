@@ -298,3 +298,24 @@ fn typed_import_uses_the_same_path_authority_and_recursive_answer_schema() {
         .is_err()
     );
 }
+
+#[test]
+fn mixed_setting_reads_use_scope_fences_from_the_admitted_request() {
+    let command = crate::commands::command("setting").unwrap();
+    assert!(command.writes);
+    let caller = crate::commands::Caller {
+        surface: crate::commands::Surface::Http,
+        cwd: None,
+        json: true,
+    };
+    let build = command.build_typed.unwrap();
+    let read = build(json!({}), &caller, "catalog-read").unwrap();
+    let write = build(
+        json!({"key":"browser.actions","value":"on"}),
+        &caller,
+        "catalog-write",
+    )
+    .unwrap();
+    assert!(read_scope_required(Some(command), Some(&read)));
+    assert!(!read_scope_required(Some(command), Some(&write)));
+}

@@ -27,6 +27,7 @@ pub struct Accepted {
     pub cancellation: polylogue_store::read::limit::ReadCancellation,
     pub working_directory: Option<PathBuf>,
     pub invocation: Option<crate::operation::Invocation>,
+    pub admitted_request: Option<crate::daemon::Request>,
 }
 
 pub fn accept(
@@ -41,6 +42,7 @@ pub fn accept(
         cancellation,
         working_directory: None,
         invocation: None,
+        admitted_request: None,
     }
 }
 

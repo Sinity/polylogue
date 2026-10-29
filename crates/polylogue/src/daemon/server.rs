@@ -37,26 +37,6 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     None,
                 )),
                 Ok((request, caller)) => {
-                    if crate::commands::command(&request.operation)
-                        .is_some_and(|command| !command.writes)
-                    {
-                        match d.reads.scope_token() {
-                            Ok(scope) => read_scope = Some(scope),
-                            Err(error) => {
-                                let answer = service::store_error(&error).answer();
-                                if writeln!(
-                                    out,
-                                    "{}",
-                                    serde_json::to_string(&answer).expect("answer serializes")
-                                )
-                                .is_err()
-                                {
-                                    return;
-                                }
-                                continue;
-                            }
-                        }
-                    }
                     let (evidence, channel) =
                         crate::protocol::caller::peer(&out, &caller, d.config.requests.machine())
                             .unwrap_or_else(|_| {
@@ -77,23 +57,47 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     );
                     accepted.working_directory =
                         crate::protocol::caller::working_directory(&out).ok();
-                    if let Some(command) = crate::commands::command(&request.operation)
-                        && let crate::commands::Action::Stream { .. } = command.action
-                        && let Some(build) = command.build_typed
+                    let command = crate::commands::command(&request.operation);
+                    let caller = crate::commands::Caller {
+                        surface: if channel == polylogue_model::authorship::Channel::Mcp {
+                            crate::commands::Surface::Mcp
+                        } else {
+                            crate::commands::Surface::Cli
+                        },
+                        cwd: accepted.working_directory.clone(),
+                        json: true,
+                    };
+                    let internal = match command.and_then(|command| command.build_typed) {
+                        Some(build) => {
+                            match build(request.arguments.clone(), &caller, &request.request_id) {
+                                Ok(internal) => Some(internal),
+                                Err(failure) => {
+                                    let answer =
+                                        command_surface::Answer::<serde_json::Value>::error(
+                                            failure,
+                                        );
+                                    if writeln!(
+                                        out,
+                                        "{}",
+                                        serde_json::to_string(&answer).expect("answer serializes")
+                                    )
+                                    .is_err()
+                                    {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        None => None,
+                    };
+                    accepted.admitted_request = internal.clone();
+                    if crate::protocol::operations::read_scope_required(command, internal.as_ref())
                     {
-                        let caller = crate::commands::Caller {
-                            surface: if channel == polylogue_model::authorship::Channel::Mcp {
-                                crate::commands::Surface::Mcp
-                            } else {
-                                crate::commands::Surface::Cli
-                            },
-                            cwd: accepted.working_directory.clone(),
-                            json: true,
-                        };
-                        match build(request.arguments.clone(), &caller, &request.request_id) {
-                            Err(failure) => {
-                                let answer =
-                                    command_surface::Answer::<serde_json::Value>::error(failure);
+                        match d.reads.scope_token() {
+                            Ok(scope) => read_scope = Some(scope),
+                            Err(error) => {
+                                let answer = service::store_error(&error).answer();
                                 if writeln!(
                                     out,
                                     "{}",
@@ -105,35 +109,50 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                                 }
                                 continue;
                             }
-                            Ok(internal) if internal.streaming() => {
-                                let limit = request.deadline.duration(crate::protocol::operations::deadlines().get(command.latency))
-                                    .map_or_else(|| polylogue_store::read::limit::ReadLimit::without_deadline(cancellation.clone()), |duration| polylogue_store::read::limit::ReadLimit::new(duration, cancellation.clone()));
-                                let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
-                                let produced = limit.scope(|| match limit.check() {
-                                    Ok(()) => {
-                                        let invocation = accepted
-                                            .invocation
-                                            .clone()
-                                            .expect("canonical request captures admission");
-                                        d.resolve_operation_context(invocation).and_then(
-                                            |operation| {
-                                                crate::protocol::stream::produce_limited(
-                                                    &internal, d, &operation, &mut out, &limit,
-                                                )
-                                                .expect("stream command owns its request")
-                                            },
-                                        )
-                                    }
-                                    Err(error) => Err(service::store_error(&error)),
-                                });
-                                if let Err(response) = produced {
-                                    let _ = crate::protocol::stream::error(&mut out, &response);
-                                }
-                                let _ = out.set_write_timeout(None);
-                                continue;
-                            }
-                            Ok(_) => {}
                         }
+                    }
+                    if let Some(command) = command
+                        && let crate::commands::Action::Stream { .. } = command.action
+                        && let Some(internal) = internal.filter(Request::streaming)
+                    {
+                        let limit = request
+                            .deadline
+                            .duration(crate::protocol::operations::deadlines().get(command.latency))
+                            .map_or_else(
+                                || {
+                                    polylogue_store::read::limit::ReadLimit::without_deadline(
+                                        cancellation.clone(),
+                                    )
+                                },
+                                |duration| {
+                                    polylogue_store::read::limit::ReadLimit::new(
+                                        duration,
+                                        cancellation.clone(),
+                                    )
+                                },
+                            );
+                        let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
+                        let produced = limit.scope(|| match limit.check() {
+                            Ok(()) => {
+                                let invocation = accepted
+                                    .invocation
+                                    .clone()
+                                    .expect("canonical request captures admission");
+                                d.resolve_operation_context(invocation)
+                                    .and_then(|operation| {
+                                        crate::protocol::stream::produce_limited(
+                                            &internal, d, &operation, &mut out, &limit,
+                                        )
+                                        .expect("stream command owns its request")
+                                    })
+                            }
+                            Err(error) => Err(service::store_error(&error)),
+                        });
+                        if let Err(response) = produced {
+                            let _ = crate::protocol::stream::error(&mut out, &response);
+                        }
+                        let _ = out.set_write_timeout(None);
+                        continue;
                     }
                     let origin = if channel == polylogue_model::authorship::Channel::Mcp {
                         command_surface::Origin::Mcp
