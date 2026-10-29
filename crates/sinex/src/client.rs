@@ -5,11 +5,7 @@
 //! stores them before it records the frame.
 use crate::{Config, Error, Result};
 mod confirmed;
-use async_nats::jetstream;
-use futures_util::StreamExt;
-use sinex_protocol::{
-    Acknowledgment, Ingress, ProducerHello, ProducerWelcome, RecordedQuery, Subjects,
-};
+use sinex_protocol::{Acknowledgment, Ingress, ProducerHello, ProducerWelcome, Subjects};
 use sinex_transport::frame_bytes;
 use std::collections::HashMap;
 use std::io::Read;
@@ -46,19 +42,21 @@ impl Client {
         &self,
         query: &sinex_protocol::ReplayScopeQuery,
     ) -> Result<Vec<sinex_protocol::ReplaySelection>> {
-        let reply = self
-            .client
-            .request(
-                self.subjects.replay_scope(&self.producer),
-                serde_json::to_vec(query)?.into(),
-            )
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let value: serde_json::Value = serde_json::from_slice(&reply.payload)?;
-        if let Some(reason) = value.get("refusal").and_then(serde_json::Value::as_str) {
-            return Err(Error::Invalid(reason.into()));
+        let mut query = query.clone();
+        let mut sequences = Vec::new();
+        loop {
+            let page: sinex_protocol::ReplayScopePage = self
+                .request(self.subjects.replay_scope(&self.producer), &query)
+                .await?;
+            sequences.extend(page.sequences);
+            match page.next {
+                Some(next) if query.after.is_none_or(|after| next > after) => {
+                    query.after = Some(next)
+                }
+                Some(_) => return Err(Error::Invalid("replay scope page did not advance".into())),
+                None => return Ok(sequences),
+            }
         }
-        serde_json::from_value(value).map_err(Error::Json)
     }
 
     pub(crate) async fn connect(
@@ -86,14 +84,15 @@ impl Client {
             .flush()
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let welcome = client
-            .request(
-                subjects.connect(&config.producer),
-                serde_json::to_vec(&ProducerHello::default())?.into(),
-            )
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let welcome: ProducerWelcome = serde_json::from_slice(&welcome.payload)?;
+        let welcome: ProducerWelcome = sinex_transport::replies::request_json(
+            &client,
+            subjects.connect(&config.producer),
+            &config.producer,
+            &ProducerHello::default(),
+            ACKNOWLEDGMENT_WAIT,
+        )
+        .await
+        .map_err(|error| Error::Unreachable(error.to_string()))?;
         if let Some(reason) = welcome.refusal {
             return Err(Error::Refused {
                 name: "connect".into(),
@@ -153,23 +152,19 @@ impl Client {
         &self,
         names: &[String],
     ) -> Result<HashMap<String, Acknowledgment>> {
-        let mut out = HashMap::new();
-        for chunk in names.chunks(500) {
-            let request = RecordedQuery {
-                frames: chunk.to_vec(),
-            };
-            let reply = self
-                .client
-                .request(
-                    self.subjects.recorded(&self.producer),
-                    serde_json::to_vec(&request)?.into(),
-                )
-                .await
-                .map_err(|e| Error::Unreachable(e.to_string()))?;
-            let acknowledgments: Vec<Acknowledgment> = serde_json::from_slice(&reply.payload)?;
-            out.extend(acknowledgments.into_iter().map(|a| (a.frame.clone(), a)));
-        }
-        Ok(out)
+        Ok(sinex_transport::producer::recorded(
+            &self.client,
+            &self.subjects,
+            &self.producer,
+            names,
+            &[],
+            ACKNOWLEDGMENT_WAIT,
+        )
+        .await
+        .map_err(|error| Error::Unreachable(error.to_string()))?
+        .into_iter()
+        .map(|ack| (ack.frame.clone(), ack))
+        .collect())
     }
 
     /// Writes `bytes` (`length` long, named `blob`) to the directory of
@@ -211,7 +206,7 @@ impl Client {
             }
             for prepared in page {
                 after = Some(prepared.order);
-                if prepared.acknowledged && !prepared.refused {
+                if prepared.acknowledged {
                     continue;
                 }
                 self.publish_prepared(prepared).await?;
@@ -281,32 +276,22 @@ impl Client {
     /// with the frame's contents, is. A lost acknowledgment is an error here;
     /// sending the frame again is answered from Sinex's record of it.
     async fn transmit(&mut self, name: &str, body: Vec<u8>) -> Result<Acknowledgment> {
-        let js = jetstream::new(self.client.clone());
-        js.publish(self.subjects.ingress(&self.producer), body.into())
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        loop {
-            let message = tokio::time::timeout(ACKNOWLEDGMENT_WAIT, self.acknowledgments.next())
-                .await
-                .map_err(|_| Error::Unreachable(format!("no acknowledgment of {name}")))?
-                .ok_or_else(|| Error::Unreachable("acknowledgments closed".into()))?;
-            let acknowledgment: Acknowledgment = serde_json::from_slice(&message.payload)?;
-            if acknowledgment.frame == name {
-                return Ok(acknowledgment);
-            }
-            // A body Sinex could not read as a frame is refused under no
-            // name; one frame is in flight at a time, so it is this one.
-            if acknowledgment.frame.is_empty()
-                && let Some(reason) = acknowledgment.refusal
-            {
-                return Err(Error::Refused {
-                    name: name.to_owned(),
-                    reason,
-                });
-            }
+        let frame: Ingress = serde_json::from_slice(&body)?;
+        if frame.frame() != name {
+            return Err(Error::Invalid(
+                "prepared transport changed frame identity".into(),
+            ));
         }
+        sinex_transport::producer::submit_frame(
+            &self.client,
+            &self.subjects,
+            &self.producer,
+            &mut self.acknowledgments,
+            &frame,
+            ACKNOWLEDGMENT_WAIT,
+        )
+        .await
+        .map_err(|error| Error::Unreachable(error.to_string()))
     }
 }
 

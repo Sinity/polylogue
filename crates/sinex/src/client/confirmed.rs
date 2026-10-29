@@ -2,139 +2,42 @@
 use super::Client;
 use crate::{Error, Result};
 use async_nats::jetstream;
-use base64::Engine;
 use futures_util::StreamExt;
 use polylogue_store::primary::{Confirmed, ConfirmedChange};
 use serde::de::DeserializeOwned;
 use sinex_protocol::{
     ConfirmedConsumer, ConfirmedConsumerReply, FetchEvent, FetchEventReply, FetchMaterial,
-    FetchMaterialReply, FetchPayload, FetchPayloadReply, FetchRange, PayloadReference,
+    FetchMaterialReply,
 };
-use std::io::{Seek, Write};
 use std::time::Duration;
 
 impl Client {
-    async fn request<T: DeserializeOwned>(
+    pub(crate) async fn request<T: DeserializeOwned + Send + 'static>(
         &self,
         subject: String,
-        body: impl serde::Serialize,
+        body: impl serde::Serialize + Sync,
     ) -> Result<T> {
-        let reply = self
-            .client
-            .request(subject, serde_json::to_vec(&body)?.into())
-            .await
-            .map_err(|error| Error::Unreachable(error.to_string()))?;
-        Ok(serde_json::from_slice(&reply.payload)?)
-    }
-
-    /// A referenced value is transferred in bounded units and checked before
-    /// any of it reaches the read index. A privacy change invalidates the hash.
-    async fn fetch_json<T: DeserializeOwned>(&self, reference: &PayloadReference) -> Result<T> {
-        self.transfer(reference.length, &reference.hash, async |offset, length| {
-            self.request(
-                self.subjects.fetch_payload(&self.producer),
-                FetchPayload {
-                    event: reference.event,
-                    offset,
-                    length,
-                    hash: reference.hash.clone(),
-                },
-            )
-            .await
-        })
+        sinex_transport::replies::request_json(
+            &self.client,
+            subject,
+            &self.producer,
+            &body,
+            Duration::from_secs(120),
+        )
         .await
-    }
-
-    async fn transfer<T: DeserializeOwned>(
-        &self,
-        total: u64,
-        hash: &str,
-        mut fetch: impl AsyncFnMut(u64, u64) -> Result<FetchPayloadReply>,
-    ) -> Result<T> {
-        let mut file = tempfile::tempfile()?;
-        let mut digest = blake3::Hasher::new();
-        let mut offset = 0u64;
-        while offset < total {
-            let length =
-                (total - offset).min((self.max_message.saturating_sub(4096) * 3 / 4).max(1) as u64);
-            let reply = fetch(offset, length).await?;
-            if let Some(reason) = reply.refusal {
-                return Err(Error::Refused {
-                    name: "payload transfer".into(),
-                    reason,
-                });
-            }
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(reply.data)
-                .map_err(|error| Error::Invalid(format!("payload transfer: {error}")))?;
-            if reply.offset != offset
-                || reply.total != total
-                || reply.hash != hash
-                || bytes.is_empty()
-                || bytes.len() as u64 > total - offset
-            {
-                return Err(Error::Invalid(
-                    "payload transfer changed its range or identity".into(),
-                ));
-            }
-            file.write_all(&bytes)?;
-            digest.update(&bytes);
-            offset += bytes.len() as u64;
-        }
-        if hash != format!("blake3:{}", digest.finalize().to_hex()) {
-            return Err(Error::Invalid(
-                "payload transfer failed its digest check".into(),
-            ));
-        }
-        file.rewind()?;
-        let mut deserializer = serde_json::Deserializer::from_reader(file);
-        deserializer.disable_recursion_limit();
-        let value = T::deserialize(&mut deserializer)?;
-        deserializer.end()?;
-        Ok(value)
+        .map_err(|error| Error::Unreachable(error.to_string()))
     }
 
     pub(crate) async fn fetch_material(
         &self,
         material: sinex_model::MaterialId,
     ) -> Result<FetchMaterialReply> {
-        let mut reply: FetchMaterialReply = self
+        let reply: FetchMaterialReply = self
             .request(
                 self.subjects.fetch_material(&self.producer),
-                FetchMaterial {
-                    material,
-                    range: None,
-                },
+                FetchMaterial { material },
             )
             .await?;
-        if let Some(reference) = reply.material_ref.clone() {
-            reply = self
-                .transfer(reference.length, &reference.hash, async |offset, length| {
-                    let reply: FetchMaterialReply = self
-                        .request(
-                            self.subjects.fetch_material(&self.producer),
-                            FetchMaterial {
-                                material,
-                                range: Some(FetchRange {
-                                    offset,
-                                    length,
-                                    hash: reference.hash.clone(),
-                                }),
-                            },
-                        )
-                        .await?;
-                    if let Some(reason) = reply.refusal {
-                        return Err(Error::Refused {
-                            name: format!("material {material}"),
-                            reason,
-                        });
-                    }
-                    reply
-                        .transfer
-                        .ok_or_else(|| Error::Invalid("material transfer supplied no bytes".into()))
-                })
-                .await?;
-        }
         if let Some(reason) = &reply.refusal {
             return Err(Error::Refused {
                 name: format!("material {material}"),
@@ -178,18 +81,9 @@ impl Client {
                 reason,
             });
         }
-        let mut event = if let Some(reference) = &reply.event_ref {
-            self.fetch_json::<sinex_protocol::ConfirmedEvent>(reference)
-                .await?
-        } else {
-            reply
-                .event
-                .ok_or_else(|| Error::Invalid("event fetch supplied no event".into()))?
-        };
-        if let Some(reference) = &reply.payload_ref {
-            event.payload = Some(self.fetch_json(reference).await?);
-            event.withheld = None;
-        }
+        let event = reply
+            .event
+            .ok_or_else(|| Error::Invalid("event fetch supplied no event".into()))?;
         if event.id != id || event.payload.is_none() {
             return Err(Error::Invalid(
                 "event fetch changed identity or withheld complete facts".into(),
@@ -223,12 +117,7 @@ impl Client {
         event: &sinex_protocol::ConfirmedEvent,
         after: i64,
     ) -> Result<Confirmed> {
-        let change = if event.commit_seq > after
-            && event.event_type.starts_with("polylogue.")
-            && !matches!(
-                event.event_type.as_str(),
-                "polylogue.tool_call" | "polylogue.turn"
-            ) {
+        let change = if event.commit_seq > after && event.event_type.starts_with("polylogue.") {
             let expected = crate::kinds::kind_reference(&event.event_type)?;
             if expected.version != event.kind_version {
                 return Err(Error::Invalid(format!(

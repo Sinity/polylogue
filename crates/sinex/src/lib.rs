@@ -282,12 +282,12 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::PendingCapture>> {
         Ok(self.pending_captures()?)
     }
-    fn complete_capture(
+    fn complete_captures(
         &self,
-        identity: &str,
+        identities: &[String],
         products: &[polylogue_store::primary::ProductWrite],
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
-        Ok(self.complete_capture(identity, products)?)
+        Ok(self.complete_captures(identities, products)?)
     }
     fn prepare_products(
         &self,
@@ -297,19 +297,65 @@ impl polylogue_store::primary::Sinex for Sinex {
     }
     fn prepare_request(
         &self,
-        request: &polylogue_store::UserRequest,
+        request: &polylogue_model::authored::PreparedRequest,
     ) -> polylogue_store::Result<polylogue_store::UserOutcome> {
         Ok(self.prepare_request(request)?)
+    }
+    fn canonical_publisher(&self) -> bool {
+        self.health
+            .lock()
+            .is_ok_and(|health| health.canonical_publisher)
+    }
+    fn visit_pending_requests(
+        &self,
+        visit: &mut dyn FnMut(
+            &polylogue_model::authored::PreparedRequest,
+        ) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        self.visit_pending_requests(visit)
+    }
+    fn visit_pending_blobs(
+        &self,
+        visit: &mut dyn FnMut(&polylogue_store::NewBlob) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        self.visit_pending_blobs(visit)
+    }
+    fn prepare_named_products(
+        &self,
+        identity: &str,
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_named_products(identity, products)?)
+    }
+    fn discard_confirmed(
+        &self,
+        identities: &[String],
+        position: i64,
+        applied: i64,
+    ) -> polylogue_store::Result<()> {
+        Ok(self
+            .spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .discard_confirmed(identities, position, applied)?)
+    }
+    fn prepare_reading(
+        &self,
+        root: &str,
+        version: &str,
+        visit: &mut dyn FnMut(
+            &mut dyn FnMut(polylogue_store::primary::ProductWrite) -> polylogue_store::Result<()>,
+        ) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        self.prepare_reading(root, version, visit)
     }
     fn confirmed(
         &self,
         after: i64,
         cache: &str,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        Ok(self.with(async |client| {
-            client.retry_prepared().await?;
-            client.confirmed(after, cache).await
-        })?)
+        self.resume_publication();
+        Ok(self.with(async |client| client.confirmed(after, cache).await)?)
     }
     fn acknowledge(&self, position: i64) -> polylogue_store::Result<()> {
         Ok(self.with(async |client| client.acknowledge(position).await)?)
