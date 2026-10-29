@@ -14,6 +14,7 @@ use query_language::{
 };
 use serde_json::Value;
 mod content;
+mod execution;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +74,7 @@ pub struct PreparedSelection<'read> {
     scope: ReadScopeToken,
     context: CursorContext,
     direct: Option<Reference>,
+    execution_options: polylogue_model::query_objects::QueryExecutionOptions,
 }
 impl PreparedSelection<'_> {
     pub fn query_object(
@@ -331,6 +333,7 @@ impl Reader<'_> {
             scope,
             context,
             direct,
+            execution_options: crate::query::execute::options_snapshot(options, false, None)?,
         })
     }
 

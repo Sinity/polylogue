@@ -349,3 +349,47 @@ impl<E> From<crate::StoreError> for StreamError<E> {
 
 #[cfg(test)]
 mod tests;
+
+/// Capture options that survive canonical semantic binding. Transfer size and
+/// current alias tables are deliberately outside the immutable execution input.
+pub fn options_snapshot(
+    options: &super::Options,
+    why: bool,
+    ranking_identity: Option<String>,
+) -> Result<polylogue_model::query_objects::QueryExecutionOptions, SelectionError> {
+    Ok(polylogue_model::query_objects::QueryExecutionOptions {
+        fields: options.fields.clone(),
+        self_session: options
+            .self_session
+            .as_deref()
+            .map(polylogue_model::SessionId::parse)
+            .transpose()
+            .map_err(|error| invalid(&error.to_string()))?,
+        embeddings: options.embeddings,
+        why,
+        ranking_identity,
+    })
+}
+
+/// Lowering takes saved definitions and kept schemas from the validated frozen
+/// Plan. It never needs current names, completion values or command vocabulary.
+pub fn options_from_snapshot(
+    options: &polylogue_model::query_objects::QueryExecutionOptions,
+    clock: query_language::time::Clock,
+    random_seed: u64,
+    page_size: Option<u64>,
+) -> super::Options {
+    super::Options {
+        clock,
+        origins: vec![],
+        command_words: vec![],
+        page_size,
+        random_seed: Some(random_seed),
+        embeddings: options.embeddings,
+        self_session: options.self_session.as_ref().map(ToString::to_string),
+        saved: Default::default(),
+        fields: options.fields.clone(),
+        kept: Default::default(),
+        chat_pages: vec![],
+    }
+}
