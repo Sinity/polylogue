@@ -67,6 +67,24 @@ pub enum SourceGeneration {
     Database { stream: RawStream, snapshot: DatabaseSnapshotToken, window: RawRange },
 }
 
+/// An actual retained body identifies one immutable predecessor-linked chain.
+/// Without it the owner must prove there is exactly one original root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawAcquisitionQuery {
+    pub generation: SourceGeneration,
+    pub anchor: Option<String>,
+}
+impl RawAcquisitionQuery {
+    pub fn validate(&self) -> Result<()> {
+        self.generation.validate()?;
+        if self.anchor.as_ref().is_some_and(String::is_empty) {
+            return Err(StoreError::Invalid("raw acquisition anchor is empty".into()));
+        }
+        Ok(())
+    }
+}
+
 impl SourceGeneration {
     pub fn stream(&self) -> &RawStream {
         match self { Self::File { stream, .. } | Self::Database { stream, .. } => stream }
@@ -130,6 +148,7 @@ pub struct RawAcquisitionCursor {
     range: RawRange,
     known_total: Option<u64>,
     last_body: String,
+    root_body: String,
     #[serde(default)]
     disposition: Option<CaptureDisposition>,
 }
@@ -138,6 +157,7 @@ impl RawAcquisitionCursor {
     pub fn generation(&self) -> &SourceGeneration { &self.generation }
     pub fn range(&self) -> RawRange { self.range }
     pub fn known_total(&self) -> Option<u64> { self.known_total }
+    pub fn root_body(&self) -> &str { &self.root_body }
     pub fn last_body(&self) -> &str { &self.last_body }
     /// Prepared describes private custody only, never logical source acceptance.
     pub fn disposition(&self) -> Option<CaptureDisposition> { self.disposition }
@@ -154,6 +174,7 @@ pub struct RawAcquisitionProof {
     range: RawRange,
     total: Option<u64>,
     disposition: Option<CaptureDisposition>,
+    root_body: Option<String>,
     last: Option<(RawRange, BlobHash, String, Option<String>)>,
     valid: bool,
 }
@@ -162,7 +183,7 @@ impl RawAcquisitionProof {
     pub fn new(generation: SourceGeneration) -> Result<Self> {
         generation.validate()?;
         let start = generation.window().start;
-        Ok(Self { generation, range: RawRange { start, end: start }, total: None, disposition: Some(CaptureDisposition::Prepared), last: None, valid: true })
+        Ok(Self { generation, range: RawRange { start, end: start }, total: None, disposition: Some(CaptureDisposition::Prepared), root_body: None, last: None, valid: true })
     }
     pub fn push(&mut self, body: RawBodyRange) -> Result<()> {
         if body.body.is_empty() || body.range.length()? != body.decoded_length {
@@ -184,6 +205,13 @@ impl RawAcquisitionProof {
         { self.valid = false; }
         if let Some((range, hash, previous_body, predecessor)) = &self.last {
             if *range == body.range && *hash == body.hash {
+                // Equal bytes under another original acquisition are a separate
+                // chain. A generation-only lookup cannot choose between them.
+                if body.range.start == self.generation.window().start
+                    && body.predecessor.is_none() && *previous_body != body.body
+                {
+                    self.valid = false;
+                }
                 if *predecessor != body.predecessor {
                     self.valid = false;
                 }
@@ -201,6 +229,9 @@ impl RawAcquisitionProof {
         }
         if body.range.start != self.range.end { self.valid = false; }
         if !self.valid { return Ok(()); }
+        if self.root_body.is_none() {
+            self.root_body = Some(body.body.clone());
+        }
         self.range.end = body.range.end;
         self.total = body.known_total.or(self.total);
         self.last = Some((body.range, body.hash, body.body, body.predecessor));
@@ -208,8 +239,9 @@ impl RawAcquisitionProof {
     }
     pub fn finish(self) -> Option<RawAcquisitionCursor> {
         let (_, _, last_body, _) = self.last?;
+        let root_body = self.root_body?;
         self.valid.then_some(RawAcquisitionCursor {
-            generation:self.generation,range:self.range,known_total:self.total,last_body,disposition:self.disposition,
+            generation:self.generation,range:self.range,known_total:self.total,last_body,root_body,disposition:self.disposition,
         })
     }
 }

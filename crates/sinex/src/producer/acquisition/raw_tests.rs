@@ -46,7 +46,26 @@ fn acquire_ranges(
     intent: &str,
     ranges: &[RawRange],
 ) -> CaptureReceipt {
-    let basis = basis(&generation.stream().source, None);
+    acquire_ranges_on(
+        sinex,
+        root,
+        generation,
+        intent,
+        ranges,
+        basis(&generation.stream().source, None),
+        None,
+    )
+}
+
+fn acquire_ranges_on(
+    sinex: &Sinex,
+    root: &std::path::Path,
+    generation: &SourceGeneration,
+    intent: &str,
+    ranges: &[RawRange],
+    basis: polylogue_store::primary::SourceBasis,
+    predecessor: Option<String>,
+) -> CaptureReceipt {
     sinex
         .prepare_input_group(
             &CapturePlan {
@@ -62,7 +81,9 @@ fn acquire_ranges(
                     let mut input = capture(&bytes, vec![]);
                     // Logical NoExtent still owns the actual provider body.
                     input.rows.extent = None;
+                    input.rows.input = generation.stream().input.id.clone();
                     input.raw_range = Some(range);
+                    input.raw_predecessor = (ordinal == 0).then(|| predecessor.clone()).flatten();
                     input.generation = Some(generation.clone());
                     input.raw_total = (range.end == generation.window().end).then_some(range.end);
                     input.basis = Some(basis.clone());
@@ -75,7 +96,7 @@ fn acquire_ranges(
 }
 
 #[test]
-fn offline_raw_cursor_spans_pages_and_restarts_without_source_or_parser_authority() {
+fn offline_raw_cursor_checks_many_bodies_and_restarts_without_source_or_parser_authority() {
     let root = tempfile::tempdir().unwrap();
     let generation = generation(35);
     let sinex = client(root.path());
@@ -90,9 +111,16 @@ fn offline_raw_cursor_spans_pages_and_restarts_without_source_or_parser_authorit
     else {
         panic!()
     };
-    let cursor = sinex.raw_acquisition_cursor(&generation).unwrap().unwrap();
+    let cursor = sinex
+        .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+            generation: generation.clone(),
+            anchor: None,
+        })
+        .unwrap()
+        .unwrap();
     assert_eq!(cursor.range(), RawRange { start: 0, end: 35 });
     assert!(cursor.is_complete_stream());
+    assert_eq!(cursor.disposition(), Some(CaptureDisposition::Prepared));
     let last = sinex
         .pending_group_headers(&write.identity, Some(33), 1)
         .unwrap();
@@ -115,7 +143,12 @@ fn offline_raw_cursor_spans_pages_and_restarts_without_source_or_parser_authorit
     drop(sinex);
     let reopened = client(root.path());
     assert_eq!(
-        reopened.raw_acquisition_cursor(&generation).unwrap(),
+        reopened
+            .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+                generation: generation.clone(),
+                anchor: None
+            })
+            .unwrap(),
         Some(cursor)
     );
 }
@@ -161,8 +194,18 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
         };
         assert_eq!(next.raw_predecessor.as_ref(), Some(&pair[0].identity));
     }
-    let cursor = sinex.raw_acquisition_cursor(&generation).unwrap().unwrap();
+    let cursor = sinex
+        .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+            generation: generation.clone(),
+            anchor: None,
+        })
+        .unwrap()
+        .unwrap();
     assert!(cursor.is_complete_stream());
+    assert_eq!(
+        cursor.disposition(),
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
     assert_eq!(cursor.last_body(), page.headers[2].identity);
     assert_eq!(
         sinex
@@ -177,7 +220,10 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
     drop(sinex);
     assert_eq!(
         client(root.path())
-            .raw_acquisition_cursor(&generation)
+            .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+                generation: generation.clone(),
+                anchor: None
+            })
             .unwrap(),
         Some(cursor)
     );
@@ -195,13 +241,29 @@ fn raw_cursor_refuses_holes_other_generations_and_corrupt_committed_bodies() {
         "hole",
         &[RawRange { start: 0, end: 1 }, RawRange { start: 2, end: 3 }],
     );
-    assert!(sinex.raw_acquisition_cursor(&generation).unwrap().is_none());
+    assert!(
+        sinex
+            .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+                generation: generation.clone(),
+                anchor: None
+            })
+            .unwrap()
+            .is_none()
+    );
     let mut changed = generation.clone();
     let SourceGeneration::File { observed, .. } = &mut changed else {
         unreachable!()
     };
     observed.changed.nanos += 1;
-    assert!(sinex.raw_acquisition_cursor(&changed).unwrap().is_none());
+    assert!(
+        sinex
+            .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+                generation: changed.clone(),
+                anchor: None
+            })
+            .unwrap()
+            .is_none()
+    );
 
     let complete_root = tempfile::tempdir().unwrap();
     let complete = client(complete_root.path());
@@ -213,7 +275,10 @@ fn raw_cursor_refuses_holes_other_generations_and_corrupt_committed_bodies() {
         &[RawRange { start: 0, end: 3 }],
     );
     let cursor = complete
-        .raw_acquisition_cursor(&generation)
+        .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+            generation: generation.clone(),
+            anchor: None,
+        })
         .unwrap()
         .unwrap();
     let (path, _) = complete
@@ -224,5 +289,184 @@ fn raw_cursor_refuses_holes_other_generations_and_corrupt_committed_bodies() {
     let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     std::io::Write::write_all(&mut file, b"corrupt").unwrap();
     file.sync_all().unwrap();
-    assert!(complete.raw_acquisition_cursor(&generation).is_err());
+    assert!(
+        complete
+            .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+                generation: generation.clone(),
+                anchor: None
+            })
+            .is_err()
+    );
+}
+
+fn first_body(sinex: &Sinex, receipt: CaptureReceipt) -> String {
+    let group = match receipt {
+        CaptureReceipt::Accepted { write } => write.identity,
+        CaptureReceipt::UnresolvedBasisConflict { custody } => custody.identity,
+    };
+    sinex
+        .pending_group_headers(&group, None, 1)
+        .unwrap()
+        .headers
+        .remove(0)
+        .identity
+}
+
+#[test]
+fn explicit_body_anchor_keeps_equal_generation_observations_and_dispositions_separate_after_restart()
+ {
+    let root = tempfile::tempdir().unwrap();
+    let generation = generation(3);
+    let sinex = client(root.path());
+    tests::acquire(
+        &sinex,
+        root.path(),
+        b"winner",
+        basis(&generation.stream().source, None),
+        CaptureMode::Mutable,
+    )
+    .unwrap();
+    let head = sinex
+        .pending_source(&generation.stream().source, "v")
+        .unwrap()
+        .head
+        .unwrap()
+        .identity;
+    let old = first_body(
+        &sinex,
+        acquire_ranges(
+            &sinex,
+            root.path(),
+            &generation,
+            "old-unresolved",
+            &[RawRange { start: 0, end: 3 }],
+        ),
+    );
+    let new = first_body(
+        &sinex,
+        acquire_ranges_on(
+            &sinex,
+            root.path(),
+            &generation,
+            "new-actual",
+            &[RawRange { start: 0, end: 3 }],
+            basis(&generation.stream().source, Some(head)),
+            None,
+        ),
+    );
+    assert!(
+        sinex
+            .raw_acquisition_cursor(&polylogue_store::primary::RawAcquisitionQuery {
+                generation: generation.clone(),
+                anchor: None
+            })
+            .unwrap()
+            .is_none()
+    );
+    let mut selected = Vec::new();
+    for (anchor, disposition) in [
+        (old, CaptureDisposition::UnresolvedBasisConflict),
+        (new, CaptureDisposition::Prepared),
+    ] {
+        let query = polylogue_store::primary::RawAcquisitionQuery {
+            generation: generation.clone(),
+            anchor: Some(anchor.clone()),
+        };
+        let cursor = sinex.raw_acquisition_cursor(&query).unwrap().unwrap();
+        assert!(cursor.is_complete_stream());
+        assert_eq!(cursor.root_body(), anchor);
+        assert_eq!(cursor.last_body(), anchor);
+        assert_eq!(cursor.disposition(), Some(disposition));
+        selected.push((query, cursor));
+    }
+    drop(sinex);
+    let reopened = client(root.path());
+    for (query, cursor) in selected {
+        assert_eq!(
+            reopened.raw_acquisition_cursor(&query).unwrap(),
+            Some(cursor)
+        );
+    }
+    let query = polylogue_store::primary::RawAcquisitionQuery {
+        generation,
+        anchor: None,
+    };
+    assert!(reopened.raw_acquisition_cursor(&query).unwrap().is_none());
+}
+
+#[test]
+fn an_explicit_tail_anchor_pins_its_branch_and_never_chooses_a_fork_by_queue_order() {
+    let root = tempfile::tempdir().unwrap();
+    let generation = generation(3);
+    let sinex = client(root.path());
+    let start = first_body(
+        &sinex,
+        acquire_ranges(
+            &sinex,
+            root.path(),
+            &generation,
+            "start",
+            &[RawRange { start: 0, end: 1 }],
+        ),
+    );
+    let left = first_body(
+        &sinex,
+        acquire_ranges_on(
+            &sinex,
+            root.path(),
+            &generation,
+            "left",
+            &[RawRange { start: 1, end: 2 }],
+            basis(&generation.stream().source, None),
+            Some(start.clone()),
+        ),
+    );
+    let _right = first_body(
+        &sinex,
+        acquire_ranges_on(
+            &sinex,
+            root.path(),
+            &generation,
+            "right",
+            &[RawRange { start: 1, end: 2 }],
+            basis(&generation.stream().source, None),
+            Some(start.clone()),
+        ),
+    );
+    let end = first_body(
+        &sinex,
+        acquire_ranges_on(
+            &sinex,
+            root.path(),
+            &generation,
+            "end",
+            &[RawRange { start: 2, end: 3 }],
+            basis(&generation.stream().source, None),
+            Some(left.clone()),
+        ),
+    );
+    let ambiguous = polylogue_store::primary::RawAcquisitionQuery {
+        generation: generation.clone(),
+        anchor: Some(start.clone()),
+    };
+    assert!(sinex.raw_acquisition_cursor(&ambiguous).unwrap().is_none());
+    let selected = polylogue_store::primary::RawAcquisitionQuery {
+        generation: generation.clone(),
+        anchor: Some(left),
+    };
+    let cursor = sinex.raw_acquisition_cursor(&selected).unwrap().unwrap();
+    assert_eq!(cursor.root_body(), start);
+    assert_eq!(cursor.last_body(), end);
+    assert!(cursor.is_complete_stream());
+    assert_eq!(
+        cursor.disposition(),
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
+    drop(sinex);
+    assert_eq!(
+        client(root.path())
+            .raw_acquisition_cursor(&selected)
+            .unwrap(),
+        Some(cursor)
+    );
 }

@@ -70,6 +70,7 @@ impl Test {
                 (Some(blob), file.into_iter().collect())
             };
             let batch = Batch {
+                required_disposition: None,
                 input: input.clone(),
                 change: if first {
                     Change::First

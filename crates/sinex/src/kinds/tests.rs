@@ -121,7 +121,15 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
             declaration.kind.version,
             match declaration.kind.name.as_str() {
                 "polylogue.work_snapshot" => 5,
-                "polylogue.message" => 4,
+                "polylogue.input_observation"
+                | "polylogue.message"
+                | "polylogue.note"
+                | "polylogue.setting"
+                | "polylogue.kept_result"
+                | "polylogue.delivery"
+                | "polylogue.delivery_outcome"
+                | "polylogue.request"
+                | "polylogue.request_restore" => 4,
                 "polylogue.fragment" => 1,
                 "polylogue.query"
                 | "polylogue.query_run"

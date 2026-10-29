@@ -7,10 +7,34 @@ use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
 
 pub(crate) fn canonical(product: &Product) -> bool {
-    matches!(
-        product,
-        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. }
-    )
+    match product {
+        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => true,
+        Product::Request(prepared) | Product::RestoredRequest { prepared, .. } => {
+            signal_content(prepared)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn signal_content(prepared: &polylogue_model::authored::PreparedRequest) -> bool {
+    matches!(prepared.request.write, UserWrite::SignalCommit(_))
+        || !prepared.effect.signal_checkpoints.is_empty()
+        || !prepared.effect.signal_events.is_empty()
+        || prepared
+            .effect
+            .deliveries
+            .iter()
+            .any(|change| change.delivery.signal.is_some())
+}
+
+pub(crate) fn require_source(product: &Product) -> Result<()> {
+    if canonical(product) {
+        return Err(Error::Refused {
+            name: kind(product).into(),
+            reason: "derived products require an owner-certified publication".into(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn kind(product: &Product) -> &'static str {
@@ -458,7 +482,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     name: (*name).into(),
                     version: match *product {
                         "work_snapshot" => 5,
-                        "message" => 4,
+                        "input" | "message" | "request" | "restored_request" => 4,
                         "fragment"
                         | "query"
                         | "query_run"

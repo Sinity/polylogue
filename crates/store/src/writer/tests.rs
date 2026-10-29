@@ -145,6 +145,7 @@ fn counts(n: u64) -> RecordCounts {
 fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&str]) -> Batch {
     let n = rows.len() as u64;
     Batch {
+        required_disposition: None,
         input: InputKey {
             id: input.into(),
             format: "claude-code".into(),
