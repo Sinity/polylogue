@@ -35,9 +35,8 @@ fn the_manual_gives_working_example_queries() {
         assert!(answer.is_ok(), "{query}: {answer:?}");
     }
     let manual = text();
-    for tool in [
-        "brief", "recall", "takeover", "query", "read", "note_add", "status",
-    ] {
+    for command in crate::mcp::tool_commands() {
+        let tool = command.mcp_name();
         assert!(
             crate::mcp::tools()
                 .iter()
@@ -47,6 +46,10 @@ fn the_manual_gives_working_example_queries() {
         assert!(
             manual.contains(&format!("`{tool}`")),
             "{tool} is not described"
+        );
+        assert!(
+            manual.contains(&format!("CLI `{}`", command.cli_words().join(" "))),
+            "{tool} has no runnable CLI spelling"
         );
     }
 }

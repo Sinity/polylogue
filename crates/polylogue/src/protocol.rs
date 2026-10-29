@@ -87,6 +87,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
             "stage_only_action_cannot_submit",
             "not_awaiting_approval",
             "job_ended",
+            "browser_actions_off",
         ],
     ),
     (FailureKind::Degraded, &["degraded"]),

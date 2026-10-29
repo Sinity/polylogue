@@ -10,18 +10,21 @@ repository files and live checks for facts they answer directly.
    (`session` names the receiving session), `recall` for relevant past
    work, and `takeover` for another session. Each names what it included and
    left out. Use the returned references to read the underlying evidence.
-3. Discover with `query`. For example, `sessions where repo:example since:7d`,
+3. Discover with `polylogue_find`. For example, `sessions where repo:example since:7d`,
    `messages where "timeout"`, or `sessions where similar:"query compiler"`.
    Use the tool's schema for arguments. CLI queries are quoted expressions:
-   `polylogue 'sessions where repo:example since:7d'`.
-4. Read selected session IDs with `read`. Views are `full`, `dialogue`,
-   `prompts` and `actions`; `with_parents` includes available parent history.
-   Documents use `document:ID`; events use `event:ID`. IDs are opaque and may
-   contain colons. Preserve them exactly.
-5. Continue pages with the returned `next` cursor and the same request's
-   conditions. A budgeted read uses `budget` and `cursor`. Continue until
-   there is no next page when the answer requires all results. Search snippets
-   help discovery; read the source messages before quoting or concluding.
+   `polylogue find 'sessions where repo:example since:7d'`.
+4. Read canonical references with `polylogue_read`, for example
+   `session:claude-code:example`, `document:ID` or `event:ID`. Views are
+   `transcript`, `dialogue`, `summary`, `context`, `links`, `changes`, `live`
+   and `raw`; `inherited` includes available parent history. IDs are opaque
+   and may contain colons. Preserve them exactly.
+5. Execute the returned `next` ReadyCall unchanged to continue a page. It
+   carries the acknowledged root run and its sealed cursor. A resumed read
+   accepts only `root_run`, `cursor` and an optional positive `budget`;
+   selection and presentation remain bound to the original read. Continue
+   until there is no next page when the answer requires all results. Search
+   snippets help discovery; read source messages before quoting or concluding.
 
 Queries select sessions by default. Start with another unit, such as
 `messages`, `documents`, `tool_calls`, `files`, `events`, `notes`, `turns`,

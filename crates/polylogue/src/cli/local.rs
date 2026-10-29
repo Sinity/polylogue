@@ -361,7 +361,13 @@ pub fn manual(
 ) -> ExitCode {
     let text = crate::manual::text();
     if json {
-        println!("{}", serde_json::json!({"manual": text}));
+        println!(
+            "{}",
+            serde_json::to_string(&crate::protocol::answer(
+                serde_json::json!({"manual": text})
+            ))
+            .expect("manual is serializable")
+        );
     } else {
         print!("{text}");
     }
