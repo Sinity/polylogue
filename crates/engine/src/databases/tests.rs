@@ -23,6 +23,8 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
             basis: None,
             facts: None,
+            raw_predecessor: None,
+            required_disposition: None,
             clock: polylogue_model::WallClock::fixed(jiff::Timestamp::from_millisecond(1).unwrap()),
         },
         observation: Observation {

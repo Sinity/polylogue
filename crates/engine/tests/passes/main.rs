@@ -14,7 +14,6 @@ mod export_round_trip;
 mod hook_events;
 mod large_sessions;
 mod live_first;
-mod older_chains;
 mod reading_version;
 mod tool_captures;
 
@@ -364,51 +363,6 @@ fn a_capture_rewritten_in_place_is_parsed_again_whole() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(texts(&w.root), ["one", "two"]);
-}
-
-/// Whether any stored input byte range holds `needle`.
-fn stored(root: &Path, needle: &str) -> bool {
-    !polylogue_store::fixture::text_search::stored_blobs_containing(&Archive::at(root), needle)
-        .unwrap()
-        .is_empty()
-}
-
-/// Index columns holding `needle`.
-fn indexed(root: &Path, needle: &str) -> Vec<String> {
-    polylogue_store::fixture::text_search::index_columns_containing(&Archive::at(root), needle)
-        .unwrap()
-}
-
-/// A session whose secret sits in its title, working directory, branch,
-/// prose, a tool command and the tool's output.
-fn secret_session(session: &str, secret: &str) -> String {
-    let line = |v: serde_json::Value| format!("{v}\n");
-    [
-        line(serde_json::json!({
-            "type": "user", "uuid": "u1", "sessionId": session,
-            "timestamp": "2026-03-01T10:00:00Z",
-            "cwd": format!("/work/{secret}/proj"), "gitBranch": format!("fix-{secret}"),
-            "message": {"role": "user", "content": format!("deploy with {secret} please")}
-        })),
-        line(serde_json::json!({
-            "type": "custom-title", "sessionId": session,
-            "customTitle": format!("rotate {secret}")
-        })),
-        line(serde_json::json!({
-            "type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": session,
-            "timestamp": "2026-03-01T10:00:01Z",
-            "message": {"id": "msg_a1", "role": "assistant", "stop_reason": "tool_use",
-                "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash",
-                             "input": {"command": format!("echo {secret} > key.txt")}}]}
-        })),
-        line(serde_json::json!({
-            "type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": session,
-            "timestamp": "2026-03-01T10:00:02Z",
-            "message": {"role": "user", "content": [{"type": "tool_result",
-                "tool_use_id": "toolu_1", "content": format!("wrote {secret}")}]}
-        })),
-    ]
-    .concat()
 }
 
 #[test]

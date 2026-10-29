@@ -1,15 +1,21 @@
 //! An export imported into a fresh archive gives the same sessions and IDs,
 //! and the same user state: notes with their revisions, withdrawals and
 //! judgments, settings, kept results, deliveries, chat actions, backfill
-//! jobs, replayed through the same request path.
+//! jobs, restored as frozen historical effects through the canonical bundle.
 use super::*;
+use polylogue_model::bundle::{
+    AuthoredRecord, Counts, Flags, Format, LinkRecord, Manifest, MessageRecord, ReadSnapshot,
+    Record, SessionRecord,
+};
 use polylogue_model::user::NewChatAction;
 use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
 use polylogue_model::user::{Delivery, UserRequest, UserWrite};
 use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Reference, Timestamp};
+use std::io::Write;
 
 /// The user-state tables, row by row, without the write counter, which
-/// counts this archive's own transactions.
+/// counts this archive's own transactions. Execution eligibility is checked
+/// separately: imported chat and backfill histories are historical.
 const USER_STATE: &[(&str, &str)] = &[
     ("client_request", "id, content_hash, created_at, request"),
     (
@@ -86,22 +92,117 @@ fn note(kind: NoteKind, target: &str, revises: Option<String>) -> UserWrite {
     }
 }
 
-fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
-    let pool = w.reads();
-    let entries = pool
+fn frozen_authored(w: &ClaudeHome) -> Vec<polylogue_model::authored::PreparedRequest> {
+    let mut records = Vec::new();
+    w.reads()
         .reader()
         .unwrap()
-        .user_state()
+        .visit_authored(&mut |prepared, _| {
+            records.push(prepared.clone());
+            Ok(())
+        })
+        .unwrap();
+    records
+}
+
+fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
+    let pool = w.reads();
+    let reader = pool.reader().unwrap();
+    let mut records = Vec::new();
+    let mut counts = Counts::default();
+    for id in sessions {
+        let id = SessionId::parse(id).unwrap();
+        let session = reader.session(&id).unwrap().unwrap();
+        records.push(Record::Session(SessionRecord {
+            reference: format!("session:{id}"),
+            commit: reader.session_commit(&id).unwrap().unwrap(),
+            session,
+        }));
+        counts.sessions += 1;
+        for message in reader.messages(&id, false).unwrap() {
+            let (message, projection) = reader
+                .message_with_projection(&message.id)
+                .unwrap()
+                .unwrap();
+            records.push(Record::Message(Box::new(MessageRecord {
+                reference: format!("message:{}", message.id),
+                commit: reader.message_admission(&message.id).unwrap().unwrap(),
+                order: reader.message_order(&message.id).unwrap().unwrap(),
+                source_version: projection.source_version,
+                block_count: projection.block_count,
+                block_ordinals: projection.block_ordinals,
+                injections: Vec::new(),
+                bindings: Vec::new(),
+                message,
+            })));
+            counts.messages += 1;
+        }
+        for event in reader.event_records(&id).unwrap() {
+            records.push(Record::Event(event));
+            counts.events += 1;
+        }
+        for link in reader.session_export(&id).unwrap().unwrap().links {
+            records.push(Record::Link(LinkRecord {
+                reference: LinkRecord::reference(&link),
+                commit: reader.link_commit(&link).unwrap().unwrap(),
+                link,
+            }));
+            counts.links += 1;
+        }
+    }
+    let commits: std::collections::BTreeMap<_, _> = reader
+        .query("SELECT id,commit_seq FROM source_client_request", &[])
         .unwrap()
-        .iter()
-        .map(|entry| serde_json::to_value(entry).unwrap())
+        .into_iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap().to_owned(),
+                row["commit_seq"].as_u64().unwrap(),
+            )
+        })
         .collect();
-    let doc =
-        polylogue_model::export::Document::new(sessions.iter().map(|id| w.export(id)).collect())
-            .with_user_state(entries);
-    let file = w.dir.path().join("export.json");
-    fs::write(&file, doc.to_json().unwrap()).unwrap();
-    file
+    reader
+        .visit_authored(&mut |prepared, imports| {
+            records.push(Record::Authored(Box::new(AuthoredRecord {
+                reference: format!("request:{}", prepared.request.id),
+                commit: commits[&prepared.request.id],
+                prepared: prepared.clone(),
+                imports: imports.to_vec(),
+            })));
+            counts.authored += 1;
+            Ok(())
+        })
+        .unwrap();
+    records.sort_by(|a, b| (a.commit(), a.reference()).cmp(&(b.commit(), b.reference())));
+    let manifest = Manifest::from_snapshot(
+        ReadSnapshot {
+            query: format!("query:{}", "0".repeat(64)),
+            query_text: "synthetic session and authored state".into(),
+            ran_at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),
+            read_at: reader.change_position().unwrap(),
+            caught_up: true,
+            currency: polylogue_model::currency::IndexCurrency::Standalone,
+            enabled_variants: Vec::new(),
+            author: Author::Operator,
+            notes: Vec::new(),
+            incomplete: Vec::new(),
+        },
+        counts,
+        Flags {
+            format: Format::Jsonl,
+            with_blobs: false,
+            read: polylogue_model::read::ReadOptions::default(),
+        },
+        None,
+    );
+    let path = w.dir.path().join("records.jsonl");
+    let mut file = fs::File::create(&path).unwrap();
+    for record in std::iter::once(Record::Manifest(Box::new(manifest))).chain(records) {
+        record.validate().unwrap();
+        serde_json::to_writer(&mut file, &record).unwrap();
+        file.write_all(b"\n").unwrap();
+    }
+    path
 }
 
 #[test]
@@ -237,6 +338,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     );
     let original = w.export("claude-code:s1");
     let source_state = user_state(&w);
+    let source_authored = frozen_authored(&w);
     let file = export_file(&w, &["claude-code:s1"]);
 
     let fresh = ClaudeHome::new();
@@ -251,19 +353,20 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     assert_eq!(back.events, original.events);
     assert_eq!(back.links, original.links);
     assert_eq!(user_state(&fresh), source_state);
+    assert_eq!(frozen_authored(&fresh), source_authored);
+    assert_eq!(
+        fresh.count("SELECT count(*) AS n FROM a.chat_action WHERE execution='historical'"),
+        1
+    );
+    assert_eq!(
+        fresh.count("SELECT count(*) AS n FROM a.backfill_job WHERE execution='historical'"),
+        1
+    );
 
     // Importing it again changes nothing.
     let again = e2.import(std::slice::from_ref(&file)).unwrap();
     assert_eq!(again.user_state.applied, 0, "{again:?}");
     assert_eq!(again.user_state.present, report.user_state.applied);
+    assert_eq!(frozen_authored(&fresh), source_authored);
     assert_eq!(user_state(&fresh), source_state);
-}
-
-fn two_sessions() -> (ClaudeHome, Engine, polylogue_store::ArchiveLock) {
-    let w = ClaudeHome::new();
-    w.append("s1.jsonl", &user("u1", "s1", "keep"));
-    w.append("s2.jsonl", &user("d1", "s2", "drop"));
-    let (mut e, lock) = w.engine(64 << 20);
-    assert!(e.run_pass().unwrap().errors.is_empty());
-    (w, e, lock)
 }

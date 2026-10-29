@@ -1,6 +1,6 @@
 use super::*;
 use polylogue_model::{Json, RecordCounts, RecordOutcome};
-use polylogue_sources::{Arrival, OriginSpec, Root, Step, StepParser};
+use polylogue_sources::{Arrival, Capture, OriginSpec, Root, Step, StepParser};
 use std::sync::mpsc::{Receiver, Sender};
 
 struct Control {
