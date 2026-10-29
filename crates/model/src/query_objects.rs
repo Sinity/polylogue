@@ -1,11 +1,7 @@
 //! Immutable questions and the exact bindings of their executions.
 use crate::{ChangePosition, Timestamp, authorship::Authorship};
 use query_language::{
-    ast::Query,
-    catalog::{Catalog, SourceOutput},
-    cursor::CursorContext,
-    identity::QuestionId,
-    time::ClockWire,
+    ast::Query, catalog::SourceOutput, cursor::CursorContext, identity::QuestionId, time::ClockWire,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -18,9 +14,6 @@ pub struct QueryObject {
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
     pub identity_ast: Query,
-    pub origins: Vec<String>,
-    pub catalog: Catalog,
-    pub catalog_fingerprint: String,
     pub source_outputs: Vec<SourceOutput>,
     pub definitions: Vec<FrozenQueryDefinition>,
     pub dependencies: Vec<QuestionId>,
