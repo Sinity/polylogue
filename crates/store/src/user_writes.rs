@@ -12,7 +12,9 @@ use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};
 use rusqlite::{OptionalExtension, Transaction, params};
 
-/// A request at the current time on this machine.
+use polylogue_model::user::{Delivery, UserOutcome, UserRequest, UserWrite};
+
+/// Construct trusted request metadata at the I/O boundary.
 pub fn request_now(id: String, write: UserWrite) -> UserRequest {
     UserRequest {
         id,

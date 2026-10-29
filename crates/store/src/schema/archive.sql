@@ -110,7 +110,10 @@ CREATE TABLE client_request (
   id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the client, once per user action
   content_hash  BLOB NOT NULL,           -- BLAKE3 of the request's sorted-key JSON, without the ID
   created_at    INTEGER NOT NULL,
-  request       BLOB,                    -- the whole request as JSON, zstd; NULL before archive version 3
+  request       BLOB,                    -- the original request as JSON, zstd
+  outcome       BLOB,                    -- the original typed outcome, zstd
+  effect        BLOB,                    -- the immutable typed authored effect, zstd
+  imports       TEXT NOT NULL DEFAULT '[]', -- local import attributions, JSON
   commit_seq    INTEGER NOT NULL DEFAULT 0  -- the write counter of the transaction that wrote it
 ) STRICT, WITHOUT ROWID;
 
@@ -235,6 +238,7 @@ CREATE TABLE chat_action (
   stage_only        INTEGER NOT NULL,       -- 1: fill the composer and stop; a submit is refused
   needs_approval    INTEGER NOT NULL,       -- 1: a submit into an existing conversation waits for the operator
   created_at        INTEGER NOT NULL,
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
@@ -243,7 +247,7 @@ CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
 CREATE TABLE chat_action_attachment (
   action            TEXT NOT NULL REFERENCES chat_action(id),
   id                TEXT NOT NULL,          -- UUIDv7, for the extension to fetch it by
-  blob              BLOB NOT NULL REFERENCES blob(hash),
+  blob              BLOB NOT NULL,
   name              TEXT NOT NULL,          -- a file name, never a path
   media_type        TEXT NOT NULL,
   size              INTEGER NOT NULL,
@@ -287,6 +291,7 @@ CREATE TABLE backfill_job (
   provider          TEXT NOT NULL,          -- the web chat, by the extension's name for it (chatgpt, claude-ai, grok)
   since             INTEGER,                -- only conversations the provider changed at or after this time; NULL: all
   created_at        INTEGER NOT NULL,
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX backfill_job_commit_seq ON backfill_job(commit_seq);

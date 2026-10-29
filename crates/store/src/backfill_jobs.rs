@@ -12,102 +12,11 @@
 use crate::{Reader, Result, StoreError};
 use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 
-/// How long a claim lasts without a report from the extension instance
-/// holding it; an expired claim lets the job be claimed again.
-pub const CLAIM_MS: i64 = 180_000;
-
-/// One thing that happened to a backfill job.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackfillEvent {
-    pub at: i64,
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub position: Option<String>,
-    pub counts: BackfillCounts,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-/// Where a backfill job stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BackfillStatus {
-    /// Started and not held by an extension instance.
-    Waiting,
-    Running,
-    Finished,
-    Failed,
-    Cancelled,
-}
-
-impl BackfillStatus {
-    pub fn ended(self) -> bool {
-        matches!(self, Self::Finished | Self::Failed | Self::Cancelled)
-    }
-}
-
-/// What the extension instance holding a job may report, and the state
-/// each report leaves; `progress` renews the claim.
-pub fn report_status(kind: &str) -> Option<BackfillStatus> {
-    Some(match kind {
-        "progress" => BackfillStatus::Running,
-        "finished" => BackfillStatus::Finished,
-        "failed" => BackfillStatus::Failed,
-        _ => return None,
-    })
-}
-
-/// A stored backfill job with everything that happened to it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackfillJob {
-    pub id: String,
-    pub provider: String,
-    pub since: Option<i64>,
-    pub created_at: i64,
-    pub events: Vec<BackfillEvent>,
-}
-
-impl BackfillJob {
-    /// The state at `now`, and the instance holding an unexpired claim.
-    pub fn status(&self, now: i64) -> (BackfillStatus, Option<&str>) {
-        let mut status = BackfillStatus::Waiting;
-        let mut claim: Option<(&str, i64)> = None;
-        for e in &self.events {
-            match e.kind.as_str() {
-                "claimed" | "progress" => {
-                    status = BackfillStatus::Running;
-                    claim = e.by.as_deref().map(|by| (by, e.at + CLAIM_MS));
-                }
-                "cancelled" => {
-                    status = BackfillStatus::Cancelled;
-                    claim = None;
-                }
-                kind => {
-                    if let Some(next) = report_status(kind) {
-                        status = next;
-                        claim = None;
-                    }
-                }
-            }
-        }
-        match (status, claim) {
-            (BackfillStatus::Running, Some((by, until))) if until >= now => (status, Some(by)),
-            (BackfillStatus::Running, _) => (BackfillStatus::Waiting, None),
-            _ => (status, None),
-        }
-    }
-
-    /// The totals and list position of the latest report.
-    pub fn progress(&self) -> (BackfillCounts, Option<&str>) {
-        let counts = self.events.last().map(|e| e.counts).unwrap_or_default();
-        let position = self.events.iter().rev().find_map(|e| e.position.as_deref());
-        (counts, position)
-    }
-}
+use polylogue_model::user::{
+    BackfillCounts, BackfillEvent, BackfillJob, BackfillReport, BackfillStatus, NewBackfillJob,
+    backfill_report_status,
+};
 
 impl Reader<'_> {
     /// Every backfill job, oldest first.
@@ -135,17 +44,18 @@ impl Reader<'_> {
 pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<BackfillJob>> {
     let row = conn
         .prepare_cached(&format!(
-            "SELECT provider, since, created_at FROM {schema}backfill_job WHERE id = ?1"
+            "SELECT provider, since, created_at, execution FROM {schema}backfill_job WHERE id = ?1"
         ))?
         .query_row([id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, Option<i64>>(1)?,
                 r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
             ))
         })
         .optional()?;
-    let Some((provider, since, created_at)) = row else {
+    let Some((provider, since, created_at, execution)) = row else {
         return Ok(None);
     };
     let count = |n: i64| u64::try_from(n).unwrap_or(0);
@@ -175,6 +85,8 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<B
         provider,
         since,
         created_at,
+        execution: polylogue_model::authored::ExecutionEligibility::parse(&execution)
+            .ok_or_else(|| StoreError::Invalid("unknown execution eligibility".into()))?,
         events,
     }))
 }
@@ -190,7 +102,7 @@ pub(crate) fn start(tx: &Connection, new: &NewBackfillJob, at: i64, seq: i64) ->
     let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
         .prepare_cached(&source.sql(
-            "SELECT id FROM @source.backfill_job WHERE provider = ?1 ORDER BY created_at, id",
+            "SELECT id FROM @source.backfill_job WHERE provider = ?1 AND execution='live' ORDER BY created_at, id",
         ))?
         .query_map([&new.provider], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
@@ -224,7 +136,9 @@ pub(crate) fn start(tx: &Connection, new: &NewBackfillJob, at: i64, seq: i64) ->
 pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<String> {
     let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
-        .prepare_cached(&source.sql("SELECT id FROM @source.backfill_job ORDER BY created_at, id"))?
+        .prepare_cached(&source.sql(
+            "SELECT id FROM @source.backfill_job WHERE execution='live' ORDER BY created_at, id",
+        ))?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut next = None;
@@ -263,7 +177,7 @@ pub(crate) fn report(
 ) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
     let job = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_backfill_job"))?;
-    if report_status(&report.kind).is_none() {
+    if backfill_report_status(&report.kind).is_none() {
         return Err(refused("unknown_report"));
     }
     let (status, holder) = job.status(at);

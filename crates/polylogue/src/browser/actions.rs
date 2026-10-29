@@ -10,7 +10,7 @@
 
 use polylogue_model::BlobHash;
 use polylogue_model::user::{ChatAttachment, NewChatAction};
-use polylogue_store::chat_actions::{CLAIM_MS, ChatAction, ChatStatus};
+use polylogue_model::user::{CHAT_CLAIM_MS, ChatAction, ChatStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -144,7 +144,7 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         .rev()
         .find(|e| {
             matches!(
-                polylogue_store::chat_actions::outcome(&e.kind),
+                polylogue_model::user::chat_outcome(&e.kind),
                 Some(Some(ChatStatus::Failed | ChatStatus::Blocked))
             )
         })
@@ -164,7 +164,7 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         "created_at": iso(a.created_at),
         "updated_at": iso(last.map_or(a.created_at, |e| e.at)),
         "claimed_by": holder,
-        "claim_expires_at": claim.map(|e| iso(e.at + CLAIM_MS)),
+        "claim_expires_at": claim.map(|e| iso(e.at + CHAT_CLAIM_MS)),
         "needs_approval": a.needs_approval,
         "last_error": failure,
         "receipt": a.events.iter().rev().find_map(|e| e.receipt.clone()),
