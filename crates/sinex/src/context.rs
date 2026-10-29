@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Serialize, schemars::JsonSchema)]
 pub struct ResolvedContext {
     #[serde(skip_serializing)]
+    #[schemars(skip)]
     pub context_token: String,
     pub settings_identity: String,
     pub owner_revision: u64,
