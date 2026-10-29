@@ -289,6 +289,27 @@ impl Reference {
             _ => return Err(ReferenceError::UnknownKind(text.into())),
         })
     }
+    /// The direct container named by this address. Message/session membership
+    /// and relationships requiring stored data are resolved by the store.
+    pub fn container(&self) -> Option<Self> {
+        match self {
+            Self::Span { container, .. } => Some((**container).clone()),
+            Self::Block { message, .. } => Some(Self::Message(message.clone())),
+            Self::ToolCall(session, _) => Some(Self::Session(session.clone())),
+            Self::Variant {
+                revision,
+                part: Some(_),
+            } => Some(Self::Variant {
+                revision: revision.clone(),
+                part: None,
+            }),
+            Self::Result { id, row: Some(_) } => Some(Self::Result {
+                id: id.clone(),
+                row: None,
+            }),
+            _ => None,
+        }
+    }
     pub fn session(&self) -> Option<&SessionId> {
         match self {
             Self::Session(session) | Self::ToolCall(session, _) => Some(session),
