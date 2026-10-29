@@ -1575,3 +1575,74 @@ fn document_overlay_uses_original_body_ordinal_and_byte_boundaries() {
             && matches!(&i.kind,ItemKind::Text{text} if text=="areplacementz"))
     );
 }
+
+#[test]
+fn supplied_attachment_action_survives_layout_and_all_encoders() {
+    let source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        9,
+        false,
+    );
+    let action = ReadyCall {
+        cli: "polylogue read --request '{\"target\":\"attachment:synthetic\"}'".into(),
+        mcp: json!({"target":"attachment:synthetic"}),
+        http: HttpCall {
+            method: "GET".into(),
+            path: "/api/v1/read".into(),
+            arguments: json!({"operation":"read","arguments":{"target":"attachment:synthetic"},"request_id":"same","deadline":"default"}),
+        },
+    };
+    let mut evidence = ProjectionEvidence::default();
+    evidence
+        .attachments
+        .entry(source.reference.clone())
+        .or_default()
+        .insert(
+            9,
+            vec![AttachmentEvidence {
+                open: Some(Box::new(action.clone())),
+                ..Default::default()
+            }],
+        );
+    let mut items = vec![];
+    layout::visit_source_block(
+        &SourceBlock {
+            source: source.clone(),
+            block: Block::File(Default::default()),
+        },
+        &ReadOptions::default(),
+        &evidence,
+        |item| {
+            items.push(item);
+            true
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(&items[0].kind,ItemKind::Attachment{open:Some(open),..} if open.as_ref()==&action)
+    );
+    for format in [
+        Format::Terminal,
+        Format::Markdown,
+        Format::Html,
+        Format::Json,
+        Format::Jsonl,
+    ] {
+        let output = encode(&document(items.clone()), format);
+        assert!(
+            output.contains("attachment:synthetic"),
+            "{format}: {output}"
+        );
+        if format == Format::Html {
+            assert!(output.contains("href=\"/api/v1/read?"));
+        }
+    }
+    assert_eq!(
+        html::DEFAULT_INLINE_IMAGE_BYTES,
+        EncodeOptions::default().inline_image_bytes
+    );
+    assert!(html::inline_media_type("image/png"));
+    assert!(!html::inline_media_type("image/svg+xml"));
+    assert!(!html::inline_media_type("text/html"));
+}

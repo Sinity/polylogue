@@ -16,6 +16,28 @@ pub fn layout_record(
     })?;
     Ok(parts)
 }
+/// Lay out one exact original block supplied by the service, including an
+/// off-page tool pair. The caller releases each pair after its callback ends.
+pub fn visit_source_block(
+    block: &SourceBlock,
+    options: &ReadOptions,
+    evidence: &ProjectionEvidence,
+    mut visit: impl FnMut(ReadItem) -> bool,
+) -> Result<(), ReadError> {
+    options.validate()?;
+    let ordinal = block.source.block.ok_or_else(|| {
+        ReadError::InvalidEvidence("source block needs its original ordinal".into())
+    })?;
+    block_items(
+        &block.block,
+        block.source.clone(),
+        ordinal,
+        options,
+        evidence,
+        &mut visit,
+    )?;
+    Ok(())
+}
 /// Visit one projected canonical record. Returning false stops layout without
 /// visiting another block. There is no archive-sized collection or recursion.
 pub fn visit_record(
@@ -847,6 +869,18 @@ fn variant_indicator(
                         .collect::<Vec<_>>()
                         .join(", "),
                     variant.mark.reference,
+                    if variant
+                        .relations
+                        .contains(&polylogue_model::VariantRelation::Omits)
+                        && variant
+                            .relations
+                            .iter()
+                            .any(|relation| *relation != polylogue_model::VariantRelation::Omits)
+                    {
+                        " · partly omitted"
+                    } else {
+                        ""
+                    },
                     if variant.mark.stale { " · stale" } else { "" }
                 ),
                 expand: variant.mark.show_original.clone().map(Box::new),
