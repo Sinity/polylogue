@@ -6,7 +6,7 @@
 //! a listed example that starts to match fails the test, so the list is
 //! removed from as features land.
 
-use super::fixture_clock;
+use super::fixture_context;
 use crate::daemon::query::*;
 use polylogue_testkit::{Morrow, Set, morrow_dir, short};
 use std::collections::BTreeMap;
@@ -109,7 +109,7 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: Some(1000),
         why: false,
         session: None,
-        clock: fixture_clock(NOW, "Europe/Warsaw", 240),
+        context: fixture_context(NOW, "Europe/Warsaw", 240),
         embeddings: false,
         near: None,
         fields: &[],

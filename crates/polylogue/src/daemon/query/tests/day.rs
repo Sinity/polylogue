@@ -4,7 +4,8 @@ use super::*;
 fn executions_keep_their_explicit_day_in_the_resolved_context() {
     let archive = morrow();
     let mut request = ask("since:2026-10-05");
-    request.clock.day = fixture_clock(0, "Pacific/Kiritimati", 0).day;
+    std::sync::Arc::make_mut(&mut request.context).clock.day =
+        fixture_clock(0, "Pacific/Kiritimati", 0).day;
     let result = run_q(&archive, request).unwrap();
     assert_eq!(
         result["resolved"]["clock"]["day"],
@@ -69,7 +70,8 @@ fn until_date_uses_logical_day_end_and_until_instant_stays_exclusive() {
         ),
     ] {
         let mut request = ask(text);
-        request.clock.day = fixture_clock(0, "Europe/Warsaw", 240).day;
+        std::sync::Arc::make_mut(&mut request.context).clock.day =
+            fixture_clock(0, "Europe/Warsaw", 240).day;
         let answer = run(&reader, request).unwrap();
         let actual: Vec<&str> = answer["rows"]
             .as_array()

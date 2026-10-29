@@ -6,7 +6,7 @@
 use polylogue_store::query::{ColKind, Options, Param, Program, QueryError, Shape};
 use polylogue_store::search::Within;
 use polylogue_store::{Reader, SqlValue};
-use query_language::time::{Clock, DaySetting};
+use query_language::time::DaySetting;
 
 use serde_json::{Value, json};
 
@@ -60,8 +60,8 @@ pub struct Ask<'a> {
     pub page_size: Option<u64>,
     pub why: bool,
     pub session: Option<String>,
-    /// One resolved operation context, retained by every continuation.
-    pub clock: Clock,
+    /// One captured invocation and owner policy for the complete operation.
+    pub context: std::sync::Arc<crate::operation::Context>,
     pub embeddings: bool,
     /// For `similar:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
@@ -132,7 +132,7 @@ fn kept_results(
 
 pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<Options, Failure> {
     Ok(Options {
-        clock: ask.clock.clone(),
+        clock: ask.context.clock.clone(),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|o| o.name.to_owned())
@@ -215,6 +215,25 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .cursor
         .map(|text| page::open(text, &seal, question, &position, index_file, &opts))
         .transpose()?;
+    let mut operation_versions = ask.context.cursor_versions();
+    operation_versions.insert(
+        "catalog".into(),
+        polylogue_query::plan::catalog_fingerprint(),
+    );
+    if let Some(scope) = reader.query_scope_fingerprint()? {
+        operation_versions.insert("scope".into(), scope);
+    }
+    if let Some(cursor) = &cursor {
+        for key in ["operation_context", "catalog", "scope"] {
+            if cursor.context.versions.get(key) != operation_versions.get(key) {
+                return Err(Failure {
+                    kind: "stale_cursor".into(),
+                    message: "the captured query context is no longer available".into(),
+                    detail: None,
+                });
+            }
+        }
+    }
     let seed = cursor.as_ref().map_or_else(
         || uuid::Uuid::now_v7().as_u128() as u64,
         |cursor| cursor.context.random_seed,
@@ -230,17 +249,22 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .as_ref()
         .map(|cursor| page::check(cursor, &program, &opts, ask.why))
         .transpose()?;
-    let context = match cursor {
+    let mut context = match cursor {
         Some(cursor) => cursor.context,
         None => page::context(
             question, &position, index_file, &opts, &program, seed, ask.why,
         )?,
     };
+    context.versions.extend(operation_versions);
     let paging = page::Paging {
         seal: &seal,
         context,
     };
-    with_similarity(reader, &program, ask.near, || {
+    let evaluation = ask
+        .context
+        .replay_clock(program.clock.clone())
+        .map_err(context_failure)?;
+    let mut output = with_similarity(reader, &program, ask.near, || {
         answer(
             reader,
             &program,
@@ -249,7 +273,28 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             &paging,
             ask.why,
         )
-    })
+    })?;
+    output["resolved"] = json!({"context":evaluation.provenance(),"times":program.resolved_times});
+    Ok(output)
+}
+
+fn context_failure(response: crate::daemon::Response) -> Failure {
+    match response {
+        crate::daemon::Response::Error {
+            kind,
+            message,
+            detail,
+        } => Failure {
+            kind,
+            message,
+            detail,
+        },
+        _ => Failure {
+            kind: "internal".into(),
+            message: "operation context replay failed".into(),
+            detail: None,
+        },
+    }
 }
 
 /// The answer to a compiled program: its count and one page after `after`.
@@ -412,10 +457,6 @@ fn answer(
         "ranked": program.ranked,
         "notes": notes,
         "incomplete": program.incomplete,
-        "resolved": {
-            "clock": program.clock,
-            "times": program.resolved_times,
-        },
         "read_at": read_at,
     });
     if !program.definitions.is_empty() {
@@ -729,7 +770,7 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
 pub(crate) fn prepare_usage(
     reader: &Reader<'_>,
     text: &str,
-    clock: &Clock,
+    context: std::sync::Arc<crate::operation::Context>,
     embeddings: bool,
 ) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
     let text = format!("{text} | measure usage");
@@ -739,7 +780,7 @@ pub(crate) fn prepare_usage(
         page_size: None,
         why: false,
         session: None,
-        clock: clock.clone(),
+        context,
         embeddings,
         near: None,
         fields: &[],
@@ -786,7 +827,7 @@ pub(crate) fn select_usage(
 pub(crate) fn usage_selection(
     reader: &Reader<'_>,
     text: &str,
-    clock: &Clock,
+    context: std::sync::Arc<crate::operation::Context>,
     embeddings: bool,
     near: Option<&NearFn<'_>>,
 ) -> Result<
@@ -796,7 +837,7 @@ pub(crate) fn usage_selection(
     ),
     Failure,
 > {
-    let (plan, options) = prepare_usage(reader, text, clock, embeddings)?;
+    let (plan, options) = prepare_usage(reader, text, context, embeddings)?;
     let program = polylogue_store::query::lower(&plan, &options)?;
     Ok((select_usage(reader, &program, near)?, plan.question_id()))
 }
