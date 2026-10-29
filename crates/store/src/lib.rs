@@ -14,6 +14,7 @@ pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
 pub mod context;
+pub mod coverage;
 pub mod derive;
 pub mod documents;
 mod encoding;
