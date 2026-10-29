@@ -15,7 +15,8 @@ impl Comparison {
             let value: Value = serde_json::from_slice(line)
                 .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
             if let Some(schema) = value.get("schema") {
-                out.schema = Some(schema.clone());
+                out.schema =
+                    Some(json!({"schema":schema,"table_metadata":value.get("table_metadata")}));
                 continue;
             }
             let table = value

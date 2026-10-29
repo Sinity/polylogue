@@ -427,3 +427,61 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
         .unwrap();
     assert_eq!(before, after);
 }
+
+#[test]
+fn row_dump_header_preserves_native_columns_without_defaults_or_guessed_json_types() {
+    let mut t = Test::new(
+        "CREATE TABLE empty(a TEXT NOT NULL,b INTEGER DEFAULT 17,PRIMARY KEY(a,b)) WITHOUT ROWID; CREATE TABLE generated(n INTEGER,doubled INTEGER GENERATED ALWAYS AS(n*2) STORED); CREATE VIRTUAL TABLE search USING fts5(body);",
+    );
+    t.capture(&mut DatabaseReader::default()).unwrap();
+    let lines = t.lines();
+    let header = &lines[0];
+    assert!(
+        header["schema"]["empty"]
+            .as_str()
+            .unwrap()
+            .contains("DEFAULT 17")
+    );
+    assert_eq!(
+        header["table_metadata"]["empty"],
+        json!({"without_rowid":true,"columns":[
+          {"cid":0,"name":"a","declared_type":"TEXT","not_null":true,"primary_key":1,"hidden":0},
+          {"cid":1,"name":"b","declared_type":"INTEGER","not_null":true,"primary_key":2,"hidden":0}
+        ]})
+    );
+    assert_eq!(
+        header["table_metadata"]["generated"]["columns"][1]["hidden"],
+        3
+    );
+    assert!(
+        header["table_metadata"]["search"]["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|column| column["hidden"] == 1)
+    );
+    let metadata = header["table_metadata"].to_string();
+    assert!(!metadata.contains("DEFAULT"));
+    assert!(!metadata.contains("json_type"));
+    let length = t.length;
+    t.capture(&mut DatabaseReader::default()).unwrap();
+    assert_eq!(t.length, length);
+    // The comparison is derived state. A SQL-only predecessor must emit its
+    // native metadata header once, then resume ordinary unchanged detection.
+    Connection::open(t.archive.index_db())
+        .unwrap()
+        .execute(
+            "UPDATE tool_database SET schema=?1",
+            [header["schema"].to_string()],
+        )
+        .unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap();
+    assert!(t.length > length);
+    assert_eq!(
+        t.lines()
+            .iter()
+            .filter(|line| line.get("table_metadata").is_some())
+            .count(),
+        2
+    );
+}
