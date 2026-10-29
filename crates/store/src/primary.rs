@@ -14,9 +14,9 @@ pub use products::{
 };
 
 use crate::input_rows::InputRows;
-use crate::user_writes::UserRequest;
 use crate::{ReadPool, Result, StoreError};
 use polylogue_model::BlobHash;
+use polylogue_model::user::UserRequest;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ pub trait Sinex: Send + Sync {
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
     fn complete_capture(&self, identity: &str, products: &[ProductWrite]) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
-    fn prepare_request(&self, request: &UserRequest) -> Result<crate::UserOutcome>;
+    fn prepare_request(&self, request: &UserRequest) -> Result<polylogue_model::user::UserOutcome>;
     fn confirmed(&self, after: i64, cache: &str) -> Result<Vec<Confirmed>>;
     fn acknowledge(&self, position: i64) -> Result<()>;
 }

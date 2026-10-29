@@ -73,7 +73,7 @@ pub enum Request {
     BackfillReport {
         id: String,
         by: String,
-        report: polylogue_store::backfill_jobs::BackfillReport,
+        report: polylogue_model::user::BackfillReport,
     },
     /// What the archive holds of some of a web chat's conversations: the
     /// session, its message count and when it was last captured.

@@ -2,8 +2,8 @@
 //! replayed in commit order through the writer. Primary mode keeps the same
 //! sequence in Sinex.
 use crate::primary::RegisterChange;
-use crate::user_writes::UserRequest;
 use crate::{Reader, Result, StoreError};
+use polylogue_model::user::UserRequest;
 
 impl Reader<'_> {
     /// One committed request, including its resolved rows, targets or revision.

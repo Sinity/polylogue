@@ -28,9 +28,10 @@ mod advice;
 
 use crate::daemon::query::{NearFn, notes};
 use polylogue_model::DeliveryEvent;
+use polylogue_model::user::LeftOut;
 use polylogue_model::{Note, NoteKind, SessionId, Target, Timestamp};
 use polylogue_store::search;
-use polylogue_store::{LeftOut, Reader, StoreError};
+use polylogue_store::{Reader, StoreError};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

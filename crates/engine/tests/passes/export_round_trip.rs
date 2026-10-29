@@ -3,10 +3,10 @@
 //! judgments, settings, kept results, deliveries, chat actions, backfill
 //! jobs, replayed through the same request path.
 use super::*;
+use polylogue_model::user::NewChatAction;
+use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
+use polylogue_model::user::{Delivery, UserRequest, UserWrite};
 use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Target, Timestamp};
-use polylogue_store::backfill_jobs::{BackfillCounts, BackfillReport, NewBackfillJob};
-use polylogue_store::chat_actions::NewChatAction;
-use polylogue_store::{Delivery, UserRequest, UserWrite};
 
 /// The user-state tables, row by row, without the write counter, which
 /// counts this archive's own transactions.

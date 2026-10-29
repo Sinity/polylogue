@@ -1,6 +1,6 @@
 use super::*;
-use crate::user_writes::UserWrite;
 use crate::{Archive, Batch, Change, InputKey, Observation, Writer};
+use polylogue_model::user::UserWrite;
 use polylogue_model::{Author, Timestamp};
 use std::sync::{Arc, Mutex};
 
@@ -177,8 +177,8 @@ fn register(archive: &Archive) -> Vec<String> {
     rows
 }
 
-fn note() -> crate::user_writes::UserRequest {
-    crate::user_writes::UserRequest {
+fn note() -> polylogue_model::user::UserRequest {
+    polylogue_model::user::UserRequest {
         id: "0199d8a0-0000-7000-8000-00000000c001".into(),
         machine: "synthetic-machine".into(),
         at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),

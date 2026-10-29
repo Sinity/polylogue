@@ -1,9 +1,9 @@
 use crate::parts::{REGISTER, held};
 use crate::register::request_event;
+use polylogue_model::user::{UserRequest, UserWrite};
 use polylogue_model::{Author, NewNote, NoteKind, Target, Timestamp};
 use polylogue_store::input_rows::{Extent, InputRows};
 use polylogue_store::primary::{Held, RegisterChange};
-use polylogue_store::user_writes::{UserRequest, UserWrite};
 use sinex_model::{InputRef, MaterialId};
 use sinex_protocol::{MaterialFrame, ProducerMaterial};
 
