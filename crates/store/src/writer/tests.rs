@@ -970,7 +970,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     let (reply, received) = sync_channel(1);
     sender
         .0
-        .send_user((
+        .send_user(UserMsg::Request(
             Box::new(crate::user_writes::request_now(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
