@@ -1332,3 +1332,96 @@ fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
     );
     tx.commit().unwrap();
 }
+
+#[test]
+fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
+    use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
+    let w = test_archive();
+    let mut input = batch("fact-source", 0, 0, Vec::new(), &["receipt-session"]);
+    input.parse[0].output.sessions[0].offer_cwd("/workspace/first");
+    let mut document = Document::new(
+        DocumentId::parse("claude-code:receipt-document").unwrap(),
+        DocumentPurpose::Context,
+    );
+    document.blocks = vec![Block::Text {
+        text: "retained canonical document".into(),
+    }];
+    input.parse[0].output.documents.push(DocumentRow {
+        offset: 1,
+        end: 2,
+        document: document.clone(),
+    });
+    let link = Link {
+        kind: LinkKind::Spawn,
+        parent: sid("receipt-session"),
+        child: sid("receipt-child"),
+        at: None,
+        call_id: None,
+        evidence: "explicit-parent".into(),
+    };
+    input.parse[0].output.links.push(link.clone());
+    let wire = serde_json::to_vec(&input.parse[0].output).unwrap();
+    let mut confirmed = commit_event_bytes(&w, input, &wire);
+    confirmed.parse[0].output.session_receipts.insert(0, 130);
+    confirmed.parse[0].output.document_receipts.insert(0, 140);
+    confirmed.parse[0].output.link_receipts.insert(0, 150);
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let control = crate::wire_shapes::ReadingReceipt {
+        sequence: 999,
+        id: Some("progress-only".into()),
+        observation: None,
+        observed_at_ms: None,
+    };
+    let apply = |conn: &mut rusqlite::Connection, batch: &mut Batch| {
+        let tx = conn.transaction().unwrap();
+        resolve::prepare_index(&tx, batch, 1, false).unwrap();
+        rows::write_confirmed_rows(&tx, batch, &batch.parse[0], 1, 2000, None, Some(&control))
+            .unwrap();
+        tx.commit().unwrap();
+    };
+    apply(&mut conn, &mut confirmed);
+    let mut contributor = batch("later-fact-source", 0, 0, Vec::new(), &["receipt-session"]);
+    contributor.parse[0].output.sessions[0].offer_cwd("/workspace/second");
+    contributor.parse[0].output.session_receipts.insert(0, 160);
+    contributor.parse[0].output.links.push(link.clone());
+    contributor.parse[0].output.link_receipts.insert(0, 170);
+    apply(&mut conn, &mut contributor);
+    let reads = ReadPool::open(&w.archive).unwrap();
+    let assert_receipts = || {
+        let reader = reads.reader().unwrap();
+        assert_eq!(
+            reader.session_commit(&sid("receipt-session")).unwrap(),
+            Some(160)
+        );
+        assert_eq!(reader.document_commit(&document.id).unwrap(), Some(140));
+        assert_eq!(reader.link_commit(&link).unwrap(), Some(170));
+    };
+    assert_receipts();
+    let source = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
+    source
+        .execute("DELETE FROM extent WHERE input='fact-source'", [])
+        .unwrap();
+    assert_receipts();
+    // Rebuilding the projection uses original fact admissions, not its newer
+    // cache transaction or the ParseProgress control's admission.
+    apply(&mut conn, &mut confirmed);
+    assert_receipts();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .session_commit(&sid("absent"))
+            .unwrap(),
+        None
+    );
+    for invalid in [0, u64::MAX] {
+        let mut malformed = confirmed.clone();
+        malformed.parse[0].output.link_receipts.insert(0, invalid);
+        assert!(
+            malformed.parse[0]
+                .prepared
+                .validate(&malformed.parse[0].output)
+                .is_err()
+        );
+    }
+}

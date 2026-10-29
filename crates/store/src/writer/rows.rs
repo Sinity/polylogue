@@ -5,8 +5,8 @@ use super::*;
 use crate::first_build::FirstBuild;
 use crate::versions::VersionKind;
 
-mod assertions;
 mod checkpoint;
+mod events_links;
 mod retract;
 pub(super) use retract::prune_sessions;
 
@@ -158,8 +158,15 @@ fn apply_rows(
         )?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
-    for s in &p.output.sessions {
-        let (pk, _) = rows.upsert_session(s)?;
+    for (i, s) in p.output.sessions.iter().enumerate() {
+        let admitted = p
+            .output
+            .session_receipts
+            .get(&i)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        let (pk, _) = rows.upsert_session(s, admitted)?;
         sessions.insert(s.id.to_string(), pk);
     }
     let source = crate::documents::Source {
@@ -180,7 +187,14 @@ fn apply_rows(
             continue;
         }
         let prepared = &p.prepared.documents[i];
-        crate::documents::write(tx, &source, row, prepared)?;
+        let admitted = p
+            .output
+            .document_receipts
+            .get(&i)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        crate::documents::write(tx, &source, row, prepared, admitted)?;
     }
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
@@ -228,7 +242,14 @@ fn apply_rows(
         rows.write_event(i)?;
     }
     for (i, l) in p.output.links.iter().enumerate() {
-        rows.write_link(l, i)?;
+        let admitted = p
+            .output
+            .link_receipts
+            .get(&i)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        rows.write_link(l, i, admitted)?;
     }
     for l in &p.output.repo_lookups {
         crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain, counter)?;
@@ -447,7 +468,7 @@ impl RowWriter<'_, '_> {
     /// session's own columns are derived from every input's facts
     /// (derive/session.rs), so no arrival order decides them. Pending links
     /// naming the session as their child are resolved here.
-    fn upsert_session(&self, s: &Session) -> Result<(i64, bool)> {
+    fn upsert_session(&self, s: &Session, admitted: Option<i64>) -> Result<(i64, bool)> {
         let pk = self.session_row(&s.id, false)?;
         let merged = self
             .choices
@@ -456,10 +477,10 @@ impl RowWriter<'_, '_> {
             .ok_or_else(|| StoreError::Invalid("unresolved session facts".into()))?;
         self.tx
             .prepare_cached(
-                "INSERT INTO session_record(session_pk, input_pk, chain, facts) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts",
+                "INSERT INTO session_record(session_pk, input_pk, chain, facts, admitted) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts, admitted=coalesce(max(session_record.admitted,excluded.admitted),session_record.admitted,excluded.admitted)",
             )?
-            .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?])?;
+            .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?, admitted])?;
         let main = merged.kind == polylogue_model::SessionKind::Main;
         self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
         self.tx
@@ -1086,8 +1107,8 @@ impl RowWriter<'_, '_> {
         self.store_event_value(index)
     }
 
-    fn write_link(&self, l: &Link, index: usize) -> Result<()> {
-        self.store_link(l, index)
+    fn write_link(&self, l: &Link, index: usize, admitted: Option<i64>) -> Result<()> {
+        self.store_link(l, index, admitted)
     }
 
     /// Parse position and record counts for the chain, committed with the rows
