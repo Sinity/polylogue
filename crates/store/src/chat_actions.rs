@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 pub const CLAIM_MS: i64 = 180_000;
 
 /// A new chat action, as the writer stores it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NewChatAction {
     pub id: String,
     /// The request's idempotency key: a resent request is the same action.
@@ -29,7 +29,7 @@ pub struct NewChatAction {
 }
 
 /// A file attached to a chat action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChatAttachment {
     pub id: String,
     pub blob: BlobHash,

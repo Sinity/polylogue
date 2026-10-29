@@ -9,7 +9,7 @@ use polylogue_model::{
 use serde::{Deserialize, Serialize};
 
 /// The parser reading and exact source chain that produced a fact.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Reading {
     pub input: InputKey,
     pub chain: i64,
@@ -22,7 +22,7 @@ pub struct Reading {
 }
 
 /// Authoritative material descriptors supplied by Sinex, never hash lookups.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Material {
     pub id: String,
     pub hash: BlobHash,
@@ -31,7 +31,7 @@ pub struct Material {
 }
 
 /// Complete parser and authored facts; rebuilding the cache requires no parsing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "product", rename_all = "snake_case")]
 pub enum Product {
     Input {
@@ -92,14 +92,14 @@ impl Product {
 }
 
 /// One change from Sinex's ordered confirmed stream.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Confirmed {
     pub position: i64,
     pub event: String,
     pub change: ConfirmedChange,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", content = "facts", rename_all = "snake_case")]
 pub enum ConfirmedChange {
     Live(Product),
@@ -109,7 +109,7 @@ pub enum ConfirmedChange {
 }
 
 /// A source capture waiting in the producer spool, before cache application.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CapturedInput {
     pub input: super::InputName,
     pub rows: InputRows,
@@ -130,14 +130,14 @@ pub enum PreparedInput {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PreparedWrite {
     pub identity: String,
     pub pending: bool,
 }
 
 /// An outbound fact with its native source record and genuine parent readings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProductWrite {
     pub product: Product,
     pub location: Option<SourceLocation>,
@@ -145,7 +145,7 @@ pub struct ProductWrite {
     pub machine: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SourceLocation {
     pub material: String,
     pub anchor: u64,

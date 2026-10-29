@@ -8,7 +8,7 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InputRows {
     pub input: String,
     /// The origin that parses it (`claude-code`).
@@ -24,7 +24,7 @@ pub struct InputRows {
     pub observation: Option<ObservationRow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Revision {
     pub number: i64,
     pub produced: String,
@@ -32,7 +32,7 @@ pub struct Revision {
     pub length: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Extent {
     pub chain: i64,
     pub offset: i64,
@@ -41,7 +41,7 @@ pub struct Extent {
 }
 
 /// One look at a path that found something.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ObservationRow {
     pub id: String,
     pub machine: String,

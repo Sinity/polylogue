@@ -12,7 +12,7 @@ use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case")]
 pub enum UserWrite {
     AddNote {
@@ -111,7 +111,7 @@ pub enum UserWrite {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Delivery {
     pub recipient_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,7 +127,7 @@ pub struct Delivery {
 }
 
 /// A reference or section a delivery did not include, and why.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LeftOut {
     pub what: String,
     pub reason: String,
@@ -172,7 +172,7 @@ pub struct UserOutcome {
 }
 
 /// One user write with the request that carries it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UserRequest {
     pub id: String,
     pub machine: String,

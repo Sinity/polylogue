@@ -4,7 +4,9 @@
 use super::*;
 
 /// The input a batch belongs to, as `archive.db` names it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct InputKey {
     /// `archive.db` input id: a location's stable id, or the BLAKE3 of an
     /// imported file's bytes.
