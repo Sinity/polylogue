@@ -107,3 +107,69 @@ fn primary_opens_one_source_cache_and_never_creates_a_local_input_ledger() {
         0
     );
 }
+
+#[test]
+fn later_chunks_keep_their_actual_admission_when_one_revision_grows() {
+    for primary in [false, true] {
+        let conn = Connection::open_in_memory().unwrap();
+        if primary {
+            conn.execute_batch(&schema().unwrap().ddl).unwrap();
+        } else {
+            conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+        }
+        let source = Source::of(&conn).unwrap();
+        let hash = polylogue_model::BlobHash::of(b"synthetic");
+        conn.execute(
+            &source
+                .sql("INSERT INTO @source.blob(hash,size,stored_size,storage) VALUES (?1,8,8,x'')"),
+            [&hash.0[..]],
+        )
+        .unwrap();
+        let mut row = crate::input_rows::InputRows {
+            input: "input".into(),
+            format: "synthetic".into(),
+            observation: None,
+            revision: Some(crate::input_rows::Revision {
+                number: 1,
+                produced: "first".into(),
+                chain: 1,
+                length: 4,
+            }),
+            extent: Some(crate::input_rows::Extent {
+                chain: 1,
+                offset: 0,
+                length: 4,
+                blob: hash,
+                blob_offset: 0,
+            }),
+        };
+        row.insert(&conn, 2).unwrap();
+        row.revision.as_mut().unwrap().length = 8;
+        row.extent.as_mut().unwrap().offset = 4;
+        row.extent.as_mut().unwrap().blob_offset = 4;
+        row.insert(&conn, 9).unwrap();
+        assert_eq!(
+            Source::admitted_through(&conn, "input", 1, 4).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            Source::admitted_through(&conn, "input", 1, 6).unwrap(),
+            Some(9)
+        );
+        assert_eq!(
+            Source::admitted_through(&conn, "input", 1, 9).unwrap(),
+            None
+        );
+        row.insert(&conn, 15).unwrap();
+        assert_eq!(
+            Source::admitted_through(&conn, "input", 1, 8).unwrap(),
+            Some(9)
+        );
+        conn.execute(&source.sql("DELETE FROM @source.extent WHERE offset=0"), [])
+            .unwrap();
+        assert_eq!(
+            Source::admitted_through(&conn, "input", 1, 8).unwrap(),
+            None
+        );
+    }
+}

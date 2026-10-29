@@ -82,6 +82,55 @@ impl Source {
     pub(crate) fn of(conn: &Connection) -> Result<Self> {
         Ok(if conn.query_row("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name='source_input')",[],|row|row.get::<_,bool>(0))? { Self::Cache } else { Self::Ledger })
     }
+    /// Actual source admission for every retained extent covering the requested prefix.
+    pub(crate) fn admitted_through(
+        conn: &Connection,
+        input: &str,
+        chain: i64,
+        through: u64,
+    ) -> Result<Option<u64>> {
+        let source = Self::of(conn)?;
+        let through = i64::try_from(through).map_err(|_| {
+            StoreError::Invalid("source position exceeds SQLite's integer range".into())
+        })?;
+        let mut query = conn.prepare(&source.sql("SELECT offset,length,commit_seq FROM @source.extent WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset"))?;
+        let mut rows = query.query(rusqlite::params![input, chain, through])?;
+        let mut covered = 0i64;
+        let mut admitted = 0i64;
+        while let Some(row) = rows.next()? {
+            let offset: i64 = row.get(0)?;
+            let length: i64 = row.get(1)?;
+            let position: i64 = row.get(2)?;
+            if offset != covered || length < 0 || position < 0 {
+                return Ok(None);
+            }
+            covered = offset
+                .checked_add(length)
+                .ok_or_else(|| StoreError::Invalid("source extent endpoint overflow".into()))?;
+            admitted = admitted.max(position);
+            if covered >= through {
+                return Ok(Some(admitted as u64));
+            }
+        }
+        if through == 0 {
+            let position: Option<i64> = conn.query_row(
+                &source.sql(
+                    "SELECT min(commit_seq) FROM @source.revision WHERE input=?1 AND chain=?2",
+                ),
+                rusqlite::params![input, chain],
+                |row| row.get(0),
+            )?;
+            return position
+                .map(|position| {
+                    u64::try_from(position).map_err(|_| {
+                        StoreError::Invalid("negative source admission position".into())
+                    })
+                })
+                .transpose();
+        }
+        Ok(None)
+    }
+
     pub(crate) fn reading_receipt(
         conn: &Connection,
         input: &str,

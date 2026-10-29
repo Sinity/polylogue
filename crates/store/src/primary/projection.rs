@@ -16,7 +16,8 @@ CREATE INDEX primary_pending_position ON primary_pending(position,n);
 CREATE TABLE primary_complete(position INTEGER PRIMARY KEY) STRICT;
 CREATE TABLE source_material (
  id TEXT NOT NULL, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
- length INTEGER NOT NULL, hash BLOB NOT NULL, PRIMARY KEY(event,id)
+ length INTEGER NOT NULL, hash BLOB NOT NULL, source_length INTEGER, blob_offset INTEGER NOT NULL,
+ PRIMARY KEY(event,id)
 ) STRICT;
 CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
@@ -342,7 +343,7 @@ pub(crate) fn material_at(
     let start = i64::try_from(start).map_err(|_| {
         StoreError::Invalid("a source record position exceeds SQLite's signed integer range".into())
     })?;
-    Ok(index.query_row("SELECT id,offset FROM source_material WHERE input=?1 AND chain=?2 AND offset<=?3 AND offset+length>?3 ORDER BY offset DESC LIMIT 1",params![input,chain,start],|row|Ok(super::SourceLocation{material:row.get(0)?,anchor:(start-row.get::<_,i64>(1)?) as u64})).optional()?)
+    Ok(index.query_row("SELECT id,offset,blob_offset FROM source_material WHERE input=?1 AND chain=?2 AND offset<=?3 AND (offset+source_length>?3 OR (source_length=0 AND offset=?3)) ORDER BY offset DESC LIMIT 1",params![input,chain,start],|row|Ok(super::SourceLocation{material:row.get(0)?,anchor:(start-row.get::<_,i64>(1)?+row.get::<_,i64>(2)?) as u64})).optional()?)
 }
 
 struct Plan {
@@ -592,14 +593,18 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
         return Ok(());
     };
     let extent = descriptor(material)?;
-    let (input, chain, offset) = match product {
+    let (input, chain, offset, source_length, blob_offset) = match product {
         Product::Input { rows, .. } => {
             let source = rows.extent.as_ref().ok_or_else(|| {
                 StoreError::Invalid("material input facts have no source extent".into())
             })?;
             if source.blob != material.hash
                 || source.length < 0
-                || source.length as u64 != material.length
+                || source.offset < 0
+                || source.blob_offset < 0
+                || (source.blob_offset as u64)
+                    .checked_add(source.length as u64)
+                    .is_none_or(|end| end > material.length)
             {
                 return Err(StoreError::Invalid(
                     "input extent differs from its material".into(),
@@ -609,9 +614,11 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
                 Some(rows.input.as_str()),
                 Some(source.chain),
                 Some(source.offset),
+                Some(source.length),
+                source.blob_offset,
             )
         }
-        _ => (None, None, None),
+        _ => (None, None, None, None, 0),
     };
     let length = i64::try_from(material.length).map_err(|_| {
         StoreError::Invalid("material length exceeds the source catalog range".into())
@@ -619,7 +626,7 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
     let stored = i64::try_from(extent.len).map_err(|_| {
         StoreError::Invalid("extent length exceeds the source catalog range".into())
     })?;
-    tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![material.id,event,input,chain,offset,length,&material.hash.0[..]])?;
+    tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash,source_length,blob_offset) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![material.id,event,input,chain,offset,length,&material.hash.0[..],source_length,blob_offset])?;
     tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],length,stored,extent.encode()])?;
     Ok(())
 }
