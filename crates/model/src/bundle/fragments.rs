@@ -233,9 +233,13 @@ impl TextFragment {
         Ok(())
     }
 
-    /// Merge data only. Wire commits remain foreign claims retained by each
-    /// receiving source reading, never a clock used to choose an authority.
-    pub fn merge(&self, other: &Self) -> Result<Option<Self>> {
+    /// Compare touching or overlapping observations without copying text.
+    /// Different domains/versions and disjoint coverage return None.
+    pub fn validate_overlap(&self, other: &Self) -> Result<Option<()>> {
+        self.overlap(other).map(|overlap| overlap.map(|_| ()))
+    }
+
+    fn overlap<'a>(&'a self, other: &'a Self) -> Result<Option<(&'a Self, &'a Self, usize)>> {
         self.validate()?;
         other.validate()?;
         if self.container != other.container || self.source_version != other.source_version {
@@ -275,6 +279,15 @@ impl TextFragment {
         if left_overlap != right_overlap {
             return Err(TextFragmentError::Conflict);
         }
+        Ok(Some((left, right, right_end)))
+    }
+
+    /// Merge data only. Wire commits remain foreign claims retained by each
+    /// receiving source reading, never a clock used to choose an authority.
+    pub fn merge(&self, other: &Self) -> Result<Option<Self>> {
+        let Some((left, right, right_end)) = self.overlap(other)? else {
+            return Ok(None);
+        };
         let mut text = left.text.clone();
         if right.coverage.end > left.coverage.end {
             text.push_str(
