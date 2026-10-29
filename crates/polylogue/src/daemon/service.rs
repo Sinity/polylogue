@@ -489,6 +489,7 @@ fn handle_inner(
             | Request::Watch { .. }
             | Request::Embed { .. }
             | Request::Read { .. }
+            | Request::ReadResume { .. }
             | Request::Context { .. }
             | Request::Resumable { .. }
     ) || matches!(&request, Request::Explain { subject, .. } if subject == "query")
@@ -709,7 +710,7 @@ fn handle_inner(
             page_size,
             cursor.as_deref(),
         ),
-        request @ Request::Read { .. } => read::page(
+        request @ (Request::Read { .. } | Request::ReadResume { .. }) => read::page(
             &reader,
             d,
             &request,

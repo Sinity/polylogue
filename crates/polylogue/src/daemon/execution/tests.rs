@@ -59,13 +59,20 @@ fn expired_requests_never_start_any_read_operation() {
     let daemon = test_daemon::start("synthetic limits");
     let requests = [
         Request::Status,
+        Request::ReadResume {
+            root_run: polylogue_model::RunId::parse("019a0000-0000-7000-8000-000000000001")
+                .unwrap(),
+            cursor: query_language::cursor::SealedCursor::from_wire(
+                "never-open-an-expired-request",
+            ),
+            budget: None,
+        },
         Request::Read {
             target: "session:claude-code:s1".into(),
             options: polylogue_model::read::ReadOptions::default(),
             delivery: polylogue_model::read::ReadDelivery::Page,
             format: "json".into(),
             budget: None,
-            cursor: None,
             with_blobs: false,
         },
         Request::Context {
@@ -158,7 +165,6 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
         delivery: polylogue_model::read::ReadDelivery::Stream,
         format: "json".into(),
         budget: None,
-        cursor: None,
         with_blobs: false,
     };
     let limit = limit_for(&request, None, Default::default());
@@ -233,4 +239,17 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
             .unwrap()
             .is_some()
     );
+}
+
+#[test]
+fn resumed_read_is_always_a_page_with_an_ordinary_read_deadline() {
+    let request = Request::ReadResume {
+        root_run: polylogue_model::RunId::parse("019a0000-0000-7000-8000-000000000001").unwrap(),
+        cursor: query_language::cursor::SealedCursor::from_wire("opaque-awaiting-owner-validation"),
+        budget: None,
+    };
+    assert!(request.read_only());
+    assert!(!request.streaming());
+    assert!(request_deadline(&request, None).is_some());
+    assert_eq!(request_deadline(&request, Some(0)), Some(0));
 }
