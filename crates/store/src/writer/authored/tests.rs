@@ -157,6 +157,12 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<crate::primary::PendingGroupPage> {
         Ok(crate::primary::PendingGroupPage::default())
     }
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
     fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
         Self::unavailable()
     }

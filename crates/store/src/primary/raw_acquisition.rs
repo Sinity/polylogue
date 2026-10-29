@@ -177,3 +177,6 @@ impl RawAcquisitionProof {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
