@@ -119,6 +119,17 @@ fn final_count_failure_and_disconnect_preserve_previous_bundle_and_staging() {
     failed.push(session("new")).unwrap();
     assert!(failed.finish(complete(2)).is_err());
     assert!(staging.exists());
+    let retained = ExportItems::in_directory(&staging.join("_staging")).unwrap();
+    let recovered: ReadRecord = serde_json::from_reader(
+        retained
+            .source_item("session:codex:new")
+            .unwrap()
+            .unwrap()
+            .reader,
+    )
+    .unwrap();
+    assert_eq!(recovered.record.reference(), Some("session:codex:new"));
+    drop(retained);
     assert_eq!(
         fs::read(destination.join("manifest.json")).unwrap(),
         original
@@ -128,6 +139,13 @@ fn final_count_failure_and_disconnect_preserve_previous_bundle_and_staging() {
     disconnected.push(session("disconnected")).unwrap();
     drop(disconnected);
     assert!(staging.exists());
+    let retained = ExportItems::in_directory(&staging.join("_staging")).unwrap();
+    assert!(
+        retained
+            .source_item("session:codex:disconnected")
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(
         fs::read(destination.join("manifest.json")).unwrap(),
         original
@@ -176,7 +194,7 @@ fn blob_hash_failure_never_publishes_and_chunk_offsets_are_checked() {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {
                 path: format!("blobs/{hash}"),
-                hash: hash,
+                hash,
                 size: 7,
             },
         }),
@@ -283,7 +301,7 @@ fn valid_blob_chunks_are_pinned_and_unclaimed_bytes_refuse_publication() {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {
                 path: format!("blobs/{hash}"),
-                hash: hash,
+                hash,
                 size: 8,
             },
         }),

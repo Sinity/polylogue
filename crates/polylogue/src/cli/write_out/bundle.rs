@@ -29,7 +29,7 @@ pub struct Bundle {
     begin: ReadBegin,
     format: Format,
     with_blobs: bool,
-    items: ExportItems,
+    items: Option<ExportItems>,
     received: Counts,
     failed: bool,
 }
@@ -67,7 +67,12 @@ impl Bundle {
             .validate()
             .map_err(|e| e.to_string())?;
             check_destination(destination)?;
-            ExportItems::new().map_err(|e| e.to_string())
+            let internal = staging.join("_staging");
+            fs::create_dir(&internal).map_err(string)?;
+            let mut header = File::create(internal.join("begin.json")).map_err(string)?;
+            serde_json::to_writer(&mut header, &begin).map_err(string)?;
+            header.sync_all().map_err(string)?;
+            ExportItems::in_directory(&internal).map_err(|e| e.to_string())
         };
         let items = build().map_err(|message| Error {
             message,
@@ -79,7 +84,7 @@ impl Bundle {
             begin,
             format,
             with_blobs,
-            items,
+            items: Some(items),
             received: Counts::default(),
             failed: false,
         })
@@ -89,8 +94,14 @@ impl Bundle {
     }
     fn error(&mut self, message: impl ToString) -> Error {
         self.failed = true;
+        let mut message = message.to_string();
+        if let Some(items) = &mut self.items {
+            if let Err(error) = items.checkpoint() {
+                message.push_str(&format!("; staging checkpoint failed: {error}"));
+            }
+        }
         Error {
-            message: message.to_string(),
+            message,
             staging: self.staging.clone(),
         }
     }
@@ -108,6 +119,8 @@ impl Bundle {
         let reference = item.record.reference().expect("non-manifest").to_owned();
         let old = self
             .items
+            .as_ref()
+            .expect("open staging")
             .source_item(&reference)
             .map_err(|e| self.error(e))?;
         if let Some(old) = old {
@@ -154,6 +167,8 @@ impl Bundle {
         alternate.push(0);
         alternate.extend_from_slice(&key);
         self.items
+            .as_mut()
+            .expect("open staging")
             .push_ordered(
                 0..bytes.len() as u64,
                 key,
@@ -191,6 +206,15 @@ impl Bundle {
             return Err(self.error("read completed with a continuation"));
         }
         self.write_members(&complete).map_err(|e| self.error(e))?;
+        self.items
+            .take()
+            .expect("open staging")
+            .close()
+            .map_err(|e| self.error(e))?;
+        fs::remove_dir_all(self.staging.join("_staging")).map_err(|e| self.error(e))?;
+        File::open(&self.staging)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| self.error(e))?;
         check_destination(&self.destination).map_err(|e| self.error(e))?;
         let parent = self
             .destination
@@ -245,6 +269,8 @@ impl Bundle {
     }
     fn next(&mut self) -> std::result::Result<Option<ReadRecord>, String> {
         self.items
+            .as_mut()
+            .expect("open staging")
             .next_item()
             .map_err(|e| e.to_string())?
             .map(|i| serde_json::from_reader(i.reader).map_err(|e| e.to_string()))
@@ -253,7 +279,11 @@ impl Bundle {
     fn write_members(&mut self, complete: &ReadComplete) -> std::result::Result<(), String> {
         let mut inventory = File::create(self.staging.join("members.jsonl")).map_err(string)?;
         let mut counts = Counts::default();
-        self.items.reset(Order::Primary).map_err(string)?;
+        self.items
+            .as_mut()
+            .expect("open staging")
+            .reset(Order::Primary)
+            .map_err(string)?;
         while let Some(item) = self.next()? {
             increment(&mut counts, &item.record);
             if let Record::Blob(blob) = &item.record {
@@ -289,6 +319,8 @@ impl Bundle {
                 if !entry.file_type().map_err(string)?.is_file()
                     || self
                         .items
+                        .as_ref()
+                        .expect("open staging")
                         .source_item(&reference)
                         .map_err(string)?
                         .is_none()
@@ -310,7 +342,11 @@ impl Bundle {
         manifest.coverage = complete.footer.coverage.clone();
         if matches!(self.format, Format::Markdown | Format::Html) {
             let mut records = File::create(self.staging.join("records.jsonl")).map_err(string)?;
-            self.items.reset(Order::Primary).map_err(string)?;
+            self.items
+                .as_mut()
+                .expect("open staging")
+                .reset(Order::Primary)
+                .map_err(string)?;
             while let Some(item) = self.next()? {
                 line(&mut records, &item.record)?;
             }
@@ -327,7 +363,11 @@ impl Bundle {
             }
         }
         if self.format != Format::Jsonl {
-            self.items.reset(Order::Alternate).map_err(string)?;
+            self.items
+                .as_mut()
+                .expect("open staging")
+                .reset(Order::Alternate)
+                .map_err(string)?;
             let mut pending = self.next()?;
             let rendered = matches!(self.format, Format::Markdown | Format::Html);
             let mut index = if rendered {
@@ -507,7 +547,11 @@ impl Bundle {
         let mut primary = File::create(self.staging.join(primary_path)).map_err(string)?;
         line(&mut primary, &Record::Manifest(Box::new(manifest)))?;
         if self.format == Format::Jsonl {
-            self.items.reset(Order::Primary).map_err(string)?;
+            self.items
+                .as_mut()
+                .expect("open staging")
+                .reset(Order::Primary)
+                .map_err(string)?;
             while let Some(item) = self.next()? {
                 line(&mut primary, &item.record)?;
             }
@@ -625,6 +669,9 @@ fn check_destination(path: &Path) -> std::result::Result<(), String> {
         Ok(meta) => {
             if !meta.is_dir() || meta.file_type().is_symlink() {
                 return Err("destination must be a bundle directory".into());
+            }
+            if fs::read_dir(path).map_err(string)?.next().is_none() {
+                return Ok(());
             }
             let file = File::open(path.join("manifest.json"))
                 .or_else(|_| File::open(path.join("records.jsonl")))
