@@ -1046,11 +1046,7 @@ impl Inner {
                 "prepared bytes do not match the new blob".into(),
             ));
         }
-        let crate::staging::Prepared::Local { prepared } = file.file else {
-            return Err(StoreError::Invalid(
-                "Sinex bytes reached local segment writer".into(),
-            ));
-        };
+        let prepared = file.into_prepared();
         if self.segment.is_none() {
             self.segment = Some(crate::blobs::open_writer(
                 &self.archive,
@@ -1058,7 +1054,7 @@ impl Inner {
             )?);
         }
         let writer = self.segment.as_mut().expect("opened segment writer");
-        let pending = match writer.append_group(vec![*prepared], |_| Ok(None)) {
+        let pending = match writer.append_group(vec![prepared], |_| Ok(None)) {
             Ok(pending) => pending,
             Err(error) => {
                 self.segment.take();
