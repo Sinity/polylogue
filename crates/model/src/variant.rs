@@ -97,8 +97,6 @@ pub struct NewVariant {
     pub kind: VariantKind,
     pub from_lang: Option<String>,
     pub to_lang: Option<String>,
-    pub author: Author,
-    pub via: String,
     pub method: Option<String>,
     pub parts: Vec<NewVariantPart>,
 }

@@ -110,13 +110,13 @@ impl Relation {
 
 /// A note to write. The writing request's ID becomes the note's ID.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NewNote {
     pub kind: NoteKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    pub author: Author,
     pub targets: Vec<Reference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<(Relation, String)>,
