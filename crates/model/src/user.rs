@@ -241,6 +241,7 @@ pub const CHAT_CLAIM_MS: i64 = 180_000;
 /// One thing that happened to a chat action.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChatEvent {
+    pub request: String,
     pub at: i64,
     pub kind: String,
     pub phase: String,
@@ -347,6 +348,7 @@ pub const BACKFILL_CLAIM_MS: i64 = 180_000;
 /// One thing that happened to a backfill job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BackfillEvent {
+    pub request: String,
     pub at: i64,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
