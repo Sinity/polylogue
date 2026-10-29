@@ -5,7 +5,7 @@ use polylogue_model::{
     authorship::{CallerEvidence, Channel, compute_authorship},
     query_objects::{
         ExecutionBinding, ExecutionPresentation, QueryExecutionOptions, QueryRunOutcome,
-        ReplayBinding, RunOutcome,
+        ReadSpanBinding, ReplayBinding, RunBinding, RunOutcome,
     },
 };
 use query_language::{
@@ -57,38 +57,40 @@ fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> Que
         read_at: position.clone(),
         machine: "synthetic-machine".into(),
         authorship,
-        binding: ExecutionBinding {
-            query_options: QueryExecutionOptions {
-                direct_reference: None,
-                fields: vec![],
-                self_session: None,
-                embeddings: false,
-                why: false,
-                ranking_identity: None,
-            },
-            presentation: ExecutionPresentation::Query,
-            accepted_request: Some(
-                serde_json::json!({"id":"actual-accepted-id","operation":"query","arguments":{"target":"sessions"}}),
-            ),
-            replay: ReplayBinding {
-                bound_ast: object.identity_ast.clone(),
-                source_outputs: object.source_outputs.clone(),
-                definitions: vec![],
-                context: CursorContext {
-                    question: object.id,
-                    clock: clock.wire(),
-                    resolved_times: vec![],
-                    random_seed: 7,
-                    read_positions: BTreeMap::from([
-                        ("generation".into(), position.generation),
-                        ("index".into(), position.index.to_string()),
-                        ("archive".into(), position.archive.to_string()),
-                    ]),
-                    versions: BTreeMap::from([("compiler".into(), "shared-query-v1".into())]),
+        binding: RunBinding::Original {
+            execution: Box::new(ExecutionBinding {
+                query_options: QueryExecutionOptions {
+                    direct_reference: None,
+                    fields: vec![],
+                    self_session: None,
+                    embeddings: false,
+                    why: false,
+                    ranking_identity: None,
                 },
-                scope_fingerprint: None,
-                original_text: "sessions".into(),
-            },
+                presentation: ExecutionPresentation::Query,
+                accepted_request: Some(
+                    serde_json::json!({"id":"actual-accepted-id","operation":"query","arguments":{"target":"sessions"}}),
+                ),
+                replay: ReplayBinding {
+                    bound_ast: object.identity_ast.clone(),
+                    source_outputs: object.source_outputs.clone(),
+                    definitions: vec![],
+                    context: CursorContext {
+                        question: object.id,
+                        clock: clock.wire(),
+                        resolved_times: vec![],
+                        random_seed: 7,
+                        read_positions: BTreeMap::from([
+                            ("generation".into(), position.generation),
+                            ("index".into(), position.index.to_string()),
+                            ("archive".into(), position.archive.to_string()),
+                        ]),
+                        versions: BTreeMap::from([("compiler".into(), "shared-query-v1".into())]),
+                    },
+                    scope_fingerprint: None,
+                    original_text: "sessions".into(),
+                },
+            }),
         },
     }
 }
@@ -96,11 +98,13 @@ fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> Que
 fn outcome(run: &QueryRun, count: u64) -> QueryRunOutcome {
     QueryRunOutcome {
         run: run.id.clone(),
-        binding_hash: run.binding.hash().unwrap(),
+        binding_hash: run.binding_hash().unwrap(),
+        run_hash: run.record_hash().unwrap(),
         at: run.at,
         outcome: RunOutcome::Ok,
         count: Some(count),
         exact: true,
+        next: None,
     }
 }
 
@@ -176,13 +180,13 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     drop(reader);
     archive.writer.begin_query_run(expected.clone()).unwrap();
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
-    let mut reordered = expected.binding.clone();
+    let mut reordered = expected.binding.original().unwrap().clone();
     let mut envelope = serde_json::Map::new();
     envelope.insert("operation".into(), serde_json::json!("query"));
     envelope.insert("arguments".into(), serde_json::json!({"target":"sessions"}));
     envelope.insert("id".into(), serde_json::json!("actual-accepted-id"));
     reordered.accepted_request = Some(serde_json::Value::Object(envelope));
-    assert_eq!(reordered.hash().unwrap(), expected.binding.hash().unwrap());
+    assert_eq!(reordered.hash().unwrap(), expected.binding_hash().unwrap());
     let completed = outcome(&expected, 3);
     drop(archive.writer.finish_query_run(completed.clone()).unwrap());
     assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
@@ -204,6 +208,8 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     contradictory.id = run_id("contradictory-context");
     contradictory
         .binding
+        .original_mut()
+        .unwrap()
         .replay
         .context
         .read_positions
@@ -212,6 +218,8 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     let mut conflicting = expected.clone();
     conflicting
         .binding
+        .original_mut()
+        .unwrap()
         .query_options
         .fields
         .push("changed".into());
@@ -282,15 +290,22 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
             42,
             pool.reader().unwrap().change_position().unwrap(),
         );
-        binding.binding.replay.original_text = text.clone();
-        binding.binding.query_options.self_session =
+        binding.binding.original_mut().unwrap().replay.original_text = text.clone();
+        binding
+            .binding
+            .original_mut()
+            .unwrap()
+            .query_options
+            .self_session =
             Some(SessionId::parse(&format!("codex:{}", "synthetic-session".repeat(3000))).unwrap());
-        binding.binding.presentation = ExecutionPresentation::Read {
+        binding.binding.original_mut().unwrap().presentation = ExecutionPresentation::Read {
             options: polylogue_model::read::ReadOptions::default(),
             delivery: polylogue_model::read::ReadDelivery::Page,
-            normalized_span: None,
+            format: polylogue_model::read::Format::Json,
+            page_budget: Some(Default::default()),
+            direct_source: None,
         };
-        binding.binding.accepted_request = Some(
+        binding.binding.original_mut().unwrap().accepted_request = Some(
             serde_json::json!({"id":"caller".repeat(10000),"operation":"read","arguments":{"target":text}}),
         );
         writer.begin_query_run(binding.clone()).unwrap();
@@ -442,8 +457,9 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
         assert!(!context.resolved_times.is_empty());
         let mut execution = run(&object, "actual-execution", 1, read_at);
         execution.at = Timestamp::from_unix_ns(options.clock.now.as_nanosecond()).unwrap();
-        execution.binding.replay.bound_ast = selection.bound_query().query().clone();
-        execution.binding.replay.context = CursorContext {
+        execution.binding.original_mut().unwrap().replay.bound_ast =
+            selection.bound_query().query().clone();
+        execution.binding.original_mut().unwrap().replay.context = CursorContext {
             question: context.question,
             clock: context.clock.wire(),
             resolved_times: context.resolved_times.clone(),
@@ -451,8 +467,18 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
             read_positions: context.read_positions.clone(),
             versions: context.versions.clone(),
         };
-        execution.binding.replay.scope_fingerprint = reader.query_scope_fingerprint().unwrap();
-        execution.binding.replay.original_text = text.into();
+        execution
+            .binding
+            .original_mut()
+            .unwrap()
+            .replay
+            .scope_fingerprint = reader.query_scope_fingerprint().unwrap();
+        execution
+            .binding
+            .original_mut()
+            .unwrap()
+            .replay
+            .original_text = text.into();
         archive.writer.begin_query_run(execution.clone()).unwrap();
         archive
             .writer
@@ -524,13 +550,20 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
         1,
         pool.reader().unwrap().change_position().unwrap(),
     );
-    execution.binding.query_options.direct_reference = Some(original);
-    execution.binding.presentation = ExecutionPresentation::Read {
+    execution
+        .binding
+        .original_mut()
+        .unwrap()
+        .query_options
+        .direct_reference = Some(original);
+    execution.binding.original_mut().unwrap().presentation = ExecutionPresentation::Read {
         options: Default::default(),
         delivery: Default::default(),
-        normalized_span: Some(span),
+        format: polylogue_model::read::Format::Json,
+        page_budget: Some(Default::default()),
+        direct_source: Some(Box::new(ReadSpanBinding::Native { span })),
     };
-    let hash = execution.binding.hash().unwrap();
+    let hash = execution.binding_hash().unwrap();
     archive.writer.begin_query_run(execution.clone()).unwrap();
     let stored = pool
         .reader()
@@ -540,21 +573,29 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
         .unwrap()
         .value;
     assert_eq!(stored, execution);
-    assert_eq!(stored.binding.hash().unwrap(), hash);
+    assert_eq!(stored.binding_hash().unwrap(), hash);
     let mut conflicting = execution.clone();
     let ExecutionPresentation::Read {
-        normalized_span: Some(span),
+        direct_source: Some(source),
         ..
-    } = &mut conflicting.binding.presentation
+    } = &mut conflicting.binding.original_mut().unwrap().presentation
     else {
         unreachable!()
     };
+    let ReadSpanBinding::Native { span } = source.as_mut() else {
+        unreachable!()
+    };
     span.seek.start.byte += 1;
-    assert_ne!(conflicting.binding.hash().unwrap(), hash);
+    assert_ne!(conflicting.binding_hash().unwrap(), hash);
     assert!(archive.writer.begin_query_run(conflicting).is_err());
     let mut detached = execution;
     detached.id = run_id("detached-span-storage");
-    detached.binding.query_options.direct_reference = None;
+    detached
+        .binding
+        .original_mut()
+        .unwrap()
+        .query_options
+        .direct_reference = None;
     assert!(archive.writer.begin_query_run(detached.clone()).is_err());
     assert!(
         pool.reader()
@@ -564,3 +605,5 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
             .is_none()
     );
 }
+
+mod pages;

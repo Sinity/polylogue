@@ -1,7 +1,8 @@
 //! Canonical questions and executions, shared by the writer and confirmed replay.
 use crate::{Reader, Result, StoreError, primary::Product, source::Source};
 use polylogue_model::query_objects::{
-    QueryCustody, QueryEdge, QueryLookup, QueryObject, QueryRun, QueryRunOutcome,
+    ExecutionBinding, QueryCustody, QueryEdge, QueryLookup, QueryObject, QueryRun, QueryRunOutcome,
+    RunBinding,
 };
 use query_language::identity::{QuestionId, question_id_from_normal_form};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -119,11 +120,27 @@ pub(crate) fn validate_result_bindings(
 
 pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
     if run.machine.trim().is_empty() {
-        return Err(invalid(
-            "a query run requires its identity and accepting machine",
-        ));
+        return Err(invalid("a query run requires its accepting machine"));
     }
-    if run.binding.replay.context.question != run.question {
+    if polylogue_model::ChangePosition::parse(&run.read_at.to_string()).as_ref()
+        != Some(&run.read_at)
+    {
+        return Err(invalid("a query run has an invalid read position"));
+    }
+    match &run.binding {
+        RunBinding::Original { execution } => validate_execution(run, execution),
+        RunBinding::Continuation { root, .. } => {
+            if root == &run.id {
+                return Err(invalid(
+                    "a continuation cannot name itself as its original root",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()> {
+    if execution.replay.context.question != run.question {
         return Err(invalid(
             "a query run's replay context names another question",
         ));
@@ -133,8 +150,7 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
         ("index", run.read_at.index.to_string()),
         ("archive", run.read_at.archive.to_string()),
     ] {
-        if run
-            .binding
+        if execution
             .replay
             .context
             .read_positions
@@ -146,38 +162,63 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
             ));
         }
     }
-    if let Some(scope) = run.binding.replay.context.versions.get("scope")
-        && run.binding.replay.scope_fingerprint.as_ref() != Some(scope)
+    if let Some(scope) = execution.replay.context.versions.get("scope")
+        && execution.replay.scope_fingerprint.as_ref() != Some(scope)
     {
         return Err(invalid(
             "a query run's replay context contradicts its grant scope",
         ));
     }
-    if let polylogue_model::query_objects::ExecutionPresentation::Read {
-        options,
-        normalized_span,
-        ..
-    } = &run.binding.presentation
-    {
-        options
-            .validate()
-            .map_err(|error| invalid(error.to_string()))?;
-        if let Some(span) = normalized_span {
-            span.validate()
-                .map_err(|error| invalid(error.to_string()))?;
-            if run.binding.query_options.direct_reference.as_ref() != Some(&span.origin.reference) {
-                return Err(invalid(
-                    "normalized span differs from the accepted direct presentation",
-                ));
-            }
-        }
+    execution
+        .validate_presentation()
+        .map_err(|error| invalid(error.to_string()))?;
+    Ok(())
+}
+
+pub(crate) fn validate_child_root(run: &QueryRun, original: &QueryRun) -> Result<()> {
+    let RunBinding::Continuation {
+        root, binding_hash, ..
+    } = &run.binding
+    else {
+        return Ok(());
+    };
+    if root == &run.id || root != &original.id {
+        return Err(invalid("continuation does not name its original root"));
     }
-    if polylogue_model::ChangePosition::parse(&run.read_at.to_string()).as_ref()
-        != Some(&run.read_at)
-    {
-        return Err(invalid("a query run has an invalid read position"));
+    validate_run(original)?;
+    let Some(execution) = original.binding.original() else {
+        return Err(invalid("continuation roots cannot be chained"));
+    };
+    if !matches!(
+        &execution.presentation,
+        polylogue_model::query_objects::ExecutionPresentation::Read {
+            delivery: polylogue_model::read::ReadDelivery::Page,
+            ..
+        }
+    ) {
+        return Err(invalid("continuation requires an original paged reading"));
+    }
+    if run.question != original.question || *binding_hash != original.binding_hash()? {
+        return Err(StoreError::Conflict(format!("run:{}", run.id)));
     }
     Ok(())
+}
+
+pub(crate) fn validate_root_reference(
+    conn: &Connection,
+    run: &QueryRun,
+    pending: Option<&dyn crate::primary::Sinex>,
+) -> Result<()> {
+    let RunBinding::Continuation { root, .. } = &run.binding else {
+        return Ok(());
+    };
+    let original = lookup_run(conn, Source::of(conn)?, root, pending)?.ok_or_else(|| {
+        StoreError::ReferenceUnavailable {
+            reference: format!("run:{}", run.id),
+            reason: "original root binding is not retained".into(),
+        }
+    })?;
+    validate_child_root(run, &original.value)
 }
 
 pub(crate) fn equivalent(left: &QueryObject, right: &QueryObject) -> bool {
@@ -207,19 +248,10 @@ pub(crate) fn known_object(conn: &Connection, object: &QueryObject) -> Result<bo
 }
 
 pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
-    let source = Source::of(conn)?;
-    let bytes: Option<Vec<u8>> = conn
-        .query_row(
-            &source.sql("SELECT run FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
-            [run.id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(bytes) = bytes else {
+    let Some(existing) = lookup_run(conn, Source::of(conn)?, &run.id, None)? else {
         return Ok(false);
     };
-    let existing: QueryRun = crate::encoding::unpack_json(&bytes)?;
-    if existing != *run {
+    if existing.value != *run {
         return Err(StoreError::Conflict(format!("run:{}", run.id)));
     }
     Ok(true)
@@ -227,23 +259,28 @@ pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
 
 pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) -> Result<bool> {
     let source = Source::of(conn)?;
-    let bytes: Option<Vec<u8>> = conn
-        .query_row(
-            &source.sql(
-                "SELECT completion FROM @source.query_run WHERE id=?1 AND completion IS NOT NULL",
-            ),
-            [outcome.run.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(bytes) = bytes else {
+    let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
+        &source.sql("SELECT completion,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND completion IS NOT NULL"),
+        [outcome.run.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).optional()?;
+    let Some((bytes, action, intent)) = stored else {
         return Ok(false);
     };
     let existing: QueryRunOutcome = crate::encoding::unpack_json(&bytes)?;
+    check_outcome_integrity(&existing, &action, &intent)?;
     if existing != *outcome {
         return Err(StoreError::Conflict(format!("run outcome:{}", outcome.run)));
     }
     Ok(true)
+}
+
+fn check_outcome_integrity(value: &QueryRunOutcome, action: &str, intent: &str) -> Result<()> {
+    if value.binding_hash.to_string() != action || value.run_hash.to_string() != intent {
+        return Err(invalid(
+            "retained run outcome failed its action or invocation integrity check",
+        ));
+    }
+    Ok(())
 }
 
 fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
@@ -310,16 +347,17 @@ pub(crate) fn apply_run(
 ) -> Result<()> {
     validate_run(run)?;
     let source = Source::of(conn)?;
-    let binding_hash = run.binding.hash()?.to_string();
-    let existing: Option<(String, Option<Vec<u8>>)> = conn
+    let binding_hash = run.binding_hash()?.to_string();
+    let run_hash = run.record_hash()?.to_string();
+    let existing: Option<(String, String, Option<Vec<u8>>)> = conn
         .query_row(
-            &source.sql("SELECT binding_hash,run FROM @source.query_run WHERE id=?1"),
+            &source.sql("SELECT binding_hash,run_hash,run FROM @source.query_run WHERE id=?1"),
             [run.id.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    if let Some((hash, body)) = existing {
-        if hash != binding_hash {
+    if let Some((hash, intent_hash, body)) = existing {
+        if hash != binding_hash || intent_hash != run_hash {
             return Err(StoreError::Conflict(format!("run:{}", run.id)));
         }
         if let Some(body) = body {
@@ -334,8 +372,8 @@ pub(crate) fn apply_run(
     let order = i64::try_from(source_order)
         .map_err(|_| invalid("query run order exceeds SQLite's integer range"))?;
     conn.execute(
-        &source.sql("INSERT INTO @source.query_run(id,binding_hash,query,at,read_at,author,via,commit_seq,source_order,run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET query=excluded.query,at=excluded.at,read_at=excluded.read_at,author=excluded.author,via=excluded.via,commit_seq=excluded.commit_seq,source_order=excluded.source_order,run=excluded.run"),
-        params![run.id.as_str(),binding_hash,run.question.to_string(),run.at.unix_ns().to_string(),run.read_at.to_string(),serde_json::to_string(&run.authorship.author)?,run.authorship.via.as_str(),commit_seq,order,pack(run)?],
+        &source.sql("INSERT INTO @source.query_run(id,binding_hash,run_hash,query,at,read_at,author,via,commit_seq,source_order,run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(id) DO UPDATE SET query=excluded.query,at=excluded.at,read_at=excluded.read_at,author=excluded.author,via=excluded.via,commit_seq=excluded.commit_seq,source_order=excluded.source_order,run=excluded.run"),
+        params![run.id.as_str(),binding_hash,run_hash,run.question.to_string(),run.at.unix_ns().to_string(),run.read_at.to_string(),serde_json::to_string(&run.authorship.author)?,run.authorship.via.as_str(),commit_seq,order,pack(run)?],
     )?;
     first_run(conn, source, &run.question.to_string())
 }
@@ -358,15 +396,16 @@ pub(crate) fn apply_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
     validate_run_outcome(outcome)?;
     let source = Source::of(conn)?;
     let hash = outcome.binding_hash.to_string();
-    let existing: Option<(String, Option<Vec<u8>>)> = conn
+    let existing: Option<(String, String, Option<Vec<u8>>)> = conn
         .query_row(
-            &source.sql("SELECT binding_hash,completion FROM @source.query_run WHERE id=?1"),
+            &source
+                .sql("SELECT binding_hash,run_hash,completion FROM @source.query_run WHERE id=?1"),
             [outcome.run.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    if let Some((existing_hash, body)) = existing {
-        if existing_hash != hash {
+    if let Some((existing_hash, intent_hash, body)) = existing {
+        if existing_hash != hash || intent_hash != outcome.run_hash.to_string() {
             return Err(StoreError::Conflict(format!("run:{}", outcome.run)));
         }
         if let Some(body) = body {
@@ -379,8 +418,8 @@ pub(crate) fn apply_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
         }
     }
     conn.execute(
-        &source.sql("INSERT INTO @source.query_run(id,binding_hash,outcome,count,exact,finished_at,completion) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET outcome=excluded.outcome,count=excluded.count,exact=excluded.exact,finished_at=excluded.finished_at,completion=excluded.completion"),
-        params![outcome.run.as_str(),hash,serde_json::to_string(&outcome.outcome)?,outcome.count.map(|count|count.to_string()),outcome.exact,outcome.at.unix_ns().to_string(),pack(outcome)?],
+        &source.sql("INSERT INTO @source.query_run(id,binding_hash,run_hash,outcome,count,exact,finished_at,completion) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET outcome=excluded.outcome,count=excluded.count,exact=excluded.exact,finished_at=excluded.finished_at,completion=excluded.completion"),
+        params![outcome.run.as_str(),hash,outcome.run_hash.to_string(),serde_json::to_string(&outcome.outcome)?,outcome.count.map(|count|count.to_string()),outcome.exact,outcome.at.unix_ns().to_string(),pack(outcome)?],
     )?;
     Ok(())
 }
@@ -414,6 +453,58 @@ fn prefix(prefix: &str) -> Result<String> {
         ));
     }
     Ok(prefix.to_ascii_lowercase())
+}
+
+pub(crate) fn lookup_run(
+    conn: &Connection,
+    source: Source,
+    id: &polylogue_model::RunId,
+    pending: Option<&dyn crate::primary::Sinex>,
+) -> Result<Option<QueryLookup<QueryRun>>> {
+    let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
+        &source.sql("SELECT run,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
+        [id.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).optional()?;
+    let mut found = stored
+        .map(|(body, action, intent)| -> Result<QueryLookup<QueryRun>> {
+            let value: QueryRun = crate::encoding::unpack_json(&body)?;
+            if value.binding_hash()?.to_string() != action
+                || value.record_hash()?.to_string() != intent
+            {
+                return Err(invalid(
+                    "retained run beginning failed its action or invocation integrity check",
+                ));
+            }
+            Ok(QueryLookup {
+                value,
+                custody: QueryCustody::Canonical,
+            })
+        })
+        .transpose()?;
+    if let Some(pending) = pending {
+        pending.visit_named_products(
+            &crate::primary::NamedProductSelector::Exact(format!("query-run:{id}")),
+            &mut |product| {
+                if let Product::QueryRun { run } = product
+                    && &run.id == id
+                {
+                    validate_run(run)?;
+                    if let Some(existing) = &found {
+                        if existing.value != **run {
+                            return Err(StoreError::Conflict(format!("run:{id}")));
+                        }
+                    } else {
+                        found = Some(QueryLookup {
+                            value: *run.clone(),
+                            custody: QueryCustody::Queued,
+                        });
+                    }
+                }
+                Ok(())
+            },
+        )?;
+    }
+    Ok(found)
 }
 
 impl Reader<'_> {
@@ -482,47 +573,34 @@ impl Reader<'_> {
         id: &polylogue_model::RunId,
         pending: Option<&dyn crate::primary::Sinex>,
     ) -> Result<Option<QueryLookup<QueryRun>>> {
-        let conn = self.conn()?;
-        let bytes: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT run FROM source_query_run WHERE id=?1 AND run IS NOT NULL",
-                [id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let mut found = bytes
-            .map(|bytes| {
-                crate::encoding::unpack_json(&bytes).map(|run| QueryLookup {
-                    value: run,
-                    custody: QueryCustody::Canonical,
-                })
-            })
-            .transpose()?;
-        if let Some(pending) = pending {
-            pending.visit_named_products(
-                &crate::primary::NamedProductSelector::Exact(format!("query-run:{id}")),
-                &mut |product| {
-                    if let Product::QueryRun { run } = product
-                        && &run.id == id
-                    {
-                        validate_run(run)?;
-                        if let Some(existing) = &found {
-                            if existing.value != **run {
-                                return Err(StoreError::Conflict(format!("run:{id}")));
-                            }
-                        } else {
-                            found = Some(QueryLookup {
-                                value: *run.clone(),
-                                custody: QueryCustody::Queued,
-                            });
-                        }
-                    }
-                    Ok(())
-                },
-            )?;
-        }
+        let found = lookup_run(self.conn()?, Source::Cache, id, pending)?;
         self.conn()?;
         Ok(found)
+    }
+
+    /// Resolves at most one original root. Custody is data, not authorization;
+    /// the replay factory must authenticate its seal and current grant/context.
+    pub fn query_run_root(
+        &self,
+        id: &polylogue_model::RunId,
+        pending: Option<&dyn crate::primary::Sinex>,
+    ) -> Result<Option<QueryLookup<QueryRun>>> {
+        let Some(requested) = self.query_run(id, pending)? else {
+            return Ok(None);
+        };
+        validate_run(&requested.value)?;
+        let RunBinding::Continuation { root, .. } = &requested.value.binding else {
+            return Ok(Some(requested));
+        };
+        let original =
+            self.query_run(root, pending)?
+                .ok_or_else(|| StoreError::ReferenceUnavailable {
+                    reference: format!("run:{id}"),
+                    reason: "original root binding is not retained in the current view".into(),
+                })?;
+        validate_child_root(&requested.value, &original.value)?;
+        self.conn()?;
+        Ok(Some(original))
     }
 
     pub fn query_run_outcome(
@@ -530,21 +608,21 @@ impl Reader<'_> {
         id: &polylogue_model::RunId,
         pending: Option<&dyn crate::primary::Sinex>,
     ) -> Result<Option<QueryLookup<QueryRunOutcome>>> {
-        let bytes: Option<Vec<u8>> = self
-            .conn()?
-            .query_row(
-                "SELECT completion FROM source_query_run WHERE id=?1 AND completion IS NOT NULL",
-                [id.as_str()],
-                |row| row.get(0),
+        let stored:Option<(Vec<u8>,String,String)>=self.conn()?.query_row(
+            "SELECT completion,binding_hash,run_hash FROM source_query_run WHERE id=?1 AND completion IS NOT NULL",
+            [id.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        ).optional()?;
+        let mut found = stored
+            .map(
+                |(body, action, intent)| -> Result<QueryLookup<QueryRunOutcome>> {
+                    let value: QueryRunOutcome = crate::encoding::unpack_json(&body)?;
+                    check_outcome_integrity(&value, &action, &intent)?;
+                    Ok(QueryLookup {
+                        value,
+                        custody: QueryCustody::Canonical,
+                    })
+                },
             )
-            .optional()?;
-        let mut found = bytes
-            .map(|body| {
-                crate::encoding::unpack_json(&body).map(|value| QueryLookup {
-                    value,
-                    custody: QueryCustody::Canonical,
-                })
-            })
             .transpose()?;
         if let Some(pending) = pending {
             pending.visit_named_products(
