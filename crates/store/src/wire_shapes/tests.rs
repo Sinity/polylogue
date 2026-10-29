@@ -725,3 +725,26 @@ fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
             .any(|drift| drift.kind == Kind::NewPath && drift.shape.reading_version == "v1")
     );
 }
+
+#[test]
+fn wire_shape_confirmed_subset_keeps_partial_coverage_despite_scratch_reset() {
+    let mut conn = database();
+    let mut complete = step(
+        "v1",
+        0..10,
+        true,
+        vec![root(), shape("/a", "string", &["string"])],
+    );
+    store(&mut conn, source(1, 1, 10, 1), &complete);
+    complete.source_prefix_missing = true;
+    store(&mut conn, source(1, 1, 10, 2), &complete);
+    let partial = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(partial.coverage[0].status(), CoverageStatus::Partial);
+    assert_eq!(at(&partial, "/a").types["string"].count, 1);
+    complete.source_prefix_missing = false;
+    store(&mut conn, source(1, 1, 10, 3), &complete);
+    assert_eq!(
+        read(&conn, Scope::current(None)).unwrap().coverage[0].status(),
+        CoverageStatus::Complete
+    );
+}
