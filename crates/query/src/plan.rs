@@ -309,9 +309,6 @@ fn visit_condition(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests;
-
 fn canonical_references(query: &mut Query) -> Result<(), QueryError> {
     walk(query, &mut |_| Ok(()), &mut |condition| {
         let text = match &condition.kind {
@@ -340,3 +337,6 @@ fn canonical_references(query: &mut Query) -> Result<(), QueryError> {
         Ok(())
     })
 }
+
+#[cfg(test)]
+mod tests;

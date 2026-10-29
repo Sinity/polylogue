@@ -977,9 +977,6 @@ fn aggregate_values(program: &Program, row: &Value) -> BTreeMap<String, Option<f
         .collect()
 }
 
-#[cfg(test)]
-mod tests;
-
 fn membership(
     unit: Unit,
     reference: &Reference,
@@ -994,3 +991,6 @@ fn membership(
         },
     ))
 }
+
+#[cfg(test)]
+mod tests;

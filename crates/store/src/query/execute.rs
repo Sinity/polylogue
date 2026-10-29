@@ -347,9 +347,6 @@ impl<E> From<crate::StoreError> for StreamError<E> {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 /// Capture options that survive canonical semantic binding. Transfer size and
 /// current alias tables are deliberately outside the immutable execution input.
 pub fn options_snapshot(
@@ -394,3 +391,47 @@ pub fn options_from_snapshot(
         chat_pages: vec![],
     }
 }
+
+/// Measure descriptors choose their transfer grain; Store alone changes the
+/// executable relation and its total order.
+pub fn prepare_measure(
+    program: &mut Program,
+    paging: Option<crate::measure::Paging>,
+    options: &str,
+    page_size: Option<u64>,
+) -> Result<(), SelectionError> {
+    let Some(measure) = &program.measure else {
+        return Ok(());
+    };
+    match paging {
+        Some(crate::measure::Paging::Sessions) => {
+            program.sql = crate::measure::comparison::page_query(&program.sql)
+        }
+        Some(crate::measure::Paging::Facets) => {
+            program.counts_near = false;
+            program.row_count_sql = None;
+            program.row_membership_sql = None;
+            program.page_size = page_size.unwrap_or(100);
+            program.sql = crate::measure::facets::query(
+                &measure.selection_sql,
+                &measure.population_sql,
+                options,
+            )?;
+            program.order = vec![
+                super::OrderKey {
+                    column: "family".into(),
+                    descending: false,
+                },
+                super::OrderKey {
+                    column: "value".into(),
+                    descending: false,
+                },
+            ];
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

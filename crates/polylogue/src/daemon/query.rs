@@ -31,6 +31,9 @@ impl From<polylogue_store::StoreError> for Failure {
 
 impl From<polylogue_store::selection::SelectionError> for Failure {
     fn from(error: polylogue_store::selection::SelectionError) -> Self {
+        if let polylogue_store::selection::SelectionError::Store(error) = error {
+            return Self::from(error);
+        }
         Self {
             kind: error.kind().to_owned(),
             message: error.to_string(),
@@ -470,33 +473,12 @@ fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), 
         return Ok(());
     };
     let (definition, options) = super::measure::find_checked(&m.what)?;
-    match definition.paging {
-        Some(super::measure::Paging::Sessions) => {
-            program.sql = polylogue_store::measure::comparison::page_query(&program.sql);
-        }
-        Some(super::measure::Paging::Facets) => {
-            program.counts_near = false;
-            program.row_count_sql = None;
-            program.row_membership_sql = None;
-            program.page_size = page_size.unwrap_or(100);
-            program.sql = polylogue_store::measure::facets::query(
-                &m.selection_sql,
-                &m.population_sql,
-                options,
-            )?;
-            program.order = vec![
-                polylogue_store::query::OrderKey {
-                    column: "family".into(),
-                    descending: false,
-                },
-                polylogue_store::query::OrderKey {
-                    column: "value".into(),
-                    descending: false,
-                },
-            ];
-        }
-        None => {}
-    }
+    polylogue_store::query::execute::prepare_measure(
+        program,
+        definition.paging,
+        options,
+        page_size,
+    )?;
     Ok(())
 }
 
