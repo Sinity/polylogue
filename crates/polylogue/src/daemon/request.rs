@@ -2,8 +2,6 @@
 //! command, the browser host and the web reader. A write carries a request
 //! ID so a resent write is a no-op.
 
-mod references;
-
 use crate::briefing::Ask;
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::{Author, DocumentId, NewNote, SessionId};
@@ -418,9 +416,6 @@ fn attachment_chunk() -> usize {
 pub enum Response {
     Ok {
         data: serde_json::Value,
-        /// References supplied by the response constructor, before transport cleaning.
-        #[serde(skip)]
-        references: References,
     },
     Error {
         kind: String,
@@ -454,25 +449,6 @@ impl Response {
         }
     }
 
-    /// The application response boundary shared by socket and HTTP consumers.
-    /// Mask decoded strings before JSON escaping, keeping every structured field.
-    pub(crate) fn masked(mut self) -> Self {
-        match &mut self {
-            Self::Ok { data, references } => references.clean(data, &mut polylogue_render::mask),
-            Self::Error {
-                kind,
-                message,
-                detail,
-            } => {
-                *kind = polylogue_render::mask(kind);
-                *message = polylogue_render::mask(message);
-                if let Some(detail) = detail {
-                    polylogue_render::mask_json(detail);
-                }
-            }
-        }
-        self
-    }
 }
 
 impl From<Response> for command_surface::Answer<serde_json::Value> {
@@ -489,7 +465,6 @@ impl From<command_surface::Answer<serde_json::Value>> for Response {
             | Answer::Empty { value, .. }
             | Answer::Degraded { value, .. } => Self::Ok {
                 data: value,
-                references: References::default(),
             },
             Answer::Error { error, notes, next } => {
                 let detail = serde_json::json!({
@@ -513,81 +488,6 @@ impl From<command_surface::Answer<serde_json::Value>> for Response {
                 }
             }
         }
-    }
-}
-
-/// Typed identifiers and declared command continuations excluded from text cleaning.
-#[derive(Debug, Clone, Default)]
-pub struct References(Vec<String>);
-
-impl References {
-    pub(crate) fn response(mut self, data: impl Serialize) -> Response {
-        match references::value(&mut self, "", &data) {
-            Ok(data) => {
-                // These root fields belong to the command response, not its authored values.
-                for field in ["cursor", "next", "previous"] {
-                    self.opaque_field(&data, format!("/{field}"));
-                }
-                Response::Ok {
-                    data,
-                    references: self,
-                }
-            }
-            Err(error) => crate::daemon::service::error("internal", error),
-        }
-    }
-    pub(crate) fn value(&mut self, path: &str, data: &impl Serialize) -> serde_json::Value {
-        references::value(self, path, data).expect("model serializes")
-    }
-
-    pub(crate) fn observe(&mut self, path: &str, data: &impl Serialize) {
-        references::observe(self, path, data);
-    }
-
-    pub(crate) fn add(&mut self, path: impl Into<String>, _value: &impl Serialize) {
-        self.0.push(path.into());
-    }
-
-    pub(crate) fn opaque_field(&mut self, value: &serde_json::Value, path: impl Into<String>) {
-        let path = path.into();
-        if let Some(value) = value.pointer(&path).and_then(serde_json::Value::as_str) {
-            self.add(path, &value);
-        }
-    }
-
-    pub(crate) fn field<T: serde::de::DeserializeOwned + Serialize>(
-        &mut self,
-        value: &serde_json::Value,
-        path: impl Into<String>,
-    ) {
-        let path = path.into();
-        if let Some(value) = value
-            .pointer(&path)
-            .and_then(|v| serde_json::from_value::<T>(v.clone()).ok())
-        {
-            self.value(&path, &value);
-        }
-    }
-
-    fn clean(&mut self, value: &mut serde_json::Value, string: &mut dyn FnMut(&str) -> String) {
-        polylogue_model::masking::mask_json_values_except(value, string, &mut self.0);
-    }
-}
-
-impl Response {
-    pub(crate) fn clean(mut self, mut string: impl FnMut(&str) -> String) -> Self {
-        match &mut self {
-            Self::Ok { data, references } => references.clean(data, &mut string),
-            Self::Error {
-                message, detail, ..
-            } => {
-                *message = string(message);
-                if let Some(detail) = detail {
-                    polylogue_model::masking::mask_json_values(detail, string);
-                }
-            }
-        }
-        self
     }
 }
 
