@@ -37,10 +37,14 @@ pub(crate) fn rotate(index: &Connection) -> Result<()> {
 pub(super) fn open(archive: &super::Archive) -> Result<()> {
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     let index = super::open_write(&archive.index_db(), cache::SETUP)?;
-    begin(&index, boot.trim())
+    begin(&index, boot.trim(), Some(&archive.read_scope))
 }
 
-fn begin(index: &Connection, boot: &str) -> Result<()> {
+fn begin(
+    index: &Connection,
+    boot: &str,
+    scope: Option<&crate::read::scope::ReadScopeState>,
+) -> Result<()> {
     if boot.is_empty() {
         return Err(crate::StoreError::Invalid(
             "the current boot has no identity".into(),
@@ -56,11 +60,17 @@ fn begin(index: &Connection, boot: &str) -> Result<()> {
                 .optional()?)
         };
         let generation = value("generation")?;
+        let mut changed = false;
         // Changing boot always invalidates cursors. A stale clean-stop marker
         // therefore cannot authorize reuse after a lost NORMAL transaction.
         if generation.as_deref().is_none_or(str::is_empty)
             || value("boot_id")?.as_deref() != Some(boot)
         {
+            if let Some(scope) = scope {
+                let mut reset = scope.begin_reset()?;
+                reset.invalidate()?;
+            }
+            changed = true;
             let generation = uuid::Uuid::now_v7().to_string();
             tx.execute("INSERT INTO meta(key,value) VALUES ('generation',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [generation])?;
             tx.execute("INSERT INTO meta(key,value) VALUES ('cursor_key',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [cursor_key()?])?;
@@ -68,6 +78,9 @@ fn begin(index: &Connection, boot: &str) -> Result<()> {
         }
         tx.execute("INSERT INTO meta(key,value) VALUES ('boot_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [boot])?;
         tx.commit()?;
+        if changed && let Some(scope) = scope {
+            scope.finish_reset();
+        }
         Ok(())
     })();
     index.pragma_update(None, "synchronous", previous)?;

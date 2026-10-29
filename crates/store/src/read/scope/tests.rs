@@ -1,4 +1,8 @@
 use crate::{ReadPool, StoreError, fixture::Fixture, read::limit::ReadLimit};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -70,4 +74,93 @@ fn waiting_for_an_unlimited_reader_slot_stops_when_scope_changes() {
         assert!(work.join().unwrap());
         fixture.archive.read_scope.finish_reset();
     });
+}
+
+#[test]
+fn an_old_publisher_cannot_reactivate_its_pointer_after_scope_invalidation() {
+    let root = tempfile::tempdir().unwrap();
+    let archive = crate::Archive::at(root.path());
+    let available = Arc::new(AtomicBool::new(true));
+    let invalidated = Arc::clone(&available);
+    let _registration = crate::Archive::register_scope_invalidator(root.path(), move || {
+        invalidated.store(false, Ordering::SeqCst);
+        Ok(())
+    })
+    .unwrap();
+    assert!(!available.load(Ordering::SeqCst));
+    let token = archive.scope_token().unwrap();
+    std::thread::scope(|threads| {
+        let (started, publishing) = std::sync::mpsc::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let pointer = &available;
+        let publisher_token = &token;
+        let publisher = threads.spawn(move || {
+            publisher_token.with_current(|| {
+                started.send(()).unwrap();
+                waiting.recv().unwrap();
+                pointer.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        publishing.recv().unwrap();
+        let state = &archive.read_scope;
+        let reset = threads.spawn(move || {
+            let mut reset = state.begin_reset().unwrap();
+            reset.invalidate().unwrap();
+            drop(reset);
+            state.finish_reset();
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        while token.check().is_ok() {
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        publisher.join().unwrap().unwrap();
+        reset.join().unwrap();
+    });
+    assert!(!available.load(Ordering::SeqCst));
+    assert!(matches!(
+        token.with_current(|| {
+            available.store(true, Ordering::SeqCst);
+            Ok(())
+        }),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert!(!available.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_preopen_registration_shares_the_later_archive_scope_and_retires_with_its_guard() {
+    let root = tempfile::tempdir().unwrap();
+    let alias = root.path().join("alias");
+    let actual = root.path().join("actual");
+    std::fs::create_dir(&actual).unwrap();
+    std::os::unix::fs::symlink(&actual, &alias).unwrap();
+    let missing = alias.join("cache");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let registration = crate::Archive::register_scope_invalidator(&missing, move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    std::fs::create_dir(&missing).unwrap();
+    let archive = crate::Archive::at(&actual.join("cache"));
+    {
+        let mut reset = archive.read_scope.begin_reset().unwrap();
+        reset.invalidate().unwrap();
+    }
+    archive.read_scope.finish_reset();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    drop(registration);
+    archive
+        .read_scope
+        .begin_reset()
+        .unwrap()
+        .invalidate()
+        .unwrap();
+    archive.read_scope.finish_reset();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
