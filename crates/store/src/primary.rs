@@ -42,7 +42,7 @@ pub trait Sinex: Send + Sync {
     ) -> Result<UserOutcome>;
     fn visit_pending_requests(
         &self,
-        visit: &mut dyn FnMut(&polylogue_model::authored::PreparedRequest) -> Result<()>,
+        visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
     ) -> Result<()>;
     fn visit_pending_blobs(
         &self,

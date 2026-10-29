@@ -189,6 +189,28 @@ impl Inner {
         request: &polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
+        if let Some(known) = crate::primary::authored::known_request(&self.index, request)? {
+            let mut outcome = known.outcome;
+            outcome.repeat = true;
+            return Ok(outcome);
+        }
+        let mut queued = None;
+        sinex.visit_pending_requests(&mut |pending| {
+            let prepared = pending.prepared();
+            if prepared.request.id == request.id {
+                if crate::primary::authored::request_hash(&prepared.request)?
+                    != crate::primary::authored::request_hash(request)?
+                {
+                    return Err(StoreError::Conflict(request.id.clone()));
+                }
+                queued = Some(prepared.outcome.clone());
+            }
+            Ok(())
+        })?;
+        if let Some(mut outcome) = queued {
+            outcome.pending = true;
+            return Ok(outcome);
+        }
         // The durable local overlay remains available while the stream is behind or offline.
         let prepared: PreparedRequest = crate::primary::authored::prepare(
             &self.index,
