@@ -4,6 +4,9 @@ use serde_json::json;
 #[test]
 fn event_identity_distinguishes_message_anchors_and_ignores_physical_ranges() {
     let mut event = Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: Some(polylogue_model::SessionId::parse("chatgpt:example").unwrap()),
         kind: "active_leaf".into(),
         at: None,
@@ -45,6 +48,9 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
         assert!(packed.len() <= pack_json(&value).unwrap().len());
         assert_eq!(unpack_json::<serde_json::Value>(&packed).unwrap(), value);
         let event = Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(polylogue_model::SessionId::parse("claude-code:session").unwrap()),
             kind: "synthetic".into(),
             at: None,
@@ -265,6 +271,9 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
         output_including_reasoning: None,
     };
     let event = Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: Some(polylogue_model::SessionId::parse("codex:thread").unwrap()),
         kind: "usage_report".into(),
         at: None,

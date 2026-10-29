@@ -7,6 +7,9 @@ use polylogue_model::{
 
 fn event(kind: &str, at: i64, data: impl serde::Serialize) -> Event {
     Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: Some(sid("observed")),
         kind: kind.into(),
         at: Timestamp::from_unix_ms(at),

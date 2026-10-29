@@ -5,6 +5,9 @@ use polylogue_model::{Block, Role, Timestamp};
 const MINUTE: i64 = 60_000;
 fn m(id: &str, at: Option<i64>, author: &str, kind: &str, end: bool) -> Message {
     Message {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         id: id.into(),
         at,
         author: author.into(),

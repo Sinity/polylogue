@@ -47,6 +47,9 @@ fn sid(n: &str) -> SessionId {
 
 fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&str>) -> Message {
     Message {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         id: MessageId::parse(&format!("claude-code:{id}")).unwrap(),
         session: sid(session),
         parent: None,

@@ -149,6 +149,9 @@ fn reset_live(tx: &Transaction<'_>, pk: i64) -> Result<()> {
             tx,
             pk,
             &polylogue_model::Event {
+                at_quality: polylogue_model::TimeQuality::Unknown,
+                at_precision: None,
+                at_until: None,
                 session: None,
                 kind,
                 at: at.and_then(polylogue_model::Timestamp::from_unix_ms),
