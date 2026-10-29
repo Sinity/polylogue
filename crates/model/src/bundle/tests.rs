@@ -16,7 +16,7 @@ fn manifest() -> Manifest {
         counts: Counts::default(),
         flags: Flags {
             format: Format::Json,
-            view: crate::read::View::Full,
+            view: crate::read::View::Transcript,
             with_blobs: false,
             inherited: true,
             assertions: true,
