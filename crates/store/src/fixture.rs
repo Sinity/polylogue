@@ -372,7 +372,7 @@ impl Fixture {
             data: serde_json::Value::Null,
         })?;
         self.index.execute(
-            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data,fields) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data,fields,source_chain) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)",
             params![id, session_pk, self.seq, kind, at, self.input_pk, data,fields],
         )?;
         let hash = *blake3::hash(b"{}").as_bytes();

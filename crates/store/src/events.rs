@@ -28,7 +28,10 @@ impl Reader<'_> {
         let mut sources = Vec::new();
         let mut statement = self.conn()?.prepare_cached(
             "SELECT i.id,i.format,s.chain,s.source_start,s.source_end,s.imported_provenance
-             FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1 ORDER BY i.id,s.chain")?;
+             FROM event_source s JOIN event e ON e.pk=s.event_pk
+             JOIN event_source selected ON selected.event_pk=e.pk AND selected.input_pk=e.input_pk AND selected.chain=e.source_chain
+             JOIN input_ref i ON i.pk=s.input_pk
+             WHERE s.event_pk=?1 AND s.value_pk=selected.value_pk AND s.fields=selected.fields ORDER BY i.id,s.chain")?;
         let rows = statement.query_map([pk], |r| {
             Ok((
                 r.get::<_, String>(0)?,
