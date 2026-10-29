@@ -94,7 +94,7 @@ The commands this area owns, each with the reason it is a command rather than a 
 | `import PATH…` | brings an outside file into the archive ([capture.md#import](capture.md#import)) |
 | `verify` | an on-demand check of stored bytes |
 | `setting [NAME [VALUE]]` | writes an authored `setting` record |
-| `schema infer\|diff\|unread\|check` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
+| `schema infer\|diff\|unread` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
 | `sinex cutover [--dry-run]` | the one-way move to primary mode ([primary-mode.md#cutover](primary-mode.md#cutover)) |
 
 Notices, the running list and the live list are shipped saved queries (`query:notices`, `query:running`), not commands. No command checks for a terminal or harness variables to decide whether it may run, and every write records its computed author ([assertions.md#authorship](assertions.md#authorship)). Every command shows stored text as it is: Polylogue censors no output.

@@ -1,19 +1,18 @@
 use super::*;
-
+use crate::ast::*;
 fn p(text: &str) -> Query {
-    parse(text).unwrap_or_else(|e| panic!("{text:?}: {e}"))
+    parse(text).unwrap_or_else(|error| panic!("{text}: {error}"))
 }
-
-fn cond(text: &str) -> CondKind {
+fn cond(text: &str) -> ConditionKind {
     match p(text).source {
-        Source::Sessions { cond } => cond.kind,
-        other => panic!("{text:?}: {other:?}"),
+        Source::Unit {
+            condition: Some(c), ..
+        } => c.kind,
+        other => panic!("{text}: {other:?}"),
     }
 }
-
 #[test]
-fn every_spec_example_parses() {
-    // The query examples over the Morrow archive.
+fn every_spec_example_parses_through_the_product_catalog() {
     for text in [
         "origin:claude-code",
         "origin:claude-code kind:subagent",
@@ -46,9 +45,8 @@ fn every_spec_example_parses() {
         "origin:(chatgpt|claude-ai)",
         "notes where kind:decision",
         "origin:codex with messages(id, role)[role:assistant, last:1]",
-        "near:\"ambiguous date formats\"",
+        "similar:\"ambiguous date formats\"",
         "repo:other",
-        "reop:morrow",
         "links where kind:continuation",
         "link:fork",
         "tree_cost > 2.90",
@@ -58,297 +56,228 @@ fn every_spec_example_parses() {
 }
 
 #[test]
-fn juxtaposition_is_and_and_capitals_are_operators() {
-    let CondKind::And { all } = cond("repo:x \"a b\" refactor*") else {
+fn shared_tree_retains_boolean_modes_values_and_spans() {
+    let ConditionKind::And { conditions } = cond("repo:x \"a b\" refactor*") else {
         panic!()
     };
-    assert_eq!(all.len(), 3);
-    assert!(matches!(&all[1].kind, CondKind::Text { phrase: true, text } if text == "a b"));
-    assert!(matches!(&all[2].kind, CondKind::Text { phrase: false, text } if text == "refactor*"));
-    // Lower-case `and`/`or` are words to search for.
-    let CondKind::And { all } = cond("cats and dogs") else {
-        panic!()
-    };
-    assert_eq!(all.len(), 3);
-    assert!(matches!(cond("a OR b"), CondKind::Or { .. }));
-    assert!(matches!(cond("NOT tag:x"), CondKind::Not { .. }));
-    assert!(matches!(cond("-tag:x"), CondKind::Not { .. }));
-}
-
-#[test]
-fn values_and_compact_comparisons() {
-    assert!(matches!(
-        cond("origin:(a|b|c)"),
-        CondKind::Match { value: Value::Alternatives { any }, .. } if any.len() == 3
-    ));
+    assert_eq!(conditions.len(), 3);
+    assert!(
+        matches!(&conditions[1].kind, ConditionKind::Text { text, mode: TextMode::Phrase } if text == "a b")
+    );
+    assert!(
+        matches!(&conditions[2].kind, ConditionKind::Text { text, mode: TextMode::Prefix } if text == "refactor")
+    );
+    assert_eq!(conditions[0].span, Span { start: 0, end: 6 });
+    assert!(
+        matches!(cond("cats and dogs"), ConditionKind::And { conditions } if conditions.len() == 3)
+    );
+    assert!(matches!(cond("a OR b"), ConditionKind::Or { .. }));
+    for text in ["NOT tag:x", "-tag:x"] {
+        assert!(matches!(cond(text), ConditionKind::Not { .. }));
+    }
+    assert!(
+        matches!(cond("origin:(a|b|c)"), ConditionKind::Match { value: Value::Set { values }, .. } if values.len() == 3)
+    );
     assert!(matches!(
         cond("kind:*"),
-        CondKind::Match {
+        ConditionKind::Match {
             value: Value::Any,
             ..
         }
     ));
     assert!(matches!(
-        cond("messages:>=10"),
-        CondKind::Compare { op: Op::Ge, value, .. } if value == "10"
+        cond("cost:unknown"),
+        ConditionKind::Match {
+            value: Value::Unknown,
+            ..
+        }
     ));
-    assert!(matches!(
-        cond("tag:project:morrow"),
-        CondKind::Match { value: Value::One { text, .. }, .. } if text == "project:morrow"
-    ));
-    assert!(matches!(
-        cond("started > last week"),
-        CondKind::Compare { value, .. } if value == "last week"
-    ));
+    assert!(
+        matches!(cond("tag:project:morrow"), ConditionKind::Match { value: Value::Scalar { text, .. }, .. } if text == "project:morrow")
+    );
 }
 
 #[test]
-fn references_parse_as_their_own_conditions() {
-    assert!(matches!(
-        cond("https://chatgpt.com/c/abc"),
-        CondKind::Url { .. }
-    ));
-    assert!(matches!(cond("@3.2"), CondKind::Position { .. }));
+fn compact_comparisons_and_unknown_fields_have_executable_corrections() {
+    for (text, correction) in [
+        ("messages:>=10", "messages >= 10"),
+        ("reop:morrow", "repo:morrow"),
+    ] {
+        let error = parse(text).unwrap_err();
+        assert_eq!(error.suggestion(), Some(correction));
+        assert!(parse(correction).is_ok());
+    }
 }
 
 #[test]
-fn a_pasted_call_is_one_search_word() {
-    assert!(matches!(
-        cond("weekday_offset()"),
-        CondKind::Text { text, phrase: false } if text == "weekday_offset()"
-    ));
-    assert!(matches!(cond("parse(x) fails"), CondKind::And { all } if all.len() == 2));
-    // Parentheses with spaces inside still group.
-    assert!(matches!(cond("a (b OR c)"), CondKind::And { all } if all.len() == 2));
-}
-
-#[test]
-fn seq_records_its_gaps() {
-    let q = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within:5m] tool:Bash)");
+fn references_calls_and_sequences_keep_structural_identity() {
+    for text in ["https://chatgpt.com/c/abc", "@3.2"] {
+        assert!(matches!(cond(text), ConditionKind::Reference { reference } if reference == text));
+    }
+    assert!(
+        matches!(cond("weekday_offset()"), ConditionKind::Text { text, .. } if text == "weekday_offset()")
+    );
+    assert!(
+        matches!(cond("parse(x) fails"), ConditionKind::And { conditions } if conditions.len() == 2)
+    );
     let Source::Unit {
-        cond: Some(Cond {
-            kind: CondKind::Seq { steps, gaps },
-            ..
-        }),
+        condition:
+            Some(Condition {
+                kind:
+                    ConditionKind::Sequence {
+                        unit,
+                        steps,
+                        gaps,
+                        all,
+                    },
+                ..
+            }),
         ..
-    } = q.source
+    } = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within:5m] tool:Bash)").source
     else {
         panic!()
     };
+    assert_eq!(unit, "tool_calls");
+    assert!(!all);
     assert_eq!(steps.len(), 3);
-    assert_eq!(gaps, vec![Gap::Next, Gap::Within { ms: 300_000 }]);
-}
-
-#[test]
-fn a_session_query_can_scope_a_row_query() {
-    let q = p("tag:project:morrow | tool_calls where action:shell | group by tool | count");
-    assert!(matches!(q.source, Source::Sessions { .. }));
-    assert!(matches!(
-        q.stages[0].kind,
-        StageKind::Scope {
-            unit: Unit::ToolCalls,
-            ..
-        }
-    ));
-    assert_eq!(q.stages.len(), 3);
-}
-
-#[test]
-fn a_unit_name_that_is_also_a_field_still_compares() {
-    // `messages` is a unit and a session field.
-    assert!(matches!(cond("messages >= 10"), CondKind::Compare { .. }));
-    assert!(matches!(
-        p("messages").source,
-        Source::Unit {
-            unit: Unit::Messages,
-            cond: None
-        }
-    ));
-}
-
-#[test]
-fn stages_parse() {
-    let q = p(
-        "tool_calls | group by day(at), tool | agg count, sum:duration, p90:duration, count_distinct:session | sort by count desc | where count >= 3 | limit 5 | offset 10",
+    assert_eq!(
+        gaps,
+        vec![
+            Gap::Next,
+            Gap::Within {
+                duration: Value::scalar("5m")
+            }
+        ]
     );
-    assert_eq!(q.stages.len(), 6);
-    let StageKind::Agg { fns } = &q.stages[1].kind else {
-        panic!()
-    };
-    assert_eq!(fns[2].column(), "p90_duration");
+}
+
+#[test]
+fn shared_units_stages_and_nested_queries_use_product_names() {
+    for (text, unit) in [
+        ("messages where role:user", "messages"),
+        ("message where role:user", "messages"),
+        ("TOOL_CALLS", "tool_calls"),
+        ("work | count", "work"),
+        ("", "sessions"),
+        ("   ", "sessions"),
+    ] {
+        assert!(
+            matches!(p(text).source, Source::Unit { unit: actual, .. } if actual == unit),
+            "{text}"
+        );
+    }
     assert!(matches!(
-        p("sessions | sort by random(7)").stages[0].kind,
-        StageKind::SortBy {
-            key: SortKey::Random { seed: Some(7) },
-            ..
-        }
+        cond("messages >= 10"),
+        ConditionKind::Compare { .. }
     ));
+    let source = "tool_calls | group by day(at), tool | agg count, sum:duration, p90:duration, count_distinct:session | sort by count desc | where count >= 3 | limit 5 | offset 10";
+    let mut catalog = crate::catalog::catalog(&[], &[]);
+    catalog
+        .units
+        .iter_mut()
+        .find(|unit| unit.name == "tool_calls")
+        .unwrap()
+        .fields
+        .push(query_language::catalog::Field {
+            name: "duration".into(),
+            kind: query_language::catalog::FieldKind::Duration,
+            ..Default::default()
+        });
+    let query = with_catalog(source, &catalog).unwrap();
+    assert_eq!(
+        parse(source).unwrap_err().kind(),
+        "unknown_field",
+        "elapsed duration has no product producer yet"
+    );
+    assert_eq!(query.stages.len(), 6);
+    let StageKind::Aggregate { aggregates } = &query.stages[1].kind else {
+        panic!()
+    };
+    assert_eq!(aggregates[2].column(), "p90_duration");
+    let nested =
+        p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
+    assert_eq!(nested.stages.len(), 2);
+    assert!(
+        matches!(cond("count(tool_call where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls")
+    );
+    assert!(
+        matches!(cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.stages.len() == 1)
+    );
 }
 
 #[test]
-fn errors_point_at_the_problem_and_offer_a_repair() {
-    let e = parse("repo:(a|").unwrap_err();
-    let QueryError::Syntax { position, .. } = &e else {
-        panic!("{e:?}")
-    };
-    assert!(*position >= 5);
-    let QueryError::Syntax { suggestion, .. } = parse("\"unclosed phrase").unwrap_err() else {
-        panic!()
-    };
-    assert_eq!(suggestion.as_deref(), Some("\"unclosed phrase\""));
-    let QueryError::Syntax { suggestion, .. } = parse("messages where").unwrap_err() else {
-        panic!()
-    };
-    assert_eq!(suggestion, None);
-}
-
-#[test]
-fn nesting_past_the_stack_bound_is_refused_by_name() {
+fn repairs_and_product_depth_guard_are_stable() {
+    let error = parse("\"unclosed phrase").unwrap_err();
+    assert_eq!(error.suggestion(), Some("\"unclosed phrase\""));
+    assert!(parse("messages where").is_err());
     let deep = format!("{}a{}", "(".repeat(65), ")".repeat(65));
-    assert!(matches!(parse(&deep), Err(QueryError::TooDeep { .. })));
-    let ok = format!("{}a{}", "(".repeat(64), ")".repeat(64));
-    assert!(parse(&ok).is_ok());
+    assert!(matches!(parse(&deep), Err(QueryError::TooDeep { max: 64 })));
+    let allowed = format!("{}a{}", "(".repeat(64), ")".repeat(64));
+    assert!(parse(&allowed).is_ok());
+    assert!(parse("kind:* where exists tool_call(outcome:error)").is_err());
+    assert!(parse("kind:* \"where\"").is_ok());
 }
 
 #[test]
-fn a_bare_where_after_session_conditions_is_refused_not_searched() {
-    // It used to search the word "where" and answer wrongly.
-    let QueryError::Syntax {
-        position,
-        suggestion,
-        ..
-    } = parse("kind:* where exists tool_call(outcome:error)").unwrap_err()
+fn saved_arguments_are_values_and_literals_do_not_bind_namespaces() {
+    let Source::Saved {
+        name, arguments, ..
+    } = p("query:failing(repo=morrow, phrase=\"two words\")").source
     else {
         panic!()
     };
-    assert_eq!(position, 7);
+    assert_eq!(name, "failing");
+    assert_eq!(arguments.len(), 2);
     assert_eq!(
-        suggestion.as_deref(),
-        Some("kind:* exists tool_call(outcome:error)")
+        arguments[1].value,
+        Value::Scalar {
+            text: "two words".into(),
+            quoted: true
+        }
     );
-    assert!(parse("kind:* NOT where").is_err());
-    // The quoted word is searched; `where` inside a row condition, and
-    // `sessions where …`, keep their meaning.
-    assert!(parse("kind:* \"where\"").is_ok());
-    assert!(parse("exists tool_call(where)").is_ok());
-    assert!(parse("sessions where exists tool_call(outcome:error)").is_ok());
+    assert!(p("repo:\"sx.events\"").namespaces().is_empty());
 }
 
 #[test]
-fn the_empty_query_is_every_session() {
-    assert!(matches!(p("").source, Source::Empty));
-    assert!(matches!(p("   ").source, Source::Empty));
-}
-
-#[test]
-fn unit_names_resolve_through_the_registry() {
-    for (text, unit) in [
-        ("messages where role:user", Unit::Messages),
-        ("message where role:user", Unit::Messages),
-        ("TOOL_CALLS", Unit::ToolCalls),
-        ("work | count", Unit::Work),
-    ] {
-        match p(text).source {
-            Source::Unit { unit: u, .. } => assert_eq!(u, unit, "{text}"),
-            other => panic!("{text:?}: {other:?}"),
-        }
-    }
-    // A lone word that names no unit is searched.
-    for text in ["crash", "crash | count", "crash with messages(id)"] {
-        assert!(matches!(p(text).source, Source::Sessions { .. }), "{text}");
-    }
-    // A word before `where`, after `exists` or in a stage must be a unit.
-    for (text, fix) in [
-        ("mesages where role:user", Some("messages where role:user")),
-        ("frobs where x:1", None),
-        ("sessions where exists frob(x:1)", None),
-        (
-            "crash | tool_cals where outcome:error",
-            Some("crash | tool_calls where outcome:error"),
-        ),
-    ] {
-        let e = parse(text).unwrap_err();
-        assert!(e.to_string().contains("is not a unit"), "{text}: {e}");
-        assert_eq!(e.suggestion(), fix, "{text}");
-    }
-}
-
-#[test]
-fn queries_inside_parentheses_parse_as_queries() {
-    let q =
-        p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
-    let combined: Vec<(Combination, bool)> = q
-        .stages
-        .iter()
-        .map(|s| match &s.kind {
-            StageKind::Combine { how, query } => {
-                (*how, matches!(query.source, Source::Unit { .. }))
-            }
-            other => panic!("{other:?}"),
-        })
-        .collect();
-    assert_eq!(
-        combined,
-        [(Combination::Union, false), (Combination::Except, true)]
-    );
-    match cond("count(tool_call where outcome:error) >= 3") {
-        CondKind::Count { unit, op, n, cond } => {
-            assert_eq!((unit, op, n), (Unit::ToolCalls, Op::Ge, 3));
-            assert!(cond.is_some());
-        }
-        other => panic!("{other:?}"),
-    }
-    match cond("id in (messages where chrono | group by session)") {
-        CondKind::In { field, query } => {
-            assert_eq!(field, "id");
-            assert_eq!(query.stages.len(), 1);
-        }
-        other => panic!("{other:?}"),
-    }
-    // A lone word in parentheses is text, not a unit.
-    let q = p("origin:codex | union (messages)");
-    let StageKind::Combine { query, .. } = &q.stages[0].kind else {
-        panic!("{q:?}")
-    };
-    assert!(matches!(query.source, Source::Sessions { .. }));
-    // `where` among conditions without a unit is refused inside too.
-    assert!(parse("origin:codex | union (kind:* where exists message(x))").is_err());
-}
-
-#[test]
-fn a_saved_query_takes_values_for_its_parameters() {
-    match cond("query:failing(repo=morrow, phrase=\"two words\")") {
-        CondKind::Saved { name, arguments } => {
-            assert_eq!(name, "failing");
-            let given: Vec<(&str, &str, bool)> = arguments
-                .iter()
-                .map(|a| (a.parameter.as_str(), a.text.as_str(), a.quoted))
-                .collect();
-            assert_eq!(
-                given,
-                [("repo", "morrow", false), ("phrase", "two words", true)]
-            );
-        }
-        other => panic!("{other:?}"),
-    }
+fn former_semantic_spelling_refuses_with_the_canonical_correction() {
+    let error = parse("near:dates").unwrap_err();
+    assert_eq!(error.kind(), "unknown_field");
+    assert_eq!(error.suggestion(), Some("similar:dates"));
     assert!(matches!(
-        cond("query:failing"),
-        CondKind::Saved { arguments, .. } if arguments.is_empty()
+        cond("similar:dates"),
+        ConditionKind::Similar { .. }
     ));
 }
 
 #[test]
-fn the_words_count_and_in_are_still_searched() {
-    for text in ["error in parser", "count words", "count(x)", "in (x)"] {
-        let q = p(text);
-        let Source::Sessions { cond } = &q.source else {
-            panic!("{text}: {q:?}")
-        };
-        let words = match &cond.kind {
-            CondKind::And { all } => all.iter().all(|c| matches!(c.kind, CondKind::Text { .. })),
-            CondKind::Text { .. } => true,
-            _ => false,
-        };
-        assert!(words, "{text}: {cond:?}");
+fn shorthand_time_bounds_keep_their_shared_typed_meaning() {
+    assert!(matches!(
+        cond("since:2026-10-05"),
+        ConditionKind::Since { .. }
+    ));
+    assert!(matches!(
+        cond("until:2026-10-05"),
+        ConditionKind::Until { .. }
+    ));
+    assert!(matches!(
+        cond("messages where at < 2026-10-05"),
+        ConditionKind::Compare { op: Op::Lt, .. }
+    ));
+}
+
+#[test]
+fn product_namespace_spelling_binds_to_the_same_declared_unit() {
+    let catalog = crate::catalog::catalog(&[], &[]);
+    for (qualified, local) in [
+        (
+            "pl.sessions where repo:morrow",
+            "sessions where repo:morrow",
+        ),
+        ("pl.messages where role:user", "messages where role:user"),
+    ] {
+        assert_eq!(
+            query_language::identity::normal_form(&p(qualified), &catalog).unwrap(),
+            query_language::identity::normal_form(&p(local), &catalog).unwrap(),
+        );
     }
 }

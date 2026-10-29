@@ -4,7 +4,7 @@ use super::{Caller, Command, LIVE, NOTICES, Values};
 use crate::briefing::{Ask, StartSource};
 use crate::browser::actions::{ChatFile, ChatRequest};
 use crate::daemon::{ReadTarget, Request};
-use polylogue_model::{Author, NewNote, NoteKind, Target};
+use polylogue_model::{Author, NewNote, NoteKind, Reference};
 use std::path::PathBuf;
 
 type Built = Result<Request, String>;
@@ -15,7 +15,7 @@ fn query_request(text: String, page_size: Option<u64>, v: &Values) -> Request {
         cursor: v.text("cursor"),
         page_size,
         why: v.flag("why"),
-        session: None,
+        session: v.text("session"),
         fields: v.list("fields"),
     }
 }
@@ -32,10 +32,10 @@ fn cwd(v: &Values, caller: &Caller) -> Result<PathBuf, String> {
     }
 }
 
-fn targets(texts: &[String]) -> Result<Vec<Target>, String> {
+fn targets(texts: &[String]) -> Result<Vec<Reference>, String> {
     texts
         .iter()
-        .map(|t| Target::parse(t).map_err(|e| e.to_string()))
+        .map(|t| Reference::parse(t).map_err(|e| e.to_string()))
         .collect()
 }
 
@@ -56,21 +56,20 @@ pub fn status(_: &Command, _: &Values, _: &Caller) -> Built {
 }
 
 pub fn complete(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(Request::Complete {
-        word: v.text("word").unwrap_or_default(),
-    })
+    let text = v.text("text").unwrap_or_default();
+    let position = v
+        .integer("position")
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| "completion position cannot be represented on this host".to_owned())?
+        .unwrap_or(text.len());
+    if position > text.len() || !text.is_char_boundary(position) {
+        return Err("completion position must be a UTF-8 byte boundary within the query".into());
+    }
+    Ok(Request::Complete { text, position })
 }
 
-pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let reveal = v.flag("reveal");
-    if reveal {
-        if caller.surface != super::Surface::Cli || v.text("out").is_none() {
-            return Err("exact attachment output requires the CLI with --reveal --out FILE".into());
-        }
-        crate::daemon::attachment::check_cli()?;
-    } else if v.text("out").is_some() || v.text("input").is_some() {
-        return Err("--out and --input require --reveal".into());
-    }
+pub fn attachment(_: &Command, v: &Values, _: &Caller) -> Built {
     let index = |key: &str, default: u64| {
         usize::try_from(v.integer(key).unwrap_or(default))
             .map_err(|_| format!("{key} exceeds address space"))
@@ -84,9 +83,8 @@ pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
         block: index("block", 0)?,
         attachment: index("attachment", 0)?,
         input: v.text("input"),
-        reveal,
         length: index("length", 65536)?,
-        cursor: None,
+        cursor: v.text("cursor"),
     })
 }
 
@@ -282,10 +280,10 @@ pub fn note_list(_: &Command, v: &Values, caller: &Caller) -> Built {
     if v.0.contains_key("cwd") {
         let dir = cwd(v, caller)?;
         for d in crate::briefing::scope_dirs(&dir) {
-            t.push(Target::Cwd(d));
+            t.push(Reference::Cwd(d));
         }
         if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
-            t.push(Target::Repo(name.to_owned()));
+            t.push(Reference::Repo(name.to_owned()));
         }
     }
     let mut conditions = Vec::new();
@@ -613,5 +611,36 @@ pub fn cost(_: &Command, v: &Values, _: &Caller) -> Built {
         model: v.text("model").filter(|s| !s.is_empty()),
         cursor: v.text("cursor"),
         page_size: v.integer("limit"),
+    })
+}
+
+fn schema_origin(v: &Values) -> Result<Option<String>, String> {
+    let origin = v.text("origin");
+    if origin.is_some() && v.flag("all") {
+        return Err("choose an origin or --all".into());
+    }
+    Ok(origin)
+}
+
+pub fn schema_infer(_: &Command, v: &Values, _: &Caller) -> Built {
+    let revision = v
+        .integer("revision")
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "revision exceeds signed range")?;
+    let request = crate::daemon::schema::Infer {
+        origin: schema_origin(v)?,
+        inputs: v.list("input").into_iter().collect(),
+        revision,
+        since: v.text("since"),
+        fields: v.list("field").into_iter().collect(),
+    };
+    request.validate()?;
+    Ok(Request::SchemaInfer { selection: request })
+}
+
+pub fn schema_unread(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(Request::SchemaUnread {
+        origin: schema_origin(v)?,
     })
 }

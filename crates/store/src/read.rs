@@ -119,7 +119,9 @@ pub struct ChainProgress {
 
 /// Totals for `status`. Unknown is never shown as zero: a count that could
 /// not be read is an error, not a 0.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct Status {
     /// Inputs whose bytes are still being written.
     pub sessions: u64,

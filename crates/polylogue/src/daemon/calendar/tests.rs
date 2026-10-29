@@ -155,7 +155,7 @@ fn invalid_period_is_refused_before_semantic_selection_runs() {
         panic!("invalid period must not request semantic work")
     };
     let mut request = options(Some("not-a-date"), None);
-    request.query = "sessions near:synthetic";
+    request.query = "sessions similar:synthetic";
     request.embeddings = true;
     request.near = Some(&near);
     assert_eq!(cost(&reader, request, 0).unwrap_err().kind, "bad_request");

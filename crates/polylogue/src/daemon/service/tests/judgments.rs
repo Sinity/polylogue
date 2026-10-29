@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{Author, NewNote, NoteKind, Target};
+use polylogue_model::{Author, NewNote, NoteKind, Reference};
 
 fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
     match handle(request, &d.daemon) {
@@ -8,7 +8,7 @@ fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
     }
 }
 
-fn note(author: Author, targets: Vec<Target>, body: &str) -> NewNote {
+fn note(author: Author, targets: Vec<Reference>, body: &str) -> NewNote {
     NewNote {
         kind: NoteKind::Lesson,
         key: None,
@@ -38,7 +38,7 @@ fn query(d: &test_daemon::TestDaemon, text: &str) -> serde_json::Value {
 #[test]
 fn the_operator_accepts_or_rejects_an_agents_note() {
     let d = test_daemon::start("first prompt");
-    let session = Target::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok(
         &d,
         Request::AddNote {
@@ -169,7 +169,7 @@ fn a_note_applies_to_every_row_of_a_query() {
 #[test]
 fn user_state_exports_notes_and_judgments_as_their_requests() {
     let d = test_daemon::start("first prompt");
-    let session = Target::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
+    let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok(
         &d,
         Request::AddNote {

@@ -200,7 +200,7 @@ fn measures_over_near_ranked_sessions_keep_page_counts() {
         ("compare", "sessions"),
         ("facets", "values"),
     ] {
-        let text = format!("sessions where near:\"synthetic ranking\" | measure {name}");
+        let text = format!("sessions where similar:\"synthetic ranking\" | measure {name}");
         let mut request = ask(&text);
         request.embeddings = true;
         request.near = Some(&near);

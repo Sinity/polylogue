@@ -1,6 +1,8 @@
 //! Application operations and their shared archive state. Socket, HTTP and
 //! MCP adapters use the same typed requests; transport framing stays outside.
 
+mod status;
+
 use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
@@ -19,6 +21,7 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
+    pub(crate) callers: crate::protocol::caller::hooks::Registry,
     page_ends: read::page_ends::Cache,
     feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
@@ -31,6 +34,7 @@ pub struct Daemon {
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
     stopping: AtomicBool,
+    pub(super) schema_admission: super::schema::Admission,
     #[cfg(test)]
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
@@ -41,11 +45,13 @@ pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
         message: message.to_string(),
         detail: None,
     }
-    .masked()
 }
 
 pub(crate) fn store_error(e: &StoreError) -> Response {
     match e {
+        StoreError::PrimaryPending { identity } => ok(serde_json::json!({
+            "identity": identity, "pending": true,
+        })),
         StoreError::Conflict(_) => error("conflict", e),
         StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
         StoreError::ReadCancelled => error("cancelled", e),
@@ -108,6 +114,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         return store_error(&error);
     }
     let mut delivery = None;
+    let mut pending = false;
     if let Some(sender) = sender
         && !prepared.empty
         && !matches!(ask, Ask::ToolUse { .. })
@@ -137,12 +144,15 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         let _invalidation = d.page_ends.mutation();
         let result = writes.user(polylogue_store::user_writes::request_now(request_id, write));
         match result {
-            Ok(out) => delivery = Some(out.id),
+            Ok(out) => {
+                pending = out.pending;
+                delivery = Some(out.id);
+            }
             Err(e) => return store_error(&e),
         }
     }
     let delivery = prepared.advice_id.as_ref().or(delivery.as_ref());
-    ok(serde_json::json!({ "delivery": delivery, "prepared": prepared }))
+    ok(serde_json::json!({ "delivery": delivery, "prepared": prepared, "pending": pending }))
 }
 
 fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
@@ -162,11 +172,7 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
 }
 
 pub(crate) fn browser_refusal(refused: crate::browser::actions::Refused) -> Response {
-    Response::Error {
-        kind: refused.1.into(),
-        message: refused.1.into(),
-        detail: Some(serde_json::json!({ "http_status": refused.0 })),
-    }
+    error(refused.0, refused.0)
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -176,7 +182,10 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 pub(crate) fn ok(data: impl serde::Serialize) -> Response {
-    super::request::References::default().response(data)
+    match serde_json::to_value(data) {
+        Ok(data) => Response::Ok { data },
+        Err(cause) => error("internal", cause),
+    }
 }
 
 fn repeated_request(
@@ -202,19 +211,20 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     Ok(())
 }
 
-/// Transport-specific string cleaning stays with the transport.
-pub(crate) type Cleaner = fn(&str, &std::path::Path) -> String;
-
-/// Prepare this stream request, or leave a different request for its handler.
+/// Produces this finite feed, or leaves another request to its operation.
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
-    clean: Option<Cleaner>,
-) -> Option<Result<std::fs::File, Response>> {
+    output: &mut dyn std::io::Write,
+) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {
         return None;
     };
-    Some(accepting(d).and_then(|()| d.feeds.read(d, since.as_deref(), clean)))
+    Some(accepting(d).and_then(|()| {
+        let mut file = d.feeds.read(d, since.as_deref())?;
+        std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
+        Ok(())
+    }))
 }
 
 /// Answers one request. Reads use the read pool; imports go to the loop
@@ -229,6 +239,20 @@ pub fn handle_with_limit(
     d: &Daemon,
     limit: &polylogue_store::read::limit::ReadLimit,
 ) -> Response {
+    let authorship = polylogue_model::authorship::compute_authorship(
+        polylogue_model::authorship::Channel::Daemon,
+        &Default::default(),
+        None,
+    );
+    handle_with_caller(request, d, limit, &authorship)
+}
+
+pub fn handle_with_caller(
+    request: Request,
+    d: &Daemon,
+    limit: &polylogue_store::read::limit::ReadLimit,
+    authorship: &polylogue_model::authorship::Authorship,
+) -> Response {
     #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(crate::test_daemon::ReadObservation {
@@ -236,16 +260,30 @@ pub fn handle_with_limit(
             owner: std::thread::current().id(),
         });
     }
-    super::execution::run(request, limit, |request| handle_inner(request, d).masked())
+    super::execution::run(request, limit, |request| {
+        handle_inner(request, d, authorship)
+    })
 }
 
-fn handle_inner(request: Request, d: &Daemon) -> Response {
+fn handle_inner(
+    request: Request,
+    d: &Daemon,
+    authorship: &polylogue_model::authorship::Authorship,
+) -> Response {
+    let _ = authorship;
     if let Err(response) = accepting(d) {
         return response;
     }
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
+    if let Request::SchemaInfer { selection } = request {
+        return super::schema::infer(d, selection);
+    }
+    if matches!(&request, Request::Attachment { .. }) {
+        return super::attachment::read(request, d);
+    }
+    let _foreground = d.schema_admission.foreground();
     let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
@@ -255,28 +293,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         Err(e) => return store_error(&e),
     };
     match request {
-        Request::Attachment {
-            message,
-            block,
-            attachment,
-            reveal,
-            cursor,
-            ..
-        } => {
-            if reveal {
-                return error(
-                    "operator_required",
-                    "exact attachment bytes require the interactive CLI operator path",
-                );
-            }
-            if cursor.is_some() {
-                return error("bad_request", "a cursor continues an exact attachment read");
-            }
-            match reader.masked_attachment(&message, block, attachment) {
-                Ok(resolution) => ok(resolution),
-                Err(e) => store_error(&e),
-            }
-        }
+        Request::Attachment { .. } => unreachable!("attachment reads own their reader"),
         Request::ChatSend { .. }
         | Request::ChatActions
         | Request::ChatAction { .. }
@@ -408,40 +425,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 },
             }
         }),
-        Request::Status => {
-            let position = match reader.change_position() {
-                Ok(p) => p.to_string(),
-                Err(e) => return store_error(&e),
-            };
-            let counted = d.warm.counts(&reader, &position);
-            // Read after the store counts: a loop seen idle now has finished
-            // the pass that wrote any row those counts include.
-            let loop_status = d.status.lock().map(|s| s.clone()).unwrap_or_default();
-            ok(serde_json::json!({
-                "archive": d.archive.root,
-                "pid": std::process::id(),
-                "uptime_seconds": d.started.elapsed().as_secs(),
-                "store": counted.as_ref().map(|c| &c.status),
-                "count_error": d.warm.count_error(),
-                "counted": counted.as_ref().map_or_else(
-                    || serde_json::json!({ "state": "counting" }),
-                    |c| serde_json::json!({
-                        "position": c.position,
-                        "current": c.position == position,
-                        "seconds_ago": c.at.elapsed().as_secs_f64(),
-                        "seconds_to_count": c.took.as_secs_f64(),
-                    }),
-                ),
-                "busy": loop_status.busy,
-                "passes": loop_status.passes,
-                "full_scans": loop_status.full_scans,
-                "last_pass": loop_status.last_pass,
-                "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
-                "notices": crate::signals::recent(&reader, now_ms()),
-                "warm": d.warm.summary(),
-                "mode": d.mode,
-            }))
-        }
+        Request::Status => status::answer(d, &reader),
         Request::Query {
             text,
             cursor,
@@ -485,19 +469,33 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 }
             })
         }
-        Request::Complete { word } => {
-            let position = match reader.change_position() {
+        Request::Complete { text, position } => {
+            if position > text.len() || !text.is_char_boundary(position) {
+                return self::error(
+                    "bad_request",
+                    "completion position must be a UTF-8 byte boundary within the query",
+                );
+            }
+            let read_position = match reader.change_position() {
                 Ok(p) => p.to_string(),
                 Err(e) => return store_error(&e),
             };
-            match d.warm.completion(&reader, &position) {
-                Ok(data) => ok(super::warm::completions(&data, &word)
-                    .into_iter()
-                    .map(|(value, help)| serde_json::json!({"value": value, "help": help}))
-                    .collect::<Vec<_>>()),
-                Err(e) => error("store", e),
+            match d.warm.completion(&reader, &read_position) {
+                Ok(data) => {
+                    if let Err(error) = crate::completion_catalog::publish(
+                        &d.archive.root,
+                        &read_position,
+                        &data,
+                        now_ms(),
+                    ) {
+                        return self::error("completion_catalog", error);
+                    }
+                    ok(super::warm::complete_at(&data, &text, position))
+                }
+                Err(error) => self::error("store", error),
             }
         }
+
         Request::Sql { statement } => match reader.query(&statement, &[]) {
             // The connection is read-only: a statement that writes fails.
             Ok(rows) => ok(rows),
@@ -564,6 +562,10 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the loop has stopped"),
             }
         }
+        Request::SchemaInfer { .. } => {
+            unreachable!("inference is admitted before acquiring a reader")
+        }
+        Request::SchemaUnread { origin } => super::schema::unread(&reader, origin.as_deref()),
         Request::Export {
             targets,
             format,
@@ -795,7 +797,12 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 key: Some(if accepted { "accepted" } else { "rejected" }.into()),
                 value: reason,
                 author: Author::Operator,
-                targets: vec![polylogue_model::Target::Note(found.id)],
+                targets: vec![polylogue_model::Reference::Assertion(
+                    polylogue_model::RevisionReference {
+                        root: found.first_note,
+                        revision: Some(found.id),
+                    },
+                )],
                 relations: vec![],
                 revises: None,
                 valid_until: None,
@@ -919,8 +926,8 @@ fn query_targets(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     query: &str,
-) -> Result<Vec<polylogue_model::Target>, Response> {
-    use polylogue_model::Target;
+) -> Result<Vec<polylogue_model::Reference>, Response> {
+    use polylogue_model::Reference;
     super::query::with_ranking(reader, &d.warm, |embeddings, near| {
         let now = now_ms();
         let mut targets = Vec::new();
@@ -961,15 +968,18 @@ fn query_targets(
                 };
                 let target = match unit {
                     "sessions" => polylogue_model::SessionId::parse(id)
-                        .map(Target::Session)
+                        .map(Reference::Session)
                         .ok(),
                     "messages" => polylogue_model::MessageId::parse(id)
-                        .map(Target::Message)
+                        .map(Reference::Message)
                         .ok(),
                     "documents" => polylogue_model::DocumentId::parse(id)
-                        .map(Target::Document)
+                        .map(Reference::Document)
                         .ok(),
-                    _ => Some(Target::Note(id.to_owned())),
+                    _ => Some(Reference::Assertion(polylogue_model::RevisionReference {
+                        root: id.to_owned(),
+                        revision: None,
+                    })),
                 };
                 if let Some(target) = target
                     && seen.insert(target.clone())
@@ -1068,6 +1078,7 @@ fn export(
 /// before this runtime; external daemon references cannot keep workers alive.
 pub struct Runtime {
     pub daemon: Arc<Daemon>,
+    pub operations: Arc<command_surface::OperationTable>,
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
     counts_stop: Option<Sender<()>>,
@@ -1276,6 +1287,9 @@ pub fn start(
     let daemon = Arc::new(Daemon {
         archive,
         reads,
+        callers: crate::protocol::caller::hooks::Registry::new(
+            settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
+        ),
         page_ends: read::page_ends::Cache::default(),
         feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
@@ -1286,11 +1300,14 @@ pub fn start(
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
         stopping: AtomicBool::new(false),
+        schema_admission: super::schema::Admission::default(),
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
+    let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
     let mut runtime = Runtime {
         daemon,
+        operations,
         signals_stop: None,
         signals: None,
         counts_stop: None,
@@ -1335,7 +1352,7 @@ pub fn start(
             .name("polylogue-counts".into())
             .spawn(move || daemon.warm.count_worker(&daemon.reads, &stopped))?,
     );
-    // Load the vectors `near:` ranks by before the first query needs them.
+    // Load the vectors `similar:` ranks by before the first query needs them.
     let daemon = Arc::clone(&runtime.daemon);
     std::thread::Builder::new()
         .name("polylogue-warm".into())

@@ -40,11 +40,11 @@ fn search_measurements() {
         ),
         (
             "semantic",
-            "messages where origin:claude-code near:\"parser\"",
+            "messages where origin:claude-code similar:\"parser\"",
         ),
         (
             "mixed",
-            "messages where origin:claude-code parser near:\"parser\"",
+            "messages where origin:claude-code parser similar:\"parser\"",
         ),
     ] {
         let request = Request::Query {

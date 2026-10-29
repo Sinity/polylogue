@@ -1,8 +1,7 @@
-//! One batch of the change feed, prepared completely before it is sent.
+//! One SSE batch of change references, prepared before delivery.
 use super::{Failure, present, validate, values};
-use crate::daemon::Response;
 use polylogue_model::ChangePosition;
-use polylogue_query::{Clock, Options};
+use polylogue_query::Options;
 use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,25 +54,13 @@ fn io(error: impl ToString) -> Failure {
     }
 }
 
-fn write(
-    file: &mut File,
-    line: Line,
-    clean: &mut impl FnMut(Response) -> Response,
-) -> Result<(), Failure> {
-    let data = serde_json::to_value(&line).map_err(io)?;
-    let mut references = super::super::request::References::default();
-    match &line {
-        Line::Begin { position, .. } | Line::Change { position, .. } => {
-            references.add("/position", position)
-        }
-        Line::Complete { position, .. } => references.add("/position", position),
-    }
-    if let Line::Change { change, .. } = &line {
-        reference_fields(change, "/change", &data, &mut references);
-    }
-    let response = clean(Response::Ok { data, references }.masked());
-    serde_json::to_writer(&mut *file, &response).map_err(io)?;
-    file.write_all(b"\n").map_err(io)
+fn write(file: &mut File, line: Line) -> Result<(), Failure> {
+    let name = match &line {
+        Line::Begin { .. } => "begin",
+        Line::Change { .. } => "record",
+        Line::Complete { .. } => "complete",
+    };
+    crate::protocol::stream::event(file, name, &line).map_err(io)
 }
 
 fn check_change(
@@ -109,7 +96,6 @@ pub(crate) fn prepare_with(
     since: Option<&str>,
     now: i64,
     mut file: File,
-    mut clean: impl FnMut(Response) -> Response,
 ) -> Result<File, Failure> {
     let previous = since
         .map(|s| ChangePosition::parse(s).ok_or_else(|| invalid("since takes GEN:COUNTER:ARCHIVE")))
@@ -135,7 +121,6 @@ pub(crate) fn prepare_with(
             replacement,
             generation_changed,
         },
-        &mut clean,
     )?;
     // Archive local order is meaningful only within archive.db. Index-side
     // references follow as a separate component, never a combined chronology.
@@ -164,7 +149,8 @@ pub(crate) fn prepare_with(
         // This fixed internal query has neither saved sources nor kept
         // results, so compilation need not load either archive-wide catalog.
         let opts = Options {
-            clock: Clock::new(now, super::logical_day(reader)?),
+            clock: polylogue_query::time::clock(now, super::logical_day(reader)?)
+                .map_err(|error| StoreError::Invalid(error.to_string()))?,
             origins: Vec::new(),
             command_words: Vec::new(),
             page_size: None,
@@ -194,7 +180,6 @@ pub(crate) fn prepare_with(
                         component,
                         change,
                     },
-                    &mut clean,
                 )
             },
         )?;
@@ -206,26 +191,10 @@ pub(crate) fn prepare_with(
             count,
             replacement,
         },
-        &mut clean,
     )?;
     file.flush().map_err(io)?;
     file.seek(SeekFrom::Start(0)).map_err(io)?;
     Ok(file)
-}
-
-/// Change rows declare references by their typed kind, on both query and feed answers.
-pub(super) fn reference_fields(
-    change: &Value,
-    prefix: &str,
-    data: &Value,
-    references: &mut super::super::request::References,
-) {
-    let path = format!("{prefix}/ref");
-    match change["kind"].as_str() {
-        Some("session" | "removed") => references.field::<polylogue_model::SessionId>(data, path),
-        Some("note") => references.opaque_field(data, path),
-        _ => {}
-    }
 }
 
 #[cfg(test)]

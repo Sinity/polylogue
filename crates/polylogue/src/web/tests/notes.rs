@@ -14,6 +14,7 @@ fn fixture() -> Fixture {
     let daemon = crate::test_daemon::start("synthetic workbench prompt");
     let web = Arc::new(Web {
         daemon: Arc::clone(&daemon.daemon),
+        operations: Arc::clone(daemon.operations()),
         key: "notes".into(),
         token: "token".into(),
         port: 8765,
@@ -54,7 +55,10 @@ async fn send(f: &Fixture, path: &str, body: Option<Value>) -> (StatusCode, Stri
         .unwrap();
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (status, String::from_utf8(body.to_vec()).unwrap())
+    (
+        status,
+        super::application_body(String::from_utf8(body.to_vec()).unwrap()),
+    )
 }
 
 async fn command(f: &Fixture, path: &str, body: Value) -> Value {
@@ -277,8 +281,8 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
                 .unwrap();
         }
         for (n, text) in [
-            "messages where near:synthetic origin:claude-code",
-            "messages where synthetic near:synthetic origin:claude-code",
+            "messages where similar:synthetic origin:claude-code",
+            "messages where synthetic similar:synthetic origin:claude-code",
         ]
         .into_iter()
         .enumerate()

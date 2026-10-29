@@ -4,10 +4,11 @@ use super::*;
 
 fn opts(saved: &[(&str, &str)]) -> Options {
     Options {
-        clock: crate::Clock::new(
+        clock: crate::time::clock(
             1_790_000_000_000,
             polylogue_model::LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        ),
+        )
+        .unwrap(),
         origins: vec!["claude-code".into(), "codex".into()],
         command_words: vec!["list".into(), "brief".into()],
         page_size: None,
@@ -187,7 +188,15 @@ fn a_query_starting_with_a_command_is_refused() {
         compile_err("list repo:x")
     );
     let near = compile_err("brife now");
-    assert!(near.contains("\"brief\""), "{near}");
+    assert!(near.contains("brief"), "{near}");
+    assert_eq!(
+        compile("brife now", &opts(&[])).unwrap_err().kind(),
+        "not_a_query"
+    );
+    assert_eq!(
+        compile("brife now", &opts(&[])).unwrap_err().suggestion(),
+        Some("brief now")
+    );
     assert!(compile(r#""list" repo:x"#, &opts(&[])).is_ok());
 }
 
@@ -223,7 +232,11 @@ fn every_stored_value_can_be_queried() {
     }
     c("sessions where link:fork");
     c("sessions where link:resume");
-    assert!(compile_err("sessions where kind:chat").contains("kind on sessions is one of"));
+    let refusal = compile("sessions where kind:chat", &opts(&[])).unwrap_err();
+    assert_eq!(refusal.kind(), "bad_value");
+    for known in ["chat", "sessions", "main"] {
+        assert!(refusal.to_string().contains(known), "{refusal}");
+    }
     assert!(compile_err("sessions where link:reference").contains("link is one of"));
 }
 
@@ -351,12 +364,12 @@ fn near_builds_only_when_an_answer_needs_ranking() {
         let mut options = opts(&[]);
         options.embeddings = embeddings;
         for text in [
-            "near:dates | count",
-            "near:dates | group by origin",
-            "near:dates | agg sum:cost",
-            "near:dates | measure activity",
-            "near:dates | messages",
-            "near:dates | sort by started | limit 1 | count",
+            "similar:dates | count",
+            "similar:dates | group by origin",
+            "similar:dates | agg sum:cost",
+            "similar:dates | measure activity",
+            "similar:dates | messages",
+            "similar:dates | sort by started | limit 1 | count",
         ] {
             let program = compile(text, &options).unwrap();
             assert!(program.near.is_none(), "{text}");
@@ -364,35 +377,36 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             assert!(!program.sql.contains("pl_similarity"), "{text}");
         }
         for text in [
-            "near:dates",
-            "near:dates | limit 1 | count",
-            "near:dates | limit 1 | measure sessions",
-            "near:dates | union (origin:codex)",
+            "similar:dates",
+            "similar:dates | limit 1 | count",
+            "similar:dates | limit 1 | measure sessions",
+            "similar:dates | union (origin:codex)",
         ] {
             let program = compile(text, &options).unwrap();
             assert_eq!(program.near.is_some(), embeddings, "{text}");
             assert_eq!(program.incomplete.is_empty(), embeddings, "{text}");
         }
         for text in [
-            "sessions | where near:dates",
-            "sessions | messages where near:dates",
-            "near:dates near:times",
-            "sessions where NOT near:dates",
+            "sessions | where similar:dates",
+            "sessions | messages where similar:dates",
+            "similar:dates similar:times",
+            "sessions where NOT similar:dates",
         ] {
             assert!(compile(text, &options).is_err(), "{text}");
         }
         if embeddings {
-            assert!(compile("near:dates | union (near:times)", &options).is_err());
+            assert!(compile("similar:dates | union (similar:times)", &options).is_err());
         } else {
-            let counted = compile("near:dates | union (origin:codex) | count", &options).unwrap();
+            let counted =
+                compile("similar:dates | union (origin:codex) | count", &options).unwrap();
             assert!(counted.incomplete.is_empty());
         }
     }
-    let text = "sessions | messages where near:dates";
+    let text = "sessions | messages where similar:dates";
     let QueryError::Invalid { position, .. } = compile(text, &opts(&[])).unwrap_err() else {
         panic!("expected invalid query")
     };
-    assert_eq!(position, text.find("near:").unwrap());
+    assert_eq!(position, text.find("similar:").unwrap());
 }
 
 #[test]
@@ -444,5 +458,54 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
             .unwrap()
             .sql
             .contains("$.matches")
+    );
+}
+
+#[test]
+fn saved_query_parameters_bind_typed_time_bounds() {
+    let options = opts(&[("window", "sessions where since $lower until $upper")]);
+    same(
+        "query:window(lower=2026-10-24,upper=2026-10-25)",
+        "sessions where since 2026-10-24 until 2026-10-25",
+        &options,
+    );
+}
+
+#[test]
+fn nested_saved_condition_uses_its_own_source_coordinates() {
+    let options = opts(&[(
+        "long",
+        "sessions where id in (sessions where title:\"a long synthetic title that extends beyond the calling saved query reference\" repo:morrow | group by id)",
+    )]);
+    compile("sessions where query:long", &options).unwrap();
+}
+
+#[test]
+fn saved_kept_source_records_its_resolved_definition() {
+    let mut options = opts(&[("kept", "result:example")]);
+    options.kept.insert(
+        "example".into(),
+        Kept {
+            unit: "sessions".into(),
+            columns: c("sessions").columns,
+            match_columns: vec![],
+        },
+    );
+    let program = compile("query:kept | sort by id", &options).unwrap();
+    assert_eq!(
+        program.definitions,
+        [Definition {
+            name: "kept".into(),
+            revision: "kept-revision".into()
+        }]
+    );
+}
+
+#[test]
+fn omitted_nested_source_inherits_the_bound_tool_call_unit() {
+    same(
+        "tool_calls where command in (outcome:error | group by command)",
+        "tool_calls where command in (tool_calls where outcome:error | group by command)",
+        &opts(&[]),
     );
 }

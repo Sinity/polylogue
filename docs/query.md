@@ -4,6 +4,8 @@ Polylogue asks every question through one query language: listings, reports, rec
 
 The grammar, its spelling, the AST's three-valued semantics, time expressions, the logical day and the cursor type are shared with Sinex and owned by the common [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) crate, together with the laws that are properties of the language. Text and semantic search are in [search.md](search.md); how the command line reads arguments, completion and exit codes are in [interfaces.md](interfaces.md); references are in [references.md](references.md); measures in [measures.md](measures.md); queries that mix Polylogue and Sinex data in [primary-mode.md](primary-mode.md#cross-system-queries).
 
+The product catalog comes from the unit and field registries used by the compiler. Parsing, grammar completion and discovery use that vocabulary. Observed repositories, models and other values extend completion suggestions; they do not turn an open field into a closed set. The product compiler consumes the shared tree directly and refuses a shared form whose execution it does not implement with `not_built`.
+
 ## Principles
 
 - **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. Ruling, 2026-06-17: "The whole point of expressive query DSL is to make such funcitonality alwasy within reach. I don't want tons of specific weird little features" (chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). Ruling, 2026-07-02: "dont build one-off silos, build things that powerfully compose" (cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
@@ -86,6 +88,7 @@ Time expressions (relative, calendar, natural-language dates, bounds, daylight-s
 
 - A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run.
 - Every time Polylogue reads carries `time_quality` and `precision` ([sessions.md](sessions.md#times)), in the closed sets shared with Sinex.
+- Tool-call `result_at` is the native result or completion-notification time. `reported_duration` is the harness's own duration, in milliseconds, and stays unknown when absent. It is separate from the elapsed `duration` defined in [measures](measures.md); that field requires the declared same-clock interval and its reason before it enters the product catalog.
 - **Coarse times.** A coarse or bounded time satisfies a time condition only when its whole period does, fails when none of its period does, and is otherwise `unknown`. A row whose time is unknown never matches a time condition, is counted in `notes`, and `group by day` puts it in an `unknown` group.
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`.
 

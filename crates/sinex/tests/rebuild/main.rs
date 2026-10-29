@@ -7,7 +7,7 @@
 //! (`cargo build -p sinexd -p sinex-schema` in a Sinex checkout).
 use polylogue_engine::Engine;
 use polylogue_model::user::UserWrite;
-use polylogue_model::{Author, NewNote, NoteKind, Target};
+use polylogue_model::{Author, NewNote, NoteKind, Reference};
 use polylogue_sinex::{Config, Mode, Sinex};
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{Morrow, Set};
@@ -206,7 +206,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
                         key: None,
                         value: Some("Synthetic note kept in Sinex".into()),
                         author: Author::Operator,
-                        targets: vec![Target::Session(polylogue_testkit::session(1))],
+                        targets: vec![Reference::Session(polylogue_testkit::session(1))],
                         relations: vec![],
                         revises: None,
                         valid_until: None,

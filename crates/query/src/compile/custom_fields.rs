@@ -23,7 +23,7 @@ pub(crate) struct Call<'q, 's> {
 impl Call<'_, '_> {
     fn one(&self) -> Option<String> {
         match self.op {
-            FieldOp::Match(Value::One { text, .. }) => Some(text.clone()),
+            FieldOp::Match(Value::Scalar { text, .. }) => Some(text.clone()),
             _ => None,
         }
     }
@@ -49,7 +49,7 @@ impl Call<'_, '_> {
 
     /// The bare, unquoted value `unknown`.
     fn unknown(&self) -> bool {
-        matches!(self.op, FieldOp::Match(Value::One { text, quoted: false })
+        matches!(self.op, FieldOp::Match(Value::Scalar { text, quoted: false })
             if text.eq_ignore_ascii_case("unknown"))
     }
 
@@ -83,7 +83,7 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     if !x.top || x.span.start >= c.stages_start || c.near_request.is_some() {
         return Err(QueryError::Invalid {
             message:
-                "near: ranks the whole query, so it appears once among the top-level conditions"
+                "similar: ranks the whole query, so it appears once among the top-level conditions"
                     .into(),
             position: x.span.start,
         });
@@ -91,7 +91,7 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     if !matches!(x.unit, Unit::Sessions | Unit::Messages | Unit::Blocks) {
         return Err(QueryError::Invalid {
             message: format!(
-                "near: ranks sessions, messages and blocks, not {}",
+                "similar: ranks sessions, messages and blocks, not {}",
                 x.unit.name()
             ),
             position: x.span.start,
@@ -168,7 +168,7 @@ pub(crate) fn thinking(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String,
 
 fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<String, QueryError> {
     let text = x.value()?;
-    let quoted = matches!(x.op, FieldOp::Match(Value::One { quoted: true, .. }));
+    let quoted = matches!(x.op, FieldOp::Match(Value::Scalar { quoted: true, .. }));
     c.text(&[(text, quoted, x.span)], x.scope, index, x.top)
 }
 
@@ -180,7 +180,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     Ok(x.scope
         .a
         .expand(window)
-        .replace("{v}", &t.start().to_string()))
+        .replace("{v}", &t.start_ms().to_string()))
 }
 
 pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
@@ -191,14 +191,14 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     Ok(x.scope
         .a
         .expand(window)
-        .replace("{v}", &t.end().to_string()))
+        .replace("{v}", &t.until_bound().as_millisecond().to_string()))
 }
 
 /// `evidence_until:T`: the evidence Polylogue had by T, read with today's
 /// parsers and prices. Rows count when their bytes were first
 /// seen by then; notes as each family stood then.
 pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let end = c.time(x.name, &x.value()?, x.span)?.end();
+    let end = c.time(x.name, &x.value()?, x.span)?.end_ms()?;
     let a = &x.scope.a;
     let cutoff = match x.unit {
         Unit::Messages | Unit::Blocks | Unit::ToolCalls => {
@@ -295,7 +295,7 @@ pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     }
     Ok(format!(
         "{} IN ({})",
-        fields::live_state(x.s(), c.opts.clock.now),
+        fields::live_state(x.s(), c.opts.clock.now.as_millisecond()),
         states.join(", ")
     ))
 }
@@ -322,7 +322,7 @@ fn live_flag(c: &mut Compiler<'_>, x: &Call<'_, '_>, states: &str) -> Result<Str
     let not = if want { "" } else { "NOT " };
     Ok(format!(
         "{} {not}IN {states}",
-        fields::live_state(x.s(), c.opts.clock.now)
+        fields::live_state(x.s(), c.opts.clock.now.as_millisecond())
     ))
 }
 

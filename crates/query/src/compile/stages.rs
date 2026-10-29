@@ -6,7 +6,7 @@ use super::*;
 impl<'a> Compiler<'a> {
     pub(super) fn sort(
         &mut self,
-        key: &SortKey,
+        key: &Operand,
         desc: bool,
         scope: &RowContext,
         at: usize,
@@ -17,7 +17,7 @@ impl<'a> Compiler<'a> {
             .map(|term| scope.a.expand(term))
             .collect();
         Ok(match key {
-            SortKey::Random { seed } => match seed.or(self.opts.random_seed) {
+            Operand::Function { .. } => match parse_random_seed(key)?.or(self.opts.random_seed) {
                 Some(seed) => {
                     let name = match identity.as_slice() {
                         [one] => format!("CAST({one} AS TEXT)"),
@@ -29,7 +29,7 @@ impl<'a> Compiler<'a> {
                 }
                 None => vec!["random()".into()],
             },
-            SortKey::Field { field } => {
+            Operand::Field { name: field } => {
                 let (expr, kind) = self.expr(field, scope, at)?;
                 scalar(kind, field, at)?;
                 self.show(field, &expr, kind, Self::field_reference(field, scope));
@@ -134,7 +134,8 @@ impl<'a> Compiler<'a> {
         } else {
             return Err(self.unknown_field(field, scope.unit, span));
         };
-        let Some(expr) = def.expr(a, self.opts.clock.now) else {
+        let Some(expr) = def.expr(a, self.opts.clock.now.as_millisecond()) else {
+            scalar(def.column_kind(), def.name, at)?;
             return Err(QueryError::Invalid {
                 message: format!("{} cannot be grouped or sorted by", def.name),
                 position: span.start,
@@ -145,14 +146,15 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn group_key(
         &mut self,
-        key: &GroupKey,
+        key: &Operand,
         scope: &RowContext,
         at: usize,
     ) -> Result<(String, String, ColKind), QueryError> {
-        let (expr, kind) = self.expr(&key.field, scope, at)?;
-        scalar(kind, &key.field, at)?;
-        let name = flat(&key.field);
-        Ok(match key.bucket {
+        let (field, bucket) = group_operand(key)?;
+        let (expr, kind) = self.expr(field, scope, at)?;
+        scalar(kind, field, at)?;
+        let name = flat(field);
+        Ok(match bucket {
             None => {
                 let e = match kind {
                     ColKind::Money => format!("({expr}) / 1e9"),
@@ -163,12 +165,12 @@ impl<'a> Compiler<'a> {
             Some(b) => {
                 if kind != ColKind::Time {
                     return Err(QueryError::Invalid {
-                        message: format!("{}({}) needs a time field", bucket_name(b), key.field),
+                        message: format!("{}({}) needs a time field", bucket_name(b), field),
                         position: at,
                     });
                 }
-                let zone = self.text_param(self.opts.clock.day.zone_name().unwrap_or("UTC"));
-                let start = self.opts.clock.day.start_minutes;
+                let zone = self.text_param(self.opts.clock.day.zone_name());
+                let start = time::product_day(&self.opts.clock).start_minutes;
                 (
                     format!("{}_{name}", bucket_name(b)),
                     format!("pl_{}({expr}, {zone}, {start})", bucket_name(b)),
@@ -180,7 +182,7 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn agg(
         &mut self,
-        f: &AggFn,
+        f: &Aggregate,
         scope: &RowContext,
         at: usize,
     ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
@@ -200,21 +202,22 @@ impl<'a> Compiler<'a> {
             format!("count(*) - count({expr})"),
             ColKind::Number,
         );
-        let mut out = match f {
-            AggFn::Count => unreachable!("handled above"),
-            AggFn::Sum { .. } => vec![(col, value(format!("sum({expr})")), kind), unknown],
-            AggFn::Avg { .. } => vec![(col, value(format!("avg({expr})")), kind), unknown],
-            AggFn::Min { .. } => vec![(col, value(format!("min({expr})")), kind), unknown],
-            AggFn::Max { .. } => vec![(col, value(format!("max({expr})")), kind), unknown],
-            AggFn::Percentile { p, .. } => {
+        let mut out = match &f.function {
+            AggregateFunction::Count => unreachable!("handled above"),
+            AggregateFunction::Sum => vec![(col, value(format!("sum({expr})")), kind), unknown],
+            AggregateFunction::Avg => vec![(col, value(format!("avg({expr})")), kind), unknown],
+            AggregateFunction::Min => vec![(col, value(format!("min({expr})")), kind), unknown],
+            AggregateFunction::Max => vec![(col, value(format!("max({expr})")), kind), unknown],
+            AggregateFunction::Percentile(p) => {
                 vec![
                     (col, value(format!("pl_percentile({expr}, {p})")), kind),
                     unknown,
                 ]
             }
-            AggFn::CountDistinct { .. } => {
+            AggregateFunction::CountDistinct => {
                 vec![(col, format!("count(DISTINCT {expr})"), ColKind::Number)]
             }
+            _ => return Err(not_built("this aggregate")),
         };
         if scope.unit == Unit::Sessions {
             let derivation = if polylogue_model::session_sql::COUNT_FIELDS
@@ -263,7 +266,9 @@ impl<'a> Compiler<'a> {
         // unpriced) is a lower bound, and the total says how many. A tree
         // cost is one too when a session in the tree is, or when a
         // subagent the tree spawned is not in the archive.
-        if scope.unit == Unit::Sessions && matches!(f, AggFn::Sum { .. } | AggFn::Avg { .. }) {
+        if scope.unit == Unit::Sessions
+            && matches!(f.function, AggregateFunction::Sum | AggregateFunction::Avg)
+        {
             let s = &scope.a.s;
             let unpriced = |sessions: &str| {
                 format!(
@@ -297,7 +302,7 @@ impl<'a> Compiler<'a> {
     /// `| where …` after grouping: conditions on the group's columns.
     pub(super) fn group_cond(
         &mut self,
-        c: &Cond,
+        c: &Condition,
         keys: Option<&[(String, String, ColKind)]>,
         aggs: Option<&[(String, String, ColKind)]>,
     ) -> Result<String, QueryError> {
@@ -322,22 +327,26 @@ impl<'a> Compiler<'a> {
             position: at,
         };
         Ok(match &c.kind {
-            CondKind::And { all } => format!(
+            ConditionKind::And { conditions: all } => format!(
                 "({})",
                 all.iter()
                     .map(|x| self.group_cond(x, keys, aggs))
                     .collect::<Result<Vec<_>, _>>()?
                     .join(" AND ")
             ),
-            CondKind::Or { any } => format!(
+            ConditionKind::Or { conditions: any } => format!(
                 "({})",
                 any.iter()
                     .map(|x| self.group_cond(x, keys, aggs))
                     .collect::<Result<Vec<_>, _>>()?
                     .join(" OR ")
             ),
-            CondKind::Not { cond } => format!("NOT ({})", self.group_cond(cond, keys, aggs)?),
-            CondKind::Compare { field, op, value } => {
+            ConditionKind::Not { condition: cond } => {
+                format!("NOT ({})", self.group_cond(cond, keys, aggs)?)
+            }
+            ConditionKind::Compare { operand, op, value } => {
+                let field = field_operand(operand)?;
+                let value = value_text(value)?;
                 let (n, _) = find(field).ok_or_else(|| missing(field, c.span.start))?;
                 let v = match value.parse::<f64>() {
                     Ok(x) if x.is_finite() => format!("{x}"),
@@ -345,9 +354,9 @@ impl<'a> Compiler<'a> {
                 };
                 format!("g.{n} {} {v}", op.sql())
             }
-            CondKind::Match {
+            ConditionKind::Match {
                 field,
-                value: Value::One { text, .. },
+                value: Value::Scalar { text, .. },
             } => {
                 let (n, _) = find(field).ok_or_else(|| missing(field, c.span.start))?;
                 let p = self.text_param(&text.to_lowercase());
@@ -366,7 +375,7 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn attach(
         &mut self,
-        child: &Child,
+        child: &Attachment,
         parent: &RowContext,
     ) -> Result<Attach, QueryError> {
         let saved = std::mem::take(&mut self.params);
@@ -376,16 +385,17 @@ impl<'a> Compiler<'a> {
         let saved_near_rank = self.near_rank.take();
         let saved_near_join = self.near_join.take();
         let saved_fusion = self.fusion.take();
-        let sc = RowContext::plain(child.unit);
-        let conds: Vec<Cond> = child
+        let unit = bind_unit(&child.unit)?;
+        let sc = RowContext::plain(unit);
+        let conds: Vec<Condition> = child
             .windows
             .iter()
             .filter_map(|w| match w {
-                Window::Cond { cond } => Some(cond.clone()),
+                Window::Where(cond) => Some(cond.clone()),
                 _ => None,
             })
             .collect();
-        let top: Vec<Cond> = conds.iter().flat_map(top_level).collect();
+        let top: Vec<Condition> = conds.iter().flat_map(top_level).collect();
         let mut w = self.defaults(&sc, &top)?;
         for c in &conds {
             w.push(self.cond(c, &sc, false)?);
@@ -394,7 +404,7 @@ impl<'a> Compiler<'a> {
         let mut columns = vec![];
         for f in &child.fields {
             let lower = f.to_ascii_lowercase();
-            let (expr, kind) = if child.unit == Unit::Messages && lower == "text" {
+            let (expr, kind) = if unit == Unit::Messages && lower == "text" {
                 (
                     format!(
                         "(SELECT group_concat(pl_text(tx.body), char(10)) FROM (SELECT xb.text_id FROM block xb WHERE xb.message_pk = {}.pk AND xb.kind = 'text' ORDER BY xb.idx) xbs JOIN text tx ON tx.id = xbs.text_id)",
@@ -421,7 +431,7 @@ impl<'a> Compiler<'a> {
         } else {
             Err(not_built(&format!(
                 "attaching {} to {}",
-                child.unit.name(),
+                unit.name(),
                 parent.unit.name()
             )))
         };
@@ -441,7 +451,7 @@ impl<'a> Compiler<'a> {
             } else {
                 select.join(", ")
             },
-            base_from(child.unit, &sc.a),
+            base_from(unit, &sc.a),
             and_all(&w),
             order.join(", ")
         )
@@ -456,13 +466,13 @@ impl<'a> Compiler<'a> {
         let (mut first, mut last) = (None, None);
         for w in &child.windows {
             match w {
-                Window::First { n } => first = Some(*n),
-                Window::Last { n } => last = Some(*n),
-                Window::Cond { .. } => {}
+                Window::First(n) => first = Some(*n),
+                Window::Last(n) => last = Some(*n),
+                Window::Where(..) => {}
             }
         }
         Ok(Attach {
-            name: child.unit.name().to_owned(),
+            name: unit.name().to_owned(),
             sql,
             params,
             columns,

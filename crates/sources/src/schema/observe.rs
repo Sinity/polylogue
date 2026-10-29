@@ -1,5 +1,5 @@
-use super::{Observer, Tree};
-use std::collections::BTreeSet;
+use super::{Column, Observer, TableMetadata, Tree};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, BufReader, Read};
 
 fn invalid() -> serde_json::Error {
@@ -49,6 +49,94 @@ pub(super) fn array(
     Ok(whole)
 }
 
+/// One row-dump record is accepted atomically, including its closing delimiter.
+/// The existing scalar-discarding walker handles row values and ignored fields.
+pub(super) struct RowDump {
+    pub table: Option<String>,
+    pub row: Option<Tree>,
+    pub gone: bool,
+    pub tables: BTreeMap<String, Option<TableMetadata>>,
+}
+
+pub(super) fn row_dump(
+    reader: impl Read,
+    names: &BTreeSet<String>,
+) -> Result<RowDump, serde_json::Error> {
+    let mut parser = Parser {
+        reader: BufReader::new(reader),
+        parents: 0,
+    };
+    let mut record = RowDump {
+        table: None,
+        row: None,
+        gone: false,
+        tables: BTreeMap::new(),
+    };
+    let mut metadata = BTreeMap::new();
+    let mut header = false;
+    let mut seen = BTreeSet::new();
+    parser.object(|parser, key| {
+        if !seen.insert(key.clone()) {
+            return Err(invalid());
+        }
+        match key.as_str() {
+            "t" => record.table = Some(parser.string(true)?),
+            "r" => {
+                if parser.space()? != Some(b'{') {
+                    return Err(invalid());
+                }
+                record.row = Some(parser.value_with_columns(names, true)?);
+            }
+            "gone" => {
+                record.gone = parser.boolean()?;
+                if !record.gone {
+                    return Err(invalid());
+                }
+            }
+            "schema" => {
+                header = true;
+                parser.object(|parser, table| {
+                    // Historical SQL-only headers establish table presence, never column types.
+                    if record.tables.contains_key(&table) {
+                        return Err(invalid());
+                    }
+                    record.tables.insert(table, None);
+                    parser.string(false)?;
+                    Ok(())
+                })?;
+            }
+            "table_metadata" => parser.object(|parser, table| {
+                if metadata
+                    .insert(table, parser.table_metadata(names)?)
+                    .is_some()
+                {
+                    return Err(invalid());
+                }
+                Ok(())
+            })?,
+            _ => {
+                parser.value(names)?;
+            }
+        }
+        Ok(())
+    })?;
+    if parser.space()?.is_some() {
+        return Err(invalid());
+    }
+    for (name, metadata) in metadata {
+        record.tables.insert(name, Some(metadata));
+    }
+    if (record.row.is_some() || record.gone) != record.table.is_some()
+        || (record.row.is_some() && record.gone)
+    {
+        return Err(invalid());
+    }
+    if record.row.is_none() && !record.gone && !header && record.tables.is_empty() {
+        return Err(invalid());
+    }
+    Ok(record)
+}
+
 struct Parser<R> {
     reader: R,
     parents: u64,
@@ -62,6 +150,121 @@ struct Frame {
 }
 
 impl<R: BufRead> Parser<R> {
+    fn object(
+        &mut self,
+        mut member: impl FnMut(&mut Self, String) -> Result<(), serde_json::Error>,
+    ) -> Result<(), serde_json::Error> {
+        self.space()?;
+        self.expect(b'{')?;
+        if self.space()? != Some(b'}') {
+            loop {
+                let key = self.string(true)?;
+                self.space()?;
+                self.expect(b':')?;
+                self.space()?;
+                member(self, key)?;
+                match self.space()? {
+                    Some(b',') => {
+                        self.byte()?;
+                        self.space()?;
+                    }
+                    Some(b'}') => break,
+                    _ => return Err(invalid()),
+                }
+            }
+        }
+        self.expect(b'}')
+    }
+
+    fn integer(&mut self) -> Result<i64, serde_json::Error> {
+        let mut text = Vec::new();
+        if self.peek()? == Some(b'-') {
+            text.push(self.byte()?);
+        }
+        while self.peek()?.is_some_and(|b| b.is_ascii_digit()) {
+            text.push(self.byte()?);
+        }
+        serde_json::from_slice(&text)
+    }
+
+    fn boolean(&mut self) -> Result<bool, serde_json::Error> {
+        match self.peek()? {
+            Some(b't') => {
+                self.literal(b"true")?;
+                Ok(true)
+            }
+            Some(b'f') => {
+                self.literal(b"false")?;
+                Ok(false)
+            }
+            _ => Err(invalid()),
+        }
+    }
+
+    fn table_metadata(
+        &mut self,
+        names: &BTreeSet<String>,
+    ) -> Result<TableMetadata, serde_json::Error> {
+        let mut columns = None;
+        let mut without_rowid = None;
+        let mut seen = BTreeSet::new();
+        self.object(|parser, key| {
+            if !seen.insert(key.clone()) {
+                return Err(invalid());
+            }
+            match key.as_str() {
+                "columns" => {
+                    parser.expect(b'[')?;
+                    let mut values = Vec::new();
+                    if parser.space()? != Some(b']') {
+                        loop {
+                            let mut fields = serde_json::Map::new();
+                            parser.object(|parser, key| {
+                                let value = match key.as_str() {
+                                    "cid" | "primary_key" | "hidden" => {
+                                        Some(parser.integer()?.into())
+                                    }
+                                    "name" | "declared_type" => Some(parser.string(true)?.into()),
+                                    "not_null" => Some(parser.boolean()?.into()),
+                                    _ => {
+                                        parser.value(names)?;
+                                        None
+                                    }
+                                };
+                                if let Some(value) = value {
+                                    if fields.insert(key, value).is_some() {
+                                        return Err(invalid());
+                                    }
+                                }
+                                Ok(())
+                            })?;
+                            values.push(serde_json::from_value::<Column>(fields.into())?);
+                            match parser.space()? {
+                                Some(b',') => {
+                                    parser.byte()?;
+                                    parser.space()?;
+                                }
+                                Some(b']') => break,
+                                _ => return Err(invalid()),
+                            }
+                        }
+                    }
+                    parser.expect(b']')?;
+                    columns = Some(values);
+                }
+                "without_rowid" => without_rowid = Some(parser.boolean()?),
+                _ => {
+                    parser.value(names)?;
+                }
+            }
+            Ok(())
+        })?;
+        Ok(TableMetadata {
+            columns: columns.ok_or_else(invalid)?,
+            without_rowid: without_rowid.ok_or_else(invalid)?,
+        })
+    }
+
     fn peek(&mut self) -> Result<Option<u8>, serde_json::Error> {
         Ok(self
             .reader
@@ -108,6 +311,14 @@ impl<R: BufRead> Parser<R> {
     }
 
     fn value(&mut self, names: &BTreeSet<String>) -> Result<Tree, serde_json::Error> {
+        self.value_with_columns(names, false)
+    }
+
+    fn value_with_columns(
+        &mut self,
+        names: &BTreeSet<String>,
+        columns: bool,
+    ) -> Result<Tree, serde_json::Error> {
         let mut tree = Tree::default();
         let root = tree.root();
         tree.nodes[root].present = 1;
@@ -177,7 +388,13 @@ impl<R: BufRead> Parser<R> {
                 let name = self.string(true)?;
                 self.space()?;
                 self.expect(b':')?;
-                tree.member(frame.node, &name, frame.parent, names)
+                tree.member(
+                    frame.node,
+                    &name,
+                    frame.parent,
+                    names,
+                    columns && frame.node == root,
+                )
             };
             next = Some(child);
         }
