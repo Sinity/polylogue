@@ -19,11 +19,6 @@
     "blobs": [],
     "events": [
       {
-        "data": {},
-        "kind": "response_boundaries_unknown",
-        "session": "codex:interleaved-session-1"
-      },
-      {
         "session": "codex:interleaved-session-1",
         "kind": "session_meta",
         "at": "2025-01-15T12:00:00Z",
@@ -93,6 +88,11 @@
           1712,
           1807
         ],
+        "session": "codex:interleaved-session-1"
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
         "session": "codex:interleaved-session-1"
       }
     ],

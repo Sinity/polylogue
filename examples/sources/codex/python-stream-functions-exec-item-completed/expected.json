@@ -20,11 +20,6 @@
     "blobs": [],
     "events": [
       {
-        "data": {},
-        "kind": "response_boundaries_unknown",
-        "session": "codex:codex-item-completed"
-      },
-      {
         "session": "codex:codex-item-completed",
         "kind": "session_meta",
         "at": "2026-09-02T10:00:00Z",
@@ -37,6 +32,11 @@
           "timestamp": "2026-09-02T10:00:00Z",
           "cwd": "/repo"
         }
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:codex-item-completed"
       }
     ],
     "links": [],

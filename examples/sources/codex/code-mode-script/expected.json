@@ -24,11 +24,6 @@
     "blobs": [],
     "events": [
       {
-        "data": {},
-        "kind": "response_boundaries_unknown",
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
-      },
-      {
         "session": "codex:019a0000-0000-7000-8000-000000000001",
         "kind": "session_meta",
         "at": "2026-03-01T10:00:01Z",
@@ -52,6 +47,11 @@
             "commit_hash": "abc"
           }
         }
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
       }
     ],
     "links": [],

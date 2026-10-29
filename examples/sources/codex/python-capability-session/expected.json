@@ -14,11 +14,6 @@
     "blobs": [],
     "events": [
       {
-        "data": {},
-        "kind": "response_boundaries_unknown",
-        "session": "codex:origin-matrix-codex"
-      },
-      {
         "session": "codex:origin-matrix-codex",
         "kind": "session_meta",
         "at": "2026-08-01T10:00:00Z",
@@ -30,6 +25,11 @@
           "id": "origin-matrix-codex",
           "timestamp": "2026-08-01T10:00:00Z"
         }
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:origin-matrix-codex"
       }
     ],
     "links": [],

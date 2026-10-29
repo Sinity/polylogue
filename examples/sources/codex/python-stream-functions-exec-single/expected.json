@@ -15,11 +15,6 @@
     "blobs": [],
     "events": [
       {
-        "data": {},
-        "kind": "response_boundaries_unknown",
-        "session": "codex:codex-functions-exec-single"
-      },
-      {
         "session": "codex:codex-functions-exec-single",
         "kind": "session_meta",
         "at": "2026-07-15T10:00:00Z",
@@ -32,6 +27,11 @@
           "timestamp": "2026-07-15T10:00:00Z",
           "cwd": "/repo"
         }
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:codex-functions-exec-single"
       }
     ],
     "links": [],

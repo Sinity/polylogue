@@ -15,11 +15,6 @@
     "blobs": [],
     "events": [
       {
-        "data": {},
-        "kind": "response_boundaries_unknown",
-        "session": "codex:text-only-session-1"
-      },
-      {
         "session": "codex:text-only-session-1",
         "kind": "session_meta",
         "at": "2025-01-15T10:00:00Z",
@@ -48,6 +43,11 @@
           578,
           671
         ],
+        "session": "codex:text-only-session-1"
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
         "session": "codex:text-only-session-1"
       }
     ],

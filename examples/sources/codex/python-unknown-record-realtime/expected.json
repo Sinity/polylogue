@@ -37,11 +37,6 @@
     "blobs": [],
     "events": [
       {
-        "data": {},
-        "kind": "response_boundaries_unknown",
-        "session": "codex:unknown-context-session"
-      },
-      {
         "session": "codex:unknown-context-session",
         "kind": "session_meta",
         "at": "2026-09-01T10:00:00Z",
@@ -54,6 +49,11 @@
           "timestamp": "2026-09-01T10:00:00.000Z",
           "cwd": "/workspace/sample"
         }
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:unknown-context-session"
       }
     ],
     "links": [],

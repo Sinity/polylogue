@@ -136,7 +136,11 @@ fn changed_turn_context_keeps_each_context_and_returns_to_prior_settings() {
     let parsed = run(&records);
     let contexts = events(&parsed, "turn_context");
     assert_eq!(contexts.len(), 4);
-    for (event, (index, payload)) in contexts.iter().zip([(1, first), (3, second), (4, third), (5, fourth)]) {
+    for (event, (index, payload)) in
+        contexts
+            .iter()
+            .zip([(1, first), (3, second), (4, third), (5, fourth)])
+    {
         assert_eq!(event["data"], payload);
         assert_eq!(event["session"], format!("codex:{SID}"));
         let start = jsonl(&records[..index]).len();
