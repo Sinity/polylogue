@@ -82,6 +82,9 @@ impl Inner {
                         None,
                     ),
                     Product::Request(prepared) => (None, Some(prepared.request.machine.clone())),
+                    Product::RestoredRequest { current, .. } => {
+                        (None, Some(current.machine.clone()))
+                    }
                     _ => unreachable!(),
                 }
             };
@@ -101,6 +104,7 @@ impl Inner {
         batches: impl Iterator<Item = &'a Batch>,
     ) -> Result<()> {
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
+        let mut pending = None;
         for batch in batches {
             let Change::Reparse { chain } = batch.change else {
                 return Err(StoreError::Invalid(
@@ -111,11 +115,18 @@ impl Inner {
                 step.counts.check()?;
                 let products = crate::primary::products::parse(&batch.input, chain, step)?;
                 let writes = self.product_writes(products)?;
-                sinex.prepare_products(&writes)?;
+                pending = Some(sinex.prepare_products(&writes)?.identity);
             }
         }
         // A pending producer write is already durable; visibility comes through this poll.
-        self.poll_primary()?;
+        if let Err(error) = self.poll_primary() {
+            return match (error, pending) {
+                (StoreError::Sinex(_), Some(identity)) => {
+                    Err(StoreError::PrimaryPending { identity })
+                }
+                (error, _) => Err(error),
+            };
+        }
         Ok(())
     }
 
@@ -155,7 +166,7 @@ impl Inner {
         let version =
             version.ok_or_else(|| StoreError::Invalid("a replacement has no reading".into()))?;
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
-        sinex.prepare_reading(&root, &version, &mut |emit| {
+        let prepared = sinex.prepare_reading(&root, &version, &mut |emit| {
             source.visit_source(|step| {
                 for product in
                     self.product_writes(crate::primary::products::parse(&input, chain, step)?)?
@@ -165,7 +176,14 @@ impl Inner {
                 Ok(())
             })
         })?;
-        self.poll_primary()?;
+        if let Err(error) = self.poll_primary() {
+            return Err(match error {
+                StoreError::Sinex(_) => StoreError::PrimaryPending {
+                    identity: prepared.identity,
+                },
+                error => error,
+            });
+        }
         Ok(messages)
     }
 
@@ -221,8 +239,17 @@ impl Inner {
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         let prepared = sinex.prepare_blob(new_blob.hash, new_blob.size, &mut file.reopen()?)?;
         // Captured bytes are durable before their temporary preparation is released.
-        self.drain_primary_captures()?;
-        self.poll_primary()?;
+        if let Err(error) = self
+            .drain_primary_captures()
+            .and_then(|_| self.poll_primary())
+        {
+            return Err(match error {
+                StoreError::Sinex(_) => StoreError::PrimaryPending {
+                    identity: prepared.identity,
+                },
+                error => error,
+            });
+        }
         if self.index.query_row(
             "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1)",
             [&new_blob.hash.0[..]],

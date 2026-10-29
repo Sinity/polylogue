@@ -11,6 +11,7 @@
 use polylogue_model::BlobHash;
 use polylogue_model::user::{CHAT_CLAIM_MS, ChatAction, ChatStatus};
 use polylogue_model::user::{ChatAttachment, NewChatAction};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -144,7 +145,7 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         .rev()
         .find(|e| {
             matches!(
-                polylogue_store::chat_actions::outcome(&e.kind),
+                polylogue_model::user::chat_outcome(&e.kind),
                 Some(Some(ChatStatus::Failed | ChatStatus::Blocked))
             )
         })

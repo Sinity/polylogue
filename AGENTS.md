@@ -125,9 +125,10 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 
 Default tests build the standalone workspace with the fault-test features;
 Sinex client tests use a separate primary-mode build. `test`, `scenarios` and
-`check` reuse these artifacts. Package and test filters select which tests
-run. Changed-package selection enables primary mode when its dependencies
-are affected; the landing check always runs both configurations. Every xtask
+`check` reuse these artifacts. Package selectors limit Cargo's test build;
+test filters select execution within that build. Changed-package selection
+enables primary mode when its dependencies are affected; the landing check
+always runs both configurations. Every xtask
 run is recorded in devkit's history database.
 
 Designed and not built yet: `cargo xtask compile` and `coverage`;

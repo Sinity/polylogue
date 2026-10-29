@@ -1,5 +1,6 @@
 use super::*;
 use crate::{Archive, ReadPool, Writer};
+use polylogue_model::user::BACKFILL_CLAIM_MS;
 use polylogue_model::user::UserWrite;
 
 fn setup() -> (
@@ -123,6 +124,7 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
         provider: "grok".into(),
         since: None,
         created_at: 0,
+        execution: polylogue_model::authored::ExecutionEligibility::Live,
         events: vec![
             BackfillEvent {
                 request: "event-request".into(),
@@ -145,10 +147,13 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
         ],
     };
     assert_eq!(
-        job.status(10 + CLAIM_MS),
+        job.status(10 + BACKFILL_CLAIM_MS),
         (BackfillStatus::Running, Some("ext"))
     );
-    assert_eq!(job.status(11 + CLAIM_MS), (BackfillStatus::Waiting, None));
+    assert_eq!(
+        job.status(11 + BACKFILL_CLAIM_MS),
+        (BackfillStatus::Waiting, None)
+    );
 
     let (_dir, _archive, _lock, writer, reads) = setup();
     start(&writer, "j1", "grok");

@@ -77,7 +77,7 @@ pub fn message_id(i: usize, j: usize) -> String {
 }
 
 /// A tool call as its result row shows it: its message, tool, command,
-/// outcome and exit code. Calls alike in all of these are alike to every
+/// outcome, exit code and time. Calls alike in all of these are alike to every
 /// condition the generator writes.
 pub fn call_key(
     message: &str,
@@ -85,8 +85,9 @@ pub fn call_key(
     command: Option<&str>,
     outcome: &str,
     exit_code: Option<i64>,
+    at: Option<i64>,
 ) -> String {
-    format!("{message} {tool} {command:?} {outcome} {exit_code:?}")
+    format!("{message} {tool} {command:?} {outcome} {exit_code:?} {at:?}")
 }
 
 impl SessionRow {
@@ -572,6 +573,7 @@ pub fn key(rows: &Rows, row: Row) -> String {
                 c.command,
                 c.outcome,
                 c.exit_code,
+                c.at,
             )
         }
     }

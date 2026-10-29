@@ -8,7 +8,7 @@
 //! same ID with other intent is refused as a conflict.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Author, NewNote, NoteKind, Timestamp};
+use polylogue_model::{NewNote, NoteKind, Timestamp};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
@@ -330,21 +330,6 @@ pub(crate) fn apply_using(
         ],
     )?;
     Ok(outcome)
-}
-
-/// The first note of the note a request adds or withdraws, once applied in
-/// `tx`.
-pub(crate) fn first_note_of_request(
-    tx: &Transaction<'_>,
-    r: &UserRequest,
-) -> Result<Option<String>> {
-    match &r.write {
-        UserWrite::AddNote { .. }
-        | UserWrite::SaveQuery { .. }
-        | UserWrite::AnnotateQuery { .. } => first_note_of(tx, &r.id).map(Some),
-        UserWrite::Withdraw { note, .. } => first_note_of(tx, note).map(Some),
-        _ => Ok(None),
-    }
 }
 
 fn first_note_of(tx: &Transaction<'_>, note: &str) -> Result<String> {

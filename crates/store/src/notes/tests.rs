@@ -318,12 +318,25 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         reads.reader().unwrap().user_request("explicit").unwrap(),
         Some(explicit)
     );
-    let (_dir2, _archive2, _lock2, replay, replay_reads) = setup();
-    for change in reads.reader().unwrap().user_state().unwrap() {
-        if let crate::primary::RegisterChange::Request { request, .. } = change {
-            replay.user(*request).unwrap();
-        }
-    }
+    let (_dir2, archive2, _lock2, _replay, replay_reads) = setup();
+    let mut destination = crate::archive::open_write(&archive2.archive_db(), 1).unwrap();
+    let tx = destination.transaction().unwrap();
+    let attribution = polylogue_model::authored::ImportAttribution {
+        input: "frozen-import".into(),
+        chain: 1,
+        machine: "receiving-machine".into(),
+        actor: Author::Operator,
+        at: Timestamp::from_unix_ms(1).unwrap(),
+    };
+    reads
+        .reader()
+        .unwrap()
+        .visit_authored(&mut |prepared, imports| {
+            crate::primary::authored::restore(&tx, prepared, imports, &attribution, 1)?;
+            Ok(())
+        })
+        .unwrap();
+    tx.commit().unwrap();
     assert_eq!(
         replay_reads.reader().unwrap().note("resolved").unwrap(),
         reads.reader().unwrap().note("resolved").unwrap()

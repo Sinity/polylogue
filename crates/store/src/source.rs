@@ -4,7 +4,6 @@ use rusqlite::{Connection, OptionalExtension};
 use std::sync::OnceLock;
 
 pub(crate) struct SourceSchema {
-    pub tables: Vec<String>,
     views: String,
     pub ddl: String,
 }
@@ -62,7 +61,7 @@ pub(crate) fn schema() -> Result<&'static SourceSchema> {
         ddl.push_str(";\n");
     }
     ddl.push_str("INSERT INTO source_row_count(name,n) VALUES ('input',0),('revision',0),('stored_bytes',0);\n");
-    let _ = SCHEMA.set(SourceSchema { tables, ddl, views });
+    let _ = SCHEMA.set(SourceSchema { ddl, views });
     Ok(SCHEMA.get().expect("source schema initialized"))
 }
 

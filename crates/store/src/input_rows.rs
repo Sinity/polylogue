@@ -88,11 +88,12 @@ impl InputRows {
             ])?;
         }
         if let Some(e) = &self.extent {
-            let inserted = tx.prepare_cached(
+            tx.prepare_cached(
                 &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(input,chain,offset) DO UPDATE SET commit_seq=min(commit_seq,excluded.commit_seq)
-                 WHERE length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset"),
+                 ON CONFLICT(input,chain,offset) DO UPDATE SET
+                     commit_seq=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN min(commit_seq,excluded.commit_seq) ELSE excluded.commit_seq END,
+                     length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"),
             )?
             .execute(params![
                 self.input,
@@ -101,11 +102,6 @@ impl InputRows {
                 e.length,
                 &e.blob.0[..],e.blob_offset,seq
             ])?;
-            if inserted == 0 {
-                return Err(crate::StoreError::Conflict(
-                    "source extent contradicts its committed bytes".into(),
-                ));
-            }
         }
         if let Some(o) = &self.observation {
             tx.prepare_cached(&source.sql(

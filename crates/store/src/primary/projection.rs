@@ -7,6 +7,11 @@ CREATE TABLE primary_fact (
 ) STRICT;
 CREATE INDEX primary_fact_chain ON primary_fact(input,chain,admitted,event);
 CREATE INDEX primary_fact_session ON primary_fact(session,kind,state,admitted);
+CREATE TABLE primary_fact_blob (
+ event TEXT NOT NULL REFERENCES primary_fact(event), hash BLOB NOT NULL,
+ PRIMARY KEY(event,hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX primary_fact_blob_hash ON primary_fact_blob(hash);
 CREATE TABLE primary_pending (
  n INTEGER PRIMARY KEY, position INTEGER NOT NULL, event TEXT NOT NULL,
  change TEXT NOT NULL, product BLOB, source_order INTEGER NOT NULL,
@@ -162,6 +167,9 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
         Product::Request(request) => Some(format!("request:{}", request.request.id)),
+        Product::RestoredRequest { prepared, .. } => {
+            Some(format!("request:{}", prepared.request.id))
+        }
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         _ => None,
     };
@@ -184,7 +192,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
             "input",
         ),
         Product::Blob(_) => (None, None, reference, "blob"),
-        Product::Request(_) => (None, None, reference, "request"),
+        Product::Request(_) | Product::RestoredRequest { .. } => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
         Product::WorkSnapshot { .. } => (None, None, reference, "derived"),
         _ => unreachable!(),
@@ -439,7 +447,10 @@ fn plan(index: &Connection) -> Result<Plan> {
             if let Product::Input { rows, .. } = &product {
                 out.inputs.insert(rows.input.clone());
             }
-            if matches!(product, Product::Request(_)) {
+            if matches!(
+                product,
+                Product::Request(_) | Product::RestoredRequest { .. }
+            ) {
                 out.requests = true;
             }
             if matches!(product, Product::Coverage(_)) {
@@ -461,6 +472,19 @@ fn plan(index: &Connection) -> Result<Plan> {
     }
     drop(rows);
     drop(q);
+    for hash in &out.materials {
+        let mut query = index.prepare("SELECT f.product FROM primary_fact_blob b JOIN primary_next f ON f.event=b.event WHERE b.hash=?1 AND f.state='live' AND f.kind='parsed'")?;
+        let mut rows = query.query([&hash.0[..]])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(0)?;
+            let product: Product = unpacked(&bytes)?;
+            let reading = product.reading().expect("parsed fact has reading");
+            chains.insert(
+                (reading.input.id.clone(), reading.chain),
+                reading.input.clone(),
+            );
+        }
+    }
     let mut needed = BTreeSet::new();
     for ((input, chain), key) in chains {
         let mut reading_file = crate::writer::ChainReading::new()?;
@@ -654,7 +678,7 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     drop(rows);
     drop(q);
     for input in &plan.inputs {
-        tx.execute("DELETE FROM source_observation_zip WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
+        tx.execute("DELETE FROM source_observation_container WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
         tx.execute("DELETE FROM source_observation WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_extent WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_revision WHERE input=?1", [input])?;
@@ -685,8 +709,44 @@ fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(0)?;
         let admitted: i64 = row.get(1)?;
-        if let Product::Request(prepared) = unpacked(&bytes)? {
-            super::authored::apply(tx, &prepared, admitted)?;
+        match unpacked(&bytes)? {
+            Product::Request(prepared) => super::authored::apply(tx, &prepared, admitted)?,
+            Product::RestoredRequest {
+                prepared,
+                claims,
+                current,
+            } => {
+                super::authored::restore(tx, &prepared, &claims, &current, admitted)?;
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "DELETE FROM primary_fact_blob WHERE event IN (SELECT event FROM primary_candidate)",
+        [],
+    )?;
+    let mut query =
+        tx.prepare("SELECT event,product FROM primary_candidate WHERE product IS NOT NULL")?;
+    let mut rows = query.query([])?;
+    while let Some(row) = rows.next()? {
+        let event: String = row.get(0)?;
+        let bytes: Vec<u8> = row.get(1)?;
+        let product: Product = unpacked(&bytes)?;
+        let mut hashes = BTreeSet::new();
+        match product {
+            Product::Message { facts, .. } => attachments(&facts.message.blocks, &mut hashes),
+            Product::Document { facts, .. } => attachments(&facts.document.blocks, &mut hashes),
+            _ => {}
+        }
+        for hash in hashes {
+            tx.execute(
+                "INSERT INTO primary_fact_blob(event,hash) VALUES (?1,?2)",
+                params![event, &hash.0[..]],
+            )?;
         }
     }
     Ok(())
@@ -736,6 +796,7 @@ pub(crate) fn apply(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
             [],
         )?;
+        remember_blobs(&tx)?;
         tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;

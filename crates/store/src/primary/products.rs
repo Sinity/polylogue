@@ -79,6 +79,11 @@ pub enum Product {
         comparison: Option<crate::tool_databases::Comparison>,
     },
     Request(PreparedRequest),
+    RestoredRequest {
+        prepared: PreparedRequest,
+        claims: Vec<polylogue_model::authored::ImportAttribution>,
+        current: polylogue_model::authored::ImportAttribution,
+    },
     WorkSnapshot {
         snapshot: polylogue_model::work_products::WorkSnapshot,
     },
@@ -99,6 +104,7 @@ impl Product {
             Self::Input { .. }
             | Self::Blob(_)
             | Self::Request(_)
+            | Self::RestoredRequest { .. }
             | Self::Coverage(_)
             | Self::WorkSnapshot { .. } => None,
         }
