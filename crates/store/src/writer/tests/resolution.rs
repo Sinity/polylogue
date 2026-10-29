@@ -1032,3 +1032,55 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
         Some(document)
     );
 }
+
+#[test]
+fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection() {
+    let w = test_archive();
+    let event = Event {
+        session: None,
+        kind: "native.input".into(),
+        at: None,
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some((3, 17)),
+        data: serde_json::json!({"same":true}),
+    };
+    let mut full = batch("native-source", 0, 0, Vec::new(), &[]);
+    full.parse[0].output.events = vec![event.clone(), event.clone()];
+    full.parse[0].prepare();
+    let ids = full.parse[0].event_identities("native-source", 1).unwrap();
+    assert_ne!(ids[0], ids[1]);
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    write_test_rows(&tx, &full, &full.parse[0], 1, 1, None).unwrap();
+    let mut subset = batch("native-source", 0, 0, Vec::new(), &[]);
+    subset.parse[0].output.events.push(event);
+    subset.parse[0].output.event_ids.insert(0, ids[1].clone());
+    write_test_rows(&tx, &subset, &subset.parse[0], 1, 2, None).unwrap();
+    let remaining: String = tx
+        .query_row("SELECT id FROM event", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(remaining, ids[1]);
+    subset.parse[0].output.imported_events.insert(
+        0,
+        polylogue_model::bundle::ImportedEventIdentity {
+            id: "contradictory-id".into(),
+            sources: vec![polylogue_model::bundle::EventSourceClaim {
+                input: "original".into(),
+                source: "native".into(),
+                source_chain: 1,
+                source_start: Some(3),
+                source_end: Some(17),
+            }],
+        },
+    );
+    assert!(write_test_rows(&tx, &subset, &subset.parse[0], 1, 3, None).is_err());
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM event", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+}

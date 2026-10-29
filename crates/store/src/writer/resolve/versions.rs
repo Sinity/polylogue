@@ -705,7 +705,7 @@ impl Assertions {
                 sources.retain(|s| s.input != input_pk || s.chain != chain);
             }
         }
-        let mut occurrences = BTreeMap::<(u64, u64), u64>::new();
+        let event_ids = step.event_identities(&input.id, chain)?;
         let mut packer = crate::encoding::RowPacker::new()?;
         for (i, (event, packed)) in step
             .output
@@ -714,21 +714,8 @@ impl Assertions {
             .zip(&step.prepared.events)
             .enumerate()
         {
-            let occurrence = if event.session.is_none() {
-                let next = occurrences
-                    .entry(event.range.unwrap_or_default())
-                    .or_default();
-                let value = *next;
-                *next += 1;
-                value
-            } else {
-                0
-            };
             let imported = step.output.imported_events.get(&i);
-            let id = match imported {
-                Some(identity) => identity.id.clone(),
-                None => event_id(&input.id, chain, event, &packed.0, occurrence)?,
-            };
+            let id = event_ids[i].clone();
             let pk = keys.get(Kind::Event, id.as_bytes())?.pk;
             let data: Json = crate::encoding::unpack_json(&packed.1)?;
             let value = resolver.value(index, Kind::EventValue, &data)?;
