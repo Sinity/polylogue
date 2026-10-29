@@ -347,10 +347,34 @@ impl Fixture {
         self.seq += 1;
         let data = crate::encoding::pack_json(&serde_json::json!({}))?;
         let id = format!("e{}", self.seq);
+        let session: String =
+            self.index
+                .query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
+                    r.get(0)
+                })?;
+        let fields = crate::encoding::pack_json(&polylogue_model::Event {
+            session: Some(
+                polylogue_model::SessionId::parse(&session)
+                    .map_err(|error| crate::StoreError::Invalid(error.to_string()))?,
+            ),
+            kind: kind.into(),
+            at: at.and_then(polylogue_model::Timestamp::from_unix_ms),
+            after: None,
+            range: None,
+            data: serde_json::Value::Null,
+        })?;
         self.index.execute(
-            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![id, session_pk, self.seq, kind, at, self.input_pk, data],
+            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data,fields) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![id, session_pk, self.seq, kind, at, self.input_pk, data,fields],
         )?;
+        let hash = *blake3::hash(b"{}").as_bytes();
+        self.index.execute(
+            "INSERT OR IGNORE INTO event_value(hash,body) VALUES (?1,?2)",
+            params![hash.as_slice(), data],
+        )?;
+        self.index.execute("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,fields,imported_provenance)
+            SELECT e.pk,?2,1,v.pk,0,?3,?4,'[]' FROM event e,event_value v WHERE e.id=?1 AND v.hash=?5",
+            params![id,self.input_pk,session_pk,fields,hash.as_slice()])?;
         self.index.execute(
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],

@@ -41,6 +41,8 @@ pub(crate) struct Choices {
     pub events: BTreeMap<i64, Option<EventChoice>>,
     pub links: BTreeMap<i64, Option<LinkChoice>>,
     pub event_values: Vec<PackedValue>,
+    pub event_ids: Vec<String>,
+    pub event_sources: Vec<(i64, EventChoice)>,
     pub link_values: Vec<PackedValue>,
     pub live_events: Vec<Event>,
 }
@@ -100,6 +102,7 @@ impl Source {
 pub(in crate::writer) trait ValueSource {
     fn session(&self, pk: i64, input: i64, chain: i64) -> Result<Option<Session>>;
     fn assertion(&self, kind: Kind, pk: i64) -> Result<Option<Vec<u8>>>;
+    fn event_source(&self, pk: i64, input: i64, chain: i64) -> Result<Option<EventChoice>>;
     fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>>;
     fn document(
         &self,
@@ -588,6 +591,9 @@ pub(super) fn resolve(
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EventChoice {
+    pub kind: String,
+    pub fields: Vec<u8>,
+    pub imported: Vec<polylogue_model::bundle::EventSourceClaim>,
     pub value_pk: i64,
     pub input: i64,
     pub chain: i64,
@@ -640,7 +646,7 @@ impl Assertions {
             }
             match key.kind {
                 Kind::Event => {
-                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:body.clone(),event:Some(EventChoice {value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:body.clone(),event:Some(EventChoice {kind:String::new(),fields:Vec::new(),imported:Vec::new(),value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
                     assertions.events.insert(row.pk, values);
                 }
                 Kind::Link => {
@@ -696,7 +702,14 @@ impl Assertions {
             }
         }
         let mut occurrences = BTreeMap::<(u64, u64), u64>::new();
-        for (event, packed) in step.output.events.iter().zip(&step.prepared.events) {
+        let mut packer = crate::encoding::RowPacker::new()?;
+        for (i, (event, packed)) in step
+            .output
+            .events
+            .iter()
+            .zip(&step.prepared.events)
+            .enumerate()
+        {
             let occurrence = if event.session.is_none() {
                 let next = occurrences
                     .entry(event.range.unwrap_or_default())
@@ -707,7 +720,11 @@ impl Assertions {
             } else {
                 0
             };
-            let id = event_id(&input.id, chain, event, &packed.0, occurrence)?;
+            let imported = step.output.imported_events.get(&i);
+            let id = match imported {
+                Some(identity) => identity.id.clone(),
+                None => event_id(&input.id, chain, event, &packed.0, occurrence)?,
+            };
             let pk = keys.get(Kind::Event, id.as_bytes())?.pk;
             let data: Json = crate::encoding::unpack_json(&packed.1)?;
             let value = resolver.value(index, Kind::EventValue, &data)?;
@@ -722,18 +739,43 @@ impl Assertions {
             let seq = step
                 .order_from
                 .map(|n| n as i64)
-                .or(event.range.map(|r| r.0 as i64))
+                .or((imported.is_none())
+                    .then_some(event.range)
+                    .flatten()
+                    .map(|r| r.0 as i64))
                 .or(step
                     .repeats_whole_conversations
                     .then_some(step.start as i64));
+            let mut original = imported
+                .map(|identity| identity.sources.clone())
+                .unwrap_or_default();
+            if let Some(previous) = self.events.get(&pk).and_then(|sources| {
+                sources
+                    .iter()
+                    .find(|source| source.input == input_pk && source.chain == chain)
+            }) {
+                original.extend(previous.event_source(index, pk, values)?.imported);
+            }
+            original.sort();
+            original.dedup();
+            let mut fields = event.clone();
+            fields.data = Json::Null;
+            let local_range = if imported.is_some() {
+                Some((step.start, step.parsed_upto))
+            } else {
+                event.range
+            };
             let choice = EventChoice {
+                kind: event.kind.clone(),
+                fields: packer.pack_json(&fields)?,
+                imported: original,
                 value_pk: value.key.pk,
                 input: input_pk,
                 chain,
                 session,
                 seq,
-                start: event.range.map(|r| r.0 as i64),
-                end: event.range.map(|r| r.1 as i64),
+                start: local_range.map(|r| r.0 as i64),
+                end: local_range.map(|r| r.1 as i64),
                 after: event.after.as_ref().map(ToString::to_string),
                 at: event.at.map(Timestamp::unix_ms),
                 body: value.body.clone(),
@@ -748,8 +790,10 @@ impl Assertions {
                 rank,
                 value_pk: value.key.pk,
                 body: value.body.clone(),
-                event: Some(choice),
+                event: Some(choice.clone()),
             });
+            choices.event_ids.push(id);
+            choices.event_sources.push((pk, choice));
             choices.event_values.push(value);
             choices.live_events.push(Event {
                 data,
@@ -795,7 +839,7 @@ impl Assertions {
             let winner = sources
                 .iter()
                 .min_by_key(|s| (s.rank, &s.id, std::cmp::Reverse(s.chain)));
-            let mut choice = winner.and_then(|s| s.event.clone());
+            let mut choice = winner.map(|source|source.event_source(index,pk,values)).transpose()?;
             if let Some(choice) = &mut choice
                 && choice.body.is_empty()
             {
@@ -846,6 +890,9 @@ impl Assertions {
                 source.body.clear();
                 if let Some(event) = &mut source.event {
                     event.body.clear();
+                    event.fields.clear();
+                    event.kind.clear();
+                    event.imported.clear();
                 }
             }
         }
@@ -854,6 +901,35 @@ impl Assertions {
 }
 
 impl Assertion {
+    fn event_source(
+        &self,
+        index: &Connection,
+        pk: i64,
+        values: Option<&dyn ValueSource>,
+    ) -> Result<EventChoice> {
+        let mut event = self
+            .event
+            .clone()
+            .ok_or_else(|| StoreError::Invalid("event membership has no fields".into()))?;
+        if !event.fields.is_empty() {
+            return Ok(event);
+        }
+        if let Some(resolved) = values
+            .map(|source| source.event_source(pk, self.input, self.chain))
+            .transpose()?
+            .flatten()
+        {
+            return Ok(resolved);
+        }
+        let (fields, imported): (Vec<u8>, String) = index.query_row(
+            "SELECT fields,imported_provenance FROM event_source WHERE event_pk=?1 AND input_pk=?2 AND chain=?3",
+            params![pk,self.input,self.chain], |row| Ok((row.get(0)?,row.get(1)?)))?;
+        let canonical: Event = crate::encoding::unpack_json(&fields)?;
+        event.kind = canonical.kind;
+        event.fields = fields;
+        event.imported = serde_json::from_str(&imported)?;
+        Ok(event)
+    }
     fn body(
         &self,
         index: &Connection,

@@ -4,7 +4,6 @@
 use super::*;
 use crate::first_build::FirstBuild;
 use crate::versions::VersionKind;
-use std::collections::BTreeMap;
 
 mod assertions;
 mod retract;
@@ -100,9 +99,7 @@ fn apply_rows(
     let rows = RowWriter {
         tx,
         input_pk,
-        input_id: &b.input.id,
         chain,
-        repeats_whole_conversations: p.repeats_whole_conversations,
         rank: i64::from(b.input.arrival_rank),
         counter,
         packed: &p.prepared.texts,
@@ -177,38 +174,9 @@ fn apply_rows(
         )?
         .execute(params![session_pk, at, counter])?;
     }
-    let mut event_occurrences = BTreeMap::<(u64, u64), u64>::new();
     for (i, e) in p.output.events.iter().enumerate() {
-        let occurrence = if e.session.is_none() {
-            if rows.input_id.is_empty() {
-                return Err(StoreError::Invalid(
-                    "an event about its input has no input identity".into(),
-                ));
-            }
-            let range = e.range.filter(|(start, end)| start < end).ok_or_else(|| {
-                StoreError::Invalid("an event about its input has no record range".into())
-            })?;
-            if e.after.is_some() {
-                return Err(StoreError::Invalid(
-                    "an event about its input cannot follow a conversation message".into(),
-                ));
-            }
-            let next = event_occurrences.entry(range).or_default();
-            let occurrence = *next;
-            *next = next
-                .checked_add(1)
-                .ok_or_else(|| StoreError::Invalid("too many events in one record".into()))?;
-            occurrence
-        } else {
-            0
-        };
-        let session_pk = e
-            .session
-            .as_ref()
-            .map(|id| rows.session_pk(&mut sessions, id))
-            .transpose()?;
-        let packed = &p.prepared.events[i];
-        rows.write_event(e, session_pk, packed, p.order_from, p.start, occurrence, i)?;
+        if let Some(id) = &e.session { rows.session_pk(&mut sessions,id)?; }
+        rows.write_event(i)?;
     }
     for (i, l) in p.output.links.iter().enumerate() {
         rows.write_link(l, i)?;
@@ -333,10 +301,7 @@ struct StoredBlock<'a> {
 pub(super) struct RowWriter<'a, 't> {
     tx: &'a Transaction<'t>,
     input_pk: i64,
-    input_id: &'a str,
     chain: i64,
-    /// The step's records restate whole conversations ([`ParseStep::restates`]).
-    repeats_whole_conversations: bool,
     rank: i64,
     counter: i64,
     packed: &'a HashMap<[u8; 32], Vec<u8>>,
@@ -385,15 +350,6 @@ impl RowWriter<'_, '_> {
             .query_row([pk], |row| row.get(0))
             .optional()?)
     }
-    fn event_pk(&self, id: &str) -> Result<Option<i64>> {
-        let pk = self.keys.get(resolve::Kind::Event, id.as_bytes())?.pk;
-        Ok(self
-            .tx
-            .prepare_cached("SELECT pk FROM event WHERE pk=?1")?
-            .query_row([pk], |row| row.get(0))
-            .optional()?)
-    }
-
     fn session_pk(&self, cache: &mut HashMap<String, i64>, id: &SessionId) -> Result<i64> {
         let key = id.to_string();
         if let Some(pk) = cache.get(&key) {
@@ -1045,60 +1001,16 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
-    /// `packed` is the event's id and stored payload ([`crate::encoding::RowPacker::pack_event`]).
-    fn write_event(
-        &self,
-        e: &Event,
-        session_pk: Option<i64>,
-        packed: &(String, Vec<u8>),
-        order: Option<u64>,
-        step_start: u64,
-        occurrence: u64,
-        prepared_idx: usize,
-    ) -> Result<()> {
-        let (content_id, data) = packed;
-        // An event about a session keeps its content identity across inputs.
-        // An event about its input belongs to one exact input record
-        // occurrence, including repeated identical events from that record.
-        let id = resolve::event_id(self.input_id, self.chain, e, content_id, occurrence)?;
-        let after: Option<(i64, i64)> = match &e.after {
-            Some(id) => match self.message_pk(&id.to_string())? {
-                Some(pk) => Some((
-                    pk,
-                    self.tx
-                        .prepare_cached("SELECT seq FROM message WHERE pk = ?1")?
-                        .query_row([pk], |r| r.get(0))?,
-                )),
-                None => None,
-            },
-            None => None,
-        };
-        // An event with its own byte range sorts by it among the input's
-        // messages (whose `seq` is their record offset); otherwise it takes
-        // the position of the message it follows.
-        // In a repeating whole conversations step an event without a range takes the step's place.
-        let seq = order
-            .map(|order| order as i64)
-            .or(e.range.map(|(start, _)| start as i64))
-            .or(self
-                .repeats_whole_conversations
-                .then_some(step_start as i64));
-        let source_chain = e.range.map(|_| self.chain);
-        let pk = match self.event_pk(&id)? {
-            Some(pk) => pk,
-            None => {
-                self.tx.prepare_cached("INSERT INTO event(pk,id,session_pk,seq,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,data)
-                    VALUES (?12,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)")?
-                    .execute(params![&*id,session_pk,seq.unwrap_or(0),after.map(|a|a.0),e.kind,ms(e.at),self.input_pk,source_chain,e.range.map(|r|r.0 as i64),e.range.map(|r|r.1 as i64),data,Some(self.keys.get(resolve::Kind::Event,id.as_bytes())?.pk)])?;
-                let pk = self.tx.last_insert_rowid();
-                if let Some(first) = self.first_build {
-                    first.add_event(&id, pk);
-                }
-                pk
-            }
-        };
-        self.store_event_value(pk, e, data, seq, prepared_idx)?;
-        Ok(())
+    fn write_event(&self, index: usize) -> Result<()> {
+        let id = &self.choices.event_ids[index];
+        let (pk, source) = &self.choices.event_sources[index];
+        self.tx.prepare_cached("INSERT OR IGNORE INTO event(pk,id,session_pk,seq,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?
+            .execute(params![pk,id,source.session,source.seq.unwrap_or(0),source.kind,source.at,self.input_pk,self.chain,source.start,source.end,source.fields,source.body])?;
+        if let Some(first) = self.first_build {
+            first.add_event(id, *pk);
+        }
+        self.store_event_value(index)
     }
 
     fn write_link(&self, l: &Link, index: usize) -> Result<()> {
