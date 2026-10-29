@@ -135,6 +135,7 @@ fn output_and_grammar_inputs_need_no_deployment_or_machine_identity() {
             .caller_environment()
             .contains_key("POLYLOGUE_AUTH_TOKEN_FILE")
     );
+    assert!(!format!("{environment:?}").contains("synthetic-secret"));
     let matches = augment_command(Command::new("polylogue"))
         .try_get_matches_from(["polylogue", "--archive", "/synthetic/archive"])
         .unwrap();
@@ -202,6 +203,21 @@ fn primary_mode_keeps_unavailable_credentials_and_never_supplies_a_local_day() {
         Err(Error::SinexDay)
     ));
     std::fs::write(path, "broken = [").unwrap();
+    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    assert!(matches!(
+        startup.mode,
+        crate::daemon::service::ArchiveMode::Blocked { .. }
+    ));
+    assert!(startup.config.standalone_day().is_err());
+}
+
+#[cfg(feature = "sinex")]
+#[test]
+fn unreadable_primary_deployment_stays_blocked_without_local_day() {
+    let root = tempfile::tempdir().unwrap();
+    deployment(root.path(), "");
+    // A directory gives a deterministic read failure even under a privileged test runner.
+    std::fs::create_dir(root.path().join("config/polylogue/sinex.toml")).unwrap();
     let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
     assert!(matches!(
         startup.mode,

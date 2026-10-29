@@ -27,9 +27,16 @@ pub enum Error {
     #[error("Sinex owns the logical day in primary mode")]
     SinexDay,
 }
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EnvSnapshot {
     values: BTreeMap<String, OsString>,
+}
+impl std::fmt::Debug for EnvSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvSnapshot")
+            .field("keys", &self.values.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 impl EnvSnapshot {
     pub fn capture() -> Self {
@@ -557,8 +564,21 @@ pub(crate) fn load_mode(
 > {
     use crate::daemon::service::ArchiveMode;
     use polylogue_sinex::{Authentication, Config, Mode};
-    let Some(text) = optional_file(path)? else {
-        return Ok((ArchiveMode::Standalone, Authentication::Anonymous));
+    let text = match optional_file(path) {
+        Ok(Some(text)) => text,
+        Ok(None) => return Ok((ArchiveMode::Standalone, Authentication::Anonymous)),
+        Err(error) => {
+            return Ok((
+                ArchiveMode::Blocked {
+                    configured: None,
+                    path: path.into(),
+                    error: error.to_string(),
+                },
+                Authentication::Unavailable {
+                    reason: error.to_string(),
+                },
+            ));
+        }
     };
     match Config::parse(&text) {
         Ok(mut config) if config.mode == Mode::Primary => {
