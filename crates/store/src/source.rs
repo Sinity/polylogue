@@ -158,6 +158,20 @@ impl Source {
         })
     }
 
+    /// Readers use the logical source namespace, including standalone TEMP
+    /// views over the attached archive. Writers still select through `of`.
+    pub(crate) fn reading(conn: &Connection) -> Result<Self> {
+        if conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name='source_input')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            Ok(Self::Cache)
+        } else {
+            Self::of(conn)
+        }
+    }
+
     pub(crate) fn prefix(self) -> &'static str {
         match self {
             Self::Ledger => "",

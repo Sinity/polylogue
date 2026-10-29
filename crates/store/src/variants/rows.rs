@@ -1,17 +1,5 @@
 use super::*;
 
-pub(super) fn reading(conn: &Connection) -> Result<Source> {
-    if conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name='source_variant')",
-        [],
-        |row| row.get::<_, bool>(0),
-    )? {
-        Ok(Source::Cache)
-    } else {
-        Source::of(conn)
-    }
-}
-
 const COLUMNS: &str = "id,root,base,source,source_hash,kind,from_lang,to_lang,author,via,method,machine,created_at,commit_seq";
 
 fn hash(value: Vec<u8>) -> Result<BlobHash> {
@@ -46,7 +34,7 @@ fn variant(row: &rusqlite::Row<'_>) -> Result<Variant> {
     })
 }
 pub(super) fn get(conn: &Connection, id: &str) -> Result<Option<Variant>> {
-    let source = reading(conn)?;
+    let source = Source::reading(conn)?;
     let mut statement = conn.prepare(&source.sql(&format!(
         "SELECT {COLUMNS} FROM @source.variant WHERE id=?1"
     )))?;
@@ -58,7 +46,7 @@ pub(super) fn visit_root(
     root: &str,
     mut visit: impl FnMut(Variant) -> Result<()>,
 ) -> Result<()> {
-    let source = reading(conn)?;
+    let source = Source::reading(conn)?;
     let mut statement = conn.prepare_cached(&source.sql(&format!(
         "SELECT {COLUMNS} FROM @source.variant WHERE root=?1 ORDER BY id"
     )))?;
@@ -74,7 +62,7 @@ pub(super) fn visit(
     value: Option<i64>,
     mut f: impl FnMut(Variant) -> Result<()>,
 ) -> Result<()> {
-    let source = reading(conn)?;
+    let source = Source::reading(conn)?;
     let mut statement = conn.prepare(&source.sql(&format!(
         "SELECT {COLUMNS} FROM @source.variant {filter} ORDER BY id"
     )))?;
@@ -108,7 +96,7 @@ pub(super) fn parts(
     id: &str,
     mut visit: impl FnMut(VariantPart) -> Result<()>,
 ) -> Result<()> {
-    let source = reading(conn)?;
+    let source = Source::reading(conn)?;
     let mut statement=conn.prepare_cached(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 ORDER BY n"))?;
     let mut rows = statement.query([id])?;
     while let Some(row) = rows.next()? {
@@ -117,7 +105,7 @@ pub(super) fn parts(
     Ok(())
 }
 pub(super) fn get_part(conn: &Connection, id: &str, n: u64) -> Result<Option<VariantPart>> {
-    let source = reading(conn)?;
+    let source = Source::reading(conn)?;
     let mut statement=conn.prepare_cached(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND n=?2"))?;
     let mut rows = statement.query(params![
         id,

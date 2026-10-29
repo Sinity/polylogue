@@ -37,7 +37,7 @@ impl<'a> Withdrawals<'a> {
     fn read(conn: &'a Connection) -> Result<Self> {
         Ok(Self {
             conn,
-            source: rows::reading(conn)?,
+            source: Source::reading(conn)?,
             known: HashMap::new(),
         })
     }
@@ -257,7 +257,7 @@ impl Reader<'_> {
         enabled: &[String],
     ) -> Result<Option<Variant>> {
         let conn = self.conn()?;
-        let namespace = rows::reading(conn)?;
+        let namespace = Source::reading(conn)?;
         let roots: Vec<String> = conn
             .prepare_cached(
                 &namespace

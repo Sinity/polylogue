@@ -88,7 +88,7 @@ pub(super) fn history(conn: &Connection, reference: &Reference) -> Result<Option
     if identify(conn, reference)?.is_none() {
         return Ok(None);
     }
-    let source = rows::reading(conn)?;
+    let source = Source::reading(conn)?;
     let mut statement=conn.prepare_cached(&source.sql("SELECT observed,input,chain,machine,actor,at FROM @source.variant_import WHERE ref=?1 ORDER BY machine,input,chain,actor,at,observed"))?;
     let mut rows = statement.query([reference.to_string()])?;
     let mut history = ImportHistory::default();
@@ -113,7 +113,7 @@ pub(super) fn history(conn: &Connection, reference: &Reference) -> Result<Option
     Ok(Some(history))
 }
 pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
-    let source = rows::reading(from)?;
+    let source = Source::reading(from)?;
     let mut statement=from.prepare_cached(&source.sql("SELECT ref,variant,observed,input,chain,machine,actor,at FROM @source.variant_import ORDER BY ref,machine,input,chain,actor,at,observed"))?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
