@@ -3,7 +3,7 @@
 //! A material's bytes, and a frame too large for one message, are written to
 //! the frame's directory under Sinex's store root on this host; Sinex
 //! stores them before it records the frame.
-use crate::{Config, Error, Result};
+use crate::{Authentication, Config, Error, Result};
 mod confirmed;
 use sinex_protocol::{Acknowledgment, Ingress, ProducerHello, ProducerWelcome, Subjects};
 use sinex_transport::frame_bytes;
@@ -61,15 +61,24 @@ impl Client {
 
     pub(crate) async fn connect(
         config: &Config,
+        authentication: &Authentication,
         spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
         health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     ) -> Result<Self> {
         let subjects = Subjects::new(config.subject_root.clone());
-        let options = match config.credentials()? {
-            Some((user, password)) => {
-                async_nats::ConnectOptions::with_user_and_password(user, password)
+        let options = match authentication {
+            Authentication::Password(password) => {
+                async_nats::ConnectOptions::with_user_and_password(
+                    config.producer.clone(),
+                    password.clone(),
+                )
             }
-            None => async_nats::ConnectOptions::new(),
+            Authentication::Anonymous => async_nats::ConnectOptions::new(),
+            Authentication::Unavailable { reason } => {
+                return Err(Error::Invalid(format!(
+                    "producer authentication is unavailable: {reason}"
+                )));
+            }
         };
         let client = options
             .custom_inbox_prefix(subjects.inbox_prefix(&config.producer))

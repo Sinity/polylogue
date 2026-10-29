@@ -88,38 +88,35 @@ fn default_producer() -> String {
     "polylogue".into()
 }
 
-impl Config {
-    pub fn path() -> PathBuf {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .unwrap_or_else(|| PathBuf::from("."));
-        config.join("polylogue/sinex.toml")
-    }
-
-    /// The configuration, or `None` when there is no file (standalone). A
-    /// file that does not parse is an error the caller shows; it never
-    /// switches the mode silently.
-    pub fn load() -> Result<Option<Self>> {
-        Self::load_from(&Self::path())
-    }
-
-    /// Reads one explicitly selected configuration file.
-    pub fn load_from(path: &Path) -> Result<Option<Self>> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                let config: Self = toml::from_str(&text)
-                    .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
-                config
-                    .check()
-                    .map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
-                Ok(Some(config))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(std::io::Error::new(e.kind(), format!("{}: {e}", path.display())).into()),
+/// Authentication resolved once by the binary's configuration loader. This
+/// value never reads the password file or environment during connection.
+#[derive(Clone)]
+pub enum Authentication {
+    Anonymous,
+    Password(String),
+    Unavailable { reason: String },
+}
+impl std::fmt::Debug for Authentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Anonymous => f.write_str("Anonymous"),
+            Self::Password(_) => f.write_str("Password([redacted])"),
+            Self::Unavailable { reason } => f
+                .debug_struct("Unavailable")
+                .field("reason", reason)
+                .finish(),
         }
     }
-
+}
+impl Config {
+    /// Parse and validate supplied bytes. File selection and credential reads
+    /// belong to the startup boundary.
+    pub fn parse(text: &str) -> Result<Self> {
+        let config: Self =
+            toml::from_str(text).map_err(|error| Error::Invalid(error.to_string()))?;
+        config.check().map_err(Error::Invalid)?;
+        Ok(config)
+    }
     /// A password in the URL would sit in the configuration file, and the
     /// NATS client ignores it there, so it is refused.
     fn check(&self) -> std::result::Result<(), String> {
@@ -135,26 +132,13 @@ impl Config {
         }
         Ok(())
     }
-
-    /// The NATS user and password, read from `password_file` when one is set.
-    /// The file's trailing whitespace is not part of the password.
-    pub(crate) fn credentials(&self) -> Result<Option<(String, String)>> {
-        let Some(path) = &self.password_file else {
-            return Ok(None);
-        };
-        let password = std::fs::read_to_string(path)
-            .map_err(|e| Error::Invalid(format!("password file {}: {e}", path.display())))?;
-        Ok(Some((
-            self.producer.clone(),
-            password.trim_end().to_owned(),
-        )))
-    }
 }
 
 /// A connection to Sinex as the producer `config.producer`, used by the
 /// writer thread and the loop. One frame is in flight at a time.
 pub struct Sinex {
     config: Config,
+    authentication: Authentication,
     health: Arc<Mutex<status::Health>>,
     spool: Arc<Mutex<spool::Spool>>,
     runtime: tokio::runtime::Runtime,
@@ -167,7 +151,12 @@ pub struct Sinex {
 impl Sinex {
     /// Opens the durable producer spool before making any network connection.
     /// Capture can prepare writes while Sinex is unavailable.
-    pub fn open(config: &Config) -> Result<Self> {
+    pub fn open(config: &Config, authentication: &Authentication, host: &str) -> Result<Self> {
+        if host.trim().is_empty() {
+            return Err(Error::Invalid(
+                "a configured host identity is required".into(),
+            ));
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -175,22 +164,20 @@ impl Sinex {
             &config.store,
             &config.producer,
         )?));
-        let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
-            .map(|host| host.trim().to_owned())
-            .unwrap_or_default();
         Ok(Self {
             config: config.clone(),
+            authentication: authentication.clone(),
             health: Arc::new(Mutex::new(status::Health::default())),
             spool,
             runtime,
             client: Mutex::new(None),
-            host,
+            host: host.into(),
         })
     }
 
     /// Opens this producer and requires Sinex to answer immediately.
-    pub fn connect(config: &Config) -> Result<Self> {
-        let sinex = Self::open(config)?;
+    pub fn connect(config: &Config, authentication: &Authentication, host: &str) -> Result<Self> {
+        let sinex = Self::open(config, authentication, host)?;
         sinex.with(async |_client| Ok(()))?;
         Ok(sinex)
     }
@@ -204,6 +191,7 @@ impl Sinex {
         if client.is_none() {
             let connected = self.runtime.block_on(Client::connect(
                 &self.config,
+                &self.authentication,
                 Arc::clone(&self.spool),
                 Arc::clone(&self.health),
             ));

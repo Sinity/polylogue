@@ -4,6 +4,33 @@
 use crate::{Author, BlobHash, DeliveryOutcome, NewNote, Timestamp};
 use serde::{Deserialize, Serialize};
 
+/// Trusted host and wall-clock inputs captured by the binary. Authored writes
+/// receive one timestamp from this handle; storage never samples another clock.
+#[derive(Debug, Clone)]
+pub struct RequestMetadata {
+    machine: String,
+    clock: crate::WallClock,
+}
+impl RequestMetadata {
+    pub fn new(machine: String, clock: crate::WallClock) -> Self {
+        Self { machine, clock }
+    }
+    pub fn request(&self, id: String, write: UserWrite) -> UserRequest {
+        UserRequest {
+            id,
+            machine: self.machine.clone(),
+            at: self.clock.now().into(),
+            write,
+        }
+    }
+    pub fn now(&self) -> crate::Timestamp {
+        self.clock.now().into()
+    }
+    pub fn machine(&self) -> &str {
+        &self.machine
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case")]
 pub enum UserWrite {
@@ -438,5 +465,33 @@ impl BackfillJob {
         let counts = self.events.last().map(|e| e.counts).unwrap_or_default();
         let position = self.events.iter().rev().find_map(|e| e.position.as_deref());
         (counts, position)
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    #[test]
+    fn request_uses_the_supplied_clock_and_machine() {
+        let metadata = RequestMetadata::new(
+            "synthetic-machine".into(),
+            crate::WallClock::fixed("2026-03-08T12:34:56.123456789Z".parse().unwrap()),
+        );
+        let request = metadata.request(
+            "synthetic-request".into(),
+            UserWrite::SetSetting {
+                key: "browser.actions".into(),
+                value: "on".into(),
+                author: Author::Operator,
+                machine: None,
+            },
+        );
+        assert_eq!(request.machine, "synthetic-machine");
+        assert_eq!(
+            jiff::Timestamp::from(request.at),
+            "2026-03-08T12:34:56.123456789Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+        );
     }
 }

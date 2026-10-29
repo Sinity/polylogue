@@ -129,7 +129,7 @@ fn native_capture_continues_the_input_named_by_its_source_header() {
             .unwrap();
         writer.derive().unwrap();
     }
-    let mut config = Config::from_env();
+    let mut config = crate::test_config();
     config.home = home;
     config.tool_dirs.clear();
     config.machine = "test-machine".into();

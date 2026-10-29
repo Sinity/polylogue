@@ -95,6 +95,7 @@ impl Morrow {
     /// Settings that read only this archive's home.
     pub fn config(&self) -> Config {
         Config {
+            clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
             home: self.home.clone(),
             tool_dirs: Default::default(),
             workers: 3,

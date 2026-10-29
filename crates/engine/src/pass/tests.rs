@@ -89,7 +89,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
 
 // Unit tests need this crate's Engine rather than the testkit's dependency.
 fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
-    let mut config = Config::from_env();
+    let mut config = crate::test_config();
     config.home = home.home.clone();
     config.tool_dirs.clear();
     config.workers = 3;
