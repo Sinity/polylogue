@@ -40,6 +40,20 @@ pub trait Sinex: Send + Sync {
         length: u64,
         body: PreparedBody,
     ) -> Result<PreparedWrite>;
+    /// Stages all member bodies and private facts before one durable group publication.
+    fn prepare_input_group(
+        &self,
+        plan: &CapturePlan,
+        members: &mut CaptureMembers<'_>,
+    ) -> Result<PreparedWrite>;
+    /// Reads only local durable source headers and one verified selected control.
+    fn pending_source(
+        &self,
+        source: &SourceSelector,
+        reading_version: &str,
+    ) -> Result<PendingSource>;
+    /// Pins the original encoded body for exact range comparison without network I/O.
+    fn capture_body(&self, identity: &str) -> Result<PreparedBody>;
     fn canonical_publisher(&self) -> bool {
         false
     }
