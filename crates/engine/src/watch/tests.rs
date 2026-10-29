@@ -8,7 +8,7 @@ fn missing_roots_advance_without_watching_unrelated_subtrees_or_reads() {
     let home = tempfile::tempdir().unwrap();
     let unrelated = home.path().join("unrelated/deep");
     fs::create_dir_all(&unrelated).unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_config();
     config.home = home.path().to_path_buf();
     config.tool_dirs.clear();
     let (tx, rx) = channel();

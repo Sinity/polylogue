@@ -44,8 +44,7 @@ fn main() {
         let (chains, bytes) = polylogue_store::fixture::older_reading(&archive, &origin).unwrap();
         selected = Some(json!({"origin":origin,"chains":chains,"bytes":bytes}));
     }
-    let mut config = Config::from_env();
-    config.home = home;
+    let mut config = measurement_config(home);
     config.tool_dirs.clear();
     if let Some(workers) = arg("--workers") {
         config.workers = workers.parse().unwrap();
@@ -151,4 +150,18 @@ fn main() {
         "write_bytes":after.get("write_bytes").zip(before.get("write_bytes")).map(|(a,b)|a-b),
         "pass":pass,"stages":stages,"pipeline":pipeline,"reading_pipeline":polylogue_store::timing::reading_pipeline(),"storage":storage,"storage_error":storage_error})
     );
+}
+
+fn measurement_config(home: std::path::PathBuf) -> Config {
+    Config::new(
+        home,
+        Default::default(),
+        "measurement-machine".into(),
+        "measurement-host".into(),
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .expect("CPU allowance"),
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    )
+    .expect("measurement configuration")
 }
