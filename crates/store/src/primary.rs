@@ -16,18 +16,22 @@ use serde::{Deserialize, Serialize};
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
 pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
 
+/// A locally pinned encoded body. Its optional path is a same-host custody
+/// optimization; the file and descriptor determine the bytes.
+pub struct PreparedBody {
+    pub file: std::fs::File,
+    pub descriptor: hashed_blobs::EncodedBlob,
+    pub path: Option<std::path::PathBuf>,
+}
+
 /// The connection to Sinex the writer and the loop send through.
 pub trait Sinex: Send + Sync {
-    fn prepare_input(
-        &self,
-        captured: &CapturedInput,
-        bytes: &mut dyn std::io::Read,
-    ) -> Result<PreparedInput>;
+    fn prepare_input(&self, captured: &CapturedInput, body: PreparedBody) -> Result<PreparedInput>;
     fn prepare_blob(
         &self,
         hash: BlobHash,
         length: u64,
-        bytes: &mut dyn std::io::Read,
+        body: PreparedBody,
     ) -> Result<PreparedWrite>;
     fn canonical_publisher(&self) -> bool {
         false

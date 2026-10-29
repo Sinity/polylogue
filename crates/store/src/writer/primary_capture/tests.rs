@@ -79,12 +79,20 @@ impl crate::primary::Sinex for OfflineProducer {
     fn prepare_input(
         &self,
         captured: &CapturedInput,
-        bytes: &mut dyn Read,
+        body: crate::primary::PreparedBody,
     ) -> Result<PreparedInput> {
         std::fs::create_dir_all(&self.root)?;
-        let mut raw = std::fs::File::create(self.root.join("source"))?;
-        std::io::copy(bytes, &mut raw)?;
-        raw.sync_all()?;
+        let prepared = hashed_blobs::Prepared::from_encoded(
+            body.file,
+            body.descriptor,
+            None,
+            hashed_blobs::ReadLimits::default(),
+        )?;
+        let mut file = prepared.into_file();
+        file.rewind()?;
+        let mut encoded = std::fs::File::create(self.root.join("source"))?;
+        std::io::copy(&mut file, &mut encoded)?;
+        encoded.sync_all()?;
         let mut metadata = std::fs::File::create(self.root.join("capture.json"))?;
         serde_json::to_writer(&mut metadata, captured)?;
         metadata.sync_all()?;
@@ -133,7 +141,7 @@ impl crate::primary::Sinex for OfflineProducer {
         &self,
         _: BlobHash,
         _: u64,
-        _: &mut dyn Read,
+        _: crate::primary::PreparedBody,
     ) -> Result<crate::primary::PreparedWrite> {
         Self::unavailable()
     }
@@ -242,7 +250,15 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         root: producer_root.clone(),
     };
     let captured = reopened.captured();
-    assert_eq!(std::fs::read(producer_root.join("source")).unwrap(), bytes);
+    let encoded = std::fs::File::open(producer_root.join("source")).unwrap();
+    let prepared = hashed_blobs::Prepared::inspect(encoded, None, Default::default()).unwrap();
+    let mut restored = Vec::new();
+    prepared
+        .reader(None, Default::default())
+        .unwrap()
+        .read_to_end(&mut restored)
+        .unwrap();
+    assert_eq!(restored, bytes);
     assert_eq!(captured.arrival_rank, 2);
     assert_eq!(captured.parsed.len(), 1);
     assert_eq!(captured.parsed[0].output.events[0].data, payload);
