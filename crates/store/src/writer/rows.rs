@@ -115,6 +115,16 @@ fn apply_rows(
     if p.reset {
         rows.retract()?;
     }
+    let native_admission = if confirmed {
+        None
+    } else {
+        receipt
+            .map(|receipt| {
+                u64::try_from(receipt.sequence)
+                    .map_err(|_| StoreError::Invalid("negative source admission".into()))
+            })
+            .transpose()?
+    };
     for version in choices.message_versions.values() {
         crate::versions::store_message(
             tx,
@@ -126,6 +136,7 @@ fn apply_rows(
                 keys,
             },
             version.replace,
+            version.admitted.or(native_admission),
         )?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();

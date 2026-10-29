@@ -153,6 +153,7 @@ pub(crate) fn store_message(
     prepared: &encoding::PreparedMessage,
     text_rows: TextRows<'_>,
     replace: bool,
+    admitted: Option<u64>,
 ) -> Result<()> {
     prepared.projection.validate(message.blocks.len())?;
     if prepared.hash != prepared.projection.source_version.0 {
@@ -172,9 +173,23 @@ pub(crate) fn store_message(
     )?;
     let layout = message_layout(&prepared.projection)?;
     conn.execute(
-        "INSERT INTO message_projection(version_hash,layout) VALUES (?1,?2)
-         ON CONFLICT(version_hash) DO UPDATE SET layout=excluded.layout WHERE layout IS NOT excluded.layout",
-        params![prepared.hash.as_slice(), layout],
+        "INSERT INTO message_projection(version_hash,layout,admitted) VALUES (?1,?2,?3)
+         ON CONFLICT(version_hash) DO UPDATE SET layout=excluded.layout,
+         admitted=CASE WHEN message_projection.admitted IS NULL THEN excluded.admitted
+             WHEN excluded.admitted IS NULL THEN message_projection.admitted
+             ELSE max(message_projection.admitted,excluded.admitted) END
+         WHERE layout IS NOT excluded.layout OR (excluded.admitted IS NOT NULL
+             AND (message_projection.admitted IS NULL OR excluded.admitted>message_projection.admitted))",
+        params![
+            prepared.hash.as_slice(),
+            layout,
+            admitted
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| crate::StoreError::Invalid(
+                    "message admission exceeds SQLite's integer range".into()
+                ))?
+        ],
     )?;
     Ok(())
 }

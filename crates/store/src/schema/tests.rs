@@ -17,10 +17,10 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn archive_and_embedding_baselines_stay_at_one_while_the_index_migrates() {
     assert_eq!(ARCHIVE_VERSION, 1);
-    assert_eq!(INDEX_VERSION, 2);
+    assert_eq!(INDEX_VERSION, 3);
     for (create, expected) in [
         (ensure_archive as fn(&Connection) -> Result<()>, 1),
-        (ensure_index, 2),
+        (ensure_index, 3),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();
@@ -165,19 +165,21 @@ fn comments_and_spacing_in_the_declarations_do_not_change_the_schema() {
 #[test]
 fn read_indexes_are_added_in_place_and_survive_reopen() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(INDEX).unwrap();
+    base_index(&conn).unwrap();
     set_version(&conn, INDEX_VERSION).unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     assert!(same_index_schema(&conn).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
-    base.execute_batch(INDEX).unwrap();
-    let base = shape(&base).unwrap();
+    base_index(&base).unwrap();
+    let base_shape = shape(&base).unwrap();
+    base.execute_batch(READ_INDEXES).unwrap();
+    let expected = shape(&base).unwrap();
     let read_indexes: Vec<_> = shape(&conn)
         .unwrap()
         .into_iter()
-        .filter(|item| item.0 == "index" && !base.contains(item))
+        .filter(|item| item.0 == "index" && !base_shape.contains(item))
         .map(|item| item.1)
         .collect();
     assert!(!read_indexes.is_empty());
@@ -185,9 +187,9 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
         assert!(same_index_schema(&conn).unwrap(), "missing {name}");
         ensure_index(&conn).unwrap();
-        assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+        assert_eq!(shape(&conn).unwrap(), expected);
     }
-    assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+    assert_eq!(shape(&conn).unwrap(), expected);
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row

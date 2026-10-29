@@ -16,6 +16,13 @@ pub(crate) struct PreparedRows {
 
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
+        for (&index, &receipt) in &output.message_receipts {
+            if index >= output.messages.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid message admission receipt".into(),
+                ));
+            }
+        }
         for (&index, projection) in &output.message_projections {
             let row = output
                 .messages

@@ -52,6 +52,7 @@ pub(crate) struct MessageVersion {
     pub message: Message,
     pub prepared: PreparedMessage,
     pub replace: bool,
+    pub admitted: Option<u64>,
 }
 #[derive(Clone)]
 struct Source {
@@ -453,6 +454,12 @@ impl<'a> Projection<'a> {
                     message: merged.0.clone(),
                     prepared: merged.1.clone(),
                     replace,
+                    admitted: step.output.message_receipts.get(&i).copied().max(
+                        choices
+                            .message_versions
+                            .get(&BlobHash(prepared.hash))
+                            .and_then(|version| version.admitted),
+                    ),
                 },
             );
             message_values.insert(prepared.hash.to_vec(), merged);
