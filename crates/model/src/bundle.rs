@@ -17,7 +17,7 @@ pub struct ReadSnapshot {
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
     pub caught_up: bool,
-    pub currency: crate::IndexCurrency,
+    pub currency: crate::currency::IndexCurrency,
     pub enabled_variants: Vec<String>,
     pub author: Author,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -38,7 +38,7 @@ pub struct Manifest {
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
     pub caught_up: bool,
-    pub currency: crate::IndexCurrency,
+    pub currency: crate::currency::IndexCurrency,
     pub counts: Counts,
     pub flags: Flags,
     pub enabled_variants: Vec<String>,

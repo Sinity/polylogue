@@ -13,7 +13,7 @@ fn manifest() -> Manifest {
             archive: 3,
         },
         caught_up: false,
-        currency: crate::IndexCurrency::Standalone,
+        currency: crate::currency::IndexCurrency::Standalone,
         counts: Counts::default(),
         flags: Flags {
             format: Format::Json,
