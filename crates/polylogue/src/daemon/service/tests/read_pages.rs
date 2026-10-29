@@ -136,7 +136,17 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
     );
     text.value
 }
+fn selected_fingerprint(d: &test_daemon::TestDaemon, session: &str) -> String {
+    let reader = d.daemon.reads.reader().unwrap();
+    reader
+        .select_messages(&polylogue_model::SessionId::parse(session).unwrap(), false)
+        .unwrap()
+        .fingerprint()
+        .unwrap()
+}
+
 fn replace(d: &test_daemon::TestDaemon, texts: &[(&str, &str)]) {
+    let previous = selected_fingerprint(d, "claude-code:s1");
     let source = texts
         .iter()
         .map(|(id, text)| polylogue_testkit::claude_user(id, "s1", text))
@@ -145,11 +155,31 @@ fn replace(d: &test_daemon::TestDaemon, texts: &[(&str, &str)]) {
     let started = std::time::Instant::now();
     d.wait_for(|status| {
         let ready = status["store"]["messages"] == texts.len()
-            && status["store"]["search_pending"] == 0;
+            && status["store"]["search_pending"] == 0
+            && selected_fingerprint(d, "claude-code:s1") != previous;
         assert!(
             ready || started.elapsed() < std::time::Duration::from_secs(20),
             "replacement did not reach {} messages with no pending search work; final status: {status}",
             texts.len()
+        );
+        ready
+    });
+}
+
+// The daemon's seeded S1 remains historical; these records belong to a fresh S2.
+fn add_selected_session(d: &test_daemon::TestDaemon, texts: &[(&str, &str)]) {
+    let source = texts
+        .iter()
+        .map(|(id, text)| polylogue_testkit::claude_user(id, "s2", text))
+        .collect::<String>();
+    std::fs::write(d.home.join(".claude/projects/-p/s2.jsonl"), source).unwrap();
+    let total = texts.len() + 1;
+    let started = std::time::Instant::now();
+    d.wait_for(|status| {
+        let ready = status["store"]["messages"] == total && status["store"]["search_pending"] == 0;
+        assert!(
+            ready || started.elapsed() < std::time::Duration::from_secs(20),
+            "fresh selected session did not reach {total} archival messages; final status: {status}"
         );
         ready
     });
@@ -248,15 +278,26 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
         &d,
         &[("u1", "rewritten earlier content before the continuation")],
     );
+    let response = handle(
+        request(
+            "session:claude-code:s1",
+            false,
+            View::Transcript,
+            1,
+            Some(&token),
+        ),
+        &d.daemon,
+    );
     assert!(
-        matches!(handle(request("session:claude-code:s1", false, View::Transcript, 1, Some(&token)), &d.daemon), Response::Error { kind, .. } if kind == "stale_cursor")
+        matches!(&response, Response::Error { kind, .. } if kind == "stale_cursor"),
+        "{response:?}"
     );
 }
 
 #[test]
 fn native_display_order_and_original_references_survive_page_boundaries() {
     let d = test_daemon::start("placeholder");
-    replace(
+    add_selected_session(
         &d,
         &[
             ("z-first", "ZETA_FIRST λ🙂"),
@@ -267,7 +308,7 @@ fn native_display_order_and_original_references_survive_page_boundaries() {
         assert_eq!(
             all(
                 &d.daemon,
-                "session:claude-code:s1",
+                "session:claude-code:s2",
                 inherited,
                 View::Transcript
             ),
@@ -410,7 +451,7 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
     let texts = (0..125)
         .map(|i| (format!("outline-{i}"), "synthetic prompt"))
         .collect::<Vec<_>>();
-    replace(
+    add_selected_session(
         &d,
         &texts
             .iter()
@@ -418,7 +459,7 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
             .collect::<Vec<_>>(),
     );
     let request = |cursor| Request::Outline {
-        session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+        session: polylogue_model::SessionId::parse("claude-code:s2").unwrap(),
         with_parents: true,
         page_size: 17,
         cursor,
@@ -460,12 +501,12 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .append(true)
-        .open(d.home.join(".claude/projects/-p/s1.jsonl"))
+        .open(d.home.join(".claude/projects/-p/s2.jsonl"))
         .unwrap();
-    file.write_all(polylogue_testkit::claude_user("outline-new", "s1", "new prompt").as_bytes())
+    file.write_all(polylogue_testkit::claude_user("outline-new", "s2", "new prompt").as_bytes())
         .unwrap();
     file.flush().unwrap();
-    d.wait_for(|status| status["store"]["messages"] == 126);
+    d.wait_for(|status| status["store"]["messages"] == 127);
     assert!(
         matches!(handle(request(first), &d.daemon), Response::Error { kind, .. } if kind == "stale_cursor")
     );
