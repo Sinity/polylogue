@@ -212,7 +212,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
                 if !checkpoint.rules.iter().any(|old| old == &rule) {
                     checkpoint
                         .evaluator
-                        .replace_rule(rule.clone(), &calendar)
+                        .replace_rule(rule.clone(), now, &calendar)
                         .map_err(|e| e.to_string())?;
                 }
                 checkpoint
