@@ -36,6 +36,8 @@ fn message(blocks: Vec<Block>) -> Record {
         source_version: message.content_hash().unwrap(),
         block_count: message.blocks.len() as u64,
         block_ordinals: (0..message.blocks.len() as u64).collect(),
+        injections: Vec::new(),
+        bindings: Vec::new(),
         message,
     }))
 }
@@ -850,6 +852,7 @@ fn inline_images_need_exact_hash_safe_raster_type_and_size() {
             availability: ValueState::known("present".into()),
             link: Some("blobs/hash".into()),
             inline_bytes: Some(bytes.clone()),
+            verified_hash: None,
             open: None,
         },
     };
@@ -1330,7 +1333,7 @@ fn one_token_pages_and_accessible_empty_text_always_make_progress() {
 fn large_footer(position: Option<&ReadPosition>) -> Result<ReadFooter, pager::PageError> {
     let mut footer = ReadFooter {
         referenced_by: vec![ReferencedBy {
-            reference: "x".repeat(500),
+            reference: "x".repeat(100),
             role: "evidence".into(),
             open: None,
         }],
@@ -1664,13 +1667,288 @@ fn supplied_attachment_action_survives_layout_and_all_encoders() {
 }
 
 #[test]
+fn a_paired_result_header_marks_only_the_pair_actually_emitted_here() {
+    let result = Block::ToolResult {
+        call_id: Some("c".into()),
+        reported_duration_ms: None,
+        outcome: polylogue_model::ToolOutcome::Ok,
+        output: Some("original result".into()),
+        data: None,
+        attachments: vec![],
+    };
+    let result_source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        0,
+        false,
+    );
+    let call_source = Source::block(
+        &MessageId::parse("test:other:call").unwrap(),
+        &SessionId::parse("test:other").unwrap(),
+        3,
+        false,
+    );
+    let mut evidence = ProjectionEvidence::default();
+    evidence
+        .variants
+        .insert(
+            polylogue_model::Reference::parse(&result_source.reference).unwrap(),
+            text_variant(&result_source.reference, "replacement result", vec![]),
+        )
+        .unwrap();
+    evidence.tool_pairs.insert(
+        0,
+        ToolPair {
+            emit_at: call_source.reference.clone(),
+            call: SourceBlock {
+                source: call_source,
+                block: Block::ToolCall {
+                    call_id: Some("c".into()),
+                    tool: Some("test".into()),
+                    action: Default::default(),
+                    input: json!({}),
+                    command: None,
+                    path: None,
+                    run_by_script: false,
+                },
+            },
+            result: Some(SourceBlock {
+                source: result_source.clone(),
+                block: result.clone(),
+            }),
+            running: false,
+            duration_ms: Default::default(),
+            error_line: None,
+            child: None,
+            edit: None,
+        },
+    );
+    let options = ReadOptions {
+        tools: Some(Expansion::Full),
+        ..Default::default()
+    };
+    let hidden = layout(message(vec![result.clone()]), &options, &evidence);
+    assert_eq!(hidden.len(), 1);
+    assert!(matches!(&hidden[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
+    evidence.tool_pairs.get_mut(&0).unwrap().emit_at = result_source.reference;
+    let shown = layout(message(vec![result]), &options, &evidence);
+    assert!(matches!(&shown[0].kind,ItemKind::MessageHeader{header} if header.variant.is_some()));
+    assert!(shown.iter().any(|item|matches!(&item.kind,ItemKind::Call{call} if call.output.as_deref()==Some("replacement result"))));
+}
+
+#[test]
+fn a_separator_only_span_keeps_its_exact_reference_and_emits_text_once() {
+    let original = message(vec![
+        Block::Text { text: "a".into() },
+        Block::Text { text: "b".into() },
+    ]);
+    let span = "span:message:test:session:message#b=1-3";
+    let source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        0,
+        false,
+    );
+    let mut evidence = ProjectionEvidence::default();
+    evidence
+        .variants
+        .insert(
+            polylogue_model::Reference::parse(span).unwrap(),
+            text_variant(
+                span,
+                "RENDITIONSEPARATOR",
+                vec![TextAlignment {
+                    source,
+                    start: 1,
+                    end: 1,
+                }],
+            ),
+        )
+        .unwrap();
+    let projected = project_record(original.clone(), &ReadOptions::default(), &evidence)
+        .unwrap()
+        .unwrap();
+    assert_eq!(projected, original);
+    let items = layout(projected, &ReadOptions::default(), &evidence);
+    assert!(
+        matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.as_ref().is_some_and(|variant|variant.original==span))
+    );
+    let texts = items
+        .iter()
+        .filter_map(|item| {
+            if let ItemKind::Text { text } = &item.kind {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["aRENDITIONSEPARATOR", "b"]);
+    for format in [
+        Format::Terminal,
+        Format::Markdown,
+        Format::Html,
+        Format::Json,
+        Format::Jsonl,
+    ] {
+        assert_eq!(
+            encode(&document(items.clone()), format)
+                .matches("RENDITIONSEPARATOR")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn accessible_empty_record_renditions_have_root_anchors_without_canonical_blocks() {
+    for original in [
+        message(vec![]),
+        Record::Document(polylogue_model::bundle::DocumentRecord {
+            reference: "document:test:document".into(),
+            commit: 1,
+            document: polylogue_model::Document::new(
+                polylogue_model::DocumentId::parse("test:document").unwrap(),
+                polylogue_model::DocumentPurpose::Transcript,
+            ),
+        }),
+    ] {
+        let reference = original.reference().unwrap().to_owned();
+        let key = if reference.starts_with("message:") {
+            format!("span:{reference}#b=0-0")
+        } else {
+            reference.clone()
+        };
+        let mut variant = text_variant(
+            &key,
+            "expanded empty source",
+            vec![TextAlignment {
+                source: Source::record(&reference),
+                start: 0,
+                end: 0,
+            }],
+        );
+        variant.relations = vec![polylogue_model::VariantRelation::Expands];
+        let mut evidence = ProjectionEvidence::default();
+        evidence
+            .variants
+            .insert(polylogue_model::Reference::parse(&key).unwrap(), variant)
+            .unwrap();
+        let projected = project_record(original.clone(), &ReadOptions::default(), &evidence)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projected, original);
+        let items = layout(projected, &ReadOptions::default(), &evidence);
+        assert!(items.iter().any(|item| item.source.reference == reference
+            && item.source.block.is_none()
+            && matches!(&item.kind,ItemKind::Text{text} if text=="expanded empty source")));
+        for format in [
+            Format::Terminal,
+            Format::Markdown,
+            Format::Html,
+            Format::Json,
+            Format::Jsonl,
+        ] {
+            assert_eq!(
+                encode(&document(items.clone()), format)
+                    .matches("expanded empty source")
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes() {
+    let bytes = vec![137, 80, 78, 71];
+    let hash = polylogue_model::BlobHash::of(&bytes);
+    let attachment = polylogue_model::Attachment {
+        source_id: Some("bound:source".into()),
+        media_type: Some("image/png".into()),
+        ..Default::default()
+    };
+    let source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        0,
+        false,
+    );
+    let mut evidence = ProjectionEvidence::default();
+    evidence
+        .attachments
+        .entry(source.reference.clone())
+        .or_default()
+        .insert(
+            0,
+            vec![AttachmentEvidence {
+                inline_bytes: Some(bytes.clone()),
+                verified_hash: Some(hash),
+                availability: ValueState::known("present".into()),
+                ..Default::default()
+            }],
+        );
+    let block = SourceBlock {
+        source: source.clone(),
+        block: Block::Image(attachment.clone()),
+    };
+    let render = |block: &SourceBlock, evidence: &ProjectionEvidence| {
+        let mut items = vec![];
+        let result = visit_source_block(block, &ReadOptions::default(), evidence, |item| {
+            items.push(item);
+            true
+        });
+        result.map(|()| items)
+    };
+    let items = render(&block, &evidence).unwrap();
+    assert!(
+        matches!(&items[0].kind,ItemKind::Attachment{attachment,verified_hash:Some(value),..} if attachment.blob.is_none() && *value==hash)
+    );
+    assert!(
+        html::item_with_inline_limit(&items[0], 100)
+            .into_string()
+            .contains("data:image/png;base64,")
+    );
+    assert_eq!(block.block, Block::Image(attachment));
+    let mut svg = items[0].clone();
+    if let ItemKind::Attachment { attachment, .. } = &mut svg.kind {
+        attachment.media_type = Some("image/svg+xml".into());
+    }
+    assert!(
+        !html::item_with_inline_limit(&svg, 100)
+            .into_string()
+            .contains("data:image/svg")
+    );
+    let entry = evidence
+        .attachments
+        .get_mut(&source.reference)
+        .unwrap()
+        .get_mut(&0)
+        .unwrap()
+        .first_mut()
+        .unwrap();
+    entry.verified_hash = Some(polylogue_model::BlobHash::of(b"wrong"));
+    assert!(render(&block, &evidence).is_err());
+    let entry = evidence
+        .attachments
+        .get_mut(&source.reference)
+        .unwrap()
+        .get_mut(&0)
+        .unwrap()
+        .first_mut()
+        .unwrap();
+    entry.verified_hash = None;
+    assert!(render(&block, &evidence).is_err());
+}
+
+#[test]
 fn unbounded_native_source_is_inside_lossless_bounded_frames() {
     let original = ReadItem {
         source: Source {
             reference: format!("message:{}", "λ/native:".repeat(4000)),
-            message: Some("natural:".repeat(3000)),
+            message: Some(MessageId::parse(&"natural:".repeat(3000)).unwrap()),
             block: Some(998),
-            source_session: Some("session:".repeat(3000)),
+            source_session: Some(SessionId::parse(&"session:".repeat(3000)).unwrap()),
             inherited: true,
         },
         kind: ItemKind::Other {
@@ -1758,4 +2036,397 @@ fn prose_encoders_label_json_fragments_as_encoded_transport() {
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         assert!(encode(&doc, format).contains("Encoded ReadItem JSON fragment"));
     }
+}
+
+#[test]
+fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverage() {
+    use polylogue_model::{
+        Author, Timestamp,
+        authored::{AuthoredEffect, PreparedRequest, Setting},
+        bundle::AuthoredRecord,
+        user::{UserOutcome, UserRequest, UserWrite},
+    };
+    let at = Timestamp::from_unix_ms(123).unwrap();
+    let row = AuthoredRecord {
+        reference: "request:synthetic".into(),
+        commit: 9,
+        prepared: PreparedRequest {
+            request: UserRequest {
+                id: "synthetic".into(),
+                machine: "test-machine".into(),
+                at,
+                write: UserWrite::SetSetting {
+                    key: "one".into(),
+                    value: "original".into(),
+                    author: Author::Operator,
+                    machine: None,
+                },
+            },
+            outcome: UserOutcome {
+                id: "one".into(),
+                repeat: false,
+                pending: false,
+            },
+            effect: AuthoredEffect {
+                settings: ["one", "two"]
+                    .into_iter()
+                    .map(|key| Setting {
+                        id: key.into(),
+                        machine: "test-machine".into(),
+                        key: key.into(),
+                        value: format!("entire {key}"),
+                        author: Author::Operator,
+                        set_at: at,
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        },
+        imports: vec![],
+    };
+    let record = Record::Authored(Box::new(row.clone()));
+    record.validate().unwrap();
+    let options = ReadOptions {
+        assertions: true,
+        ..Default::default()
+    };
+    let selected = AuthoredSelection {
+        selected: polylogue_model::Reference::Delivery("selected".into()),
+        coverage: AuthoredCoverage::WholeRequest,
+    };
+    let evidence = ProjectionEvidence {
+        authored: Some(selected.clone()),
+        ..Default::default()
+    };
+    let projected = project_record(record.clone(), &options, &evidence)
+        .unwrap()
+        .unwrap();
+    assert_eq!(projected, record);
+    let items = layout(projected, &options, &evidence);
+    let ItemKind::Other { type_name, data } = &items[0].kind else {
+        panic!()
+    };
+    assert_eq!(type_name, "authored");
+    assert_eq!(
+        serde_json::from_value::<AuthoredRecord>(data["record"].clone()).unwrap(),
+        row
+    );
+    assert_eq!(
+        serde_json::from_value::<AuthoredSelection>(data["selection"].clone()).unwrap(),
+        selected
+    );
+    assert_eq!(data["selection"]["coverage"], "whole_request");
+    let doc = document(items);
+    let restored: ReadDocument = serde_json::from_str(&encode(&doc, Format::Json)).unwrap();
+    assert_eq!(restored, doc);
+}
+
+fn selected_fragment(text: &str, start: u64) -> Record {
+    selected_fragment_in(
+        polylogue_model::Reference::Message(MessageId::parse("test:session:message").unwrap()),
+        text,
+        start,
+    )
+}
+fn selected_fragment_in(container: polylogue_model::Reference, text: &str, start: u64) -> Record {
+    use polylogue_model::{
+        BlobHash, Reference, SpanUnit,
+        bundle::{
+            TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord,
+            TextSourceVersion, TextSpanOrigin,
+        },
+    };
+    let end = start + text.len() as u64;
+    let span = Reference::Span {
+        container: Box::new(container.clone()),
+        unit: SpanUnit::Bytes,
+        start,
+        end,
+    };
+    Record::TextFragment(Box::new(TextFragmentRecord {
+        reference: span.to_string(),
+        commit: 7,
+        fragment: TextFragment {
+            container: container.clone(),
+            source_version: TextSourceVersion::ContentHash {
+                record: container,
+                hash: BlobHash::of(b"retained whole-source claim"),
+            },
+            coverage: TextCoverage {
+                start,
+                end,
+                total_bytes: None,
+            },
+            text: text.into(),
+            text_hash: BlobHash::of(text.as_bytes()),
+            provenance: TextFragmentProvenance {
+                spans: vec![TextSpanOrigin {
+                    reference: span,
+                    start,
+                    end,
+                }],
+                sources: vec![],
+                imports: vec![],
+            },
+        },
+    }))
+}
+fn known_fragment_origin(kind: polylogue_model::BlockKind, start: u64, end: u64) -> FragmentOrigin {
+    FragmentOrigin {
+        message: Some(FragmentMessageOrigin {
+            role: Role::Assistant,
+            prompt_kind: None,
+        }),
+        bodies: vec![FragmentBodyOrigin { start, end, kind }],
+    }
+}
+#[test]
+fn partial_source_claims_do_not_invent_message_roles_or_dialogue_visibility() {
+    use polylogue_model::BlockKind;
+    let record = selected_fragment("<script>\u{9b}quote</script>", 9);
+    record.validate().unwrap();
+    let claimed = known_fragment_origin(BlockKind::Text, 9, 42);
+    for origin in [
+        ValueState::default(),
+        ValueState::Unavailable {
+            reason: "source unavailable".into(),
+        },
+        ValueState::Partial {
+            value: claimed.clone(),
+            unknown: 1,
+        },
+        ValueState::Inferred {
+            value: claimed.clone(),
+        },
+        ValueState::Stale {
+            value: Some(claimed.clone()),
+            reason: "source changed".into(),
+        },
+        ValueState::Inherited { value: claimed },
+    ] {
+        let evidence = ProjectionEvidence {
+            fragment_origin: origin.clone(),
+            ..Default::default()
+        };
+        let projected = project_record(record.clone(), &ReadOptions::default(), &evidence)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projected, record);
+        let items = layout(projected, &ReadOptions::default(), &evidence);
+        assert_eq!(items.len(), 1);
+        assert!(
+            matches!(&items[0].kind,ItemKind::TextFragment {origin:actual,..} if actual==&origin)
+        );
+        let doc = document(items);
+        let encoded = encode(&doc, Format::Json);
+        assert_eq!(serde_json::from_str::<ReadDocument>(&encoded).unwrap(), doc);
+        let parts: Vec<ReadPart> = encode(&doc, Format::Jsonl)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(parts, doc.clone().into_parts().collect::<Vec<_>>());
+        let html = encode(&doc, Format::Html);
+        assert!(html.contains("Selected source text"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(encode(&doc, Format::Markdown).contains("Source classification:"));
+        for view in [View::Dialogue, View::Context] {
+            assert!(matches!(
+                project_record(
+                    record.clone(),
+                    &ReadOptions {
+                        view,
+                        ..Default::default()
+                    },
+                    &evidence
+                ),
+                Err(ReadError::MissingEvidence { .. })
+            ));
+        }
+    }
+}
+#[test]
+fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutation() {
+    use polylogue_model::BlockKind;
+    let record = selected_fragment("selected", 12);
+    for (kind, option) in [
+        (BlockKind::Thinking, "thinking"),
+        (BlockKind::ToolResult, "tools"),
+    ] {
+        let evidence = ProjectionEvidence {
+            fragment_origin: ValueState::known(known_fragment_origin(kind, 10, 30)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            project_record(record.clone(), &ReadOptions::default(), &evidence),
+            Err(ReadError::RequiredExpansion { .. })
+        ));
+        assert!(matches!(
+            project_record(
+                record.clone(),
+                &ReadOptions {
+                    view: View::Dialogue,
+                    ..Default::default()
+                },
+                &evidence
+            ),
+            Err(ReadError::UnsupportedTarget { .. })
+        ));
+        let mut full = ReadOptions::default();
+        if option == "thinking" {
+            full.thinking = Some(Expansion::Full)
+        } else {
+            full.tools = Some(Expansion::Full)
+        };
+        assert_eq!(
+            project_record(record.clone(), &full, &evidence).unwrap(),
+            Some(record.clone())
+        );
+        let items = layout(record.clone(), &full, &evidence);
+        assert!(matches!(&items[0].kind, ItemKind::TextFragment { .. }));
+    }
+    let text = ProjectionEvidence {
+        fragment_origin: ValueState::known(known_fragment_origin(BlockKind::Text, 10, 30)),
+        ..Default::default()
+    };
+    assert_eq!(
+        project_record(
+            record.clone(),
+            &ReadOptions {
+                view: View::Dialogue,
+                ..Default::default()
+            },
+            &text
+        )
+        .unwrap(),
+        Some(record.clone())
+    );
+    let mut harness = text.clone();
+    let ValueState::Value { value: origin } = &mut harness.fragment_origin else {
+        panic!()
+    };
+    origin.message.as_mut().unwrap().prompt_kind = Some(polylogue_model::PromptKind::Harness);
+    assert!(matches!(
+        project_record(record.clone(), &ReadOptions::default(), &harness),
+        Err(ReadError::RequiredExpansion { .. })
+    ));
+    assert_eq!(
+        project_record(
+            record.clone(),
+            &ReadOptions {
+                harness: Some(Expansion::Full),
+                ..Default::default()
+            },
+            &harness
+        )
+        .unwrap(),
+        Some(record.clone())
+    );
+    assert!(matches!(
+        project_record(
+            record.clone(),
+            &ReadOptions {
+                view: View::Dialogue,
+                ..Default::default()
+            },
+            &harness
+        ),
+        Err(ReadError::UnsupportedTarget { .. })
+    ));
+    let record = selected_fragment_in(
+        polylogue_model::Reference::Document(
+            polylogue_model::DocumentId::parse("test:document").unwrap(),
+        ),
+        "selected",
+        12,
+    );
+    let mut document = text;
+    let ValueState::Value { value: origin } = &mut document.fragment_origin else {
+        panic!()
+    };
+    origin.message = None;
+    assert!(matches!(
+        project_record(
+            record,
+            &ReadOptions {
+                view: View::Dialogue,
+                ..Default::default()
+            },
+            &document
+        ),
+        Err(ReadError::UnsupportedTarget { .. })
+    ));
+}
+#[test]
+fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() {
+    use polylogue_model::BlockKind;
+    let record = selected_fragment("\n\n", 2);
+    let mut origin = FragmentOrigin {
+        message: Some(FragmentMessageOrigin {
+            role: Role::Assistant,
+            prompt_kind: None,
+        }),
+        bodies: vec![
+            FragmentBodyOrigin {
+                start: 0,
+                end: 2,
+                kind: BlockKind::Text,
+            },
+            FragmentBodyOrigin {
+                start: 4,
+                end: 9,
+                kind: BlockKind::Thinking,
+            },
+        ],
+    };
+    let dialogue = ReadOptions {
+        view: View::Dialogue,
+        ..Default::default()
+    };
+    assert_eq!(
+        project_record(
+            record.clone(),
+            &dialogue,
+            &ProjectionEvidence {
+                fragment_origin: ValueState::known(origin.clone()),
+                ..Default::default()
+            }
+        )
+        .unwrap(),
+        Some(record.clone())
+    );
+    origin.bodies[1].start = 5;
+    assert!(matches!(
+        project_record(
+            record,
+            &dialogue,
+            &ProjectionEvidence {
+                fragment_origin: ValueState::known(origin),
+                ..Default::default()
+            }
+        ),
+        Err(ReadError::InvalidEvidence(_))
+    ));
+    let empty = selected_fragment_in(
+        polylogue_model::Reference::Document(
+            polylogue_model::DocumentId::parse("test:empty").unwrap(),
+        ),
+        "",
+        0,
+    );
+    let bodyless = ProjectionEvidence {
+        fragment_origin: ValueState::known(FragmentOrigin {
+            message: None,
+            bodies: vec![],
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        project_record(empty.clone(), &ReadOptions::default(), &bodyless).unwrap(),
+        Some(empty.clone())
+    );
+    assert!(matches!(
+        project_record(empty, &dialogue, &bodyless),
+        Err(ReadError::UnsupportedTarget { .. })
+    ));
 }

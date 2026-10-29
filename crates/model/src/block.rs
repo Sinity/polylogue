@@ -63,7 +63,8 @@ pub enum Block {
 
 /// A block's variant without its contents: what the index stores as the
 /// block's kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum BlockKind {
     Text,
     Thinking,
