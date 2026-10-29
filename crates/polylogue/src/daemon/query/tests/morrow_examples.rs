@@ -1,4 +1,3 @@
-use super::fixture_clock;
 //! The query examples over the Morrow archive built by the real
 //! loop and import (`examples/morrow/expected/main/expected.json`).
 //!
@@ -7,6 +6,7 @@ use super::fixture_clock;
 //! a listed example that starts to match fails the test, so the list is
 //! removed from as features land.
 
+use super::fixture_clock;
 use crate::daemon::query::*;
 use polylogue_testkit::{Morrow, Set, morrow_dir, short};
 use std::collections::BTreeMap;
