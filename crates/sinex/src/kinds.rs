@@ -385,17 +385,8 @@ pub fn definition_hash(producer: &str) -> String {
 
 pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
     use sinex_model::EventPayload;
-    let mut declarations = vec![
-        Session::declaration(),
-        Message::declaration(),
-        ToolCall::declaration(),
-        Turn::declaration(),
-        Delivery::declaration(),
-        DeliveryOutcome::declaration(),
-        Note::declaration(),
-        Setting::declaration(),
-        KeptResult::declaration(),
-    ];
+    let mut declarations = crate::products::declarations(producer);
+    declarations.extend([ToolCall::declaration(), Turn::declaration()]);
     for declaration in &mut declarations {
         declaration.declaring_producer = producer.to_string();
         declaration.normalization = sinex_model::kinds::Normalization::Json;

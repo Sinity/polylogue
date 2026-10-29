@@ -46,7 +46,7 @@ impl Replay<'_> {
 
     /// `batches` is the completed parse of every material in `selection`.
     /// An empty replacement is valid only when the completed parse has no
-    /// readings in this scope. The caller updates its index after this returns.
+    /// readings in this scope. Only the confirmed consumer updates the index.
     /// A different parse or build needs a new operation.
     pub fn sequence(
         &mut self,
@@ -62,7 +62,7 @@ impl Replay<'_> {
                     .blob
                     .strip_prefix("blake3:")
                     .ok_or_else(|| Error::Invalid("invalid material digest".into()))?;
-                let extents = crate::parts::decode_extents(&material.extents)?;
+                let extents = crate::material::decode_extents(&material.extents)?;
                 if extents.is_empty()
                     || extents.iter().try_fold(0u64, |length, extent| {
                         length.checked_add(extent.decoded_len)
@@ -94,7 +94,7 @@ impl Replay<'_> {
                     })
                     .collect(),
                 parser_build: build_id()?,
-                parser_version: crate::parts::parser_version().to_string(),
+                parser_version: crate::material::parser_version().to_string(),
                 expected_live_hash: selection.expected_live_hash,
                 batches,
             };

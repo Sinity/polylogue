@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 schemars = "1"
+base64.workspace = true
+tempfile.workspace = true
 blake3.workspace = true
 polylogue-store.workspace = true
 polylogue-model.workspace = true
@@ -26,7 +28,6 @@ thiserror.workspace = true
 toml = "0.9"
 
 [dev-dependencies]
-tempfile.workspace = true
 polylogue-testkit.workspace = true
 polylogue-engine.workspace = true
 devkit = { workspace = true, features = ["pg", "nats"] }

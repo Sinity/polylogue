@@ -4,11 +4,11 @@
 //! the frame's directory under Sinex's store root on this host; Sinex
 //! stores them before it records the frame.
 use crate::{Config, Error, Result};
+mod confirmed;
 use async_nats::jetstream;
 use futures_util::StreamExt;
 use sinex_protocol::{
-    Acknowledgment, Ingress, Materials, ProducerHello, ProducerMaterial, ProducerWelcome,
-    RecordedQuery, Subjects,
+    Acknowledgment, Ingress, ProducerHello, ProducerWelcome, RecordedQuery, Subjects,
 };
 use sinex_transport::frame_bytes;
 use std::collections::HashMap;
@@ -22,9 +22,6 @@ const ACKNOWLEDGMENT_WAIT: Duration = Duration::from_secs(120);
 /// Room left in a NATS message for its subject and headers.
 const MESSAGE_OVERHEAD: usize = 4096;
 
-/// How many held materials one page asks for.
-const PAGE: u32 = 1000;
-
 pub(crate) struct Client {
     client: async_nats::Client,
     subjects: Subjects,
@@ -32,6 +29,10 @@ pub(crate) struct Client {
     max_message: usize,
     pub(crate) store_root: PathBuf,
     acknowledgments: async_nats::Subscriber,
+    consumer_name: String,
+    consumer: Option<async_nats::jetstream::consumer::PullConsumer>,
+    pending: Vec<async_nats::jetstream::Message>,
+    spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
 }
 
 impl Client {
@@ -58,7 +59,11 @@ impl Client {
         serde_json::from_value(value).map_err(Error::Json)
     }
 
-    pub(crate) async fn connect(config: &Config) -> Result<Self> {
+    pub(crate) async fn connect(
+        config: &Config,
+        spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
+        consumer_name: String,
+    ) -> Result<Self> {
         let options = match config.credentials()? {
             Some((user, password)) => {
                 async_nats::ConnectOptions::with_user_and_password(user, password)
@@ -100,6 +105,10 @@ impl Client {
             max_message,
             store_root: config.store.clone(),
             acknowledgments,
+            consumer_name,
+            consumer: None,
+            pending: Vec::new(),
+            spool,
         };
         let declarations = crate::kinds::declarations(&config.producer);
         let hashes: Vec<_> = declarations
@@ -150,27 +159,6 @@ impl Client {
         Ok(out)
     }
 
-    /// One page of the materials Sinex holds from this producer, after the
-    /// frame numbered `after`.
-    pub(crate) async fn materials(&self, after: i64) -> Result<Vec<ProducerMaterial>> {
-        let reply = self
-            .client
-            .request(
-                self.subjects.materials(&self.producer),
-                serde_json::to_vec(&Materials { after, limit: PAGE })?.into(),
-            )
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let value: serde_json::Value = serde_json::from_slice(&reply.payload)?;
-        if let Some(refusal) = value.get("refusal") {
-            return Err(Error::Refused {
-                name: "materials".into(),
-                reason: refusal.to_string(),
-            });
-        }
-        Ok(serde_json::from_value(value)?)
-    }
-
     /// Writes `bytes` (`length` long, named `blob`) to the directory of
     /// the frame `name`.
     pub(crate) fn write_bytes(
@@ -188,6 +176,70 @@ impl Client {
     /// one message travels indirectly. A frame Sinex recorded before is
     /// answered from its record.
     pub(crate) async fn send(&mut self, frame: Ingress) -> Result<Acknowledgment> {
+        let prepared = self
+            .spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .prepare(frame)?;
+        if let Some(acknowledgment) = prepared.acknowledgment {
+            return checked(acknowledgment);
+        }
+        let acknowledgment = self.send_prepared(prepared.frame).await?;
+        self.spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .acknowledge(acknowledgment.clone())?;
+        checked(acknowledgment)
+    }
+
+    /// Resume every original frame after reconnect, in preparation order.
+    pub(crate) async fn retry_prepared(&mut self) -> Result<()> {
+        let prepared = self
+            .spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .prepared()?;
+        for prepared in prepared {
+            if prepared.acknowledgment.is_some() {
+                continue;
+            }
+            let acknowledgment = self.send_prepared(prepared.frame).await?;
+            let refused = acknowledgment.refusal.clone();
+            let frame = acknowledgment.frame.clone();
+            self.spool
+                .lock()
+                .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+                .acknowledge(acknowledgment)?;
+            if let Some(reason) = refused {
+                return Err(Error::Refused {
+                    name: frame,
+                    reason,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_prepared(&mut self, frame: Ingress) -> Result<Acknowledgment> {
+        if let Ingress::Material { material, .. } = &frame {
+            let bytes = {
+                let spool = self
+                    .spool
+                    .lock()
+                    .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
+                if spool
+                    .get(frame.frame())?
+                    .is_some_and(|prepared| prepared.body)
+                {
+                    Some(spool.body(frame.frame())?)
+                } else {
+                    None
+                }
+            };
+            if let Some(bytes) = bytes {
+                self.write_bytes(frame.frame(), &material.blob, material.length, bytes)?;
+            }
+        }
         let body = serde_json::to_vec(&frame)?;
         if body.len().saturating_add(MESSAGE_OVERHEAD) <= self.max_message {
             return self.transmit(frame.frame(), body).await;
@@ -222,7 +274,7 @@ impl Client {
                 .ok_or_else(|| Error::Unreachable("acknowledgments closed".into()))?;
             let acknowledgment: Acknowledgment = serde_json::from_slice(&message.payload)?;
             if acknowledgment.frame == name {
-                return checked(acknowledgment);
+                return Ok(acknowledgment);
             }
             // A body Sinex could not read as a frame is refused under no
             // name; one frame is in flight at a time, so it is this one.
