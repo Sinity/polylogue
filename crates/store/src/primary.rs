@@ -2,8 +2,9 @@
 pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
-    CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan, ConfirmedSource, PendingCheckpoint,
-    PendingSource, RawRange, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus,
+    AcquisitionReceipt, AcquisitionRoute, CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan,
+    ConfirmedSource, PendingCheckpoint, PendingSource, RawRange, SourceBasis, SourceSelector,
+    SourceSnapshot, SourceStatus,
 };
 pub mod products;
 pub(crate) mod projection;

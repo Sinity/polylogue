@@ -5,6 +5,31 @@ use crate::{Result, StoreError};
 use polylogue_model::batch::ParserCheckpoint;
 use serde::{Deserialize, Serialize};
 
+/// Receiver-minted IO evidence. Native field observation does not identify
+/// Polylogue as its producer; producer proof is a separate post-emit receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionRoute {
+    NativeCapture,
+    ExplicitImport,
+}
+
+/// Original body acquisition, before overlap trimming and final source chain
+/// assignment. Historical absence is unknown. Payload declarations cannot mint it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcquisitionReceipt {
+    pub version: u32,
+    pub route: AcquisitionRoute,
+    pub source: SourceSelector,
+    pub range: RawRange,
+    pub hash: polylogue_model::BlobHash,
+    pub observed_at: polylogue_model::Timestamp,
+}
+impl AcquisitionReceipt {
+    pub const VERSION: u32 = 1;
+}
+
 /// The declared input format and exact native location. Display paths and
 /// host labels cannot identify a filesystem observation.
 #[derive(
