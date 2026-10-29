@@ -7,6 +7,25 @@ use serde::{Deserialize, Serialize};
 pub const FORMAT: &str = "polylogue-bundle";
 pub const VERSION: u32 = 1;
 
+/// One reader's immutable context. Streaming batches share this snapshot;
+/// delivery computes record counts without collecting the complete selection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSnapshot {
+    pub query: String,
+    pub query_text: String,
+    pub ran_at: Timestamp,
+    pub read_at: ChangePosition,
+    pub caught_up: bool,
+    pub currency: crate::currency::IndexCurrency,
+    pub enabled_variants: Vec<String>,
+    pub author: Author,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incomplete: Vec<String>,
+}
+
 /// The primary manifest stays small. A directory package names a streamed
 /// inventory, rather than collecting all members in the manifest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -19,12 +38,19 @@ pub struct Manifest {
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
     pub caught_up: bool,
+    pub currency: crate::currency::IndexCurrency,
     pub counts: Counts,
     pub flags: Flags,
     pub enabled_variants: Vec<String>,
     pub author: Author,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incomplete: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inventory: Option<FileDescriptor>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<crate::read::Coverage>,
 }
 
 #[derive(
@@ -47,10 +73,8 @@ pub struct Counts {
 #[serde(deny_unknown_fields)]
 pub struct Flags {
     pub format: Format,
-    pub view: crate::read::View,
     pub with_blobs: bool,
-    pub inherited: bool,
-    pub assertions: bool,
+    pub read: crate::read::ReadOptions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -149,6 +173,8 @@ pub struct VariantRecord {
     pub reference: String,
     pub commit: u64,
     pub variant: crate::Variant,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::authored::ImportAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -158,6 +184,8 @@ pub struct VariantPartRecord {
     pub reference: String,
     pub commit: u64,
     pub part: crate::VariantPart,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<crate::authored::ImportAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -174,9 +202,9 @@ pub struct AuthoredRecord {
 /// A stream starts with exactly one manifest. All remaining values are
 /// independently staged and validated before the receiving archive writes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "record", content = "data", rename_all = "snake_case")]
+#[serde(tag = "record", content = "data", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Record {
-    Manifest(Manifest),
+    Manifest(Box<Manifest>),
     Session(SessionRecord),
     Message(Box<MessageRecord>),
     Event(InputEventRecord),
@@ -308,6 +336,8 @@ pub enum BundleError {
     InvalidQuery,
     #[error("bundle read position is invalid")]
     InvalidPosition,
+    #[error("invalid bundle read options: {0}")]
+    ReadOptions(String),
     #[error("bundle member path is not a canonical relative path")]
     InvalidPath,
     #[error("bundle record reference does not match its canonical identity")]
@@ -376,6 +406,32 @@ impl InputEventRecord {
 }
 
 impl Manifest {
+    pub fn from_snapshot(
+        snapshot: ReadSnapshot,
+        counts: Counts,
+        flags: Flags,
+        inventory: Option<FileDescriptor>,
+    ) -> Self {
+        Self {
+            format: FORMAT.into(),
+            version: VERSION,
+            query: snapshot.query,
+            query_text: snapshot.query_text,
+            ran_at: snapshot.ran_at,
+            read_at: snapshot.read_at,
+            caught_up: snapshot.caught_up,
+            currency: snapshot.currency,
+            enabled_variants: snapshot.enabled_variants,
+            author: snapshot.author,
+            notes: snapshot.notes,
+            incomplete: snapshot.incomplete,
+            counts,
+            flags,
+            inventory,
+            coverage: Vec::new(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), BundleError> {
         if self.format != FORMAT {
             return Err(BundleError::WrongFormat(self.format.clone()));
@@ -397,6 +453,10 @@ impl Manifest {
         {
             return Err(BundleError::InvalidPosition);
         }
+        self.flags
+            .read
+            .validate()
+            .map_err(|error| BundleError::ReadOptions(error.to_string()))?;
         if let Some(inventory) = &self.inventory {
             inventory.validate()?;
         }

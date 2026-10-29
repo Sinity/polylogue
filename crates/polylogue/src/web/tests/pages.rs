@@ -1,3 +1,12 @@
+fn feed_frames(text: &str) -> Vec<serde_json::Value> {
+    command_surface::SseDecoder::new()
+        .push(text.as_bytes())
+        .unwrap()
+        .into_iter()
+        .map(|event| serde_json::from_str(&event.data).unwrap())
+        .collect()
+}
+
 use super::*;
 
 #[test]
@@ -103,14 +112,11 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(headers[header::CONTENT_TYPE], "application/x-ndjson");
-        let lines = body
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(lines.first().unwrap()["data"]["type"], "begin");
-        assert_eq!(lines.last().unwrap()["data"]["type"], "complete");
-        let position = lines.last().unwrap()["data"]["position"].as_str().unwrap();
+        assert_eq!(headers[header::CONTENT_TYPE], "text/event-stream");
+        let lines = feed_frames(&body);
+        assert_eq!(lines.first().unwrap()["type"], "begin");
+        assert_eq!(lines.last().unwrap()["type"], "complete");
+        let position = lines.last().unwrap()["position"].as_str().unwrap();
         let path = format!(
             "/api/v1/changes?since={}",
             polylogue_render::html::encode_path_segment(position)
@@ -156,8 +162,9 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
             authed(get("/api/v1/changes")).body(Body::empty()).unwrap(),
         )
         .await;
-        let last: serde_json::Value = serde_json::from_str(body.lines().last().unwrap()).unwrap();
-        let position = last["data"]["position"].as_str().unwrap();
+        let frames = feed_frames(&body);
+        let last = frames.last().unwrap();
+        let position = last["position"].as_str().unwrap();
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
             "UPDATE meta SET value=?1 WHERE key='generation'",
@@ -182,9 +189,10 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         );
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let begin: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
-        assert_eq!(begin["data"]["generation_changed"], true);
-        assert_eq!(begin["data"]["replacement"], true);
+        let frames = feed_frames(&body);
+        let begin = frames.first().unwrap();
+        assert_eq!(begin["generation_changed"], true);
+        assert_eq!(begin["replacement"], true);
     });
 }
 
@@ -269,14 +277,14 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
 
 #[test]
 fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions() {
-    use polylogue_model::{Author, NewNote, NoteKind, Target};
+    use polylogue_model::{Author, NewNote, NoteKind, Reference};
     let r = reader();
     let note = NewNote {
         kind: NoteKind::Note,
         key: None,
         value: Some("older exact note <text>".into()),
         author: Author::Operator,
-        targets: vec![Target::Session(
+        targets: vec![Reference::Session(
             polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
         )],
         relations: vec![],

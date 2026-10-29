@@ -1,9 +1,9 @@
 //! Warm state: what the daemon keeps between requests so common answers
 //! come without reloading or recomputing.
 //!
-//! - **Vectors**: every vector of the embedding key `near:` ranks by, in
+//! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
 //!   memory, reloaded after a commit stored or removed vectors.
-//! - **Query vectors**: the provider's vector for each recent `near:` text,
+//! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
 //! - **Answers**: recent query pages, by request and read position. A page
@@ -28,16 +28,16 @@
 use crate::embeddings::Provider;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{self, Loaded, Similarity};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long a first page is answered again from memory.
 pub const FIRST_PAGE_FOR: Duration = Duration::from_secs(5);
-/// Recent `near:` texts whose query vectors are kept.
+/// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
 /// Recent answers kept.
 const ANSWERS: usize = 128;
@@ -88,17 +88,22 @@ struct Answer {
     value: Value,
 }
 
-/// Values completion offers for a query being typed.
-#[derive(Debug, Clone, Default, Serialize)]
+/// One immutable vocabulary snapshot. Observed values are suggestions, not
+/// closed-set declarations: only the execution registry declares closed sets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Completion {
-    pub units: Vec<String>,
-    /// `name:` for every field of every unit.
-    pub fields: Vec<String>,
-    /// `field:value` for the values seen: repositories, origins,
-    /// harnesses, tags, saved queries.
-    pub values: Vec<String>,
-    /// The most recently active sessions, newest first, with titles.
+    pub catalog: query_language::catalog::Catalog,
+    pub values: BTreeMap<String, Vec<String>>,
     pub sessions: Vec<(String, String)>,
+}
+impl Default for Completion {
+    fn default() -> Self {
+        Self {
+            catalog: polylogue_query::catalog::catalog(&[], &[]),
+            values: BTreeMap::new(),
+            sessions: vec![],
+        }
+    }
 }
 
 /// Hits and misses since the daemon started, for `status`.
@@ -166,7 +171,7 @@ fn read_lock<'a, T>(
 }
 
 impl Warm {
-    /// The loaded vectors of the embedding key `near:` ranks by, loading
+    /// The loaded vectors of the embedding key `similar:` ranks by, loading
     /// them when absent or stale. `None`: no vectors for this provider.
     pub fn vectors(
         &self,
@@ -192,7 +197,7 @@ impl Warm {
         Ok(Some(loaded))
     }
 
-    /// Every stored text's similarity to `text`, for `near:`.
+    /// Every stored text's similarity to `text`, for `similar:`.
     pub fn similarity(
         &self,
         reader: &Reader<'_>,
@@ -413,18 +418,21 @@ impl Warm {
     }
 
     /// What `status` shows.
-    pub fn summary(&self) -> Value {
-        let vectors = self.vectors.lock().ok().and_then(|v| {
-            v.as_ref()
-                .map(|l| serde_json::json!({"key": l.key, "vectors": l.vectors()}))
+    pub fn summary(&self) -> crate::protocol::status::Warm {
+        use crate::protocol::status::{Vectors, Warm};
+        let vectors = self.vectors.lock().ok().and_then(|vectors| {
+            vectors.as_ref().map(|loaded| Vectors {
+                key: loaded.key.clone(),
+                vectors: loaded.vectors(),
+            })
         });
-        serde_json::json!({
-            "vectors": vectors,
-            "vector_loads": self.counts.vector_loads.load(Ordering::Relaxed),
-            "query_vectors_reused": self.counts.query_vectors_reused.load(Ordering::Relaxed),
-            "answers_reused": self.counts.answers_reused.load(Ordering::Relaxed),
-            "answers_computed": self.counts.answers_computed.load(Ordering::Relaxed),
-        })
+        Warm {
+            vectors,
+            vector_loads: self.counts.vector_loads.load(Ordering::Relaxed),
+            query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),
+            answers_reused: self.counts.answers_reused.load(Ordering::Relaxed),
+            answers_computed: self.counts.answers_computed.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -441,37 +449,26 @@ fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
 
 /// Values completion offers, read from the index and the archive.
 fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreError> {
-    use polylogue_query::ast::Unit;
+    let origins = polylogue_sources::origin::ORIGINS
+        .iter()
+        .map(|origin| origin.name.to_owned())
+        .collect::<Vec<_>>();
     let mut data = Completion {
-        units: Unit::all().map(|u| u.name().to_owned()).collect(),
+        catalog: polylogue_query::catalog::catalog(&origins, &crate::commands::command_words()),
         ..Completion::default()
     };
-    for unit in Unit::all() {
-        for name in polylogue_query::fields::names(unit) {
-            let field = format!("{name}:");
-            if !data.fields.contains(&field) {
-                data.fields.push(field);
-            }
-        }
-    }
-    data.fields.sort();
     let column = |sql: &str,
                   field: &str,
-                  out: &mut Vec<String>|
+                  out: &mut BTreeMap<String, Vec<String>>|
      -> Result<(), polylogue_store::StoreError> {
         for row in reader.query(sql, &[])? {
             if let Some(v) = row["v"].as_str().filter(|v| !v.is_empty()) {
-                out.push(format!("{field}:{}", quoted(v)));
+                out.entry(field.into()).or_default().push(v.to_owned());
             }
         }
         Ok(())
     };
-    let mut values = Vec::new();
-    for field in polylogue_query::fields::FIELDS {
-        for value in field.values.into_iter().flatten() {
-            values.push(format!("{}:{}", field.name, quoted(value)));
-        }
-    }
+    let mut values = BTreeMap::new();
     column(
         "SELECT DISTINCT model AS v FROM message WHERE model IS NOT NULL ORDER BY model",
         "model",
@@ -508,13 +505,16 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
         &mut values,
     )?;
     for origin in polylogue_sources::origin::ORIGINS {
-        values.push(format!("origin:{}", origin.name));
+        values
+            .entry("origin".into())
+            .or_default()
+            .push(origin.name.into());
     }
     data.values = values;
     for row in reader.query(
         "SELECT id, coalesce(title, derived_title, '') AS title FROM session \
          WHERE kind = 'main' AND stub = 0 \
-         ORDER BY last_activity_at IS NULL, last_activity_at DESC LIMIT 50",
+         ORDER BY last_activity_at IS NULL, last_activity_at DESC",
         &[],
     )? {
         if let Some(id) = row["id"].as_str() {
@@ -527,73 +527,92 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
     Ok(data)
 }
 
-/// A value as the query language reads it back: bare when it is one plain
-/// word, else in double quotes.
-fn quoted(v: &str) -> String {
-    if v.chars()
-        .all(|c| c.is_alphanumeric() || "-_./@".contains(c))
-    {
-        v.to_owned()
-    } else {
-        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+/// Complete the full source at a byte offset using the shared grammar. Only
+/// this temporary completion catalog receives observed values.
+pub fn complete_at(
+    data: &Completion,
+    text: &str,
+    position: usize,
+) -> Vec<query_language::complete::Completion> {
+    let mut catalog = data.catalog.clone();
+    for unit in &mut catalog.units {
+        for (id, _) in &data.sessions {
+            if let Some((origin, _)) = id.split_once(':')
+                && !unit.fields.iter().any(|field| field.name == origin)
+            {
+                unit.fields.push(query_language::catalog::Field {
+                    name: origin.into(),
+                    kind: query_language::catalog::FieldKind::Reference,
+                    ..Default::default()
+                });
+            }
+        }
     }
+    for unit in &mut catalog.units {
+        for field in &mut unit.fields {
+            let short = field.name.strip_prefix("session.").unwrap_or(&field.name);
+            if let Some(values) = data.values.get(short) {
+                for value in values {
+                    if !value.chars().any(char::is_control) && !field.values.contains(value) {
+                        field.values.push(value.clone());
+                    }
+                }
+            }
+            for (id, _) in &data.sessions {
+                if let Some((origin, native)) = id.split_once(':')
+                    && field.name == origin
+                    && !id.chars().any(char::is_control)
+                {
+                    field.values.push(native.into());
+                }
+            }
+        }
+    }
+    // A complete reference is one legal leading atom. These names are used
+    // only for suggestions and never become the parser's command vocabulary.
+    for (id, _) in &data.sessions {
+        if !id.chars().any(char::is_control) {
+            catalog.commands.push(id.clone());
+        }
+    }
+    let mut candidates = query_language::complete::complete(text, position, &catalog);
+    for candidate in &mut candidates {
+        let completed = format!(
+            "{}{}{}",
+            &text[..candidate.replace.start],
+            candidate.value,
+            &text[candidate.replace.end..]
+        );
+        if let Some((_, title)) = data.sessions.iter().find(|(id, _)| id == &completed) {
+            candidate.kind = query_language::complete::CompletionKind::Value;
+            candidate.help = polylogue_render::terminal::escape(title);
+        } else {
+            candidate.help = polylogue_render::terminal::escape(&candidate.help);
+        }
+    }
+    candidates.retain(|candidate| {
+        !candidate.value.chars().any(char::is_control)
+            && polylogue_render::terminal::escape(&candidate.value) == candidate.value
+    });
+    candidates
 }
 
-/// The completions of the word being typed: field names, values of the
-/// field it names, unit names and session IDs, each starting with it.
-pub fn completions(data: &Completion, word: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut add = |value: &str, help: &str| {
-        let literal_match = value.split_once(':').zip(word.split_once(':')).is_some_and(
-            |((field, value), (wanted, prefix))| {
-                field == wanted
-                    && !prefix.starts_with('"')
-                    && value
-                        .strip_prefix('"')
-                        .and_then(|v| v.strip_suffix('"'))
-                        .is_some_and(|literal| {
-                            let mut chars = literal.chars();
-                            let mut decoded = String::new();
-                            while let Some(c) = chars.next() {
-                                if c == '\\' {
-                                    if let Some(c) = chars.next() {
-                                        decoded.push(c);
-                                    }
-                                } else {
-                                    decoded.push(c);
-                                }
-                            }
-                            decoded.starts_with(prefix)
-                        })
-            },
-        );
-        if (value.starts_with(word) || literal_match)
-            && !value.chars().any(char::is_control)
-            && polylogue_render::terminal::escape(value) == value
-            && !out.iter().any(|(v, _)| v == value)
-        {
-            out.push((value.to_owned(), polylogue_render::terminal::escape(help)));
-        }
-    };
-    if word.contains(':') {
-        for v in &data.values {
-            add(v, "");
-        }
-        for (id, title) in &data.sessions {
-            add(id, title);
-        }
-    } else {
-        for u in &data.units {
-            add(u, "unit");
-        }
-        for f in &data.fields {
-            add(f, "field");
-        }
-        for (id, title) in &data.sessions {
-            add(id, title);
-        }
-    }
-    out
+/// The command's string candidates are replacements applied to its full text.
+pub fn completions(data: &Completion, text: &str) -> Vec<(String, String)> {
+    complete_at(data, text, text.len())
+        .into_iter()
+        .map(|candidate| {
+            (
+                format!(
+                    "{}{}{}",
+                    &text[..candidate.replace.start],
+                    candidate.value,
+                    &text[candidate.replace.end..]
+                ),
+                candidate.help,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

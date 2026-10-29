@@ -106,21 +106,21 @@ pub enum Cli {
     NoSubcommand,
 }
 
-pub type StreamHandler = fn(
+pub type StreamProducer = fn(
     &Request,
     &crate::daemon::service::Daemon,
-    Option<crate::daemon::service::Cleaner>,
-) -> Option<Result<std::fs::File, crate::daemon::Response>>;
+    &mut dyn std::io::Write,
+) -> Option<Result<(), crate::daemon::Response>>;
 
 #[derive(Clone, Copy)]
 pub enum Action {
     /// Sent to the daemon as the request this builds.
     Request(fn(&Command, &Values, &Caller) -> Result<Request, String>),
-    /// A finite stream with shared preparation and command-line delivery.
+    /// A finite stream produced on the thread that owns its reader.
     Stream {
         build: fn(&Command, &Values, &Caller) -> Result<Request, String>,
-        prepare: StreamHandler,
-        cli: fn(&Request, Option<std::time::Duration>) -> ExitCode,
+        produce: StreamProducer,
+        cli: fn(&Values, &Request, Option<std::time::Duration>) -> ExitCode,
     },
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
@@ -128,6 +128,13 @@ pub enum Action {
 
 #[derive(Clone, Copy)]
 pub struct Command {
+    pub reason: &'static str,
+    pub latency: command_surface::LatencyClass,
+    pub failures: &'static [command_surface::FailureKind],
+    pub register: Option<
+        fn(std::sync::Arc<crate::daemon::service::Daemon>, &mut command_surface::OperationTable),
+    >,
+    pub typed_schemas: Option<fn() -> (Value, Value)>,
     /// The command-line words (`note add`); the MCP tool joins them with
     /// `_`, the HTTP route with `/`.
     pub name: &'static str,
@@ -295,6 +302,11 @@ const HOOKS_ARGS: &[Arg] = &[
 /// A command on the command line only, sent to the daemon unless its
 /// action is local.
 const CLI: Command = Command {
+    reason: "",
+    latency: command_surface::LatencyClass::Local,
+    failures: &command_surface::FailureKind::ALL,
+    register: None,
+    typed_schemas: None,
     name: "",
     help: "",
     args: &[],
@@ -310,7 +322,7 @@ const CLI: Command = Command {
 pub const GROUPS: &[Group] = &[
     Group {
         name: "schema",
-        help: "Offline structure and counts over explicitly selected stored revisions",
+        help: "Structure, counts and unread paths from stored revisions",
     },
     Group {
         name: "demo",
@@ -341,6 +353,23 @@ pub const GROUPS: &[Group] = &[
         help: "Capture a web chat's older conversations through the browser extension",
     },
 ];
+
+macro_rules! typed_command {
+    ($marker:ident, $arguments:ty, $answer:ty, { name: $name:literal, $($fields:tt)* }) => {{
+        struct $marker;
+        impl crate::protocol::operations::CommandType for $marker {
+            type Arguments = $arguments;
+            type Answer = $answer;
+            const NAME: &'static str = $name;
+        }
+        Command {
+            name: $name,
+            register: Some(crate::protocol::operations::register::<$marker>),
+            typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
+            $($fields)*
+        }
+    }};
+}
 
 /// Every command, in the order help lists them: the written ones, with a
 /// `measure NAME` for each measurement after `setting`.
@@ -407,48 +436,72 @@ fn query_help() -> &'static str {
 }
 
 const WRITTEN: &[Command] = &[
-    Command {
+    typed_command!(SchemaInferCommand, crate::protocol::schema::Infer, crate::daemon::schema::Inference, {
         name: "schema infer",
-        help: "Observe selected stored inputs without ingestion; dynamic map keys become *",
+        reason: "Observe stored wire structure that parsed query rows cannot reconstruct",
+        latency: command_surface::LatencyClass::Local,
+        help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
         args: &[
-            pos("origin", Kind::Text, "The origin declaration"),
-            Arg {
-                required: true,
-                ..opt(
-                    "input",
-                    Kind::List,
-                    "Explicit stored input IDs (repeatable)",
-                )
-            },
+            pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
+            opt("all", Kind::Flag, "Select every origin"),
+            opt(
+                "input",
+                Kind::List,
+                "Explicit stored input IDs (repeatable)",
+            ),
+            opt(
+                "since",
+                Kind::Text,
+                "Observation time lower bound, RFC 3339 with an offset",
+            ),
             opt(
                 "revision",
                 Kind::Integer,
-                "An exact revision number (default: latest for each selected input)",
+                "Exact revision (default: latest for each input)",
             ),
             opt(
                 "field",
                 Kind::List,
-                "Force these names into paths even when they look like dynamic keys (repeatable)",
+                "Keep these field names instead of grouping them as dynamic keys",
             ),
-            opt(
-                "archive",
-                Kind::Text,
-                "Archive or primary index directory (default: Polylogue's data directory)",
-            ),
-            opt(
-                "sinex_store",
-                Kind::Text,
-                "Read bytes from this Sinex store using primary-mode typed Store reads",
-            ),
-            opt(
-                "output",
-                Kind::Text,
-                "Write the result only to this explicit path (default: stdout)",
-            ),
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "output",
+                    Kind::Text,
+                    "Write the result to this explicit local path",
+                )
+            },
         ],
-        action: Action::Local(crate::cli::schema::infer),
+        action: Action::Request(requests::schema_infer),
+        output: Some(crate::cli::schema::output),
+        mcp: true,
+        http: true,
         ..CLI
-    },
+    }),
+    typed_command!(SchemaUnreadCommand, crate::protocol::schema::Unread, polylogue_store::wire_shapes::Report, {
+        name: "schema unread",
+        reason: "Expose stored wire paths outside the parser coverage",
+        latency: command_surface::LatencyClass::Read,
+        help: "Show stored wire paths neither read nor kept, with drift and coverage",
+        args: &[
+            pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
+            opt("all", Kind::Flag, "Select every origin"),
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "output",
+                    Kind::Text,
+                    "Write the result to this explicit local path",
+                )
+            },
+        ],
+        action: Action::Request(requests::schema_unread),
+        output: Some(crate::cli::schema::output),
+        mcp: true,
+        http: true,
+        ..CLI
+    }),
     Command {
         name: "schema diff",
         help: "Compare explicit inferred schema files recursively, with sample differences labeled",
@@ -505,15 +558,27 @@ const WRITTEN: &[Command] = &[
         action: Action::Local(local::manual),
         ..CLI
     },
-    Command {
+    typed_command!(QueryOperation, crate::protocol::query::Arguments, crate::protocol::query::Answer, {
         name: "query",
         help: "Run a query",
+        reason: "Execute a question expressed in the archive query language",
+        latency: command_surface::LatencyClass::Search,
+        failures: &[
+            command_surface::FailureKind::InvalidQuery, command_surface::FailureKind::UnknownField,
+            command_surface::FailureKind::BadValue, command_surface::FailureKind::NotAQuery,
+            command_surface::FailureKind::BadRequest, command_surface::FailureKind::Ambiguous,
+            command_surface::FailureKind::StaleCursor, command_surface::FailureKind::NotYetAvailable,
+            command_surface::FailureKind::NotFound, command_surface::FailureKind::Conflict,
+            command_surface::FailureKind::Io, command_surface::FailureKind::Timeout,
+            command_surface::FailureKind::Cancelled,
+        ],
         args: &[
             pos_opt("query", Kind::Rest, "A query, when no subcommand is given"),
             LIMIT,
             WHY,
             CURSOR,
             FIELDS,
+            opt("session", Kind::Text, "The session named by self in the query"),
         ],
         action: Action::Request(requests::query),
         print: print::query,
@@ -521,15 +586,17 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         http: true,
         ..CLI
-    },
-    Command {
+    }),
+    typed_command!(StatusOperation, crate::protocol::status::Arguments, crate::protocol::status::Answer, {
         name: "status",
         help: "What the archive holds and what the daemon is doing",
+        reason: "Orient the caller with measured archive and daemon state",
+        latency: command_surface::LatencyClass::Status,
         action: Action::Request(requests::status),
         mcp: true,
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "daemon",
         help: "Run the daemon in the foreground",
@@ -544,16 +611,18 @@ const WRITTEN: &[Command] = &[
         writes: true,
         ..CLI
     },
-    Command {
+    typed_command!(ListOperation, crate::protocol::query_aliases::List, crate::protocol::query::Answer, {
         name: "list",
         help: "Sessions matching a query, newest first",
+        reason: "List archive rows through the query language",
+        latency: command_surface::LatencyClass::Read,
         args: QUERY_ARGS,
         action: Action::Request(requests::list),
         print: print::query,
         mcp: true,
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "outline",
         help: "Page prompt, tool failure, compaction and branch references without loading message bodies",
@@ -617,7 +686,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "attachment",
-        help: "Describe a message attachment and the stored export files that match it",
+        help: "Read a bounded range of the stored bytes for a message attachment",
         args: &[
             pos("message", Kind::Text, "The message ID"),
             pos("block", Kind::Integer, "Zero-based source block index"),
@@ -626,34 +695,19 @@ const WRITTEN: &[Command] = &[
                 Kind::Integer,
                 "Zero-based attachment within a tool result (default 0)",
             ),
+            opt(
+                "input",
+                Kind::Text,
+                "The stored input to read when several match",
+            ),
+            opt("cursor", Kind::Text, "Continue a previous byte range"),
             Arg {
-                cli_only: true,
-                ..opt(
-                    "input",
-                    Kind::Text,
-                    "The stored input to read the bytes from, when several match",
-                )
-            },
-            Arg {
-                cli_only: true,
                 default: Some("65536"),
-                ..opt("length", Kind::Integer, "Bytes per exact retrieval range")
+                ..opt("length", Kind::Integer, "Bytes per retrieval range")
             },
             Arg {
                 cli_only: true,
-                ..opt(
-                    "reveal",
-                    Kind::Bool,
-                    "Retrieve exact bytes with terminal stdout outside an agent harness",
-                )
-            },
-            Arg {
-                cli_only: true,
-                ..opt(
-                    "out",
-                    Kind::Text,
-                    "Write the verified bytes to FILE; requires --reveal",
-                )
+                ..opt("out", Kind::Text, "Write the verified bytes to FILE")
             },
         ],
         action: Action::Request(requests::attachment),
@@ -925,14 +979,16 @@ const WRITTEN: &[Command] = &[
         print: print::query,
         ..CLI
     },
-    Command {
+    typed_command!(LiveOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
         name: "live",
         help: "Sessions running now and what each is doing: the query `sessions where -live:ended | sort by live_rank, last_event_at desc`",
+        reason: "Show the current running-session view",
+        latency: command_surface::LatencyClass::Read,
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::live),
         print: print::query,
         ..CLI
-    },
+    }),
     Command {
         name: "changes",
         help: "A finite JSON-lines change feed; persist its new position only after applying the complete batch",
@@ -948,15 +1004,17 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Stream {
             build: requests::changes,
-            prepare: crate::daemon::service::change_feed,
+            produce: crate::daemon::service::change_feed,
             cli: crate::cli::changes::run,
         },
         http: true,
         ..CLI
     },
-    Command {
+    typed_command!(NoticesOperation, crate::protocol::query_aliases::Notices, crate::protocol::query::Rows, {
         name: "notices",
         help: "Signal notices and what happened to each: the query `deliveries where sender:signal | sort by at desc`",
+        reason: "Read recorded signal deliveries and their outcomes",
+        latency: command_surface::LatencyClass::Read,
         args: &[
             Arg {
                 default: Some("50"),
@@ -969,7 +1027,7 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::notices),
         print: print::query,
         ..CLI
-    },
+    }),
     Command {
         name: "save",
         help: "Save a query under a name, to run as `query:NAME`, alone or among other conditions. A `$word` standing for a value is a parameter, given when it runs: `query:NAME(word=VALUE)`. Saving a name again revises it",
@@ -1035,14 +1093,16 @@ const WRITTEN: &[Command] = &[
         writes: true,
         ..CLI
     },
-    Command {
+    typed_command!(SqlOperation, crate::protocol::query_aliases::Sql, crate::protocol::query_aliases::SqlRows, {
         name: "sql",
         help: "Read-only SQL. Programs read the views v1_sessions, v1_messages, v1_tool_calls, v1_links and v1_notes, whose names and columns stay; the tables change with the index format",
+        reason: "Run expert read-only queries over the stable archive views",
+        latency: command_surface::LatencyClass::Aggregate,
         args: &[pos("statement", Kind::Text, "One SQL statement")],
         action: Action::Request(requests::sql),
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "embed preview",
         help: "What a build would embed and what it would cost",
@@ -1320,15 +1380,25 @@ const WRITTEN: &[Command] = &[
         http: true,
         ..CLI
     },
-    Command {
+    typed_command!(CompleteCommand, crate::protocol::complete::Arguments, crate::protocol::complete::Answer, {
         name: "complete",
-        help: "Completions for one word of a query: field names, values seen, unit names and recent session IDs",
-        args: &[pos_opt("word", Kind::Text, "The word being typed")],
+        reason: "Complete an unfinished query at its actual cursor position",
+        latency: command_surface::LatencyClass::Completion,
+        help: "Complete a query at a UTF-8 byte offset using its full scope and suffix",
+        args: &[
+            pos_opt("text", Kind::Text, "The full query text"),
+            opt(
+                "position",
+                Kind::Integer,
+                "UTF-8 byte offset of the cursor (default: end of text)",
+            ),
+        ],
         action: Action::Request(requests::complete),
         cli: Cli::Hidden,
         http: true,
+        mcp: true,
         ..CLI
-    },
+    }),
 ];
 
 /// The command called `name` (`note add`).
@@ -1508,6 +1578,13 @@ fn describe(kind: Kind) -> String {
 /// The JSON Schema of a command's arguments, for an MCP tool.
 pub fn schema(command: &Command) -> Map<String, Value> {
     use serde_json::json;
+    if let Some(schemas) = command.typed_schemas {
+        return schemas()
+            .0
+            .as_object()
+            .expect("argument schema is an object")
+            .clone();
+    }
     let mut properties = Map::new();
     for a in command.args_for(Surface::Mcp) {
         let mut p = match a.kind {

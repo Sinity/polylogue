@@ -7,7 +7,12 @@ fn http_disconnect_interrupts_sql_and_releases_the_reader_slot() {
     let daemon = test_daemon::start("HTTP cancellation");
     let _held = daemon.daemon.reads.reader().unwrap();
     let reads = daemon.watch_reads();
-    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
+    let mut server = start_on(
+        Arc::clone(&daemon.daemon),
+        Arc::clone(daemon.operations()),
+        0,
+    )
+    .unwrap();
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     let sql = "WITH%20RECURSIVE%20n(x)%20AS%20(SELECT%201%20UNION%20ALL%20SELECT%20x%2B1%20FROM%20n%20WHERE%20x%3C2000000000)%20SELECT%20count(*)%20FROM%20n";
     write!(stream, "GET /api/v1/sql?statement={sql} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n", server.port, server.token).unwrap();

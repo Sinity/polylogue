@@ -84,3 +84,16 @@ fn linked_html_escapes_targets_and_keeps_links_in_their_own_cells() {
     );
     assert!(html.contains("<td>&lt;same&gt;</td>"), "{html}");
 }
+
+#[test]
+fn row_markup_stays_data_and_link_schemes_are_checked() {
+    let data = json!({"columns":[{"name":"text"}],"rows":[{"text":"<script>stored()</script> [x](javascript:foo)"}],"count":1});
+    let mut out = vec![];
+    render(&data, Format::Markdown, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("<script>"));
+    assert!(text.contains("&lt;script&gt;"));
+    let mut out = vec![];
+    linked_html(&data, &mut out, &|_, _| Some("javascript:stored()".into())).unwrap();
+    assert!(!String::from_utf8(out).unwrap().contains("href="));
+}

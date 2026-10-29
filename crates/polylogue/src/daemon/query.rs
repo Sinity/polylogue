@@ -46,7 +46,7 @@ impl From<QueryError> for Failure {
 pub(crate) mod feed;
 pub(crate) mod notes;
 mod page;
-use page::Cursor;
+use query_language::cursor::CursorSeal;
 
 /// What a request asks besides the text.
 pub struct Ask<'a> {
@@ -61,13 +61,13 @@ pub struct Ask<'a> {
     /// settings ([`logical_day`]).
     pub day: Option<LogicalDay>,
     pub embeddings: bool,
-    /// For `near:`: every stored text's similarity to a text.
+    /// For `similar:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
     /// The columns to show instead of the unit's defaults.
     pub fields: &'a [String],
 }
 
-/// Every stored text's similarity to a text, for `near:`.
+/// Every stored text's similarity to a text, for `similar:`.
 pub type NearFn<'a> =
     dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
@@ -235,7 +235,7 @@ fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Op
         None => logical_day(reader)?,
     };
     Ok(Options {
-        clock: polylogue_query::Clock::new(now, day),
+        clock: polylogue_query::time::clock(now, day)?,
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|o| o.name.to_owned())
@@ -308,27 +308,43 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
 
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
-    let cursor = ask.cursor.map(Cursor::decode).transpose()?;
-    let seed = cursor
-        .as_ref()
-        .map_or_else(|| uuid::Uuid::now_v7().as_u128() as u64, |c| c.seed);
-    let opts = options(
-        reader,
-        &ask,
-        cursor.as_ref().map_or(ask.now, |c| c.now),
-        seed,
-    )?;
+    let seal = CursorSeal::new(reader.cursor_key()?);
+    let position = reader.change_position()?;
+    let index_file = reader.index_identity()?;
+    let mut opts = options(reader, &ask, ask.now, 0)?;
+    let question = page::identity(ask.text, &opts)?;
+    let cursor = ask
+        .cursor
+        .map(|text| page::open(text, &seal, question, &position, index_file, &opts))
+        .transpose()?;
+    let seed = cursor.as_ref().map_or_else(
+        || uuid::Uuid::now_v7().as_u128() as u64,
+        |cursor| cursor.context.random_seed,
+    );
+    if let Some(cursor) = &cursor {
+        opts.clock = cursor.context.clock.clone();
+    }
+    opts.random_seed = Some(seed);
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    let question = page::question(&program, &opts, ask.why)?;
     let after = cursor
         .as_ref()
-        .map(|cursor| cursor.check(&program, &question).map(<[Value]>::to_vec))
+        .map(|cursor| page::check(cursor, &program, &opts, ask.why))
         .transpose()?;
-    let day = opts.clock.day.clone();
+    let context = match cursor {
+        Some(cursor) => cursor.context,
+        None => page::context(
+            question, &position, index_file, &opts, &program, seed, ask.why,
+        )?,
+    };
+    let paging = page::Paging {
+        seal: &seal,
+        context,
+    };
+    let day = polylogue_query::time::product_day(&opts.clock);
     with_similarity(reader, &program, ask.near, || {
-        answer(reader, &program, &day, after, seed, question, ask.why)
+        answer(reader, &program, &day, after, &paging, ask.why)
     })
 }
 
@@ -339,8 +355,7 @@ fn answer(
     program: &Program,
     day: &LogicalDay,
     after: Option<Vec<Value>>,
-    seed: u64,
-    question: String,
+    paging: &page::Paging<'_>,
     why_asked: bool,
 ) -> Result<Value, Failure> {
     let params = values(&program.params);
@@ -349,7 +364,7 @@ fn answer(
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let (definition, _) = super::measure::find_checked(&m.what)?;
         if let Some(paging) = definition.paging {
-            let (rows, count, next, _) = read_page(reader, program, &after, seed, question)?;
+            let (rows, count, next, _) = read_page(reader, program, &after, paging)?;
             let session_order: std::collections::BTreeMap<_, _> = rows
                 .iter()
                 .enumerate()
@@ -448,7 +463,7 @@ fn answer(
             json!({ "outcome": "measure", "measure": m.what, "data": data, "read_at": read_at }),
         );
     }
-    let (mut rows, count, next, without) = read_page(reader, program, &after, seed, question)?;
+    let (mut rows, count, next, without) = read_page(reader, program, &after, paging)?;
 
     polylogue_store::read::limit::ReadLimit::set_stage("attached rows");
     if program.shape == Shape::Rows {
@@ -490,6 +505,7 @@ fn answer(
             "now": polylogue_model::Timestamp::from_unix_ms(program.now),
             "zone": program.zone,
             "day_start_minutes": program.day_start_minutes,
+            "times": program.resolved_times,
         },
         "read_at": read_at,
     });
@@ -548,8 +564,7 @@ fn read_page(
     reader: &Reader<'_>,
     program: &Program,
     after: &Option<Vec<Value>>,
-    seed: u64,
-    question: String,
+    paging: &page::Paging<'_>,
 ) -> Result<(Vec<Value>, u64, Option<String>, u64), Failure> {
     let params = values(&program.params);
     polylogue_store::read::limit::ReadLimit::set_stage("count");
@@ -568,7 +583,7 @@ fn read_page(
     let more = rows.len() as u64 > page_size;
     rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
     let next = match rows.last() {
-        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
+        Some(last) if more => Some(page::after_row(program, last, paging)?),
         _ => None,
     };
 
@@ -809,7 +824,7 @@ pub(crate) fn usage_selection(
     text: &str,
     now: i64,
     embeddings: bool,
-    near: Option<&NearFn<'_>>,
+    similar: Option<&NearFn<'_>>,
 ) -> Result<(polylogue_store::measure::Selection, String), Failure> {
     let text = format!("{text} | measure usage");
     let ask = Ask {
@@ -859,36 +874,9 @@ pub(crate) fn usage_selection(
     ))
 }
 
-/// Reference columns belong to the compiled answer's declared types.
+/// Keep declared column metadata and source values as the compiled answer supplies them.
 pub(crate) fn response(data: Value) -> super::Response {
-    use super::request::References;
-    use polylogue_model::{DocumentId, MessageId, SessionId};
-    use polylogue_query::{Column, ColumnReference};
-    let mut references = References::default();
-    references.opaque_field(&data, "/next");
-    references.opaque_field(&data, "/read_at/cursor");
-    for column in data["columns"].as_array().into_iter().flatten() {
-        let Ok(column) = serde_json::from_value::<Column>(column.clone()) else {
-            continue;
-        };
-        let name = column.name.replace('~', "~0").replace('/', "~1");
-        for index in 0..data["rows"].as_array().map_or(0, Vec::len) {
-            let path = format!("/rows/{index}/{name}");
-            match column.reference {
-                Some(ColumnReference::Session) => references.field::<SessionId>(&data, path),
-                Some(ColumnReference::Message) => references.field::<MessageId>(&data, path),
-                Some(ColumnReference::Document) => references.field::<DocumentId>(&data, path),
-                Some(ColumnReference::Note) => references.opaque_field(&data, path),
-                None => {}
-            }
-        }
-    }
-    if data["unit"] == "changes" {
-        for (index, row) in data["rows"].as_array().into_iter().flatten().enumerate() {
-            feed::reference_fields(row, &format!("/rows/{index}"), &data, &mut references);
-        }
-    }
-    super::Response::Ok { data, references }
+    super::Response::Ok { data }
 }
 
 #[cfg(test)]
