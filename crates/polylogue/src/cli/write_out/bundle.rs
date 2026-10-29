@@ -1,4 +1,5 @@
 //! Client-owned, staged directory delivery over canonical read records.
+use polylogue_model::bundle::Format;
 use polylogue_model::{BlobHash, SessionId, bundle::*, read::*};
 use polylogue_store::export_items::{ExportItems, Order};
 use std::{

@@ -1,7 +1,7 @@
 //! One pinned selection, projected and laid out identically for every delivery.
 use super::{Daemon, Response, error, ok, store_error};
 use crate::daemon::Request;
-use polylogue_model::{BlobHash, RunId, query_objects::*, read::*};
+use polylogue_model::{BlobHash, RunId, bundle::ReadSnapshot, query_objects::*, read::*};
 use polylogue_render::pager::{PageBuilder, PageError, Push};
 use polylogue_store::{
     Reader,
