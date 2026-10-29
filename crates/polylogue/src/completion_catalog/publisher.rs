@@ -40,6 +40,7 @@ impl Publisher {
                 let mut last_error = None;
                 loop {
                     if stopped.load(Ordering::Acquire) {
+                        completed.store(true, Ordering::Release);
                         return;
                     }
                     let result = (|| {
@@ -54,6 +55,7 @@ impl Publisher {
                         Ok(()) => last_error = None,
                         Err(error) => {
                             if stopped.load(Ordering::Acquire) {
+                                completed.store(true, Ordering::Release);
                                 return;
                             }
                             let error = error.to_string();
@@ -70,6 +72,9 @@ impl Publisher {
                     match &subscription {
                         Some(subscription) => {
                             if subscription.recv().is_err() {
+                                if stopped.load(Ordering::Acquire) {
+                                    completed.store(true, Ordering::Release);
+                                }
                                 return;
                             }
                         }
@@ -94,17 +99,30 @@ impl Publisher {
         (self.thread.as_ref().is_some_and(JoinHandle::is_finished)
             && !self.stop.load(Ordering::Acquire)
             && !self.expected_exit.load(Ordering::Acquire))
-            .then_some("completion worker terminated")
+        .then_some("completion worker terminated")
     }
-}
-impl Drop for Publisher {
-    fn drop(&mut self) {
+
+    /// Stop and join the exact worker before the runtime records its end.
+    pub(crate) fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop.store(true, Ordering::Release);
         if let Some(wake) = &self.wake {
             let _ = wake.try_send(());
         }
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            thread
+                .join()
+                .map_err(|_| std::io::Error::other("completion worker panicked"))?;
+            if !self.expected_exit.load(Ordering::Acquire) {
+                return Err(std::io::Error::other("completion worker terminated"));
+            }
+        }
+        Ok(())
+    }
+}
+impl Drop for Publisher {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            eprintln!("polylogue: completion worker shutdown: {error}");
         }
     }
 }

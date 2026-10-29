@@ -7,6 +7,8 @@ use query_language::{
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
+mod objects;
+pub use objects::{catalog_fingerprint, replay, validate_object};
 
 fn native_catalog() -> Catalog {
     crate::catalog::catalog(&[], &[])
@@ -36,9 +38,18 @@ pub struct Plan {
     identity: Query,
     catalog: Catalog,
     definitions: Vec<ResolvedDefinition>,
+    bindings: Bindings,
+    frozen: Vec<polylogue_model::query_objects::FrozenQueryDefinition>,
+    identity_catalog: Catalog,
     question_id: QuestionId,
 }
 impl Plan {
+    pub fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+    pub fn query_object(&self) -> Result<polylogue_model::query_objects::QueryObject, QueryError> {
+        objects::from_plan(self)
+    }
     pub fn expanded_query(&self) -> &BoundQuery {
         &self.expanded
     }
@@ -79,6 +90,7 @@ fn prepare_inner(
     let mut catalog = options.catalog();
     let mut query = crate::parse::with_catalog(text, &catalog)?;
     let mut definitions = Vec::new();
+    let mut frozen = Vec::new();
     let mut identities = BTreeMap::<String, QuestionId>::new();
     walk(
         &mut query,
@@ -161,6 +173,22 @@ fn prepare_inner(
         stack.push(name.clone());
         let nested = prepare_inner(&definition.text, options, resolve, stack)?;
         stack.pop();
+        let object = nested.query_object()?;
+        frozen.push(polylogue_model::query_objects::FrozenQueryDefinition {
+            question: object.id,
+            normal_form: object.normal_form,
+            parameters: object.parameters,
+            identity_ast: object.identity_ast,
+            source_outputs: object.source_outputs,
+        });
+        for dependency in object.definitions {
+            if !frozen
+                .iter()
+                .any(|known| known.question == dependency.question)
+            {
+                frozen.push(dependency);
+            }
+        }
         definitions.push(ResolvedDefinition {
             name: name.clone(),
             revision: definition.revision.clone(),
@@ -197,10 +225,10 @@ fn prepare_inner(
     )?;
     let mut identity_catalog = catalog.clone();
     for output in &mut identity_catalog.source_outputs {
-        if let OutputSource::Saved { name, .. } = &mut output.source {
-            if let Some(hash) = identities.get(name) {
-                *name = hash.to_string();
-            }
+        if let OutputSource::Saved { name, .. } = &mut output.source
+            && let Some(hash) = identities.get(name)
+        {
+            *name = hash.to_string();
         }
     }
     let question_id =
@@ -218,6 +246,9 @@ fn prepare_inner(
         identity,
         catalog,
         definitions,
+        bindings: options.clone(),
+        frozen,
+        identity_catalog,
         question_id,
     })
 }
@@ -288,3 +319,6 @@ fn visit_condition(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

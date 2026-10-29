@@ -41,7 +41,7 @@ pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
     String::from_utf8(unpack_bytes(packed)?).map_err(|e| StoreError::Io(std::io::Error::other(e)))
 }
 
-/// Packs standalone JSON facts without the parsed-row dictionary.
+/// Packs source metadata without the index row dictionary.
 pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(pack_bytes(&serde_json::to_vec(value)?)?)
 }

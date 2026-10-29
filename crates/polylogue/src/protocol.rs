@@ -91,7 +91,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
     (FailureKind::StoppedEarly, &["stopped_early"]),
     (
         FailureKind::NotRunning,
-        &["not_running", "daemon_required", "daemon_stopping"],
+        &["not_running", "daemon_required", "shutting_down"],
     ),
     (FailureKind::Timeout, &["timeout", "deadline_exceeded"]),
     (FailureKind::Cancelled, &["cancelled"]),
@@ -167,7 +167,7 @@ pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
         },
         StoreError::ReadDeadlineExceeded => "deadline_exceeded",
         StoreError::ReadCancelled => "cancelled",
-        StoreError::ReadPoolClosed => "daemon_stopping",
+        StoreError::ReadPoolClosed => "shutting_down",
         StoreError::NotFound(_) => "not_found",
         StoreError::Invalid(_) => "bad_request",
         StoreError::IncompleteParents(_) => "incomplete_parents",

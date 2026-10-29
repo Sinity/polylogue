@@ -45,6 +45,21 @@ fn values(notes: &[Note]) -> Vec<&str> {
 fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
     let w = test_daemon::start("synthetic");
     let now = Timestamp::from_unix_ms(4_000_000_000_000).unwrap();
+    let captured = w
+        .daemon
+        .operation_context(&polylogue_model::authorship::Authorship {
+            author: Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        })
+        .unwrap();
+    let context = std::sync::Arc::new(
+        captured
+            .replay_clock(query_language::time::Clock::new(
+                now.into(),
+                captured.clock.day.clone(),
+            ))
+            .unwrap(),
+    );
     let first = "018f0000-0000-7000-8000-000000000001";
     add(
         &w,
@@ -68,12 +83,12 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
     let reader = w.daemon.reads.reader().unwrap();
     let about = about(&[Reference::parse("repo:morrow").unwrap()]);
     assert_eq!(
-        values(&list(&reader, &format!("{about} agent:false"), now).unwrap()),
+        values(&list(&reader, &format!("{about} agent:false"), &context).unwrap()),
         ["run cargo nextest"],
         "the current revision only, and a target matches whole"
     );
     assert_eq!(
-        count(&reader, &format!("{about} agent:true"), now).unwrap(),
+        count(&reader, &format!("{about} agent:true"), &context).unwrap(),
         1
     );
     drop(reader);
@@ -89,7 +104,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
     assert!(matches!(withdrawn, Response::Ok { .. }), "{withdrawn:?}");
     let reader = w.daemon.reads.reader().unwrap();
     assert_eq!(
-        values(&list(&reader, &about, now).unwrap()),
+        values(&list(&reader, &about, &context).unwrap()),
         ["an agent's idea"],
         "a withdrawal takes the whole family out, and is not listed itself"
     );
@@ -98,7 +113,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
             &list(
                 &reader,
                 &format!("{about} withdrawn:true current:true"),
-                now
+                &context
             )
             .unwrap()
         ),

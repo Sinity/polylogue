@@ -28,6 +28,7 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
             length: bytes.len() as u64,
             parse: Vec::new(),
             acquisition: None,
+            basis: None,
             release: Default::default(),
         },
         files: Vec::new(),
@@ -40,15 +41,15 @@ fn capture_intent_survives_observer_retry_and_preserves_source_order() {
         source("first", b"first source"),
         source("second", b"second source"),
     ];
-    let original = capture_group_identity(&group).unwrap();
+    let original = capture_group_identity(&group, false).unwrap();
     group[0].batch.observation.as_mut().unwrap().seen_at_ms = 9_000;
     group[1].batch.observation.as_mut().unwrap().seen_at_ms = 10_000;
-    assert_eq!(capture_group_identity(&group).unwrap(), original);
+    assert_eq!(capture_group_identity(&group, false).unwrap(), original);
     group.swap(0, 1);
-    assert_ne!(capture_group_identity(&group).unwrap(), original);
+    assert_ne!(capture_group_identity(&group, false).unwrap(), original);
     group.swap(0, 1);
     group[0].batch.new_blob.as_mut().unwrap().hash = BlobHash::of(b"other source");
-    assert_ne!(capture_group_identity(&group).unwrap(), original);
+    assert_ne!(capture_group_identity(&group, false).unwrap(), original);
 }
 
 #[test]
@@ -57,13 +58,13 @@ fn a_new_reading_and_a_new_source_range_are_new_capture_intents() {
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..6, true);
     step.reading_version = "codex:1".into();
     group[0].batch.parse.push(step);
-    let original = capture_group_identity(&group).unwrap();
+    let original = capture_group_identity(&group, false).unwrap();
     group[0].batch.parse[0].reading_version = "codex:2".into();
-    assert_ne!(capture_group_identity(&group).unwrap(), original);
+    assert_ne!(capture_group_identity(&group, false).unwrap(), original);
     group[0].batch.parse[0].reading_version = "codex:1".into();
     group[0].batch.change = Change::Appended { from: 6 };
     group[0].batch.length = 12;
-    assert_ne!(capture_group_identity(&group).unwrap(), original);
+    assert_ne!(capture_group_identity(&group, false).unwrap(), original);
 }
 
 struct OfflineProducer {
@@ -78,12 +79,129 @@ impl OfflineProducer {
     }
 }
 impl crate::primary::Sinex for OfflineProducer {
+    fn prepare_input_group(
+        &self,
+        plan: &crate::primary::CapturePlan,
+        members: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<crate::primary::CaptureReceipt> {
+        plan.validate()?;
+        if plan.count != 1 {
+            return Err(StoreError::Invalid(
+                "synthetic offline adapter supports one member".into(),
+            ));
+        }
+        let mut count = 0;
+        members(&mut |mut input, body| {
+            if count != 0 {
+                return Err(StoreError::Invalid(
+                    "too many synthetic capture members".into(),
+                ));
+            }
+            input.group = Some(crate::primary::CaptureGroup {
+                identity: "offline-capture".into(),
+                intent: plan.intent.clone(),
+                ordinal: 0,
+                count: 1,
+            });
+            self.prepare_input(&input, body)?;
+            count += 1;
+            Ok(())
+        })?;
+        if count != 1 {
+            return Err(StoreError::Invalid(
+                "missing synthetic capture member".into(),
+            ));
+        }
+        Ok(crate::primary::CaptureReceipt::Accepted {
+            write: crate::primary::PreparedWrite {
+                identity: "offline-capture".into(),
+                pending: true,
+            },
+        })
+    }
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
+    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+        let path = self.root.join("source");
+        Ok(crate::primary::PreparedBody {
+            file: std::fs::File::open(&path)?,
+            descriptor: hashed_blobs::EncodedBlob::decode(&std::fs::read(
+                self.root.join("descriptor"),
+            )?)?,
+            path: Some(path),
+        })
+    }
+    fn pending_source(
+        &self,
+        source: &crate::primary::SourceSelector,
+        version: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        use crate::primary::{PendingCheckpoint, PendingSource, SourceSelector, SourceStatus};
+        if !self.root.join("capture.json").exists() {
+            return Ok(PendingSource {
+                status: SourceStatus::Ready,
+                ..Default::default()
+            });
+        }
+        let mut full = self.captured();
+        let selector = full
+            .basis
+            .as_ref()
+            .map(|basis| basis.source.clone())
+            .or_else(|| {
+                full.rows.observation.as_ref().and_then(|o| {
+                    o.path_bytes.as_ref().map(|bytes| SourceSelector {
+                        origin: full.rows.format.clone(),
+                        machine: o.machine.clone(),
+                        path_bytes: bytes.clone(),
+                    })
+                })
+            });
+        let Some(selector) = selector else {
+            return Ok(PendingSource::default());
+        };
+        if &selector != source {
+            return Ok(PendingSource {
+                status: SourceStatus::Ready,
+                ..Default::default()
+            });
+        }
+        let checkpoint = full
+            .parsed
+            .iter()
+            .rev()
+            .filter_map(|p| p.checkpoint.as_ref())
+            .find(|c| c.reading_version == version)
+            .cloned();
+        full.parsed.clear();
+        let head = PendingCapture {
+            identity: "offline-capture".into(),
+            captured: Capture::Input(Box::new(full.clone())),
+            material: None,
+            anchor: None,
+        };
+        Ok(PendingSource {
+            status: SourceStatus::Ready,
+            raw: full.raw_range.map(|_| head.clone()),
+            head: Some(head),
+            continuation: checkpoint.map(|checkpoint| PendingCheckpoint {
+                capture: "offline-capture".into(),
+                header: full,
+                checkpoint,
+            }),
+        })
+    }
     fn prepare_input(
         &self,
         captured: &CapturedInput,
         body: crate::primary::PreparedBody,
     ) -> Result<PreparedInput> {
         std::fs::create_dir_all(&self.root)?;
+        std::fs::write(self.root.join("descriptor"), body.descriptor.encode())?;
         let prepared = hashed_blobs::Prepared::from_encoded(
             body.file,
             body.descriptor,
@@ -101,77 +219,6 @@ impl crate::primary::Sinex for OfflineProducer {
         Ok(PreparedInput::Pending {
             identity: "offline-capture".into(),
         })
-    }
-    fn prepare_input_group(
-        &self,
-        _: &crate::primary::CapturePlan,
-        _: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<crate::primary::CaptureReceipt> {
-        Self::unavailable()
-    }
-    fn pending_group_headers(
-        &self,
-        _: &str,
-        _: Option<u64>,
-        _: usize,
-    ) -> Result<crate::primary::PendingGroupPage> {
-        Ok(crate::primary::PendingGroupPage::default())
-    }
-    fn raw_acquisition_cursor(
-        &self,
-        _: &crate::primary::SourceGeneration,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        Ok(None)
-    }
-    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
-        Self::unavailable()
-    }
-    fn pending_source(
-        &self,
-        source: &crate::primary::SourceSelector,
-        _: &str,
-    ) -> Result<crate::primary::PendingSource> {
-        let head = self.pending_captures()?.into_iter().find(|pending| {
-            let Capture::Input(captured) = &pending.captured else {
-                return false;
-            };
-            captured.rows.format == source.origin
-                && captured
-                    .rows
-                    .observation
-                    .as_ref()
-                    .is_some_and(|observation| {
-                        observation.machine == source.machine
-                            && observation.path_bytes.as_ref() == Some(&source.path_bytes)
-                    })
-        });
-        Ok(crate::primary::PendingSource {
-            status: crate::primary::SourceStatus::Ready,
-            raw: head.clone().filter(|pending| matches!(&pending.captured,Capture::Input(captured) if captured.raw_range.is_some())),
-            head,
-            ..Default::default()
-        })
-    }
-    fn capture(&self, _: &str) -> Result<Capture> {
-        Ok(Capture::Input(Box::new(self.captured())))
-    }
-    fn prepare_reading(
-        &self,
-        _: &str,
-        _: &str,
-        _: &mut crate::primary::ReadingProducts<'_>,
-    ) -> Result<crate::primary::PreparedWrite> {
-        Self::unavailable()
-    }
-    fn prepare_named_products(
-        &self,
-        _: &str,
-        _: &[ProductWrite],
-    ) -> Result<crate::primary::PreparedWrite> {
-        Self::unavailable()
-    }
-    fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
-        Ok(())
     }
     fn pending_group_headers(
         &self,
@@ -195,9 +242,31 @@ impl crate::primary::Sinex for OfflineProducer {
             }
         }
         Ok(crate::primary::PendingGroupPage {
+            disposition: Some(crate::primary::CaptureDisposition::Prepared),
             headers,
             next: None,
         })
+    }
+    fn capture(&self, _: &str) -> Result<Capture> {
+        Ok(Capture::Input(Box::new(self.captured())))
+    }
+    fn prepare_reading(
+        &self,
+        _: &str,
+        _: &str,
+        _: &mut crate::primary::ReadingProducts<'_>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn prepare_named_products(
+        &self,
+        _: &str,
+        _: &[ProductWrite],
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
+        Ok(())
     }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         Ok(if self.root.join("capture.json").exists() {
@@ -334,14 +403,28 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         assert_eq!(snapshot.basis.pending.as_deref(), Some("offline-capture"));
         assert!(snapshot.pending.raw.is_some());
         assert!(snapshot.basis.boundary.is_none());
-        writer.apply_confirmed(vec![crate::primary::Confirmed {
-            position: 0, output_index: 0, event: String::new(),
-            change: crate::primary::ConfirmedChange::PositionComplete,
-        }]).unwrap();
-        let after_checkpoint = writer.source_snapshot(crate::primary::SourceSelector {
-            origin: "codex".into(), machine: "machine".into(), path_bytes: b"/home/op/offline".to_vec(),
-        }, "synthetic:1").unwrap();
-        assert_eq!(after_checkpoint.basis.status, crate::primary::SourceStatus::MissingEvidence);
+        writer
+            .apply_confirmed(vec![crate::primary::Confirmed {
+                position: 0,
+                output_index: 0,
+                event: String::new(),
+                change: crate::primary::ConfirmedChange::PositionComplete,
+            }])
+            .unwrap();
+        let after_checkpoint = writer
+            .source_snapshot(
+                crate::primary::SourceSelector {
+                    origin: "codex".into(),
+                    machine: "machine".into(),
+                    path_bytes: b"/home/op/offline".to_vec(),
+                },
+                "synthetic:1",
+            )
+            .unwrap();
+        assert_eq!(
+            after_checkpoint.basis.status,
+            crate::primary::SourceStatus::MissingEvidence
+        );
         assert!(after_checkpoint.basis.boundary.is_none());
         let Capture::Input(hydrated) = writer.capture("offline-capture".into()).unwrap() else {
             panic!("the pending source must hydrate its original input facts");
@@ -395,7 +478,7 @@ fn import_retry_intent_excludes_its_generated_operation_id() {
         }),
         format: Some("polylogue-bundle".into()),
     });
-    let first = capture_group_identity(&group).unwrap();
+    let first = capture_group_identity(&group, false).unwrap();
     let member = group[0]
         .batch
         .observation
@@ -405,7 +488,7 @@ fn import_retry_intent_excludes_its_generated_operation_id() {
         .as_mut()
         .unwrap();
     member.import_id = "retry-operation".into();
-    assert_eq!(capture_group_identity(&group).unwrap(), first);
+    assert_eq!(capture_group_identity(&group, false).unwrap(), first);
     group[0]
         .batch
         .observation
@@ -418,5 +501,5 @@ fn import_retry_intent_excludes_its_generated_operation_id() {
         .as_mut()
         .unwrap()
         .author = polylogue_model::Author::Script("other-importer".into());
-    assert_ne!(capture_group_identity(&group).unwrap(), first);
+    assert_ne!(capture_group_identity(&group, false).unwrap(), first);
 }

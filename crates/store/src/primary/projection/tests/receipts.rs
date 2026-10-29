@@ -131,6 +131,8 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
                     end: 2,
                     message: subset,
                 }),
+                native_fields: Vec::new(),
+                declared_injections: Vec::new(),
                 order: None,
                 projection: Some(polylogue_model::bundle::MessageProjection {
                     source_version: message.content_hash().unwrap(),

@@ -20,6 +20,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Session { .. } => "polylogue.session",
         Product::Message { .. } => "polylogue.message",
         Product::Document { .. } => "polylogue.document",
+        Product::Fragment { .. } => "polylogue.fragment",
         Product::Event { .. } => "polylogue.event",
         Product::Link { .. } => "polylogue.link",
         Product::Background { .. } => "polylogue.background",
@@ -60,6 +61,7 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::Session { facts, .. } => json!([facts.id]),
         Product::Message { facts, .. } => json!([facts.message.id, facts.offset]),
         Product::Document { facts, .. } => json!([facts.document.id, facts.offset]),
+        Product::Fragment { facts, .. } => json!([facts.record.reference, facts.offset]),
         Product::Event { id, .. } => json!([id]),
         Product::Link { facts, .. } => json!([facts.kind, facts.parent, facts.child]),
         Product::Background { facts, .. } => json!([facts.session, facts.task_id]),
@@ -132,6 +134,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         Product::Document { facts, .. } => {
             json!({"document": facts.document.id, "at": facts.document.source_time})
         }
+        Product::Fragment { facts, .. } => json!({"fragment": facts.record.reference}),
         Product::Event { facts, .. } => {
             json!({"session": facts.session, "event": facts.kind, "at": facts.at})
         }
@@ -370,6 +373,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.session", "session"),
         ("polylogue.message", "message"),
         ("polylogue.document", "document"),
+        ("polylogue.fragment", "fragment"),
         ("polylogue.event", "event"),
         ("polylogue.link", "link"),
         ("polylogue.background", "background"),
@@ -454,7 +458,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     name: (*name).into(),
                     version: match *product {
                         "work_snapshot" => 5,
-                        "query" | "query_run" | "query_run_outcome" | "work_component_status" => 1,
+                        "message" => 4,
+                        "fragment" | "query" | "query_run" | "query_run_outcome" | "work_component_status" => 1,
                         _ => 3,
                     },
                 },

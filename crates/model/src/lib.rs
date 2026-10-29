@@ -6,6 +6,7 @@ mod stored_names;
 
 pub mod assertion;
 pub mod atomic_write;
+pub mod attachment_binding;
 pub mod authored;
 pub mod authorship;
 pub mod batch;
@@ -36,6 +37,7 @@ pub use reference::{
     Reference, ReferenceError, RevisionReference, SpanBounds, SpanError, SpanUnit,
     TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece, span_bodies, text_body,
 };
+pub mod query_objects;
 pub mod read;
 mod session;
 pub mod settings;
@@ -100,3 +102,5 @@ string_schema!(
 );
 
 pub mod work_products;
+
+pub mod signal;

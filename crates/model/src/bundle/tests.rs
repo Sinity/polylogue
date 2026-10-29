@@ -131,6 +131,8 @@ fn message_record() -> MessageRecord {
         source_version: message.content_hash().unwrap(),
         block_count: 2,
         block_ordinals: vec![0, 1],
+        injections: Vec::new(),
+        bindings: Vec::new(),
         message,
     }
 }
@@ -254,4 +256,70 @@ fn published_bundle_schema_matches_the_canonical_wire_types() {
     .unwrap();
     let current = serde_json::to_value(schemars::schema_for!(Record)).unwrap();
     assert_eq!(published, current);
+}
+
+#[test]
+fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() {
+    let mut record = message_record();
+    let hash = record.message.content_hash().unwrap();
+    let evidence = crate::injection::InjectionEvidence {
+        message: record.message.id.clone(),
+        source_version: record.source_version,
+        block: 1,
+        observed: Some(crate::injection::NativeHookField {
+            input: "native-input".into(),
+            chain: 1,
+            start: 3,
+            end: 30,
+            pointer: "/hookAdditionalContext/0".into(),
+        }),
+        declared: Vec::new(),
+    };
+    record.injections.push(evidence.clone());
+    record.validate().unwrap();
+    assert_eq!(record.message.content_hash().unwrap(), hash);
+    let decoded: MessageRecord =
+        serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
+    assert_eq!(decoded, record);
+    let declared = evidence.clone().into_declared();
+    assert_eq!(declared.observed, None);
+    assert_eq!(declared.declared, vec![evidence.observed.clone().unwrap()]);
+    assert_eq!(declared.clone().into_declared(), declared);
+    for case in 0..5 {
+        let mut invalid = record.clone();
+        let evidence = &mut invalid.injections[0];
+        match case {
+            0 => evidence.message = crate::MessageId::parse("codex:other").unwrap(),
+            1 => evidence.source_version = crate::BlobHash([7; 32]),
+            2 => evidence.block = 2,
+            3 => evidence.observed.as_mut().unwrap().pointer = "/bad~2escape".into(),
+            _ => evidence.observed.as_mut().unwrap().end = 3,
+        }
+        assert!(invalid.validate().is_err(), "case {case}");
+    }
+}
+
+#[test]
+fn declared_blob_records_require_actual_blob_transfer() {
+    let mut value: Manifest = serde_json::from_str(
+        r#"{
+        "format":"polylogue-bundle","version":1,
+        "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
+        "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
+        "read_at":{"generation":"synthetic","index":0,"archive":0},"caught_up":true,
+        "counts":{"sessions":0,"messages":0,"documents":0,"events":0,"links":0,
+                  "authored":0,"variants":0,"variant_parts":0,"blobs":1},
+        "flags":{"format":"jsonl","with_blobs":false,
+                 "read":{"view":"transcript","inherited":false,"assertions":false}},
+        "enabled_variants":[],"author":"script:fixture","currency":{"mode":"standalone"}
+    }"#,
+    )
+    .unwrap();
+    assert_eq!(value.validate(), Err(BundleError::BlobFlagMismatch));
+    value.flags.with_blobs = true;
+    assert!(value.validate().is_ok());
+    value.counts.blobs = 0;
+    assert!(value.validate().is_ok());
+    value.flags.with_blobs = false;
+    assert!(value.validate().is_ok());
 }

@@ -53,18 +53,8 @@ fn main() -> ExitCode {
         Err(error) => return startup_error(error),
     };
     let arguments = std::env::args_os().collect::<Vec<_>>();
-    let native = arguments
-        .get(1)
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.starts_with("chrome-extension://"));
-    if arguments.get(1).and_then(|value| value.to_str()) != Some("daemon") {
-        // SAFETY: this is the process boundary, before worker threads exist.
-        #[allow(unsafe_code)]
-        unsafe {
-            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-        }
-    }
     if process.environment.get_os("COMPLETE").is_some() {
+        client_pipe_signal();
         let callback = arguments
             .iter()
             .position(|value| value == "--")
@@ -98,11 +88,17 @@ fn main() -> ExitCode {
         });
         clap_complete::CompleteEnv::with_factory(cli::command).complete();
     }
-    let mut matches = if native {
-        cli::command().get_matches_from([arguments.first().cloned().unwrap_or_default()])
-    } else {
-        cli::command().get_matches_from(arguments.clone())
+    let mut matches = match cli::command().try_get_matches_from(arguments.clone()) {
+        Ok(matches) => matches,
+        Err(error) => {
+            client_pipe_signal();
+            error.exit();
+        }
     };
+    let native = native_host(&matches);
+    if !daemon_command(&matches) {
+        client_pipe_signal();
+    }
     if let Some(result) = cli::run_local(&matches) {
         return result;
     }
@@ -142,6 +138,31 @@ fn main() -> ExitCode {
         return startup_error("the working directory is unavailable");
     };
     cli::run(&matches, &startup, cwd)
+}
+
+fn daemon_command(matches: &clap::ArgMatches) -> bool {
+    matches.subcommand_name() == Some("daemon")
+}
+
+fn native_host(matches: &clap::ArgMatches) -> bool {
+    if matches.subcommand().is_some() {
+        return false;
+    }
+    let Some(mut query) = matches.get_many::<String>("query") else {
+        return false;
+    };
+    query
+        .next()
+        .is_some_and(|word| word.starts_with("chrome-extension://"))
+        && query.next().is_none()
+}
+
+fn client_pipe_signal() {
+    // SAFETY: main selects the process mode before starting worker threads.
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
 }
 
 fn startup_error(error: impl std::fmt::Display) -> ExitCode {

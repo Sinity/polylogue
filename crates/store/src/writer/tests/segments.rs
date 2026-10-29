@@ -30,6 +30,7 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
         length: bytes.len() as u64,
         parse: Vec::new(),
         acquisition: None,
+        basis: None,
         release: Default::default(),
     };
     writer

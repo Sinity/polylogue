@@ -188,9 +188,14 @@ pub(crate) fn infer(query: &Query, catalog: &Catalog) -> Result<OutputSchema, Qu
         _ => return Err(not_built("this source output schema")),
     };
     let mut group = None;
+    let mut native_rows = matches!(
+        query.source,
+        Source::Unit { .. } | Source::RecallLast { .. }
+    );
     for stage in &query.stages {
         match &stage.kind {
             StageKind::Group { keys } => {
+                native_rows = false;
                 let mut fields = keys
                     .iter()
                     .map(|key| value_kind(&schema, key))
@@ -208,6 +213,7 @@ pub(crate) fn infer(query: &Query, catalog: &Catalog) -> Result<OutputSchema, Qu
                 schema.main_time = None;
             }
             StageKind::Aggregate { aggregates } => {
+                native_rows = false;
                 let source = group.as_ref().unwrap_or(&schema);
                 let fields = aggregates
                     .iter()
@@ -225,6 +231,7 @@ pub(crate) fn infer(query: &Query, catalog: &Catalog) -> Result<OutputSchema, Qu
                 schema.main_time = None;
             }
             StageKind::Fields { fields } => {
+                native_rows = false;
                 schema.fields = fields
                     .iter()
                     .map(|name| value_kind(&schema, &Operand::field(name)))
@@ -236,8 +243,12 @@ pub(crate) fn infer(query: &Query, catalog: &Catalog) -> Result<OutputSchema, Qu
                     .main_time
                     .filter(|name| schema.fields.iter().any(|f| &f.name == name));
             }
-            StageKind::Matches => schema = matches_schema(query, &schema, catalog)?,
+            StageKind::Matches => {
+                native_rows = false;
+                schema = matches_schema(query, &schema, catalog)?;
+            }
             StageKind::Scope { unit, .. } => {
+                native_rows = true;
                 schema = unit_schema(unit, catalog)?;
                 group = None;
             }
@@ -258,6 +269,23 @@ pub(crate) fn infer(query: &Query, catalog: &Catalog) -> Result<OutputSchema, Qu
             | StageKind::Measure { .. } => {}
             StageKind::Extension { .. } => return Err(not_built("extension output schema")),
         }
+    }
+    if native_rows {
+        let unit = schema
+            .unit
+            .as_deref()
+            .and_then(crate::units::Unit::from_name)
+            .ok_or_else(|| error("native output has no row unit"))?;
+        let columns = crate::units::spec(unit)
+            .columns
+            .iter()
+            .map(|column| Column {
+                name: column.name.to_owned(),
+                kind: column.kind,
+                reference: None,
+            })
+            .collect::<Vec<_>>();
+        schema = super::source::schema(catalog, unit.name(), &columns);
     }
     Ok(schema)
 }

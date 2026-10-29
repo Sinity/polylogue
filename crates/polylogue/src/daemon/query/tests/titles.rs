@@ -75,7 +75,10 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
             "claude-code:empty" => Some(""),
             _ => None,
         };
-        assert_eq!(source.title.as_deref(), expected);
+        assert_eq!(
+            source.title.as_ref().map(|title| title.text.as_str()),
+            expected
+        );
     }
     assert!(recorded[0]["title"].is_null());
     assert_eq!(recorded[0]["derived_title"], "First human question");

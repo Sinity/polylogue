@@ -96,11 +96,23 @@ pub(super) fn parts(
     id: &str,
     mut visit: impl FnMut(VariantPart) -> Result<()>,
 ) -> Result<()> {
+    parts_while(conn, id, |part| {
+        visit(part)?;
+        Ok(true)
+    })
+}
+pub(super) fn parts_while(
+    conn: &Connection,
+    id: &str,
+    mut visit: impl FnMut(VariantPart) -> Result<bool>,
+) -> Result<()> {
     let source = Source::reading(conn)?;
     let mut statement=conn.prepare_cached(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 ORDER BY n"))?;
     let mut rows = statement.query([id])?;
     while let Some(row) = rows.next()? {
-        visit(part(row)?)?;
+        if !visit(part(row)?)? {
+            break;
+        }
     }
     Ok(())
 }

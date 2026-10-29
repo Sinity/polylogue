@@ -25,7 +25,7 @@ fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
         done.send(server.shutdown()).unwrap();
     });
     stopped
-        .recv()
+        .recv_timeout(Duration::from_secs(2))
         .expect("socket readers did not stop")
         .unwrap();
     thread.join().unwrap();
@@ -46,19 +46,18 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
     let mut server =
         Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
-    let request = Request::Setting {
-        request_id: None,
-        key: Some("browser.actions".into()),
-        value: Some("on".into()),
-        machine: None,
+    let request = command_surface::Request {
+        operation: "setting".into(),
+        arguments: serde_json::json!({"key":"browser.actions","value":"on"}),
+        request_id: "durable-socket-setting".into(),
+        deadline: command_surface::Deadline::None,
     };
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
     let mut response = String::new();
     BufReader::new(stream).read_line(&mut response).unwrap();
-    assert!(matches!(
-        serde_json::from_str::<super::super::Response>(&response).unwrap(),
-        super::super::Response::Ok { .. }
-    ));
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_str(&response).unwrap();
+    assert!(answer.value().is_some(), "{answer:?}");
     server.shutdown().unwrap();
     runtime.shutdown().unwrap();
     let reads = polylogue_store::ReadPool::open(&Archive::at(&root)).unwrap();
@@ -167,7 +166,12 @@ fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
     let _held = daemon.daemon.reads.reader().unwrap();
     let reads = daemon.watch_reads();
     let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
-    let request = Request::Sql { statement: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n".into() };
+    let request = command_surface::Request {
+        operation: "sql".into(),
+        arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
+        request_id: "disconnect-sql".into(),
+        deadline: command_surface::Deadline::None,
+    };
     serde_json::to_writer(&mut stream, &request).unwrap();
     stream.write_all(b"\n").unwrap();
     let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -185,30 +189,33 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
-    let request = Request::Sql { statement: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n".into() };
-    let outgoing = crate::daemon::execution::Outgoing::new(
-        &request,
-        Some(crate::daemon::execution::deadline(Duration::from_millis(
-            50,
-        ))),
-    );
-    serde_json::to_writer(&mut stream, &outgoing).unwrap();
+    let request = command_surface::Request {
+        operation: "sql".into(),
+        arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
+        request_id: "bounded-sql".into(),
+        deadline: command_surface::Deadline::Milliseconds(50),
+    };
+    serde_json::to_writer(&mut stream, &request).unwrap();
     stream.write_all(b"\n").unwrap();
     let mut input = BufReader::new(stream);
     let mut line = String::new();
     input.read_line(&mut line).unwrap();
-    let response: Response = serde_json::from_str(&line).unwrap();
-    assert!(matches!(response, Response::Error { kind, .. } if kind == "deadline_exceeded"));
-    input
-        .get_mut()
-        .write_all(b"{\"caller\":{\"controlling_terminal\":false},\"op\":\"sql\",\"statement\":\"SELECT 1\"}\n")
-        .unwrap();
+    let response: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    assert!(
+        matches!(&response,command_surface::Answer::Error {error,..} if error.kind==command_surface::FailureKind::Timeout),
+        "{response:?}"
+    );
+    let next = command_surface::Request {
+        operation: "sql".into(),
+        arguments: serde_json::json!({"statement":"SELECT 1"}),
+        request_id: "after-timeout".into(),
+        deadline: command_surface::Deadline::Default,
+    };
+    writeln!(input.get_mut(), "{}", serde_json::to_string(&next).unwrap()).unwrap();
     line.clear();
     input.read_line(&mut line).unwrap();
-    assert!(matches!(
-        serde_json::from_str::<Response>(&line).unwrap(),
-        Response::Ok { .. }
-    ));
+    let next: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    assert!(next.value().is_some(), "{next:?}");
 }
 
 #[test]
@@ -229,4 +236,93 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
         ),
         "{line}"
     );
+}
+
+#[test]
+fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = crate::test_daemon::engine_config(dir.path().join("home"));
+    config.tool_dirs.clear();
+    config.workers = 1;
+    let runtime = crate::test_daemon::start_runtime(
+        &dir.path().join("archive"),
+        config,
+        service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let mut server =
+        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut responses = BufReader::new(stream.try_clone().unwrap());
+    let request = |id: &str| command_surface::Request {
+        operation: "sql".into(),
+        arguments: serde_json::json!({"statement":"SELECT 1 AS n"}),
+        request_id: id.into(),
+        deadline: command_surface::Deadline::None,
+    };
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&request("admitted-peer")).unwrap()
+    )
+    .unwrap();
+    let mut line = String::new();
+    responses.read_line(&mut line).unwrap();
+    assert!(
+        serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&line)
+            .unwrap()
+            .value()
+            .is_some()
+    );
+    runtime.stop_accepting();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&request("queued-at-stop")).unwrap()
+    )
+    .unwrap();
+    server.shutdown().unwrap();
+    line.clear();
+    responses.read_line(&mut line).unwrap();
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let command_surface::Answer::Error { error, .. } = answer else {
+        panic!("queued request must be refused");
+    };
+    assert_eq!(error.code.as_deref(), Some("shutting_down"));
+    assert_eq!(error.kind, command_surface::FailureKind::NotRunning);
+}
+
+#[test]
+fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
+    struct ResetWhileSerializing<'a>(&'a Archive);
+    impl serde::Serialize for ResetWhileSerializing<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0
+                .advance_generation_for_test()
+                .map_err(<S::Error as serde::ser::Error>::custom)?;
+            serde::Serialize::serialize(
+                &serde_json::json!({"stale":"synthetic-old-scope-value"}),
+                serializer,
+            )
+        }
+    }
+    let daemon = crate::test_daemon::start("native JSON publication fence");
+    let scope = daemon.daemon.reads.scope_token().unwrap();
+    let (mut output, input) = UnixStream::pair().unwrap();
+    input
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let answer = command_surface::Answer::ok(ResetWhileSerializing(&daemon.daemon.archive));
+    write_scoped_json(&mut output, &answer, Some(&scope)).unwrap();
+    let mut line = String::new();
+    BufReader::new(input).read_line(&mut line).unwrap();
+    assert!(!line.contains("synthetic-old-scope-value"));
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let command_surface::Answer::Error { error, .. } = answer else {
+        panic!("old scope must not publish a value");
+    };
+    assert_eq!(error.code.as_deref(), Some("scope_changed"));
 }

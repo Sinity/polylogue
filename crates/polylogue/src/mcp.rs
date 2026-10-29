@@ -88,7 +88,7 @@ fn call_with_limit(
 ) -> Result<(String, Value, bool), String> {
     let command = tool_commands()
         .find(|command| command.mcp_name() == name)
-        .ok_or_else(|| format!("no tool {name}"))?;
+        .ok_or_else(|| polylogue_render::terminal::escape(&format!("no tool {name}")))?;
     let canonical = if command.register.is_some() {
         let envelope: crate::protocol::operations::McpArguments<Value> =
             serde_json::from_value(Value::Object(arguments.clone()))
@@ -108,14 +108,30 @@ fn call_with_limit(
             cwd: None,
             json: true,
         };
-        command
+        match command
             .build_typed
             .expect("registered commands validate typed arguments")(
             call.arguments.clone(),
             &caller,
             &call.request_id,
-        )
-        .map_err(|error| error.message)?
+        ) {
+            Ok(request) => request,
+            Err(failure) => {
+                let kind = serde_json::to_value(failure.kind).expect("failure kind serializes");
+                let code = failure
+                    .code
+                    .as_deref()
+                    .unwrap_or_else(|| kind.as_str().expect("failure kind is a string"));
+                let detail = serde_json::to_value(&failure).expect("failure serializes");
+                let text = error_text(code, &failure.message, Some(&detail));
+                let answer = command_surface::Answer::<Value>::error(failure);
+                return Ok((
+                    text,
+                    serde_json::to_value(answer).expect("answer serializes"),
+                    true,
+                ));
+            }
+        }
     } else {
         build_request(name, arguments.clone())?
     };

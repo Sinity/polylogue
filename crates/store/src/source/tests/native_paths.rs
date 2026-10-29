@@ -107,7 +107,8 @@ fn native_path_migrations_preserve_unknown_historical_bytes_in_both_modes() {
     for primary in [false, true] {
         let conn = Connection::open_in_memory().unwrap();
         if primary {
-            crate::schema::ensure_index(&conn).unwrap();
+            conn.execute_batch(include_str!("../../schema/fixtures/index_5.sql")).unwrap();
+            crate::archive::generation::create(&conn).unwrap();
             conn.execute_batch(&from_archive(historical).unwrap().ddl)
                 .unwrap();
             conn.execute_batch(crate::primary::projection::SCHEMA)
@@ -177,6 +178,9 @@ fn acquisition_evidence_keeps_original_body_when_an_extent_is_trimmed_or_absent(
             range: RawRange { start: 4, end: 12 },
             hash: polylogue_model::BlobHash::of(b"abcdefgh"),
             observed_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            generation: None,
+            raw_total: None,
+            raw_predecessor: None,
         };
         conn.execute(
             &source
@@ -259,7 +263,11 @@ fn queued_source_snapshot_and_reader_keep_the_same_exact_observation() {
     rows("native", Some(path.to_vec()))
         .insert(&conn, 1)
         .unwrap();
-    conn.execute("INSERT INTO meta(key,value) VALUES('write_counter','1')", []).unwrap();
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES('write_counter','1')",
+        [],
+    )
+    .unwrap();
     drop(conn);
     let writer = crate::Writer::start(&archive).unwrap();
     let snapshot = writer

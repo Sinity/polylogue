@@ -61,6 +61,7 @@ pub(crate) fn apply_using(
     )?;
     let at = r.at.unix_ms();
     let outcome = match &r.write {
+        UserWrite::SignalCommit(commit) => crate::signals::write(tx, r, commit, seq),
         UserWrite::Variant { variant } => crate::variants::write(tx, r, variant, seq),
         UserWrite::AddNote { note } | UserWrite::AnnotateQuery { note, .. } => {
             add_note(tx, r, note, seq)

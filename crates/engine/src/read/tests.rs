@@ -282,3 +282,22 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         "consumed chunks retained {retained} bytes outside the {budget}-byte pool budget"
     );
 }
+
+#[test]
+fn native_range_binds_the_opened_file_generation_and_rejects_path_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native");
+    std::fs::write(&path, b"original body").unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    let facts = polylogue_store::FileFacts::of(&metadata);
+    let (bytes, observed) = read_native_range(&path, 0, facts.size, Some(facts)).unwrap();
+    assert_eq!(bytes, b"original body");
+    assert_eq!(
+        observed,
+        crate::acquisition::file_snapshot(&metadata).unwrap()
+    );
+    let replacement = dir.path().join("replacement");
+    std::fs::write(&replacement, b"different body").unwrap();
+    std::fs::rename(replacement, &path).unwrap();
+    assert!(read_native_range(&path, 0, facts.size, Some(facts)).is_err());
+}

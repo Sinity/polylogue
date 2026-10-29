@@ -92,3 +92,31 @@ fn publication_uses_the_captured_clock_and_machine_scoped_setting() {
     };
     assert_eq!(setting.value, serde_json::json!("3"));
 }
+
+#[test]
+fn explicit_shutdown_reports_a_panicked_publisher_once() {
+    let mut publisher = Publisher {
+        stop: Arc::new(AtomicBool::new(false)),
+        expected_exit: Arc::new(AtomicBool::new(false)),
+        wake: None,
+        thread: Some(std::thread::spawn(|| panic!("synthetic publisher failure"))),
+    };
+    let error = publisher.shutdown().unwrap_err();
+    assert_eq!(error.to_string(), "completion worker panicked");
+    assert!(publisher.thread.is_none());
+    publisher.shutdown().unwrap();
+}
+
+#[test]
+fn explicit_shutdown_accepts_only_a_recorded_expected_return() {
+    for (expected, succeeds) in [(true, true), (false, false)] {
+        let mut publisher = Publisher {
+            stop: Arc::new(AtomicBool::new(false)),
+            expected_exit: Arc::new(AtomicBool::new(expected)),
+            wake: None,
+            thread: Some(std::thread::spawn(|| {})),
+        };
+        assert_eq!(publisher.shutdown().is_ok(), succeeds);
+        assert!(publisher.thread.is_none());
+    }
+}

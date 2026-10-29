@@ -19,8 +19,16 @@ fn held_signal_observations_preserve_reasons_without_inventing_available_rules()
 
 #[test]
 fn ordinary_signal_summaries_retain_held_rule_identity() {
-    let mut observed = crate::signals::summary(&[], &[]);
-    observed["held"] = json!([{"id":"rule-one","reason":"the index is catching up"}]);
+    let observed = serde_json::to_value(Signals::Observed {
+        rules: vec![],
+        unusable: vec![],
+        held: vec![HeldSignal {
+            id: Some("rule-one".into()),
+            reason: "the index is catching up".into(),
+            detail: None,
+        }],
+    })
+    .unwrap();
     let typed: Signals = serde_json::from_value(observed.clone()).unwrap();
     assert_eq!(serde_json::to_value(typed).unwrap(), observed);
 }

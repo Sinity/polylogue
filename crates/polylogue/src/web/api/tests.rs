@@ -327,3 +327,52 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
             assert_eq!(error.kind, command_surface::FailureKind::Conflict);
         });
 }
+
+#[test]
+fn scope_reset_after_http_encoding_cannot_activate_the_old_body() {
+    let daemon = crate::test_daemon::start("native HTTP activation fence");
+    let web = web(&daemon);
+    let scope = daemon.daemon.reads.scope_token().unwrap();
+    let (status, bytes) = super::super::prepare_json_answer(
+        &web,
+        command_surface::Answer::ok(serde_json::json!({"stale":"synthetic-old-scope-value"})),
+    );
+    daemon.daemon.archive.advance_generation_for_test().unwrap();
+    let response = scoped_body_response(&web, status, "application/json", bytes, Some(&scope));
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let bytes = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-old-scope-value"));
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&bytes).unwrap();
+    let command_surface::Answer::Error { error, .. } = answer else {
+        panic!("old scope must not activate");
+    };
+    assert_eq!(error.code.as_deref(), Some("scope_changed"));
+}
+
+#[test]
+fn scope_reset_before_polling_an_encoded_http_body_aborts_its_frame() {
+    let daemon = crate::test_daemon::start("native HTTP frame fence");
+    let web = web(&daemon);
+    let scope = daemon.daemon.reads.scope_token().unwrap();
+    let (status, bytes) = super::super::prepare_json_answer(
+        &web,
+        command_surface::Answer::ok(serde_json::json!({"stale":"synthetic-old-scope-value"})),
+    );
+    let response = scoped_body_response(&web, status, "application/json", bytes, Some(&scope));
+    daemon.daemon.archive.advance_generation_for_test().unwrap();
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX));
+    assert!(
+        result.is_err(),
+        "a revoked HTTP body must not publish a complete value"
+    );
+}

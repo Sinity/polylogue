@@ -254,6 +254,14 @@ impl Reader<'_> {
     ) -> Result<()> {
         rows::parts(self.conn()?, id, visit)
     }
+    /// Ascending rendition order. False stops before the next body is decoded.
+    pub fn visit_variant_parts_while(
+        &self,
+        id: &str,
+        visit: impl FnMut(VariantPart) -> Result<bool>,
+    ) -> Result<()> {
+        rows::parts_while(self.conn()?, id, visit)
+    }
     /// Exact source-address lookup. Part numbers describe rendition order;
     /// they never stand in for the original source block's ordinal.
     pub fn visit_variant_parts_for(

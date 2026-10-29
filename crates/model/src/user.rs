@@ -35,6 +35,8 @@ impl RequestMetadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
+    /// A trusted daemon checkpoint with its immutable signal outbox and receipts.
+    SignalCommit(Box<crate::signal::Commit>),
     Variant {
         variant: crate::NewVariant,
     },

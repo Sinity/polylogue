@@ -29,6 +29,7 @@ pub struct Job {
     pub input: InputKey,
     pub change: Change,
     pub observation: Option<Observation>,
+    pub(crate) acquisition: Option<crate::acquisition::AcquisitionContext>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -41,6 +42,7 @@ pub struct Job {
     /// The input's stored length once this job is written.
     pub length: u64,
     pub parser_state: Option<Json>,
+    pub(crate) parser_deferred: bool,
     pub priority: Priority,
     /// Where the bytes come from.
     pub source: Bytes,
@@ -90,6 +92,9 @@ pub struct Done {
     pub error: Option<String>,
     pub write_failed: bool,
     pub continuation_missing: bool,
+    /// Accepted SDK custody; this is neither failure nor confirmed admission.
+    pub pending: Option<String>,
+    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
 }
 
 struct Queue {
@@ -282,6 +287,9 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                 for (result, queued) in group.waiting.iter_mut().zip(group.queued) {
                     if queued {
                         match results.next() {
+                            Some(Err(polylogue_store::StoreError::PrimaryPending { identity })) => {
+                                result.pending = Some(identity);
+                            }
                             Some(Err(error)) => {
                                 result.error = Some(error.to_string());
                                 result.write_failed = true;
@@ -367,8 +375,11 @@ pub(crate) fn run(
         error: None,
         write_failed: false,
         continuation_missing: false,
+        pending: None,
+        checkpoint: None,
     };
     let started = std::time::Instant::now();
+    let mut file_snapshot = None;
     let read = match &job.source {
         Bytes::Import(source) => source
             .lock()
@@ -377,7 +388,14 @@ pub(crate) fn run(
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
             .map_err(|e| std::io::Error::other(e.to_string())),
-        Bytes::File => read::read_range(&job.path, job.start, job.end),
+        Bytes::File => match &job.acquisition {
+            Some(context) => read::read_native_range(&job.path, job.start, job.end, context.facts)
+                .map(|(bytes, observed)| {
+                    file_snapshot = Some(observed);
+                    bytes
+                }),
+            None => read::read_range(&job.path, job.start, job.end),
+        },
         Bytes::Unloaded { .. } => Err(std::io::Error::other(
             "stored bytes were not loaded before their job",
         )),
@@ -408,6 +426,29 @@ pub(crate) fn run(
         },
         None => None,
     };
+    let acquisition = new_blob
+        .as_ref()
+        .zip(job.acquisition.as_ref())
+        .map(|(blob, context)| {
+            let range = polylogue_store::primary::RawRange {
+                start: job.store_from.expect("new body has a source interval"),
+                end: job.store_from.expect("new body has a source interval") + blob.size,
+            };
+            match &file_snapshot {
+                Some(observed) => context.finish_file(
+                    range,
+                    blob.hash,
+                    job.input.clone(),
+                    observed.clone(),
+                    polylogue_store::primary::RawStreamRole::ProviderBytes,
+                    polylogue_store::primary::RawRange {
+                        start: 0,
+                        end: observed.size,
+                    },
+                ),
+                None => context.finish(range, blob.hash),
+            }
+        });
     let mut extra = Vec::new();
     let parser = (job.origin.open)(&job.path).or_else(|| {
         job.origin
@@ -416,7 +457,8 @@ pub(crate) fn run(
     });
     let parse = parser
         .map(|parser| {
-            if job.start > 0 && out.parser_state.is_none() {
+            if job.origin.support == polylogue_sources::Support::Parsed
+                && (job.parser_deferred || job.start > 0 && out.parser_state.is_none()) {
                 out.continuation_missing = true;
                 return Vec::new();
             }
@@ -522,6 +564,7 @@ pub(crate) fn run(
         };
         source.lock().expect("import reader lock").consume(upto);
     }
+    out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     let batch = Batch {
         input: job.input,
         change: job.change,
@@ -531,7 +574,11 @@ pub(crate) fn run(
         blobs: extra,
         length: job.length,
         parse,
-        acquisition: None,
+        acquisition,
+        basis: job
+            .acquisition
+            .as_ref()
+            .and_then(|context| context.basis.clone()),
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)

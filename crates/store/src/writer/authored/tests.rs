@@ -127,6 +127,29 @@ impl Producer {
     }
 }
 impl crate::primary::Sinex for Producer {
+    fn prepare_input_group(
+        &self,
+        _: &crate::primary::CapturePlan,
+        _: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<crate::primary::CaptureReceipt> {
+        Self::unavailable()
+    }
+    fn pending_source(
+        &self,
+        _: &crate::primary::SourceSelector,
+        _: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        Ok(Default::default())
+    }
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
+    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+        Self::unavailable()
+    }
     fn prepare_input(
         &self,
         _: &CapturedInput,
@@ -142,43 +165,6 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<PreparedWrite> {
         Self::unavailable()
     }
-    fn prepare_input_group(
-        &self,
-        _: &crate::primary::CapturePlan,
-        _: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<crate::primary::CaptureReceipt> {
-        Self::unavailable()
-    }
-    fn pending_group_headers(
-        &self,
-        _: &str,
-        _: Option<u64>,
-        _: usize,
-    ) -> Result<crate::primary::PendingGroupPage> {
-        Ok(crate::primary::PendingGroupPage::default())
-    }
-    fn raw_acquisition_cursor(
-        &self,
-        _: &crate::primary::SourceGeneration,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        Ok(None)
-    }
-    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
-        Self::unavailable()
-    }
-    fn pending_source(
-        &self,
-        _: &crate::primary::SourceSelector,
-        _: &str,
-    ) -> Result<crate::primary::PendingSource> {
-        Ok(crate::primary::PendingSource {
-            status: crate::primary::SourceStatus::Ready,
-            ..Default::default()
-        })
-    }
-    fn capture(&self, _: &str) -> Result<Capture> {
-        Self::unavailable()
-    }
     fn pending_group_headers(
         &self,
         _: &str,
@@ -188,6 +174,9 @@ impl crate::primary::Sinex for Producer {
         Err(StoreError::Invalid(
             "synthetic authored adapter has no acquisition journal".into(),
         ))
+    }
+    fn capture(&self, _: &str) -> Result<Capture> {
+        Self::unavailable()
     }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         Ok(vec![])

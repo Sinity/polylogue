@@ -64,6 +64,10 @@ impl PendingAuthored {
 /// an entity-deduplicated request's identity and original outcome.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AuthoredEffect {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signal_checkpoints: Vec<crate::signal::Checkpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signal_events: Vec<crate::signal::EventRecord>,
     pub variants: crate::VariantEffect,
     pub notes: Vec<NoteRevision>,
     pub withdrawals: Vec<Withdrawal>,
@@ -119,6 +123,8 @@ pub struct DeliveryEvent {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DeliveryRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<crate::signal::Metadata>,
     pub id: String,
     pub prepared: Delivery,
     pub at: Timestamp,

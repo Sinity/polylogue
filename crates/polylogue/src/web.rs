@@ -572,10 +572,10 @@ fn error_status(kind: &str) -> StatusCode {
 }
 
 /// The data as the socket gives it, or a typed error with its HTTP status.
-pub fn json_answer(
+pub(crate) fn prepare_json_answer(
     web: &Web,
     response: impl Into<command_surface::Answer<serde_json::Value>>,
-) -> HttpResponse {
+) -> (StatusCode, Vec<u8>) {
     let answer = response.into();
     let status = answer
         .http_status()
@@ -589,7 +589,23 @@ pub fn json_answer(
         data.remove("archive");
     }
     access::scrub_value(&mut value, &web.daemon.archive.root);
-    (status, axum::Json(value)).into_response()
+    (
+        status,
+        serde_json::to_vec(&value).expect("answer serializes"),
+    )
+}
+
+pub fn json_answer(
+    web: &Web,
+    response: impl Into<command_surface::Answer<serde_json::Value>>,
+) -> HttpResponse {
+    let (status, bytes) = prepare_json_answer(web, response);
+    (
+        status,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bytes,
+    )
+        .into_response()
 }
 
 #[cfg(test)]
