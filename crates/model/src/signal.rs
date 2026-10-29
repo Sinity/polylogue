@@ -61,7 +61,7 @@ pub struct Outbox {
 pub enum Event {
     HostDecision {
         #[serde(deserialize_with = "buffered_delivery")]
-        delivery: Delivery,
+        delivery: Box<Delivery>,
     },
     Desktop {
         receipt: NotificationReceipt,
@@ -149,7 +149,7 @@ impl<'de> Deserialize<'de> for Commit {
 // arbitrary precision enabled, normalize numbers before decoding shared f64s.
 fn buffered_delivery<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> Result<Delivery, D::Error> {
+) -> Result<Box<Delivery>, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     serde_json::from_value(value).map_err(serde::de::Error::custom)
 }

@@ -288,7 +288,9 @@ fn signal_source_schema_is_shared_by_ledger_and_cache_and_rollback_is_atomic() {
 fn signal_numeric_host_decision_survives_tagged_request_round_trip() {
     let mut commit = initial();
     let delivery = commit.outbox[0].metadata.delivery.clone();
-    commit.events.push(Event::HostDecision { delivery });
+    commit.events.push(Event::HostDecision {
+        delivery: Box::new(delivery),
+    });
     let request = request("host-decision", commit);
     let encoded = serde_json::to_vec(&request).unwrap();
     let decoded: UserRequest = serde_json::from_slice(&encoded).unwrap();

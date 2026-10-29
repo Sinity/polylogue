@@ -68,10 +68,10 @@ impl NativeSpanSeek {
         for endpoint in [self.start, self.end] {
             match endpoint.piece {
                 NativeTextPiece::Body { body } => {
-                    if let Reference::Block { n, .. } = container {
-                        if body.block != *n {
-                            return Err(TextFragmentError::Origin);
-                        }
+                    if let Reference::Block { n, .. } = container
+                        && body.block != *n
+                    {
+                        return Err(TextFragmentError::Origin);
                     }
                 }
                 NativeTextPiece::Separator { before, after } => {
