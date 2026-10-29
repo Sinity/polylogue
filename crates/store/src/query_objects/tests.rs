@@ -288,6 +288,7 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
         binding.binding.presentation = ExecutionPresentation::Read {
             options: polylogue_model::read::ReadOptions::default(),
             delivery: polylogue_model::read::ReadDelivery::Page,
+            normalized_span: None,
         };
         binding.binding.accepted_request = Some(
             serde_json::json!({"id":"caller".repeat(10000),"operation":"read","arguments":{"target":text}}),
@@ -469,4 +470,97 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
         .unwrap()
         .unwrap();
     assert_eq!(stored.value, expected);
+}
+
+#[test]
+fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
+    use polylogue_model::bundle::{
+        TextSourceVersion, TextSpanOrigin,
+        fragments::seek::{
+            NativeSpanSeek, NativeTextBody, NativeTextPiece, NativeTextPosition, TextField,
+        },
+    };
+    use polylogue_model::query_objects::NormalizedReadSpan;
+    let archive = WriterArchive::new();
+    let object = question("messages");
+    archive.writer.query_object(object.clone()).unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let original = polylogue_model::Reference::parse("span:message:codex:synthetic#c=1-3").unwrap();
+    let span = NormalizedReadSpan::new(
+        TextSpanOrigin {
+            reference: original.clone(),
+            start: 4,
+            end: 9,
+        },
+        TextSourceVersion::ContentHash {
+            record: polylogue_model::Reference::parse("message:codex:synthetic").unwrap(),
+            hash: polylogue_model::BlobHash::of(b"retained version metadata"),
+        },
+        NativeSpanSeek {
+            start: NativeTextPosition {
+                piece: NativeTextPiece::Body {
+                    body: NativeTextBody {
+                        block: 7,
+                        field: TextField::Text,
+                    },
+                },
+                byte: 1,
+            },
+            end: NativeTextPosition {
+                piece: NativeTextPiece::Body {
+                    body: NativeTextBody {
+                        block: 7,
+                        field: TextField::Text,
+                    },
+                },
+                byte: 6,
+            },
+        },
+    )
+    .unwrap();
+    let mut execution = run(
+        &object,
+        "normalized-span-storage",
+        1,
+        pool.reader().unwrap().change_position().unwrap(),
+    );
+    execution.binding.query_options.direct_reference = Some(original);
+    execution.binding.presentation = ExecutionPresentation::Read {
+        options: Default::default(),
+        delivery: Default::default(),
+        normalized_span: Some(span),
+    };
+    let hash = execution.binding.hash().unwrap();
+    archive.writer.begin_query_run(execution.clone()).unwrap();
+    let stored = pool
+        .reader()
+        .unwrap()
+        .query_run(&execution.id, None)
+        .unwrap()
+        .unwrap()
+        .value;
+    assert_eq!(stored, execution);
+    assert_eq!(stored.binding.hash().unwrap(), hash);
+    let mut conflicting = execution.clone();
+    let ExecutionPresentation::Read {
+        normalized_span: Some(span),
+        ..
+    } = &mut conflicting.binding.presentation
+    else {
+        unreachable!()
+    };
+    span.seek.start.byte += 1;
+    assert_ne!(conflicting.binding.hash().unwrap(), hash);
+    assert!(archive.writer.begin_query_run(conflicting).is_err());
+    let mut detached = execution;
+    detached.id = run_id("detached-span-storage");
+    detached.binding.query_options.direct_reference = None;
+    assert!(archive.writer.begin_query_run(detached.clone()).is_err());
+    assert!(
+        pool.reader()
+            .unwrap()
+            .query_run(&detached.id, None)
+            .unwrap()
+            .is_none()
+    );
 }

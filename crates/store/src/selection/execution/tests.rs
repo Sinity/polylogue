@@ -202,6 +202,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             ExecutionPresentation::Read {
                 options: Default::default(),
                 delivery: Default::default(),
+                normalized_span: None,
             },
             None,
         )

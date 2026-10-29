@@ -1,4 +1,8 @@
 //! Immutable questions and the exact bindings of their executions.
+use crate::bundle::{
+    TextCoverage, TextFragmentError, TextSourceVersion, TextSpanOrigin,
+    fragments::seek::NativeSpanSeek,
+};
 use crate::{ChangePosition, Timestamp, authorship::Authorship};
 use query_language::{
     ast::Query, catalog::SourceOutput, cursor::CursorContext, identity::QuestionId, time::ClockWire,
@@ -104,7 +108,67 @@ pub enum ExecutionPresentation {
     Read {
         options: crate::read::ReadOptions,
         delivery: crate::read::ReadDelivery,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        normalized_span: Option<NormalizedReadSpan>,
     },
+}
+
+/// Resolver-produced coordinates kept in acknowledged Run custody. Source
+/// identity is retained metadata, never a claim that all source text was read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NormalizedReadSpan {
+    pub origin: TextSpanOrigin,
+    pub version: TextSourceVersion,
+    pub seek: NativeSpanSeek,
+}
+impl NormalizedReadSpan {
+    pub fn new(
+        origin: TextSpanOrigin,
+        version: TextSourceVersion,
+        seek: NativeSpanSeek,
+    ) -> Result<Self, TextFragmentError> {
+        let value = Self {
+            origin,
+            version,
+            seek,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+    /// Global UTF-8 bounds only. The unavailable remainder stays unknown.
+    pub fn coverage(&self) -> TextCoverage {
+        TextCoverage {
+            start: self.origin.start,
+            end: self.origin.end,
+            total_bytes: None,
+        }
+    }
+    /// Metadata checks only. The authenticated Reader validates current grant,
+    /// source version/content and the indexed field/UTF-8 boundary mapping.
+    pub fn validate(&self) -> Result<(), TextFragmentError> {
+        let crate::Reference::Span {
+            container,
+            unit,
+            start,
+            end,
+        } = &self.origin.reference
+        else {
+            return Err(TextFragmentError::Origin);
+        };
+        if crate::Reference::parse(&self.origin.reference.to_string())
+            .ok()
+            .as_ref()
+            != Some(&self.origin.reference)
+            || self.origin.start > self.origin.end
+            || matches!(unit, crate::SpanUnit::Bytes)
+                && (*start != self.origin.start || *end != self.origin.end)
+        {
+            return Err(TextFragmentError::Origin);
+        }
+        self.version.validate_container(container)?;
+        self.seek.validate(container, &self.coverage())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -189,3 +253,6 @@ pub struct QueryLookup<T> {
     pub value: T,
     pub custody: QueryCustody,
 }
+
+#[cfg(test)]
+mod tests;

@@ -153,12 +153,24 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
             "a query run's replay context contradicts its grant scope",
         ));
     }
-    if let polylogue_model::query_objects::ExecutionPresentation::Read { options, .. } =
-        &run.binding.presentation
+    if let polylogue_model::query_objects::ExecutionPresentation::Read {
+        options,
+        normalized_span,
+        ..
+    } = &run.binding.presentation
     {
         options
             .validate()
             .map_err(|error| invalid(error.to_string()))?;
+        if let Some(span) = normalized_span {
+            span.validate()
+                .map_err(|error| invalid(error.to_string()))?;
+            if run.binding.query_options.direct_reference.as_ref() != Some(&span.origin.reference) {
+                return Err(invalid(
+                    "normalized span differs from the accepted direct presentation",
+                ));
+            }
+        }
     }
     if polylogue_model::ChangePosition::parse(&run.read_at.to_string()).as_ref()
         != Some(&run.read_at)
