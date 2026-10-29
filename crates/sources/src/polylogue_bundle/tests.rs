@@ -16,6 +16,7 @@ fn message_record(id: &str, order: u64) -> MessageRecord {
         source_version,
         block_count: 1,
         block_ordinals: vec![0],
+        bindings: vec![],
         injections: vec![InjectionEvidence {
             message: message.id.clone(),
             source_version,

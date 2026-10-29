@@ -71,6 +71,7 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         mut messages,
         native_hook_fields,
         declared_injections,
+        declared_attachment_bindings,
         mut documents,
         mut fragments,
         fragment_receipts,
@@ -114,6 +115,7 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
     );
     shift!(native_hook_fields, message_base);
     shift!(declared_injections, message_base);
+    shift!(declared_attachment_bindings, message_base);
     shift!(message_order, message_base);
     shift!(message_projections, message_base);
     shift!(message_receipts, message_base);
