@@ -248,9 +248,16 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     }
     if let Request::Complete { text, position } = &request {
         if *position > text.len() || !text.is_char_boundary(*position) {
-            return error("bad_request", "completion position must be a UTF-8 byte boundary within the query");
+            return error(
+                "bad_request",
+                "completion position must be a UTF-8 byte boundary within the query",
+            );
         }
-        return ok(crate::completion_catalog::complete(&d.archive.root, text, *position));
+        return ok(crate::completion_catalog::complete(
+            &d.archive.root,
+            text,
+            *position,
+        ));
     }
     let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
@@ -491,7 +498,9 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 }
             })
         }
-        Request::Complete { .. } => unreachable!("completion is handled before opening an archive reader"),
+        Request::Complete { .. } => {
+            unreachable!("completion is handled before opening an archive reader")
+        }
 
         Request::Sql { statement } => match reader.query(&statement, &[]) {
             // The connection is read-only: a statement that writes fails.
@@ -1305,11 +1314,27 @@ pub fn start(
         lock: Some(lock),
     };
     // Subscribe before the initial snapshot or starting the ingest loop.
-    let completion_commits = runtime.daemon.writes.as_ref().map(WriterSender::completion_commits);
+    let completion_commits = runtime
+        .daemon
+        .writes
+        .as_ref()
+        .map(WriterSender::completion_commits);
     let completion_clock = if matches!(&runtime.daemon.mode, ModeState::Standalone) {
-        runtime.daemon.reads.reader().ok().and_then(|reader|super::query::logical_day(&reader).ok()).and_then(|day|polylogue_query::time::clock(now_ms(),day).ok())
-    } else { None };
-    runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(Arc::clone(&runtime.daemon), completion_commits, completion_clock)?);
+        runtime
+            .daemon
+            .reads
+            .reader()
+            .ok()
+            .and_then(|reader| super::query::logical_day(&reader).ok())
+            .and_then(|day| polylogue_query::time::clock(now_ms(), day).ok())
+    } else {
+        None
+    };
+    runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
+        Arc::clone(&runtime.daemon),
+        completion_commits,
+        completion_clock,
+    )?);
     let Some(mut engine) = engine.take() else {
         return Ok(runtime);
     };
