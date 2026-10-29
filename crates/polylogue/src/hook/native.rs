@@ -16,22 +16,14 @@ pub(super) struct Environment {
 }
 
 impl Environment {
-    pub(super) fn load() -> Self {
+    pub(super) fn observe(host: &str, inputs: &super::Inputs) -> Self {
         Self {
-            host: std::fs::read_to_string("/proc/sys/kernel/hostname")
-                .unwrap_or_default()
-                .trim_end_matches('\n')
-                .to_owned(),
+            host: host.to_owned(),
             boot: std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
                 .ok()
                 .map(|s| s.trim_end_matches('\n').to_owned()),
-            kitty_pid: std::env::var("KITTY_PID")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .filter(|pid| *pid > 0),
-            kitty_window: std::env::var("KITTY_WINDOW_ID")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            kitty_pid: inputs.kitty_pid,
+            kitty_window: inputs.kitty_window.clone(),
         }
     }
 }

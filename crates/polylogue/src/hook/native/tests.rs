@@ -121,6 +121,7 @@ fn captured_native_facts_survive_spooling_and_parsing_at_their_record_anchor() {
         "Stop",
         &payload,
         &captured,
+        &super::super::tests::startup(),
     )
     .unwrap();
     let path = dir
