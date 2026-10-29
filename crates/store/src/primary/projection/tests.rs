@@ -208,3 +208,86 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
         .unwrap();
     assert_eq!(body, None);
 }
+
+#[test]
+fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let bytes_root = dir.path().join("unavailable-bytes");
+    let archive = crate::Archive::on_sinex(&dir.path().join("cache"), &bytes_root);
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let hash = polylogue_model::BlobHash::of(b"abcd");
+    let extent = hashed_blobs::Extent {
+        segment: "segments/confirmed.hb".into(),
+        offset: 0,
+        len: 100,
+        decoded_len: 4,
+        hash: hashed_blobs::Hash(hash.0),
+        kind: hashed_blobs::Kind::Plain,
+        index_hash: hashed_blobs::Hash([1; 32]),
+        encoded_hash: hashed_blobs::Hash([2; 32]),
+    };
+    let material = Material {
+        id: "shared-material".into(),
+        hash,
+        length: 4,
+        extents: vec![extent.encode()],
+    };
+    let facts = |position, id: &str, blob_offset| Confirmed {
+        position,
+        output_index: 0,
+        event: format!("event-{id}"),
+        change: ConfirmedChange::Live(Product::Input {
+            rows: crate::input_rows::InputRows {
+                input: id.into(),
+                format: "synthetic".into(),
+                observation: None,
+                revision: Some(crate::input_rows::Revision {
+                    number: 1,
+                    produced: "first".into(),
+                    chain: 1,
+                    length: 2,
+                }),
+                extent: Some(crate::input_rows::Extent {
+                    chain: 1,
+                    offset: 0,
+                    length: 2,
+                    blob: hash,
+                    blob_offset,
+                }),
+            },
+            material: Some(material.clone()),
+        }),
+    };
+    apply(
+        &mut index,
+        &resolver,
+        &[facts(7, "first", 1), facts(8, "second", 0), barrier(8)],
+    )
+    .unwrap();
+    assert_eq!(
+        material_at(&index, "first", 1, 1).unwrap(),
+        Some(super::super::SourceLocation {
+            material: "shared-material".into(),
+            anchor: 2
+        })
+    );
+    assert_eq!(
+        material_at(&index, "second", 1, 1).unwrap(),
+        Some(super::super::SourceLocation {
+            material: "shared-material".into(),
+            anchor: 1
+        })
+    );
+    assert_eq!(
+        crate::source::Source::admitted_through(&index, "first", 1, 2).unwrap(),
+        Some(7)
+    );
+    let retained: (i64, Vec<u8>) = index
+        .query_row("SELECT size,storage FROM source_blob", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(retained, (4, extent.encode()));
+    assert!(!bytes_root.exists());
+}
