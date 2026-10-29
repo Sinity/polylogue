@@ -34,15 +34,17 @@ fn unpacked<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     crate::encoding::unpack_json(bytes)
 }
 
-pub(crate) fn position(index: &Connection) -> Result<i64> {
+pub(crate) fn checkpoint(index: &Connection) -> Result<Option<i64>> {
     Ok(index
         .query_row(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key='confirmed_position'",
             [],
             |row| row.get(0),
         )
-        .optional()?
-        .unwrap_or(0))
+        .optional()?)
+}
+pub(crate) fn position(index: &Connection) -> Result<i64> {
+    Ok(checkpoint(index)?.unwrap_or(0))
 }
 
 /// Each successfully staged page may be acknowledged. Only a complete position is visible.
@@ -50,9 +52,13 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let applied = position(&tx)?;
     for event in events {
+        if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
+            tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
+            continue;
+        }
         if event.position <= 0 {
             return Err(StoreError::Invalid(
-                "a confirmed position must be positive".into(),
+                "a confirmed data position must be positive".into(),
             ));
         }
         if event.position <= applied {
@@ -364,6 +370,7 @@ fn step(
     step.order_from = reading.order_from;
     step.reading_version = reading.reading_version.clone();
     step.repeats_whole_conversations = reading.repeats_whole_conversations;
+    step.no_parser_yet = reading.no_parser_yet;
     step
 }
 

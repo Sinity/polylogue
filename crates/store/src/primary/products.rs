@@ -19,6 +19,7 @@ pub struct Reading {
     pub start: u64,
     pub parsed_upto: u64,
     pub at_end: bool,
+    pub no_parser_yet: bool,
 }
 
 /// Authoritative material descriptors supplied by Sinex, never hash lookups.
@@ -183,6 +184,7 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
         start: step.start,
         parsed_upto: step.parsed_upto,
         at_end: step.at_end,
+        no_parser_yet: step.no_parser_yet,
     };
     let mut products = Vec::new();
     products.extend(output.sessions.into_iter().map(|facts| Product::Session {
@@ -258,4 +260,5 @@ pub struct PendingCapture {
     pub identity: String,
     pub captured: Capture,
     pub material: Option<Material>,
+    pub anchor: Option<SourceLocation>,
 }
