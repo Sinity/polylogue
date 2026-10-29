@@ -22,6 +22,7 @@ pub mod scope;
 
 mod behind_index;
 mod captured;
+mod native_hook_fields;
 mod parser_checkpoint;
 pub use parser_checkpoint::StoredParserCheckpoint;
 mod import_attribution;

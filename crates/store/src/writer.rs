@@ -36,6 +36,7 @@ mod source_snapshot;
 mod query_objects;
 pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
+mod native_hook_fields;
 mod rows;
 mod search;
 mod staging;

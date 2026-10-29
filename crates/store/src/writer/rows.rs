@@ -222,6 +222,16 @@ fn apply_rows(
         // A kind this step states needs no lookup.
         let main = choices.message_mains[i];
         written += u64::from(rows.write_message(row, session_pk, prepared, position, main)?);
+        super::native_hook_fields::write(
+            tx,
+            super::native_hook_fields::Source {
+                input: &b.input.id,
+                input_pk,
+                chain,
+            },
+            p,
+            i,
+        )?;
         if let Some(at) = ms(row.message.at) {
             let last = activity.entry(session_pk).or_insert(at);
             *last = (*last).max(at);

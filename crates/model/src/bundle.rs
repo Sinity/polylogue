@@ -138,6 +138,8 @@ pub struct MessageRecord {
     pub block_count: u64,
     /// Original source positions aligned to `message.blocks`.
     pub block_ordinals: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub injections: Vec<crate::injection::InjectionEvidence>,
     pub message: Message,
 }
 
@@ -350,6 +352,8 @@ pub enum BundleError {
     ReferenceMismatch,
     #[error("message projection has invalid original block positions")]
     InvalidBlockSelection,
+    #[error("injection evidence does not match its source message or field")]
+    InvalidInjectionEvidence,
     #[error("complete message content does not match its source version")]
     SourceVersionMismatch,
     #[error("partial message observations conflict at the same source version")]
@@ -504,6 +508,9 @@ impl MessageRecord {
         }
         self.message.time_evidence().validate(self.message.at)?;
         self.projection().validate(self.message.blocks.len())?;
+        for evidence in &self.injections {
+            evidence.validate_for(&self.message.id, &self.projection())?;
+        }
         if self.is_complete()
             && self
                 .message
