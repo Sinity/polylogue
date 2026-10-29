@@ -42,7 +42,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let mut hello=client.subscribe("auth.connect.polylogue").await.unwrap();
             let mut ingress=client.subscribe("auth.ingress.polylogue").await.unwrap();
             let mut recorded=client.subscribe("auth.recorded.polylogue").await.unwrap();
-            let mut consumers=client.subscribe("auth.confirmed_consumer.polylogue").await.unwrap();
+            let mut replay=client.subscribe("auth.replay_scope.polylogue").await.unwrap();
             let mut contexts=client.subscribe("auth.public_context.polylogue").await.unwrap();
             client.flush().await.unwrap();ready.send(()).unwrap();
             let request=hello.next().await.unwrap();let inbox=request.reply.unwrap();
@@ -61,21 +61,19 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
             let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","context_token":"synthetic-context-token","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z","coverage":{"state":"not_requested"}})).unwrap();
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
-            let subjects=Subjects::new("auth");
-            let response=sinex_protocol::ConfirmedConsumerReply{stream_instance:None,stream:subjects.confirmed_stream(),consumer:subjects.consumer_name("test-scope"),scope:"test-scope".into(),position:Some(42),refusal:None,gap:None};
-            let request=consumers.next().await.unwrap();
-            let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
-            assert_eq!(query.after,42);
-            assert!(!query.status_only);
-            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),response.clone(),Duration::from_secs(5)).await.unwrap();
-            let request=consumers.next().await.unwrap();
-            let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
-            assert_eq!(query.after,0,"a new scope must replay from the cleared checkpoint");
-            let js=async_nats::jetstream::new(client.clone());
-            let stream=js.get_or_create_stream(async_nats::jetstream::stream::Config{name:subjects.confirmed_stream(),subjects:vec![subjects.confirmed_all()],..Default::default()}).await.unwrap();
-            stream.get_or_create_consumer(&response.consumer,async_nats::jetstream::consumer::pull::Config{durable_name:Some(response.consumer.clone()),..Default::default()}).await.unwrap();
-            js.publish(subjects.confirmed_control(),serde_json::to_vec(&sinex_protocol::Confirmed::PositionComplete{commit_seq:0}).unwrap().into()).await.unwrap().await.unwrap();
-            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),response,Duration::from_secs(5)).await.unwrap();
+            for _ in 0..2 {
+                let request=replay.next().await.unwrap();
+                let query:sinex_protocol::ReplayQuery=serde_json::from_slice(&request.payload).unwrap();
+                assert!(matches!(query,sinex_protocol::ReplayQuery::Inputs{cache,cursor:None} if cache=="cache-test"));
+                let reply=sinex_protocol::ReplayReply::Inputs {result:sinex_protocol::InputReplayReply::Page {
+                    position:0,policy_epoch:1,scope:"test-scope".into(),inputs:Vec::new(),
+                    continuation:sinex_protocol::ReplayContinuation::Complete {
+                        projection:sinex_protocol::FullProjectionComplete {stamp:"full-owner-proof".into(),position:0,scope:"test-scope".into(),catalog:"empty-synthetic-catalog".into()},
+                        raw_inputs:sinex_protocol::CoverageStatus::NotRequested,
+                    },
+                }};
+                sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
+            }
         });
     });
     wait.recv().unwrap();
@@ -100,28 +98,37 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             .contains("synthetic-context-token")
     );
     assert!(!format!("{context:?}").contains("synthetic-context-token"));
-    let control =
-        polylogue_store::primary::Sinex::confirmed(&sinex, 42, "cache-test", Some("old-scope"))
-            .unwrap();
+    use polylogue_store::primary::{self, ConfirmedChange, ReplayControl};
+    let mut state = primary::ReplayState {
+        applied_position: Some(42),
+        scope: Some("old-scope".into()),
+        policy_epoch: Some(1),
+        ..Default::default()
+    };
+    let control = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
     assert!(
-        matches!(control.as_slice(),[polylogue_store::primary::Confirmed{position:0,change:polylogue_store::primary::ConfirmedChange::ScopeReset{scope},..}] if scope=="test-scope")
+        matches!(control.as_slice(),[primary::Confirmed{change:ConfirmedChange::Control(control),..}]
+        if matches!(control.as_ref(),ReplayControl::Reset{scope,policy_epoch:1} if scope=="test-scope"))
     );
     let currency = sinex.currency(Some(42), Some("old-scope".into())).unwrap();
     assert_eq!(currency.scope(), Some("old-scope"));
     assert!(currency.degraded());
-    polylogue_store::primary::Sinex::acknowledge(&sinex, 0).unwrap();
-    let page =
-        polylogue_store::primary::Sinex::confirmed(&sinex, 0, "cache-test", Some("test-scope"))
-            .unwrap();
-    assert!(matches!(
-        page.as_slice(),
-        [polylogue_store::primary::Confirmed {
-            position: 0,
-            change: polylogue_store::primary::ConfirmedChange::PositionComplete,
-            ..
-        }]
-    ));
-    polylogue_store::primary::Sinex::acknowledge(&sinex, 0).unwrap();
+    state = primary::ReplayState {
+        scope: Some("test-scope".into()),
+        policy_epoch: Some(1),
+        ..Default::default()
+    };
+    primary::Sinex::acknowledge(&sinex, &state).unwrap();
+    let page = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
+    assert!(
+        matches!(page.as_slice(),[primary::Confirmed{change:ConfirmedChange::Control(control),..}]
+        if matches!(control.as_ref(),ReplayControl::BasisStatus{status:primary::ReplayBasisStatus::Unverified}))
+    );
+    assert_eq!(
+        state.applied_position, None,
+        "delivery of a full proof does not apply it locally"
+    );
+    primary::Sinex::acknowledge(&sinex, &state).unwrap();
     drop(sinex);
     owner.join().unwrap();
 }

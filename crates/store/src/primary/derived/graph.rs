@@ -107,6 +107,21 @@ pub(super) fn stage(tx: &Transaction<'_>, proof: &RawInputProof) -> Result<()> {
         if native.projection.policy_epoch != proof.policy_epoch
             || native.kind_definition_hash.is_empty()
             || native.origin.producer_family.as_deref() != Some("polylogue")
+            || !native
+                .origin
+                .source
+                .as_ref()
+                .is_some_and(|source| source.name == "polylogue" && source.version == 2)
+            || native
+                .origin
+                .source_fingerprint
+                .as_ref()
+                .is_none_or(String::is_empty)
+            || native
+                .origin
+                .producer_identity
+                .as_ref()
+                .is_none_or(String::is_empty)
         {
             return Ok(());
         }

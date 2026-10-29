@@ -61,3 +61,12 @@ pub fn source_declaration() -> sinex_model::SourceDeclaration {
 
 #[cfg(test)]
 mod tests;
+
+/// Export is unavailable until every indexed owner kind has a local projector.
+/// Native Source2 registration and write authority do not establish this read contract.
+pub fn projection_catalog() -> crate::Result<sinex_model::ProjectionCatalog> {
+    Err(crate::Error::Refused {
+        name: "indexed projection catalog".into(),
+        reason: "the foreign signal receipt projectors are not registered".into(),
+    })
+}

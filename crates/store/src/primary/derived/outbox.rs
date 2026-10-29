@@ -62,10 +62,16 @@ pub fn stage_products(
         )
         .optional()?;
     if let Some((old_body, old_proof, cancelled)) = old {
-        if old_body != body
-            || cancelled.is_some()
-            || (old_proof.is_some() && offered_proof.is_some() && old_proof != offered_proof)
-        {
+        let same_proof = match (old_proof.as_deref(), proof) {
+            (Some(bytes), Some(offered)) => {
+                let old: RawInputProof = crate::encoding::unpack_json(bytes)?;
+                old.position == offered.position
+                    && old.policy_epoch == offered.policy_epoch
+                    && old.scope == offered.scope
+            }
+            _ => true,
+        };
+        if old_body != body || cancelled.is_some() || !same_proof {
             return Err(StoreError::Conflict(identity.into()));
         }
         if old_proof.is_none() && offered_proof.is_some() {
@@ -139,7 +145,11 @@ pub(crate) fn publish(index: &Connection, sinex: &dyn Sinex, state: &ReplayState
         let proof: RawInputProof = crate::encoding::unpack_json(&proof)?;
         if state.availability != ProjectionAvailability::Certified
             || state.erasure_fence.is_some()
-            || state.publication.as_ref() != Some(&proof)
+            || !state.publication.as_ref().is_some_and(|current| {
+                current.position == proof.position
+                    && current.policy_epoch == proof.policy_epoch
+                    && current.scope == proof.scope
+            })
             || state.applied_position != Some(proof.position)
             || state.policy_epoch != Some(proof.policy_epoch)
             || state.scope.as_ref() != Some(&proof.scope)

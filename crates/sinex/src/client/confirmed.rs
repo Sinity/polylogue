@@ -129,6 +129,27 @@ impl Client {
             ));
         }
         let product = crate::products::decode(&event.event_type, event.payload.clone())?;
+        if matches!(
+            &product,
+            local::Product::Session { .. }
+                | local::Product::Message { .. }
+                | local::Product::Event { .. }
+                | local::Product::Link { .. }
+                | local::Product::Background { .. }
+        ) && (event.source_ref.as_ref() != Some(&crate::source_reference())
+            || event.source_fingerprint.as_deref()
+                != Some(crate::kinds::source_declaration().fingerprint().as_str())
+            || event.producer_family.as_deref() != Some("polylogue")
+            || event
+                .producer_identity
+                .as_ref()
+                .is_none_or(String::is_empty))
+        {
+            return Err(Error::Invalid(
+                "raw membership input has no supported authenticated native origin".into(),
+            ));
+        }
+
         Ok(Confirmed {
             position: event.commit_seq,
             event: event.id.to_string(),
@@ -294,15 +315,24 @@ impl Client {
             sinex_protocol::ReplayContinuation::Complete {
                 projection,
                 raw_inputs,
-            } => local::ReplayContinuation::Complete {
-                projection: local::FullProjectionComplete {
-                    stamp: projection.stamp,
-                    position: projection.position,
-                    scope: projection.scope,
-                    catalog: projection.catalog,
-                },
-                raw_inputs: raw_coverage(raw_inputs),
-            },
+            } => {
+                let catalog = crate::kinds::projection_catalog()?;
+                if projection.catalog != catalog.fingerprint() {
+                    return Err(Error::Invalid(
+                        "owner full projection catalog differs from the supported local projectors"
+                            .into(),
+                    ));
+                }
+                local::ReplayContinuation::Complete {
+                    projection: local::FullProjectionComplete {
+                        stamp: projection.stamp,
+                        position: projection.position,
+                        scope: projection.scope,
+                        catalog: projection.catalog,
+                    },
+                    raw_inputs: raw_coverage(raw_inputs),
+                }
+            }
         };
         page.push(control_fact(ReplayControl::Page {
             page: local::ReplayPage {

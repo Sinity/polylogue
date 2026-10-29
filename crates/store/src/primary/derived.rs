@@ -4,8 +4,7 @@
 use super::{Product, ProductWrite, Sinex};
 use crate::{Result, StoreError};
 use polylogue_model::work_products::{
-    self, NativeEvidence, ReadingSource, SelectedBackground, SelectedMessage, WorkMessage,
-    WorkSnapshot,
+    self, ReadingSource, SelectedBackground, SelectedMessage, WorkMessage, WorkSnapshot,
 };
 use polylogue_model::{Message, Session, SessionId, WrittenBy};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -97,7 +96,8 @@ fn snapshot(
     index.execute_batch("DROP TABLE IF EXISTS temp.primary_work_message; CREATE TEMP TABLE primary_work_message(event TEXT PRIMARY KEY, input TEXT NOT NULL, seq INTEGER NOT NULL, ordinal INTEGER NOT NULL, id TEXT NOT NULL, product BLOB NOT NULL) STRICT; DROP TABLE IF EXISTS temp.primary_work_parent; CREATE TEMP TABLE primary_work_parent(event TEXT PRIMARY KEY) STRICT;")?;
     let mut session_facts: Option<Session> = None;
     let mut sources = Vec::new();
-    let mut native = Vec::new();
+    let native = Vec::new();
+    let mut native_unavailable = Vec::new();
     let mut backgrounds = Vec::new();
     let mut query=index.prepare("SELECT event,product,state FROM primary_next WHERE kind='parsed' AND session IN (SELECT session FROM primary_work_physical) AND product IS NOT NULL ORDER BY input,chain,step_start,admitted,source_order,event")?;
     let mut rows = query.query([])?;
@@ -168,17 +168,9 @@ fn snapshot(
                 .iter()
                 .any(|key| facts.data.get(*key).is_some())
                 {
-                    if let Some(range) = &facts.range {
-                        let location:Option<(String,u64)>=index.query_row("SELECT id,?3-offset FROM source_material WHERE input=?1 AND chain=?2 AND offset<=?3 AND offset+length>=?3 ORDER BY offset DESC LIMIT 1",params![reading.input.id,reading.chain,range.0],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-                        if let Some((material, anchor)) = location {
-                            native.push(NativeEvidence {
-                                event: event.clone(),
-                                material,
-                                anchor,
-                                data: facts.data.clone(),
-                            });
-                        }
-                    }
+                    // SourceRef authenticates the receiver, but does not attest
+                    // native acquisition rather than imported hook claims.
+                    native_unavailable.push("native_acquisition_authority_unavailable".to_string());
                 }
                 true
             }
@@ -262,7 +254,7 @@ fn snapshot(
     if let Some(error) = error {
         return Err(error);
     }
-    let unavailable = if sources
+    let mut unavailable = if sources
         .iter()
         .any(|source| source.selected && source.projection.is_some())
     {
@@ -270,6 +262,9 @@ fn snapshot(
     } else {
         Vec::new()
     };
+    unavailable.extend(native_unavailable);
+    unavailable.sort();
+    unavailable.dedup();
     let snapshot = WorkSnapshot {
         reducer_version: work_products::VERSION,
         membership,
