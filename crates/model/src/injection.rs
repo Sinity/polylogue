@@ -82,7 +82,10 @@ impl InjectionEvidence {
     ) -> Result<(), crate::bundle::BundleError> {
         if &self.message != message
             || self.source_version != projection.source_version
-            || !projection.block_ordinals.contains(&self.block)
+            || projection
+                .block_ordinals
+                .binary_search(&self.block)
+                .is_err()
         {
             return Err(crate::bundle::BundleError::InvalidInjectionEvidence);
         }

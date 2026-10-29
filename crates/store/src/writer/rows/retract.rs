@@ -20,7 +20,13 @@ impl RowWriter<'_, '_> {
             )?;
         }
         self.tx.execute("UPDATE session SET changed=?3,live_reparse=1 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2)", params![self.input_pk,self.chain,self.counter])?;
-        for table in ["session_record", "parsed", "parse_state", "unused"] {
+        for table in [
+            "session_record",
+            "parsed",
+            "parse_state",
+            "unused",
+            "message_injection_field",
+        ] {
             self.tx
                 .prepare_cached(&format!(
                     "DELETE FROM {table} WHERE input_pk=?1 AND chain=?2"
