@@ -432,11 +432,10 @@ impl Parameters {
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
-        match &mut query.source {
-            Source::Unit {
+        if let Source::Unit {
                 condition: Some(c), ..
-            } => self.cond(c, used, position)?,
-            _ => {}
+            } = &mut query.source {
+            self.cond(c, used, position)?;
         }
         for child in &mut query.attach {
             for window in &mut child.windows {

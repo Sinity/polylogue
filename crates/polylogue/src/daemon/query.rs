@@ -310,11 +310,12 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
     let seal = CursorSeal::new(reader.cursor_key()?);
     let position = reader.change_position()?;
+    let index_file = reader.index_identity()?;
     let mut opts = options(reader, &ask, ask.now, 0)?;
     let question = page::identity(ask.text, &opts)?;
     let cursor = ask
         .cursor
-        .map(|text| page::open(text, &seal, question, &position, &opts))
+        .map(|text| page::open(text, &seal, question, &position, index_file, &opts))
         .transpose()?;
     let seed = cursor.as_ref().map_or_else(
         || uuid::Uuid::now_v7().as_u128() as u64,
@@ -333,7 +334,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .transpose()?;
     let context = match cursor {
         Some(cursor) => cursor.context,
-        None => page::context(question, &position, &opts, &program, seed, ask.why)?,
+        None => page::context(question, &position, index_file, &opts, &program, seed, ask.why)?,
     };
     let paging = page::Paging {
         seal: &seal,
