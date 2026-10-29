@@ -618,3 +618,238 @@ fn streaming_export_does_not_collect_the_session() {
     assert!(out.bytes > 2_000_000);
     assert!(out.max_write < 1024);
 }
+
+#[test]
+fn summary_cards_show_header_facts_without_source_instructions() {
+    let mut session = polylogue_model::Session::new(
+        SessionId::parse("test:session").unwrap(),
+        Default::default(),
+    );
+    session.instructions = Some("HARNESS_INSTRUCTIONS_NOT_SUMMARY".into());
+    let record = Record::Session(polylogue_model::bundle::SessionRecord {
+        reference: "session:test:session".into(),
+        commit: 1,
+        session,
+    });
+    let items = layout(
+        record,
+        &ReadOptions {
+            view: View::Summary,
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    );
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        assert!(
+            !encode(&document(items.clone()), format).contains("HARNESS_INSTRUCTIONS_NOT_SUMMARY")
+        );
+    }
+}
+#[test]
+fn html_export_has_no_network_font_dependency() {
+    assert!(!html::export_css().contains("/assets/"));
+}
+#[test]
+fn declared_tool_pairs_refuse_conflicting_ids() {
+    let call = Block::ToolCall {
+        call_id: Some("a".into()),
+        tool: None,
+        action: Default::default(),
+        input: json!({}),
+        command: None,
+        path: None,
+        run_by_script: false,
+    };
+    let result = Block::ToolResult {
+        reported_duration_ms: None,
+        call_id: Some("b".into()),
+        outcome: polylogue_model::ToolOutcome::Ok,
+        output: None,
+        data: None,
+        attachments: vec![],
+    };
+    let pair = ToolPair {
+        emit_at: "block:test#0".into(),
+        call: SourceBlock {
+            source: Source::record("block:test#0"),
+            block: call,
+        },
+        result: Some(SourceBlock {
+            source: Source::record("block:test#1"),
+            block: result,
+        }),
+        running: false,
+        duration_ms: ValueState::default(),
+        error_line: None,
+        child: None,
+        edit: None,
+    };
+    assert!(pair.validate().is_err());
+}
+
+fn result_output(output: String, options: ReadOptions) -> (Record, Box<CallItem>) {
+    let record = message(vec![Block::ToolResult {
+        reported_duration_ms: None,
+        call_id: Some("orphan".into()),
+        outcome: polylogue_model::ToolOutcome::Ok,
+        output: Some(output),
+        data: None,
+        attachments: vec![],
+    }]);
+    let items = layout(record.clone(), &options, &ProjectionEvidence::default());
+    let ItemKind::Call { call } = items[1].kind.clone() else {
+        panic!()
+    };
+    (record, call)
+}
+#[test]
+fn expanded_tool_output_has_exact_omission_counts_and_zero_means_all() {
+    let original = (0..301)
+        .map(|n| format!("line {n} λ\n"))
+        .collect::<String>();
+    let options = ReadOptions {
+        tools: Some(Expansion::Full),
+        ..Default::default()
+    };
+    let (record, call) = result_output(original.clone(), options.clone());
+    let excerpt = call.output_excerpt.unwrap();
+    assert_eq!(excerpt.omitted_lines, 101);
+    assert!(excerpt.head.starts_with("line 0"));
+    assert!(excerpt.tail.starts_with("line 201"));
+    assert_eq!(
+        excerpt.head.chars().count() as u64
+            + excerpt.omitted_characters
+            + excerpt.tail.chars().count() as u64,
+        original.chars().count() as u64
+    );
+    assert!(call.output.is_none());
+    let Record::Message(row) = record else {
+        panic!()
+    };
+    assert!(
+        matches!(&row.message.blocks[0],Block::ToolResult{output:Some(output),..} if output==&original)
+    );
+    let (_, call) = result_output(
+        original.clone(),
+        ReadOptions {
+            output_lines: 0,
+            ..options
+        },
+    );
+    assert_eq!(call.output.as_deref(), Some(original.as_str()));
+    assert!(call.output_excerpt.is_none());
+}
+#[test]
+fn a_single_long_output_line_is_shortened_at_unicode_boundaries() {
+    let original = "λ🙂".repeat(5000);
+    let (_, call) = result_output(
+        original.clone(),
+        ReadOptions {
+            tools: Some(Expansion::Full),
+            ..Default::default()
+        },
+    );
+    let excerpt = call.output_excerpt.unwrap();
+    assert_eq!(excerpt.head.chars().count(), 2000);
+    assert_eq!(excerpt.tail.chars().count(), 2000);
+    assert_eq!(excerpt.omitted_characters, 6000);
+    assert_eq!(excerpt.omitted_lines, 0);
+}
+#[test]
+fn multiple_result_attachments_keep_individual_availability_and_source() {
+    let attachments = vec![
+        polylogue_model::Attachment {
+            name: Some("first".into()),
+            ..Default::default()
+        },
+        polylogue_model::Attachment {
+            name: Some("second".into()),
+            ..Default::default()
+        },
+    ];
+    let record = message(vec![Block::ToolResult {
+        reported_duration_ms: None,
+        call_id: None,
+        outcome: polylogue_model::ToolOutcome::Ok,
+        output: None,
+        data: None,
+        attachments,
+    }]);
+    let mut evidence = ProjectionEvidence::default();
+    evidence.attachments.insert(
+        "block:test:session:message#0".into(),
+        vec![
+            AttachmentEvidence {
+                availability: ValueState::known("present".into()),
+                ..Default::default()
+            },
+            AttachmentEvidence {
+                availability: ValueState::Unavailable {
+                    reason: "source missing".into(),
+                },
+                ..Default::default()
+            },
+        ],
+    );
+    let items = layout(record, &ReadOptions::default(), &evidence);
+    assert!(
+        matches!(&items[2].kind,ItemKind::Attachment{availability:ValueState::Value{value},..} if value=="present")
+    );
+    assert!(
+        matches!(&items[3].kind,ItemKind::Attachment{availability:ValueState::Unavailable{reason},..} if reason=="source missing")
+    );
+}
+#[test]
+fn inline_images_need_exact_hash_safe_raster_type_and_size() {
+    let bytes = vec![137, 80, 78, 71];
+    let mut attachment = polylogue_model::Attachment {
+        name: Some("sample".into()),
+        media_type: Some("image/png".into()),
+        blob: Some(polylogue_model::BlobHash::of(&bytes)),
+        ..Default::default()
+    };
+    let make = |attachment: polylogue_model::Attachment| ReadItem {
+        source: Source::record("block:test#0"),
+        kind: ItemKind::Attachment {
+            attachment: Box::new(attachment),
+            supplied_by: ValueState::default(),
+            availability: ValueState::known("present".into()),
+            link: Some("blobs/hash".into()),
+            inline_bytes: Some(bytes.clone()),
+        },
+    };
+    assert!(
+        html::item_with_inline_limit(&make(attachment.clone()), 100)
+            .into_string()
+            .contains("data:image/png;base64,")
+    );
+    assert!(
+        !html::item_with_inline_limit(&make(attachment.clone()), 3)
+            .into_string()
+            .contains("<img")
+    );
+    assert!(
+        !html::item(&make(attachment.clone()))
+            .into_string()
+            .contains("<img")
+    );
+    attachment.media_type = Some("image/svg+xml".into());
+    assert!(
+        !html::item_with_inline_limit(&make(attachment.clone()), 100)
+            .into_string()
+            .contains("<img")
+    );
+    attachment.media_type = Some("text/html".into());
+    assert!(
+        !html::item_with_inline_limit(&make(attachment.clone()), 100)
+            .into_string()
+            .contains("<img")
+    );
+    attachment.media_type = Some("image/png".into());
+    attachment.blob = Some(polylogue_model::BlobHash::of(b"different"));
+    assert!(
+        !html::item_with_inline_limit(&make(attachment), 100)
+            .into_string()
+            .contains("<img")
+    );
+}

@@ -9,7 +9,7 @@ pub mod pager;
 pub mod results;
 pub mod schema;
 pub mod terminal;
-pub use encode::{EncodeOptions, Encoder, encode_document};
+pub use encode::{ARCHIVE_NOTICE, EncodeOptions, Encoder, encode_document};
 pub use layout::{layout_record, visit_record};
 pub use polylogue_model::read;
 

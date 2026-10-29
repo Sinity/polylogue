@@ -70,6 +70,27 @@ impl ToolPair {
                 "tool pair needs a call and optional result".into(),
             ));
         }
+        if let (
+            crate::Block::ToolCall {
+                call_id: Some(call),
+                ..
+            },
+            Some(SourceBlock {
+                block:
+                    crate::Block::ToolResult {
+                        call_id: Some(result),
+                        ..
+                    },
+                ..
+            }),
+        ) = (&self.call.block, &self.result)
+        {
+            if call != result {
+                return Err(ReadError::InvalidEvidence(
+                    "tool pair call IDs disagree".into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -112,6 +133,8 @@ pub struct ProjectionEvidence {
     #[serde(default)]
     pub tool_pairs: BTreeMap<u64, ToolPair>,
     #[serde(default)]
+    pub output_calls: BTreeMap<u64, ReadyCall>,
+    #[serde(default)]
     pub assertions: Vec<Annotation>,
     #[serde(default)]
     pub variants: BTreeMap<u64, VariantText>,
@@ -119,10 +142,23 @@ pub struct ProjectionEvidence {
     pub cards: Vec<Card>,
     #[serde(default)]
     pub raw: Vec<RawRecord>,
+    /// Source block reference -> metadata aligned with its attachment positions.
     #[serde(default)]
-    pub attachment_availability: BTreeMap<u64, ValueState<String>>,
-    #[serde(default)]
-    pub attachment_links: BTreeMap<u64, String>,
+    pub attachments: BTreeMap<String, Vec<AttachmentEvidence>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expand_inherited: Option<ReadyCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentEvidence {
+    #[serde(default)]
+    pub supplied_by: ValueState<String>,
+    #[serde(default)]
+    pub availability: ValueState<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// The store has resolved access and supplied original content bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_bytes: Option<Vec<u8>>,
 }

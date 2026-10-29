@@ -127,7 +127,7 @@ fn edit(edit: &EditView) -> Markup {
 fn card(card: &Card) -> Markup {
     html! { section class="read-card" { @match card {
         Card::Fields { title,figures } => { h3 { (title) } dl { @for figure in figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } },
-        Card::Session { session,open } => { h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } details { summary { "Session fields" } pre { (serde_json::to_string_pretty(session).expect("session serializes")) } } @if let Some(call)=open { (ready(call)) } },
+        Card::Session { session,open } => { h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } @for line in crate::encode::session_lines(session) { p { (line) } } @if let Some(call)=open { (ready(call)) } },
         Card::LinkNode { reference,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call)) } },
         Card::LinkEdge { from,to,relation,how,cross_link } => { p { code { (from) } " → " code { (to) } " · " (relation) @if let Some(how)=how { " (" (how) ")" } @if *cross_link { " · cross-link" } } },
         Card::Change { edit:e } => { (edit(e)) },
@@ -136,6 +136,9 @@ fn card(card: &Card) -> Markup {
     } } }
 }
 pub fn item(item: &ReadItem) -> Markup {
+    item_with_inline_limit(item, 0)
+}
+pub fn item_with_inline_limit(item: &ReadItem, inline_limit: usize) -> Markup {
     html! { section class="read-item" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
         ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at|at.to_string()).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"?".into())) "/" (total.map(|n|n.to_string()).unwrap_or_else(||"?".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call)) } } } code { (&item.source.reference) } @for assertion in &header.assertions { aside { "◆ " (&assertion.kind) ": " (&assertion.value) " · " (format!("{:?}",assertion.author)) } } },
         ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
@@ -144,8 +147,8 @@ pub fn item(item: &ReadItem) -> Markup {
             ThinkingContent::Collapsed => { p class="thinking" { "thinking (" (value(words)) " words)" } },
             ThinkingContent::Encrypted => { p class="thinking" { "thinking (encrypted)" } }, ThinkingContent::Redacted => { p class="thinking" { "thinking (redacted)" } }, ThinkingContent::Absent { blocks } => { p class="thinking" { "thinking absent · " (blocks) " blocks" } }
         } },
-        ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (value(&call.tool)) " " code { (value(&call.target)) } " " (value(&call.outcome)) @if let Some(exit)=call.exit { " · exit " (exit) } " · " (value(&call.duration_ms)) " ms" } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() })) } } },
-        ItemKind::Attachment { attachment,supplied_by,availability,link } => { p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) } },
+        ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (value(&call.tool)) " " code { (value(&call.target)) } " " (value(&call.outcome)) @if let Some(exit)=call.exit { " · exit " (exit) } " · " (value(&call.duration_ms)) " ms" } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { pre { (&excerpt.head) } p class="omission" { "… " (excerpt.omitted_lines) " lines / " (excerpt.omitted_characters) " characters skipped" @if let Some(open)=&excerpt.open { " " (ready(open)) } } pre { (&excerpt.tail) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() })) } } },
+        ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) } },
         ItemKind::Other { type_name,data } => { details { summary { (type_name) } pre { (serde_json::to_string_pretty(data).expect("JSON serializes")) } } },
         ItemKind::Indicator { indicator,text,expand } => { aside class="indicator" data-kind=(format!("{indicator:?}")) { (text) @if let Some(call)=expand { " " (ready(call)) } } },
         ItemKind::Omission { count,unit,why,continue_call } => { aside class="omission" { "… " (value(count)) " " (unit) ": " (why) @if let Some(call)=continue_call { " " (ready(call)) } } },
@@ -169,6 +172,34 @@ pub(crate) fn export_css() -> String {
         .expect("constant request");
     let response = web_shell::assets::serve(&request);
     let mut css = String::from_utf8(response.into_body()).expect("shared CSS is UTF-8");
+    // Exports use system fonts; shared @font-face URLs belong to the web host.
+    if let Some(start) = css.find(":root{") {
+        css = css[start..].to_owned();
+    }
     css.push_str("body{font-family:system-ui,sans-serif;color:var(--ink);background:var(--ground);max-width:80rem;margin:auto;padding:2rem}pre,code{font-family:monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere}h2{font-size:1rem;border-top:1px solid var(--line);padding-top:1rem}.read-item{margin-block:1rem}.unknown,.omission,.meta{color:var(--muted-ink)}.value-state[data-state=unknown]{text-decoration:underline dotted}.read-card{border:1px solid var(--line);padding:1rem}dt{font-weight:bold}dd{margin-bottom:.5rem}");
     css
+}
+
+fn inline_image(
+    attachment: &polylogue_model::Attachment,
+    bytes: Option<&[u8]>,
+    limit: usize,
+) -> Option<String> {
+    let bytes = bytes?;
+    let mime = attachment.media_type.as_deref()?;
+    if bytes.len() > limit
+        || limit == 0
+        || !matches!(
+            mime,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+        )
+        || attachment.blob.as_ref() != Some(&polylogue_model::BlobHash::of(bytes))
+    {
+        return None;
+    }
+    use base64::Engine;
+    Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }

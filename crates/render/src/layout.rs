@@ -313,7 +313,9 @@ fn block_items(
     evidence: &ProjectionEvidence,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> Result<bool, ReadError> {
-    if !options.view.block_kinds().contains(&block.kind()) { return Ok(true); }
+    if !options.view.block_kinds().contains(&block.kind()) {
+        return Ok(true);
+    }
     let kind = match block {
         Block::Text { text } => {
             let text = evidence
@@ -366,10 +368,15 @@ fn block_items(
                 if !matches!(pair.duration_ms, ValueState::Unknown { .. }) {
                     call.duration_ms = pair.duration_ms.clone();
                 }
-                call.error_line = pair.error_line.clone();
+                call.error_line = pair.error_line.clone().or(call.error_line);
                 call.child = pair.child.clone().map(Box::new);
                 call.edit = pair.edit.clone();
                 call.result_source = pair.result.as_ref().map(|r| r.source.clone());
+                excerpt_output(
+                    &mut call,
+                    options.output_lines,
+                    evidence.output_calls.get(&ordinal),
+                );
                 if !visit(ReadItem {
                     source: pair.call.source.clone(),
                     kind: ItemKind::Call {
@@ -390,7 +397,7 @@ fn block_items(
                 }
                 return Ok(true);
             }
-            let call = match block {
+            let mut call = match block {
                 Block::ToolCall { .. } => {
                     call_item(block, None, options.tools() == Expansion::Full, false)
                 }
@@ -409,6 +416,11 @@ fn block_items(
                     false,
                 ),
             };
+            excerpt_output(
+                &mut call,
+                options.output_lines,
+                evidence.output_calls.get(&ordinal),
+            );
             if !visit(ReadItem {
                 source: source.clone(),
                 kind: ItemKind::Call {
@@ -420,7 +432,7 @@ fn block_items(
             return result_extras(block, &source, ordinal, options, evidence, visit);
         }
         Block::Image(attachment) | Block::File(attachment) => {
-            attachment_kind(attachment, ordinal, evidence)
+            attachment_kind(attachment, &source, 0, evidence)?
         }
         Block::Other { type_name, data } => ItemKind::Other {
             type_name: type_name.clone(),
@@ -431,24 +443,35 @@ fn block_items(
 }
 fn attachment_kind(
     attachment: &polylogue_model::Attachment,
-    ordinal: u64,
+    source: &Source,
+    index: usize,
     evidence: &ProjectionEvidence,
-) -> ItemKind {
-    ItemKind::Attachment {
-        attachment: Box::new(attachment.clone()),
-        supplied_by: ValueState::default(),
-        availability: evidence
-            .attachment_availability
-            .get(&ordinal)
-            .cloned()
-            .unwrap_or_default(),
-        link: evidence.attachment_links.get(&ordinal).cloned(),
+) -> Result<ItemKind, ReadError> {
+    let prepared = evidence
+        .attachments
+        .get(&source.reference)
+        .and_then(|attachments| attachments.get(index));
+    let inline_bytes = prepared.and_then(|prepared| prepared.inline_bytes.clone());
+    if let Some(bytes) = &inline_bytes {
+        if attachment.blob.as_ref() != Some(&polylogue_model::BlobHash::of(bytes)) {
+            return Err(ReadError::InvalidEvidence(
+                "attachment inline bytes do not match its canonical blob hash".into(),
+            ));
+        }
     }
+    Ok(ItemKind::Attachment {
+        attachment: Box::new(attachment.clone()),
+        supplied_by: prepared.map(|p| p.supplied_by.clone()).unwrap_or_default(),
+        availability: prepared.map(|p| p.availability.clone()).unwrap_or_default(),
+        link: prepared.and_then(|p| p.link.clone()),
+        inline_bytes,
+    })
 }
+
 fn result_extras(
     block: &Block,
     source: &Source,
-    ordinal: u64,
+    _ordinal: u64,
     options: &ReadOptions,
     evidence: &ProjectionEvidence,
     visit: &mut impl FnMut(ReadItem) -> bool,
@@ -469,10 +492,10 @@ fn result_extras(
         {
             return Ok(false);
         }
-        for attachment in attachments {
+        for (index, attachment) in attachments.iter().enumerate() {
             if !visit(ReadItem {
                 source: source.clone(),
-                kind: attachment_kind(attachment, ordinal, evidence),
+                kind: attachment_kind(attachment, source, index, evidence)?,
             }) {
                 return Ok(false);
             }
@@ -555,11 +578,84 @@ fn call_item(call: &Block, result: Option<&Block>, full: bool, running: bool) ->
         outcome,
         exit,
         duration_ms,
-        error_line: None,
+        error_line: match result {
+            Some(Block::ToolResult {
+                outcome:
+                    ToolOutcome::Error {
+                        reason: Some(reason),
+                    },
+                ..
+            }) => Some(match reason {
+                ErrorReason::ExitCode(0) => "exit 0 but marked error".into(),
+                ErrorReason::ExitCode(code) => format!("exit {code}"),
+                ErrorReason::Denied(reason) => format!("denied ({reason})"),
+                ErrorReason::Interrupted => "interrupted".into(),
+                ErrorReason::TimedOut => "timed out".into(),
+            }),
+            _ => None,
+        },
         input: full.then(|| input.clone()),
         output,
+        output_excerpt: None,
         result_source: None,
         child: None,
         edit: None,
     }
+}
+
+/// Keep exact substrings and count the omitted middle without searching the
+/// output for success or failure prose.
+fn excerpt_output(call: &mut CallItem, lines: u64, open: Option<&ReadyCall>) {
+    if lines == 0 {
+        return;
+    }
+    let Some(output) = &call.output else { return };
+    let mut bounds: Vec<usize> = std::iter::once(0)
+        .chain(output.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    if bounds.last() != Some(&output.len()) {
+        bounds.push(output.len());
+    }
+    let line_count = bounds.len().saturating_sub(1);
+    let n = usize::try_from(lines).unwrap_or(usize::MAX);
+    let (mut head_end, mut tail_start) = if n < line_count.div_ceil(2) {
+        (bounds[n], bounds[line_count - n])
+    } else {
+        (output.len(), output.len())
+    };
+    // Long lines are also shortened visibly. Restricting the retained ends
+    // bounds even a provider's single enormous, newline-free result.
+    let long_line = output.lines().any(|line| line.chars().count() > 4000);
+    if long_line {
+        head_end = head_end.min(
+            output
+                .char_indices()
+                .nth(2000)
+                .map(|(i, _)| i)
+                .unwrap_or(output.len()),
+        );
+        let tail_bound = output
+            .char_indices()
+            .rev()
+            .nth(1999)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        tail_start = if tail_start == output.len() {
+            tail_bound
+        } else {
+            tail_start.max(tail_bound)
+        };
+    }
+    if head_end >= tail_start {
+        return;
+    }
+    let omitted = &output[head_end..tail_start];
+    call.output_excerpt = Some(OutputExcerpt {
+        head: output[..head_end].into(),
+        tail: output[tail_start..].into(),
+        omitted_lines: omitted.bytes().filter(|byte| *byte == b'\n').count() as u64,
+        omitted_characters: omitted.chars().count() as u64,
+        open: open.cloned(),
+    });
+    call.output = None;
 }

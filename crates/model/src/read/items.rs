@@ -238,6 +238,8 @@ pub enum ItemKind {
         availability: ValueState<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         link: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inline_bytes: Option<Vec<u8>>,
     },
     Other {
         type_name: String,
@@ -323,11 +325,25 @@ pub struct CallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_excerpt: Option<OutputExcerpt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_source: Option<Source>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child: Option<Box<DelegationCard>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit: Option<EditView>,
+}
+/// Explicitly omitted middle of a tool result. Original bytes remain in the
+/// canonical record; `open` reads that exact source block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutputExcerpt {
+    pub head: String,
+    pub tail: String,
+    pub omitted_lines: u64,
+    pub omitted_characters: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<ReadyCall>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

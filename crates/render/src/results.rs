@@ -211,7 +211,7 @@ fn markdown(
     if cells.is_empty() {
         return Ok(());
     }
-    let esc = |s: &str| s.replace('|', "\\|");
+    let esc = crate::encode::markdown_escape;
     let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
     let mut head: Vec<String> = columns.iter().map(|c| esc(c)).collect();
     if with_snippet {
@@ -268,7 +268,10 @@ fn html(
         for (i, v) in r.iter().enumerate() {
             let column = descriptors[i];
             let value = &row[columns[i].as_str()];
-            match target.and_then(|target| target(column, value)) {
+            match target
+                .and_then(|target| target(column, value))
+                .filter(|href| crate::html::safe_url(href))
+            {
                 Some(href) => write!(
                     out,
                     "<td><a href=\"{}\">{}</a></td>",
