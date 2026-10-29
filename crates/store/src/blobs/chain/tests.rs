@@ -27,27 +27,42 @@ impl Fixture {
         }
     }
     fn add(&self, at: u64, length: u64, blob_offset: u64, bytes: &[u8]) -> BlobHash {
-        let prepared = hashed_blobs::Preparation::new(self._dir.path().join("parts"))
+        self.add_group([(at, length, blob_offset, bytes)])
+            .pop()
             .unwrap()
-            .plain(bytes, crate::blobs::LEVEL)
-            .unwrap();
+    }
+    fn add_group<'a>(
+        &self,
+        rows: impl IntoIterator<Item = (u64, u64, u64, &'a [u8])>,
+    ) -> Vec<BlobHash> {
+        let rows: Vec<_> = rows.into_iter().collect();
+        let preparation = hashed_blobs::Preparation::new(self._dir.path().join("parts")).unwrap();
+        let prepared = rows
+            .iter()
+            .map(|(_, _, _, bytes)| preparation.plain(*bytes, crate::blobs::LEVEL).unwrap())
+            .collect();
         let mut writer = crate::blobs::open_writer(&self.conn, self._dir.path()).unwrap();
         let group = writer
-            .append_group(vec![prepared], |hash| {
+            .append_group(prepared, |hash| {
                 crate::blobs::load_extent(&self.conn, "", hash)
                     .map_err(|e| hashed_blobs::Error::Refused(e.to_string()))
             })
             .unwrap()
             .wait()
             .unwrap();
-        let extent = &group.extents[0];
         let tx = self.conn.unchecked_transaction().unwrap();
-        crate::blobs::insert_extent(&tx, extent).unwrap();
-        tx.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('input',1,?1,?2,?3,?4)",params![at as i64,length as i64,extent.hash.0.as_slice(),blob_offset as i64]).unwrap();
-        tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",params![extent.segment,group.end as i64]).unwrap();
+        for ((at, length, blob_offset, _), extent) in rows.iter().zip(&group.extents) {
+            crate::blobs::insert_extent(&tx, extent).unwrap();
+            tx.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('input',1,?1,?2,?3,?4)",params![*at as i64,*length as i64,extent.hash.0.as_slice(),*blob_offset as i64]).unwrap();
+        }
+        tx.execute("INSERT INTO segment(name,committed_end) VALUES ('segments/current.hb',?1) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",[group.end as i64]).unwrap();
         tx.commit().unwrap();
         writer.acknowledge(&group).unwrap();
-        BlobHash(extent.hash.0)
+        group
+            .extents
+            .iter()
+            .map(|extent| BlobHash(extent.hash.0))
+            .collect()
     }
     fn load(&self, length: u64) -> StoredChain {
         StoredChain::load(&self.conn, "", "input", 1, length).unwrap()
@@ -101,11 +116,19 @@ fn independent_sequential_and_range_readers_preserve_shared_slices_and_short_rea
 #[test]
 fn many_segment_blobs_stay_compressed_and_clones_share_one_extent_view() {
     let w = Fixture::new(512 * 16384);
-    for n in 0u64..512 {
-        let mut bytes = vec![b'x'; 16384];
-        bytes[..8].copy_from_slice(&n.to_le_bytes());
-        w.add(n * 16384, 16384, 0, &bytes);
-    }
+    let bytes: Vec<_> = (0u64..512)
+        .map(|n| {
+            let mut bytes = vec![b'x'; 16384];
+            bytes[..8].copy_from_slice(&n.to_le_bytes());
+            bytes
+        })
+        .collect();
+    w.add_group(
+        bytes
+            .iter()
+            .enumerate()
+            .map(|(n, bytes)| (n as u64 * 16384, 16384, 0, bytes.as_slice())),
+    );
     let chain = w.load(512 * 16384);
     let clone = chain.clone();
     assert!(Arc::ptr_eq(
