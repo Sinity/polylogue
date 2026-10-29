@@ -71,9 +71,7 @@ fn begin(
                 reset.invalidate()?;
             }
             changed = true;
-            let generation = uuid::Uuid::now_v7().to_string();
-            tx.execute("INSERT INTO meta(key,value) VALUES ('generation',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [generation])?;
-            tx.execute("INSERT INTO meta(key,value) VALUES ('cursor_key',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [cursor_key()?])?;
+            rotate(&tx)?;
             tx.execute("DELETE FROM removed_session", [])?;
         }
         tx.execute("INSERT INTO meta(key,value) VALUES ('boot_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [boot])?;

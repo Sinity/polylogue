@@ -114,14 +114,32 @@ impl Reader<'_> {
 
     /// Events in the session's reading order, preserving identities and claims.
     pub fn event_records(&self, session: &SessionId) -> Result<Vec<InputEventRecord>> {
-        let ids = self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.seq,e.id")?
-            .query_map([session.to_string()],|row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        ids.into_iter()
-            .map(|id| {
-                self.event_record(&id)?
-                    .ok_or_else(|| StoreError::Invalid("selected event disappeared".into()))
-            })
-            .collect()
+        let mut records = Vec::new();
+        self.visit_event_records(session, |record| {
+            records.push(record);
+            std::ops::ControlFlow::Continue(())
+        })?;
+        Ok(records)
+    }
+
+    /// Visit selected events in reading order without retaining the session's payloads.
+    pub fn visit_event_records(
+        &self,
+        session: &SessionId,
+        mut visit: impl FnMut(InputEventRecord) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        let mut statement=self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.seq,e.id")?;
+        let mut rows = statement.query([session.to_string()])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let record = self
+                .event_record(&id)?
+                .ok_or_else(|| StoreError::Invalid("selected event disappeared".into()))?;
+            if visit(record).is_break() {
+                break;
+            }
+        }
+        Ok(())
     }
 
     pub fn event_export(&self, id: &str) -> Result<Option<EventExport>> {

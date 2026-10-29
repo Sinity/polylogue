@@ -146,6 +146,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
                 counts,
                 reset: true,
                 comparison: None,
+                checkpoint: None,
             },
         ),
     ]

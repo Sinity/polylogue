@@ -403,7 +403,7 @@ impl ReadTarget {
 }
 
 fn attachment_chunk() -> usize {
-    64 * 1024
+    super::attachment::PAGE_BYTES
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,7 +1,6 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
-mod scanner_key;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -54,9 +53,11 @@ impl Archive {
         crate::read::scope::root_key(root)
     }
 
-    /// Register before opening the producer or exposing a derived cache. The
-    /// callback runs immediately and at each reset, under the publication fence;
-    /// it must durably invalidate its pointer without re-entering store APIs.
+    /// Register while holding writer custody of a live shared archive. Startup
+    /// uses the open-with-invalidator constructors to acquire that custody first.
+    /// The callback runs immediately and at each reset, under the publication fence;
+    /// it must durably invalidate its pointer without acquiring archive readers
+    /// or re-entering the scope fence.
     pub fn register_scope_invalidator(
         root: &Path,
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
@@ -68,6 +69,22 @@ impl Archive {
     /// confirmed checkpoint; this token alone cannot authorize cache activation.
     pub fn scope_token(&self) -> Result<crate::ReadScopeToken> {
         self.read_scope.token()
+    }
+
+    /// Exercise the native generation transition in synthetic transport tests.
+    /// This changes cursor identity only; primary grant resets use confirmed facts.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn advance_generation_for_test(&self) -> Result<()> {
+        let mut index = open_write(&self.index_db(), cache::SETUP)?;
+        index.pragma_update(None, "synchronous", 2)?;
+        let mut reset = self.read_scope.begin_reset()?;
+        reset.invalidate()?;
+        drop(reset);
+        let tx = index.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        generation::rotate(&tx)?;
+        tx.commit()?;
+        self.read_scope.finish_reset();
+        Ok(())
     }
 
     /// Where source rows are read: the standalone ledger or the primary index cache.
@@ -144,14 +161,7 @@ impl Archive {
 
     /// The primary cache remains readable when configuration cannot name its byte owner.
     pub fn open_primary_cache(root: &Path) -> Result<(Self, ArchiveLock)> {
-        let lock = Self::lock(root)?;
-        let archive = Self {
-            root: root.to_path_buf(),
-            sinex_store: None,
-            primary: true,
-            read_scope: crate::read::scope::state(root),
-        };
-        archive.finish_open()?;
+        let (archive, lock, ()) = Self::open_configured(Self::primary_cache(root), |_| Ok(()))?;
         Ok((archive, lock))
     }
 
@@ -196,23 +206,72 @@ impl Archive {
     /// at their current versions, or opens an existing one. Takes the writer
     /// lock; a second daemon on the same archive is refused.
     pub fn open_or_create(root: &Path) -> Result<(Self, ArchiveLock)> {
-        let lock = Self::lock(root)?;
-        let archive = Self::at(root);
-        fs::create_dir_all(archive.blobs_dir())?;
-        let a = open_write(&archive.archive_db(), cache::SETUP)?;
-        let schema_lock = crate::write_lock::hold(&a)?;
-        schema::ensure_archive(&a)?;
-        drop(schema_lock);
-        archive.finish_open()?;
+        let (archive, lock, ()) = Self::open_configured(Self::at(root), |_| Ok(()))?;
         Ok((archive, lock))
     }
 
     /// Opens the single primary cache. Only the confirmed consumer fills it.
     pub fn open_primary(root: &Path, store: &Path) -> Result<(Self, ArchiveLock)> {
-        let lock = Self::lock(root)?;
-        let archive = Self::on_sinex(root, store);
-        archive.finish_open()?;
+        let (archive, lock, ()) = Self::open_configured(Self::on_sinex(root, store), |_| Ok(()))?;
         Ok((archive, lock))
+    }
+
+    /// Acquire writer custody before registering cache invalidation and opening
+    /// the standalone archive. Retain the returned registration with the lock.
+    pub fn open_or_create_with_invalidator(
+        root: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+        Self::open_configured(Self::at(root), |archive| {
+            archive.read_scope.register(invalidate)
+        })
+    }
+
+    /// Open a primary cache with invalidation installed before generation setup.
+    pub fn open_primary_with_invalidator(
+        root: &Path,
+        store: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+        Self::open_configured(Self::on_sinex(root, store), |archive| {
+            archive.read_scope.register(invalidate)
+        })
+    }
+
+    /// Install invalidation while opening a cache whose byte owner is unavailable.
+    pub fn open_primary_cache_with_invalidator(
+        root: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+        Self::open_configured(Self::primary_cache(root), |archive| {
+            archive.read_scope.register(invalidate)
+        })
+    }
+
+    fn primary_cache(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            sinex_store: None,
+            primary: true,
+            read_scope: crate::read::scope::state(root),
+        }
+    }
+
+    fn open_configured<T>(
+        archive: Self,
+        setup: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<(Self, ArchiveLock, T)> {
+        let lock = Self::lock(&archive.root)?;
+        let setup = setup(&archive)?;
+        if !archive.is_primary() {
+            fs::create_dir_all(archive.blobs_dir())?;
+            let source = open_write(&archive.archive_db(), cache::SETUP)?;
+            let schema_lock = crate::write_lock::hold(&source)?;
+            schema::ensure_archive(&source)?;
+            drop(schema_lock);
+        }
+        archive.finish_open()?;
+        Ok((archive, lock, setup))
     }
 
     /// Where input bytes wait, in primary mode, until the writer sends them

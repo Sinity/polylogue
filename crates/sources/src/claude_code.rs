@@ -15,7 +15,7 @@
 //! once, and the copying session gets a `copy` link.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 mod blocks;
 mod fields;
@@ -1231,11 +1231,11 @@ impl Parser for ClaudeCode {
                         None => self.own_session(parser_state),
                     }
                 {
+                    let (result_at, result_at_evidence) =
+                        crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
                     out.background.push(BackgroundUpdate {
-                        result_at: v
-                            .get("timestamp")
-                            .and_then(time::rfc3339)
-                            .map(crate::time::SourceTime::timestamp),
+                        result_at,
+                        result_at_evidence,
                         reported_duration_ms: v.get("durationMs").and_then(Json::as_u64),
                         session,
                         task_id,

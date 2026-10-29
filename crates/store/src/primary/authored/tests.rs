@@ -760,7 +760,7 @@ fn pending_historical_restore_keeps_execution_disabled_after_restart() {
 #[test]
 fn reverse_full_snapshot_restore_keeps_event_order_and_historical_execution() {
     let mut source = cache();
-    let writes = vec![
+    let writes = [
         request("enqueue", 10, UserWrite::ChatEnqueue(chat("chat"))),
         request("chat-claim", 20, UserWrite::ChatClaim { by: "tab".into() }),
         request(

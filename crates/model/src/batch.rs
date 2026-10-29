@@ -6,6 +6,38 @@ use crate::{BlobHash, Document, Event, Link, Message, Session, SessionId, ToolOu
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Native parser continuation at one exact admitted cursor. This is not source,
+/// revision or receipt evidence; the containing reading supplies that identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ParserCheckpoint {
+    pub version: u32,
+    pub reading_version: String,
+    pub parsed_upto: u64,
+    /// None is an explicitly stateless parser; an absent envelope is unknown.
+    pub parser_state: Option<crate::Json>,
+}
+impl ParserCheckpoint {
+    pub const VERSION: u32 = 1;
+    pub fn new(
+        reading_version: String,
+        parsed_upto: u64,
+        parser_state: Option<crate::Json>,
+    ) -> Self {
+        Self {
+            version: Self::VERSION,
+            reading_version,
+            parsed_upto,
+            parser_state,
+        }
+    }
+    pub fn matches(&self, reading_version: &str, parsed_upto: u64) -> bool {
+        self.version == Self::VERSION
+            && self.reading_version == reading_version
+            && self.parsed_upto == parsed_upto
+    }
+}
+
 /// Rows one parse step produced. Sessions and messages are upserts keyed by
 /// their IDs: a later step may send a longer version of the same message
 /// (one still being written), and writing it again is harmless.

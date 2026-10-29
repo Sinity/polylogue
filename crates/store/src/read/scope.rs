@@ -132,7 +132,8 @@ impl ReadScopeState {
 }
 impl ReadScopeToken {
     /// Fence one pointer activation against scope invalidation. Build the cache
-    /// outside this guard; the callback must not re-enter the store or scope API.
+    /// outside this guard; the callback must not acquire archive readers or
+    /// re-enter this fence.
     pub fn with_current<T>(&self, publish: impl FnOnce() -> Result<T>) -> Result<T> {
         self.check()?;
         let _fence = self.state.fence.lock().map_err(|_| poisoned())?;
