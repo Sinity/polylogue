@@ -212,6 +212,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
     captured.member = Some(polylogue_store::ImportMember {
         version: 1,
         import_id: "competing".into(),
+        authorship: None,
         member: "conversations.json".into(),
         format: None,
     });

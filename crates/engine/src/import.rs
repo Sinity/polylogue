@@ -4,13 +4,15 @@
 
 use super::*;
 use polylogue_sources::origin::Arrival;
+use std::collections::BTreeSet;
 
 mod assets;
+mod authored;
+mod bundle;
 pub(crate) mod exports;
 mod legacy;
 mod package;
 mod recognition;
-mod user_state;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
@@ -43,7 +45,7 @@ impl Engine {
                 ..Default::default()
             };
             let mut ids = Vec::new();
-            let mut user_states = Vec::new();
+            let mut authored_records = Vec::new();
             let mut items = Vec::new();
             let mut hashes = std::collections::BTreeMap::new();
             let import_id = uuid::Uuid::now_v7().to_string();
@@ -84,6 +86,12 @@ impl Engine {
                 captured.member = Some(polylogue_store::ImportMember {
                     version: 1,
                     import_id: import_id.clone(),
+                    authorship: Some(options.authorship.clone().unwrap_or_else(|| {
+                        polylogue_model::authorship::Authorship {
+                            author: polylogue_model::Author::Script("polylogue-import".into()),
+                            via: polylogue_model::authorship::Channel::Import,
+                        }
+                    })),
                     member: if member.parent.is_some() {
                         member
                             .path
@@ -122,8 +130,8 @@ impl Engine {
                             path_bytes: member.member_path_bytes.clone().unwrap_or_default(),
                         })
                 });
-                if origin.name == "polylogue-export" {
-                    user_states.push((
+                if origin.name == "polylogue-bundle" {
+                    authored_records.push((
                         member.path.clone(),
                         captured.prepared.hash().to_string(),
                         member.bytes,
@@ -132,12 +140,35 @@ impl Engine {
                 items.push((member.path, origin, None, captured));
             }
             if !options.explain {
-                self.store_import_group(items, &mut report)?;
-                for (at, id, bytes) in user_states {
-                    if self.reads.reader()?.input_progress(&id)?.is_some() {
-                        self.import_user_state(
+                let executed = self.store_import_group(items, &mut report)?;
+                for (at, id, bytes) in authored_records {
+                    if executed.contains(&id) {
+                        continue;
+                    }
+                    if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
+                        let current = polylogue_model::authored::ImportAttribution {
+                            machine: self.config.machine.clone(),
+                            input: id,
+                            chain: progress.chain,
+                            actor: options
+                                .authorship
+                                .as_ref()
+                                .map(|authorship| authorship.author.clone())
+                                .unwrap_or_else(|| {
+                                    polylogue_model::Author::Script("polylogue-import".into())
+                                }),
+                            at: polylogue_model::Timestamp::from_unix_ms(now_ms()).ok_or_else(
+                                || {
+                                    EngineError::Store(polylogue_store::StoreError::Invalid(
+                                        "import receipt time is outside the supported range".into(),
+                                    ))
+                                },
+                            )?,
+                        };
+                        self.restore_bundle_authored(
                             &at,
                             &mut std::fs::File::open(&bytes)?,
+                            &current,
                             &mut report,
                         )?;
                     }
@@ -152,6 +183,9 @@ impl Engine {
             report.pass.seconds = started.elapsed().as_secs_f64();
             return Ok(report);
         }
+        report.user_state.applied += report.pass.authored.applied;
+        report.user_state.present += report.pass.authored.present;
+        report.user_state.pending += report.pass.authored.pending;
         self.refresh_import_assets(&mut report.pass)?;
         report.pass.sessions_derived = self.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
@@ -162,7 +196,8 @@ impl Engine {
         &mut self,
         items: Vec<(PathBuf, &'static OriginSpec, Option<FileFacts>, Captured)>,
         report: &mut ImportReport,
-    ) -> Result<(), EngineError> {
+    ) -> Result<BTreeSet<String>, EngineError> {
+        let mut executed = BTreeSet::new();
         let existing = items
             .iter()
             .map(|(_, _, _, captured)| {
@@ -188,10 +223,11 @@ impl Engine {
                     arrival_rank: 2,
                 };
                 if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
+                    executed.insert(plan.input.id.clone());
                     self.execute(vec![plan], &mut report.pass)?;
                 }
             }
-            return Ok(());
+            return Ok(executed);
         }
         let mut metadata = Vec::new();
         let mut group = Vec::new();
@@ -220,7 +256,7 @@ impl Engine {
             });
         }
         if group.is_empty() {
-            return Ok(());
+            return Ok(executed);
         }
         let outcomes = self
             .writer
@@ -241,34 +277,63 @@ impl Engine {
                 report.pass.bytes_stored += stored.length;
             }
             if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
+                executed.insert(plan.input.id.clone());
                 self.execute(vec![plan], &mut report.pass)?;
             }
         }
+        Ok(executed)
+    }
+
+    pub(crate) fn restore_captured_authored(
+        &mut self,
+        plan: &crate::plan::Plan,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        if plan.origin.name != "polylogue-bundle" {
+            return Ok(());
+        }
+        let Change::Reparse { chain } = plan.change else {
+            return Ok(());
+        };
+        let reader = self.reads.reader()?;
+        let current = reader.import_attribution(&plan.input.id, chain)?;
+        let stored = reader.stored_chain(&plan.input.id, chain, plan.size)?;
+        drop(reader);
+        polylogue_store::fault::check("import.before_authored_restore", &plan.input.id)?;
+        authored::replay(stored.reader(Arc::clone(&self.blobs)), |entry| {
+            let outcome = self
+                .writer
+                .restore_authored(entry.prepared, entry.imports, current.clone())
+                .map_err(|error| error.to_string())?;
+            if outcome.pending {
+                pass.authored.pending += 1;
+            } else if outcome.repeat {
+                pass.authored.present += 1;
+            } else {
+                pass.authored.applied += 1;
+            }
+            Ok(())
+        })
+        .map_err(EngineError::Parse)?;
+        polylogue_store::fault::check("import.after_authored_restore", &plan.input.id)?;
         Ok(())
     }
 
-    fn import_user_state(
+    fn restore_bundle_authored(
         &mut self,
         path: &Path,
         file: &mut std::fs::File,
+        current: &polylogue_model::authored::ImportAttribution,
         report: &mut ImportReport,
     ) -> Result<(), EngineError> {
-        use polylogue_store::primary::RegisterChange;
-        use std::io::Seek;
-        // Validate the entire immutable document before applying its first request.
-        if serde_json::from_reader::<_, serde::de::IgnoredAny>(&mut *file).is_err() {
-            return Ok(());
-        }
-        file.rewind()?;
-        let result = user_state::replay(file, |entry| {
-            let RegisterChange::Request { request, .. } = entry else {
-                return Err("an entry is not a user request".into());
-            };
+        let result = authored::replay(file, |entry| {
             let outcome = self
                 .writer
-                .user(*request)
+                .restore_authored(entry.prepared, entry.imports, current.clone())
                 .map_err(|error| error.to_string())?;
-            if outcome.repeat {
+            if outcome.pending {
+                report.user_state.pending += 1;
+            } else if outcome.repeat {
                 report.user_state.present += 1;
             } else {
                 report.user_state.applied += 1;
@@ -279,7 +344,7 @@ impl Engine {
             report
                 .pass
                 .errors
-                .push(format!("{}: user state: {error}", path.display()));
+                .push(format!("{}: authored restoration: {error}", path.display()));
         }
         Ok(())
     }

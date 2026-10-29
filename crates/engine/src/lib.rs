@@ -184,6 +184,8 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
+    /// Historical effects accepted during ordinary stored-input replay.
+    pub authored: UserStateReport,
     /// Whole-location scans, excluding changed paths and live-file checks.
     pub full_scans: u64,
     /// Input visits, summed across turns by run_pass.
@@ -270,6 +272,8 @@ pub struct ImportReport {
 /// Requests replayed from Polylogue exports.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct UserStateReport {
+    /// Durably accepted and awaiting the confirmed primary stream.
+    pub pending: u64,
     /// Written into this archive.
     pub applied: u64,
     /// Already here, from an earlier import or the archive's own history.
