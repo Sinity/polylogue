@@ -76,14 +76,20 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("toolCalls", Rule::Read(T::Array)),
     ("toolCalls[].id", Rule::Read(T::String)),
     ("toolCalls[].name", Rule::Read(T::String)),
-    ("toolCalls[].args", Rule::Read(T::Any)),
-    ("toolCalls[].result", Rule::Read(T::Any)),
+    ("toolCalls[].args", Rule::Kept("complete call input")),
+    (
+        "toolCalls[].result",
+        Rule::Kept("complete native result data"),
+    ),
     ("toolCalls[].status", Rule::Read(T::String)),
     (
         "toolCalls[].timestamp",
         Rule::Excluded("the turn's time places the call"),
     ),
-    ("toolCalls[].resultDisplay", Rule::Read(T::Any)),
+    (
+        "toolCalls[].resultDisplay",
+        Rule::Kept("native result display data"),
+    ),
     (
         "toolCalls[].displayName",
         Rule::Excluded("label for the tool name"),

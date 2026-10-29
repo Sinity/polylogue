@@ -374,3 +374,11 @@ pub static CONTINUATION_FIELDS: Fields = Fields::new(&[
     ("type", Read(T::String)),
     ("continuedInSessionId", Read(T::String)),
 ]);
+
+pub static AGENT_PROGRESS_FIELDS: Fields = Fields::new(&[
+    ("", Kept("complete progress record in the event")),
+    ("type", Read(T::String)),
+    ("sessionId", Read(T::String)),
+    ("data.type", Read(T::String)),
+    ("data.agentId", Read(T::String)),
+]);

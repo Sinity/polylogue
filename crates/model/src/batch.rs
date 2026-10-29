@@ -139,6 +139,8 @@ impl RecordOutcome {
 /// never scalar bodies from the input. The writer gives these their receipt time.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireShape {
+    pub record_kind: String,
+    pub path: String,
     pub types: BTreeMap<String, u64>,
     pub expected: Vec<String>,
     pub dynamic_map: bool,
@@ -146,6 +148,8 @@ pub struct WireShape {
 }
 impl WireShape {
     pub fn merge(&mut self, other: &Self) {
+        self.record_kind.clone_from(&other.record_kind);
+        self.path.clone_from(&other.path);
         for (kind, count) in &other.types {
             *self.types.entry(kind.clone()).or_default() += count;
         }

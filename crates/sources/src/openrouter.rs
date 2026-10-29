@@ -110,7 +110,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "metadata.plugins",
         Rule::Kept("plugins enabled for the reply"),
     ),
-    ("metadata.reasoning", Rule::Read(T::StringOrArray)),
+    ("metadata.reasoning", Rule::Read(T::String)),
 ]);
 
 impl ExportParser for OpenRouter {

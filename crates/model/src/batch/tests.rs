@@ -66,3 +66,27 @@ fn order_key_sorts_by_input_then_offset() {
         }
     );
 }
+
+#[test]
+fn wire_shapes_survive_scratch_serialization_and_count_merge() {
+    let key = serde_json::to_string(&("record.kind", "/a.b/[]/~1")).unwrap();
+    let mut counts = RecordCounts::default();
+    counts.wire_shapes.insert(
+        key.clone(),
+        WireShape {
+            record_kind: "record.kind".into(),
+            path: "/a.b/[]/~1".into(),
+            types: BTreeMap::from([("string".into(), 2)]),
+            expected: vec!["string".into()],
+            dynamic_map: true,
+            known_kinds: vec!["message".into()],
+        },
+    );
+    let decoded: RecordCounts =
+        serde_json::from_slice(&serde_json::to_vec(&counts).unwrap()).unwrap();
+    assert_eq!(decoded, counts);
+    counts.merge(&decoded);
+    assert_eq!(counts.wire_shapes[&key].types["string"], 4);
+    assert_eq!(counts.wire_shapes[&key].record_kind, "record.kind");
+    assert_eq!(counts.wire_shapes[&key].path, "/a.b/[]/~1");
+}

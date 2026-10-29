@@ -45,12 +45,13 @@ impl Records {
         for path in accounting.unused {
             self.counts.unread(kind, &path);
         }
-        for (path, shape) in accounting.shapes {
-            self.counts
-                .wire_shapes
-                .entry(format!("{kind}.{path}"))
-                .or_default()
-                .merge(&shape);
+        for (path, mut shape) in accounting.shapes {
+            shape.record_kind = kind.to_owned();
+            let key = serde_json::to_string(&(kind, &path)).expect("string tuple");
+            let observed = self.counts.wire_shapes.entry(key).or_default();
+            observed.record_kind.clone_from(&shape.record_kind);
+            observed.path.clone_from(&shape.path);
+            observed.merge(&shape);
         }
     }
 
