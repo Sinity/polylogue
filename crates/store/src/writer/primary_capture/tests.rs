@@ -293,6 +293,11 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         assert_eq!(snapshot.basis.confirmed, None);
         assert_eq!(snapshot.basis.pending.as_deref(), Some("offline-capture"));
         assert!(snapshot.pending.raw.is_some());
+        let Capture::Input(hydrated) = writer.capture("offline-capture".into()).unwrap() else {
+            panic!("the pending source must hydrate its original input facts");
+        };
+        assert_eq!(hydrated.parsed[0].output.events[0].data, payload);
+        assert_eq!(hydrated.parsed[0].parsed_upto, bytes.len() as u64);
         let index = crate::archive::open_read(&archive.index_db()).unwrap();
         assert_eq!(
             index
