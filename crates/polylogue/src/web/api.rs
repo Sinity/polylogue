@@ -169,7 +169,11 @@ async fn answer(
             polylogue_model::authorship::Channel::Web,
             limit.cancellation,
         );
-        accepted.accepted_request = Some(Arc::new(request.clone()));
+        accepted.invocation = Some(
+            web.daemon
+                .invocation(&accepted.authorship)
+                .with_accepted_request(Some(Arc::new(request.clone()))),
+        );
         let scope = accepted.authorship.author.to_string();
         let trusted = command_surface::Caller::authenticated(scope, accepted);
         let answer = table
@@ -252,6 +256,10 @@ async fn stream(
         polylogue_model::authorship::Channel::Web,
         cancellation.clone(),
     );
+    let invocation = web
+        .daemon
+        .invocation(&accepted.authorship)
+        .with_accepted_request(accepted_request.map(Arc::new));
     let (output, input) = tokio::io::duplex(64 * 1024);
     let (ready, first) = tokio::sync::oneshot::channel();
     let runtime = tokio::runtime::Handle::current();
@@ -263,16 +271,12 @@ async fn stream(
             ready: Some(ready),
         };
         let mut guarded = crate::protocol::stream::GuardedWriter::new(&mut output, limit.clone());
-        let result = limit.scope(|| {
-            let invocation = worker
-                .daemon
-                .invocation(&accepted.authorship)
-                .with_accepted_request(accepted_request.map(Arc::new));
-            match worker.daemon.resolve_operation_context(invocation) {
+        let result = limit.scope(
+            || match worker.daemon.resolve_operation_context(invocation) {
                 Ok(operation) => produce(&worker_request, &worker.daemon, &operation, &mut guarded),
                 Err(response) => Some(Err(response)),
-            }
-        });
+            },
+        );
         let result = match guarded.failure() {
             Some(failure) => Some(Err(failure)),
             None => result,

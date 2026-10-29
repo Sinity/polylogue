@@ -143,14 +143,12 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     };
                     polylogue_model::authorship::compute_authorship(via, &Default::default(), None)
                 });
-            let accepted_request = accepted.and_then(|caller| caller.accepted_request.clone());
+            let invocation = accepted.and_then(|caller| caller.invocation.clone());
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let worker = tokio::task::spawn_blocking(move || {
                 let limit = polylogue_store::read::limit::ReadLimit::without_deadline(cancellation);
-                let invocation = daemon
-                    .invocation(&authorship)
-                    .with_accepted_request(accepted_request);
+                let invocation = invocation.unwrap_or_else(|| daemon.invocation(&authorship));
                 crate::daemon::service::handle_with_invocation(
                     request,
                     &daemon,

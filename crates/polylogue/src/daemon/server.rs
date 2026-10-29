@@ -71,7 +71,10 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         channel,
                         cancellation.clone(),
                     );
-                    accepted.accepted_request = Some(Arc::new(request.clone()));
+                    accepted.invocation = Some(
+                        d.invocation(&accepted.authorship)
+                            .with_accepted_request(Some(Arc::new(request.clone()))),
+                    );
                     accepted.working_directory =
                         crate::protocol::caller::working_directory(&out).ok();
                     if let Some(command) = crate::commands::command(&request.operation)
@@ -108,11 +111,10 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                                 let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
                                 let produced = limit.scope(|| match limit.check() {
                                     Ok(()) => {
-                                        let invocation = d
-                                            .invocation(&accepted.authorship)
-                                            .with_accepted_request(
-                                                accepted.accepted_request.clone(),
-                                            );
+                                        let invocation = accepted
+                                            .invocation
+                                            .clone()
+                                            .expect("canonical request captures admission");
                                         d.resolve_operation_context(invocation).and_then(
                                             |operation| {
                                                 crate::protocol::stream::produce_limited(
