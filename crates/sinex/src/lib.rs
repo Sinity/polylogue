@@ -262,6 +262,12 @@ impl Drop for Sinex {
 }
 
 impl polylogue_store::primary::Sinex for Sinex {
+    fn raw_acquisition_cursor(
+        &self,
+        generation: &polylogue_store::primary::SourceGeneration,
+    ) -> polylogue_store::Result<Option<polylogue_store::primary::RawAcquisitionCursor>> {
+        Ok(self.raw_acquisition_cursor(generation)?)
+    }
     fn prepare_input_group(
         &self,
         plan: &polylogue_store::primary::CapturePlan,

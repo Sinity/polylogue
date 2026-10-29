@@ -167,6 +167,14 @@ there is no new logical extent. A metadata-only capture has no raw range and
 keeps its observation JSON as metadata. Neither case may substitute observation
 JSON for provider bytes or invent a whole-blob address for a retained range.
 
+Physical resumption uses a separate raw acquisition cursor built from committed
+body references in one exact provider generation and stream. Its ranges must
+be contiguous and cite their actual predecessor bodies. The cursor can include
+unresolved raw custody, but grants no source revision, parser progress or native
+admission. A changed or unproved generation remains unknown. Group-page
+exhaustion is not provider EOF; total length requires actual end-of-stream
+evidence, including the opened file size for provider bytes.
+
 ## Shared temporal and policy context
 
 Each operation uses one typed Sinex public context snapshot: the logical day,

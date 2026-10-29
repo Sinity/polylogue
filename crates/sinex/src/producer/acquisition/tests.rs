@@ -2,14 +2,14 @@ use super::*;
 use crate::tests::{body, capture, client};
 use polylogue_store::primary::{RawRange, SourceBasis};
 
-fn source(path: &[u8]) -> SourceSelector {
+pub(super) fn source(path: &[u8]) -> SourceSelector {
     SourceSelector {
         origin: "codex".into(),
         machine: "fixture-machine".into(),
         path_bytes: path.into(),
     }
 }
-fn basis(source: &SourceSelector, pending: Option<String>) -> SourceBasis {
+pub(super) fn basis(source: &SourceSelector, pending: Option<String>) -> SourceBasis {
     SourceBasis {
         boundary: None,
         resolved: None,
@@ -19,7 +19,7 @@ fn basis(source: &SourceSelector, pending: Option<String>) -> SourceBasis {
         pending,
     }
 }
-fn acquire(
+pub(super) fn acquire(
     sinex: &Sinex,
     root: &std::path::Path,
     bytes: &[u8],

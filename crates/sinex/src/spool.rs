@@ -11,6 +11,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 mod names;
+mod raw_ranges;
 mod sources;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1362,6 +1363,7 @@ impl Spool {
             "names",
             "pending-source",
             "acquisition-members",
+            "raw-generations",
         ] {
             fs::create_dir_all(index.join(name))?;
         }
@@ -1480,6 +1482,7 @@ impl Spool {
             write_index(&root.join(format!("{ordinal:020}")), &prepared.identity)?;
         }
         sources::insert(self, prepared)?;
+        raw_ranges::insert(self, prepared)?;
         if let Some(name) = prepared.logical_name() {
             names::insert(&self.index("names", ""), name, &prepared.identity)?;
         }
@@ -1556,6 +1559,9 @@ pub(crate) fn capture_header(capture: &Capture) -> Capture {
                 arrival_rank: input.arrival_rank,
                 parsed: Vec::new(),
                 raw_range: input.raw_range,
+                generation: input.generation.clone(),
+                raw_total: input.raw_total,
+                raw_predecessor: input.raw_predecessor.clone(),
                 basis: input.basis.clone(),
             }))
         }

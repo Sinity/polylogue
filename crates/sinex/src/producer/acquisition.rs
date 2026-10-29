@@ -40,6 +40,7 @@ fn semantic(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Valu
     // acceptance. Byte identity and complete parser facts still match exactly.
     Ok(serde_json::json!({
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
+        "generation":input.generation, "raw_total":input.raw_total, "raw_predecessor":input.raw_predecessor,
         "index":input.index, "arrival_rank":input.arrival_rank, "parsed":input.parsed,
         "origin":input.input.origin,
         "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|basis| &basis.source)),
@@ -47,6 +48,27 @@ fn semantic(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Valu
 }
 
 impl Sinex {
+    pub fn raw_acquisition_cursor(
+        &self,
+        generation: &polylogue_store::primary::SourceGeneration,
+    ) -> Result<Option<polylogue_store::primary::RawAcquisitionCursor>> {
+        let mut proof = polylogue_store::primary::RawAcquisitionProof::new(generation.clone())?;
+        let through = self.queue()?.raw_cut()?;
+        let mut after = None;
+        loop {
+            let page = self.queue()?.raw_ranges(generation, after, through, 32)?;
+            if page.is_empty() {
+                break;
+            }
+            for entry in page {
+                after = Some(entry.order);
+                let body = entry.verify()?;
+                proof.push(body)?;
+            }
+        }
+        Ok(proof.finish())
+    }
+
     pub(crate) fn prepare_input_group(
         &self,
         plan: &CapturePlan,
@@ -109,6 +131,7 @@ impl Sinex {
         )?;
         let staging = staged.queue();
         let mut ordinal = 0u64;
+        let mut raw_siblings = BTreeMap::<Vec<u8>, (u64, String)>::new();
         {
             members(&mut |mut input, body| {
                 if ordinal >= plan.count {
@@ -146,6 +169,17 @@ impl Sinex {
                 });
                 let member = format!("{identity}:{ordinal}");
                 ordinal += 1;
+                if let (Some(generation), Some(range)) = (&input.generation, input.raw_range) {
+                    generation.validate()?;
+                    let key = serde_json::to_vec(generation)?;
+                    if input.raw_predecessor.is_none()
+                        && let Some((end, previous)) = raw_siblings.get(&key)
+                        && *end == range.start
+                    {
+                        input.raw_predecessor = Some(previous.clone());
+                    }
+                    raw_siblings.insert(key, (range.end, member.clone()));
+                }
                 let retained = {
                     let queue = self.queue()?;
                     queue
@@ -271,6 +305,19 @@ impl Sinex {
                     .ok_or_else(|| Error::Invalid("acquisition member has no ordinal".into()))?;
                 let member = format!("{custody_identity}:{}", group.ordinal);
                 group.identity = custody_identity.clone();
+                if let Some(previous) = input.raw_predecessor.as_ref()
+                    && let Some(preceding) = staging.get(previous)?
+                    && preceding.order < entry.order
+                    && let Some(Capture::Input(prior)) = preceding.capture
+                    && prior.generation == input.generation
+                    && prior
+                        .raw_range
+                        .zip(input.raw_range)
+                        .is_some_and(|(a, b)| a.end == b.start)
+                    && let Some(group) = prior.group
+                {
+                    input.raw_predecessor = Some(format!("{custody_identity}:{}", group.ordinal));
+                }
                 let original = {
                     let queue = self.queue()?;
                     queue
@@ -408,5 +455,7 @@ impl Sinex {
     }
 }
 
+#[cfg(test)]
+mod raw_tests;
 #[cfg(test)]
 mod tests;
