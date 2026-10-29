@@ -128,7 +128,13 @@ pub fn failure(code: &str, message: String, detail: Option<&Value>) -> Failure {
 /// Pending writes have a durable local receipt but no confirmed remote commit.
 /// Read outcomes carry their incompleteness in the typed answer payload.
 pub fn answer(value: Value) -> Answer<Value> {
-    if value["pending"].as_bool() == Some(true) || value["state"].as_str() == Some("pending") {
+    if value["pending"].as_bool() == Some(true)
+        || value["state"].as_str() == Some("pending")
+        || value
+            .pointer("/user_state/pending")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0)
+    {
         Answer::Degraded {
             value,
             notes: vec!["accepted locally; awaiting Sinex confirmation".into()],

@@ -52,7 +52,13 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::PrimaryPending { identity } => ok(serde_json::json!({
             "identity": identity, "pending": true,
         })),
-        StoreError::Conflict(_) => error("conflict", e),
+        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => error("conflict", e),
+        StoreError::Ambiguous { .. } => error("ambiguous", e),
+        StoreError::Projection(issue) => match issue {
+            polylogue_model::bundle::BundleError::ProjectionConflict
+            | polylogue_model::bundle::BundleError::SourceVersionMismatch => error("conflict", e),
+            _ => error("bad_request", e),
+        },
         StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
         StoreError::ReadCancelled => error("cancelled", e),
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
@@ -270,7 +276,6 @@ fn handle_inner(
     d: &Daemon,
     authorship: &polylogue_model::authorship::Authorship,
 ) -> Response {
-    let _ = authorship;
     if let Err(response) = accepting(d) {
         return response;
     }
@@ -551,7 +556,14 @@ fn handle_inner(
             let sent = d
                 .loop_tx
                 .lock()
-                .map(|tx| tx.send(LoopMsg::Import { paths, reply }).is_ok())
+                .map(|tx| {
+                    tx.send(LoopMsg::Import {
+                        paths,
+                        authorship: authorship.clone(),
+                        reply,
+                    })
+                    .is_ok()
+                })
                 .unwrap_or(false);
             if !sent {
                 return error("internal", "the loop has stopped");

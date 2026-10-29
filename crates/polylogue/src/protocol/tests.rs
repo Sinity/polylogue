@@ -75,3 +75,29 @@ fn query_empty_and_incomplete_outcomes_keep_their_shared_exit() {
         1
     );
 }
+
+#[test]
+fn a_bundle_with_unconfirmed_authored_restorations_is_degraded() {
+    let report = json!({"imported":["synthetic.bundle"], "user_state":{"pending":1,"applied":0,"present":0}});
+    let result = answer(report.clone());
+    assert_eq!(result.exit_code(), 5);
+    assert_eq!(result.http_status(), Some(200));
+    assert_eq!(result.value(), Some(&report));
+}
+
+#[test]
+fn projection_failures_distinguish_conflicts_from_invalid_input() {
+    use polylogue_model::bundle::BundleError;
+    for (issue, kind) in [
+        (BundleError::ProjectionConflict, FailureKind::Conflict),
+        (BundleError::SourceVersionMismatch, FailureKind::Conflict),
+        (BundleError::InvalidBlockSelection, FailureKind::BadRequest),
+    ] {
+        let response =
+            crate::daemon::service::store_error(&polylogue_store::StoreError::Projection(issue));
+        let Answer::Error { error, .. } = response.answer() else {
+            panic!("projection failure is not success")
+        };
+        assert_eq!(error.kind, kind);
+    }
+}
