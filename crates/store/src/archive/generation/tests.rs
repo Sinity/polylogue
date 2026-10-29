@@ -14,10 +14,10 @@ fn value(conn: &Connection, key: &str) -> String {
 #[test]
 fn same_boot_keeps_positions_but_changed_boot_ignores_a_stale_clean_stop() {
     let conn = index();
-    begin(&conn, "boot-a").unwrap();
+    begin(&conn, "boot-a", None).unwrap();
     let original = value(&conn, "generation");
     conn.execute_batch("INSERT INTO meta VALUES ('write_counter','50'),('clean_stop','1'); INSERT INTO removed_session VALUES ('claude-code:old',50)").unwrap();
-    begin(&conn, "boot-a").unwrap();
+    begin(&conn, "boot-a", None).unwrap();
     assert_eq!(value(&conn, "generation"), original);
     assert_eq!(
         conn.query_row("SELECT count(*) FROM removed_session", [], |r| r
@@ -25,7 +25,7 @@ fn same_boot_keeps_positions_but_changed_boot_ignores_a_stale_clean_stop() {
             .unwrap(),
         1
     );
-    begin(&conn, "boot-b").unwrap();
+    begin(&conn, "boot-b", None).unwrap();
     assert_ne!(value(&conn, "generation"), original);
     assert_eq!(value(&conn, "boot_id"), "boot-b");
     assert_eq!(value(&conn, "write_counter"), "50");
@@ -36,7 +36,7 @@ fn same_boot_keeps_positions_but_changed_boot_ignores_a_stale_clean_stop() {
         0
     );
     let next = value(&conn, "generation");
-    begin(&conn, "boot-b").unwrap();
+    begin(&conn, "boot-b", None).unwrap();
     assert_eq!(value(&conn, "generation"), next);
 }
 
@@ -45,13 +45,13 @@ fn a_missing_generation_is_created_and_a_failed_update_changes_nothing() {
     let conn = index();
     conn.execute("DELETE FROM meta WHERE key='generation'", [])
         .unwrap();
-    begin(&conn, "boot-a").unwrap();
+    begin(&conn, "boot-a", None).unwrap();
     let original = value(&conn, "generation");
     conn.execute_batch("INSERT INTO removed_session VALUES ('claude-code:old',5); CREATE TRIGGER refuse_boot BEFORE UPDATE ON meta WHEN NEW.key='boot_id' BEGIN SELECT RAISE(ABORT,'boot update failed'); END;").unwrap();
     let sync: i64 = conn
         .pragma_query_value(None, "synchronous", |r| r.get(0))
         .unwrap();
-    assert!(begin(&conn, "boot-b").is_err());
+    assert!(begin(&conn, "boot-b", None).is_err());
     assert_eq!(value(&conn, "generation"), original);
     assert_eq!(value(&conn, "boot_id"), "boot-a");
     assert_eq!(
@@ -69,8 +69,26 @@ fn a_missing_generation_is_created_and_a_failed_update_changes_nothing() {
 
 #[test]
 fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     let dir = tempfile::tempdir().unwrap();
+    let pointer = Arc::new(AtomicBool::new(true));
+    let invalidate = Arc::clone(&pointer);
+    let _registration = crate::Archive::register_scope_invalidator(dir.path(), move || {
+        invalidate.store(false, Ordering::SeqCst);
+        Ok(())
+    })
+    .unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
+    let publisher = archive.scope_token().unwrap();
+    publisher
+        .with_current(|| {
+            pointer.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
     let conn = super::super::open_write(&archive.index_db(), cache::SETUP).unwrap();
     let before = value(&conn, "generation");
     drop(conn);
@@ -81,6 +99,11 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
         }
     }
     archive.prepare_index().unwrap();
+    assert!(!pointer.load(Ordering::SeqCst));
+    assert!(matches!(
+        publisher.with_current(|| Ok(())),
+        Err(crate::StoreError::ScopeChanged)
+    ));
     let conn = super::super::open_read(&archive.index_db()).unwrap();
     let rebuilt = value(&conn, "generation");
     assert_ne!(rebuilt, before);
@@ -90,4 +113,105 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     let (archive, _lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     let conn = super::super::open_read(&archive.index_db()).unwrap();
     assert_eq!(value(&conn, "generation"), rebuilt);
+}
+
+#[test]
+fn a_boot_generation_change_fences_publishers_in_both_archive_modes() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    for primary in [false, true] {
+        let root = dir
+            .path()
+            .join(if primary { "primary" } else { "standalone" });
+        std::fs::create_dir(&root).unwrap();
+        let archive = if primary {
+            crate::Archive::on_sinex(&root, &root.join("bytes"))
+        } else {
+            crate::Archive::at(&root)
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback = Arc::clone(&calls);
+        let _registration = crate::Archive::register_scope_invalidator(&root, move || {
+            callback.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        let conn = index();
+        let original = archive.scope_token().unwrap();
+        begin(&conn, "boot-a", Some(&archive.read_scope)).unwrap();
+        assert!(matches!(
+            original.check(),
+            Err(crate::StoreError::ScopeChanged)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let current = archive.scope_token().unwrap();
+        begin(&conn, "boot-a", Some(&archive.read_scope)).unwrap();
+        assert!(current.check().is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        begin(&conn, "boot-b", Some(&archive.read_scope)).unwrap();
+        assert!(matches!(
+            current.check(),
+            Err(crate::StoreError::ScopeChanged)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+}
+
+#[test]
+fn the_transport_fixture_uses_the_native_transition_and_keeps_source_rows() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let root = tempfile::tempdir().unwrap();
+    let (archive, _lock) = crate::Archive::open_or_create(root.path()).unwrap();
+    let source = super::super::open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    crate::input_rows::InputRows {
+        input: "retained-source".into(),
+        format: "synthetic".into(),
+        revision: None,
+        extent: None,
+        observation: None,
+    }
+    .insert(&source, 1)
+    .unwrap();
+    let available = Arc::new(AtomicBool::new(true));
+    let invalidate = Arc::clone(&available);
+    let _registration = crate::Archive::register_scope_invalidator(root.path(), move || {
+        invalidate.store(false, Ordering::SeqCst);
+        Ok(())
+    })
+    .unwrap();
+    let token = archive.scope_token().unwrap();
+    token
+        .with_current(|| {
+            available.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+    let index = super::super::open_read(&archive.index_db()).unwrap();
+    let old = value(&index, "generation");
+    archive.advance_generation_for_test().unwrap();
+    assert!(!available.load(Ordering::SeqCst));
+    assert!(matches!(
+        token.check(),
+        Err(crate::StoreError::ScopeChanged)
+    ));
+    assert_ne!(value(&index, "generation"), old);
+    assert_eq!(
+        source
+            .query_row("SELECT id FROM input", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "retained-source"
+    );
+    assert!(
+        archive
+            .scope_token()
+            .unwrap()
+            .with_current(|| Ok(()))
+            .is_ok()
+    );
 }

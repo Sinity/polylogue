@@ -170,7 +170,12 @@ impl crate::primary::Sinex for OfflineProducer {
     fn visit_pending_blobs(&self, _: &mut dyn FnMut(&crate::NewBlob) -> Result<()>) -> Result<()> {
         Ok(())
     }
-    fn confirmed(&self, _: i64, _: &str) -> Result<Vec<crate::primary::Confirmed>> {
+    fn confirmed(
+        &self,
+        _: i64,
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<Vec<crate::primary::Confirmed>> {
         Self::unavailable()
     }
     fn acknowledge(&self, _: i64) -> Result<()> {

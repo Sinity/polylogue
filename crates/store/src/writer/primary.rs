@@ -4,11 +4,43 @@ use crate::primary::{Product, ProductWrite, SourceLocation};
 use polylogue_model::authored::PreparedRequest;
 
 impl Inner {
+    pub(super) fn primary_cache_ready(&self) -> Result<()> {
+        self.location.read_scope.token()?;
+        crate::primary::scope::require_readable(&self.index)
+    }
+
     pub(super) fn apply_confirmed(&mut self, events: &[crate::primary::Confirmed]) -> Result<i64> {
         if !self.location.is_primary() {
             return Err(StoreError::Invalid(
                 "confirmed facts require a primary cache".into(),
             ));
+        }
+        if let Some(reset) = events.iter().find(|event| {
+            matches!(
+                event.change,
+                crate::primary::ConfirmedChange::ScopeReset { .. }
+            )
+        }) {
+            if events.len() != 1
+                || reset.position != 0
+                || !reset.event.is_empty()
+                || reset.output_index != 0
+            {
+                return Err(StoreError::Invalid(
+                    "scope reset must be a separate owner control page".into(),
+                ));
+            }
+            let crate::primary::ConfirmedChange::ScopeReset { scope } = &reset.change else {
+                unreachable!()
+            };
+            if crate::primary::scope::reset(&mut self.index, &self.location, &self.resolver, scope)?
+            {
+                self.commits.committed();
+                self.derive_due = false;
+                self.derived_version = None;
+                self.report.transactions += 1;
+            }
+            return crate::primary::projection::position(&self.index);
         }
         let before = crate::primary::projection::checkpoint(&self.index)?;
         let position = crate::primary::projection::apply(&mut self.index, &self.resolver, events)?;
@@ -29,7 +61,8 @@ impl Inner {
         );
         let after = crate::primary::projection::position(&self.index)?;
         let identity = crate::primary::cache_identity(&self.index)?;
-        let events = sinex.confirmed(after, &identity)?;
+        let scope = crate::primary::scope::current(&self.index)?;
+        let events = sinex.confirmed(after, &identity, scope.as_deref())?;
         let applied = self.apply_confirmed(&events)?;
         // Staging is durable even when a large position has not reached its barrier.
         sinex.acknowledge(applied)?;
@@ -43,6 +76,7 @@ impl Inner {
     }
 
     pub(super) fn product_writes(&self, products: Vec<Product>) -> Result<Vec<ProductWrite>> {
+        self.primary_cache_ready()?;
         let mut writes = Vec::with_capacity(products.len());
         for (index, product) in products.into_iter().enumerate() {
             let (location, machine) = if let Some(reading) = product.reading() {
@@ -138,6 +172,7 @@ impl Inner {
         length: u64,
         mut source: ChainReading,
     ) -> Result<u64> {
+        self.primary_cache_ready()?;
         let root:Option<String>=self.index.query_row("SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",params![input.id,chain],|row|row.get(0)).optional()?;
         let root = root.ok_or_else(|| {
             StoreError::Invalid("the confirmed source chain has no root material".into())
@@ -192,6 +227,7 @@ impl Inner {
         &mut self,
         request: &polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
+        self.primary_cache_ready()?;
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         if let Some(known) = crate::primary::authored::known_request(&self.index, request)? {
             let mut outcome = known.outcome;
@@ -230,6 +266,7 @@ impl Inner {
         new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
+        self.primary_cache_ready()?;
         let known: Option<i64> = self
             .index
             .query_row(
