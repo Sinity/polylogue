@@ -1085,15 +1085,29 @@ fn handle_inner(
             Err(e) => store_error(&e),
         },
         Request::Setting {
-            request_id,
+            request_id: _,
             key,
             value: None,
-            machine: _,
+            machine,
         } => {
-            let _ = request_id;
-            match reader.setting(&key, d.config.requests.machine()) {
-                Ok(v) => ok(serde_json::json!({ "key": key, "value": v })),
-                Err(e) => store_error(&e),
+            let selected = machine.as_deref().unwrap_or(&invocation.machine);
+            if let Some(key) = key {
+                if let Err(error) = polylogue_model::settings::target_machine(
+                    &key,
+                    machine.as_deref(),
+                    &invocation.machine,
+                ) {
+                    return self::error("bad_value", error);
+                }
+                match reader.setting_current(&key, selected) {
+                    Ok(current) => ok(current),
+                    Err(error) => store_error(&error),
+                }
+            } else {
+                match reader.settings_catalog(selected) {
+                    Ok(catalog) => ok(catalog),
+                    Err(error) => store_error(&error),
+                }
             }
         }
         Request::Setting {
@@ -1102,6 +1116,9 @@ fn handle_inner(
             value: Some(value),
             machine,
         } => {
+            let Some(key) = key else {
+                return error("bad_request", "a value requires a setting key");
+            };
             drop(reader);
             write(
                 d,
@@ -1110,7 +1127,7 @@ fn handle_inner(
                 UserWrite::SetSetting {
                     key,
                     value,
-                    machine: machine.then(|| d.config.requests.machine().to_owned()),
+                    machine,
                 },
             )
         }

@@ -359,11 +359,15 @@ pub fn recall(_: &Command, v: &Values, caller: &Caller) -> Built {
 /// A read without a value, a write with one.
 pub fn setting(_: &Command, v: &Values, _: &Caller) -> Built {
     let value = v.text("value");
+    let key = v.text("key");
+    if value.is_some() && key.is_none() {
+        return Err("a value requires a setting key".into());
+    }
     Ok(Request::Setting {
         request_id: value.as_ref().map(|_| v.request_id()),
-        key: v.text("key").unwrap_or_default(),
+        key,
         value,
-        machine: v.flag("machine"),
+        machine: v.text("machine"),
     })
 }
 

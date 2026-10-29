@@ -204,3 +204,37 @@ fn local_schema_output_path_stays_out_of_the_typed_request() {
     assert!(call.arguments.get("output").is_none());
     assert!(serde_json::from_value::<crate::protocol::schema::Infer>(call.arguments).is_ok());
 }
+
+#[test]
+fn typed_setting_catalog_is_a_real_table_answer() {
+    let daemon = crate::test_daemon::start("typed settings catalog witness");
+    let table = table(Arc::clone(&daemon.daemon));
+    let answer = runtime().block_on(table.call(
+        command_surface::Request {
+            operation: "setting".into(),
+            arguments: json!({}),
+            request_id: "catalog-witness".into(),
+            deadline: command_surface::Deadline::None,
+        },
+        command_surface::Origin::Cli,
+        Default::default(),
+    ));
+    let catalog: Vec<polylogue_model::settings::Current> =
+        serde_json::from_value(answer.value().expect("catalog succeeds").clone()).unwrap();
+    assert!(
+        catalog
+            .iter()
+            .any(|current| current.key == "browser.actions")
+    );
+    let invalid = runtime().block_on(table.call(
+        command_surface::Request {
+            operation: "setting".into(),
+            arguments: json!({"key":"browser.actions", "machine":true}),
+            request_id: "invalid-catalog-witness".into(),
+            deadline: command_surface::Deadline::None,
+        },
+        command_surface::Origin::Cli,
+        Default::default(),
+    ));
+    assert!(invalid.value().is_none());
+}

@@ -945,23 +945,22 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         ..CLI
     },
-    Command {
+    typed_command!(SettingOperation, crate::protocol::setting::Arguments, crate::protocol::setting::Answer, {
         name: "setting",
-        help: "Read or set a setting: `briefing.session_start off`, `briefing.budget 2000`, `notify.command`, `day.zone Europe/Warsaw` and `day.logical_start 04:00` (the logical day that dates, `today` and `group by day` use)",
+        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.*, plan.* and price.*. Standalone attention settings are local; primary attention names its Sinex owner",
+        reason: "Inspect declared runtime settings and author changes at their declared scope",
+        latency: command_surface::LatencyClass::Local,
         args: &[
-            pos("key", Kind::Text, "The setting"),
-            pos_opt(
-                "value",
-                Kind::Text,
-                "The new value; without it, the current one",
-            ),
-            opt("machine", Kind::Bool, "Only on this machine"),
+            pos_opt("key", Kind::Text, "The setting; without it, list catalog, defaults, scopes and values"),
+            pos_opt("value", Kind::Text, "The new value; without it, read the current value"),
+            opt("machine", Kind::Text, "A named host for host-scoped settings; default: the accepting machine"),
         ],
         action: Action::Request(requests::setting),
+        mcp: true,
         http: true,
         writes: true,
         ..CLI
-    },
+    }),
     Command {
         name: "work",
         help: "The work graph: goals, attempts, verifications and artifacts, by a query over the `work` unit (`polylogue work kind:attempt state:open`)",

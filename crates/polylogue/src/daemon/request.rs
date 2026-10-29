@@ -279,12 +279,12 @@ pub enum Request {
     Setting {
         #[serde(default)]
         request_id: Option<String>,
-        key: String,
+        key: Option<String>,
         #[serde(default)]
         value: Option<String>,
-        /// Per machine instead of archive-wide.
+        /// Explicit host identity for host-scoped settings.
         #[serde(default)]
-        machine: bool,
+        machine: Option<String>,
     },
     Sql {
         statement: String,

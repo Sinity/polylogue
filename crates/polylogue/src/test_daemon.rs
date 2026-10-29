@@ -182,9 +182,9 @@ impl TestDaemon {
         let r = handle(
             Request::Setting {
                 request_id: None,
-                key: key.into(),
+                key: Some(key.into()),
                 value: Some(value.into()),
-                machine: false,
+                machine: None,
             },
             &self.daemon,
         );
