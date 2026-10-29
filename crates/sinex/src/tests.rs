@@ -193,23 +193,14 @@ fn a_held_register_material_is_read_from_the_content_store_and_checked() {
 
 #[test]
 fn credentials_in_the_nats_url_are_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sinex.toml");
-    std::fs::write(
-        &path,
+    let error = crate::Config::parse(
         "mode = 'primary'\nnats = 'nats://polylogue:secret@127.0.0.1:4222'\nstore = '/unused'\n",
     )
-    .unwrap();
-    let error = crate::Config::load_from(&path).unwrap_err().to_string();
+    .unwrap_err()
+    .to_string();
     assert!(error.contains("password_file"), "{error}");
     assert!(!error.contains("secret"), "{error}");
-
-    std::fs::write(
-        &path,
-        "mode = 'primary'\nnats = 'nats://127.0.0.1:4222'\npassword_file = '/run/secret'\nstore = '/unused'\n",
-    )
-    .unwrap();
-    let config = crate::Config::load_from(&path).unwrap().unwrap();
+    let config = crate::Config::parse("mode = 'primary'\nnats = 'nats://127.0.0.1:4222'\npassword_file = '/run/secret'\nstore = '/unused'\n").unwrap();
     assert_eq!(
         config.password_file.unwrap(),
         std::path::Path::new("/run/secret")
@@ -254,4 +245,35 @@ fn held_materials_refuse_missing_or_mismatched_descriptors() {
     let mut wrong = material(REGISTER, &blob, serde_json::json!({}), &extent);
     wrong.material.length += 1;
     assert!(held(&reader, wrong).is_err());
+}
+
+#[test]
+fn startup_authentication_and_host_are_explicit_and_secrets_are_redacted() {
+    use crate::{Authentication, Config, Sinex};
+    let config = Config::parse("mode = 'primary'\nnats = 'nats://127.0.0.1:1'\npassword_file = '/does-not-exist'\nstore = '/unused'\n").unwrap();
+    assert_eq!(
+        format!("{:?}", Authentication::Password("synthetic-secret".into())),
+        "Password([redacted])"
+    );
+    let error = Sinex::connect(
+        &config,
+        &Authentication::Anonymous,
+        std::path::Path::new("/unused"),
+        " ",
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("host identity"));
+    let error = Sinex::connect(
+        &config,
+        &Authentication::Unavailable {
+            reason: "startup refused credential".into(),
+        },
+        std::path::Path::new("/unused"),
+        "synthetic-host",
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("startup refused credential"));
+    assert!(!error.to_string().contains("does-not-exist"));
 }

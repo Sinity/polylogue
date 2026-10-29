@@ -3,7 +3,7 @@
 //! A material's bytes, and a frame too large for one message, are written to
 //! the frame's directory under Sinex's store root on this host; Sinex
 //! stores them before it records the frame.
-use crate::{Config, Error, Result};
+use crate::{Authentication, Config, Error, Result};
 use async_nats::jetstream;
 use futures_util::StreamExt;
 use sinex_protocol::{
@@ -58,12 +58,20 @@ impl Client {
         serde_json::from_value(value).map_err(Error::Json)
     }
 
-    pub(crate) async fn connect(config: &Config) -> Result<Self> {
-        let options = match config.credentials()? {
-            Some((user, password)) => {
-                async_nats::ConnectOptions::with_user_and_password(user, password)
+    pub(crate) async fn connect(config: &Config, authentication: &Authentication) -> Result<Self> {
+        let options = match authentication {
+            Authentication::Password(password) => {
+                async_nats::ConnectOptions::with_user_and_password(
+                    config.producer.clone(),
+                    password.clone(),
+                )
             }
-            None => async_nats::ConnectOptions::new(),
+            Authentication::Anonymous => async_nats::ConnectOptions::new(),
+            Authentication::Unavailable { reason } => {
+                return Err(Error::Invalid(format!(
+                    "producer authentication is unavailable: {reason}"
+                )));
+            }
         };
         let client = options
             .connect(config.nats.as_str())

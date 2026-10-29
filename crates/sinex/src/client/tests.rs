@@ -25,13 +25,31 @@ fn config(server: &devkit::nats::Server, password_file: Option<&Path>) -> Config
     }
 }
 
+fn authentication(config: &Config) -> crate::Authentication {
+    match &config.password_file {
+        None => crate::Authentication::Anonymous,
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(value) => crate::Authentication::Password(value.trim_end().into()),
+            Err(error) => crate::Authentication::Unavailable {
+                reason: error.to_string(),
+            },
+        },
+    }
+}
+
 fn connect(config: &Config) -> crate::Result<()> {
     let dir = tempfile::tempdir().unwrap();
-    Sinex::connect(config, dir.path()).map(drop)
+    Sinex::connect(
+        config,
+        &authentication(config),
+        dir.path(),
+        "synthetic-host",
+    )
+    .map(drop)
 }
 
 #[test]
-fn the_producer_connects_with_the_password_from_its_file() {
+fn the_producer_connects_with_the_startup_resolved_password() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("password");
@@ -115,7 +133,13 @@ fn the_producer_connects_with_the_password_from_its_file() {
     let mut config = config(&server, Some(&file));
     config.store = dir.path().join("store");
     std::fs::create_dir(&config.store).unwrap();
-    let sinex = Sinex::connect(&config, dir.path()).unwrap();
+    let sinex = Sinex::connect(
+        &config,
+        &authentication(&config),
+        dir.path(),
+        "synthetic-host",
+    )
+    .unwrap();
     let replay = sinex.replay().unwrap();
     assert!(matches!(
         sinex.client.try_lock(),
@@ -204,9 +228,14 @@ fn a_connect_refusal_precedes_kind_registration_and_frame_bytes() {
     let mut config = config(&server, Some(&file));
     config.store = dir.path().join("store");
     std::fs::create_dir(&config.store).unwrap();
-    let error = Sinex::connect(&config, dir.path())
-        .err()
-        .expect("connect refused");
+    let error = Sinex::connect(
+        &config,
+        &authentication(&config),
+        dir.path(),
+        "synthetic-host",
+    )
+    .err()
+    .expect("connect refused");
     assert!(
         matches!(&error, Error::Refused { name, reason }
         if name == "connect" && reason == "producer bytes cannot be stored sealed"),

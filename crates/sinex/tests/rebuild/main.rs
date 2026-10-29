@@ -100,8 +100,12 @@ fn sinex(dir: &Path) -> Running {
 fn connect(config: &Config, root: &Path) -> Arc<Sinex> {
     let started = Instant::now();
     loop {
-        if let Ok(sinex) = Sinex::connect(config, root)
-            && sinex.reachable().is_ok()
+        if let Ok(sinex) = Sinex::connect(
+            config,
+            &polylogue_sinex::Authentication::Anonymous,
+            root,
+            "synthetic-host",
+        ) && sinex.reachable().is_ok()
         {
             return Arc::new(sinex);
         }
