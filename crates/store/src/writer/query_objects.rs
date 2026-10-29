@@ -1,6 +1,6 @@
 //! Question custody is acknowledged separately from asynchronous execution history.
 use super::*;
-use polylogue_model::query_objects::{QueryCustody, QueryObject, QueryRun};
+use polylogue_model::query_objects::{QueryCustody, QueryObject, QueryRun, QueryRunOutcome};
 
 fn object_via(queue: &WriterQueue, object: QueryObject) -> Result<QueryCustody> {
     let (reply, wait) = sync_channel(1);
@@ -10,10 +10,21 @@ fn object_via(queue: &WriterQueue, object: QueryObject) -> Result<QueryCustody> 
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
-fn run_via(queue: &WriterQueue, run: QueryRun) -> Result<Receiver<Result<QueryCustody>>> {
+fn begin_via(queue: &WriterQueue, run: QueryRun) -> Result<QueryCustody> {
     let (reply, wait) = sync_channel(1);
     queue
         .send_user(UserMsg::QueryRun(Box::new(run), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn finish_via(
+    queue: &WriterQueue,
+    outcome: QueryRunOutcome,
+) -> Result<Receiver<Result<QueryCustody>>> {
+    let (reply, wait) = sync_channel(1);
+    queue
+        .send_user(UserMsg::QueryRunOutcome(Box::new(outcome), reply))
         .map_err(|_| StoreError::WriterGone)?;
     Ok(wait)
 }
@@ -24,9 +35,17 @@ impl Writer {
         object_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, object)
     }
 
-    /// Enqueues an execution; dropping the receipt never cancels its write.
-    pub fn record_query_run(&self, run: QueryRun) -> Result<Receiver<Result<QueryCustody>>> {
-        run_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, run)
+    /// Acknowledges immutable inputs before a continuation exposes its run reference.
+    pub fn begin_query_run(&self, run: QueryRun) -> Result<QueryCustody> {
+        begin_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, run)
+    }
+
+    /// Dropping the completion receipt never cancels accepted history work.
+    pub fn finish_query_run(
+        &self,
+        outcome: QueryRunOutcome,
+    ) -> Result<Receiver<Result<QueryCustody>>> {
+        finish_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, outcome)
     }
 }
 
@@ -35,8 +54,14 @@ impl WriterSender {
         object_via(&self.0, object)
     }
 
-    pub fn record_query_run(&self, run: QueryRun) -> Result<Receiver<Result<QueryCustody>>> {
-        run_via(&self.0, run)
+    pub fn begin_query_run(&self, run: QueryRun) -> Result<QueryCustody> {
+        begin_via(&self.0, run)
+    }
+    pub fn finish_query_run(
+        &self,
+        outcome: QueryRunOutcome,
+    ) -> Result<Receiver<Result<QueryCustody>>> {
+        finish_via(&self.0, outcome)
     }
 }
 
@@ -119,6 +144,26 @@ impl Inner {
                     output_index: 0,
                 }],
             )?;
+            let mut visible = false;
+            sinex.visit_named_products(
+                &crate::primary::NamedProductSelector::Exact(format!("query-run:{}", run.id)),
+                &mut |product| {
+                    if let crate::primary::Product::QueryRun { run: stored } = product
+                        && stored.id == run.id
+                    {
+                        if **stored != *run {
+                            return Err(StoreError::Conflict(format!("run:{}", run.id)));
+                        }
+                        visible = true;
+                    }
+                    Ok(())
+                },
+            )?;
+            if !visible {
+                return Err(StoreError::Sinex(
+                    "acknowledged query run is unavailable from named custody".into(),
+                ));
+            }
             return Ok(QueryCustody::Queued);
         }
         let tx = self.archive.transaction()?;
@@ -126,6 +171,39 @@ impl Inner {
         let before = tx.total_changes();
         crate::query_objects::apply_run(&tx, run, sequence, 0)?;
         if tx.total_changes() != before {
+            crate::write_lock::commit(tx)?;
+            self.commits.committed();
+            self.report.transactions += 1;
+        } else {
+            tx.rollback()?;
+        }
+        Ok(QueryCustody::Canonical)
+    }
+    pub(super) fn write_query_run_outcome(
+        &mut self,
+        outcome: &QueryRunOutcome,
+    ) -> Result<QueryCustody> {
+        crate::query_objects::validate_run_outcome(outcome)?;
+        if let Some(sinex) = &self.sinex {
+            sinex.prepare_named_products(
+                &format!("query-run-outcome:{}", outcome.run),
+                &[crate::primary::ProductWrite {
+                    product: crate::primary::Product::QueryRunOutcome {
+                        outcome: Box::new(outcome.clone()),
+                    },
+                    location: None,
+                    parents: Vec::new(),
+                    machine: None,
+                    output_index: 0,
+                }],
+            )?;
+            return Ok(QueryCustody::Queued);
+        }
+        let tx = self.archive.transaction()?;
+        let before = tx.total_changes();
+        crate::query_objects::apply_run_outcome(&tx, outcome)?;
+        if tx.total_changes() != before {
+            bump_counter(&tx)?;
             crate::write_lock::commit(tx)?;
             self.commits.committed();
             self.report.transactions += 1;

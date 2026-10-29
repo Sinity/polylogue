@@ -132,6 +132,10 @@ enum UserMsg {
         Box<polylogue_model::query_objects::QueryRun>,
         SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
     ),
+    QueryRunOutcome(
+        Box<polylogue_model::query_objects::QueryRunOutcome>,
+        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+    ),
 }
 
 /// User writes waiting before their senders block.
@@ -734,6 +738,15 @@ impl Inner {
                         self.report
                             .errors
                             .push(format!("query run {}: {error}", run.id));
+                    }
+                    let _ = reply.send(result);
+                }
+                UserMsg::QueryRunOutcome(outcome, reply) => {
+                    let result = self.write_query_run_outcome(&outcome);
+                    if let Err(error) = &result {
+                        self.report
+                            .errors
+                            .push(format!("query run outcome {}: {error}", outcome.run));
                     }
                     let _ = reply.send(result);
                 }

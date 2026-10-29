@@ -8,11 +8,11 @@ use std::{path::PathBuf, sync::Arc};
 
 struct PendingProducer(PathBuf);
 impl PendingProducer {
-    fn writes(&self) -> Result<Option<(String, Vec<ProductWrite>)>> {
+    fn writes(&self) -> Result<BTreeMap<String, Vec<ProductWrite>>> {
         if !self.0.exists() {
-            return Ok(None);
+            return Ok(BTreeMap::new());
         }
-        Ok(Some(serde_json::from_slice(&std::fs::read(&self.0)?)?))
+        Ok(serde_json::from_slice(&std::fs::read(&self.0)?)?)
     }
     fn unavailable<T>() -> Result<T> {
         Err(StoreError::Sinex("synthetic offline producer".into()))
@@ -65,7 +65,7 @@ impl Sinex for PendingProducer {
         selector: &NamedProductSelector,
         visit: &mut dyn FnMut(&Product) -> Result<()>,
     ) -> Result<()> {
-        if let Some((name, writes)) = self.writes()? {
+        for (name, writes) in self.writes()? {
             let selected = match selector {
                 NamedProductSelector::Exact(expected) => *expected == name,
                 NamedProductSelector::Prefix(prefix) => name.starts_with(prefix),
@@ -83,12 +83,15 @@ impl Sinex for PendingProducer {
         identity: &str,
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
-        if let Some((prior, existing)) = self.writes()? {
-            assert_eq!(prior, identity);
-            assert_eq!(existing, writes);
+        let mut retained = self.writes()?;
+        if let Some(existing) = retained.get(identity) {
+            if existing != writes {
+                return Err(StoreError::Conflict(identity.into()));
+            }
         } else {
+            retained.insert(identity.into(), writes.to_vec());
             let file = std::fs::File::create(&self.0)?;
-            serde_json::to_writer(&file, &(identity, writes))?;
+            serde_json::to_writer(&file, &retained)?;
             file.sync_all()?;
             std::fs::File::open(self.0.parent().unwrap())?.sync_all()?;
         }
@@ -123,8 +126,9 @@ fn completed_run_keeps_its_original_scope_in_durable_custody_during_cache_reset(
             archive: 4,
         },
     );
-    expected.replay.scope_fingerprint = Some("original-scope".into());
+    expected.binding.replay.scope_fingerprint = Some("original-scope".into());
     expected
+        .binding
         .replay
         .context
         .versions
@@ -141,15 +145,11 @@ fn completed_run_keeps_its_original_scope_in_durable_custody_during_cache_reset(
             Err(StoreError::ScopeChanged)
         ));
         assert_eq!(
-            writer
-                .record_query_run(expected.clone())
-                .unwrap()
-                .recv()
-                .unwrap()
-                .unwrap(),
+            writer.begin_query_run(expected.clone()).unwrap(),
             QueryCustody::Queued
         );
-        let (_, writes) = producer.writes().unwrap().unwrap();
+        let retained = producer.writes().unwrap();
+        let writes = retained.get(&format!("query-run:{}", expected.id)).unwrap();
         let [write] = writes.as_slice() else {
             panic!("one frozen query run expected");
         };
@@ -158,5 +158,75 @@ fn completed_run_keeps_its_original_scope_in_durable_custody_during_cache_reset(
             panic!("query run expected");
         };
         assert_eq!(**run, expected);
+    }
+}
+
+#[test]
+fn queued_begin_and_outcome_remain_distinct_and_lookup_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
+    let object = question("sessions");
+    let mut expected = run(
+        &object,
+        "pending-begin",
+        7,
+        ChangePosition {
+            generation: "synthetic-generation".into(),
+            index: 5,
+            archive: 4,
+        },
+    );
+    expected.binding.accepted_request =
+        Some(serde_json::json!({"id":"uncapped-caller".repeat(5000),"operation":"read"}));
+    let completed = outcome(&expected, 5);
+    for phase in 0..2 {
+        let (archive, _lock) =
+            crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes"))
+                .unwrap();
+        let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+        assert_eq!(
+            writer.begin_query_run(expected.clone()).unwrap(),
+            QueryCustody::Queued
+        );
+        let pool = crate::ReadPool::open(&archive).unwrap();
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .query_run(&expected.id, Some(producer.as_ref()))
+                .unwrap()
+                .unwrap()
+                .value,
+            expected
+        );
+        if phase == 0 {
+            assert!(
+                pool.reader()
+                    .unwrap()
+                    .query_run_outcome(&expected.id, Some(producer.as_ref()))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        drop(writer.finish_query_run(completed.clone()).unwrap());
+        writer.flush_rows().unwrap();
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .query_run_outcome(&expected.id, Some(producer.as_ref()))
+                .unwrap()
+                .unwrap()
+                .value,
+            completed
+        );
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .query_run(&expected.id, Some(producer.as_ref()))
+                .unwrap()
+                .unwrap()
+                .value,
+            expected
+        );
+        assert_eq!(producer.writes().unwrap().len(), 2);
     }
 }

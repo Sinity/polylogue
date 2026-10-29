@@ -80,23 +80,44 @@ fn confirmed_query_components_rebuild_out_of_order_and_keep_unknown_first_run_ho
     };
     let later = run(&object, "later", 1, read_at.clone());
     let mut earlier = run(&object, "earlier", 10_000, read_at);
-    earlier.count = Some(u64::MAX);
-    earlier.replay.context.clock.now = "2026-10-29T12:00:00.123456789Z".parse().unwrap();
+    earlier.binding.replay.context.clock.now = "2026-10-29T12:00:00.123456789Z".parse().unwrap();
     let tx = conn.transaction().unwrap();
+    let completed = outcome(&earlier, u64::MAX);
+    apply_run_outcome(&tx, &completed).unwrap();
+    assert!(
+        tx.query_row(
+            "SELECT run IS NULL FROM source_query_run WHERE id=?1",
+            [earlier.id.as_str()],
+            |row| row.get::<_, bool>(0)
+        )
+        .unwrap()
+    );
+
     apply_run(&tx, &later, 8, 1).unwrap();
     apply_run(&tx, &earlier, 8, 0).unwrap();
+    let mut conflicting = earlier.clone();
+    conflicting
+        .binding
+        .query_options
+        .fields
+        .push("forged".into());
+    assert!(matches!(
+        apply_run(&tx, &conflicting, 8, 0),
+        Err(StoreError::Conflict(_))
+    ));
+
     apply_object(&tx, &object).unwrap();
     tx.commit().unwrap();
     assert_eq!(
         conn.query_row("SELECT first_run FROM source_query", [], |row| row
             .get::<_, String>(0))
             .unwrap(),
-        "earlier"
+        run_id("earlier").as_str()
     );
     let body: Vec<u8> = conn
         .query_row(
-            "SELECT run FROM source_query_run WHERE id='earlier'",
-            [],
+            "SELECT run FROM source_query_run WHERE id=?1",
+            [earlier.id.as_str()],
             |row| row.get(0),
         )
         .unwrap();
@@ -106,8 +127,8 @@ fn confirmed_query_components_rebuild_out_of_order_and_keep_unknown_first_run_ho
     );
     assert_eq!(
         conn.query_row(
-            "SELECT count FROM source_query_run WHERE id='earlier'",
-            [],
+            "SELECT count FROM source_query_run WHERE id=?1",
+            [earlier.id.as_str()],
             |row| row.get::<_, String>(0)
         )
         .unwrap(),
