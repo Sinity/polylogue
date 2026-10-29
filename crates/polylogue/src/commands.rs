@@ -167,11 +167,10 @@ pub struct Command {
 
 impl Command {
     pub fn mcp_name(&self) -> String {
-        let words = self.name.replace(' ', "_");
         if self.register.is_some() {
-            format!("polylogue_{words}")
+            format!("polylogue_{}", self.cli_words().join("_"))
         } else {
-            words
+            self.name.replace(' ', "_")
         }
     }
 
