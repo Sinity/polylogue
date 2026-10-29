@@ -281,6 +281,34 @@ impl Config {
     pub fn standalone_day(&self) -> Result<&DaySetting, Error> {
         self.standalone_day.as_ref().ok_or(Error::SinexDay)
     }
+    /// A separate synthetic archive receives its own explicit day and no
+    /// deployment outlets or paid credentials from the operator's archive.
+    pub fn standalone_for_archive(
+        &self,
+        archive: PathBuf,
+        day: DaySetting,
+    ) -> Result<Arc<Self>, Error> {
+        if !archive.is_absolute() {
+            return Err(Error::Invalid(
+                "the standalone archive path must be absolute".into(),
+            ));
+        }
+        let mut config = self.clone();
+        config.archive = archive;
+        config.standalone_day = Some(day);
+        config.http = HttpConfig {
+            listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            token: None,
+        };
+        config.signals = SignalDeployment::default();
+        config.notification_bus_address = None;
+        config.embedding_credentials = crate::embeddings::Credentials::new(None);
+        #[cfg(feature = "sinex")]
+        {
+            config.primary_auth = polylogue_sinex::Authentication::Anonymous;
+        }
+        Ok(Arc::new(config))
+    }
 }
 pub struct Startup {
     pub config: Arc<Config>,
