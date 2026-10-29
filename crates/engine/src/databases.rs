@@ -11,6 +11,7 @@ pub(super) struct DatabaseInput {
     pub path: PathBuf,
     pub input: InputKey,
     pub observation: Observation,
+    pub acquisition: crate::acquisition::AcquisitionContext,
 }
 #[derive(Default)]
 pub(super) struct Completed {
@@ -245,6 +246,15 @@ impl<'a> InputWriter<'a> {
                 })?;
             (Some(blob), file.into_iter().collect())
         };
+        let acquisition = new_blob.as_ref().map(|blob| {
+            self.source.acquisition.finish(
+                polylogue_store::primary::RawRange {
+                    start: self.length - size,
+                    end: self.length,
+                },
+                blob.hash,
+            )
+        });
         let batch = Batch {
             input: self.source.input.clone(),
             change: if !self.exists {
@@ -262,7 +272,7 @@ impl<'a> InputWriter<'a> {
             blobs: vec![],
             length: self.length,
             parse: vec![],
-            acquisition: None,
+            acquisition,
             release: Default::default(),
         };
         self.exists = true;
@@ -426,6 +436,11 @@ impl Engine {
                         arrival_rank: 0,
                     },
                     observation: self.observation(path, None),
+                    acquisition: self.acquisition_context(
+                        path,
+                        origin,
+                        polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                    ),
                 })
                 .collect();
             self.captures.start(

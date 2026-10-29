@@ -210,6 +210,19 @@ impl Engine {
         pass.bytes_read += prepared.len();
         let exists = self.reads.reader()?.input_progress(&id)?.is_some();
         let observation = self.observation(path, Some(facts));
+        let acquisition = self
+            .acquisition_context(
+                path,
+                "codex-local-file",
+                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+            )
+            .finish(
+                polylogue_store::primary::RawRange {
+                    start: 0,
+                    end: prepared.len(),
+                },
+                prepared.hash(),
+            );
         let batch = polylogue_store::Batch {
             input: InputKey {
                 id: id.clone(),
@@ -227,7 +240,7 @@ impl Engine {
             blobs: Vec::new(),
             length: prepared.len(),
             parse: Vec::new(),
-            acquisition: None,
+            acquisition: Some(acquisition),
             release: Default::default(),
         };
         if !exists {

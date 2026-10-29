@@ -241,7 +241,7 @@ impl Engine {
                 origin,
                 captured.member,
                 facts,
-                captured.prepared.hash().to_string(),
+                captured.prepared.hash(),
                 captured.prepared.len(),
             );
             batch
@@ -390,8 +390,8 @@ impl Engine {
         report: &mut ImportReport,
     ) -> Result<Option<Plan>, EngineError> {
         let size = captured.prepared.len();
-        let id = captured.prepared.hash().to_string();
-        let batch = self.import_batch(path, origin, captured.member, facts, id, size);
+        let hash = captured.prepared.hash();
+        let batch = self.import_batch(path, origin, captured.member, facts, hash, size);
         let input = batch.input.clone();
         let stored = match self.writer.store_bytes(captured.prepared, batch) {
             Ok(stored) => stored,
@@ -415,7 +415,7 @@ impl Engine {
         origin: &'static OriginSpec,
         member: Option<polylogue_store::ImportMember>,
         facts: Option<FileFacts>,
-        id: String,
+        hash: polylogue_model::BlobHash,
         size: u64,
     ) -> polylogue_store::Batch {
         let mut observation = self.observation(path, facts);
@@ -425,7 +425,7 @@ impl Engine {
         });
         polylogue_store::Batch {
             input: InputKey {
-                id,
+                id: hash.to_string(),
                 format: origin.name.into(),
                 arrival_rank: 2,
             },
@@ -436,7 +436,20 @@ impl Engine {
             blobs: Vec::new(),
             length: size,
             parse: Vec::new(),
-            acquisition: None,
+            acquisition: Some(
+                self.acquisition_context(
+                    path,
+                    origin.name,
+                    polylogue_store::primary::AcquisitionRoute::ExplicitImport,
+                )
+                .finish(
+                    polylogue_store::primary::RawRange {
+                        start: 0,
+                        end: size,
+                    },
+                    hash,
+                ),
+            ),
             release: Default::default(),
         }
     }

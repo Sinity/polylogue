@@ -292,6 +292,24 @@ impl Engine {
         length: u64,
         bytes: Option<PreparedBytes>,
     ) -> PreparedBatch {
+        let acquisition = bytes.as_ref().map(|bytes| {
+            crate::acquisition::AcquisitionContext {
+                source: polylogue_store::primary::SourceSelector {
+                    origin: origin.name.into(),
+                    machine: observation.machine.clone(),
+                    path_bytes: observation.path_bytes.clone(),
+                },
+                route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                clock: self.config.clock.clone(),
+            }
+            .finish(
+                polylogue_store::primary::RawRange {
+                    start: length - bytes.len(),
+                    end: length,
+                },
+                bytes.hash(),
+            )
+        });
         PreparedBatch {
             batch: polylogue_store::Batch {
                 input: InputKey {
@@ -313,7 +331,7 @@ impl Engine {
                 }),
                 blobs: Vec::new(),
                 parse: Vec::new(),
-                acquisition: None,
+                acquisition,
                 release: Default::default(),
             },
             files: bytes.into_iter().collect(),

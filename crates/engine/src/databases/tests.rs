@@ -14,6 +14,15 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             format: "codex-database".into(),
             arrival_rank: 0,
         },
+        acquisition: crate::acquisition::AcquisitionContext {
+            source: polylogue_store::primary::SourceSelector {
+                origin: "codex-database".into(),
+                machine: "test-machine".into(),
+                path_bytes: db.as_os_str().as_encoded_bytes().to_vec(),
+            },
+            route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
+            clock: polylogue_model::WallClock::fixed(jiff::Timestamp::from_millisecond(1).unwrap()),
+        },
         observation: Observation {
             machine: "test-machine".into(),
             host: "test".into(),

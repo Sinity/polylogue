@@ -147,6 +147,19 @@ impl Engine {
             return Err(std::io::Error::other("source changed during export capture").into());
         }
         let bytes = prepared.len();
+        let acquisition = self
+            .acquisition_context(
+                &plan.path,
+                plan.origin.name,
+                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+            )
+            .finish(
+                polylogue_store::primary::RawRange {
+                    start: plan.stored_upto,
+                    end: plan.size,
+                },
+                prepared.hash(),
+            );
         self.writer.store_bytes(
             prepared,
             Batch {
@@ -162,7 +175,7 @@ impl Engine {
                 blobs: Vec::new(),
                 length: plan.size,
                 parse: Vec::new(),
-                acquisition: None,
+                acquisition: Some(acquisition),
                 release: Default::default(),
             },
         )?;
