@@ -20,12 +20,18 @@ pub enum CurrencyState {
 pub enum IndexCurrency {
     Standalone,
     Primary {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         applied_position: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_position: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_position_seconds_ago: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reachable: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         lag_positions: Option<i64>,
         state: CurrencyState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
 }
