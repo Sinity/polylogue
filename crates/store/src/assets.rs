@@ -141,7 +141,7 @@ pub enum AssetRow {
 
 impl Reader<'_> {
     pub fn asset_source(&self, input: &str) -> Result<Option<AssetSource>> {
-        asset_source(self.conn()?, "a.", input)
+        asset_source(self.conn()?, "source_", input)
     }
     /// Only unseen import metadata is decoded. Content and observations
     /// remain separate: equal bytes can have several physical memberships.
@@ -230,7 +230,7 @@ impl Reader<'_> {
             ))
         })? {
             let (input, sidecar, version, recorded) = row?;
-            let current = asset_source(conn, "a.", &input)?.map(|source| source.version);
+            let current = asset_source(conn, "source_", &input)?.map(|source| source.version);
             if version != Some(RULES) || recorded != current {
                 pending.push((input, sidecar));
             }

@@ -7,6 +7,7 @@
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
 //! what Sinex holds ([`load`]). `polylogue-sinex` implements [`Sinex`].
 pub mod products;
+pub(crate) mod projection;
 pub use products::{
     Capture, CapturedInput, Confirmed, ConfirmedChange, Material, PendingCapture, PreparedInput,
     PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
@@ -36,7 +37,7 @@ pub trait Sinex: Send + Sync {
     fn complete_capture(&self, identity: &str, products: &[ProductWrite]) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
     fn prepare_request(&self, request: &UserRequest) -> Result<crate::UserOutcome>;
-    fn confirmed(&self, after: i64) -> Result<Vec<Confirmed>>;
+    fn confirmed(&self, after: i64, cache: &str) -> Result<Vec<Confirmed>>;
     fn acknowledge(&self, position: i64) -> Result<()>;
 }
 
@@ -373,3 +374,16 @@ fn forget_uncommitted(
 
 #[cfg(test)]
 mod tests;
+
+/// The primary cache's persistent identity, independent of read cursor generations.
+pub fn cache_identity(index: &Connection) -> Result<String> {
+    index
+        .query_row(
+            "SELECT value FROM meta WHERE key='primary_cache'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .filter(|value: &String| !value.is_empty())
+        .ok_or_else(|| StoreError::Invalid("the primary cache has no identity".into()))
+}

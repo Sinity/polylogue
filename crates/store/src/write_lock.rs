@@ -48,16 +48,21 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
         return Ok(WriteLock { file: None });
     };
     let path = Path::new(path);
+    if path.file_name().and_then(|name| name.to_str()) == Some("index.db")
+        && conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='primary_fact')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Ok(WriteLock { file: None });
+    }
     let archive_db = match path.file_name().and_then(|name| name.to_str()) {
-        Some("archive.db" | "sinex.db") => path.to_path_buf(),
-        // The index's register beside it: `sinex.db` in primary mode.
-        Some("index.db") if path.with_file_name("sinex.db").exists() => {
-            path.with_file_name("sinex.db")
-        }
+        Some("archive.db") => path.to_path_buf(),
         Some("index.db") => path.with_file_name("archive.db"),
         _ => {
             return Err(StoreError::Invalid(
-                "the write lock needs an archive or index connection".into(),
+                "the write lock needs a standalone archive or index connection".into(),
             ));
         }
     };

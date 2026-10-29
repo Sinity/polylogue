@@ -28,6 +28,8 @@ mod attachments;
 mod batch;
 mod bytes;
 mod chain;
+mod confirmed;
+pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
 mod rows;
 mod search;
@@ -295,8 +297,10 @@ impl Writer {
             .transpose()?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
-        } else {None};
-        let resolver=resolve::Resolver::new(archive,&index,first_build.clone())?;
+        } else {
+            None
+        };
+        let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
         let mut inner = Inner {
             segment,
             archive: archive_conn,

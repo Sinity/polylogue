@@ -79,3 +79,31 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
         .unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn primary_opens_one_source_cache_and_never_creates_a_local_input_ledger() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("polylogue");
+    let sinex = directory.path().join("sinex");
+    let (archive, lock) = crate::Archive::open_primary(&root, &sinex).unwrap();
+    assert!(archive.index_db().exists());
+    assert!(archive.embeddings_db().exists());
+    for name in ["archive.db", "sinex.db", "segments", "parts"] {
+        assert!(!root.join(name).exists(), "unexpected local {name}");
+    }
+    let reads = crate::ReadPool::open(&archive).unwrap();
+    assert_eq!(reads.reader().unwrap().status().unwrap().inputs, 0);
+    drop(reads);
+    drop(lock);
+    let (archive, _lock) = crate::Archive::open_primary(&root, &sinex).unwrap();
+    assert_eq!(
+        crate::ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stored_bytes,
+        0
+    );
+}

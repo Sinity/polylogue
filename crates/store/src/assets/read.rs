@@ -123,7 +123,7 @@ impl Reader<'_> {
                 })? {
                     let (input, member) = row?;
                     if !known.contains_key(&input) {
-                        known.insert(input.clone(), asset_source(conn, "a.", &input)?);
+                        known.insert(input.clone(), asset_source(conn, "source_", &input)?);
                     }
                     let Some(current) = known[&input].as_ref() else {
                         continue;
@@ -157,7 +157,7 @@ impl Reader<'_> {
                     })? {
                         let (name, media, size, input, recorded) = row?;
                         if !known.contains_key(&input) {
-                            known.insert(input.clone(), asset_source(conn, "a.", &input)?);
+                            known.insert(input.clone(), asset_source(conn, "source_", &input)?);
                         }
                         if known[&input].as_ref().map(|source| source.version.as_str())
                             != Some(recorded.as_str())
