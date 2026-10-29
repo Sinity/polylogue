@@ -1307,12 +1307,14 @@ fn one_token_pages_and_accessible_empty_text_always_make_progress() {
     );
 }
 fn large_footer(position: Option<&ReadPosition>) -> Result<ReadFooter, pager::PageError> {
-    let mut footer = ReadFooter::default();
-    footer.referenced_by = vec![ReferencedBy {
-        reference: "x".repeat(500),
-        role: "evidence".into(),
-        open: None,
-    }];
+    let mut footer = ReadFooter {
+        referenced_by: vec![ReferencedBy {
+            reference: "x".repeat(500),
+            role: "evidence".into(),
+            open: None,
+        }],
+        ..Default::default()
+    };
     footer.next = position.map(|position| ReadyCall {
         cli: format!(
             "read {} {} {}",
