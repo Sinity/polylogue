@@ -65,6 +65,10 @@ pub fn project_record(
                     row.message.blocks.push(block);
                 }
             }
+            row.injections
+                .retain(|evidence| row.block_ordinals.binary_search(&evidence.block).is_ok());
+            row.bindings
+                .retain(|binding| row.block_ordinals.binary_search(&binding.block).is_ok());
             if options.view == View::Dialogue && row.message.blocks.is_empty() {
                 return Ok(None);
             }
@@ -110,6 +114,9 @@ pub fn project_record(
             ) {
                 return Ok(None);
             }
+        }
+        Record::TextFragment(row) => {
+            super::fragments::project_fragment(row, options, evidence)?;
         }
         Record::Authored(_) => {
             if !options.assertions {

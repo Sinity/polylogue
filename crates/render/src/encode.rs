@@ -312,6 +312,7 @@ impl<'a> Encoder<'a> {
                 availability,
                 link,
                 inline_bytes: _,
+                verified_hash: _,
                 open,
             } => {
                 self.line(&format!(
@@ -334,6 +335,22 @@ impl<'a> Encoder<'a> {
                 if let Some(open) = open {
                     self.line(&open.cli)?;
                 }
+            }
+            ItemKind::TextFragment { record, origin } => {
+                let fragment = &record.fragment;
+                self.line(&format!(
+                    "Selected source text · {} · bytes {}..{}",
+                    record.reference, fragment.coverage.start, fragment.coverage.end
+                ))?;
+                self.line(&format!(
+                    "Source classification: {} · recorded source length: {}",
+                    fragment_origin_label(origin),
+                    fragment
+                        .coverage
+                        .total_bytes
+                        .map_or_else(|| "unknown".into(), |total| total.to_string())
+                ))?;
+                self.literal(&fragment.text, "text")?;
             }
             ItemKind::Other { type_name, data } => {
                 self.line(type_name)?;
@@ -643,5 +660,21 @@ pub(crate) fn call_label(call: &CallItem) -> String {
         format!("result for unknown call {id}")
     } else {
         value_text(&call.tool)
+    }
+}
+
+pub(crate) fn fragment_origin_label(origin: &ValueState<FragmentOrigin>) -> &'static str {
+    match origin {
+        ValueState::Value { .. } => "known",
+        ValueState::Unknown { .. } => "unknown",
+        ValueState::NotRecorded => "not recorded",
+        ValueState::Unavailable { .. } => "unavailable",
+        ValueState::NotApplicable => "not applicable",
+        ValueState::Partial { .. } => "partial",
+        ValueState::Inferred { .. } => "inferred",
+        ValueState::Pending => "pending",
+        ValueState::Error { .. } => "error",
+        ValueState::Stale { .. } => "stale",
+        ValueState::Inherited { .. } => "inherited",
     }
 }

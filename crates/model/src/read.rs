@@ -3,6 +3,7 @@
 mod delivery;
 mod evidence;
 mod format;
+mod fragments;
 mod items;
 mod options;
 mod position;
@@ -12,6 +13,7 @@ mod tokens;
 pub use delivery::*;
 pub use evidence::*;
 pub use format::*;
+pub use fragments::*;
 pub use items::*;
 pub use options::*;
 pub use position::*;
@@ -42,6 +44,12 @@ pub enum ReadError {
         view: View,
         evidence: String,
         reference: String,
+    },
+    #[error("view {view} needs {option}=full for {target}")]
+    RequiredExpansion {
+        view: View,
+        target: String,
+        option: String,
     },
     #[error("invalid read evidence: {0}")]
     InvalidEvidence(String),
