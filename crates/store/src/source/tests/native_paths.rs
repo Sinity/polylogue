@@ -178,6 +178,9 @@ fn acquisition_evidence_keeps_original_body_when_an_extent_is_trimmed_or_absent(
             range: RawRange { start: 4, end: 12 },
             hash: polylogue_model::BlobHash::of(b"abcdefgh"),
             observed_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            generation: None,
+            raw_total: None,
+            raw_predecessor: None,
         };
         conn.execute(
             &source
@@ -260,7 +263,11 @@ fn queued_source_snapshot_and_reader_keep_the_same_exact_observation() {
     rows("native", Some(path.to_vec()))
         .insert(&conn, 1)
         .unwrap();
-    conn.execute("INSERT INTO meta(key,value) VALUES('write_counter','1')", []).unwrap();
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES('write_counter','1')",
+        [],
+    )
+    .unwrap();
     drop(conn);
     let writer = crate::Writer::start(&archive).unwrap();
     let snapshot = writer

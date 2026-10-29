@@ -288,6 +288,7 @@ fn gather<'a>(
                 length: reading.length,
                 parse: vec![step],
                 acquisition: None,
+                basis: None,
                 release: InFlight::default(),
             };
             let (step_keys, _) = resolver.gather(&mut [&mut batch], index, index)?;
@@ -573,6 +574,7 @@ impl Inner {
             length,
             parse: Vec::new(),
             acquisition: None,
+            basis: None,
             release: Default::default(),
         };
         let mut written = 0;

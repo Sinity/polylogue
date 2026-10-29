@@ -298,3 +298,28 @@ fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() 
         assert!(invalid.validate().is_err(), "case {case}");
     }
 }
+
+#[test]
+fn declared_blob_records_require_actual_blob_transfer() {
+    let mut value: Manifest = serde_json::from_str(
+        r#"{
+        "format":"polylogue-bundle","version":1,
+        "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
+        "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
+        "read_at":{"generation":"synthetic","index":0,"archive":0},"caught_up":true,
+        "counts":{"sessions":0,"messages":0,"documents":0,"events":0,"links":0,
+                  "authored":0,"variants":0,"variant_parts":0,"blobs":1},
+        "flags":{"format":"jsonl","with_blobs":false,
+                 "read":{"view":"transcript","inherited":false,"assertions":false}},
+        "enabled_variants":[],"author":"script:fixture","currency":{"mode":"standalone"}
+    }"#,
+    )
+    .unwrap();
+    assert_eq!(value.validate(), Err(BundleError::BlobFlagMismatch));
+    value.flags.with_blobs = true;
+    assert!(value.validate().is_ok());
+    value.counts.blobs = 0;
+    assert!(value.validate().is_ok());
+    value.flags.with_blobs = false;
+    assert!(value.validate().is_ok());
+}

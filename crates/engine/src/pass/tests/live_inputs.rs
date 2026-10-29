@@ -77,6 +77,11 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
                     arrival_rank: 0,
                 },
                 observation: engine.observation(&db, None),
+                acquisition: engine.acquisition_context(
+                    &db,
+                    "codex-database",
+                    polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                ),
             }],
             engine.archive.clone(),
             engine.writer.sender().unwrap(),

@@ -87,6 +87,7 @@ impl Test {
                 length,
                 parse: vec![parse],
                 acquisition: None,
+                basis: None,
                 release: Default::default(),
             };
             for done in writer.sender()?.store_group(

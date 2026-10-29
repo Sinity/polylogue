@@ -3,8 +3,8 @@
 use super::*;
 use crate::input_rows::{InputRows, Revision};
 use crate::primary::{
-    Capture, CaptureGroup, CapturedInput, CapturedReading, Material, PendingCapture, PreparedInput,
-    Product, ProductWrite,
+    Capture, CaptureGroup, CapturedInput, CapturedReading, Material, PendingCapture, Product,
+    ProductWrite,
 };
 use crate::staging::{PreparedBatch, StoredInput};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +17,20 @@ fn latest(index: &Connection, input: &str) -> Result<Option<Revision>> {
 fn failed(count: usize, error: StoreError) -> Vec<Result<StoredInput>> {
     let reason = error.to_string();
     (0..count)
-        .map(|_| Err(StoreError::Invalid(reason.clone())))
+        .map(|_| {
+            Err(match &error {
+                StoreError::Conflict(identity) => StoreError::Conflict(identity.clone()),
+                StoreError::PrimaryPending { identity } => StoreError::PrimaryPending {
+                    identity: identity.clone(),
+                },
+                StoreError::UnresolvedBasisConflict { custody } => {
+                    StoreError::UnresolvedBasisConflict {
+                        custody: custody.clone(),
+                    }
+                }
+                _ => StoreError::Invalid(reason.clone()),
+            })
+        })
         .collect()
 }
 
@@ -64,8 +77,32 @@ fn material_reader(archive: &Archive, material: &Material) -> Result<hashed_blob
     Ok(hashed_blobs::Reader::new(archive.byte_root()?).open(&[extent], None)?)
 }
 
+// The acquired body may be retained without creating a logical source extent.
+// A receipt identifies the physical preparation, never a whole-chain blob guess.
+fn acquired_body(item: &PreparedBatch) -> Result<Option<&crate::staging::PreparedBytes>> {
+    let batch = &item.batch;
+    let expected = if let Some(receipt) = &batch.acquisition {
+        Some((receipt.hash, receipt.range.length()?))
+    } else {
+        batch.new_blob.as_ref().map(|blob| (blob.hash, blob.size))
+    };
+    expected
+        .map(|(hash, length)| {
+            item.files
+                .iter()
+                .find(|file| file.hash() == hash && file.len() == length)
+                .ok_or_else(|| {
+                    StoreError::Invalid(
+                        "acquired provider body has no matching private encoding".into(),
+                    )
+                })
+        })
+        .transpose()
+}
+
 fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     let batch = &item.batch;
+    acquired_body(item)?;
     if batch.input.id.is_empty() || i64::try_from(batch.length).is_err() {
         return Err(StoreError::Invalid("invalid primary capture input".into()));
     }
@@ -103,7 +140,7 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
 
 // An acquisition intent is independent of observer time and generated observation IDs.
 // Ordered source content, source facts and reading versions distinguish actual new work.
-fn capture_group_identity(group: &[PreparedBatch]) -> Result<String> {
+fn capture_group_identity(group: &[PreparedBatch], immutable: bool) -> Result<String> {
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue-capture-group-v1");
     for item in group {
@@ -122,7 +159,7 @@ fn capture_group_identity(group: &[PreparedBatch]) -> Result<String> {
             Change::Rewritten => ("rewritten", 0, 0),
             Change::Disappeared => ("disappeared", 0, 0),
         };
-        let observation = b.observation.as_ref().map(|o| {
+        let observation = b.observation.as_ref().filter(|_| !immutable).map(|o| {
             (
                 &o.machine,
                 &o.host,
@@ -140,7 +177,7 @@ fn capture_group_identity(group: &[PreparedBatch]) -> Result<String> {
         });
         let encoded = serde_json::to_vec(&(
             &b.input,
-            change,
+            (!immutable).then_some(change),
             b.continues,
             b.length,
             b.new_blob.as_ref().map(|v| (v.hash, v.size)),
@@ -190,11 +227,83 @@ impl Inner {
         let sinex = Arc::clone(self.sinex.as_ref().ok_or_else(|| {
             StoreError::Invalid("primary acquisition requires a producer".into())
         })?);
-        let group_id = capture_group_identity(group)?;
-        let mut pending = sinex.pending_captures()?;
-        // A retry reuses its original snapshot coordinates; its own durable
-        // members are not predecessors of themselves.
-        pending.retain(|capture| !matches!(&capture.captured, Capture::Input(input) if input.group.as_ref().is_some_and(|group| group.identity == group_id)));
+        let immutable = group.iter().all(|item| {
+            item.batch.acquisition.as_ref().is_some_and(|receipt| {
+                receipt.route == crate::primary::AcquisitionRoute::ExplicitImport
+            })
+        });
+        let intent = capture_group_identity(group, immutable)?;
+        let pending = sinex.pending_captures()?;
+        let mut bases = BTreeMap::new();
+        for item in group {
+            let source = self.capture_source_selector(&item.batch, &pending)?;
+            if let Some(existing) = bases.get(&source) {
+                if item
+                    .batch
+                    .basis
+                    .as_ref()
+                    .is_some_and(|basis| basis != existing)
+                {
+                    return Err(StoreError::Conflict(
+                        "one acquisition group has different source preconditions".into(),
+                    ));
+                }
+            } else {
+                let version = item
+                    .batch
+                    .parse
+                    .last()
+                    .map_or("", |step| step.reading_version.as_str());
+                let snapshot = self.source_snapshot(source.clone(), version)?;
+                let basis = if let Some(sampled) = &item.batch.basis {
+                    if sampled.source != source
+                        || sampled.confirmed != snapshot.basis.confirmed
+                        || sampled.status != snapshot.basis.status
+                    {
+                        return Err(StoreError::Conflict(
+                            "source basis changed while acquiring input bytes".into(),
+                        ));
+                    }
+                    // Pending predecessor is compared under the SDK custody
+                    // lock, after the serialized writer checks confirmed state.
+                    sampled.clone()
+                } else {
+                    snapshot.basis
+                };
+                bases.insert(source, basis);
+            }
+        }
+        let plan = crate::primary::CapturePlan {
+            intent: intent.clone(),
+            bases: bases.values().cloned().collect(),
+            count: group.len() as u64,
+            mode: if immutable {
+                crate::primary::CaptureMode::Immutable
+            } else {
+                crate::primary::CaptureMode::Mutable
+            },
+        };
+        plan.validate()?;
+        // Provider-output blobs have their own durable capture. Group callbacks
+        // stage encodings outside the SDK lock; publication rechecks the basis.
+        for item in group {
+            for blob in &item.batch.blobs {
+                // The acquired provider body belongs to this atomic group, even
+                // when it creates no logical extent. Generic blob replay must
+                // not publish bytes from an unresolved acquisition separately.
+                if item.batch.acquisition.as_ref().is_some_and(|receipt| {
+                    receipt.hash == blob.hash && receipt.range.length().ok() == Some(blob.size)
+                }) {
+                    continue;
+                }
+                let file = item
+                    .files
+                    .iter()
+                    .find(|file| file.hash() == blob.hash)
+                    .expect("validated blob");
+                sinex.prepare_blob(blob.hash, blob.size, file.body()?)?;
+            }
+        }
         let mut revisions = BTreeMap::new();
         let mut known: BTreeSet<String> = group
             .iter()
@@ -208,126 +317,135 @@ impl Inner {
                 }
             }
         }
-        let mut accepted = Vec::new();
-        for (ordinal, item) in group.iter().enumerate() {
-            let batch = &item.batch;
-            let previous = match revisions.get(&batch.input.id) {
-                Some(revision) => Some(revision.clone()),
-                None => latest(&self.index, &batch.input.id)?,
-            };
-            // Metadata describes the original acquired source range. Exact overlap
-            // with a later confirmed prefix is resolved when this group is ready.
-            let mut metadata = batch.clone();
-            metadata.new_blob = None;
-            metadata.blobs.clear();
-            let (chain, mut rows) =
-                bytes::capture_rows(&self.index, &metadata, previous.clone(), &known)?;
-            let chain = chain
-                .or_else(|| previous.as_ref().map(|r| r.chain))
-                .unwrap_or(1);
-            if let Some(blob) = &batch.new_blob {
-                rows.extent = Some(crate::input_rows::Extent {
-                    chain,
-                    offset: (batch.length - blob.size) as i64,
-                    length: blob.size as i64,
-                    blob: blob.hash,
-                    blob_offset: 0,
-                });
-            }
-            if let Some(revision) = &rows.revision {
-                revisions.insert(batch.input.id.clone(), revision.clone());
-            }
-            let name = source_name(&self.index, batch, &pending)?;
-            let (index, previous_material) =
-                self.capture_predecessor(&batch.input.id, chain, &pending)?;
-            let metadata_bytes = serde_json::to_vec(&rows)?;
-            let (hash, length) = batch
-                .new_blob
-                .as_ref()
-                .map(|blob| (blob.hash, blob.size))
-                .unwrap_or_else(|| (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64));
-            let captured = CapturedInput {
-                generation: None,
-                raw_total: None,
-                raw_predecessor: None,
-                raw_range: batch
-                    .new_blob
-                    .as_ref()
-                    .map(|blob| crate::primary::RawRange {
-                        start: batch.length - blob.size,
-                        end: batch.length,
+        let mut accepted: Vec<_> = group
+            .iter()
+            .map(|item| {
+                (
+                    item.batch.input.id.clone(),
+                    item.batch.length,
+                    None::<InputRows>,
+                    item.batch.new_blob.is_none(),
+                )
+            })
+            .collect();
+        let mut members = |emit: &mut crate::primary::CaptureEmitter<'_>| -> Result<()> {
+            for (ordinal, item) in group.iter().enumerate() {
+                let batch = &item.batch;
+                let previous = match revisions.get(&batch.input.id) {
+                    Some(revision) => Some(revision.clone()),
+                    None => latest(&self.index, &batch.input.id)?,
+                };
+                // Metadata describes the original acquired source range. Exact overlap
+                // with a later confirmed prefix is resolved when this group is ready.
+                let mut metadata = batch.clone();
+                metadata.new_blob = None;
+                metadata.blobs.clear();
+                let (chain, mut rows) =
+                    bytes::capture_rows(&self.index, &metadata, previous.clone(), &known)?;
+                let chain = chain
+                    .or_else(|| previous.as_ref().map(|r| r.chain))
+                    .unwrap_or(1);
+                if let Some(blob) = &batch.new_blob {
+                    rows.extent = Some(crate::input_rows::Extent {
+                        chain,
+                        offset: (batch.length - blob.size) as i64,
+                        length: blob.size as i64,
+                        blob: blob.hash,
+                        blob_offset: 0,
+                    });
+                }
+                if let Some(revision) = &rows.revision {
+                    revisions.insert(batch.input.id.clone(), revision.clone());
+                }
+                let name = source_name(&self.index, batch, &pending)?;
+                let (index, previous_material) =
+                    self.capture_predecessor(&batch.input.id, chain, &pending)?;
+                let metadata_bytes = serde_json::to_vec(&rows)?;
+                let raw_body = acquired_body(item)?;
+                let (hash, length) = raw_body
+                    .map(|body| (body.hash(), body.len()))
+                    .unwrap_or_else(|| {
+                        (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64)
+                    });
+                let captured = CapturedInput {
+                    generation: batch
+                        .acquisition
+                        .as_ref()
+                        .and_then(|receipt| receipt.generation.clone()),
+                    raw_total: batch
+                        .acquisition
+                        .as_ref()
+                        .and_then(|receipt| receipt.raw_total),
+                    raw_predecessor: batch
+                        .acquisition
+                        .as_ref()
+                        .and_then(|receipt| receipt.raw_predecessor.clone()),
+                    raw_range: batch
+                        .acquisition
+                        .as_ref()
+                        .map(|receipt| receipt.range)
+                        .or_else(|| {
+                            raw_body.map(|body| crate::primary::RawRange {
+                                start: batch.length - body.len(),
+                                end: batch.length,
+                            })
+                        }),
+                    basis: Some(bases[&self.capture_source_selector(batch, &pending)?].clone()),
+                    input: name,
+                    arrival_rank: batch.input.arrival_rank,
+                    parsed: batch
+                        .parse
+                        .iter()
+                        .map(CapturedReading::from_step)
+                        .collect::<Result<_>>()?,
+                    rows,
+                    index,
+                    previous: previous_material,
+                    hash,
+                    length,
+                    group: Some(CaptureGroup {
+                        identity: intent.clone(),
+                        intent: intent.clone(),
+                        ordinal: ordinal as u64,
+                        count: group.len() as u64,
                     }),
-                basis: None,
-                input: name,
-                arrival_rank: batch.input.arrival_rank,
-                parsed: batch
-                    .parse
-                    .iter()
-                    .map(CapturedReading::from_step)
-                    .collect::<Result<_>>()?,
-                rows,
-                index,
-                previous: previous_material,
-                hash,
-                length,
-                group: Some(CaptureGroup {
-                    identity: group_id.clone(),
-                    intent: group_id.clone(),
-                    ordinal: ordinal as u64,
-                    count: group.len() as u64,
-                }),
-            };
-            for blob in &batch.blobs {
-                let file = item
-                    .files
-                    .iter()
-                    .find(|file| file.hash() == blob.hash)
-                    .expect("validated blob");
-                sinex.prepare_blob(blob.hash, blob.size, file.body()?)?;
+                };
+                let body = if let Some(body) = raw_body {
+                    body.body()?
+                } else {
+                    self.location
+                        .prepare_bytes(metadata_bytes.as_slice())?
+                        .body()?
+                };
+                // The SDK assigns the original frozen occurrence to all members at
+                // one publication boundary. No per-member durable acceptance exists.
+                accepted[ordinal].2 = Some(captured.rows.clone());
+                emit(captured, body)?;
             }
-            let prepared = if let Some(blob) = &batch.new_blob {
-                let file = item
-                    .files
-                    .iter()
-                    .find(|file| file.hash() == blob.hash)
-                    .expect("validated source");
-                sinex.prepare_input(&captured, file.body()?)?
-            } else {
-                let metadata = self.location.prepare_bytes(metadata_bytes.as_slice())?;
-                sinex.prepare_input(&captured, metadata.body()?)?
-            };
-            pending.push(PendingCapture {
-                identity: match &prepared {
-                    PreparedInput::Confirmed { material, .. } => material.id.clone(),
-                    PreparedInput::Pending { identity } => identity.clone(),
-                },
-                captured: Capture::Input(Box::new(captured.clone())),
-                material: match &prepared {
-                    PreparedInput::Confirmed { material, .. } => Some(material.clone()),
-                    _ => None,
-                },
-                anchor: None,
-            });
-            accepted.push((
-                batch.input.id.clone(),
-                batch.length,
-                captured.rows.clone(),
-                batch.new_blob.is_none(),
-                prepared,
-            ));
-        }
+            Ok(())
+        };
+        let prepared = match sinex.prepare_input_group(&plan, &mut members)? {
+            crate::primary::CaptureReceipt::Accepted { write } => write,
+            crate::primary::CaptureReceipt::UnresolvedBasisConflict { custody } => {
+                return Ok(failed(
+                    group.len(),
+                    StoreError::UnresolvedBasisConflict { custody },
+                ));
+            }
+        };
         match self.drain_primary_captures() {
             Ok(()) | Err(StoreError::Sinex(_)) => {}
             Err(error) => return Err(error),
         }
         let mut outcomes = Vec::new();
-        for (input, length, rows, already_stored, prepared) in accepted {
-            let pending = match prepared {
-                PreparedInput::Confirmed { stored, .. } => {
-                    outcomes.push(Ok(stored));
-                    continue;
-                }
-                PreparedInput::Pending { identity } => identity,
+        for (input, length, rows, already_stored) in accepted {
+            let pending = prepared.identity.clone();
+            // An idempotent SDK retry can return its frozen group without
+            // calling the visitor. Its original metadata is not replaced by
+            // newly generated observation IDs.
+            let Some(rows) = rows else {
+                outcomes.push(Err(StoreError::PrimaryPending { identity: pending }));
+                continue;
             };
             let chain = if let Some(observation) = &rows.observation {
                 self.index.query_row("SELECT coalesce(o.chain,r.chain) FROM source_observation o LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1",[&observation.id],|row|row.get::<_,Option<i64>>(0)).optional()?.map(|chain|chain.unwrap_or(1))
@@ -347,6 +465,49 @@ impl Inner {
             });
         }
         Ok(outcomes)
+    }
+
+    fn capture_source_selector(
+        &self,
+        batch: &Batch,
+        pending: &[PendingCapture],
+    ) -> Result<crate::primary::SourceSelector> {
+        if let Some(receipt) = &batch.acquisition {
+            return Ok(receipt.source.clone());
+        }
+        if let Some(observation) = &batch.observation {
+            return Ok(crate::primary::SourceSelector {
+                origin: batch.input.format.clone(),
+                machine: observation.machine.clone(),
+                path_bytes: observation.path_bytes.clone(),
+            });
+        }
+        if let Some(source) = pending
+            .iter()
+            .rev()
+            .find_map(|pending| match &pending.captured {
+                Capture::Input(input) if input.rows.input == batch.input.id => {
+                    input.basis.as_ref().map(|basis| basis.source.clone())
+                }
+                _ => None,
+            })
+        {
+            return Ok(source);
+        }
+        let value:Option<(String, Option<Vec<u8>>)> = self.index.query_row(
+            "SELECT machine,path_bytes FROM source_observation WHERE input=?1 ORDER BY rowid DESC LIMIT 1",
+            [&batch.input.id], |row| Ok((row.get(0)?,row.get(1)?)),
+        ).optional()?;
+        match value {
+            Some((machine, Some(path_bytes))) => Ok(crate::primary::SourceSelector {
+                origin: batch.input.format.clone(),
+                machine,
+                path_bytes,
+            }),
+            _ => Err(StoreError::Invalid(
+                "continuing capture has no exact source location evidence".into(),
+            )),
+        }
     }
 
     fn capture_predecessor(
@@ -614,12 +775,32 @@ impl Inner {
     }
 
     fn ready_capture_rows(
-        &self,
+        &mut self,
         input: &CapturedInput,
         material: Option<&Material>,
         ready_revisions: &BTreeMap<String, Revision>,
         ready_extents: &[(String, crate::input_rows::Extent, Material)],
     ) -> Result<Option<InputRows>> {
+        let source = input
+            .basis
+            .as_ref()
+            .map(|basis| basis.source.clone())
+            .or_else(|| {
+                let observation = input.rows.observation.as_ref()?;
+                Some(crate::primary::SourceSelector {
+                    origin: input.rows.format.clone(),
+                    machine: observation.machine.clone(),
+                    path_bytes: observation.path_bytes.clone()?,
+                })
+            });
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        // Raw custody is valid without source-scope coverage. Final coordinates
+        // wait for explicit confirmed identity/absence evidence.
+        if self.source_snapshot(source, "")?.basis.status != crate::primary::SourceStatus::Ready {
+            return Ok(None);
+        }
         let mut rows = input.rows.clone();
         let Some(original) = &input.rows.extent else {
             return Ok(Some(rows));

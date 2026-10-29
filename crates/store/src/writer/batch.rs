@@ -173,6 +173,9 @@ pub struct Batch {
     pub release: InFlight,
     /// Receiver-minted evidence of the body acquisition, not parsed payload data.
     pub acquisition: Option<crate::primary::AcquisitionReceipt>,
+    /// Actual source precondition sampled before provider IO. It has no
+    /// authority to assign the resulting native chain or revision.
+    pub basis: Option<crate::primary::SourceBasis>,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The

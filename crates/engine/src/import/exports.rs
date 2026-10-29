@@ -129,6 +129,8 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
+        let context =
+            self.sampling_context(&plan.path, plan.origin.name, &plan.origin.reading_version())?;
         let mut file = std::fs::File::open(&plan.path)?;
         let before = FileFacts::of(&file.metadata()?);
         if Some(before) != plan.facts || before.size != plan.size {
@@ -142,11 +144,19 @@ impl Engine {
             .archive
             .prepare_bytes((&mut file).take(plan.size - plan.stored_upto))?;
         if FileFacts::of(&file.metadata()?) != before
+            || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
             || prepared.len() != plan.size - plan.stored_upto
         {
             return Err(std::io::Error::other("source changed during export capture").into());
         }
         let bytes = prepared.len();
+        let acquisition = context.finish(
+            polylogue_store::primary::RawRange {
+                start: plan.stored_upto,
+                end: plan.size,
+            },
+            prepared.hash(),
+        );
         self.writer.store_bytes(
             prepared,
             Batch {
@@ -162,7 +172,8 @@ impl Engine {
                 blobs: Vec::new(),
                 length: plan.size,
                 parse: Vec::new(),
-                acquisition: None,
+                acquisition: Some(acquisition),
+                basis: context.basis,
                 release: Default::default(),
             },
         )?;
@@ -259,6 +270,7 @@ impl Engine {
             length: plan.size,
             parse: vec![parse],
             acquisition: None,
+            basis: None,
             release: Default::default(),
         };
         if files.is_empty() {

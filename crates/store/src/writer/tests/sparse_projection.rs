@@ -283,6 +283,7 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
             length: *length,
             parse: vec![],
             acquisition: None,
+            basis: None,
             release: InFlight::default(),
         };
         reading

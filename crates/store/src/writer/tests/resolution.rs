@@ -723,6 +723,7 @@ fn apply_confirmed_readings(
             length: *length,
             parse: Vec::new(),
             acquisition: None,
+            basis: None,
             release: InFlight::default(),
         };
         reading.visit(|step| {
