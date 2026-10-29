@@ -48,7 +48,7 @@ pub use message::{
 pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
-pub use time::{LogicalDay, Timestamp};
+pub use time::{LogicalDay, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
 pub mod note_sql;
 pub mod session_sql;
 pub mod text;
