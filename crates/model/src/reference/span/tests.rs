@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn known_prefix_bounds_resolve_without_claiming_a_complete_source() {
+    for (unit, end) in [
+        (SpanUnit::Bytes, 5),
+        (SpanUnit::CodePoints, 2),
+        (SpanUnit::Utf16, 3),
+    ] {
+        let mut span = SpanBounds::new(unit, 1, end).unwrap();
+        assert_eq!(span.resolved(), None);
+        span.push("a").unwrap();
+        assert_eq!(span.resolved(), None);
+        span.push("💡").unwrap();
+        assert_eq!(span.resolved(), Some(1..5));
+        // A later combining mark changes neither the original bytes nor the
+        // already observed coordinate boundaries.
+        span.push("\u{301}").unwrap();
+        assert_eq!(span.resolved(), Some(1..5));
+    }
+    assert_eq!(
+        SpanBounds::new(SpanUnit::Utf16, 0, 0)
+            .unwrap()
+            .resolved(),
+        Some(0..0)
+    );
+    let mut split = SpanBounds::new(SpanUnit::Utf16, 1, 2).unwrap();
+    assert_eq!(split.push("a💡"), Err(SpanError::SplitCharacter));
+    assert_eq!(split.resolved(), None);
+}
+
+#[test]
 fn original_span_bounds_are_independent_of_chunk_boundaries() {
     let text = "a💡ż\n尾";
     for (unit, start, end) in [

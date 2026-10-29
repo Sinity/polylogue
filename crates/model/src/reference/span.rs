@@ -89,9 +89,14 @@ impl SpanBounds {
         }
         Ok(())
     }
+    /// Both requested bounds have been observed in the original text prefix.
+    /// This proves their UTF-8 coordinates, not completeness of the source.
+    /// Offsets count verbatim source text; no Unicode normalization is applied.
+    pub fn resolved(&self) -> Option<Range<u64>> {
+        Some(self.start_byte?..self.end_byte?)
+    }
     pub fn finish(self) -> Result<Range<u64>, SpanError> {
-        Ok(self.start_byte.ok_or(SpanError::OutOfRange)?
-            ..self.end_byte.ok_or(SpanError::OutOfRange)?)
+        self.resolved().ok_or(SpanError::OutOfRange)
     }
 }
 
