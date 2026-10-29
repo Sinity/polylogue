@@ -477,7 +477,7 @@ impl Engine {
         if st.failed == Some(now) {
             return Ok(None);
         }
-        let parsed = st.origin.support == Support::Parsed;
+        let parsed = st.origin.support != Support::Kept;
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
@@ -578,7 +578,7 @@ impl Engine {
         let behind = self.reads.reader()?.chains_behind_index(
             &ORIGINS
                 .iter()
-                .filter(|o| o.support == Support::Parsed)
+                .filter(|o| o.support != Support::Kept)
                 .map(|o| (o.name.to_owned(), o.reading_version()))
                 .collect::<Vec<_>>(),
         )?;
@@ -598,7 +598,7 @@ impl Engine {
             let (path, origin) = match &c.imported {
                 Some(imported) => {
                     let Some(origin) = polylogue_sources::origin::by_name(&imported.format)
-                        .filter(|origin| origin.support == Support::Parsed)
+                        .filter(|origin| origin.support != Support::Kept)
                     else {
                         continue;
                     };
@@ -608,7 +608,7 @@ impl Engine {
                             c.input
                         ))
                     })?);
-                    if (origin.open)(&path).is_none() {
+                    if origin.support == Support::Parsed && (origin.open)(&path).is_none() {
                         return Err(std::io::Error::other(format!(
                             "stored import {} has no parser for its recorded path",
                             c.input
@@ -688,7 +688,7 @@ impl Engine {
         let Some(chain) = st.chain else {
             return Ok(None);
         };
-        if st.origin.support != Support::Parsed
+        if st.origin.support == Support::Kept
             || st.stored == 0
             || !behind
             || st.failed.is_some()
@@ -974,7 +974,7 @@ impl Engine {
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
             }
-            let parsed = plan.origin.support == Support::Parsed;
+            let parsed = plan.origin.support != Support::Kept;
             plan.apply(d, parsed);
             if plan.finished() {
                 self.finish_plan(plan);

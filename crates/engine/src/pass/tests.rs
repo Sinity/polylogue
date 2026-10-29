@@ -163,4 +163,5 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
     assert!(length(&engine) > before);
 }
 
+mod capture_only;
 mod live_inputs;
