@@ -19,10 +19,12 @@ use std::collections::HashSet;
 mod combine;
 mod conditions;
 pub(crate) mod custom_fields;
+mod expression;
 mod program;
 mod saved;
 mod sequences;
 mod stages;
+use conditions::unknown_field;
 
 use saved::compile_kept;
 
@@ -816,4 +818,25 @@ fn parse_random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
                 .map_err(|_| not_built("this random seed"))
         })
         .transpose()
+}
+
+pub(crate) struct FieldExpression {
+    pub sql: String,
+    pub kind: ColKind,
+}
+pub(crate) fn field_expression(
+    unit: Unit,
+    field: &str,
+    now: jiff::Timestamp,
+) -> Result<FieldExpression, QueryError> {
+    let (sql, kind) = expression::expression(
+        field,
+        unit,
+        Aliases::plain(),
+        field,
+        now.as_millisecond(),
+        0,
+        &mut 0,
+    )?;
+    Ok(FieldExpression { sql, kind })
 }

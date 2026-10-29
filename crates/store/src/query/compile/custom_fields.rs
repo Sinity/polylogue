@@ -375,7 +375,8 @@ pub(crate) fn cwd(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
         let a1 = c.subtree(&format!("{s}.cwd"), &v);
         let a2 = c.subtree("cj.value", &v);
         parts.push(format!(
-            "({a1} OR EXISTS (SELECT 1 FROM json_each({s}.cwd_json) cj WHERE {a2}))"
+            "({a1} OR EXISTS (SELECT 1 FROM {} cj WHERE {a2}))",
+            fields::working_directories(s)
         ));
     }
     any_of(x, parts)
