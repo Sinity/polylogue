@@ -262,7 +262,8 @@ fn sinex_client(run: &mut Run) -> devkit::Result {
 }
 
 fn build_tests(run: &mut Run) -> devkit::Result {
-    let standalone = test_arguments(&[], None, false).expect("the full selection is valid");
+    let standalone =
+        test_arguments(&run.root, &[], None, false).expect("the full selection is valid");
     for (stage, arguments) in [
         ("test build", standalone),
         ("sinex-client test build", sinex_client_arguments()),
@@ -287,6 +288,7 @@ fn nextest(args: Vec<String>) -> Nextest {
 /// `required` (a changed-package selection, or the scenarios' own).
 /// Feature flags are refused so each mode keeps its fault-enabled build.
 fn test_arguments(
+    root: &Path,
     args: &[String],
     required: Option<String>,
     mut sinex: bool,
@@ -359,17 +361,42 @@ fn test_arguments(
     for package in packages {
         arguments.extend(["-p".into(), package]);
     }
-    arguments.extend(
-        [
-            "--features",
-            if sinex {
-                "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults"
-            } else {
-                TEST_FEATURES
-            },
-        ]
-        .map(String::from),
-    );
+    let features = if workspace {
+        if sinex {
+            format!("polylogue/sinex,{TEST_FEATURES}")
+        } else {
+            TEST_FEATURES.into()
+        }
+    } else {
+        // Cargo accepts dependency features only when their provider is selected
+        // or directly visible to a selected package. Ask Cargo for that scope.
+        let output = devkit::cargo_command()
+            .args([
+                "tree", "--depth", "1", "--prefix", "none", "--format", "{p}",
+            ])
+            .args(&arguments)
+            .current_dir(root)
+            .output()
+            .map_err(|error| format!("cargo tree: {error}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        let visible: std::collections::BTreeSet<_> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+            .collect();
+        let mut features: Vec<_> = TEST_FEATURES
+            .split(',')
+            .filter(|feature| visible.contains(feature.split_once('/').unwrap().0))
+            .collect();
+        if sinex && visible.contains("polylogue") {
+            features.insert(0, "polylogue/sinex");
+        }
+        features.join(",")
+    };
+    if !features.is_empty() {
+        arguments.extend(["--features".into(), features]);
+    }
     if workspace && !sinex {
         arguments.extend(["--exclude".into(), "polylogue-sinex".into()]);
     }
@@ -414,16 +441,21 @@ fn main() -> ExitCode {
             fmt_check(run)?;
             boundaries_step(run)?;
             clippy(run, true)?;
-            let arguments = test_arguments(&[], None, false).expect("the full selection is valid");
+            let arguments =
+                test_arguments(&run.root, &[], None, false).expect("the full selection is valid");
             run.nextest("test", &nextest(arguments))?;
             sinex_client(run)?;
             Ok(())
         }),
         Cli::SinexClient => run("sinex-client", &[], sinex_client),
         Cli::Scenarios => run("scenarios", &[], |run| {
-            let arguments =
-                test_arguments(&[], Some("package(=polylogue) & kind(test)".into()), false)
-                    .expect("the scenario selection is valid");
+            let arguments = test_arguments(
+                &run.root,
+                &[],
+                Some("package(=polylogue) & kind(test)".into()),
+                false,
+            )
+            .expect("the scenario selection is valid");
             run.nextest("test", &nextest(arguments))
         }),
         Cli::Boundaries => run("boundaries", &[], boundaries_step),
@@ -455,7 +487,7 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let arguments = match test_arguments(&args, required, sinex) {
+            let arguments = match test_arguments(Path::new("."), &args, required, sinex) {
                 Ok(arguments) => arguments,
                 Err(error) => {
                     eprintln!("{error}");

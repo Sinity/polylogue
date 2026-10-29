@@ -32,7 +32,12 @@ fn forbidden_internal_dependency_is_rejected() {
 }
 
 fn arguments(args: &[&str], required: Option<&str>) -> Result<Vec<String>, String> {
+    arguments_at(Path::new("."), args, required)
+}
+
+fn arguments_at(root: &Path, args: &[&str], required: Option<&str>) -> Result<Vec<String>, String> {
     test_arguments(
+        root,
         &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
         required.map(str::to_owned),
         false,
@@ -95,7 +100,7 @@ fn packages_filtersets_and_a_required_selection_intersect() {
             "-p",
             "polylogue-store",
             "--features",
-            TEST_FEATURES,
+            "polylogue-store/faults",
             "-E",
             "(rdeps(=polylogue-model)) & ((test(a)) | (test(b)))",
             "--no-capture"
@@ -117,7 +122,7 @@ fn native_scopes_and_literal_test_arguments_keep_their_meaning() {
                 "-p",
                 "polylogue-store",
                 "--features",
-                TEST_FEATURES
+                "polylogue-store/faults"
             ]
         );
     }
@@ -213,7 +218,7 @@ fn package_selection_reaches_the_real_runner_before_unrelated_compilation() {
     let execute = |args: &[&str], required: Option<&str>| {
         let mut run = Run::unrecorded("selection-fixture", "test", &[]);
         run.root = root.into();
-        let mut options = nextest(arguments(args, required).unwrap());
+        let mut options = nextest(arguments_at(root, args, required).unwrap());
         options.env.push((
             "CARGO_TARGET_DIR".into(),
             root.join("build").display().to_string(),
@@ -350,6 +355,7 @@ fn changed_client_dependencies_select_the_sinex_build() {
         let selection = Selection::Packages(vec![name.into()]);
         assert!(affected(&selection, &graph, "polylogue-sinex"));
         let args = test_arguments(
+            Path::new("."),
             &[],
             selection.filterset(),
             affected(&selection, &graph, "polylogue-sinex"),
@@ -401,13 +407,11 @@ fn a_changed_sinex_package_builds_its_tests_in_primary_mode() {
     fs::write(root.join("client/src/lib.rs"), "pub fn changed() {}\n").unwrap();
     let selection = devkit::select::changed(root, "origin/master").unwrap();
     let sinex = affected(&selection, &metadata(root).unwrap(), "polylogue-sinex");
-    let args = test_arguments(&[], selection.filterset(), sinex).unwrap();
+    let args = test_arguments(root, &[], selection.filterset(), sinex).unwrap();
     assert!(args.iter().any(|arg| arg.contains("polylogue/sinex")));
     assert!(!args.iter().any(|arg| arg == "--exclude"));
-    assert!(
-        arguments(&["-p", "polylogue-sinex"], None)
-            .unwrap()
-            .iter()
-            .any(|arg| arg.contains("polylogue/sinex"))
-    );
+    let scoped = arguments(&["-p", "polylogue-sinex"], None).unwrap();
+    assert!(scoped.iter().any(|arg| arg == "polylogue-sinex"));
+    assert!(scoped.iter().any(|arg| arg == TEST_FEATURES));
+    assert!(!scoped.iter().any(|arg| arg.contains("polylogue/sinex")));
 }
