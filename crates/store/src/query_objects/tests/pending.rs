@@ -230,3 +230,44 @@ fn queued_begin_and_outcome_remain_distinct_and_lookup_survives_restart() {
         assert_eq!(producer.writes().unwrap().len(), 2);
     }
 }
+
+#[test]
+fn confirmed_run_phases_reuse_canonical_custody_without_a_new_spool_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
+    let (archive, _lock) =
+        crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes")).unwrap();
+    let object = question("sessions");
+    let expected = run(
+        &object,
+        "confirmed",
+        7,
+        ChangePosition {
+            generation: "synthetic-generation".into(),
+            index: 5,
+            archive: 4,
+        },
+    );
+    let completed = outcome(&expected, 5);
+    let mut conn = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
+    let tx = conn.transaction().unwrap();
+    apply_run(&tx, &expected, 8, 0).unwrap();
+    apply_run_outcome(&tx, &completed).unwrap();
+    tx.commit().unwrap();
+    drop(conn);
+    let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+    assert_eq!(
+        writer.begin_query_run(expected).unwrap(),
+        QueryCustody::Canonical
+    );
+    assert_eq!(
+        writer
+            .finish_query_run(completed)
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap(),
+        QueryCustody::Canonical
+    );
+    assert!(producer.writes().unwrap().is_empty());
+}
