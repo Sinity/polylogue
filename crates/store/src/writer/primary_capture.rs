@@ -293,7 +293,7 @@ impl Inner {
                     PreparedInput::Confirmed { material, .. } => material.id.clone(),
                     PreparedInput::Pending { identity } => identity.clone(),
                 },
-                captured: Capture::Input(captured.clone()),
+                captured: Capture::Input(Box::new(captured.clone())),
                 material: match &prepared {
                     PreparedInput::Confirmed { material, .. } => Some(material.clone()),
                     _ => None,

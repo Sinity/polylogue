@@ -45,12 +45,33 @@ fn observed(conn: &Connection, restoration: &Restoration) -> Result<bool> {
 }
 
 impl Inner {
-    pub(super) fn restore_authored(&mut self, restoration: Restoration) -> Result<UserOutcome> {
+    pub(super) fn restore_authored(&mut self, mut restoration: Restoration) -> Result<UserOutcome> {
         if let Some(sinex) = self.sinex.as_ref().map(Arc::clone) {
             let mut outcome = restoration.prepared.outcome.clone();
             if observed(&self.index, &restoration)? {
                 outcome.repeat = true;
                 return Ok(outcome);
+            }
+            let mut original = None;
+            sinex.visit_pending_requests(&mut |pending| {
+                if let polylogue_model::authored::PendingAuthored::Restore {
+                    prepared,
+                    claims,
+                    current,
+                } = pending
+                    && prepared == &restoration.prepared
+                    && claims == &restoration.claims
+                    && current.input == restoration.current.input
+                    && current.chain == restoration.current.chain
+                    && current.machine == restoration.current.machine
+                    && current.actor == restoration.current.actor
+                {
+                    original = Some(current.clone());
+                }
+                Ok(())
+            })?;
+            if let Some(original) = original {
+                restoration.current = original;
             }
             let product = crate::primary::Product::RestoredRequest {
                 prepared: restoration.prepared.clone(),
