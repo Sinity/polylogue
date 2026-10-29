@@ -229,7 +229,7 @@ The reference forms are [references.md](references.md#forms)'s. The command line
 - **"Here"** is the terminal, or, for a caller with no terminal, the calling session (its harness session ID), so agents' tool shells get `@N` and `@last` per session. A caller with neither is refused with "rows are remembered per terminal or session; use the ID".
 - `@` forms are rewritten after argument parsing, and only in arguments of reference or query kind; free text (assertion values, titles, setting values) is kept as typed.
 - `@N` sets travel as a list parameter, not as text, and row numbers never leave the command line: the request carries the resolved references.
-- **The row file**, per terminal or session and per archive, holds the list's query hash and text, unit, read position, the displayed rows' references with hit references, and the next cursor. `next` prints the following page with continued row numbers; a cursor invalidated by a rebuild answers `stale_cursor` and offers to run the query again.
+- **The row file**, per terminal or session and per archive, holds the list's query hash and text, unit, read position, the displayed rows' references with hit references, and the next cursor. `next` prints the following page with continued row numbers; a cursor whose seal key a rebuild retired answers `invalid_query` and offers to run the query again; an authenticated unavailable read context answers `stale_cursor`.
 
 ### Footers and affordances
 
@@ -310,7 +310,7 @@ Exit 78 is used only by the daemon process itself, when it refuses to open an ar
 - **key-parity**: every act in both the picker table and the web key table has the same letter.
 - **at-forms-only-in-references**: `REF assert note "see @2"` stores `see @2`; `@2-4 assert tag x` tags exactly rows 2, 3 and 4; in a harness tool shell without a terminal, `@N` resolves against the calling session's last list.
 - **footer-handle**: every list, search and aggregate printed for a person carries its `query:<hash>` in the footer, and `result:<id>` when kept; `@last read` reproduces the same rows.
-- **next-continues**: `next` after a page prints the following page with continued numbers; after a rebuild it answers `stale_cursor`.
+- **next-continues**: `next` after a page prints the following page with continued numbers; after a rebuild it refuses the retired seal with `invalid_query`.
 - **write-undo**: every write verb prints its undo command, and running it restores the previous current state.
 - **output-gallery**: every command's terminal output on Morrow at widths 60, 80, 120 and 200, with `NO_COLOR=1` and piped, is checked on a terminal-cell model: no ANSI in a pipe, no line over the width, no traceback, no exit code outside the table, and colour never changes the text.
 - **exit-code-per-kind**: one invocation per failure kind exits with its table code.
