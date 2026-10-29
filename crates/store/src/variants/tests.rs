@@ -285,9 +285,9 @@ fn variant_ingress_keeps_original_author_and_first_admitted_time_separate_from_c
         actor: Author::Script("importer.service".into()),
         at: Timestamp::from_unix_ms(1).unwrap(),
     };
-    declare_imports(&target, &reference, &[claim.clone()], 4).unwrap();
+    declare_imports(&target, &reference, std::slice::from_ref(&claim), 4).unwrap();
     let history = imports::history(&target, &reference).unwrap().unwrap();
-    assert_eq!(history.observed, [current.clone()]);
+    assert_eq!(history.observed.as_slice(), std::slice::from_ref(&current));
     assert_eq!(history.declared, [claim]);
     assert_eq!(
         imports::history(&target, &part).unwrap().unwrap().observed,
