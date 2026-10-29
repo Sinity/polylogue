@@ -79,7 +79,7 @@ fn live_refresh_keeps_each_queued_partial_first_plan_and_finishes_its_bytes() {
             text
         );
         let known = reader
-            .known_input_at("test-machine", &path.to_string_lossy())
+            .known_input_at("test-machine", path.as_os_str().as_encoded_bytes())
             .unwrap()
             .unwrap();
         assert_eq!(known.stored, expected.len() as u64);

@@ -5,6 +5,31 @@ use crate::{Result, StoreError};
 use polylogue_model::batch::ParserCheckpoint;
 use serde::{Deserialize, Serialize};
 
+/// Receiver-minted IO evidence. Native field observation does not identify
+/// Polylogue as its producer; producer proof is a separate post-emit receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionRoute {
+    NativeCapture,
+    ExplicitImport,
+}
+
+/// Original body acquisition, before overlap trimming and final source chain
+/// assignment. Historical absence is unknown. Payload declarations cannot mint it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcquisitionReceipt {
+    pub version: u32,
+    pub route: AcquisitionRoute,
+    pub source: SourceSelector,
+    pub range: RawRange,
+    pub hash: polylogue_model::BlobHash,
+    pub observed_at: polylogue_model::Timestamp,
+}
+impl AcquisitionReceipt {
+    pub const VERSION: u32 = 1;
+}
+
 /// The declared input format and exact native location. Display paths and
 /// host labels cannot identify a filesystem observation.
 #[derive(
@@ -32,7 +57,20 @@ pub enum SourceStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SourceSubject {
+    pub input: String,
+    pub observation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SourceBasis {
+    /// Missing authority permits private custody, not source-coordinate claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<super::SourceBoundary>,
+    /// A native-ID alias resolved strictly within the pre-acquisition cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<SourceSubject>,
     pub source: SourceSelector,
     pub status: SourceStatus,
     pub confirmed: Option<String>,
@@ -126,10 +164,8 @@ pub struct SourceSnapshot {
     pub pending: PendingSource,
 }
 
-/// One bounded page of retained original group members. Exhaustion says
-/// nothing about provider EOF or missing members already applied elsewhere.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// Bounded private custody metadata. Exhaustion does not prove provider EOF.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PendingGroupPage {
     pub headers: Vec<PendingCapture>,
     /// Original ordinal, exclusive, for the next page.

@@ -9,11 +9,7 @@ fn grok_account_import_reads_exact_turns_without_filename_or_export_order_identi
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
     std::fs::create_dir_all(&home).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let a = json!({"conversation":{"title":"Synthetic account A", "create_time":{"$date":{"$numberLong":"1712000000000"}}}, "responses":[
         {"response":{"sender":"human", "message":"# AGENTS.md\nExplain this synthetic document.", "create_time":{"$date":{"$numberLong":"1712000001000"}}}},
@@ -139,11 +135,7 @@ fn grok_native_ids_blank_content_and_unknown_shapes_are_visible() {
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
     std::fs::create_dir_all(&home).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let value = json!({"conversations":[{"conversation":{"conversationId":"native-account", "title":"", "model":"not-inherited"}, "responses":[
         {"sender":"human", "responseId":"native-user", "message":"", "create_time":null},
@@ -193,11 +185,7 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
     std::fs::create_dir_all(&home).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let conversations = json!([{"conversation":{"id":"metadata-prefix"}, "responses":[
         {"responseId":"prefix-turn", "sender":"human", "message":"synthetic prefix turn"}

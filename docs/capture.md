@@ -20,6 +20,8 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - The root honours the tool's own home variable where the tool defines one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`); otherwise it is the tool's fixed path under `$HOME`. Polylogue has no setting of its own for any path.
 - Ignoring a tool's credential files is not filtering content: they are account state, not AI work.
 
+Mutable source sampling freezes its source boundary before provider I/O. It binds the current index generation and actual source admission fence, separately from the selected source's observation and pending capture IDs. A later native-ID alias lookup may use only retained facts admitted within that boundary. Acceptance compares the exact resolved source head and pending predecessor; unrelated source commits do not invalidate every sampler. Missing boundary evidence permits private byte custody but cannot establish a fresh source, append coordinates or parser continuation. In primary mode this requires certified coverage of the full scoped projection, including indexed authored records. A raw-input certificate or partial stream checkpoint alone is insufficient.
+
 ### Every file in one class
 
 | Class | Meaning | What happens |
@@ -107,6 +109,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
   - `inherited` records another harness's session variables present in the environment (a Codex run launched from a Claude Code shell). It is launch evidence for delegation, never the child's identity. The native terminal adapter variables described below are also recorded when present.
   - Hermes's `conversation_history` is left out of the line, because its transcript is read from `state.db`.
 - **Native work context.** At session start, the hook observes Git's common directory, root commits, current revision and branch, and the repository named in `remote.origin.url`, using one shared 50 ms budget. An unavailable or timed-out observation is recorded as unknown with its reason. A source cwd selects where Git observes these facts; it does not identify the repository. When Kitty supplies its native process and window variables, the hook records that adapter key with host, boot and parent-process identity. Structured task and pull-request references supplied by a harness remain in the payload; prompts, goal prose and shell commands do not supply objective identities.
+- **Successful context output** adds a `HookContextEmitted` receipt after the output is handed to the harness. Its `event_id` is distinct from the original invocation; its typed payload names that invocation, session, hook event and canonical delivery references. Failed output leaves no emission receipt. A parsed receipt is a source claim until native admission establishes its provenance, and it identifies no transcript message without an exact native link.
 - **A hook event belongs to its session and never creates one.** The daemon reads spool files like any growing file; a hook line keeps its identity across re-storage.
 - **Hooks complete transcripts** where the transcript is short of the truth: `PreCompact` gives the pre-compaction context, `PostToolUse` restores a truncated tool result (the order is inline, then sidecar, then hook), `UserPromptSubmit` gives exact paste bodies.
 

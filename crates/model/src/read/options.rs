@@ -180,6 +180,11 @@ impl ReadOptions {
             ),
             (self.turns && !prose, "turns", "transcript, context"),
             (
+                self.output_lines != 100 && !prose,
+                "output_lines",
+                "transcript, context",
+            ),
+            (
                 self.inherited
                     && matches!(
                         self.view,

@@ -18,6 +18,7 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
             machine: "test-machine".into(),
             host: "test-host".into(),
             path: format!("/home/op/{input}"),
+            path_bytes: format!("/home/op/{input}").into_bytes(),
             facts: None,
             seen_at_ms: 1,
             import: None,
@@ -28,6 +29,7 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
         blobs: Vec::new(),
         length: bytes.len() as u64,
         parse: Vec::new(),
+        acquisition: None,
         release: Default::default(),
     };
     writer

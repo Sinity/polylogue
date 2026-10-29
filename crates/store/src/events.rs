@@ -1,7 +1,7 @@
 //! Selected events keep the local input they were read from. Citations in an
 //! exported file name the sender's inputs and never decide local ones.
 use crate::{Reader, Result, StoreError};
-use polylogue_model::bundle::{EventSourceClaim, ImportedEventIdentity, InputEventRecord};
+use polylogue_model::bundle::{SourceClaim, ImportedEventIdentity, InputEventRecord};
 use polylogue_model::export::EventExport;
 use polylogue_model::{Event, SessionId};
 use rusqlite::OptionalExtension;
@@ -87,14 +87,14 @@ impl Reader<'_> {
                     })
                     .transpose()
             };
-            sources.push(EventSourceClaim {
+            sources.push(SourceClaim {
                 input,
                 source,
                 source_chain,
                 source_start: coordinate(start)?,
                 source_end: coordinate(end)?,
             });
-            sources.extend(serde_json::from_str::<Vec<EventSourceClaim>>(&original)?);
+            sources.extend(serde_json::from_str::<Vec<SourceClaim>>(&original)?);
         }
         let mut identity = ImportedEventIdentity {
             id: id.to_owned(),

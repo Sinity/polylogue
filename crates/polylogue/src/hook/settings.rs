@@ -31,8 +31,10 @@ const CODEX_EVENTS: &[&str] = &[
 ];
 
 /// The harness's hook settings file in its configured directory.
-pub fn settings_path(harness: Harness) -> Result<PathBuf, String> {
-    let config = polylogue_engine::Config::from_env();
+pub fn settings_path(
+    harness: Harness,
+    config: &polylogue_engine::Config,
+) -> Result<PathBuf, String> {
     match harness {
         Harness::ClaudeCode => Ok(config
             .root(polylogue_sources::claude_code::ROOT)

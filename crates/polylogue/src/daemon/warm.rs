@@ -1,17 +1,15 @@
 //! Warm state: what the daemon keeps between requests so common answers
 //! come without reloading or recomputing.
 //!
-//! - **Vectors**: every vector of the embedding key `near:` ranks by, in
+//! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
 //!   memory, reloaded after a commit stored or removed vectors.
-//! - **Query vectors**: the provider's vector for each recent `near:` text,
+//! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
 //! - **Answers**: recent query pages, by request and read position. A page
 //!   continuing a cursor is fixed by the cursor's clock and is good until
 //!   the next write; a first page also reads the clock (`since:2h`, live
 //!   states), so it is good for [`FIRST_PAGE_FOR`] at most.
-//! - **Completion data**: unit and field names, values seen and recent
-//!   session IDs, rebuilt on the first request after a write.
 //! - **Archive counts** for `status`: counted by a worker of their own when
 //!   the daemon starts and whenever a `status` finds them older than its
 //!   read, while `status` answers from memory (no counts until the first
@@ -28,7 +26,6 @@
 use crate::embeddings::Provider;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{self, Loaded, Similarity};
-use serde::Serialize;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +34,7 @@ use std::time::{Duration, Instant};
 
 /// How long a first page is answered again from memory.
 pub const FIRST_PAGE_FOR: Duration = Duration::from_secs(5);
-/// Recent `near:` texts whose query vectors are kept.
+/// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
 /// Recent answers kept.
 const ANSWERS: usize = 128;
@@ -88,19 +85,6 @@ struct Answer {
     value: Value,
 }
 
-/// Values completion offers for a query being typed.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct Completion {
-    pub units: Vec<String>,
-    /// `name:` for every field of every unit.
-    pub fields: Vec<String>,
-    /// `field:value` for the values seen: repositories, origins,
-    /// harnesses, tags, saved queries.
-    pub values: Vec<String>,
-    /// The most recently active sessions, newest first, with titles.
-    pub sessions: Vec<(String, String)>,
-}
-
 /// Hits and misses since the daemon started, for `status`.
 #[derive(Default)]
 struct Counts {
@@ -128,7 +112,6 @@ pub struct Warm {
     recount_wanted: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     answers: Mutex<Recent<Answer>>,
-    completion: Mutex<Option<(String, Arc<Completion>)>>,
     counts: Counts,
 }
 
@@ -143,7 +126,6 @@ impl Default for Warm {
             recount_wanted: std::sync::atomic::AtomicBool::new(true),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             answers: Mutex::new(Recent::new(ANSWERS)),
-            completion: Mutex::new(None),
             counts: Counts::default(),
         }
     }
@@ -166,7 +148,7 @@ fn read_lock<'a, T>(
 }
 
 impl Warm {
-    /// The loaded vectors of the embedding key `near:` ranks by, loading
+    /// The loaded vectors of the embedding key `similar:` ranks by, loading
     /// them when absent or stale. `None`: no vectors for this provider.
     pub fn vectors(
         &self,
@@ -192,7 +174,7 @@ impl Warm {
         Ok(Some(loaded))
     }
 
-    /// Every stored text's similarity to `text`, for `near:`.
+    /// Every stored text's similarity to `text`, for `similar:`.
     pub fn similarity(
         &self,
         reader: &Reader<'_>,
@@ -258,24 +240,6 @@ impl Warm {
                 },
             );
         }
-    }
-
-    /// Completion data for the read position `position`, built on first
-    /// use after a write.
-    pub fn completion(
-        &self,
-        reader: &Reader<'_>,
-        position: &str,
-    ) -> Result<Arc<Completion>, String> {
-        let mut held = read_lock(&self.completion, reader)?;
-        if let Some((at, data)) = held.as_ref()
-            && at == position
-        {
-            return Ok(Arc::clone(data));
-        }
-        let data = Arc::new(completion(reader).map_err(|e| e.to_string())?);
-        *held = Some((position.to_owned(), Arc::clone(&data)));
-        Ok(data)
     }
 
     /// The archive counts for `status`. When the last count was quick
@@ -403,9 +367,6 @@ impl Warm {
         if let Ok(mut a) = self.answers.lock() {
             a.clear();
         }
-        if let Ok(mut c) = self.completion.lock() {
-            *c = None;
-        }
         if let Ok(mut c) = self.archive_counts.lock() {
             *c = None;
         }
@@ -413,18 +374,21 @@ impl Warm {
     }
 
     /// What `status` shows.
-    pub fn summary(&self) -> Value {
-        let vectors = self.vectors.lock().ok().and_then(|v| {
-            v.as_ref()
-                .map(|l| serde_json::json!({"key": l.key, "vectors": l.vectors()}))
+    pub fn summary(&self) -> crate::protocol::status::Warm {
+        use crate::protocol::status::{Vectors, Warm};
+        let vectors = self.vectors.lock().ok().and_then(|vectors| {
+            vectors.as_ref().map(|loaded| Vectors {
+                key: loaded.key.clone(),
+                vectors: loaded.vectors(),
+            })
         });
-        serde_json::json!({
-            "vectors": vectors,
-            "vector_loads": self.counts.vector_loads.load(Ordering::Relaxed),
-            "query_vectors_reused": self.counts.query_vectors_reused.load(Ordering::Relaxed),
-            "answers_reused": self.counts.answers_reused.load(Ordering::Relaxed),
-            "answers_computed": self.counts.answers_computed.load(Ordering::Relaxed),
-        })
+        Warm {
+            vectors,
+            vector_loads: self.counts.vector_loads.load(Ordering::Relaxed),
+            query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),
+            answers_reused: self.counts.answers_reused.load(Ordering::Relaxed),
+            answers_computed: self.counts.answers_computed.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -437,163 +401,6 @@ fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
         took: started.elapsed(),
         status,
     })
-}
-
-/// Values completion offers, read from the index and the archive.
-fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreError> {
-    use polylogue_query::ast::Unit;
-    let mut data = Completion {
-        units: Unit::all().map(|u| u.name().to_owned()).collect(),
-        ..Completion::default()
-    };
-    for unit in Unit::all() {
-        for name in polylogue_query::fields::names(unit) {
-            let field = format!("{name}:");
-            if !data.fields.contains(&field) {
-                data.fields.push(field);
-            }
-        }
-    }
-    data.fields.sort();
-    let column = |sql: &str,
-                  field: &str,
-                  out: &mut Vec<String>|
-     -> Result<(), polylogue_store::StoreError> {
-        for row in reader.query(sql, &[])? {
-            if let Some(v) = row["v"].as_str().filter(|v| !v.is_empty()) {
-                out.push(format!("{field}:{}", quoted(v)));
-            }
-        }
-        Ok(())
-    };
-    let mut values = Vec::new();
-    for field in polylogue_query::fields::FIELDS {
-        for value in field.values.into_iter().flatten() {
-            values.push(format!("{}:{}", field.name, quoted(value)));
-        }
-    }
-    column(
-        "SELECT DISTINCT model AS v FROM message WHERE model IS NOT NULL ORDER BY model",
-        "model",
-        &mut values,
-    )?;
-    column(
-        "SELECT DISTINCT repo AS v FROM session WHERE repo IS NOT NULL ORDER BY repo",
-        "repo",
-        &mut values,
-    )?;
-    column(
-        "SELECT DISTINCT harness AS v FROM session WHERE harness IS NOT NULL ORDER BY harness",
-        "harness",
-        &mut values,
-    )?;
-    column(
-        &format!(
-            "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'tag' AND n.key IS NOT NULL \
-             AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
-        ),
-        "tag",
-        &mut values,
-    )?;
-    column(
-        &format!(
-            "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'saved_query' AND n.key IS NOT NULL \
-             AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
-        ),
-        "query",
-        &mut values,
-    )?;
-    for origin in polylogue_sources::origin::ORIGINS {
-        values.push(format!("origin:{}", origin.name));
-    }
-    data.values = values;
-    for row in reader.query(
-        "SELECT id, coalesce(title, derived_title, '') AS title FROM session \
-         WHERE kind = 'main' AND stub = 0 \
-         ORDER BY last_activity_at IS NULL, last_activity_at DESC LIMIT 50",
-        &[],
-    )? {
-        if let Some(id) = row["id"].as_str() {
-            data.sessions.push((
-                id.to_owned(),
-                row["title"].as_str().unwrap_or("").to_owned(),
-            ));
-        }
-    }
-    Ok(data)
-}
-
-/// A value as the query language reads it back: bare when it is one plain
-/// word, else in double quotes.
-fn quoted(v: &str) -> String {
-    if v.chars()
-        .all(|c| c.is_alphanumeric() || "-_./@".contains(c))
-    {
-        v.to_owned()
-    } else {
-        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
-    }
-}
-
-/// The completions of the word being typed: field names, values of the
-/// field it names, unit names and session IDs, each starting with it.
-pub fn completions(data: &Completion, word: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut add = |value: &str, help: &str| {
-        let literal_match = value.split_once(':').zip(word.split_once(':')).is_some_and(
-            |((field, value), (wanted, prefix))| {
-                field == wanted
-                    && !prefix.starts_with('"')
-                    && value
-                        .strip_prefix('"')
-                        .and_then(|v| v.strip_suffix('"'))
-                        .is_some_and(|literal| {
-                            let mut chars = literal.chars();
-                            let mut decoded = String::new();
-                            while let Some(c) = chars.next() {
-                                if c == '\\' {
-                                    if let Some(c) = chars.next() {
-                                        decoded.push(c);
-                                    }
-                                } else {
-                                    decoded.push(c);
-                                }
-                            }
-                            decoded.starts_with(prefix)
-                        })
-            },
-        );
-        if (value.starts_with(word) || literal_match)
-            && !value.chars().any(char::is_control)
-            && polylogue_render::terminal::escape(value) == value
-            && !out.iter().any(|(v, _)| v == value)
-        {
-            out.push((value.to_owned(), polylogue_render::terminal::escape(help)));
-        }
-    };
-    if word.contains(':') {
-        for v in &data.values {
-            add(v, "");
-        }
-        for (id, title) in &data.sessions {
-            add(id, title);
-        }
-    } else {
-        for u in &data.units {
-            add(u, "unit");
-        }
-        for f in &data.fields {
-            add(f, "field");
-        }
-        for (id, title) in &data.sessions {
-            add(id, title);
-        }
-    }
-    out
 }
 
 #[cfg(test)]

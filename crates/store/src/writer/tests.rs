@@ -158,6 +158,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             machine: "m".into(),
             host: "h".into(),
             path: format!("/p/{input}"),
+            path_bytes: format!("/p/{input}").into_bytes(),
             facts: None,
             seen_at_ms: 1,
             import: None,
@@ -184,6 +185,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             step.reading_version = "synthetic=1".into();
             step
         }],
+        acquisition: None,
         release: InFlight::default(),
     }
 }
@@ -971,12 +973,11 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     sender
         .0
         .send_user((
-            Box::new(crate::user_writes::request_now(
+            Box::new(crate::fixture::authored::operator_request(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
-                    key: "shutdown-test".into(),
-                    value: "stored".into(),
-                    author: polylogue_model::Author::Operator,
+                    key: "browser.actions".into(),
+                    value: "on".into(),
                     machine: None,
                 },
             )),
@@ -1001,8 +1002,8 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
         "durable before stop"
     );
     assert_eq!(
-        reader.setting("shutdown-test", "").unwrap().as_deref(),
-        Some("stored")
+        reader.setting("browser.actions", "").unwrap().as_deref(),
+        Some("on")
     );
 }
 
@@ -1206,12 +1207,11 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     let user = std::thread::spawn({
         let sender = sender.clone();
         move || {
-            sender.user(crate::user_writes::request_now(
+            sender.user(crate::fixture::authored::operator_request(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
-                    key: "ahead".into(),
-                    value: "yes".into(),
-                    author: polylogue_model::Author::Operator,
+                    key: "browser.actions".into(),
+                    value: "on".into(),
                     machine: None,
                 },
             ))

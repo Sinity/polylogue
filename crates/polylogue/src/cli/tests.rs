@@ -26,7 +26,6 @@ fn a_starting_daemon_is_waited_for() {
         std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
         let reply = serde_json::to_string(&Response::Ok {
             data: serde_json::json!({"ready": true}),
-            references: Default::default(),
         })
         .unwrap();
         std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
@@ -44,27 +43,89 @@ fn manual_is_an_offline_topic() {
     let matches = command()
         .try_get_matches_from(["polylogue", "manual"])
         .unwrap();
-    assert_eq!(run(&matches), std::process::ExitCode::SUCCESS);
+    assert_eq!(run_local(&matches), Some(std::process::ExitCode::SUCCESS));
 }
 
 #[test]
-fn timeout_is_global_and_requires_positive_seconds() {
-    for args in [
-        vec!["polylogue", "--timeout", "120", "status"],
-        vec!["polylogue", "status", "--timeout", "120"],
-    ] {
-        let matches = command().try_get_matches_from(args).unwrap();
-        assert_eq!(matches.get_one::<u64>("timeout"), Some(&120));
-    }
+fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() {
+    use std::io::{BufRead, Write};
+    let daemon = crate::test_daemon::start("canonical command witness");
+    let request = command_surface::Request {
+        operation: "query".into(),
+        arguments: serde_json::json!({"query":"sessions"}),
+        request_id: "quoted ' identity".into(),
+        deadline: command_surface::Deadline::None,
+    };
+    let ready = daemon.daemon.ready_call(&request).unwrap();
+    let stages = polylogue_model::command::effective_stages(&ready.cli);
+    assert_eq!(stages.len(), 1);
+    assert_eq!(stages[0].args[0], "find");
+    let root = tempfile::tempdir().unwrap();
+    let archive = Archive::at(root.path());
+    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let expected = request.clone();
+    let server = std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && start.elapsed() < std::time::Duration::from_secs(3) =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("CLI did not reach the canonical socket: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut text = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut text)
+            .unwrap();
+        let (actual, _) = crate::protocol::wire::incoming(&text).unwrap().unwrap();
+        assert_eq!(actual, expected);
+        let answer = command_surface::Answer::ok(serde_json::json!({"count":1}));
+        writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
+    });
+    let mut arguments = vec!["polylogue".to_owned()];
+    arguments.extend(stages[0].args.clone());
+    arguments.push("--json".into());
+    let matches = command().try_get_matches_from(arguments).unwrap();
+    let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
+    assert_eq!(run(&matches, &startup, root.path()), ExitCode::SUCCESS);
+    server.join().unwrap();
+    let mixed = command()
+        .try_get_matches_from([
+            "polylogue",
+            "find",
+            "--request",
+            r#"{"query":"sessions"}"#,
+            "--limit",
+            "1",
+        ])
+        .unwrap();
+    assert_eq!(run(&mixed, &startup, root.path()), ExitCode::from(2));
+}
+
+#[test]
+fn raw_cli_arguments_replace_required_positionals() {
+    let (selected, values) =
+        parse(&["polylogue", "find", "--request", "{}", "--deadline", "none"]).unwrap();
+    assert_eq!(selected.name, "query");
+    assert!(values.text("query").is_none());
     assert!(
         command()
-            .try_get_matches_from(["polylogue", "--timeout", "0", "status"])
-            .is_err()
+            .try_get_matches_from(["polylogue", "read", "--request", r#"{"target":"sessions"}"#])
+            .is_ok()
     );
 }
 
 #[test]
-fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
+fn clients_send_deadlines_only_for_reads_and_explicit_stream_limits() {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::time::Duration;
@@ -73,19 +134,27 @@ fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
     for (request, timeout, expected) in [
         (Request::Status, None, true),
         (
-            Request::Export {
-                targets: vec![],
+            Request::Read {
+                target: "sessions".into(),
+                options: polylogue_model::read::ReadOptions::default(),
+                delivery: polylogue_model::read::ReadDelivery::Stream,
                 format: "json".into(),
-                user_state: true,
+                budget: None,
+                cursor: None,
+                with_blobs: false,
             },
             None,
             false,
         ),
         (
-            Request::Export {
-                targets: vec![],
+            Request::Read {
+                target: "sessions".into(),
+                options: polylogue_model::read::ReadOptions::default(),
+                delivery: polylogue_model::read::ReadDelivery::Stream,
                 format: "json".into(),
-                user_state: true,
+                budget: None,
+                cursor: None,
+                with_blobs: false,
             },
             Some(Duration::from_secs(120)),
             true,
@@ -114,7 +183,7 @@ fn clients_send_deadlines_only_for_reads_and_explicit_export_limits() {
                 assert!(left > timeout.as_millis() as i64 - 5000);
             }
             stream
-                .write_all(b"{\"result\":\"ok\",\"data\":{}}\n")
+                .write_all(b"{\"outcome\":\"ok\",\"value\":{},\"notes\":[],\"next\":[]}\n")
                 .unwrap();
         });
         send_with_timeout(&archive, &request, timeout).unwrap();
@@ -132,7 +201,17 @@ fn shell_completion_escapes_daemon_help_and_omits_control_values() {
         {"value": "tag:bad\n", "help": ""},
         {"value": "tag:bad\t", "help": ""}
     ]);
-    let found = completion_candidates(&data);
+    let found = data
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| {
+            completion::candidate(
+                item["value"].as_str().unwrap().into(),
+                item["help"].as_str().unwrap().into(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].get_value(), "tag:ordinary");
     assert_eq!(

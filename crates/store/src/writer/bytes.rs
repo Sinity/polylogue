@@ -81,6 +81,7 @@ fn input_rows_at(
 ) -> Result<(Option<i64>, InputRows)> {
     let next = latest.as_ref().map_or(1, |l| l.0 + 1);
     let mut rows = InputRows {
+        acquisition: b.acquisition.clone(),
         input: b.input.id.clone(),
         format: b.input.format.clone(),
         revision: None,
@@ -298,6 +299,7 @@ fn observation_known(
         machine: o.machine.clone(),
         host: o.host.clone(),
         path: o.path.clone(),
+        path_bytes: Some(o.path_bytes.clone()),
         class: class.to_owned(),
         revision,
         chain: None,

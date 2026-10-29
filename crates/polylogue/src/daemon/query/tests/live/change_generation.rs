@@ -21,6 +21,10 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     };
     let cursor = initial["read_at"]["cursor"].as_str().unwrap();
     engine.writer().unwrap().user(UserRequest {
+    authorship: polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Operator,
+        via: polylogue_model::authorship::Channel::Cli,
+    },
         id: "saved-feed".into(), machine: "synthetic".into(), at: Timestamp::from_unix_ms(T0).unwrap(),
         write: UserWrite::AddNote { note: serde_json::from_value(json!({"kind":"saved_query","key":"old-feed","value":format!("changes where after:{cursor}"),"author":"operator","targets":["repo:synthetic"]})).unwrap() },
     }).unwrap();
@@ -90,6 +94,10 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
         .writer()
         .unwrap()
         .user(UserRequest {
+    authorship: polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Operator,
+        via: polylogue_model::authorship::Channel::Cli,
+    },
             id: "000-late-note".into(),
             machine: "synthetic".into(),
             at: Timestamp::from_unix_ms(T0 - 86_400_000).unwrap(),

@@ -1,20 +1,22 @@
 use super::*;
 use crate::daemon::Response;
+use polylogue_store::Archive;
 
 #[test]
 fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
-    let runtime = service::start(
+    let runtime = crate::test_daemon::start_runtime(
         &dir.path().join("archive"),
         config,
         service::ArchiveMode::Standalone,
     )
     .unwrap();
-    let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
+    let mut server =
+        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
     let _idle = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let mut partial = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     partial.write_all(b"{\"op\":").unwrap();
@@ -34,19 +36,21 @@ fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
 #[test]
 fn acknowledged_socket_write_survives_runtime_shutdown() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
-    let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
-    let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
+    let mut runtime =
+        crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
+    let mut server =
+        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let request = Request::Setting {
         request_id: None,
-        key: "lifecycle-test".into(),
-        value: Some("written".into()),
-        machine: false,
+        key: Some("browser.actions".into()),
+        value: Some("on".into()),
+        machine: None,
     };
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
     let mut response = String::new();
@@ -62,25 +66,26 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
         reads
             .reader()
             .unwrap()
-            .setting("lifecycle-test", "")
+            .setting("browser.actions", "")
             .unwrap()
             .as_deref(),
-        Some("written")
+        Some("on")
     );
 }
 
 #[test]
 fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
-    let first = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
-    let mut old = Server::start(Arc::clone(&first.daemon)).unwrap();
+    let first =
+        crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
+    let mut old = Server::start(Arc::clone(&first.daemon), Arc::clone(&first.operations)).unwrap();
     old.shutdown().unwrap();
-    let _server = Server::start(Arc::clone(&first.daemon)).unwrap();
+    let _server = Server::start(Arc::clone(&first.daemon), Arc::clone(&first.operations)).unwrap();
     drop(old);
     assert!(UnixStream::connect(first.daemon.archive.socket()).is_ok());
 }
@@ -88,11 +93,11 @@ fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
 #[test]
 fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
-    let mut runtime = service::start(
+    let mut runtime = crate::test_daemon::start_runtime(
         &dir.path().join("archive"),
         config,
         service::ArchiveMode::Standalone,
@@ -101,12 +106,16 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    let mut server = Server::start(Arc::clone(&daemon)).unwrap();
+    let mut server = Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
     let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
     writeln!(
         stream,
         "{}",
-        serde_json::to_string(&Request::Status).unwrap()
+        serde_json::to_string(&crate::daemon::execution::Outgoing::new(
+            &Request::Status,
+            None
+        ))
+        .unwrap()
     )
     .unwrap();
     runtime.stop_accepting();
@@ -118,11 +127,11 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
 #[test]
 fn listener_wait_stops_accepting_requests_before_joining_clients() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
-    let runtime = service::start(
+    let runtime = crate::test_daemon::start_runtime(
         &dir.path().join("archive"),
         config,
         service::ArchiveMode::Standalone,
@@ -131,12 +140,16 @@ fn listener_wait_stops_accepting_requests_before_joining_clients() {
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    let server = Server::start(Arc::clone(&daemon)).unwrap();
+    let server = Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
     let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
     writeln!(
         stream,
         "{}",
-        serde_json::to_string(&Request::Status).unwrap()
+        serde_json::to_string(&crate::daemon::execution::Outgoing::new(
+            &Request::Status,
+            None
+        ))
+        .unwrap()
     )
     .unwrap();
     server.stop.as_ref().unwrap().send(()).unwrap();
@@ -173,12 +186,12 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let request = Request::Sql { statement: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n".into() };
-    let outgoing = crate::daemon::execution::Outgoing {
-        request: &request,
-        deadline_ms: Some(crate::daemon::execution::deadline(Duration::from_millis(
+    let outgoing = crate::daemon::execution::Outgoing::new(
+        &request,
+        Some(crate::daemon::execution::deadline(Duration::from_millis(
             50,
         ))),
-    };
+    );
     serde_json::to_writer(&mut stream, &outgoing).unwrap();
     stream.write_all(b"\n").unwrap();
     let mut input = BufReader::new(stream);
@@ -188,7 +201,7 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
     assert!(matches!(response, Response::Error { kind, .. } if kind == "deadline_exceeded"));
     input
         .get_mut()
-        .write_all(b"{\"op\":\"sql\",\"statement\":\"SELECT 1\"}\n")
+        .write_all(b"{\"caller\":{\"controlling_terminal\":false},\"op\":\"sql\",\"statement\":\"SELECT 1\"}\n")
         .unwrap();
     line.clear();
     input.read_line(&mut line).unwrap();
@@ -205,7 +218,7 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(b"{\"op\":\"sql\",\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}\n").unwrap();
+    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"op\":\"sql\",\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}\n").unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();

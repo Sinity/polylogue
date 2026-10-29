@@ -722,6 +722,7 @@ fn apply_confirmed_readings(
             blobs: Vec::new(),
             length: *length,
             parse: Vec::new(),
+            acquisition: None,
             release: InFlight::default(),
         };
         reading.visit(|step| {
@@ -975,7 +976,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     newer.data = serde_json::json!({"remaining":7});
     let identity = polylogue_model::bundle::ImportedEventIdentity {
         id: id.clone(),
-        sources: vec![polylogue_model::bundle::EventSourceClaim {
+        sources: vec![polylogue_model::bundle::SourceClaim {
             input: "newer-original".into(),
             source: "native".into(),
             source_chain: 1,
@@ -1247,7 +1248,7 @@ fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection(
         0,
         polylogue_model::bundle::ImportedEventIdentity {
             id: "contradictory-id".into(),
-            sources: vec![polylogue_model::bundle::EventSourceClaim {
+            sources: vec![polylogue_model::bundle::SourceClaim {
                 input: "original".into(),
                 source: "native".into(),
                 source_chain: 1,

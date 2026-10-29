@@ -18,6 +18,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             machine: "test-machine".into(),
             host: "test".into(),
             path: db.display().to_string(),
+            path_bytes: db.as_os_str().as_encoded_bytes().to_vec(),
             facts: None,
             seen_at_ms: 1,
             import: None,
@@ -113,6 +114,12 @@ fn native_capture_continues_the_input_named_by_its_source_header() {
                             .join("observed-records.jsonl")
                             .display()
                             .to_string(),
+                        path_bytes: dir
+                            .path()
+                            .join("observed-records.jsonl")
+                            .as_os_str()
+                            .as_encoded_bytes()
+                            .to_vec(),
                         facts: None,
                         seen_at_ms: 1,
                         import: None,
@@ -123,13 +130,14 @@ fn native_capture_continues_the_input_named_by_its_source_header() {
                     blobs: vec![],
                     length: bytes.len() as u64,
                     parse: vec![],
+                    acquisition: None,
                     release: Default::default(),
                 },
             )
             .unwrap();
         writer.derive().unwrap();
     }
-    let mut config = Config::from_env();
+    let mut config = crate::test_config();
     config.home = home;
     config.tool_dirs.clear();
     config.machine = "test-machine".into();

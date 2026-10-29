@@ -21,7 +21,7 @@ pub fn providers() -> impl Iterator<Item = &'static str> {
 /// timestamp.
 pub fn new_job(provider: &str, since: Option<&str>) -> Result<NewBackfillJob, Refused> {
     if !providers().any(|p| p == provider) {
-        return Err(Refused(400, "unsupported_provider"));
+        return Err(Refused("unsupported_provider"));
     }
     let since = since
         .map(|text| {
@@ -32,7 +32,7 @@ pub fn new_job(provider: &str, since: Option<&str>) -> Result<NewBackfillJob, Re
                         .and_then(|d| d.to_zoned(jiff::tz::TimeZone::UTC))
                         .map(|z| z.timestamp())
                 })
-                .map_err(|_| Refused(400, "since_is_a_date_or_time"))?;
+                .map_err(|_| Refused("since_is_a_date_or_time"))?;
             Ok(at.as_millisecond())
         })
         .transpose()?;

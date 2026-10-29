@@ -36,6 +36,7 @@ pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod rows;
 mod source_commit;
+mod source_snapshot;
 use order::RecordOrder;
 
 pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
@@ -107,6 +108,7 @@ pub struct Reader<'a> {
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
+    calendar: crate::sql_functions::CalendarContext,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +128,8 @@ fn index_identity(archive: &Archive) -> Result<IndexIdentity> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownInput {
     pub path: String,
+    /// None is historical missing identity evidence, never a UTF-8 fallback.
+    pub path_bytes: Option<Vec<u8>>,
     pub input_id: String,
     pub format: String,
     /// The file's facts at the last observation; `None` once it was seen
@@ -156,7 +160,9 @@ pub struct ChainProgress {
 
 /// Totals for `status`. Unknown is never shown as zero: a count that could
 /// not be read is an error, not a 0.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct Status {
     /// Inputs whose bytes are still being written.
     pub sessions: u64,
@@ -256,6 +262,11 @@ impl ReadPool {
         Ok(conn)
     }
 
+    /// Pins the admission scope without acquiring a SQL reader.
+    pub fn scope_token(&self) -> Result<scope::ReadScopeToken> {
+        self.archive.read_scope.token()
+    }
+
     /// Waits for a connection while the pool is full. Reuse the existing Reader
     /// within a request. Nested checkouts are allowed while capacity remains;
     /// waiting while this thread already holds a slot refuses to avoid deadlock.
@@ -320,6 +331,7 @@ impl ReadPool {
             scope,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
+            calendar: crate::sql_functions::CalendarContext::new(),
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
@@ -347,6 +359,7 @@ impl ReadPool {
             conn.progress_handler(1000, Some(move || scope.check().is_err()))?;
         }
         reader.scope.check()?;
+        crate::sql_functions::register_calendar(&conn, &reader.calendar)?;
         conn.execute_batch("BEGIN")?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
@@ -456,43 +469,6 @@ impl Reader<'_> {
     pub fn check(&self) -> Result<()> {
         self.scope.check()?;
         self.limit.as_ref().map_or(Ok(()), limit::ReadLimit::check)
-    }
-
-    /// A row dump names its native source independently of its observations.
-    pub fn tool_database_source(
-        &self,
-        input: &str,
-        blobs: &crate::blobs::Blobs,
-    ) -> Result<Option<(String, String)>> {
-        let Some(progress) = self.input_progress(input)? else {
-            return Ok(None);
-        };
-        let chain = self.stored_chain(input, progress.chain, progress.length)?;
-        let mut bytes = Vec::new();
-        let mut offset = 0;
-        while offset < progress.length {
-            let end = progress.length.min(offset + 4096);
-            bytes.extend(chain.read_range(blobs, offset, end)?);
-            if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
-                let Ok(header) = serde_json::from_slice::<serde_json::Value>(&bytes[..end]) else {
-                    return Ok(None);
-                };
-                if !header
-                    .get("schema")
-                    .is_some_and(serde_json::Value::is_object)
-                {
-                    return Ok(None);
-                }
-                return Ok(header.get("source").and_then(|source| {
-                    Some((
-                        source.get("machine")?.as_str()?.to_owned(),
-                        source.get("path")?.as_str()?.to_owned(),
-                    ))
-                }));
-            }
-            offset = end;
-        }
-        Ok(None)
     }
 
     /// The optional embeddings read connection shares this reader's slot and
@@ -611,6 +587,13 @@ impl Reader<'_> {
 
     pub fn confirmed_scope(&self) -> Result<Option<String>> {
         crate::primary::scope::current(self.conn()?)
+    }
+
+    /// Sinex owns this durable grant identity; standalone reads have no grant scope.
+    pub fn query_scope_fingerprint(&self) -> Result<Option<String>> {
+        let scope = crate::primary::scope::current(self.conn()?)?;
+        self.conn()?;
+        Ok(scope)
     }
 
     pub fn primary_cache_identity(&self) -> Result<String> {
@@ -1243,7 +1226,7 @@ impl Reader<'_> {
 
     /// Committed state of one source path after a rejected write.
     #[cfg(any(test, feature = "fixture"))]
-    pub fn known_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
+    pub fn known_input_at(&self, machine: &str, path: &[u8]) -> Result<Option<KnownInput>> {
         Ok(self.known_inputs_at(machine, Some(path), true)?.pop())
     }
 
@@ -1252,23 +1235,23 @@ impl Reader<'_> {
         crate::fault::check("read.watched_inputs", machine)?;
         self.known_inputs_at(machine, None, false)
     }
-    pub fn known_watched_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
+    pub fn known_watched_input_at(&self, machine: &str, path: &[u8]) -> Result<Option<KnownInput>> {
         Ok(self.known_inputs_at(machine, Some(path), false)?.pop())
     }
 
     fn known_inputs_at(
         &self,
         machine: &str,
-        path: Option<&str>,
+        path: Option<&[u8]>,
         include_imported: bool,
     ) -> Result<Vec<KnownInput>> {
         // Imported eligibility is per input, not per observation. A point
         // lookup only visits inputs at its path; startup builds the set once.
         let (location, imported) = if path.is_some() {
             (
-                "x.machine = ?1 AND x.path = ?2",
+                "x.machine = ?1 AND x.path_bytes = ?2",
                 "SELECT r.input FROM (
-                 SELECT DISTINCT input FROM source_observation WHERE machine = ?1 AND path = ?2
+                 SELECT DISTINCT input FROM source_observation WHERE machine = ?1 AND path_bytes = ?2
              ) paths CROSS JOIN source_revision r ON r.input = paths.input
              WHERE r.produced = 'imported'",
             )
@@ -1282,12 +1265,13 @@ impl Reader<'_> {
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
                     (SELECT chain FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
-                    (SELECT length FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
+                    (SELECT length FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
+                    o.path_bytes
              FROM (
                  SELECT MAX(x.rowid) AS latest FROM source_observation x
                  WHERE {location}
                    AND (?3 OR x.input NOT IN ({imported}))
-                 GROUP BY x.path
+                 GROUP BY x.path_bytes,CASE WHEN x.path_bytes IS NULL THEN x.path END
              ) latest
              JOIN source_observation o ON o.rowid = latest.latest
              JOIN source_input i ON i.id = o.input"
@@ -1308,11 +1292,12 @@ impl Reader<'_> {
                 ],
                 r.get::<_, Option<i64>>(9)?,
                 r.get::<_, Option<i64>>(10)?,
+                r.get::<_, Option<Vec<u8>>>(11)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (path, input_id, format, class, f, chain, length) = row?;
+            let (path, input_id, format, class, f, chain, length, path_bytes) = row?;
             let facts = match (class.as_str(), f) {
                 ("deleted", _) => None,
                 (_, [Some(d), Some(i), Some(s), Some(m), Some(c)]) => Some(FileFacts {
@@ -1326,6 +1311,7 @@ impl Reader<'_> {
             };
             out.push(KnownInput {
                 path,
+                path_bytes,
                 input_id,
                 format,
                 facts,
@@ -1408,3 +1394,11 @@ impl Reader<'_> {
 
 #[cfg(test)]
 mod tests;
+
+impl Reader<'_> {
+    /// Execute against one owner-supplied calendar, restoring any enclosing
+    /// query's calendar even when the callback unwinds.
+    pub fn with_clock<T>(&self, clock: &query_language::time::Clock, f: impl FnOnce() -> T) -> T {
+        self.calendar.with_clock(clock, f)
+    }
+}

@@ -20,10 +20,11 @@ fn crossing_quoted_credentials_are_masked_by_public_read_and_export_without_chan
     );
     std::fs::write(&source, &raw).unwrap();
     let archive = dir.path().join("archive");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-    ];
+    let env = crate::Fixture::new(
+        archive.as_path(),
+        home.as_path(),
+        &home.parent().unwrap().join("config"),
+    );
     let _daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(2));
     for args in [
@@ -66,10 +67,11 @@ fn structured_command(args: &[&str]) -> Output {
     )
     .unwrap();
     let archive = dir.path().join("archive");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-    ];
+    let env = crate::Fixture::new(
+        archive.as_path(),
+        home.as_path(),
+        &home.parent().unwrap().join("config"),
+    );
     let _daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
     let out = cli(&env, args);
@@ -117,10 +119,11 @@ fn json_export_import_round_trip_keeps_structured_fields_that_are_not_secret() {
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     let archive = dir.path().join("source");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-    ];
+    let env = crate::Fixture::new(
+        archive.as_path(),
+        home.as_path(),
+        &home.parent().unwrap().join("config"),
+    );
     let _source = start_daemon(&env);
     let seed: Document = serde_json::from_value(serde_json::json!({
         "format": "polylogue-export", "version": 1,
@@ -145,10 +148,11 @@ fn json_export_import_round_trip_keeps_structured_fields_that_are_not_secret() {
     let transfer = dir.path().join("transfer.json");
     std::fs::write(&transfer, first.to_json().unwrap()).unwrap();
     let restored = dir.path().join("restored");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", restored.as_path()),
-    ];
+    let env = crate::Fixture::new(
+        restored.as_path(),
+        home.as_path(),
+        &home.parent().unwrap().join("config"),
+    );
     let _restored = start_daemon(&env);
     let imported = cli(&env, &["import", transfer.to_str().unwrap()]);
     assert!(imported.status.success(), "{imported:?}");

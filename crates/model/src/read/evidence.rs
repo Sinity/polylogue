@@ -1,8 +1,8 @@
 //! Store/service-prepared evidence. Rendering does not resolve parents, fetch
 //! blobs, read grants or choose archive rows.
 use super::{
-    Annotation, Card, DelegationCard, EditView, IndicatorKind, RawRecord, ReadError, ReadyCall,
-    Source, SourceBlock, ValueState, VariantMark,
+    Annotation, Card, DelegationCard, EditView, IndicatorKind, PresentationMap, RawRecord,
+    ReadError, ReadyCall, Source, SourceBlock, ValueState,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -106,13 +106,6 @@ pub struct ContextEvidence {
     #[serde(default)]
     pub not_recorded: Vec<String>,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct VariantText {
-    pub mark: VariantMark,
-    pub text: String,
-}
-
 /// Evidence is per record/page, never an entire session required to produce
 /// the next item. Variants change layout, not the canonical source record.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -136,7 +129,7 @@ pub struct ProjectionEvidence {
     #[serde(default)]
     pub assertions: Vec<Annotation>,
     #[serde(default)]
-    pub variants: BTreeMap<u64, VariantText>,
+    pub variants: PresentationMap,
     #[serde(default)]
     pub cards: Vec<Card>,
     #[serde(default)]
@@ -157,6 +150,8 @@ pub struct AttachmentEvidence {
     pub availability: ValueState<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<Box<ReadyCall>>,
     /// The store has resolved access and supplied original content bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_bytes: Option<Vec<u8>>,

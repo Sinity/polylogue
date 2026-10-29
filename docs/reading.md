@@ -60,7 +60,7 @@ Footer = ReferencedBy[], Continue(ReadyCall)?
 - **Physical and logical.** A session reference reads that physical session exactly. A row of a logical listing (`@N` from a default listing, or `root:REF`) names a [logical session](sessions.md#logical-sessions): its read shows the logical header (root, physical sessions, span, own and tree cost), then the root's transcript with each `continuation` and `resume` child following in link order after a `continues` indicator; `fork` and `spawn` children appear as cards at their branch point or spawning call, each a `ReadyCall` that reads the child. `--physical` reads only the named physical session. References in output always name physical sessions and messages.
 - **A query that selects messages** renders them in their sessions' context: consecutive messages share one session header, and gaps are `Omission` items.
 - **Several matching sessions:** on an interactive terminal the [picker](interfaces.md#picker) opens; `--all-matches` renders every match in order; a caller without a terminal is refused with the match count and the ready `--all-matches` call. An arbitrary first match is never rendered.
-- **Documents** show their purpose and authorship, then their blocks, with no chat roles; parent options are refused. **Events** show their payload, their session and the stored input they were read from. **Authored records, pages, kept results and deliveries** show the item, then the references it points at as quotations from the archive.
+- **Documents** show their purpose and authorship, then their blocks, with no chat roles; parent options are refused. A document explicitly requested with `dialogue` returns an unsupported-target answer with transcript and raw alternatives. A mixed selection reports that document as an omission with coverage and the same alternatives; document block positions are never changed. **Events** show their payload, their session and the stored input they were read from. **Authored records, pages, kept results and deliveries** show the item, then the references it points at as quotations from the archive.
 - A message off the active path renders its branch with the indicator "on an abandoned branch". A missing reference is `not_found`.
 
 ## Composed transcripts
@@ -134,6 +134,8 @@ A [variant](assertions.md#variants) is transformed content (a translation, trans
 - A variant bound to an older revision than the one shown is marked `stale` and applied only when asked for.
 - Assertions of a translated session show their own variants; originals are not shown on a variant.
 - A summary variant is shown as a variant, never as the session's own text.
+- Presentation mappings use canonical original references. Span offsets resolve against original source text before substitution. Mapped text bodies include prose, recorded thinking and tool-result output; document bodies keep their original block positions. A replacement covering several bodies is emitted once at its first aligned original range; the remaining covered ranges are removed from presentation. Original records, references and source hashes stay unchanged. Overlapping distinct replacements are an ambiguity error. A replacement touching hidden bodies reports coverage instead of crossing the hidden content.
+- Parts for the same original are joined in their declared order with two line feeds. Their declared relations remain visible. An all-`omits` group removes its covered presentation; a mixed group retains its nonempty rendition and is marked partly omitted.
 
 ## Tool calls
 
@@ -169,7 +171,7 @@ A [variant](assertions.md#variants) is transformed content (a translation, trans
 
 [Attachments](sessions.md#attachments) are shown as `▣ name (media type, size)`, with who supplied them when that is not the message's author, and their availability when it is not `present`: `unfetched`, `failed (reason)`, `unavailable at source`.
 
-- An HTML file embeds images as data URIs up to 10 MiB each (a setting) and links larger ones; the web reader uses daemon-served blob links. SVG and HTML attachments are always links, never inline.
+- An HTML file embeds verified raster images as data URIs within a 10 MiB aggregate allowance per prepared record or window (a setting); larger images keep a supplied open action. The web reader uses the same typed operation action to open source attachments. SVG and HTML attachments are always links, never inline.
 - In a bundle written with `--with-blobs`, Markdown links `![name](blobs/<hex>)`; otherwise the plain line.
 - A tool-result attachment is listed under its call.
 - Exact bytes come from `block:<message>#<n> read --to FILE` (a hash-checked atomic write) on the CLI, or as bytes from MCP and HTTP, for every caller.
@@ -182,6 +184,7 @@ One table binds every format:
 |---|---|
 | unknown | `—` / `unknown (reason)` |
 | not recorded | `not recorded` |
+| unavailable | `unavailable (reason)` |
 | not applicable | `n/a` |
 | partial | `≥ X (N unknown)` |
 | inferred | `≈ X` |
@@ -262,6 +265,7 @@ What the model had been given at a message, in the order it received it:
 
 - Four bounds stay separate: the selection (ranges), the page size (`page_size`), the presentation budget (`budget_tokens`, `--output-lines`) and the deadline class ([query.md](query.md#deadlines)).
 - A budget cuts between layout items. A single item larger than the budget is shortened with `… N more characters (read block:<id>)`; following that reference continues inside the block by character position. Concatenating every fragment gives back the whole value.
+- A structured item larger than a page uses typed `read_item_json` fragments with Unicode `from`, `until` and `total` positions. Concatenating and decoding those fragments reconstructs the complete item, including provider fields; text fragments reconstruct the original text directly.
 - A page keeps its format. The envelope (`position`, `next`, `previous`, `count`) is never encoded in the content: JSON carries it as fields, the CLI prints the continuation on stderr, MCP puts `next` in the result object.
 - `previous` is issued by the daemon. Cursors are sealed and bound to target, view, expansion options, parents mode, enabled variants, content digest and the boundary in use; any change gives `stale_cursor`, never a shifted page.
 - `latest` starts at the tail.
@@ -313,19 +317,20 @@ Writing out a selection is reading it to a directory; there is no separate expor
 
 **The bundle** is a typed record stream, `polylogue-bundle` version 1:
 
-- the first record is the manifest: the query text and its `query:<hash>`, `ran_at`, the archive and index positions read, whether the index was caught up, counts, flags, enabled variants, and the computed author;
-- then one record per physical session (its messages, blocks, events, links and attachment descriptors inline), per document, per input event, per authored record (assertions, pages, kept results, deliveries) and per variant, in commit order;
-- `json` writes the manifest plus one file per session at `<origin>/<percent-encoded native id>.json` (long names hashed), for diffing; `jsonl` writes everything to one file with the manifest first; `markdown` and `html` write one file per session plus `index.md` or `index.html` linking them, rendered through the same layout with the chosen view and enabled variants;
+- the first record is the manifest: the query text and its `query:<hash>`, `ran_at`, the archive and index positions read, whether the local index was caught up, cached owner/application currency, counts, flags, enabled variants, and the computed author;
+- then typed session headers, messages, events, links, documents, authored records (assertions, pages, kept results, deliveries) and variants, in commit order. A message carries its canonical blocks and attachment descriptors and an explicit snapshot ordinal over the canonical, unfiltered display order of its physical session, including native ordering ties. A subset keeps that ordinal; native counters and source commit order are independent. Events retain their stable IDs and all original source claims; the receiving archive records its own input and byte extents separately;
+- `json` writes a small manifest plus one file per session at `<origin>/<percent-encoded native id>.json` (long names hashed), containing its typed records for diffing; `jsonl` writes everything to one file with the manifest first; `markdown` and `html` write one file per session plus `index.md` or `index.html` linking them, rendered through the same layout with the chosen view and enabled variants;
+- A directory manifest pins a streamed `members.jsonl` inventory by hash and size. Inventory records name each member's relative path, type, stable reference where applicable, hash and size. The importer validates the complete immutable package before it commits records; manifest and inventory processing never require a selection-sized collection. A single JSONL stream carries the manifest first and typed records after it, including blob descriptors.
 - `--with-blobs` writes attachment bytes under `blobs/<hex>` so they resolve after import;
 - branches are written in full.
 
 **Rules:**
 
-- Absent means unknown; no `null` is written for unknown. Times are RFC 3339 UTC in milliseconds, each with its quality and precision. Encrypted reasoning is never written.
+- Absent means unknown; no `null` is written for unknown. Times are RFC 3339 UTC, preserving the original timestamp precision, each with its quality, precision and explicit upper bound when recorded. Millisecond SQL clocks are query caches; they do not replace the original time in a record. Encrypted reasoning is never written.
 - A JSON Schema generated from the Rust types is committed and tested current. A newer major version is refused by name, and so are Polylogue's own earlier export formats: Polylogue reads only its current bundle version.
 - Every object carries its stable reference.
-- Sessions are written one at a time to a temporary directory that is renamed over the previous bundle only when complete; memory is bounded by the largest item, not the selection. Progress goes to stderr.
-- **Round trip:** importing a bundle into a fresh archive ([capture.md](capture.md#import)) gives the same session, message, document and event IDs and the same authored records and variants; importing it again changes nothing except recording the input. Raw provider bytes are not carried: a bundle is a reading. A whole-archive selection is an ordinary query.
+- Records are streamed to a temporary directory that is renamed over the previous bundle only when complete; memory is bounded by the largest message, document or authored record, independently of session and selection size. Progress goes to stderr.
+- **Round trip:** importing a bundle into a fresh archive ([capture.md](capture.md#import)) gives the same session, message, document and event IDs and the same authored records and variants; importing it again changes nothing except recording the input. Raw provider bytes are not carried: a bundle is a reading. Historical authored records retain their original attribution as imported provenance, with the importing actor recorded separately. Restoration preserves their frozen state and identities; it does not enqueue chat actions, start backfills, deliver messages or recompute old requests as new writes. Imported attribution never supplies the actor of a current authored operation. A whole-archive selection is an ordinary query.
 - OpenTelemetry GenAI traces are another writer of the same selection (`--format otel`), with paths replaced unless `--keep-paths` is given and message text only with `--with-text`.
 - MCP and HTTP do not write bundles, since they cannot write files on the caller's host.
 

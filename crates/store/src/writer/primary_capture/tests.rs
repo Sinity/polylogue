@@ -13,6 +13,7 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
                 machine: "machine".into(),
                 host: "host".into(),
                 path: format!("/home/op/{id}"),
+                path_bytes: format!("/home/op/{id}").into_bytes(),
                 facts: None,
                 seen_at_ms: 1,
                 import: None,
@@ -26,6 +27,7 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
             blobs: Vec::new(),
             length: bytes.len() as u64,
             parse: Vec::new(),
+            acquisition: None,
             release: Default::default(),
         },
         files: Vec::new(),
@@ -98,6 +100,42 @@ impl crate::primary::Sinex for OfflineProducer {
         metadata.sync_all()?;
         Ok(PreparedInput::Pending {
             identity: "offline-capture".into(),
+        })
+    }
+    fn prepare_input_group(
+        &self,
+        _: &crate::primary::CapturePlan,
+        _: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+        Self::unavailable()
+    }
+    fn pending_source(
+        &self,
+        source: &crate::primary::SourceSelector,
+        _: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        let head = self.pending_captures()?.into_iter().find(|pending| {
+            let Capture::Input(captured) = &pending.captured else {
+                return false;
+            };
+            captured.rows.format == source.origin
+                && captured
+                    .rows
+                    .observation
+                    .as_ref()
+                    .is_some_and(|observation| {
+                        observation.machine == source.machine
+                            && observation.path_bytes.as_ref() == Some(&source.path_bytes)
+                    })
+        });
+        Ok(crate::primary::PendingSource {
+            status: crate::primary::SourceStatus::Ready,
+            raw: head.clone().filter(|pending| matches!(&pending.captured,Capture::Input(captured) if captured.raw_range.is_some())),
+            head,
+            ..Default::default()
         })
     }
     fn capture(&self, _: &str) -> Result<Capture> {
@@ -238,6 +276,38 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         assert!(
             matches!(results.remove(0),Err(StoreError::PrimaryPending {identity}) if identity == "offline-capture")
         );
+        let snapshot = writer
+            .source_snapshot(
+                crate::primary::SourceSelector {
+                    origin: "codex".into(),
+                    machine: "machine".into(),
+                    path_bytes: b"/home/op/offline".to_vec(),
+                },
+                "synthetic:1",
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot.basis.status,
+            crate::primary::SourceStatus::MissingEvidence
+        );
+        assert_eq!(snapshot.basis.confirmed, None);
+        assert_eq!(snapshot.basis.pending.as_deref(), Some("offline-capture"));
+        assert!(snapshot.pending.raw.is_some());
+        assert!(snapshot.basis.boundary.is_none());
+        writer.apply_confirmed(vec![crate::primary::Confirmed {
+            position: 0, output_index: 0, event: String::new(),
+            change: crate::primary::ConfirmedChange::PositionComplete,
+        }]).unwrap();
+        let after_checkpoint = writer.source_snapshot(crate::primary::SourceSelector {
+            origin: "codex".into(), machine: "machine".into(), path_bytes: b"/home/op/offline".to_vec(),
+        }, "synthetic:1").unwrap();
+        assert_eq!(after_checkpoint.basis.status, crate::primary::SourceStatus::MissingEvidence);
+        assert!(after_checkpoint.basis.boundary.is_none());
+        let Capture::Input(hydrated) = writer.capture("offline-capture".into()).unwrap() else {
+            panic!("the pending source must hydrate its original input facts");
+        };
+        assert_eq!(hydrated.parsed[0].output.events[0].data, payload);
+        assert_eq!(hydrated.parsed[0].parsed_upto, bytes.len() as u64);
         let index = crate::archive::open_read(&archive.index_db()).unwrap();
         assert_eq!(
             index

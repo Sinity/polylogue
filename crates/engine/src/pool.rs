@@ -531,6 +531,7 @@ pub(crate) fn run(
         blobs: extra,
         length: job.length,
         parse,
+        acquisition: None,
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)

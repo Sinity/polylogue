@@ -2,6 +2,9 @@
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::OnceLock;
+mod boundary;
+pub use boundary::SourceBoundary;
+mod native;
 
 pub(crate) struct SourceSchema {
     views: String,
@@ -14,8 +17,13 @@ pub(crate) fn schema() -> Result<&'static SourceSchema> {
     if let Some(schema) = SCHEMA.get() {
         return Ok(schema);
     }
+    let _ = SCHEMA.set(from_archive(crate::schema::ARCHIVE)?);
+    Ok(SCHEMA.get().expect("source schema initialized"))
+}
+
+fn from_archive(archive: &str) -> Result<SourceSchema> {
     let conn = Connection::open_in_memory()?;
-    conn.execute_batch(crate::schema::ARCHIVE)?;
+    conn.execute_batch(archive)?;
     let tables:Vec<String>=conn.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?
         .query_map([],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?;
     for name in &tables {
@@ -61,8 +69,7 @@ pub(crate) fn schema() -> Result<&'static SourceSchema> {
         ddl.push_str(";\n");
     }
     ddl.push_str("INSERT INTO source_row_count(name,n) VALUES ('input',0),('revision',0),('stored_bytes',0);\n");
-    let _ = SCHEMA.set(SourceSchema { ddl, views });
-    Ok(SCHEMA.get().expect("source schema initialized"))
+    Ok(SourceSchema { ddl, views })
 }
 
 /// Read SQL uses these logical names in both modes. Primary tables live in main.
@@ -156,6 +163,20 @@ impl Source {
             observation,
             observed_at_ms,
         })
+    }
+
+    /// Readers use the logical source namespace, including standalone TEMP
+    /// views over the attached archive. Writers still select through `of`.
+    pub(crate) fn reading(conn: &Connection) -> Result<Self> {
+        if conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name='source_input')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            Ok(Self::Cache)
+        } else {
+            Self::of(conn)
+        }
     }
 
     pub(crate) fn prefix(self) -> &'static str {

@@ -1,11 +1,39 @@
 //! Authored request payloads and their portable values. Storage and the
 //! clock that creates a request belong to the caller.
 
-use crate::{Author, BlobHash, DeliveryOutcome, NewNote, Timestamp};
+use crate::{BlobHash, DeliveryOutcome, NewNote, Timestamp, authorship::Authorship};
 use serde::{Deserialize, Serialize};
 
+/// Trusted host and wall-clock inputs captured by the binary. Authored writes
+/// receive one timestamp from this handle; storage never samples another clock.
+#[derive(Debug, Clone)]
+pub struct RequestMetadata {
+    machine: String,
+    clock: crate::WallClock,
+}
+impl RequestMetadata {
+    pub fn new(machine: String, clock: crate::WallClock) -> Self {
+        Self { machine, clock }
+    }
+    pub fn request(&self, id: String, write: UserWrite, authorship: Authorship) -> UserRequest {
+        UserRequest {
+            id,
+            machine: self.machine.clone(),
+            authorship,
+            at: self.clock.now().into(),
+            write,
+        }
+    }
+    pub fn now(&self) -> crate::Timestamp {
+        self.clock.now().into()
+    }
+    pub fn machine(&self) -> &str {
+        &self.machine
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "write", rename_all = "snake_case")]
+#[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
     Variant {
         variant: crate::NewVariant,
@@ -25,7 +53,6 @@ pub enum UserWrite {
     /// Withdraws a note family: the newest revision and every older one.
     Withdraw {
         note: String,
-        author: Author,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
@@ -54,7 +81,6 @@ pub enum UserWrite {
     SetSetting {
         key: String,
         value: String,
-        author: Author,
         /// `None` for an archive-wide key, otherwise this machine.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<String>,
@@ -173,6 +199,7 @@ pub struct UserOutcome {
 pub struct UserRequest {
     pub id: String,
     pub machine: String,
+    pub authorship: Authorship,
     pub at: Timestamp,
     pub write: UserWrite,
 }
@@ -440,3 +467,6 @@ impl BackfillJob {
         (counts, position)
     }
 }
+
+#[cfg(test)]
+mod tests;

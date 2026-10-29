@@ -1,10 +1,11 @@
 //! Durable primary producer intents and the confirmed cache contract.
+pub use crate::source::SourceBoundary;
 pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
-    CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan, ConfirmedSource, PendingCheckpoint,
-    PendingGroupPage, PendingSource, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
-    SourceStatus,
+    AcquisitionReceipt, AcquisitionRoute, CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan,
+    ConfirmedSource, PendingCheckpoint, PendingGroupPage, PendingSource, RawRange, SourceBasis,
+    SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
 };
 pub mod products;
 pub(crate) mod projection;

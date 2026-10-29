@@ -13,6 +13,7 @@ fn batch(id: &str, length: u64) -> Batch {
             machine: "synthetic-machine".into(),
             host: "synthetic-host".into(),
             path: "/synthetic/export.bin".into(),
+            path_bytes: b"/synthetic/export.bin".to_vec(),
             facts: None,
             seen_at_ms: 1,
             import: None,
@@ -23,6 +24,7 @@ fn batch(id: &str, length: u64) -> Batch {
         blobs: Vec::new(),
         length,
         parse: Vec::new(),
+        acquisition: None,
         release: Default::default(),
     }
 }
