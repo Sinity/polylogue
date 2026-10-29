@@ -13,11 +13,7 @@ use query_language::time::DaySetting;
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Clone, Copy)]
-pub enum Paging {
-    Sessions,
-    Facets,
-}
+pub use polylogue_store::measure::Paging;
 
 pub struct Measure {
     /// The name after `| measure` and `polylogue measure`.

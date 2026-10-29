@@ -117,11 +117,28 @@ one capture at a time. Shared encoded preparations carry bytes through staging,
 spooling and transport without plaintext disk copies. Material receipts make
 dependent writes ready; they do not retire unconfirmed source custody.
 
-Confirmed pages may end inside one owner transaction. Such pages enter durable
-private staging and remain invisible. A cumulative `PositionComplete` barrier
-promotes every complete change through its position and the applied checkpoint
-atomically. The checkpoint is unknown until the first real barrier, including
-the explicit zero barrier for an empty owner store.
+Confirmed pages may end inside one owner transaction. Their facts, signed replay
+cursor and actual native delivery receipt commit together in private cache
+staging. Delivery acknowledgments release broker credit for those staged pages;
+producer custody retires only through the applied complete position. A full
+indexed snapshot certificate commits with its projected facts. Its original
+position remains the snapshot basis while real native completion markers extend
+the applied prefix. The checkpoint is unknown until the first real completion,
+including an explicit zero for an empty owner store.
+
+Raw-input snapshot coverage is a separate request basis. Canonical publication
+uses the write proof returned by the owner for the actual completed position,
+policy epoch and scope. Retaining a snapshot basis never grants publication.
+Original kind definitions, projected identities and optional receiver-authenticated
+origin metadata are stored with each fact at first admission. Missing origin
+metadata remains unknown when the fact is replayed or restored.
+
+An owner invalidation blocks existing read generations and publication before
+it becomes observable. It preserves cached payload custody until the owner
+directs a replay reset. An observed erasure at position Q keeps output fenced
+until an actual completed prefix reaches Q. Neither control advances the applied
+position. An invalidated certificate cannot be revived by an old completion or
+publication proof.
 
 Read completeness is evaluated on the pinned Reader snapshot from declared
 native reading contracts, source lengths and parser checkpoints, current
@@ -302,3 +319,12 @@ the same Run ID. Its phase key cannot replace the Begin body. Named producer
 custody supports immediate exact-hash and unambiguous prefix lookup while
 confirmation is pending; that state is reported as queued. The local index
 changes only from the confirmed stream.
+
+Attachment binding claims preserve their declared namespace independently from
+validated receiving members. Primary mode projects binding facts only at a confirmed barrier, after source
+observations, actual member associations and parsed rows. New publication needs
+the canonical outbox and an authenticated owner basis; without that basis the
+writer refuses publication while neutral declarations remain in source facts. Serialized witnesses remain retained data;
+primary availability stays unknown until their original receiving admission can
+be authenticated in the current grant. Standalone reads use the validated bytes
+and exact member namespace. Binding claim hashes do not request source materials.

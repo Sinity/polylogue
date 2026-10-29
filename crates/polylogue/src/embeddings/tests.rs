@@ -60,3 +60,32 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
     assert!(!format!("{voyage:?}").contains("synthetic-secret"));
     assert!(Provider::from_settings(&Snapshot::new(Vec::new()), &credentials).is_err());
 }
+
+#[test]
+fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
+    use polylogue_model::authorship::{Author, Authorship, Channel};
+    let daemon = crate::test_daemon::start("synthetic selected text");
+    let operation = daemon
+        .daemon
+        .operation_context(&Authorship {
+            author: Author::Operator,
+            via: Channel::Cli,
+        })
+        .unwrap();
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let selected = query_sessions(&reader, "sessions", &operation).unwrap();
+    assert_eq!(selected, ["claude-code:s1"]);
+    for (query, expected) in [
+        ("sessions | group by origin | count", "bad_request"),
+        (
+            "sessions where similar:\"synthetic selected text\"",
+            "not_yet_available",
+        ),
+    ] {
+        let response = query_sessions(&reader, query, &operation).unwrap_err();
+        assert!(
+            matches!(&response, Response::Error { kind, .. } if kind == expected),
+            "{query}: {response:?}"
+        );
+    }
+}

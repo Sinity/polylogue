@@ -46,15 +46,21 @@ mod writes;
 
 /// One native registry projection is shared by reparse planning and read currency.
 pub fn reading_contracts() -> Vec<polylogue_store::ReadingContract> {
-    ORIGINS.iter().map(|origin| {
-        if origin.support == Support::Kept {
-            polylogue_store::ReadingContract::Kept { origin: origin.name.to_owned() }
-        } else {
-            polylogue_store::ReadingContract::Expected {
-                origin: origin.name.to_owned(), version: origin.reading_version(),
+    ORIGINS
+        .iter()
+        .map(|origin| {
+            if origin.support == Support::Kept {
+                polylogue_store::ReadingContract::Kept {
+                    origin: origin.name.to_owned(),
+                }
+            } else {
+                polylogue_store::ReadingContract::Expected {
+                    origin: origin.name.to_owned(),
+                    version: origin.reading_version(),
+                }
             }
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 #[derive(Debug, thiserror::Error)]

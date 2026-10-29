@@ -5,6 +5,7 @@ use polylogue_model::{
 
 fn fact(position: i64, event: &str, product: Product) -> Confirmed {
     Confirmed {
+        native: None,
         position,
         output_index: 0,
         event: event.into(),
@@ -13,6 +14,7 @@ fn fact(position: i64, event: &str, product: Product) -> Confirmed {
 }
 fn lifecycle(position: i64, event: &str, change: ConfirmedChange) -> Confirmed {
     Confirmed {
+        native: None,
         position,
         output_index: 0,
         event: event.into(),

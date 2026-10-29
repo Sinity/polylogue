@@ -102,15 +102,22 @@ impl Reader<'_> {
             let imported: bool = row.get(4)?;
             let origin: String = row.get(5)?;
             let version: Option<String> = row.get(10)?;
-            let reading_changed = versions.iter().find(|(name, _)| name == &origin)
+            let reading_changed = versions
+                .iter()
+                .find(|(name, _)| name == &origin)
                 .is_some_and(|(_, expected)| version.as_ref() != Some(expected));
             let state = ChainState {
                 plan: BehindChain {
                     input: row.get(0)?,
                     current: row.get(3)?,
                     imported: if imported {
-                        Some(ImportedAs { format: origin.clone(), path: row.get(6)? })
-                    } else { None },
+                        Some(ImportedAs {
+                            format: origin.clone(),
+                            path: row.get(6)?,
+                        })
+                    } else {
+                        None
+                    },
                     reading_changed,
                     progress: ChainProgress {
                         chain: row.get(1)?,
@@ -125,7 +132,9 @@ impl Reader<'_> {
                 version,
                 status: row.get(11)?,
             };
-            if visit(state)?.is_break() { break; }
+            if visit(state)?.is_break() {
+                break;
+            }
         }
         token.check()
     }

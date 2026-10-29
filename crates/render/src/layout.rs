@@ -191,22 +191,37 @@ pub fn visit_record(
                     reason: Some("author not established by source".into()),
                 },
             };
-            let mark =
-                row.block_ordinals
-                    .iter()
-                    .zip(&message.blocks)
-                    .find_map(|(ordinal, block)| {
-                        if !visible_text(block, options) {
+            let mark = row
+                .block_ordinals
+                .iter()
+                .zip(&message.blocks)
+                .find_map(|(ordinal, block)| {
+                    let source =
+                        Source::block(&message.id, &message.session, *ordinal, evidence.inherited);
+                    if matches!(block, Block::ToolCall { .. } | Block::ToolResult { .. })
+                        && let Some(pair) = evidence.tool_pairs.get(ordinal)
+                    {
+                        if pair.emit_at != source.reference || options.tools() != Expansion::Full {
                             return None;
                         }
-                        let source = Source::block(
-                            &message.id,
-                            &message.session,
-                            *ordinal,
-                            evidence.inherited,
-                        );
-                        evidence.variants.mark_for(&source, options).cloned()
-                    });
+                        return pair
+                            .result
+                            .as_ref()
+                            .filter(|result| presentation_text_visible(&result.block, options))
+                            .and_then(|result| evidence.variants.mark_for(&result.source, options))
+                            .cloned();
+                    }
+                    if !presentation_text_visible(block, options) {
+                        return None;
+                    }
+                    evidence.variants.mark_for(&source, options).cloned()
+                })
+                .or_else(|| {
+                    if by == WrittenBy::Harness && options.harness() != Expansion::Full {
+                        return None;
+                    }
+                    evidence.variants.mark_for(&source, options).cloned()
+                });
             if !visit(ReadItem {
                 source: source.clone(),
                 kind: ItemKind::MessageHeader {
@@ -232,6 +247,11 @@ pub fn visit_record(
                     }),
                 },
             }) {
+                return Ok(());
+            }
+            if (by != WrittenBy::Harness || options.harness() == Expansion::Full)
+                && !root_text(&source, options, evidence, &mut visit)?
+            {
                 return Ok(());
             }
             if by == WrittenBy::Harness && options.harness() == Expansion::Collapsed {
@@ -307,6 +327,9 @@ pub fn visit_record(
                     accepted_views: vec![View::Transcript, View::Raw],
                 });
             }
+            if !root_text(&source, options, evidence, &mut visit)? {
+                return Ok(());
+            }
             for (ordinal, block) in row.document.blocks.iter().enumerate() {
                 let source = Source {
                     reference: row.reference.clone(),
@@ -329,12 +352,23 @@ pub fn visit_record(
                 return Ok(());
             }
         }
+        Record::TextFragment(row) => {
+            if !visit(ReadItem {
+                source,
+                kind: ItemKind::TextFragment {
+                    record: row.clone(),
+                    origin: evidence.fragment_origin.clone(),
+                },
+            }) {
+                return Ok(());
+            }
+        }
         Record::Authored(row) if options.assertions => {
             if !visit(ReadItem {
                 source,
                 kind: ItemKind::Other {
                     type_name: "authored".into(),
-                    data: json!(row),
+                    data: json!({"record":row,"selection":evidence.authored}),
                 },
             }) {
                 return Ok(());
@@ -342,7 +376,7 @@ pub fn visit_record(
         }
         Record::Session(row) if options.view != View::Changes => {
             let accepted = visit(ReadItem {
-                source,
+                source: source.clone(),
                 kind: ItemKind::Card {
                     card: Box::new(Card::Session {
                         session: Box::new(row.session.clone()),
@@ -350,7 +384,7 @@ pub fn visit_record(
                     }),
                 },
             });
-            if !accepted {
+            if !accepted || !root_text(&source, options, evidence, &mut visit)? {
                 return Ok(());
             }
         }
@@ -385,7 +419,7 @@ fn block_items(
         return Ok(true);
     }
     if !evidence.tool_pairs.contains_key(&ordinal)
-        && visible_text(block, options)
+        && presentation_text_visible(block, options)
         && !variant_indicator(&source, options, evidence, visit)
     {
         return Ok(false);
@@ -529,11 +563,21 @@ fn attachment_kind(
         .and_then(|blocks| source.block.and_then(|ordinal| blocks.get(&ordinal)))
         .and_then(|attachments| attachments.get(index));
     let inline_bytes = prepared.and_then(|prepared| prepared.inline_bytes.clone());
-    if let Some(bytes) = &inline_bytes
-        && attachment.blob.as_ref() != Some(&polylogue_model::BlobHash::of(bytes))
+    let verified_hash = prepared.and_then(|prepared| prepared.verified_hash);
+    if attachment
+        .blob
+        .zip(verified_hash)
+        .is_some_and(|(source, verified)| source != verified)
     {
         return Err(ReadError::InvalidEvidence(
-            "attachment inline bytes do not match its canonical blob hash".into(),
+            "verified attachment hash disagrees with its canonical blob hash".into(),
+        ));
+    }
+    if let Some(bytes) = &inline_bytes
+        && attachment.blob.or(verified_hash) != Some(polylogue_model::BlobHash::of(bytes))
+    {
+        return Err(ReadError::InvalidEvidence(
+            "attachment inline bytes do not match a canonical or verified content hash".into(),
         ));
     }
     Ok(ItemKind::Attachment {
@@ -542,6 +586,7 @@ fn attachment_kind(
         availability: prepared.map(|p| p.availability.clone()).unwrap_or_default(),
         link: prepared.and_then(|p| p.link.clone()),
         inline_bytes,
+        verified_hash,
         open: prepared.and_then(|p| p.open.clone()),
     })
 }
@@ -792,16 +837,19 @@ fn absent_thinking(source: Source, blocks: u64) -> ReadItem {
     }
 }
 
-fn visible_text(block: &Block, options: &ReadOptions) -> bool {
-    options.view.block_kinds().contains(&block.kind())
-        && match block {
-            Block::Text { .. } => true,
-            Block::Thinking { text: Some(_), .. } => options.thinking() == Expansion::Full,
-            Block::ToolResult {
-                output: Some(_), ..
-            } => options.tools() == Expansion::Full,
-            _ => false,
-        }
+/// Whether a text body is visible after record projection. Record membership,
+/// harness authorship and branch eligibility remain owned by projection.
+pub fn presentation_text_visible(block: &Block, options: &ReadOptions) -> bool {
+    options.text_kind_visible(block.kind())
+        && matches!(
+            block,
+            Block::Text { .. }
+                | Block::Thinking { text: Some(_), .. }
+                | Block::ToolResult {
+                    output: Some(_),
+                    ..
+                }
+        )
 }
 fn presentation_block<'a>(
     block: &'a Block,
@@ -810,7 +858,7 @@ fn presentation_block<'a>(
     evidence: &ProjectionEvidence,
 ) -> Result<std::borrow::Cow<'a, Block>, ReadError> {
     use std::borrow::Cow;
-    if !visible_text(block, options) {
+    if !presentation_text_visible(block, options) {
         return Ok(Cow::Borrowed(block));
     }
     let text = match block {
@@ -890,4 +938,34 @@ fn variant_indicator(
         }
     }
     true
+}
+
+/// The service supplies this anchor only after proving accessible-empty source
+/// text. It represents no canonical block and never resolves source access.
+fn root_text(
+    source: &Source,
+    options: &ReadOptions,
+    evidence: &ProjectionEvidence,
+    visit: &mut impl FnMut(ReadItem) -> bool,
+) -> Result<bool, ReadError> {
+    if !options
+        .view
+        .block_kinds()
+        .contains(&polylogue_model::BlockKind::Text)
+    {
+        return Ok(true);
+    }
+    let text = evidence.variants.apply(source, "", options)?;
+    if matches!(text, std::borrow::Cow::Borrowed(_)) {
+        return Ok(true);
+    }
+    if !variant_indicator(source, options, evidence, visit) {
+        return Ok(false);
+    }
+    Ok(visit(ReadItem {
+        source: source.clone(),
+        kind: ItemKind::Text {
+            text: text.into_owned(),
+        },
+    }))
 }

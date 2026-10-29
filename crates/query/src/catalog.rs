@@ -62,7 +62,19 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
             }
             // These reference atoms are compiled at the product identity seam.
             for name in origins.iter().map(String::as_str).chain([
-                "session", "message", "block", "note", "query", "result", "similar",
+                "session",
+                "message",
+                "block",
+                "note",
+                "query",
+                "result",
+                "run",
+                "document",
+                "event",
+                "span",
+                "assertion",
+                "delivery",
+                "similar",
             ]) {
                 if !declarations.iter().any(|f| f.name == name) {
                     declarations.push(Field {
@@ -92,10 +104,23 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
             }
         })
         .collect();
-    catalog.references = vec![ReferenceSyntax {
-        prefix: "@".into(),
-        marker: None,
-    }];
+    catalog.references = [
+        ("@", None),
+        ("session:", Some(":")),
+        ("message:", Some(":")),
+        ("block:", Some("#")),
+        ("document:", Some(":")),
+        ("span:", Some("#")),
+        ("assertion:", Some("@")),
+        ("delivery:", None),
+        ("run:", None),
+    ]
+    .into_iter()
+    .map(|(prefix, marker)| ReferenceSyntax {
+        prefix: prefix.into(),
+        marker: marker.map(str::to_owned),
+    })
+    .collect();
     catalog
 }
 
@@ -103,4 +128,21 @@ pub use query_language::catalog::{AGGREGATES, KEY_FUNCTIONS, STAGES};
 pub use query_language::complete::{Completion, CompletionKind};
 pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completion> {
     query_language::complete::complete(text, position, catalog)
+}
+
+/// The native row domain of a typed address. This is pure product vocabulary;
+/// membership and source availability remain Store responsibilities.
+pub fn reference_unit(reference: &polylogue_model::Reference) -> Option<Unit> {
+    use polylogue_model::Reference;
+    Some(match reference {
+        Reference::Session(_) => Unit::Sessions,
+        Reference::Message(_) | Reference::MessageRange { .. } => Unit::Messages,
+        Reference::Block { .. } => Unit::Blocks,
+        Reference::Document(_) => Unit::Documents,
+        Reference::Event(_) => Unit::Events,
+        Reference::Assertion(_) => Unit::Notes,
+        Reference::Delivery(_) => Unit::Deliveries,
+        Reference::Span { container, .. } => return reference_unit(container),
+        _ => return None,
+    })
 }

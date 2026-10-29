@@ -23,6 +23,9 @@ pub struct VariantText {
     /// Original body ranges in source order. Replacement is emitted at the first
     /// range; subsequent covered ranges are removed. Empty means the key names
     /// exactly one complete text body. Multi-body targets need alignment.
+    /// A synthesized source-coordinate separator has no bytes in either block;
+    /// its replacement uses a zero-width anchor at the preceding body's end,
+    /// retaining the exact original span key. View formatting stays structural.
     #[serde(default)]
     pub alignment: Vec<TextAlignment>,
 }

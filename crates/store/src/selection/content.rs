@@ -22,10 +22,18 @@ impl Reader<'_> {
             if let Some(reference) = &selection.direct {
                 return self.fingerprint_reference(reference, with_parents, &mut hash);
             }
-            if let RowBasis::Native { columns, .. } = &selection.program.row_basis {
+            if matches!(
+                selection.program.unit,
+                Unit::Sessions
+                    | Unit::Messages
+                    | Unit::Documents
+                    | Unit::Events
+                    | Unit::Blocks
+                    | Unit::ToolCalls
+            ) && let RowBasis::Native { .. } = &selection.program.row_basis
+            {
                 return self.selection_facts_scoped(selection, &mut |fact: SelectionFactKey| {
-                    let row = Value::Object(columns.iter().cloned().zip(fact.values).collect());
-                    let reference = row_reference(&selection.program, &row).ok_or_else(|| {
+                    let reference = fact.reference().ok_or_else(|| {
                         invalid(
                             "not_yet_available",
                             "native row has no retained reference identity",

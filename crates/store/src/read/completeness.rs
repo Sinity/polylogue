@@ -13,11 +13,15 @@ pub enum ReadingContract {
 }
 impl ReadingContract {
     pub fn origin(&self) -> &str {
-        match self { Self::Expected { origin, .. } | Self::Kept { origin } => origin }
+        match self {
+            Self::Expected { origin, .. } | Self::Kept { origin } => origin,
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletenessReason {
     MissingDeclaration,
@@ -59,10 +63,14 @@ pub struct ReadCompleteness {
 }
 impl ReadCompleteness {
     pub fn caught_up(&self) -> bool {
-        self.parsing.current() && self.derivation.current()
-            && self.search.current() && self.projection.current()
+        self.parsing.current()
+            && self.derivation.current()
+            && self.search.current()
+            && self.projection.current()
     }
-    pub fn degraded(&self) -> bool { !self.caught_up() }
+    pub fn degraded(&self) -> bool {
+        !self.caught_up()
+    }
 }
 
 impl Reader<'_> {
@@ -72,12 +80,18 @@ impl Reader<'_> {
         let mut declared = BTreeMap::new();
         let mut versions = Vec::new();
         for contract in contracts {
-            if contract.origin().is_empty() || declared.insert(contract.origin(), contract).is_some() {
-                return Err(StoreError::Invalid("reading contracts need unique nonempty origins".into()));
+            if contract.origin().is_empty()
+                || declared.insert(contract.origin(), contract).is_some()
+            {
+                return Err(StoreError::Invalid(
+                    "reading contracts need unique nonempty origins".into(),
+                ));
             }
             if let ReadingContract::Expected { origin, version } = contract {
                 if version.is_empty() {
-                    return Err(StoreError::Invalid("an expected reading needs its declared version".into()));
+                    return Err(StoreError::Invalid(
+                        "an expected reading needs its declared version".into(),
+                    ));
                 }
                 versions.push((origin.clone(), version.clone()));
             }
@@ -92,7 +106,9 @@ impl Reader<'_> {
                     unknown = true;
                     missing.insert(CompletenessReason::MissingDeclaration);
                 }
-                Some(ReadingContract::Kept { .. }) => { kept_chains += 1; }
+                Some(ReadingContract::Kept { .. }) => {
+                    kept_chains += 1;
+                }
                 Some(ReadingContract::Expected { version, .. }) => {
                     let progress = &state.plan.progress;
                     if !progress.parsed {
@@ -105,10 +121,14 @@ impl Reader<'_> {
                                 raw_only_chains += 1;
                                 missing.insert(CompletenessReason::KnownRawOnly);
                             }
-                            Some("partial") => { missing.insert(CompletenessReason::MissingSourcePrefix); }
+                            Some("partial") => {
+                                missing.insert(CompletenessReason::MissingSourcePrefix);
+                            }
                             Some("waiting") if progress.waiting => {}
                             Some("done") if progress.parsed_upto >= progress.length => {}
-                            _ => { missing.insert(CompletenessReason::ParserBehind); }
+                            _ => {
+                                missing.insert(CompletenessReason::ParserBehind);
+                            }
                         }
                     }
                 }
@@ -131,21 +151,39 @@ impl Reader<'_> {
         )?;
         let derivation = if derive_behind {
             CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind])
-        } else { CompletenessDimension::Complete };
+        } else {
+            CompletenessDimension::Complete
+        };
         let mut search_missing = Vec::new();
-        if crate::schema::building(conn)? { search_missing.push(CompletenessReason::FirstBuild); }
-        if conn.query_row("SELECT EXISTS(SELECT 1 FROM search_pending)", [], |row| row.get::<_, bool>(0))? {
+        if crate::schema::building(conn)? {
+            search_missing.push(CompletenessReason::FirstBuild);
+        }
+        if conn.query_row("SELECT EXISTS(SELECT 1 FROM search_pending)", [], |row| {
+            row.get::<_, bool>(0)
+        })? {
             search_missing.push(CompletenessReason::SearchPending);
         }
-        let search = if search_missing.is_empty() { CompletenessDimension::Complete }
-            else { CompletenessDimension::Incomplete(search_missing) };
+        let search = if search_missing.is_empty() {
+            CompletenessDimension::Complete
+        } else {
+            CompletenessDimension::Incomplete(search_missing)
+        };
         let projection = if self.pool.archive.is_primary() {
-            // Scalar stream progress and raw-input certificates cannot certify
-            // the full permitted indexed catalog. The owner proof is distinct.
-            CompletenessDimension::Unknown(vec![CompletenessReason::OwnerProofUnavailable])
+            if crate::primary::projection::replay_state(conn)?.certified_position().is_some() {
+                CompletenessDimension::Complete
+            } else {
+                CompletenessDimension::Unknown(vec![CompletenessReason::OwnerProofUnavailable])
+            }
         } else { CompletenessDimension::NotApplicable };
         token.check()?;
-        Ok(ReadCompleteness { parsing, derivation, search, projection, kept_chains, raw_only_chains })
+        Ok(ReadCompleteness {
+            parsing,
+            derivation,
+            search,
+            projection,
+            kept_chains,
+            raw_only_chains,
+        })
     }
 }
 

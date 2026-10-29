@@ -72,6 +72,7 @@ pub struct Counts {
     pub authored: u64,
     pub variants: u64,
     pub variant_parts: u64,
+    pub text_fragments: u64,
     pub blobs: u64,
 }
 
@@ -230,6 +231,7 @@ pub enum Record {
     Authored(Box<AuthoredRecord>),
     Variant(VariantRecord),
     VariantPart(VariantPartRecord),
+    TextFragment(Box<TextFragmentRecord>),
     Blob(BlobRecord),
 }
 
@@ -245,6 +247,7 @@ impl Record {
             Self::Authored(r) => &r.reference,
             Self::Variant(r) => &r.reference,
             Self::VariantPart(r) => &r.reference,
+            Self::TextFragment(r) => &r.reference,
             Self::Blob(r) => &r.reference,
         })
     }
@@ -260,6 +263,7 @@ impl Record {
             Self::Authored(r) => r.commit,
             Self::Variant(r) => r.commit,
             Self::VariantPart(r) => r.commit,
+            Self::TextFragment(r) => r.commit,
         })
     }
 
@@ -291,6 +295,7 @@ impl Record {
                 }
                 Ok(())
             }
+            Self::TextFragment(r) => r.validate().map_err(BundleError::from),
             Self::Blob(r) => r.validate(),
         }
     }
@@ -343,6 +348,8 @@ pub struct InputEventRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BundleError {
+    #[error(transparent)]
+    TextFragment(#[from] TextFragmentError),
     #[error("not a current Polylogue bundle (format {0:?})")]
     WrongFormat(String),
     #[error(

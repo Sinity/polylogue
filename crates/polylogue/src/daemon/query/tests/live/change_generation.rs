@@ -159,7 +159,7 @@ fn selection_output_preserves_unknown_and_empty_and_refuses_scalars() {
     for text in ["true", "1", "\"bad\"", "[1]", "{}", "["] {
         let mut value = json!(text);
         assert_eq!(
-            shape_value(ColKind::Ids, &mut value).unwrap_err().kind,
+            shape_value(ColKind::Ids, &mut value).unwrap_err().kind(),
             "store"
         );
     }
@@ -175,7 +175,7 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
         json!([""]),
     ] {
         assert_eq!(
-            shape_value(ColKind::Ids, &mut value).unwrap_err().kind,
+            shape_value(ColKind::Ids, &mut value).unwrap_err().kind(),
             "store"
         );
     }

@@ -16,11 +16,7 @@ impl Inner {
             &self.archive
         };
         let (mut status, confirmed) = crate::source::Source::confirmed_source(conn, &source)?;
-        let boundary = crate::source::SourceBoundary::read(
-            &self.index,
-            conn,
-            &self.location,
-        )?;
+        let boundary = crate::source::SourceBoundary::read(&self.index, conn, &self.location)?;
         if boundary.is_none() && status == SourceStatus::Ready {
             status = SourceStatus::MissingEvidence;
         }

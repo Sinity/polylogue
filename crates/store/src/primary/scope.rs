@@ -15,7 +15,7 @@ pub(crate) fn current(index: &Connection) -> Result<Option<String>> {
 pub(crate) fn require_readable(index: &Connection) -> Result<()> {
     if index
         .query_row(
-            "SELECT 1 FROM meta WHERE key='confirmed_scope_pending'",
+            "SELECT 1 FROM meta WHERE key IN ('confirmed_scope_pending','confirmed_replay_blocked') LIMIT 1",
             [],
             |_| Ok(()),
         )
@@ -37,12 +37,48 @@ pub(crate) fn reset(
     resolver: &crate::writer::resolve::Resolver,
     scope: &str,
 ) -> Result<bool> {
+    reset_to(index, archive, resolver, scope, false)
+}
+
+pub(crate) fn restart(
+    index: &mut Connection,
+    archive: &Archive,
+    resolver: &crate::writer::resolve::Resolver,
+    scope: &str,
+) -> Result<bool> {
+    reset_to(index, archive, resolver, scope, true)
+}
+
+/// Invalidates output before a typed owner refusal or erasure becomes observable.
+/// Payload custody remains until an explicit authoritative replay reset.
+pub(crate) fn invalidate(index: &Connection, archive: &Archive) -> Result<()> {
+    let mut reset = archive.read_scope.begin_reset()?;
+    let mut previous = None;
+    let persisted = (|| {
+        let synchronous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
+        previous = Some(synchronous);
+        index.pragma_update(None, "synchronous", synchronous.max(2))?;
+        index.execute("INSERT INTO meta(key,value) VALUES ('confirmed_replay_blocked','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+        Ok(())
+    })();
+    let invalidated = reset.invalidate();
+    let restored = previous.map(|previous| index.pragma_update(None, "synchronous", previous)).transpose();
+    persisted.and(invalidated).and_then(|()| restored.map(|_| ()).map_err(Into::into))
+}
+
+fn reset_to(
+    index: &mut Connection,
+    archive: &Archive,
+    resolver: &crate::writer::resolve::Resolver,
+    scope: &str,
+    force: bool,
+) -> Result<bool> {
     if scope.is_empty() {
         return Err(StoreError::Invalid(
             "a confirmed scope needs its owner identity".into(),
         ));
     }
-    if current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
+    if !force && current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
         return Ok(false);
     }
     // Cancellation precedes visibility. A failed transaction leaves reads blocked

@@ -562,3 +562,254 @@ fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
         replay.cursor_context().versions
     );
 }
+
+#[test]
+fn selected_assertion_reference_retains_its_actual_family_and_revision() {
+    let (_dir, mut fixture) = fixture();
+    let first = fixture
+        .note("note", None, Some("first"), "session:test:one")
+        .unwrap();
+    let second = fixture
+        .note("note", None, Some("second"), "session:test:one")
+        .unwrap();
+    let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
+    conn.execute(
+        "UPDATE note SET first_note=?1 WHERE id=?2",
+        rusqlite::params![first, second],
+    )
+    .unwrap();
+    drop(conn);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["value".into()];
+    let selected = reader
+        .prepare_selection("notes where current:* | sort by id", &options)
+        .unwrap();
+    let mut rows = vec![];
+    reader
+        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+            rows.push((row.reference.unwrap().to_string(), row.values));
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                format!("assertion:{first}@{first}"),
+                serde_json::json!({"value":"first"})
+            ),
+            (
+                format!("assertion:{first}@{second}"),
+                serde_json::json!({"value":"second"})
+            )
+        ]
+    );
+    let exact = reader
+        .prepare_selection(&format!("assertion:{first}@{first}"), &options)
+        .unwrap();
+    let mut exact_values = vec![];
+    reader
+        .visit_selection::<SelectionError>(&exact, None, None, |row| {
+            exact_values.push(row.values);
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(exact_values, vec![serde_json::json!({"value":"first"})]);
+    assert_eq!(
+        reader
+            .prepare_selection(&format!("assertion:{first}"), &options)
+            .err()
+            .unwrap()
+            .kind(),
+        "ambiguous"
+    );
+    let family = reader
+        .prepare_selection(
+            &format!("notes where assertion:{first} | sort by id"),
+            &options,
+        )
+        .unwrap();
+    assert!(family.direct_reference().is_none());
+    let mut count = 0;
+    reader
+        .visit_selection::<SelectionError>(&family, None, None, |_| {
+            count += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:session",
+            ..Default::default()
+        })
+        .unwrap();
+    for id in ["test:a", "test:b", "test:native with | separator"] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role: "user",
+                    written_by: "human",
+                    prompt_kind: Some("prose"),
+                    text: Some("synthetic"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.event(session, "synthetic", None).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let options = options();
+    let opaque = reader
+        .prepare_selection("message:\"test:native with | separator\"", &options)
+        .unwrap();
+    assert_eq!(
+        opaque.direct_reference().unwrap().to_string(),
+        "message:test:native with | separator"
+    );
+    let object = opaque.query_object().unwrap();
+    polylogue_query::plan::validate_object(&object).unwrap();
+    let event = reader.prepare_selection("event:e4", &options).unwrap();
+    assert_eq!(
+        event.direct_reference(),
+        Some(&Reference::Event("e4".into()))
+    );
+    assert_eq!(
+        reader
+            .prepare_selection("block:test:a#999", &options)
+            .err()
+            .unwrap()
+            .kind(),
+        "not_found"
+    );
+    let ordinary = reader
+        .prepare_selection(
+            "messages where message:test:a..test:b | sort by id",
+            &options,
+        )
+        .unwrap();
+    assert!(ordinary.direct_reference().is_none());
+    let mut selected = vec![];
+    reader
+        .visit_selection::<SelectionError>(&ordinary, None, None, |row| {
+            selected.push(row.reference.unwrap().to_string());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(selected, ["message:test:a", "message:test:b"]);
+    let semantic = reader
+        .prepare_query_selection("messages where message:test:a..test:b", &options)
+        .unwrap();
+    assert!(semantic.direct_reference().is_none());
+    let mut semantic_count = 0;
+    reader
+        .visit_selection::<SelectionError>(&semantic, None, None, |_| {
+            semantic_count += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(semantic_count, 2);
+    let range = reader
+        .prepare_selection("message:test:a..test:b", &options)
+        .unwrap();
+    assert!(matches!(
+        range.direct_reference(),
+        Some(Reference::MessageRange { .. })
+    ));
+}
+
+#[test]
+fn direct_authored_reference_uses_exact_family_revision_membership() {
+    let (_dir, mut fixture) = fixture();
+    let first = fixture
+        .note("lesson", None, Some("first"), "session:test:one")
+        .unwrap();
+    let second = fixture
+        .note("lesson", None, Some("second"), "session:test:two")
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let reference = format!("assertion:{first}@{first}");
+    let prepared = reader.prepare_selection(&reference, &options()).unwrap();
+    let mut selected = Vec::new();
+    reader
+        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+            selected.push(row.reference.unwrap().to_string());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(selected, [reference]);
+    let wrong_family = reader
+        .prepare_selection(&format!("assertion:{first}@{second}"), &options())
+        .unwrap();
+    let mut count = 0;
+    reader
+        .visit_selection::<SelectionError>(&wrong_family, None, None, |_| {
+            count += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn native_event_read_target_uses_event_grain_without_rebinding_ordinary_queries() {
+    use crate::fixture::writer::WriterArchive;
+    use polylogue_model::{Event, Output, TimeQuality};
+    let mut archive = WriterArchive::new();
+    let output = Output {
+        events: vec![Event {
+            session: None,
+            kind: "native_event".into(),
+            at: None,
+            at_quality: TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: Some((0, 1)),
+            data: serde_json::json!({"synthetic":true}),
+        }],
+        ..Default::default()
+    };
+    archive.write_output("native-event", "claude-code", "synthetic/event", output, 1);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let semantic = reader
+        .prepare_query_selection("events", &options())
+        .unwrap();
+    let mut references = vec![];
+    reader
+        .visit_selection::<SelectionError>(&semantic, None, None, |row| {
+            references.push(row.reference.unwrap());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(references.len(), 1);
+    assert!(matches!(references[0], Reference::Event(_)));
+    let target = references[0].to_string();
+    let direct = reader.prepare_selection(&target, &options()).unwrap();
+    assert_eq!(direct.program().unit, Unit::Events);
+    assert_eq!(direct.direct_reference(), Some(&references[0]));
+    let mut selected = vec![];
+    reader
+        .visit_selection::<SelectionError>(&direct, None, None, |row| {
+            selected.push(row.reference.unwrap());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(selected, references);
+    let ordinary = reader.prepare_query_plan(&target, &options()).unwrap();
+    assert!(matches!(&ordinary.bound_query().query().source,
+        polylogue_query::ast::Source::Unit { unit, implicit: true, .. } if unit == "sessions"));
+}

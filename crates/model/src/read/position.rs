@@ -95,3 +95,40 @@ impl ReadFraming {
         super::Source::record(format!("query:{}", self.question))
     }
 }
+
+const READ_POSITION_SENTINEL: &str = "read-position-v1";
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReadPositionCodecError {
+    #[error("read continuation has an unsupported position encoding")]
+    Sentinel,
+    #[error("read continuation position needs exactly one value, found {found}")]
+    Arity { found: usize },
+    #[error("read continuation position is invalid: {0}")]
+    Value(#[from] serde_json::Error),
+}
+impl ReadPosition {
+    /// Encode only bounded delivery coordinates. Authentication and root/run
+    /// bindings remain with the existing common cursor seal and its caller.
+    pub fn to_order_position(
+        &self,
+    ) -> Result<query_language::cursor::OrderPosition, ReadPositionCodecError> {
+        Ok(query_language::cursor::OrderPosition {
+            row_identity: READ_POSITION_SENTINEL.into(),
+            values: vec![serde_json::to_value(self)?],
+        })
+    }
+    pub fn from_order_position(
+        position: &query_language::cursor::OrderPosition,
+    ) -> Result<Self, ReadPositionCodecError> {
+        if position.row_identity != READ_POSITION_SENTINEL {
+            return Err(ReadPositionCodecError::Sentinel);
+        }
+        let [value] = position.values.as_slice() else {
+            return Err(ReadPositionCodecError::Arity {
+                found: position.values.len(),
+            });
+        };
+        Ok(serde_json::from_value(value.clone())?)
+    }
+}

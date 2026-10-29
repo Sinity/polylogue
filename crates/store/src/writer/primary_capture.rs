@@ -207,6 +207,16 @@ impl Inner {
         &mut self,
         group: Vec<PreparedBatch>,
     ) -> Vec<Result<StoredInput>> {
+        if super::staging::independent_files(&group) {
+            let mut outcomes = Vec::with_capacity(group.len());
+            for item in group {
+                match self.capture_primary_group(std::slice::from_ref(&item)) {
+                    Ok(result) => outcomes.extend(result),
+                    Err(error) => outcomes.extend(failed(1, error)),
+                }
+            }
+            return outcomes;
+        }
         let count = group.len();
         match self.capture_primary_group(&group) {
             Ok(outcomes) => outcomes,
@@ -607,9 +617,7 @@ impl Inner {
         if members.iter().any(|member| {
             member.anchor.is_none()
                 || match &member.captured {
-                    Capture::Input(input) => {
-                        input.rows.extent.is_some() && member.material.is_none()
-                    }
+                    Capture::Input(input) => input.raw_range.is_some() && member.material.is_none(),
                     Capture::Blob { .. } => member.material.is_none(),
                 }
         }) {
@@ -637,6 +645,21 @@ impl Inner {
                     });
                 }
                 Capture::Input(input) => {
+                    if let Some(range) = input.raw_range {
+                        let material = member.material.as_ref().ok_or_else(|| {
+                            StoreError::Invalid(
+                                "ready provider capture has no actual material".into(),
+                            )
+                        })?;
+                        if material.hash != input.hash
+                            || material.length != input.length
+                            || range.length()? != input.length
+                        {
+                            return Err(StoreError::Invalid(
+                                "ready provider material differs from its acquired body".into(),
+                            ));
+                        }
+                    }
                     let Some(rows) = self.ready_capture_rows(
                         input,
                         member.material.as_ref(),
@@ -720,7 +743,7 @@ impl Inner {
                             let start = match &product {
                                 Product::Message { facts, .. } => facts.offset,
                                 Product::Document { facts, .. } => facts.offset,
-                    Product::Fragment { facts, .. } => facts.offset,
+                                Product::Fragment { facts, .. } => facts.offset,
                                 Product::Event { facts, .. } => {
                                     facts.range.map_or(reading.start, |range| range.0)
                                 }

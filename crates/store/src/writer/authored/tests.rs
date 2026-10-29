@@ -127,6 +127,12 @@ impl Producer {
     }
 }
 impl crate::primary::Sinex for Producer {
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::RawAcquisitionQuery,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
     fn prepare_input_group(
         &self,
         _: &crate::primary::CapturePlan,
@@ -199,6 +205,25 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<PreparedWrite> {
         Self::unavailable()
     }
+    fn visit_named_products(
+        &self,
+        selector: &crate::primary::NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> Result<()>,
+    ) -> Result<()> {
+        if let Some((name, writes)) = self.original() {
+            let selected = match selector {
+                crate::primary::NamedProductSelector::Exact(expected) => name == *expected,
+                crate::primary::NamedProductSelector::Prefix(prefix) => name.starts_with(prefix),
+            };
+            if !selected {
+                return Ok(());
+            }
+            for write in writes {
+                visit(&write.product)?;
+            }
+        }
+        Ok(())
+    }
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&PendingAuthored) -> Result<()>,
@@ -255,11 +280,11 @@ impl crate::primary::Sinex for Producer {
     fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
         Ok(())
     }
-    fn confirmed(&self, after: i64, _: &str, _: Option<&str>) -> Result<Vec<Confirmed>> {
+    fn confirmed(&self, state: &crate::primary::ReplayState, _: &str) -> Result<Vec<Confirmed>> {
         if !self.online.load(Ordering::SeqCst) {
             return Self::unavailable();
         }
-        if after >= 1 {
+        if state.applied_position.is_some_and(|after| after >= 1) {
             return Ok(vec![]);
         }
         let (_, writes) = self.original().unwrap();
@@ -267,6 +292,7 @@ impl crate::primary::Sinex for Producer {
             .into_iter()
             .enumerate()
             .map(|(n, write)| Confirmed {
+                native: None,
                 position: 1,
                 output_index: n as u64,
                 event: format!("restoration-{n}"),
@@ -274,6 +300,7 @@ impl crate::primary::Sinex for Producer {
             })
             .collect::<Vec<_>>();
         events.push(Confirmed {
+            native: None,
             position: 1,
             output_index: 0,
             event: String::new(),
@@ -281,7 +308,7 @@ impl crate::primary::Sinex for Producer {
         });
         Ok(events)
     }
-    fn acknowledge(&self, _: i64) -> Result<()> {
+    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
         Ok(())
     }
 }

@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQLITE_DETERMINISTIC);
 
 pub fn register(conn: &Connection) -> rusqlite::Result<()> {
+    temporal::register(conn)?;
     let versions = crate::derive::current_versions()
         .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
     conn.create_scalar_function("pl_derived_current", 2, FLAGS, move |ctx| {
@@ -216,3 +217,5 @@ pub(crate) fn register_calendar(
 
 #[cfg(test)]
 mod tests;
+
+mod temporal;

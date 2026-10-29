@@ -732,3 +732,23 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         assert_eq!(&rows, whole["rows"].as_array().unwrap(), "{text}");
     }
 }
+
+#[test]
+fn continuation_refuses_a_changed_captured_ranking_basis() {
+    let w = morrow();
+    let mut request = ask("messages | sort by id");
+    request.page_size = Some(1);
+    request.ranking_identity = Some("synthetic-provider:vectors-a".into());
+    let first = run_q(&w, request).unwrap();
+    let cursor = first["next"].as_str().unwrap();
+    let mut same = ask("messages | sort by id");
+    same.page_size = Some(1);
+    same.cursor = Some(cursor);
+    same.ranking_identity = Some("synthetic-provider:vectors-a".into());
+    assert!(run_q(&w, same).is_ok());
+    let mut changed = ask("messages | sort by id");
+    changed.page_size = Some(1);
+    changed.cursor = Some(cursor);
+    changed.ranking_identity = Some("synthetic-provider:vectors-b".into());
+    assert_eq!(run_q(&w, changed).unwrap_err().kind, "stale_cursor");
+}

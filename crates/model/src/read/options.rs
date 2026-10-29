@@ -66,10 +66,11 @@ impl View {
         }
     }
     pub fn keeps_message(self, message: &Message) -> bool {
+        self.keeps_message_metadata(message.role, message.prompt_kind)
+    }
+    pub fn keeps_message_metadata(self, role: Role, prompt_kind: Option<PromptKind>) -> bool {
         match self {
-            Self::Dialogue => {
-                message.role != Role::System && message.prompt_kind != Some(PromptKind::Harness)
-            }
+            Self::Dialogue => role != Role::System && prompt_kind != Some(PromptKind::Harness),
             Self::Transcript | Self::Context | Self::Changes | Self::Raw => true,
             Self::Summary | Self::Links | Self::Live => false,
         }
@@ -151,6 +152,17 @@ impl Default for ReadOptions {
     }
 }
 impl ReadOptions {
+    /// Visibility of an available original reference-text body. Availability
+    /// itself remains evidence owned by the caller.
+    pub fn text_kind_visible(&self, kind: BlockKind) -> bool {
+        self.view.block_kinds().contains(&kind)
+            && match kind {
+                BlockKind::Text => true,
+                BlockKind::Thinking => self.thinking() == Expansion::Full,
+                BlockKind::ToolResult => self.tools() == Expansion::Full,
+                _ => false,
+            }
+    }
     pub fn tools(&self) -> Expansion {
         self.tools.unwrap_or(Expansion::Collapsed)
     }

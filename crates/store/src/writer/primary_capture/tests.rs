@@ -80,6 +80,12 @@ impl OfflineProducer {
     }
 }
 impl crate::primary::Sinex for OfflineProducer {
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::RawAcquisitionQuery,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
     fn prepare_input_group(
         &self,
         plan: &crate::primary::CapturePlan,
@@ -319,6 +325,13 @@ impl crate::primary::Sinex for OfflineProducer {
     ) -> Result<polylogue_model::user::UserOutcome> {
         Self::unavailable()
     }
+    fn visit_named_products(
+        &self,
+        _: &crate::primary::NamedProductSelector,
+        _: &mut dyn FnMut(&crate::primary::Product) -> Result<()>,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn visit_pending_requests(
         &self,
         _: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
@@ -330,13 +343,12 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn confirmed(
         &self,
-        _: i64,
+        _: &crate::primary::ReplayState,
         _: &str,
-        _: Option<&str>,
     ) -> Result<Vec<crate::primary::Confirmed>> {
         Self::unavailable()
     }
-    fn acknowledge(&self, _: i64) -> Result<()> {
+    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
         Self::unavailable()
     }
 }
@@ -416,6 +428,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         assert!(snapshot.basis.boundary.is_none());
         writer
             .apply_confirmed(vec![crate::primary::Confirmed {
+                native: None,
                 position: 0,
                 output_index: 0,
                 event: String::new(),

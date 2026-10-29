@@ -133,7 +133,7 @@ pub(super) fn context(
             polylogue_store::vectors::writes().to_string(),
         );
     }
-    Ok(CursorContext {
+    let mut context = CursorContext {
         question,
         clock: options.clock.clone(),
         resolved_times: program.resolved_times.clone(),
@@ -148,7 +148,9 @@ pub(super) fn context(
             ("archive".into(), position.archive.to_string()),
         ]),
         versions,
-    })
+    };
+    polylogue_store::query::continuation::compact_resolved_times(&mut context)?;
+    Ok(context)
 }
 
 pub(super) fn check(
@@ -169,9 +171,10 @@ pub(super) fn check(
     {
         return Err(stale("the query compiler or saved definitions changed"));
     }
-    if cursor.context.resolved_times != program.resolved_times {
-        return Err(stale("the resolved query times changed"));
-    }
+    polylogue_store::query::continuation::check_resolved_times(
+        &cursor.context,
+        &program.resolved_times,
+    )?;
     Ok(cursor.after.values.clone())
 }
 

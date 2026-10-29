@@ -15,7 +15,7 @@
 //! once, and the copying session gets a `copy` link.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 mod blocks;
 mod fields;
@@ -461,14 +461,18 @@ impl ClaudeCode {
         parser_state: &mut ParserState,
         record: Record<'_>,
         v: &Json,
-        summary: (Vec<Block>, Option<&'static str>),
+        summary: HookText,
         out: &mut Output,
     ) -> RecordOutcome {
         let outcome = self.event(parser_state, record, v, "stop_hook_summary", out);
         if outcome != RecordOutcome::Used {
             return outcome;
         }
-        let (blocks, invalid) = summary;
+        let HookText {
+            blocks,
+            context_blocks,
+            invalid,
+        } = summary;
         if !blocks.is_empty() {
             let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
                 return RecordOutcome::unreadable("session ID is empty");
@@ -482,6 +486,23 @@ impl ClaudeCode {
             // The summary records supplied feedback, including when the
             // hook prevented continuation. It is not a delivery receipt.
             close(parser_state, out);
+            // This sidecar cites native fields, not an authored claim in the
+            // message. Admission determines whether they were observed locally
+            // or merely declared by an import; neither changes the message hash.
+            if !context_blocks.is_empty() {
+                out.native_hook_fields.insert(
+                    out.messages.len(),
+                    context_blocks
+                        .into_iter()
+                        .map(|(block, source_index)| polylogue_model::HookFieldClaim {
+                            block,
+                            start: record.offset,
+                            end: range(record).1,
+                            pointer: format!("/hookAdditionalContext/{source_index}"),
+                        })
+                        .collect(),
+                );
+            }
             out.messages.push(MessageRow {
                 offset: record.offset,
                 end: range(record).1,
@@ -1039,8 +1060,16 @@ fn usage(u: &Json) -> Usage {
 
 /// Polylogue labels typed diagnostics for readers; the error and reason
 /// strings stay unchanged. The complete native summary remains in its event.
-fn hook_text(v: &Json) -> (Vec<Block>, Option<&'static str>) {
+struct HookText {
+    blocks: Vec<Block>,
+    /// Original projected block ordinal and original native array position.
+    context_blocks: Vec<(u64, usize)>,
+    invalid: Option<&'static str>,
+}
+
+fn hook_text(v: &Json) -> HookText {
     let mut blocks = Vec::new();
+    let mut context_blocks = Vec::new();
     let mut invalid = None;
     if let Some(errors) = v.get("hookErrors") {
         match errors.as_array() {
@@ -1078,11 +1107,14 @@ fn hook_text(v: &Json) -> (Vec<Block>, Option<&'static str>) {
     if let Some(context) = v.get("hookAdditionalContext") {
         match context.as_array() {
             Some(context) => {
-                for text in context {
+                for (source_index, text) in context.iter().enumerate() {
                     match text.as_str() {
-                        Some(text) => blocks.push(Block::Text {
-                            text: text.to_owned(),
-                        }),
+                        Some(text) => {
+                            context_blocks.push((blocks.len() as u64, source_index));
+                            blocks.push(Block::Text {
+                                text: text.to_owned(),
+                            });
+                        }
                         None => invalid = Some("hookAdditionalContext contains a non-string value"),
                     }
                 }
@@ -1090,7 +1122,11 @@ fn hook_text(v: &Json) -> (Vec<Block>, Option<&'static str>) {
             None => invalid = Some("hookAdditionalContext is not an array of strings"),
         }
     }
-    (blocks, invalid)
+    HookText {
+        blocks,
+        context_blocks,
+        invalid,
+    }
 }
 
 /// A background task's completion, from the notification the harness
@@ -1163,7 +1199,9 @@ impl Parser for ClaudeCode {
             .then(|| hook_text(v));
         let message_record = (matches!(ty, "user" | "assistant")
             && v.get("isCompactSummary").and_then(Json::as_bool) != Some(true))
-            || hook.as_ref().is_some_and(|(blocks, _)| !blocks.is_empty());
+            || hook
+                .as_ref()
+                .is_some_and(|summary| !summary.blocks.is_empty());
         if !message_record && let Some(uuid) = str_field(v, "uuid") {
             // A child naming this record as its parent belongs under the
             // nearest message above it; a compaction boundary points there
@@ -1420,14 +1458,20 @@ impl Parser for ClaudeCode {
         // A response reopened within one step was sent more than once; keep
         // the last, which is the longest. Rows go out in file order.
         let mut seen = BTreeSet::new();
-        let mut kept: Vec<MessageRow> = Vec::with_capacity(out.messages.len());
-        for row in out.messages.drain(..).rev() {
+        let mut claims = std::mem::take(&mut out.native_hook_fields);
+        let mut kept = Vec::with_capacity(out.messages.len());
+        for (index, row) in out.messages.drain(..).enumerate().rev() {
             if seen.insert((row.message.id.clone(), row.offset)) {
-                kept.push(row);
+                kept.push((row, claims.remove(&index)));
             }
         }
-        kept.sort_by_key(|row| row.offset);
-        out.messages = kept;
+        kept.sort_by_key(|(row, _)| row.offset);
+        for (index, (_, claims)) in kept.iter_mut().enumerate() {
+            if let Some(claims) = claims.take() {
+                out.native_hook_fields.insert(index, claims);
+            }
+        }
+        out.messages = kept.into_iter().map(|(row, _)| row).collect();
         out.sessions = parser_state
             .sessions
             .values()

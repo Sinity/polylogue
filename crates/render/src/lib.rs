@@ -6,12 +6,13 @@ pub mod html;
 mod layout;
 pub mod measures;
 pub mod pager;
+pub mod ready;
 pub mod results;
 pub mod schema;
 pub mod terminal;
 pub mod web;
 pub use encode::{ARCHIVE_NOTICE, EncodeOptions, Encoder, encode_document};
-pub use layout::{layout_record, visit_record, visit_source_block};
+pub use layout::{layout_record, presentation_text_visible, visit_record, visit_source_block};
 pub use polylogue_model::read;
 pub use polylogue_model::read::Format;
 

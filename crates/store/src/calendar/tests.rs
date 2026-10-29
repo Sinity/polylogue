@@ -125,6 +125,16 @@ fn calendar_sql_daily_series_and_pooled_reads_agree_at_fractional_dst_boundaries
                 ("2026-03-08".into(), 1.0)
             ]
         );
+        let rhythm = crate::measure::daily::rhythm(
+            &reader,
+            &crate::measure::Selection::default(),
+            &clock.day,
+        )
+        .unwrap();
+        assert_eq!(rhythm.prompts, 4);
+        assert_eq!(rhythm.grid[4][6], 1); // Friday's logical day, Saturday's clock hour.
+        assert_eq!(rhythm.grid[5][6], 2);
+        assert_eq!(rhythm.grid[6][6], 1);
         let calendar =
             crate::timeline::calendar(&reader, &clock, "2026-03-07".parse().unwrap()).unwrap();
         assert_eq!(
@@ -221,4 +231,17 @@ fn a_skipped_start_uses_the_first_valid_instant_and_a_skipped_date_is_empty() {
         .unwrap(),
         "2011-12-29"
     );
+}
+
+#[test]
+fn calendar_labels_keep_iso_years_before_the_common_era() {
+    let day = day("UTC", "00:00:00");
+    let at = "-0400-02-29T12:00:00Z"
+        .parse::<Timestamp>()
+        .unwrap()
+        .as_millisecond();
+    assert_eq!(day_label(&day, at).unwrap(), "-0400-02-29");
+    assert_eq!(month_label(&day, at).unwrap(), "-0400-02");
+    // Gregorian weekdays repeat every 400 years: this is the Tuesday of ISO week 9.
+    assert_eq!(week_label(&day, at).unwrap(), "-0400-W09");
 }

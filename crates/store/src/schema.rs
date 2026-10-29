@@ -41,7 +41,9 @@ struct IndexMigration {
 #[derive(Clone, Copy)]
 enum IndexTarget {
     Index(&'static str),
+    IndexAndPrimary(&'static str, &'static str),
     PrimarySource(&'static str),
+    PrimaryIndex(&'static [&'static str]),
 }
 const INDEX_MIGRATIONS: &[IndexMigration] = &[
     IndexMigration {
@@ -78,7 +80,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     },
     IndexMigration {
         version: 10,
-        target: IndexTarget::Index(include_str!("schema/attachment_bindings.sql")),
+        target: IndexTarget::IndexAndPrimary(
+            include_str!("schema/attachment_bindings.sql"),
+            crate::primary::projection::REFERENCE_INDEX,
+        ),
     },
     IndexMigration {
         version: 11,
@@ -87,6 +92,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     IndexMigration {
         version: 12,
         target: IndexTarget::Index(include_str!("schema/index_12.sql")),
+    },
+    IndexMigration {
+        version: 13,
+        target: IndexTarget::PrimaryIndex(&[include_str!("schema/index_13.sql"), crate::primary::derived::SCHEMA]),
     },
 ];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
@@ -179,10 +188,18 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         for step in INDEX_MIGRATIONS.iter().filter(|step| step.version > found) {
             match step.target {
                 IndexTarget::Index(sql) => tx.execute_batch(sql)?,
+                IndexTarget::IndexAndPrimary(sql, primary_sql) => {
+                    tx.execute_batch(sql)?;
+                    if primary {
+                        tx.execute_batch(primary_sql)?;
+                    }
+                }
                 IndexTarget::PrimarySource(sql) if primary => {
                     tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
                 }
                 IndexTarget::PrimarySource(_) => {}
+                IndexTarget::PrimaryIndex(statements) if primary => { for sql in statements { tx.execute_batch(sql)?; } },
+                IndexTarget::PrimaryIndex(_) => {}
             }
         }
         tx.execute_batch(READ_INDEXES)?;

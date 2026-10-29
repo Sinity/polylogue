@@ -87,6 +87,7 @@ fn authored_crash_child() {
     let point = std::env::var("POLYLOGUE_BUNDLE_CRASH_POINT").unwrap();
     let (archive, _lock) = Archive::open_or_create(&base.join("archive")).unwrap();
     let config = Config {
+        clock: polylogue_model::WallClock::fixed("2026-01-01T00:00:00Z".parse().unwrap()),
         home: base.join("home"),
         tool_dirs: Default::default(),
         workers: 1,
@@ -111,8 +112,33 @@ fn authored_crash_child() {
 }
 
 #[cfg(feature = "faults")]
-#[test]
 #[allow(unsafe_code)]
+fn interrupt_authored_import(w: &ClaudeHome, point: &str) {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "import::exports::tests::polylogue_bundle::authored_crash_child",
+            "--nocapture",
+        ])
+        .env("POLYLOGUE_BUNDLE_CRASH_BASE", w.dir.path())
+        .env("POLYLOGUE_BUNDLE_CRASH_POINT", point)
+        .spawn()
+        .unwrap();
+    let mut status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, libc::WUNTRACED) },
+        child.id() as libc::pid_t
+    );
+    assert!(
+        libc::WIFSTOPPED(status),
+        "child exited before {point}: {status}"
+    );
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+}
+
+#[cfg(feature = "faults")]
+#[test]
 fn ordinary_open_replays_stored_authored_state_after_real_interruption() {
     for point in [
         "import.before_authored_restore",
@@ -121,27 +147,7 @@ fn ordinary_open_replays_stored_authored_state_after_real_interruption() {
         let w = ClaudeHome::new();
         let path = w.dir.path().join("records.jsonl");
         fs::write(&path, authored_bundle()).unwrap();
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "import::exports::tests::polylogue_bundle::authored_crash_child",
-                "--nocapture",
-            ])
-            .env("POLYLOGUE_BUNDLE_CRASH_BASE", w.dir.path())
-            .env("POLYLOGUE_BUNDLE_CRASH_POINT", point)
-            .spawn()
-            .unwrap();
-        let mut status = 0;
-        assert_eq!(
-            unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, libc::WUNTRACED) },
-            child.id() as libc::pid_t
-        );
-        assert!(
-            libc::WIFSTOPPED(status),
-            "child exited before {point}: {status}"
-        );
-        child.kill().unwrap();
-        assert!(!child.wait().unwrap().success());
+        interrupt_authored_import(&w, point);
         fs::remove_file(&path).unwrap();
         let (mut engine, _lock) = engine(&w, 64);
         let pass = engine.run_pass().unwrap();
@@ -165,4 +171,54 @@ fn ordinary_open_replays_stored_authored_state_after_real_interruption() {
         assert_eq!(imports["observed"].as_array().unwrap().len(), 1);
         assert_eq!(imports["observed"][0]["actor"], "script:polylogue-import");
     }
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn explicit_receiver_after_interruption_is_separate_from_the_frozen_original_ingress() {
+    let w = ClaudeHome::new();
+    let path = w.dir.path().join("records.jsonl");
+    fs::write(&path, authored_bundle()).unwrap();
+    interrupt_authored_import(&w, "import.after_authored_restore");
+    let (mut engine, _lock) = engine(&w, 64);
+    let report = engine
+        .import_with_options(
+            &[path],
+            &ImportOptions {
+                authorship: Some(polylogue_model::authorship::Authorship {
+                    author: polylogue_model::Author::Script("receiver-b".into()),
+                    via: polylogue_model::authorship::Channel::Import,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
+    assert_eq!(report.user_state.present, 1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.setting WHERE id='setting-record' AND author='operator' AND value='UTC'"), 1);
+    let reader = engine.reads.reader().unwrap();
+    let provenance = reader
+        .query(
+            "SELECT imports FROM source_client_request WHERE id='setting-request'",
+            &[],
+        )
+        .unwrap();
+    let imports: serde_json::Value =
+        serde_json::from_str(provenance[0]["imports"].as_str().unwrap()).unwrap();
+    let observed = imports["observed"].as_array().unwrap();
+    assert_eq!(observed.len(), 2);
+    let actors: std::collections::BTreeSet<_> = observed
+        .iter()
+        .map(|claim| claim["actor"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        actors,
+        std::collections::BTreeSet::from(["script:polylogue-import", "script:receiver-b"])
+    );
+    drop(reader);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.setting"), 1);
 }

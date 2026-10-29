@@ -475,6 +475,7 @@ fn query_sessions(
             session: None,
             context: std::sync::Arc::clone(context),
             embeddings: false,
+            ranking_identity: None,
             near: None,
             fields: &[],
         };
@@ -483,16 +484,30 @@ fn query_sessions(
             message: f.message,
             detail: f.detail,
         })?;
-        if page["unit"] != "sessions" {
-            return Err(error("bad_request", "embed takes a sessions query"));
+        if page["unit"] != "sessions" || page["shape"] != "rows" {
+            return Err(error("bad_request", "embed takes session rows"));
         }
-        ids.extend(
-            page["rows"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|r| r["id"].as_str().map(str::to_owned)),
-        );
+        if !page["incomplete"].as_array().is_some_and(Vec::is_empty) {
+            return Err(error(
+                "not_yet_available",
+                "embedding selection requires complete query results",
+            ));
+        }
+        let rows = page["rows"].as_array().ok_or_else(|| {
+            error(
+                "bad_request",
+                "embedding selection did not return session rows",
+            )
+        })?;
+        for row in rows {
+            let id = row["id"].as_str().ok_or_else(|| {
+                error(
+                    "bad_request",
+                    "embedding selection requires session identities",
+                )
+            })?;
+            ids.push(id.to_owned());
+        }
         match page["next"].as_str() {
             Some(next) => cursor = Some(next.to_owned()),
             None => return Ok(ids),

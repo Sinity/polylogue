@@ -228,3 +228,34 @@ fn text_fragment_exact_revision_never_resolves_a_current_root() {
     value.provenance.spans[0].reference = value.reference();
     assert!(value.validate().is_ok());
 }
+
+#[test]
+fn portable_fragment_envelope_keeps_versioned_identity_and_sender_commit() {
+    let selected = fragment(1, "😀");
+    let record = crate::bundle::Record::TextFragment(Box::new(TextFragmentRecord {
+        reference: selected.reference().to_string(),
+        commit: 17,
+        fragment: selected.clone(),
+    }));
+    record.validate().unwrap();
+    assert_eq!(record.reference(), Some("span:message:codex:source#b=1-5"));
+    assert_eq!(record.commit(), Some(17));
+    let wire = serde_json::to_value(&record).unwrap();
+    assert_eq!(wire["record"], "text_fragment");
+    assert_eq!(
+        serde_json::from_value::<crate::bundle::Record>(wire).unwrap(),
+        record
+    );
+    let mut claims = selected.clone();
+    claims.coverage.total_bytes = Some(8);
+    claims.provenance.spans.clear();
+    assert_eq!(claims.content_key(), selected.content_key());
+    let mut different_version = selected.clone();
+    different_version.source_version = TextSourceVersion::ContentHash {
+        record: selected.container.clone(),
+        hash: BlobHash::of(b"another complete canonical source"),
+    };
+    assert_ne!(different_version.content_key(), selected.content_key());
+    let conflict = fragment(1, "xxxx");
+    assert_ne!(conflict.content_key(), selected.content_key());
+}

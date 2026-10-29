@@ -2,6 +2,7 @@ use super::*;
 use polylogue_model::{Author, ChangePosition, Timestamp};
 fn begin() -> ReadBegin {
     ReadBegin {
+        format: polylogue_model::read::Format::Json,
         snapshot: ReadSnapshot {
             query: format!("query:{}", "a".repeat(64)),
             query_text: "sessions".into(),
@@ -251,6 +252,8 @@ fn long_opaque_names_have_bounded_distinct_components() {
 fn sparse_records_union_and_later_partial_does_not_downgrade_content() {
     let message:polylogue_model::Message=serde_json::from_value(serde_json::json!({"id":"codex:message","session":"codex:session","role":"assistant","blocks":[{"type":"text","text":"first"},{"type":"text","text":"second"}]})).unwrap();
     let full = MessageRecord {
+        injections: Vec::new(),
+        bindings: Vec::new(),
         reference: "message:codex:message".into(),
         commit: 2,
         order: 0,

@@ -379,6 +379,7 @@ fn ask(text: &str) -> Ask<'_> {
         session: None,
         context: fixture_context(OCT1 + 7 * DAY, "UTC", 0),
         embeddings: false,
+        ranking_identity: None,
         near: None,
         fields: &[],
     }

@@ -49,7 +49,8 @@ impl Reader<'_> {
         while let Some(row) = rows.next()? {
             let chain = row.get(1)?;
             if let Some(through) = through {
-                let admitted = crate::source::Source::admitted_through(conn, input, chain, length as u64)?;
+                let admitted =
+                    crate::source::Source::admitted_through(conn, input, chain, length as u64)?;
                 if admitted.is_none_or(|position| position > through as u64) {
                     continue;
                 }

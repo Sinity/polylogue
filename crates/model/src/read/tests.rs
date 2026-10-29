@@ -238,3 +238,227 @@ fn expansion_headers_is_the_only_public_collapsed_spelling() {
     );
     assert!(serde_json::from_str::<Expansion>("\"collapsed\"").is_err());
 }
+
+#[test]
+fn projection_keeps_only_selected_injection_evidence_without_promoting_claims() {
+    use crate::injection::{InjectionEvidence, NativeHookField};
+    let mut original = record(message(Role::Assistant, None));
+    let Record::Message(row) = &mut original else {
+        unreachable!()
+    };
+    let claim = |n: u64| NativeHookField {
+        input: format!("synthetic-input-{n}"),
+        chain: 1,
+        start: n + 1,
+        end: n + 2,
+        pointer: format!("/message/content/{n}"),
+    };
+    row.injections = (0..3)
+        .map(|block| InjectionEvidence {
+            message: row.message.id.clone(),
+            source_version: row.source_version,
+            block,
+            observed: Some(claim(block)),
+            declared: vec![claim(block + 4)],
+        })
+        .collect();
+    let before = row.clone();
+    let projected = project_record(
+        original,
+        &ReadOptions {
+            view: View::Dialogue,
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let Record::Message(after) = projected else {
+        unreachable!()
+    };
+    assert_eq!(after.block_ordinals, [0, 2]);
+    assert_eq!(
+        after.injections,
+        [before.injections[0].clone(), before.injections[2].clone()]
+    );
+    assert_eq!(after.source_version, before.source_version);
+    assert_eq!(after.block_count, before.block_count);
+    assert_eq!(after.message.attrs, before.message.attrs);
+    assert_eq!(
+        after.message.blocks,
+        [
+            before.message.blocks[0].clone(),
+            before.message.blocks[2].clone()
+        ]
+    );
+    after.validate().unwrap();
+}
+
+#[test]
+fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() {
+    use crate::attachment_binding::{
+        AttachmentBinding, AttachmentCandidate, AttachmentSourceClaim,
+    };
+    let attachment = |source: &str| crate::Attachment {
+        source_id: Some(source.into()),
+        ..Default::default()
+    };
+    let mut source = message(Role::Assistant, None);
+    source.blocks = vec![
+        Block::File(attachment("file:source")),
+        Block::ToolResult {
+            call_id: None,
+            reported_duration_ms: None,
+            outcome: crate::ToolOutcome::Ok,
+            output: Some("result".into()),
+            data: None,
+            attachments: vec![attachment("result:first"), attachment("result:second")],
+        },
+        Block::Text {
+            text: "kept".into(),
+        },
+    ];
+    let mut original = record(source);
+    let Record::Message(row) = &mut original else {
+        unreachable!()
+    };
+    let candidate = |name: &str| AttachmentCandidate {
+        hash: crate::BlobHash::of(b"same"),
+        size: 4,
+        sources: vec![AttachmentSourceClaim {
+            namespace: None,
+            input: name.into(),
+            chain: 1,
+            source_version: format!("historical:{name}"),
+            members: vec![format!("members/{name}")],
+            names: vec![name.into()],
+            media_types: vec!["application/octet-stream".into()],
+            declared_sizes: vec![9],
+        }],
+    };
+    row.bindings = [
+        (0, 0, "file:source"),
+        (1, 0, "result:first"),
+        (1, 1, "result:second"),
+    ]
+    .into_iter()
+    .map(|(block, attachment, source_id)| AttachmentBinding {
+        source_version: row.source_version,
+        namespace: crate::attachment_binding::AttachmentNamespace {
+            input: "synthetic-import".into(),
+            chain: 1,
+            import_id: "original".into(),
+        },
+        exported_from: crate::attachment_binding::AttachmentNamespace {
+            input: "synthetic-export".into(),
+            chain: 2,
+            import_id: "current".into(),
+        },
+        prior_exports: vec![],
+        block,
+        attachment,
+        source_id: source_id.into(),
+        candidates: vec![candidate("first"), candidate("second")],
+    })
+    .collect();
+    let before = row.clone();
+    original.validate().unwrap();
+    let projected = project_record(
+        original.clone(),
+        &ReadOptions {
+            tools: Some(Expansion::None),
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let Record::Message(after) = projected else {
+        unreachable!()
+    };
+    assert_eq!(after.block_ordinals, [0, 2]);
+    assert_eq!(after.bindings, [before.bindings[0].clone()]);
+    assert_eq!(after.bindings[0].candidates.len(), 2);
+    assert_eq!(
+        after.bindings[0].candidates[0].hash,
+        after.bindings[0].candidates[1].hash
+    );
+    assert_ne!(
+        after.bindings[0].candidates[0].sources,
+        after.bindings[0].candidates[1].sources
+    );
+    assert_eq!(after.source_version, before.source_version);
+    after.validate().unwrap();
+    let dialogue = project_record(
+        original,
+        &ReadOptions {
+            view: View::Dialogue,
+            ..Default::default()
+        },
+        &ProjectionEvidence::default(),
+    )
+    .unwrap()
+    .unwrap();
+    let Record::Message(dialogue) = dialogue else {
+        unreachable!()
+    };
+    assert_eq!(dialogue.block_ordinals, [2]);
+    assert!(dialogue.bindings.is_empty());
+    dialogue.validate().unwrap();
+}
+
+#[test]
+fn read_position_codec_is_versioned_closed_and_has_no_native_identity_fallback() {
+    let position = ReadPosition {
+        selection: SelectionLocator {
+            row: 17,
+            record: ReadRecordLocator {
+                kind: ReadRecordKind::TextFragment,
+                ordinal: 9,
+            },
+        },
+        item: 2,
+        character: 184,
+        item_hash: crate::BlobHash::of(b"complete encoded ReadItem"),
+    };
+    let encoded = position.to_order_position().unwrap();
+    assert_eq!(encoded.row_identity, "read-position-v1");
+    assert_eq!(
+        encoded.values,
+        vec![serde_json::to_value(position).unwrap()]
+    );
+    assert_eq!(
+        ReadPosition::from_order_position(&encoded).unwrap(),
+        position
+    );
+    let mut invalid = encoded.clone();
+    invalid.row_identity = "message:native:legacy".into();
+    assert!(matches!(
+        ReadPosition::from_order_position(&invalid),
+        Err(ReadPositionCodecError::Sentinel)
+    ));
+    let mut invalid = encoded.clone();
+    invalid.values.push(serde_json::Value::Null);
+    assert!(matches!(
+        ReadPosition::from_order_position(&invalid),
+        Err(ReadPositionCodecError::Arity { found: 2 })
+    ));
+    let mut invalid = encoded.clone();
+    invalid.values.clear();
+    assert!(matches!(
+        ReadPosition::from_order_position(&invalid),
+        Err(ReadPositionCodecError::Arity { found: 0 })
+    ));
+    let mut invalid = encoded.clone();
+    invalid.values[0]["native_reference"] = serde_json::json!("message:synthetic:unexpected");
+    assert!(matches!(
+        ReadPosition::from_order_position(&invalid),
+        Err(ReadPositionCodecError::Value(_))
+    ));
+    let mut invalid = encoded;
+    invalid.values[0]["selection"]["row"] = serde_json::json!(-1);
+    assert!(matches!(
+        ReadPosition::from_order_position(&invalid),
+        Err(ReadPositionCodecError::Value(_))
+    ));
+}

@@ -221,8 +221,16 @@ impl Engine {
                     arrival_rank: 2,
                 };
                 if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
+                    let current = self.receiving_import_attribution(
+                        &plan.input.id,
+                        stored.chain,
+                        captured
+                            .member
+                            .as_ref()
+                            .and_then(|member| member.authorship.as_ref()),
+                    );
                     executed.insert(plan.input.id.clone());
-                    self.execute(vec![plan], &mut report.pass)?;
+                    self.execute_with_import_context(vec![plan], &mut report.pass, Some(&current))?;
                 }
             }
             return Ok(executed);
@@ -247,7 +255,12 @@ impl Engine {
                 hash: captured.prepared.hash(),
                 size: captured.prepared.len(),
             });
-            metadata.push((at, origin, facts, batch.input.clone()));
+            let authorship = batch
+                .observation
+                .as_ref()
+                .and_then(|observation| observation.import.as_ref())
+                .and_then(|member| member.authorship.clone());
+            metadata.push((at, origin, facts, batch.input.clone(), authorship));
             group.push(polylogue_store::staging::PreparedBatch {
                 batch,
                 files: vec![captured.prepared],
@@ -260,7 +273,8 @@ impl Engine {
             .writer
             .sender()?
             .store_group(group, Arc::clone(&self.blobs))?;
-        for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
+        for ((at, origin, facts, input, authorship), outcome) in metadata.into_iter().zip(outcomes)
+        {
             let stored = match outcome {
                 Ok(stored) => stored,
                 Err(error) => {
@@ -275,17 +289,40 @@ impl Engine {
                 report.pass.bytes_stored += stored.length;
             }
             if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
+                let current = self.receiving_import_attribution(
+                    &plan.input.id,
+                    stored.chain,
+                    authorship.as_ref(),
+                );
                 executed.insert(plan.input.id.clone());
-                self.execute(vec![plan], &mut report.pass)?;
+                self.execute_with_import_context(vec![plan], &mut report.pass, Some(&current))?;
             }
         }
         Ok(executed)
+    }
+
+    fn receiving_import_attribution(
+        &self,
+        input: &str,
+        chain: i64,
+        authorship: Option<&polylogue_model::authorship::Authorship>,
+    ) -> polylogue_model::authored::ImportAttribution {
+        polylogue_model::authored::ImportAttribution {
+            machine: self.config.machine.clone(),
+            input: input.into(),
+            chain,
+            actor: authorship
+                .map(|authorship| authorship.author.clone())
+                .unwrap_or_else(|| polylogue_model::Author::Script("polylogue-import".into())),
+            at: self.config.clock.now().into(),
+        }
     }
 
     pub(crate) fn restore_captured_authored(
         &mut self,
         plan: &crate::plan::Plan,
         pass: &mut Pass,
+        current_import: Option<&polylogue_model::authored::ImportAttribution>,
     ) -> Result<(), EngineError> {
         if plan.origin.name != "polylogue-bundle" {
             return Ok(());
@@ -304,7 +341,24 @@ impl Engine {
                     .chain
             }
         };
-        let current = reader.import_attribution(&plan.input.id, chain)?;
+        // The current accepting caller is independent of the immutable source
+        // capture's historical ingress. Ordinary stored replay retains that
+        // original context; a new explicit import supplies its actual receiver.
+        let current = match current_import {
+            Some(current) => {
+                if current.input != plan.input.id
+                    || current.chain != chain
+                    || current.machine != self.config.machine
+                {
+                    return Err(polylogue_store::StoreError::Invalid(
+                        "current import context differs from its receiving source".into(),
+                    )
+                    .into());
+                }
+                current.clone()
+            }
+            None => reader.import_attribution(&plan.input.id, chain)?,
+        };
         let stored = reader.stored_chain(&plan.input.id, chain, plan.size)?;
         drop(reader);
         polylogue_store::fault::check("import.before_authored_restore", &plan.input.id)?;
@@ -412,7 +466,6 @@ impl Engine {
         hash: polylogue_model::BlobHash,
         size: u64,
     ) -> polylogue_store::Batch {
-        required_disposition: None,
         let mut observation = self.observation(path, facts);
         observation.import = member.map(|mut member| {
             member.format = Some(origin.name.into());

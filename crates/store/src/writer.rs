@@ -24,6 +24,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod assets;
 mod attachments;
 mod authored;
 mod batch;
@@ -32,12 +33,12 @@ mod chain;
 mod confirmed;
 mod primary;
 mod primary_capture;
-mod source_snapshot;
-mod scoped;
 mod query_objects;
+mod scoped;
+mod source_snapshot;
 pub(crate) use confirmed::apply_confirmed_readings;
-pub(crate) mod resolve;
 mod native_hook_fields;
+pub(crate) mod resolve;
 mod rows;
 mod search;
 mod staging;
@@ -558,7 +559,10 @@ impl Writer {
         limit: usize,
     ) -> Result<crate::primary::PendingGroupPage> {
         pending_group_headers_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?, group, after_ordinal, limit,
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            group,
+            after_ordinal,
+            limit,
         )
     }
 
@@ -1117,7 +1121,7 @@ impl Inner {
             }
             for (staged, reply) in assets.drain(..) {
                 let before = self.index.total_changes();
-                let result = crate::assets::install(&mut self.index, &self.archive, *staged);
+                let result = self.install_assets(*staged);
                 if result.is_ok() && self.index.total_changes() != before {
                     self.commits.committed();
                 }
@@ -1129,15 +1133,17 @@ impl Inner {
             }
             for (query, reply) in raw_cursors.drain(..) {
                 let result = query.validate().and_then(|()| {
-                    self.sinex.as_ref().map_or(Ok(None), |sinex| {
-                        sinex.raw_acquisition_cursor(&query)
-                    })
+                    self.sinex
+                        .as_ref()
+                        .map_or(Ok(None), |sinex| sinex.raw_acquisition_cursor(&query))
                 });
                 let _ = reply.send(result);
             }
             for (group, after, limit, reply) in group_pages.drain(..) {
                 let result = if group.is_empty() || limit == 0 {
-                    Err(StoreError::Invalid("group identity and positive page limit are required".into()))
+                    Err(StoreError::Invalid(
+                        "group identity and positive page limit are required".into(),
+                    ))
                 } else {
                     self.sinex.as_ref().map_or_else(
                         || Ok(crate::primary::PendingGroupPage::default()),
@@ -1151,7 +1157,9 @@ impl Inner {
                     .sinex
                     .as_ref()
                     .ok_or_else(|| {
-                        StoreError::Invalid("private source captures require a primary producer".into())
+                        StoreError::Invalid(
+                            "private source captures require a primary producer".into(),
+                        )
                     })
                     .and_then(|sinex| sinex.capture(&identity));
                 let _ = reply.send(result);

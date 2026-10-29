@@ -118,6 +118,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         "d1",
         &operation,
         None,
+        None,
         &d.daemon.config.paths.check_history,
     )
     .unwrap();

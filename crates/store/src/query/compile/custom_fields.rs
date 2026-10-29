@@ -177,6 +177,20 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     let window = units::spec(x.unit)
         .since
         .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
+    if let Some(native) = fields::native_window(x.unit, true, &x.scope.a) {
+        let exact = c.native_time_test(
+            &native,
+            time::NativePredicate::Overlap {
+                since: Some(t.start()),
+                until: None,
+            },
+        );
+        return Ok(if x.unit == Unit::ToolCalls {
+            format!("({exact} OR {}.result_block_pk IS NULL)", x.scope.a.t)
+        } else {
+            exact
+        });
+    }
     Ok(x.scope
         .a
         .expand(window)
@@ -188,6 +202,15 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     let window = units::spec(x.unit)
         .until
         .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
+    if let Some(native) = fields::native_window(x.unit, false, &x.scope.a) {
+        return Ok(c.native_time_test(
+            &native,
+            time::NativePredicate::Overlap {
+                since: None,
+                until: Some(t.until_bound()),
+            },
+        ));
+    }
     Ok(x.scope.a.expand(window).replace(
         "{v}",
         &crate::calendar::boundary_ms(t.until_bound()).to_string(),
