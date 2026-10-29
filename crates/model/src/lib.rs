@@ -5,14 +5,16 @@
 mod stored_names;
 
 pub mod atomic_write;
-pub mod authorship;
 pub mod authored;
+pub mod authorship;
 pub mod batch;
 mod block;
 pub mod bundle;
 pub mod capture;
 pub mod capture_log;
 mod change_position;
+mod clock;
+pub use clock::WallClock;
 pub mod command;
 mod delivery;
 mod document;
@@ -28,6 +30,7 @@ mod reference;
 pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
 pub mod read;
 mod session;
+pub mod settings;
 mod time;
 mod usage;
 pub mod user;
