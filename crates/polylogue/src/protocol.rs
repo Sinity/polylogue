@@ -1,6 +1,7 @@
 //! Product failure codes classified once into the shared transport contract.
 pub mod operations;
 pub mod query;
+pub mod status;
 use command_surface::{Answer, Failure, FailureKind, Position};
 use serde_json::Value;
 

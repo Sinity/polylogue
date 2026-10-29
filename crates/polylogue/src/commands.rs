@@ -583,14 +583,16 @@ const WRITTEN: &[Command] = &[
         http: true,
         ..CLI
     }),
-    Command {
+    typed_command!(StatusOperation, crate::protocol::status::Arguments, crate::protocol::status::Answer, {
         name: "status",
         help: "What the archive holds and what the daemon is doing",
+        reason: "Orient the caller with measured archive and daemon state",
+        latency: command_surface::LatencyClass::Status,
         action: Action::Request(requests::status),
         mcp: true,
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "daemon",
         help: "Run the daemon in the foreground",

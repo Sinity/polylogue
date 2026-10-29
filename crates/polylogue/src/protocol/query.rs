@@ -45,10 +45,14 @@ impl Arguments {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum Outcome {
+pub enum RowsOutcome {
     Rows,
     Empty,
     Incomplete,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasureOutcome {
     Measure,
 }
 
@@ -67,6 +71,8 @@ pub struct Resolved {
     pub now: Option<polylogue_model::Timestamp>,
     pub zone: String,
     pub day_start_minutes: u16,
+    #[serde(default)]
+    pub times: Vec<query_language::time::ResolvedTime>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -77,41 +83,64 @@ pub struct Explanation {
     pub of: u64,
 }
 
-/// The query envelope is fixed. Row keys are the query's declared columns;
-/// measure data is supplied by the named measure's own result contract.
+/// The query envelope is fixed. Row keys follow the declared columns;
+/// measure data belongs to the named measure's own result contract.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Answer {
+    Rows(Rows),
+    PagedMeasure(PagedMeasure),
+    Measure(Measure),
+}
+impl Answer {
+    #[cfg(test)]
+    pub fn rows(&self) -> Option<&[Map<String, Value>]> {
+        match self {
+            Self::Rows(answer) => Some(&answer.rows),
+            Self::PagedMeasure(_) | Self::Measure(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Answer {
-    pub outcome: Outcome,
+pub struct Rows {
+    pub outcome: RowsOutcome,
     pub read_at: Position,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unit: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shape: Option<polylogue_query::Shape>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unit: String,
+    pub shape: polylogue_query::Shape,
     pub columns: Vec<polylogue_query::Column>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rows: Option<Vec<Map<String, Value>>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub count: Option<u64>,
-    #[serde(default)]
+    pub rows: Vec<Map<String, Value>>,
+    pub count: u64,
     pub next: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ranked: Option<bool>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranked: bool,
     pub notes: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub incomplete: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolved: Option<Resolved>,
+    pub resolved: Resolved,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub definitions: Vec<polylogue_query::Definition>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<Vec<Explanation>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub measure: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PagedMeasure {
+    pub outcome: MeasureOutcome,
+    pub measure: String,
+    pub data: Value,
+    pub read_at: Position,
+    pub count: u64,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Measure {
+    pub outcome: MeasureOutcome,
+    pub measure: String,
+    pub data: Value,
+    pub read_at: Position,
 }

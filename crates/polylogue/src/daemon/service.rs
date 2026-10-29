@@ -1,6 +1,8 @@
 //! Application operations and their shared archive state. Socket, HTTP and
 //! MCP adapters use the same typed requests; transport framing stays outside.
 
+mod status;
+
 use super::{ReadTarget, Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
@@ -416,40 +418,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 },
             }
         }),
-        Request::Status => {
-            let position = match reader.change_position() {
-                Ok(p) => p.to_string(),
-                Err(e) => return store_error(&e),
-            };
-            let counted = d.warm.counts(&reader, &position);
-            // Read after the store counts: a loop seen idle now has finished
-            // the pass that wrote any row those counts include.
-            let loop_status = d.status.lock().map(|s| s.clone()).unwrap_or_default();
-            ok(serde_json::json!({
-                "archive": d.archive.root,
-                "pid": std::process::id(),
-                "uptime_seconds": d.started.elapsed().as_secs(),
-                "store": counted.as_ref().map(|c| &c.status),
-                "count_error": d.warm.count_error(),
-                "counted": counted.as_ref().map_or_else(
-                    || serde_json::json!({ "state": "counting" }),
-                    |c| serde_json::json!({
-                        "position": c.position,
-                        "current": c.position == position,
-                        "seconds_ago": c.at.elapsed().as_secs_f64(),
-                        "seconds_to_count": c.took.as_secs_f64(),
-                    }),
-                ),
-                "busy": loop_status.busy,
-                "passes": loop_status.passes,
-                "full_scans": loop_status.full_scans,
-                "last_pass": loop_status.last_pass,
-                "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
-                "notices": crate::signals::recent(&reader, now_ms()),
-                "warm": d.warm.summary(),
-                "mode": d.mode,
-            }))
-        }
+        Request::Status => status::answer(d, &reader),
         Request::Query {
             text,
             cursor,

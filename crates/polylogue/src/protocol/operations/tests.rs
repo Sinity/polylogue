@@ -23,7 +23,7 @@ fn typed_query_runs_through_the_shared_table_and_socket() {
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     let typed: crate::protocol::query::Answer =
         serde_json::from_value(answer.value().unwrap().clone()).unwrap();
-    assert_eq!(typed.rows.as_ref().unwrap().len(), 1);
+    assert_eq!(typed.rows().unwrap().len(), 1);
     let command = crate::commands::command("query").unwrap();
     let values = Values::from_json(
         command,
@@ -97,4 +97,30 @@ fn declaration_and_typed_query_schema_have_the_same_argument_names() {
     assert_eq!(schema["additionalProperties"], false);
     let output = (command.typed_schemas.unwrap())().1;
     assert!(output.to_string().contains("\"read_at\""));
+}
+
+#[test]
+fn status_operation_uses_its_typed_answer_on_the_shared_socket_path() {
+    let daemon = crate::test_daemon::start("typed status witness");
+    let response = crate::client::send(
+        &daemon.daemon.archive.socket(),
+        &crate::daemon::Request::Status,
+    )
+    .unwrap();
+    let answer = response.answer();
+    assert_eq!(answer.exit_code(), 0, "{answer:?}");
+    let status: crate::protocol::status::Answer =
+        serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    assert_eq!(status.pid, std::process::id());
+    assert!(matches!(
+        status.mode,
+        crate::protocol::status::Mode::Standalone
+    ));
+    if let Some(counts) = status.store {
+        assert_eq!(counts.messages, 1);
+    }
+    assert!(
+        serde_json::from_value::<crate::protocol::status::Arguments>(json!({"author":"operator"}))
+            .is_err()
+    );
 }

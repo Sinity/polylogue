@@ -93,7 +93,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                         deadline: command_surface::Deadline::Default,
                     }
                 });
-            if let Err(error) = context.progress("query preparation", 0, narrower) {
+            if let Err(error) = context.progress(C::NAME, 0, narrower) {
                 return Answer::error(error);
             }
             let Action::Request(build) = command.action else {
