@@ -128,8 +128,9 @@ pub struct MessageRecord {
     #[serde(rename = "ref")]
     pub reference: String,
     pub commit: u64,
-    /// Reading position within the physical session, independent of commit
-    /// order and of the receiving bundle's actual local byte extents.
+    /// Snapshot ordinal over the canonical, unfiltered physical session's full
+    /// display order, including native ordering ties. Subsets never renumber it;
+    /// it is independent of native counters, commit order and local byte extents.
     pub order: u64,
     /// Identity of the complete source value, unchanged by view projection.
     pub source_version: BlobHash,

@@ -205,7 +205,7 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 - **Four bounds stay apart.** Selection (`limit`, `[last:k]`) is in the question. `page_size` is how much travels now (default 20 sessions or 50 other rows, the same on every surface). A presentation budget cuts display, never a figure's population. The deadline bounds execution.
 - **Cursors** hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are sealed: opaque and integrity-checked.
 - **Continuation is by key,** never by offset, and no read transaction is held between pages. When the archive changes between pages, no row whose key did not change is skipped or repeated, and `notes` say "the archive changed since the first page", listing rows that moved before the anchor.
-- **Refusals:** a cursor from another question is `invalid_query`; one from an earlier index generation, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
+- **Refusals:** a cursor with an invalid or retired seal, or from another question, is `invalid_query`. An authenticated cursor whose read context is no longer available, including a ranked cursor after a vector write, is `stale_cursor`. The index keeps its private seal key across daemon restarts; rebuilding retires that key. Neither refusal restarts the query silently. Only the page size may change between pages.
 - A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is kept first, then paged.
 - The count is computed once per question and read position, and reused by later pages.
 
@@ -288,7 +288,7 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **ranked-keep-or-refuse**: keeping a fused answer stores ranks and contributions; keeping one whose vector side is missing is refused naming the list.
 - **figure-needs-denominator**: a figure without a denominator is refused at save; a kept figure reports value, denominator count and unknown count.
 - **kept-result-derivation-versions**: a kept result records derivation versions and reports the change after a price-table change.
-- **paging-stable-under-writes**: paging across concurrent writes never repeats or skips an unchanged row; a cursor across a rebuild is `stale_cursor`; random-order pages never overlap.
+- **paging-stable-under-writes**: paging across concurrent writes never repeats or skips an unchanged row; a cursor across a rebuild is refused with `invalid_query` after its seal key retires; random-order pages never overlap.
 - **deadline-timeout-and-lift**: a read past its deadline ends `timeout` naming a narrower query and the lifted form, and is cancelled in the daemon within 100 ms; the same query with `--deadline none`, or `deadline: null` over MCP called as an agent, completes.
 - **disconnect-cancels**: a client disconnect cancels the read.
 - **answer-schema**: one JSON-schema test of the answer holds across all surfaces; `empty` never results from a failure.

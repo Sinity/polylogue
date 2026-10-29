@@ -21,12 +21,7 @@ pub struct Failure {
 impl From<polylogue_store::StoreError> for Failure {
     fn from(e: polylogue_store::StoreError) -> Self {
         Failure {
-            kind: match &e {
-                polylogue_store::StoreError::ReadDeadlineExceeded => "deadline_exceeded",
-                polylogue_store::StoreError::ReadCancelled => "cancelled",
-                _ => "store",
-            }
-            .into(),
+            kind: crate::protocol::store_code(&e).into(),
             message: e.to_string(),
             detail: None,
         }
@@ -72,14 +67,15 @@ pub type NearFn<'a> =
 pub(crate) fn with_ranking<T>(
     reader: &Reader<'_>,
     warm: &super::warm::Warm,
+    config: &crate::config::Config,
     run: impl FnOnce(bool, &NearFn<'_>) -> T,
 ) -> T {
-    let provider = crate::embeddings::Provider::from_settings(
-        reader,
-        &polylogue_store::user_writes::machine_id(),
-    )
-    .ok()
-    .flatten();
+    let settings = reader.settings_snapshot(config.requests.machine()).ok();
+    let provider = settings.as_ref().and_then(|settings| {
+        crate::embeddings::Provider::from_settings(settings, &config.embedding_credentials)
+            .ok()
+            .flatten()
+    });
     let available = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
     let near = |text: &str| match &provider {
         Some(provider) => warm.similarity(reader, provider, text),
@@ -327,7 +323,7 @@ fn answer(
     if let Some(m) = &program.measure {
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let (definition, _) = super::measure::find_checked(&m.what)?;
-        if let Some(paging) = definition.paging {
+        if let Some(measure_paging) = definition.paging {
             let (rows, count, next, _) = read_page(reader, program, &after, paging)?;
             let session_order: std::collections::BTreeMap<_, _> = rows
                 .iter()
@@ -339,7 +335,7 @@ fn answer(
                 sessions: Some(keys),
                 ..Default::default()
             };
-            let data = match paging {
+            let data = match measure_paging {
                 super::measure::Paging::Facets => {
                     let selected =
                         reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;

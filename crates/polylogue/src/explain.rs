@@ -100,7 +100,7 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
         "syntax" => vec![json!({"syntax": SYNTAX, "stages": polylogue_query::catalog::STAGES.iter().map(|s| s.completion).collect::<Vec<_>>(), "aggregates": polylogue_query::catalog::AGGREGATES, "keywords": polylogue_query::catalog::KEY_FUNCTIONS})],
         "units" => units::UNITS.iter().map(|u| json!({
             "name": u.name, "singular": u.singular,
-            "columns": u.columns.iter().map(|c| c.0).collect::<Vec<_>>(),
+            "columns": u.columns.iter().map(|c| c.name).collect::<Vec<_>>(),
             "session_fields": u.in_session,
             "relations": u.relations.iter().map(|r| json!({"prefix": r.prefix, "unit": r.target})).collect::<Vec<_>>(),
         })).collect(),

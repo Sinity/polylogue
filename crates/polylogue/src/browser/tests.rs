@@ -158,7 +158,7 @@ fn a_capture_is_stored_durably_and_archived_by_the_loop() {
 
 /// Settings that read only a home under `dir`.
 fn config_at(dir: &std::path::Path) -> polylogue_engine::Config {
-    let mut c = polylogue_engine::Config::from_env();
+    let mut c = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     c.home = dir.join("home");
     c.tool_dirs.clear();
     c

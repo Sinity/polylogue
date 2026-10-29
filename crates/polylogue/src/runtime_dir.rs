@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// path: it names the archive's runtime directory and its cookie, so two
 /// archives never share a token.
 pub fn archive_key(root: &Path) -> String {
-    let resolved = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let resolved = polylogue_store::Archive::resolved_root(root);
     let hash = blake3::hash(resolved.as_os_str().as_encoded_bytes());
     hash.to_hex()[..12].to_owned()
 }

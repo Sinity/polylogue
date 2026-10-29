@@ -59,6 +59,8 @@ pub enum MeasureOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<polylogue_model::currency::IndexCurrency>,
     pub generation: String,
     pub index: u64,
     pub archive: u64,
@@ -68,9 +70,7 @@ pub struct Position {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Resolved {
-    pub now: Option<polylogue_model::Timestamp>,
-    pub zone: String,
-    pub day_start_minutes: u16,
+    pub clock: query_language::time::ClockWire,
     #[serde(default)]
     pub times: Vec<query_language::time::ResolvedTime>,
 }

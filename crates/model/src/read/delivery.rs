@@ -18,9 +18,32 @@ pub enum ReadDelivery {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadPage {
-    pub snapshot: ReadSnapshot,
+    pub snapshot: ReadPageSnapshot,
     pub records: Vec<Record>,
     pub document: ReadDocument,
+}
+
+/// The fixed reading identity for a budgeted page. Query text, notes and other
+/// unbounded metadata belong in budgeted items or the full stream header.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadPageSnapshot {
+    pub query: String,
+    pub ran_at: crate::Timestamp,
+    pub read_at: crate::ChangePosition,
+    pub caught_up: bool,
+    pub currency: crate::currency::IndexCurrency,
+}
+impl From<&ReadSnapshot> for ReadPageSnapshot {
+    fn from(snapshot: &ReadSnapshot) -> Self {
+        Self {
+            query: snapshot.query.clone(),
+            ran_at: snapshot.ran_at,
+            read_at: snapshot.read_at.clone(),
+            caught_up: snapshot.caught_up,
+            currency: snapshot.currency.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -31,11 +54,33 @@ pub struct ReadBegin {
     pub options: ReadOptions,
 }
 
+/// Portable source records and presentation-only evidence are explicit kinds.
+/// An omission never stands in for an unavailable canonical record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadRecord {
-    pub record: Record,
-    pub parts: Vec<ReadPart>,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadRecord {
+    Canonical {
+        record: Box<Record>,
+        parts: Vec<ReadPart>,
+    },
+    Presentation {
+        parts: Vec<ReadPart>,
+    },
+}
+
+impl ReadRecord {
+    pub fn record(&self) -> Option<&Record> {
+        match self {
+            Self::Canonical { record, .. } => Some(record),
+            Self::Presentation { .. } => None,
+        }
+    }
+
+    pub fn parts(&self) -> &[ReadPart] {
+        match self {
+            Self::Canonical { parts, .. } | Self::Presentation { parts, .. } => parts,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -51,7 +51,8 @@ fn archive_with_notes() -> Morrow {
             .id
     };
     let mut runtime =
-        service::start(&archive.root, archive.config(), ArchiveMode::Standalone).unwrap();
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
     for (id, kind, key, value, targets) in [
         (
             "morrow-project",

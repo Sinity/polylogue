@@ -257,6 +257,11 @@ impl ReadPool {
         Ok(conn)
     }
 
+    /// Pins the admission scope without acquiring a SQL reader.
+    pub fn scope_token(&self) -> Result<scope::ReadScopeToken> {
+        self.archive.read_scope.token()
+    }
+
     /// Waits for a connection while the pool is full. Reuse the existing Reader
     /// within a request. Nested checkouts are allowed while capacity remains;
     /// waiting while this thread already holds a slot refuses to avoid deadlock.
@@ -610,6 +615,10 @@ impl Reader<'_> {
 
     pub fn confirmed_checkpoint(&self) -> Result<Option<i64>> {
         crate::primary::projection::checkpoint(self.conn()?)
+    }
+
+    pub fn confirmed_scope(&self) -> Result<Option<String>> {
+        crate::primary::scope::current(self.conn()?)
     }
 
     pub fn primary_cache_identity(&self) -> Result<String> {

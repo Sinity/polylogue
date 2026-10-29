@@ -94,6 +94,7 @@ impl std::str::FromStr for View {
 #[serde(rename_all = "snake_case")]
 pub enum Expansion {
     None,
+    #[serde(rename = "headers")]
     Collapsed,
     Full,
 }
@@ -178,6 +179,11 @@ impl ReadOptions {
                 "transcript, context",
             ),
             (self.turns && !prose, "turns", "transcript, context"),
+            (
+                self.output_lines != 100 && !prose,
+                "output_lines",
+                "transcript, context",
+            ),
             (
                 self.inherited
                     && matches!(

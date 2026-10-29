@@ -9,6 +9,23 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{marker::PhantomData, sync::Arc};
 
+/// MCP carries the same operation arguments and admission metadata as the socket.
+#[derive(serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpArguments<T> {
+    pub arguments: T,
+    #[schemars(length(min = 1))]
+    pub request_id: String,
+    #[serde(default, skip_serializing_if = "default_deadline")]
+    pub deadline: command_surface::Deadline,
+}
+
+fn default_deadline(deadline: &command_surface::Deadline) -> bool {
+    matches!(deadline, command_surface::Deadline::Default)
+}
+
+pub const PRODUCT: &str = "polylogue";
+
 pub trait CommandType: Send + Sync + 'static {
     type Arguments: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     type Answer: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
@@ -45,7 +62,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
         let command = crate::commands::command(C::NAME).expect("typed command exists");
         OperationSpec {
             name: C::NAME.into(),
-            command: C::NAME.split(' ').map(str::to_owned).collect(),
+            command: command.cli_words(),
             summary: command.help.into(),
             reason: command.reason.into(),
             http_route: format!("/api/v1{}", command.http_path()),
@@ -74,20 +91,9 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     .and_then(|caller| caller.working_directory.clone()),
                 json: true,
             };
-            let values = serde_json::to_value(arguments).expect("typed arguments serialize");
-            let mut values = values
-                .as_object()
-                .expect("command arguments are objects")
-                .clone();
-            if command.writes {
-                values.insert(
-                    "request_id".into(),
-                    Value::String(context.request_id.clone()),
-                );
-            }
-            let values = match Values::from_json(command, caller.surface, values) {
+            let values = match checked_values::<C>(arguments, &caller, &context.request_id) {
                 Ok(values) => values,
-                Err(error) => return Answer::error(Failure::new(FailureKind::BadRequest, error)),
+                Err(error) => return Answer::error(error),
             };
             let narrower = values
                 .text("query")
@@ -105,11 +111,14 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             if let Err(error) = context.progress_unknown(C::NAME, narrower) {
                 return Answer::error(error);
             }
-            let Action::Request(build) = command.action else {
-                return Answer::error(Failure::new(
-                    FailureKind::BadRequest,
-                    "command is not a finite daemon operation",
-                ));
+            let build = match command.action {
+                Action::Request(build) | Action::Stream { build, .. } => build,
+                Action::Local(_) | Action::ConfiguredLocal(_) => {
+                    return Answer::error(Failure::new(
+                        FailureKind::BadRequest,
+                        "command runs locally",
+                    ));
+                }
             };
             let request = match build(command, &values, &caller) {
                 Ok(request) => request,
@@ -193,6 +202,50 @@ impl<C: CommandType> Operation for TypedCommand<C> {
     }
 }
 
+fn checked_values<C: CommandType>(
+    arguments: C::Arguments,
+    caller: &Caller,
+    request_id: &str,
+) -> Result<Values, Failure> {
+    if request_id.is_empty() {
+        return Err(Failure::new(
+            FailureKind::BadRequest,
+            "request_id must not be empty",
+        ));
+    }
+    let command = crate::commands::command(C::NAME).expect("typed command exists");
+    let mut values = serde_json::to_value(arguments)
+        .expect("typed arguments serialize")
+        .as_object()
+        .expect("command arguments are objects")
+        .clone();
+    if command.writes {
+        values.insert("request_id".into(), Value::String(request_id.into()));
+    }
+    Values::from_json(command, caller.surface, values)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error))
+}
+
+/// Streams and finite answers validate through the same declaration adapter.
+pub fn build<C: CommandType>(
+    arguments: Value,
+    caller: &Caller,
+    request_id: &str,
+) -> Result<crate::daemon::Request, Failure> {
+    let arguments: C::Arguments = serde_json::from_value(arguments)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error.to_string()))?;
+    let values = checked_values::<C>(arguments, caller, request_id)?;
+    let command = crate::commands::command(C::NAME).expect("typed command exists");
+    match command.action {
+        Action::Request(build) | Action::Stream { build, .. } => build(command, &values, caller)
+            .map_err(|error| Failure::new(FailureKind::BadRequest, error)),
+        Action::Local(_) | Action::ConfiguredLocal(_) => Err(Failure::new(
+            FailureKind::BadRequest,
+            "command runs locally",
+        )),
+    }
+}
+
 pub fn deadlines() -> command_surface::Deadlines {
     let mut deadlines = command_surface::Deadlines::default();
     for (class, milliseconds) in [
@@ -207,7 +260,7 @@ pub fn deadlines() -> command_surface::Deadlines {
 }
 
 pub fn table(daemon: Arc<Daemon>) -> OperationTable {
-    let mut table = OperationTable::new("polylogue", deadlines());
+    let mut table = OperationTable::new(PRODUCT, deadlines());
     for (kind, codes) in super::FAILURE_CLASSES {
         for code in *codes {
             table

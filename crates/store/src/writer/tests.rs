@@ -973,8 +973,8 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
             Box::new(crate::user_writes::request_now(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
-                    key: "shutdown-test".into(),
-                    value: "stored".into(),
+                    key: "browser.actions".into(),
+                    value: "on".into(),
                     author: polylogue_model::Author::Operator,
                     machine: None,
                 },
@@ -1000,8 +1000,8 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
         "durable before stop"
     );
     assert_eq!(
-        reader.setting("shutdown-test", "").unwrap().as_deref(),
-        Some("stored")
+        reader.setting("browser.actions", "").unwrap().as_deref(),
+        Some("on")
     );
 }
 
@@ -1208,8 +1208,8 @@ fn a_user_write_goes_ahead_of_queued_batches() {
             sender.user(crate::user_writes::request_now(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
-                    key: "ahead".into(),
-                    value: "yes".into(),
+                    key: "browser.actions".into(),
+                    value: "on".into(),
                     author: polylogue_model::Author::Operator,
                     machine: None,
                 },

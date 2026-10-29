@@ -158,3 +158,75 @@ fn native_nanosecond_observation_keeps_quality_and_missing_clock_stays_unknown()
     assert_eq!(step.output.events[1].at, None);
     assert_eq!(step.output.events[1].at_quality, TimeQuality::Unknown);
 }
+
+fn emission_line() -> Json {
+    json!({"event_id":"emission1", "event":CONTEXT_EMITTED,
+        "provider":"claude-code", "session_id":"s1", "at_ns":"1792400000123456789",
+        "payload":{"invocation":"invocation1", "session":"claude-code:s1",
+            "hook_event":"SessionStart", "deliveries":["delivery:receipt1", "delivery:receipt2"]}})
+}
+
+#[test]
+fn hook_emission_claim_retains_exact_producer_references_without_attributing_messages() {
+    let native = emission_line();
+    let bytes = lines(&[native]);
+    let step = run(&HookSpool, &mut ParserState::default(), &bytes, 0).unwrap();
+    let [event] = &step.output.events[..] else {
+        panic!("one receipt")
+    };
+    let claim = context_emission(event).unwrap();
+    assert_eq!(claim.invocation, "invocation1");
+    assert_eq!(claim.session.to_string(), "claude-code:s1");
+    assert_eq!(claim.hook_event, "SessionStart");
+    assert_eq!(claim.deliveries, ["delivery:receipt1", "delivery:receipt2"]);
+    assert_eq!(event.data["event_id"], "emission1");
+    assert!(step.output.messages.is_empty());
+    assert!(step.output.native_hook_fields.is_empty());
+}
+
+#[test]
+fn hook_emission_claim_requires_an_exact_typed_receipt_and_never_trusts_a_payload_flag() {
+    let mut cases = Vec::new();
+    for deliveries in [
+        json!([]),
+        json!(["receipt1"]),
+        json!(["message:claude-code:m1"]),
+        json!(["delivery:"]),
+        json!([false]),
+    ] {
+        let mut v = emission_line();
+        v["payload"]["deliveries"] = deliveries;
+        cases.push(v);
+    }
+    for (key, value) in [
+        ("invocation", json!("")),
+        ("invocation", json!("emission1")),
+        ("session", json!("claude-code:other")),
+        ("hook_event", json!("")),
+        ("injected_context", json!(true)),
+    ] {
+        let mut v = emission_line();
+        v["payload"][key] = value;
+        cases.push(v);
+    }
+    let mut invocation = emission_line();
+    invocation["event"] = json!("SessionStart");
+    cases.push(invocation);
+    let mut missing_receipt = emission_line();
+    missing_receipt.as_object_mut().unwrap().remove("event_id");
+    cases.push(missing_receipt);
+    for value in cases {
+        let step = run(
+            &HookSpool,
+            &mut ParserState::default(),
+            &lines(&[value.clone()]),
+            0,
+        )
+        .unwrap();
+        assert!(
+            context_emission(&step.output.events[0]).is_none(),
+            "{value}"
+        );
+        assert!(step.output.native_hook_fields.is_empty());
+    }
+}

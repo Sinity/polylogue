@@ -158,13 +158,7 @@ impl Engine {
                                 .unwrap_or_else(|| {
                                     polylogue_model::Author::Script("polylogue-import".into())
                                 }),
-                            at: polylogue_model::Timestamp::from_unix_ms(now_ms()).ok_or_else(
-                                || {
-                                    EngineError::Store(polylogue_store::StoreError::Invalid(
-                                        "import receipt time is outside the supported range".into(),
-                                    ))
-                                },
-                            )?,
+                            at: self.config.clock.now().into(),
                         };
                         self.restore_bundle_authored(
                             &at,

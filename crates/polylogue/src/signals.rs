@@ -22,9 +22,9 @@
 //! interrupts become plain notices. Every handoff is a `delivery` record,
 //! so what fired survives restarts and index rebuilds.
 
-use crate::daemon::service::{Daemon, now_ms};
+use crate::daemon::service::Daemon;
 use polylogue_model::user::{Delivery, UserWrite};
-use polylogue_model::{Author, Note, NoteKind, Timestamp};
+use polylogue_model::{Author, Note, NoteKind};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -401,7 +401,7 @@ fn history(d: &Daemon) -> Vec<Sent> {
 fn matching_rows(
     reader: &polylogue_store::Reader<'_>,
     query: &str,
-    now: i64,
+    clock: &query_language::time::Clock,
 ) -> Result<Option<Vec<String>>, crate::daemon::query::Failure> {
     let mut rows = Vec::new();
     let mut cursor: Option<String> = None;
@@ -414,8 +414,7 @@ fn matching_rows(
                 page_size: Some(1_000),
                 why: false,
                 session: None,
-                now,
-                day: None,
+                clock: clock.clone(),
                 embeddings: false,
                 near: None,
                 fields: &[],
@@ -478,7 +477,6 @@ pub fn recent(reader: &polylogue_store::Reader<'_>, now: i64) -> Value {
 /// deadline, so a duration fires with no new data, and records
 /// every handoff as a delivery.
 pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
-    use polylogue_model::LogicalDay;
     let Some(writes) = &d.writes else {
         return;
     };
@@ -487,7 +485,23 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
         if !matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
             return;
         }
-        let now = now_ms();
+        let clock = match d.query_clock() {
+            Ok(clock) => clock,
+            Err(response) => {
+                if let Ok(mut status) = d.signals.lock() {
+                    *status = json!({"held":[{"reason":"the operation clock is unavailable","detail":response}]});
+                }
+                if !matches!(
+                    stop.recv_timeout(std::time::Duration::from_secs(30)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    return;
+                }
+                continue;
+            }
+        };
+        let now = clock.now.as_millisecond();
+        let local_hour = clock.now.to_zoned(clock.day.zone().clone()).hour() as u8;
         let Ok(reader) = d.reads.reader() else {
             if !matches!(
                 stop.recv_timeout(std::time::Duration::from_secs(30)),
@@ -497,20 +511,11 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             }
             continue;
         };
-        // Quiet hours are local hours of the operator's day; a setting that
-        // cannot be read leaves the machine's, and the rules' queries
-        // report it.
-        let day =
-            crate::daemon::query::logical_day(&reader).unwrap_or_else(|_| LogicalDay::system());
-        let signals = Timestamp::from_unix_ms(now)
-            .map(|at| {
-                crate::daemon::query::notes::list(
-                    &reader,
-                    &format!("kind:{}", NoteKind::Signal.as_str()),
-                    at,
-                )
-            })
-            .unwrap_or(Ok(Vec::new()));
+        let signals = crate::daemon::query::notes::list(
+            &reader,
+            &format!("kind:{}", NoteKind::Signal.as_str()),
+            &clock,
+        );
         let mut rules: Vec<Rule> = vec![];
         let mut unusable: Vec<Unusable> = vec![];
         for note in signals.unwrap_or_default() {
@@ -536,7 +541,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 usable.push(rule);
                 continue;
             }
-            match matching_rows(&reader, &rule.query, now) {
+            match matching_rows(&reader, &rule.query, &clock) {
                 Ok(Some(rows)) => {
                     matches.insert(rule.id.clone(), rows);
                     usable.push(rule);
@@ -558,7 +563,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
             *s = summary(&usable, &unusable);
             s["held"] = json!(held);
         }
-        for h in eval.step(now, &usable, &matches, |t| day.local_hour(t)) {
+        for h in eval.step(now, &usable, &matches, |_| local_hour) {
             let Some(rule) = usable.iter().find(|r| r.id == h.rule) else {
                 continue;
             };
@@ -613,7 +618,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
         }
         let wait = eval
             .next_due()
-            .map_or(30_000, |due| (due - now_ms()).clamp(1_000, 30_000));
+            .map_or(30_000, |due| (due - d.config.requests.now().unix_ms()).clamp(1_000, 30_000));
         if !matches!(
             stop.recv_timeout(std::time::Duration::from_millis(wait as u64)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)

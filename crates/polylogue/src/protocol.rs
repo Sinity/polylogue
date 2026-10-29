@@ -1,9 +1,11 @@
 //! Product failure codes classified once into the shared transport contract.
+pub mod attachment;
 pub mod caller;
 pub mod complete;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;
+pub mod read;
 pub mod schema;
 pub mod status;
 pub mod stream;
@@ -100,6 +102,43 @@ pub fn kind(code: &str) -> FailureKind {
         .unwrap_or(FailureKind::Io)
 }
 
+/// A revoked read cannot become a final success after its worker returns.
+pub fn scope_answer<T>(
+    answer: Answer<T>,
+    scope: Option<&polylogue_store::read::scope::ReadScopeToken>,
+) -> Answer<T> {
+    if let Some(scope) = scope
+        && let Err(error) = scope.check()
+    {
+        Answer::error(failure(store_code(&error), error.to_string(), None))
+    } else {
+        answer
+    }
+}
+
+/// Every store boundary uses this code before the shared transport mapping.
+pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
+    use polylogue_store::StoreError;
+    match error {
+        StoreError::ScopeChanged => "scope_changed",
+        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => "conflict",
+        StoreError::Ambiguous { .. } => "ambiguous",
+        StoreError::Projection(issue) => match issue {
+            polylogue_model::bundle::BundleError::ProjectionConflict
+            | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
+            _ => "bad_request",
+        },
+        StoreError::ReadDeadlineExceeded => "deadline_exceeded",
+        StoreError::ReadCancelled => "cancelled",
+        StoreError::ReadPoolClosed => "daemon_stopping",
+        StoreError::NotFound(_) => "not_found",
+        StoreError::Invalid(_) => "bad_request",
+        StoreError::IncompleteParents(_) => "incomplete_parents",
+        StoreError::PrimaryPending { .. } => "degraded",
+        _ => "store",
+    }
+}
+
 pub fn failure(code: &str, message: String, detail: Option<&Value>) -> Failure {
     let mut failure = Failure::new(kind(code), message);
     failure.code = Some(code.to_owned());
@@ -138,6 +177,32 @@ pub fn answer(value: Value) -> Answer<Value> {
         Answer::Degraded {
             value,
             notes: vec!["accepted locally; awaiting Sinex confirmation".into()],
+            next: vec![],
+        }
+    } else if let Some(currency) = value
+        .get("currency")
+        .or_else(|| value.pointer("/snapshot/currency"))
+        .or_else(|| value.pointer("/read_at/currency"))
+        .and_then(|value| {
+            serde_json::from_value::<polylogue_model::currency::IndexCurrency>(value.clone()).ok()
+        })
+        && currency.degraded()
+    {
+        use polylogue_model::currency::{CurrencyState, IndexCurrency};
+        let note = match currency {
+            IndexCurrency::Primary {
+                state: CurrencyState::Behind,
+                ..
+            } => "primary index is behind the observed owner position",
+            IndexCurrency::Primary {
+                state: CurrencyState::Unavailable,
+                ..
+            } => "primary owner is unavailable",
+            _ => "primary index currency is unknown",
+        };
+        Answer::Degraded {
+            value,
+            notes: vec![note.into()],
             next: vec![],
         }
     } else if value["incomplete"].as_bool() == Some(true)

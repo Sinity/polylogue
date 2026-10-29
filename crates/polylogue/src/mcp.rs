@@ -17,12 +17,12 @@ use std::io::{self, BufRead, Write};
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
-        .filter(|c| c.mcp && matches!(c.action, Action::Request(_)))
+        .filter(|c| c.mcp && matches!(c.action, Action::Request(_) | Action::Stream { .. }))
 }
 
 pub fn tools() -> Vec<Value> {
     tool_commands()
-        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": commands::schema(c), "outputSchema": c.typed_schemas.map(|schemas| schemas().1).unwrap_or_else(|| schemars::schema_for!(command_surface::Answer<Value>).to_value()), "annotations": {"readOnlyHint": !c.writes}}))
+        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": c.typed_mcp_schema.map(|schema|schema()).unwrap_or_else(|| Value::Object(commands::schema(c))), "outputSchema": c.typed_schemas.map(|schemas| schemas().1).unwrap_or_else(|| schemars::schema_for!(command_surface::Answer<Value>).to_value()), "annotations": {"readOnlyHint": !c.writes}}))
         .collect()
 }
 
@@ -45,10 +45,9 @@ fn build_request(
         .ok_or_else(|| {
             polylogue_render::terminal::escape(&format!("error (bad_request): no tool {name}"))
         })?;
-    let Action::Request(build) = command.action else {
-        return Err(polylogue_render::terminal::escape(&format!(
-            "error (bad_request): no tool {name}"
-        )));
+    let build = match command.action {
+        Action::Request(build) | Action::Stream { build, .. } => build,
+        Action::Local(_) | Action::ConfiguredLocal(_) => return Err(format!("no tool {name}")),
     };
     let bad = |e: String| polylogue_render::terminal::escape(&format!("error (bad_request): {e}"));
     let values = Values::from_json(command, Surface::Mcp, arguments).map_err(bad)?;
@@ -90,7 +89,36 @@ fn call_with_limit(
     let command = tool_commands()
         .find(|command| command.mcp_name() == name)
         .ok_or_else(|| format!("no tool {name}"))?;
-    let request = build_request(name, arguments.clone())?;
+    let canonical = if command.register.is_some() {
+        let envelope: crate::protocol::operations::McpArguments<Value> =
+            serde_json::from_value(Value::Object(arguments.clone()))
+                .map_err(|error| error.to_string())?;
+        Some(command_surface::Request {
+            operation: command.name.into(),
+            arguments: envelope.arguments,
+            request_id: envelope.request_id,
+            deadline: envelope.deadline,
+        })
+    } else {
+        None
+    };
+    let request = if let Some(call) = &canonical {
+        let caller = Caller {
+            surface: Surface::Mcp,
+            cwd: None,
+            json: true,
+        };
+        command
+            .build_typed
+            .expect("registered commands validate typed arguments")(
+            call.arguments.clone(),
+            &caller,
+            &call.request_id,
+        )
+        .map_err(|error| error.message)?
+    } else {
+        build_request(name, arguments.clone())?
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -99,22 +127,7 @@ fn call_with_limit(
     if tool_call_id.is_some() {
         caller.tool_call_id = tool_call_id;
     }
-    let answer = if command.register.is_some() {
-        let values = Values::from_json(command, Surface::Mcp, arguments)?;
-        let deadline = deadline_ms.map_or(command_surface::Deadline::Default, |deadline| {
-            command_surface::Deadline::Milliseconds(
-                crate::daemon::execution::remaining(Some(deadline))
-                    .as_millis()
-                    .try_into()
-                    .unwrap_or(u64::MAX),
-            )
-        });
-        let call = crate::protocol::operations::request(
-            command,
-            values.clone(),
-            values.request_id(),
-            deadline,
-        );
+    let answer = if let Some(call) = canonical {
         runtime.block_on(crate::client::call_ready_as(
             archive, &call, cancelled, caller,
         ))
@@ -467,12 +480,8 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
     })
 }
 
-pub fn serve_stdio() -> io::Result<()> {
-    serve(
-        io::stdin().lock(),
-        io::stdout(),
-        &Archive::at(&Archive::default_root()),
-    )
+pub fn serve_stdio(archive: &Archive) -> io::Result<()> {
+    serve(io::stdin().lock(), io::stdout(), archive)
 }
 
 #[cfg(test)]

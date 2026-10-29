@@ -9,11 +9,15 @@ pub mod pager;
 pub mod results;
 pub mod schema;
 pub mod terminal;
+pub mod web;
 pub use encode::{ARCHIVE_NOTICE, EncodeOptions, Encoder, encode_document};
-pub use layout::{layout_record, visit_record};
+pub use layout::{layout_record, visit_record, visit_source_block};
 pub use polylogue_model::read;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Format {
     Terminal,
     Markdown,
@@ -22,6 +26,15 @@ pub enum Format {
     Jsonl,
 }
 impl Format {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Markdown => "markdown",
+            Self::Html => "html",
+            Self::Json => "json",
+            Self::Jsonl => "jsonl",
+        }
+    }
     pub const NAMES: &[&str] = &["terminal", "markdown", "html", "json", "jsonl"];
     pub fn parse(name: &str) -> Option<Self> {
         Some(match name {
@@ -48,3 +61,9 @@ pub fn shell_quote(word: &str) -> String {
 }
 #[cfg(test)]
 mod tests;
+
+impl std::fmt::Display for Format {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}

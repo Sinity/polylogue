@@ -37,6 +37,49 @@ use std::path::Path;
 
 pub const ORIGIN: &str = "hook-spool";
 
+/// Written only after the native hook output was successfully handed over.
+pub const CONTEXT_EMITTED: &str = "HookContextEmitted";
+
+// These native envelope fields are copied alongside, rather than inside, the
+// payload in Event.data. Keep decoding and event retention on the same list.
+const ENVELOPE_FIELDS: &[&str] = &[
+    "event_id",
+    "at_ns",
+    "harness_pid",
+    "git_identity",
+    "terminal_identity",
+    "repository",
+    "boot_id",
+    "native_unavailable",
+];
+
+/// Decode an emission claim retained by this parser. This is not native
+/// admission and confers no authority on imported bytes. The receipt proves no
+/// transcript-message attribution without an exact native message link.
+pub fn context_emission(event: &Event) -> Option<polylogue_model::HookContextEmission> {
+    if event.kind != event_kind(CONTEXT_EMITTED) {
+        return None;
+    }
+    let mut payload = event.data.as_object()?.clone();
+    let receipt = payload.get("event_id")?.as_str()?.to_owned();
+    for key in ENVELOPE_FIELDS {
+        payload.remove(*key);
+    }
+    let claim: polylogue_model::HookContextEmission =
+        serde_json::from_value(Json::Object(payload)).ok()?;
+    if receipt.is_empty() || claim.invocation.is_empty() || receipt == claim.invocation
+        || claim.hook_event.is_empty() || event.session.as_ref() != Some(&claim.session)
+        || claim.deliveries.is_empty()
+        || !claim.deliveries.iter().all(|reference| {
+            matches!(polylogue_model::Reference::parse(reference),
+                Ok(parsed @ polylogue_model::Reference::Delivery(_)) if parsed.to_string() == *reference)
+        })
+    {
+        return None;
+    }
+    Some(claim)
+}
+
 pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/*.jsonl",
     "polylogue/hooks/carriers/*/*/*.ndjson",
@@ -169,18 +212,9 @@ impl Parser for HookSpool {
             Some(other) => serde_json::json!({ "payload": other }),
         };
         if let Json::Object(map) = &mut data {
-            for key in [
-                "event_id",
-                "at_ns",
-                "harness_pid",
-                "git_identity",
-                "terminal_identity",
-                "repository",
-                "boot_id",
-                "native_unavailable",
-            ] {
-                if let Some(v) = value.get(key) {
-                    map.insert(key.into(), v.clone());
+            for key in ENVELOPE_FIELDS {
+                if let Some(v) = value.get(*key) {
+                    map.insert((*key).into(), v.clone());
                 }
             }
         }

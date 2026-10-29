@@ -52,12 +52,6 @@ impl BrowserHost {
         })
     }
 
-    /// The running user's: the default archive and the state root its
-    /// daemon's loop reads.
-    pub fn for_user() -> std::io::Result<Self> {
-        Self::at(&Config::from_env(), &Archive::at(&Archive::default_root()))
-    }
-
     /// Asks the daemon. `None` when it does not answer: callers report what
     /// they cannot know as unknown, never as absent.
     pub fn ask(&self, request: &Request) -> Option<Response> {

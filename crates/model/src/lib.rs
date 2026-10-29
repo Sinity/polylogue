@@ -13,12 +13,17 @@ pub mod bundle;
 pub mod capture;
 pub mod capture_log;
 mod change_position;
+mod clock;
+pub mod currency;
+pub use clock::WallClock;
 pub mod command;
 mod delivery;
 mod document;
 mod event;
 pub mod export;
 mod id;
+pub mod injection;
+pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
 mod note;
 pub mod price;
@@ -27,6 +32,7 @@ mod reference;
 pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
 pub mod read;
 mod session;
+pub mod settings;
 mod time;
 mod usage;
 pub mod user;
@@ -87,5 +93,3 @@ string_schema!(
 );
 
 pub mod work_products;
-
-pub mod currency;

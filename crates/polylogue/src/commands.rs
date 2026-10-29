@@ -109,6 +109,7 @@ pub enum Cli {
 pub type StreamProducer = fn(
     &Request,
     &crate::daemon::service::Daemon,
+    &polylogue_model::authorship::Authorship,
     &mut dyn std::io::Write,
 ) -> Option<Result<(), crate::daemon::Response>>;
 
@@ -120,10 +121,16 @@ pub enum Action {
     Stream {
         build: fn(&Command, &Values, &Caller) -> Result<Request, String>,
         produce: StreamProducer,
-        cli: fn(&Values, &Request, Option<std::time::Duration>) -> ExitCode,
+        cli: fn(
+            &Values,
+            &Request,
+            &crate::config::Startup,
+            &command_surface::RunnableRequest,
+        ) -> ExitCode,
     },
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
+    ConfiguredLocal(fn(&Command, &Values, &crate::config::Startup, bool) -> ExitCode),
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +142,8 @@ pub struct Command {
         fn(std::sync::Arc<crate::daemon::service::Daemon>, &mut command_surface::OperationTable),
     >,
     pub typed_schemas: Option<fn() -> (Value, Value)>,
+    pub typed_mcp_schema: Option<fn() -> Value>,
+    pub build_typed: Option<fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>>,
     /// The command-line words (`note add`); the MCP tool joins them with
     /// `_`, the HTTP route with `/`.
     pub name: &'static str,
@@ -153,12 +162,25 @@ pub struct Command {
     pub print: fn(&Value) -> String,
     /// What the command line does with the answer in place of printing it
     /// (`export` writes a file, `continue --exec` runs the plan).
-    pub output: Option<fn(&Values, &Value, bool) -> ExitCode>,
+    pub output: Option<fn(&Values, &Value, &crate::config::Startup, bool) -> ExitCode>,
 }
 
 impl Command {
     pub fn mcp_name(&self) -> String {
-        self.name.replace(' ', "_")
+        let words = self.name.replace(' ', "_");
+        if self.register.is_some() {
+            format!("polylogue_{words}")
+        } else {
+            words
+        }
+    }
+
+    pub fn cli_words(&self) -> Vec<String> {
+        if self.cli == Cli::NoSubcommand {
+            vec!["find".into()]
+        } else {
+            self.name.split(' ').map(str::to_owned).collect()
+        }
     }
 
     pub fn http_path(&self) -> String {
@@ -171,7 +193,10 @@ impl Command {
         let args: &'static [Arg] = self.args;
         args.iter()
             .chain(self.writes.then_some(&REQUEST_ID))
-            .filter(move |a| surface == Surface::Cli || !a.cli_only)
+            .filter(move |a| {
+                (surface == Surface::Cli || !a.cli_only)
+                    && (surface != Surface::Cli || a.name != "request_id")
+            })
     }
 }
 
@@ -307,6 +332,8 @@ const CLI: Command = Command {
     failures: &command_surface::FailureKind::ALL,
     register: None,
     typed_schemas: None,
+    typed_mcp_schema: None,
+    build_typed: None,
     name: "",
     help: "",
     args: &[],
@@ -365,7 +392,9 @@ macro_rules! typed_command {
         Command {
             name: $name,
             register: Some(crate::protocol::operations::register::<$marker>),
+            build_typed: Some(crate::protocol::operations::build::<$marker>),
             typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
+            typed_mcp_schema: Some(|| schemars::schema_for!(crate::protocol::operations::McpArguments<$arguments>).to_value()),
             $($fields)*
         }
     }};
@@ -443,7 +472,7 @@ const WRITTEN: &[Command] = &[
         help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            opt("all", Kind::Flag, "Select every origin"),
+            opt("all", Kind::Bool, "Select every origin"),
             opt(
                 "input",
                 Kind::List,
@@ -486,7 +515,7 @@ const WRITTEN: &[Command] = &[
         help: "Show stored wire paths neither read nor kept, with drift and coverage",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            opt("all", Kind::Flag, "Select every origin"),
+            opt("all", Kind::Bool, "Select every origin"),
             Arg {
                 cli_only: true,
                 ..opt(
@@ -525,7 +554,7 @@ const WRITTEN: &[Command] = &[
             Kind::Text,
             "A new directory for the example home, archive and transcript",
         )],
-        action: Action::Local(crate::demo::tour),
+        action: Action::ConfiguredLocal(crate::demo::tour),
         ..CLI
     },
     Command {
@@ -600,7 +629,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "daemon",
         help: "Run the daemon in the foreground",
-        action: Action::Local(local::daemon),
+        action: Action::ConfiguredLocal(local::daemon),
         ..CLI
     },
     Command {
@@ -645,47 +674,40 @@ const WRITTEN: &[Command] = &[
         http: true,
         ..CLI
     },
-    Command {
+    typed_command!(ReadCommand, crate::protocol::read::Arguments, crate::protocol::read::Answer, {
         name: "read",
-        help: "Read one session, text document or event",
+        reason: "Render a selected query or reference and transfer its canonical records",
+        latency: command_surface::LatencyClass::Read,
+        help: "Read a query or reference; write a consistent bundle with --to DIR",
         args: &[
-            pos(
-                "session",
-                Kind::Text,
-                "A session ID, `document:origin:native_id`, or `event:ID` from a query",
-            ),
-            Arg {
-                default: Some("full"),
-                ..opt("view", Kind::Choice(VIEWS), "What to show")
-            },
-            opt(
-                "format",
-                Kind::Choice(FORMATS),
-                "Default: typed JSON for programs (`--json`, MCP, HTTP), else terminal text",
-            ),
-            opt("budget", Kind::Integer, "Page budget in estimated tokens"),
-            CURSOR,
-            opt(
-                "message",
-                Kind::Text,
-                "Start at this message in the selected session",
-            ),
-            opt("slices", Kind::Bool, "Include masked block slices"),
-            opt("latest", Kind::Bool, "Start at the latest message"),
-            opt(
-                "with_parents",
-                Kind::Bool,
-                "Include messages inherited from a parent session",
-            ),
+            pos("target", Kind::Text, "A query or canonical reference"),
+            Arg { default: Some("transcript"), ..opt("view", Kind::Choice(VIEWS), "The reading view") },
+            opt("format", Kind::Choice(FORMATS), "The output format"),
+            opt("delivery", Kind::Choice(&["page", "stream"]), "Page or finite SSE transfer"),
+            opt("budget", Kind::Integer, "Page budget in estimated tokens"), CURSOR,
+            opt("tools", Kind::Choice(&["none", "headers", "full"]), "Tool output expansion"),
+            opt("thinking", Kind::Choice(&["none", "headers", "full"]), "Thinking expansion"),
+            opt("harness", Kind::Choice(&["none", "headers", "full"]), "Harness expansion"),
+            Arg { default: Some("100"), ..opt("output_lines", Kind::Integer, "Tool output head and tail lines; zero keeps all lines") },
+            opt("inherited", Kind::Bool, "Include inherited messages"),
+            opt("branches", Kind::Bool, "Include branches"),
+            opt("turns", Kind::Bool, "Show turn boundaries"),
+            opt("assertions", Kind::Bool, "Include assertions (default true)"),
+            opt("for_others", Kind::Bool, "Prepare a reading for another caller"),
+            opt("variant", Kind::List, "Ordered variant layers"),
+            opt("with_blobs", Kind::Bool, "Include stored blob bytes in a stream"),
+            Arg { cli_only: true, ..opt("to", Kind::Text, "Write a bundle directory") },
+            Arg { cli_only: true, ..opt("no_inherited", Kind::Bool, "Omit inherited messages from the bundle") },
+            Arg { cli_only: true, ..opt("no_assertions", Kind::Bool, "Omit assertions from the bundle") },
         ],
-        action: Action::Request(requests::read),
-        print: print::read,
-        mcp: true,
-        http: true,
+        action: Action::Stream { build: requests::read, produce: crate::daemon::service::read::produce, cli: crate::cli::write_out::run },
+        print: print::read, mcp: true, http: true,
         ..CLI
-    },
-    Command {
+    }),
+    typed_command!(AttachmentCommand, crate::protocol::attachment::Arguments, crate::protocol::attachment::Answer, {
         name: "attachment",
+        reason: "Retrieve the checked stored bytes behind an attachment descriptor",
+        latency: command_surface::LatencyClass::Read,
         help: "Read a bounded range of the stored bytes for a message attachment",
         args: &[
             pos("message", Kind::Text, "The message ID"),
@@ -716,33 +738,7 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         http: true,
         ..CLI
-    },
-    Command {
-        name: "export",
-        help: "Write sessions, text documents and events out as files. `user-state` adds every note, setting, kept result, delivery, chat action, backfill job which `import` replays into another archive",
-        args: &[
-            pos_opt(
-                "sessions",
-                Kind::List,
-                "Session IDs, document:origin:native_id or event:ID references, or user-state",
-            ),
-            Arg {
-                default: Some("json"),
-                ..opt("format", Kind::Choice(FORMATS), "The file format")
-            },
-            Arg {
-                cli_only: true,
-                ..opt(
-                    "out",
-                    Kind::Text,
-                    "The file to write (default: standard output)",
-                )
-            },
-        ],
-        action: Action::Request(requests::export),
-        output: Some(crate::cli::write_export),
-        ..CLI
-    },
+    }),
     Command {
         name: "note read",
         help: "Read one exact note revision, including an older or withdrawn revision",
@@ -1239,7 +1235,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "web",
         help: "Open the web reader",
-        action: Action::Local(local::web),
+        action: Action::ConfiguredLocal(local::web),
         ..CLI
     },
     Command {
@@ -1254,20 +1250,20 @@ const WRITTEN: &[Command] = &[
             ),
             opt("remove", Kind::Bool, "Delete the manifest instead"),
         ],
-        action: Action::Local(local::install_agent),
+        action: Action::ConfiguredLocal(local::install_agent),
         ..CLI
     },
     Command {
         name: "browser-host",
         help: "The browser extension's native messaging host; Chrome starts it",
-        action: Action::Local(local::browser_host),
+        action: Action::ConfiguredLocal(local::browser_host),
         cli: Cli::Hidden,
         ..CLI
     },
     Command {
         name: "mcp",
         help: "Serve MCP over stdio",
-        action: Action::Local(local::mcp),
+        action: Action::ConfiguredLocal(local::mcp),
         ..CLI
     },
     Command {
@@ -1284,21 +1280,21 @@ const WRITTEN: &[Command] = &[
                 )
             },
         ],
-        action: Action::Local(local::hook),
+        action: Action::ConfiguredLocal(local::hook),
         ..CLI
     },
     Command {
         name: "hooks install",
         help: "Merge Polylogue's hook entries into the settings file, keeping everything else. Installing twice changes nothing",
         args: HOOKS_ARGS,
-        action: Action::Local(local::hooks_install),
+        action: Action::ConfiguredLocal(local::hooks_install),
         ..CLI
     },
     Command {
         name: "hooks uninstall",
         help: "Remove Polylogue's hook entries, keeping everything else",
         args: HOOKS_ARGS,
-        action: Action::Local(local::hooks_uninstall),
+        action: Action::ConfiguredLocal(local::hooks_uninstall),
         ..CLI
     },
     Command {

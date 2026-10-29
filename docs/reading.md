@@ -134,6 +134,8 @@ A [variant](assertions.md#variants) is transformed content (a translation, trans
 - A variant bound to an older revision than the one shown is marked `stale` and applied only when asked for.
 - Assertions of a translated session show their own variants; originals are not shown on a variant.
 - A summary variant is shown as a variant, never as the session's own text.
+- Presentation mappings use canonical original references. Span offsets resolve against original source text before substitution. Mapped text bodies include prose, recorded thinking and tool-result output; document bodies keep their original block positions. A replacement covering several bodies is emitted once at its first aligned original range; the remaining covered ranges are removed from presentation. Original records, references and source hashes stay unchanged. Overlapping distinct replacements are an ambiguity error. A replacement touching hidden bodies reports coverage instead of crossing the hidden content.
+- Parts for the same original are joined in their declared order with two line feeds. Their declared relations remain visible. An all-`omits` group removes its covered presentation; a mixed group retains its nonempty rendition and is marked partly omitted.
 
 ## Tool calls
 
@@ -169,7 +171,7 @@ A [variant](assertions.md#variants) is transformed content (a translation, trans
 
 [Attachments](sessions.md#attachments) are shown as `▣ name (media type, size)`, with who supplied them when that is not the message's author, and their availability when it is not `present`: `unfetched`, `failed (reason)`, `unavailable at source`.
 
-- An HTML file embeds images as data URIs up to 10 MiB each (a setting) and links larger ones; the web reader uses daemon-served blob links. SVG and HTML attachments are always links, never inline.
+- An HTML file embeds verified raster images as data URIs within a 10 MiB aggregate allowance per prepared record or window (a setting); larger images keep a supplied open action. The web reader uses the same typed operation action to open source attachments. SVG and HTML attachments are always links, never inline.
 - In a bundle written with `--with-blobs`, Markdown links `![name](blobs/<hex>)`; otherwise the plain line.
 - A tool-result attachment is listed under its call.
 - Exact bytes come from `block:<message>#<n> read --to FILE` (a hash-checked atomic write) on the CLI, or as bytes from MCP and HTTP, for every caller.
@@ -316,7 +318,7 @@ Writing out a selection is reading it to a directory; there is no separate expor
 **The bundle** is a typed record stream, `polylogue-bundle` version 1:
 
 - the first record is the manifest: the query text and its `query:<hash>`, `ran_at`, the archive and index positions read, whether the local index was caught up, cached owner/application currency, counts, flags, enabled variants, and the computed author;
-- then typed session headers, messages, events, links, documents, authored records (assertions, pages, kept results, deliveries) and variants, in commit order. A message carries its canonical blocks and attachment descriptors and an explicit reading-order ordinal within its physical session; its reading order is independent of the source commit order. Events retain their stable IDs and all original source claims; the receiving archive records its own input and byte extents separately;
+- then typed session headers, messages, events, links, documents, authored records (assertions, pages, kept results, deliveries) and variants, in commit order. A message carries its canonical blocks and attachment descriptors and an explicit snapshot ordinal over the canonical, unfiltered display order of its physical session, including native ordering ties. A subset keeps that ordinal; native counters and source commit order are independent. Events retain their stable IDs and all original source claims; the receiving archive records its own input and byte extents separately;
 - `json` writes a small manifest plus one file per session at `<origin>/<percent-encoded native id>.json` (long names hashed), containing its typed records for diffing; `jsonl` writes everything to one file with the manifest first; `markdown` and `html` write one file per session plus `index.md` or `index.html` linking them, rendered through the same layout with the chosen view and enabled variants;
 - A directory manifest pins a streamed `members.jsonl` inventory by hash and size. Inventory records name each member's relative path, type, stable reference where applicable, hash and size. The importer validates the complete immutable package before it commits records; manifest and inventory processing never require a selection-sized collection. A single JSONL stream carries the manifest first and typed records after it, including blob descriptors.
 - `--with-blobs` writes attachment bytes under `blobs/<hex>` so they resolve after import;

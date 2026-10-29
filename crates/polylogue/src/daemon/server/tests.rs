@@ -4,11 +4,11 @@ use crate::daemon::Response;
 #[test]
 fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
-    let runtime = service::start(
+    let runtime = crate::test_daemon::start_runtime(
         &dir.path().join("archive"),
         config,
         service::ArchiveMode::Standalone,
@@ -35,12 +35,13 @@ fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
 #[test]
 fn acknowledged_socket_write_survives_runtime_shutdown() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
-    let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
+    let mut runtime =
+        crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut server =
         Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
@@ -74,12 +75,13 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
 #[test]
 fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
-    let first = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
+    let first =
+        crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut old = Server::start(Arc::clone(&first.daemon), Arc::clone(&first.operations)).unwrap();
     old.shutdown().unwrap();
     let _server = Server::start(Arc::clone(&first.daemon), Arc::clone(&first.operations)).unwrap();
@@ -90,11 +92,11 @@ fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
 #[test]
 fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
-    let mut runtime = service::start(
+    let mut runtime = crate::test_daemon::start_runtime(
         &dir.path().join("archive"),
         config,
         service::ArchiveMode::Standalone,
@@ -124,11 +126,11 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
 #[test]
 fn listener_wait_stops_accepting_requests_before_joining_clients() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
-    let runtime = service::start(
+    let runtime = crate::test_daemon::start_runtime(
         &dir.path().join("archive"),
         config,
         service::ArchiveMode::Standalone,

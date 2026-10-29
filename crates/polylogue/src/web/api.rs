@@ -35,8 +35,11 @@ pub fn routes() -> Router<Arc<Web>> {
                             serde_json::from_str(&body)
                                 .map_err(|e| format!("the body is not a JSON object: {e}"))
                         };
-                        let values = object.and_then(|o| Values::from_json(c, Surface::Http, o));
-                        answer(&web, c, values).await
+                        let values = object.and_then(|object| {
+                            if c.register.is_some() { serde_json::from_value(serde_json::Value::Object(object)).map(Input::Ready).map_err(|error|error.to_string()) }
+                            else { Values::from_json(c, Surface::Http, object).map(Input::Values) }
+                        });
+                        answer(&web, c, values, &headers).await
                     },
                 ),
             )
@@ -45,8 +48,18 @@ pub fn routes() -> Router<Arc<Web>> {
                 &c.http_path(),
                 get(
                     move |State(web): State<Arc<Web>>,
-                          Query(pairs): Query<Vec<(String, String)>>| async move {
-                        answer(&web, c, Values::from_pairs(c, Surface::Http, pairs)).await
+                          Query(pairs): Query<Vec<(String, String)>>,
+                          headers: HeaderMap| async move {
+                        let input = if c.register.is_some()
+                            && pairs
+                                .iter()
+                                .any(|(key, _)| key == "operation" || key == "arguments")
+                        {
+                            ready_pairs(pairs).map(Input::Ready)
+                        } else {
+                            Values::from_pairs(c, Surface::Http, pairs).map(Input::Values)
+                        };
+                        answer(&web, c, input, &headers).await
                     },
                 ),
             )
@@ -56,15 +69,37 @@ pub fn routes() -> Router<Arc<Web>> {
     router.layer(axum::extract::DefaultBodyLimit::disable())
 }
 
+enum Input {
+    Ready(command_surface::RunnableRequest),
+    Values(Values),
+}
+fn ready_pairs(pairs: Vec<(String, String)>) -> Result<command_surface::RunnableRequest, String> {
+    let mut object = serde_json::Map::new();
+    for (key, value) in pairs {
+        let value = if matches!(key.as_str(), "arguments" | "deadline") {
+            serde_json::from_str(&value).map_err(|error| error.to_string())?
+        } else {
+            serde_json::Value::String(value)
+        };
+        if object.insert(key.clone(), value).is_some() {
+            return Err(format!("duplicate {key}"));
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
+}
+
 /// Builds the command's request and answers with the daemon's.
 async fn answer(
     web: &Arc<Web>,
     c: &'static Command,
-    values: Result<Values, String>,
+    values: Result<Input, String>,
+    headers: &HeaderMap,
 ) -> HttpResponse {
     let build = match c.action {
         Action::Request(build) | Action::Stream { build, .. } => build,
-        Action::Local(_) => return StatusCode::NOT_FOUND.into_response(),
+        Action::Local(_) | Action::ConfiguredLocal(_) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
     };
     let caller = Caller {
         surface: Surface::Http,
@@ -72,26 +107,60 @@ async fn answer(
         json: true,
     };
     if c.register.is_some() {
-        let values = match values {
-            Ok(values) => values,
+        let request = match values {
+            Ok(Input::Ready(request)) if request.operation == c.name => request,
+            Ok(Input::Ready(_)) => {
+                return json_answer(
+                    web,
+                    crate::daemon::service::error("bad_request", "route does not match operation"),
+                );
+            }
+            Ok(Input::Values(values)) => crate::protocol::operations::request(
+                c,
+                values.clone(),
+                values.request_id(),
+                command_surface::Deadline::Default,
+            ),
             Err(error) => {
                 return json_answer(web, crate::daemon::service::error("bad_request", error));
             }
         };
-        let request_id = values.request_id();
-        let deadline = super::READ_LIMIT
-            .try_with(|(deadline, _)| {
-                deadline.map_or(command_surface::Deadline::Default, |deadline| {
-                    command_surface::Deadline::Milliseconds(
-                        crate::daemon::execution::remaining(Some(deadline))
-                            .as_millis()
-                            .try_into()
-                            .unwrap_or(u64::MAX),
-                    )
-                })
-            })
-            .unwrap_or_default();
-        let request = crate::protocol::operations::request(c, values, request_id, deadline);
+        if let Action::Stream { produce, .. } = c.action
+            && let Some(build) = c.build_typed
+        {
+            match build(request.arguments.clone(), &caller, &request.request_id) {
+                Ok(internal) if internal.streaming() => {
+                    let cancellation = super::request_limit().cancellation;
+                    let duration = request
+                        .deadline
+                        .duration(crate::protocol::operations::deadlines().get(c.latency));
+                    let limit = match duration {
+                        Some(duration) => {
+                            polylogue_store::read::limit::ReadLimit::new(duration, cancellation)
+                        }
+                        None => {
+                            polylogue_store::read::limit::ReadLimit::without_deadline(cancellation)
+                        }
+                    };
+                    return stream(web, internal, produce, Some(limit)).await;
+                }
+                Err(failure) => {
+                    return json_answer(
+                        web,
+                        command_surface::Answer::<serde_json::Value>::error(failure),
+                    );
+                }
+                _ => {}
+            }
+        }
+        let read_scope = if !c.writes {
+            match web.daemon.reads.scope_token() {
+                Ok(scope) => Some(scope),
+                Err(error) => return json_answer(web, crate::daemon::service::store_error(&error)),
+            }
+        } else {
+            None
+        };
         let table = &web.operations;
         let limit = super::request_limit();
         let accepted = crate::protocol::caller::accept(
@@ -104,17 +173,60 @@ async fn answer(
         let trusted = command_surface::Caller::authenticated(scope, accepted);
         let answer = table
             .call_as(
-                request,
+                request.clone(),
                 command_surface::Origin::Http,
                 trusted,
                 Default::default(),
             )
             .await;
-        return json_answer(web, answer.into());
+        let answer = crate::protocol::scope_answer(answer, read_scope.as_ref());
+        if c.name == "read"
+            && headers
+                .get(header::ACCEPT)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| {
+                    value.split(',').any(|kind| {
+                        kind.split(';')
+                            .next()
+                            .is_some_and(|kind| kind.trim() == "text/html")
+                    })
+                })
+            && let Some(value) = answer.value()
+        {
+            let page = serde_json::from_value::<polylogue_model::read::ReadPage>(value.clone());
+            match page
+                .map_err(|error| {
+                    command_surface::Failure::new(
+                        command_surface::FailureKind::Io,
+                        error.to_string(),
+                    )
+                })
+                .and_then(|page| super::pages::reader::read(&page, table, &request))
+            {
+                Ok(html) => {
+                    if let Some(scope) = &read_scope
+                        && let Err(error) = scope.check()
+                    {
+                        return json_answer(web, crate::daemon::service::store_error(&error));
+                    }
+                    return axum::response::Html(html).into_response();
+                }
+                Err(error) => {
+                    return json_answer(
+                        web,
+                        command_surface::Answer::<serde_json::Value>::error(error),
+                    );
+                }
+            }
+        }
+        return json_answer(web, answer);
     }
-    match values.and_then(|v| build(c, &v, &caller)) {
+    match values.and_then(|input| match input {
+        Input::Values(values) => build(c, &values, &caller),
+        Input::Ready(_) => Err("this operation does not accept a typed envelope".into()),
+    }) {
         Ok(request) => match c.action {
-            Action::Stream { produce, .. } => stream(web, request, produce).await,
+            Action::Stream { produce, .. } => stream(web, request, produce, None).await,
             _ => json_answer(web, ask(web, request).await),
         },
         Err(message) => json_answer(web, crate::daemon::service::error("bad_request", message)),
@@ -127,10 +239,17 @@ async fn stream(
     web: &Arc<Web>,
     request: crate::daemon::Request,
     produce: crate::commands::StreamProducer,
+    limit: Option<polylogue_store::read::limit::ReadLimit>,
 ) -> HttpResponse {
     let worker = Arc::clone(web);
-    let limit = super::request_limit();
+    let limit = limit.unwrap_or_else(super::request_limit);
     let cancellation = limit.cancellation.clone();
+    let accepted = crate::protocol::caller::accept(
+        &web.daemon.callers,
+        &Default::default(),
+        polylogue_model::authorship::Channel::Web,
+        cancellation.clone(),
+    );
     let (output, input) = tokio::io::duplex(64 * 1024);
     let (ready, first) = tokio::sync::oneshot::channel();
     let runtime = tokio::runtime::Handle::current();
@@ -141,7 +260,20 @@ async fn stream(
             runtime,
             ready: Some(ready),
         };
-        let result = limit.scope(|| produce(&worker_request, &worker.daemon, &mut output));
+        let mut guarded = crate::protocol::stream::GuardedWriter::new(&mut output, limit.clone());
+        let result = limit.scope(|| {
+            produce(
+                &worker_request,
+                &worker.daemon,
+                &accepted.authorship,
+                &mut guarded,
+            )
+        });
+        let result = match guarded.failure() {
+            Some(failure) => Some(Err(failure)),
+            None => result,
+        };
+        drop(guarded);
         let Some(result) = result else {
             if let Some(ready) = output.ready.take() {
                 let _ = ready.send(Ok(false));
@@ -205,7 +337,14 @@ impl std::io::Write for ProducerWriter {
                 .send(Ok(true))
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
         }
-        self.runtime.block_on(self.output.write(bytes))
+        self.runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                self.output.write(bytes),
+            )
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::WouldBlock))?
+        })
     }
     fn flush(&mut self) -> std::io::Result<()> {
         use tokio::io::AsyncWriteExt;

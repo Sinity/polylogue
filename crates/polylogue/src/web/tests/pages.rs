@@ -13,39 +13,32 @@ use super::*;
 fn page_navigation_and_message_routes_use_the_shared_selection() {
     let r = reader();
     rt().block_on(async {
-        let (status, _, first) = send(
-            &r,
-            authed(get("/s/claude-code:s1?budget=2"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{first}");
-        assert!(first.contains("Next</a>"));
-        let (_, text) = first.split_once("<div class=\"text\">").unwrap();
-        let (text, _) = text.split_once("</div>").unwrap();
-        assert!(!text.contains("alert(1)"), "content must be paged: {text}");
-        let (status, headers, _) = send(
+        let first = read_page(&r, "session:claude-code:s1", &[("budget", "2")]).await;
+        let next = first
+            .document
+            .footer
+            .next
+            .as_ref()
+            .expect("small budget continues");
+        assert_eq!(next.http.path, "/api/v1/read");
+        let (_, headers, _) = send(
             &r,
             authed(get("/m/claude-code:u1"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await;
-        assert_eq!(status, StatusCode::SEE_OTHER);
         assert_eq!(
             headers[header::LOCATION],
-            "/s/claude-code%3As1?message=claude-code%3Au1"
+            "/api/v1/read?target=message%3Aclaude-code%3Au1"
         );
-        let (status, _, body) = send(
-            &r,
-            authed(get("/s/claude-code:s1?message=claude-code:u1"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
+        let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        let path = polylogue_render::web::http_url(&next.http).unwrap();
+        let (status, _, body) = send_html(&r, &path).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!body.contains("history.back"));
         let (status, _, body) = send(
             &r,
             authed(get("/api/v1/outline?session=claude-code:s1&page_size=1"))
@@ -56,10 +49,7 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         assert_eq!(status, StatusCode::OK, "{body}");
         let data: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(data["entries"][0]["message"], "claude-code:u1");
-        assert!(
-            !body.contains("alert"),
-            "outline must not load a transcript body"
-        );
+        assert!(!body.contains("alert"));
     });
 }
 
@@ -146,43 +136,25 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
 fn changed_generation_refuses_content_continuation_and_replaces_change_population() {
     let r = reader();
     rt().block_on(async {
-        let (_, _, body) = send(
-            &r,
-            authed(get(
-                "/api/v1/read?session=claude-code:s1&with_parents=true&budget=2",
-            ))
-            .body(Body::empty())
-            .unwrap(),
-        )
-        .await;
-        let page: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let token = page["next"].as_str().unwrap();
+        let first = read_page(&r, "session:claude-code:s1", &[("budget", "2")]).await;
+        let next =
+            polylogue_render::web::http_url(&first.document.footer.next.unwrap().http).unwrap();
         let (_, _, body) = send(
             &r,
             authed(get("/api/v1/changes")).body(Body::empty()).unwrap(),
         )
         .await;
         let frames = feed_frames(&body);
-        let last = frames.last().unwrap();
-        let position = last["position"].as_str().unwrap();
+        let position = frames.last().unwrap()["position"].as_str().unwrap();
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
             "UPDATE meta SET value=?1 WHERE key='generation'",
             [uuid::Uuid::now_v7().to_string()],
         )
         .unwrap();
-        let secret = "AKIAIOSFODNN7EXAMPLE";
-        let url = format!(
-            "/s/claude-code:s1?message=claude-code:{secret}&budget=2&cursor={}",
-            polylogue_render::html::encode_path_segment(token)
-        );
-        let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
+        let (status, _, body) = send(&r, authed(get(&next)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
-        assert!(body.contains("Refresh from this message"));
-        assert!(
-            body.contains(secret),
-            "valid identifiers remain intact in links"
-        );
+        assert!(body.contains("stale_cursor"));
         let url = format!(
             "/api/v1/changes?since={}",
             polylogue_render::html::encode_path_segment(position)
@@ -190,9 +162,8 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let frames = feed_frames(&body);
-        let begin = frames.first().unwrap();
-        assert_eq!(begin["generation_changed"], true);
-        assert_eq!(begin["replacement"], true);
+        assert_eq!(frames[0]["generation_changed"], true);
+        assert_eq!(frames[0]["replacement"], true);
     });
 }
 
@@ -239,26 +210,22 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
         Some(path.replace("&amp;", "&"))
     }
     rt().block_on(async {
-        let mut path = "/s/claude-code:s1".to_owned();
+        let mut page = read_page(&r, "session:claude-code:s1", &[("view", "links")]).await;
         let mut seen = std::collections::HashSet::new();
-        let mut pages = 0;
         loop {
-            let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-            assert_eq!(status, StatusCode::OK, "{body}");
-            for n in 0..125 {
-                if body.contains(&format!("href=\"/s/claude-code%3Arelated-{n}\"")) {
-                    assert!(seen.insert(n), "relationship repeated");
+            for item in &page.document.items {
+                if let polylogue_model::read::ItemKind::Card { card } = &item.kind
+                    && let polylogue_model::read::Card::LinkEdge { to, .. } = card.as_ref()
+                {
+                    assert!(seen.insert(to.clone()), "relationship repeated");
                 }
             }
-            pages += 1;
-            let Some(next) = link(&body, "Next relationships page") else {
+            let Some(next) = page.document.footer.next.as_ref() else {
                 break;
             };
-            path = next;
-            assert!(pages < 5);
+            page = follow_read(&r, next).await;
         }
         assert_eq!(seen.len(), 125);
-        assert_eq!(pages, 3);
         let (_, _, body) = send(
             &r,
             authed(get("/search?q=messages"))
@@ -347,28 +314,13 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         );
         // A message prefix and a note prefix remain absent exact references.
         for path in ["/m/claude-code:u", "/n/exact"] {
-            assert_eq!(
-                send(&r, authed(get(path)).body(Body::empty()).unwrap())
-                    .await
-                    .0,
-                StatusCode::NOT_FOUND,
-                "{path}"
-            );
+            assert_eq!(send_html(&r, path).await.0, StatusCode::NOT_FOUND, "{path}");
         }
     });
 }
 
-fn page_link(html: &str, label: &str) -> String {
-    let end = html.find(&format!("\">{label}</a>")).unwrap();
-    html[..end]
-        .rsplit_once("href=\"")
-        .unwrap()
-        .1
-        .replace("&amp;", "&")
-}
-
 #[test]
-fn fork_parent_toggle_opens_the_selected_content_and_outline_is_optional() {
+fn inheritance_is_an_explicit_shared_read_option() {
     let r = reader();
     let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
         "child-prompt",
@@ -384,83 +336,68 @@ fn fork_parent_toggle_opens_the_selected_content_and_outline_is_optional() {
     .unwrap();
     r.w.wait_for(|data| data["store"]["messages"] == 2);
     rt().block_on(async {
-        let (status, _, html) = send(
-            &r,
-            authed(get("/s/claude-code:child"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(html.contains("Open outline"));
-        let path = page_link(&html, "Exclude parents");
-        assert!(!path.contains("message="));
-        let (status, _, html) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(html.contains("synthetic child only"));
-        assert!(!html.contains("&lt;script&gt;alert"));
-        let path = page_link(&html, "Open outline");
-        let (status, _, outline) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(outline.contains("<summary>Outline</summary>"));
-        let path = page_link(&html, "Include parents");
-        let (status, _, html) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::OK);
-        assert!(html.contains("&lt;script&gt;alert"));
+        let (_, _, own) = send_html(&r, "/s/claude-code:child").await;
+        assert!(own.contains("synthetic child only"));
+        assert!(!own.contains("&lt;script&gt;alert"));
+        let (status, _, inherited) = send_html(&r, "/s/claude-code:child?inherited=true").await;
+        assert_eq!(status, StatusCode::OK, "{inherited}");
+        assert!(inherited.contains("&lt;script&gt;alert"));
+        let page = read_page(&r, "session:claude-code:child", &[("inherited", "true")]).await;
+        assert!(page.document.items.iter().any(|item| item.source.inherited));
     });
 }
 
 #[test]
-fn previous_links_work_for_direct_anchors_and_within_large_blocks() {
+fn previous_links_reopen_exact_unicode_fragments_without_browser_history() {
     let r = reader();
-    let records = polylogue_testkit::claude_user("u1", "s1", &"first ".repeat(500))
-        + &polylogue_testkit::claude_user("u2", "s1", &"second ".repeat(500));
-    std::fs::write(r.w.home.join(".claude/projects/-p/s1.jsonl"), records).unwrap();
-    r.w.wait_for(|data| data["store"]["messages"] == 2);
+    let text = "first λ🙂 ".repeat(800);
+    std::fs::write(
+        r.w.home.join(".claude/projects/-p/s1.jsonl"),
+        polylogue_testkit::claude_user("u1", "s1", &text),
+    )
+    .unwrap();
+    r.w.wait_for(|data| data["store"]["search_pending"] == 0 && data["busy"] == false);
     rt().block_on(async {
-        let (_, _, html) = send(
-            &r,
-            authed(get("/s/claude-code:s1?message=claude-code:u2&budget=100"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        let previous = page_link(&html, "Previous");
-        let (status, _, html) = send(&r, authed(get(&previous)).body(Body::empty()).unwrap()).await;
+        let first = read_page(&r, "message:claude-code:u1", &[("budget", "20")]).await;
+        let next = first
+            .document
+            .footer
+            .next
+            .as_ref()
+            .expect("long body continues");
+        let second = follow_read(&r, next).await;
+        let previous = second
+            .document
+            .footer
+            .previous
+            .as_ref()
+            .expect("previous is supplied by service");
+        let restored = follow_read(&r, previous).await;
+        assert_eq!(restored.document.items, first.document.items);
+        let path = polylogue_render::web::http_url(&previous.http).unwrap();
+        let (status, _, html) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(html.contains("first first"));
-        assert!(!html.contains("second second"));
-        let previous = page_link(&html, "Previous");
-        let (status, _, html) = send(&r, authed(get(&previous)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(html.contains("first first"));
-        assert!(!html.contains("second second"));
         assert!(!html.contains("history.back"));
     });
 }
 
 #[test]
-fn message_redirects_quote_literal_ids_and_preserve_them_in_links() {
+fn message_redirects_quote_literal_ids_without_resolving_source_rows() {
     let r = reader();
     let id = "claude-code:slash\\tab\tline\nquote\"AKIAIOSFODNN7EXAMPLE";
-    let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
-    conn.execute("UPDATE message SET id=?1", [id]).unwrap();
     rt().block_on(async {
         let path = format!("/m/{}", polylogue_render::html::encode_path_segment(id));
-        let (status, headers, body) =
-            send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+        let (status, headers, _) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(
             headers[header::LOCATION],
             format!(
-                "/s/claude-code%3As1?message={}",
-                polylogue_render::html::encode_path_segment(id)
+                "/api/v1/read?target={}",
+                polylogue_render::html::encode_path_segment(&format!("message:{id}"))
             )
         );
-        let path = headers[header::LOCATION].to_str().unwrap();
-        let (status, _, body) = send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("AKIAIOSFODNN7EXAMPLE"));
+        let (status, _, body) = send_html(&r, &path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     });
 }
 
@@ -468,15 +405,8 @@ fn message_redirects_quote_literal_ids_and_preserve_them_in_links() {
 fn message_identifiers_are_validated_even_when_a_cursor_is_supplied() {
     let r = reader();
     rt().block_on(async {
-        let (status, _, body) = send(
-            &r,
-            authed(get("/s/claude-code:s1?cursor=invalid&message=not-an-id"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.contains("not a message ID"), "{body}");
+        let (status, _, body) = send_html(&r, "/m/not-an-id?cursor=invalid").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     });
 }
 
