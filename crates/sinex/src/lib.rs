@@ -20,6 +20,7 @@ use std::sync::Mutex;
 
 mod client;
 pub mod kinds;
+pub(crate) mod native;
 mod parts;
 mod register;
 mod replay;
