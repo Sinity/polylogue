@@ -398,6 +398,17 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Installs export associations derived from committed source observations.
+    pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Assets(Box::new(staged), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Waits until earlier batches are committed and their memory charges
     /// are released, then returns what was written since the previous flush.
     /// Outside a first build what it reports is also derived and searchable;
