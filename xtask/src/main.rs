@@ -389,7 +389,7 @@ fn test_arguments(
             .split(',')
             .filter(|feature| visible.contains(feature.split_once('/').unwrap().0))
             .collect();
-        if sinex && visible.contains("polylogue") {
+        if (sinex || visible.contains("polylogue-sinex")) && visible.contains("polylogue") {
             features.insert(0, "polylogue/sinex");
         }
         features.join(",")

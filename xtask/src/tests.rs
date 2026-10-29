@@ -110,6 +110,12 @@ fn packages_filtersets_and_a_required_selection_intersect() {
 
 #[test]
 fn native_scopes_and_literal_test_arguments_keep_their_meaning() {
+    assert!(
+        arguments(&["-p", "polylogue*"], None)
+            .unwrap()
+            .iter()
+            .any(|arg| arg.contains("polylogue/sinex"))
+    );
     for flag in [
         "-ppolylogue-store",
         "-p=polylogue-store",
