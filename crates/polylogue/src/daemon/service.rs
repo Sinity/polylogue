@@ -1274,6 +1274,12 @@ impl Runtime {
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        let mut failure = None;
+        if let Some(completion) = self.completion.as_mut()
+            && let Err(error) = completion.shutdown()
+        {
+            failure = Some(error);
+        }
         self.completion.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
@@ -1285,13 +1291,12 @@ impl Runtime {
         if let Some(counts) = self.counts.take()
             && counts.join().is_err()
         {
-            eprintln!("polylogue: the count worker panicked");
+            failure.get_or_insert_with(|| std::io::Error::other("count worker panicked"));
         }
-        let mut failure = None;
         if let Some(signals) = self.signals.take()
             && signals.join().is_err()
         {
-            failure = Some(std::io::Error::other("signal worker panicked"));
+            failure.get_or_insert_with(|| std::io::Error::other("signal worker panicked"));
         }
         if let Ok(tx) = self.daemon.loop_tx.lock() {
             let _ = tx.send(LoopMsg::Stop);
