@@ -1,7 +1,7 @@
 //! An explicit browser selection becomes an ordinary operator note.
 use super::BrowserHost;
 use crate::daemon::{Request, Response};
-use polylogue_model::{Author, MessageId, NewNote, NoteKind, Reference};
+use polylogue_model::{MessageId, NewNote, NoteKind, Reference};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

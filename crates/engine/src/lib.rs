@@ -22,7 +22,7 @@ mod watch;
 
 use databases::Databases;
 use plan::{InputState, Plan};
-use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
+use polylogue_sources::{ORIGINS, OriginSpec, Support};
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
