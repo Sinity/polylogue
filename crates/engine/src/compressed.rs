@@ -75,10 +75,46 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<Option<Plan>, EngineError> {
         let path = &found.path;
+        let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
+        let compressed = found.origin.name == "codex-compressed";
+        let mut context = self.acquisition_context(
+            path,
+            origin.name,
+            polylogue_store::primary::AcquisitionRoute::NativeCapture,
+        );
+        let snapshot = self.writer.source_snapshot(context.source.clone(), "")?;
+        context.basis = Some(snapshot.basis.clone());
+        context.facts = Some(facts);
+        let raw_context = if compressed {
+            Some(self.sampling_context(path, found.origin.name, "")?)
+        } else {
+            None
+        };
+        let has_pending = snapshot.pending.head.is_some();
+        if let Some(raw) = &snapshot.pending.raw
+            && let polylogue_store::primary::Capture::Input(input) = &raw.captured
+            && input.rows.acquisition.as_ref().is_some_and(|receipt| {
+                receipt.route == polylogue_store::primary::AcquisitionRoute::NativeCapture
+            })
+            && input
+                .raw_range
+                .is_some_and(|range| range.start == 0 && range.end == input.length)
+            && input.rows.observation.as_ref().is_some_and(|observation| {
+                observation.device == Some(facts.device as i64)
+                    && observation.inode == Some(facts.inode as i64)
+                    && observation.size == Some(facts.size as i64)
+                    && observation.mtime_ns == i64::try_from(facts.mtime_ns).ok()
+                    && observation.ctime_ns == i64::try_from(facts.ctime_ns).ok()
+            })
+        {
+            pass.capture_pending = true;
+            return self.stored_plan(path);
+        }
         if self
             .inputs
             .get(path)
             .is_some_and(|s| s.facts == Some(facts))
+            && !has_pending
         {
             let id = self.inputs[path].input_id.clone();
             if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
@@ -96,7 +132,6 @@ impl Engine {
             return self.stored_plan(path);
         }
         let mut source = std::fs::File::open(path)?;
-        let compressed = found.origin.name == "codex-compressed";
         let raw = if compressed {
             Some(self.archive.prepare_bytes(&mut source)?)
         } else {
@@ -114,7 +149,7 @@ impl Engine {
         let mut same = false;
         let mut appended = false;
         let mut historical = None;
-        if let (Some(id), Some(previous)) = (&native_id, &previous) {
+        if !has_pending && let (Some(id), Some(previous)) = (&native_id, &previous) {
             let chain = reader.stored_chain(id, previous.chain, previous.length)?;
             let mut stored = chain.reader(Arc::clone(&self.blobs));
             let mut left = [0; 65536];
@@ -162,7 +197,7 @@ impl Engine {
         };
         if previous.is_none() {
             previous = reader.input_progress(&id)?;
-            if previous.is_some() {
+            if previous.is_some() && !has_pending {
                 same = true;
             }
         }
@@ -206,20 +241,13 @@ impl Engine {
                 )
                 .into());
             }
-            Some(
-                self.acquisition_context(
-                    path,
-                    "codex",
-                    polylogue_store::primary::AcquisitionRoute::NativeCapture,
-                )
-                .finish(
-                    polylogue_store::primary::RawRange {
-                        start: 0,
-                        end: length,
-                    },
-                    polylogue_model::BlobHash(*hash.finalize().as_bytes()),
-                ),
-            )
+            Some(context.finish(
+                polylogue_store::primary::RawRange {
+                    start: 0,
+                    end: length,
+                },
+                polylogue_model::BlobHash(*hash.finalize().as_bytes()),
+            ))
         } else {
             None
         };
@@ -228,7 +256,6 @@ impl Engine {
         } else {
             prepared.as_ref().expect("new bytes").len()
         };
-        let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
         let mut observation = self.observation(path, Some(facts));
         let mut group = Vec::new();
         let mut raw_added = 0;
@@ -249,8 +276,21 @@ impl Engine {
                 },
                 self.observation(path, Some(facts)),
                 raw_length,
-                (!exists).then_some(raw),
+                (!exists).then_some(raw.clone()),
+                raw_context.as_ref().expect("compressed acquisition"),
             ));
+            group.last_mut().expect("raw container").batch.acquisition = Some(
+                raw_context
+                    .as_ref()
+                    .expect("compressed acquisition")
+                    .finish(
+                        polylogue_store::primary::RawRange {
+                            start: 0,
+                            end: raw_length,
+                        },
+                        raw.hash(),
+                    ),
+            );
             observation.container = Some(polylogue_store::InContainer {
                 input: raw_id,
                 member_index: 0,
@@ -290,6 +330,7 @@ impl Engine {
             } else {
                 prepared
             },
+            &context,
         ));
         if let Some(receipt) = observed_receipt {
             group
@@ -338,20 +379,10 @@ impl Engine {
         observation: Observation,
         length: u64,
         bytes: Option<PreparedBytes>,
+        context: &crate::acquisition::AcquisitionContext,
     ) -> PreparedBatch {
         let acquisition = bytes.as_ref().map(|bytes| {
-            crate::acquisition::AcquisitionContext {
-                source: polylogue_store::primary::SourceSelector {
-                    origin: origin.name.into(),
-                    machine: observation.machine.clone(),
-                    path_bytes: observation.path_bytes.clone(),
-                },
-                route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
-                basis: None,
-                facts: None,
-                clock: self.config.clock.clone(),
-            }
-            .finish(
+            context.finish(
                 polylogue_store::primary::RawRange {
                     start: length - bytes.len(),
                     end: length,
@@ -381,7 +412,7 @@ impl Engine {
                 blobs: Vec::new(),
                 parse: Vec::new(),
                 acquisition,
-                basis: None,
+                basis: context.basis.clone(),
                 release: Default::default(),
             },
             files: bytes.into_iter().collect(),
