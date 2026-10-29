@@ -124,3 +124,24 @@ fn conflicting_harness_identity_is_never_promoted_to_operator_or_script() {
         Author::Unattributed
     );
 }
+
+#[test]
+fn malformed_authorship_is_an_error_without_fallback_attribution() {
+    for text in [
+        "",
+        "agent:",
+        "script:",
+        "person:synthetic",
+        "operator:extra",
+    ] {
+        assert!(Author::parse(text).is_err(), "{text}");
+    }
+    assert!(matches!(
+        Author::parse("agent:"),
+        Err(AuthorError::Id(_, _))
+    ));
+    assert!(matches!(
+        Author::parse("person:synthetic"),
+        Err(AuthorError::Unknown(_))
+    ));
+}
