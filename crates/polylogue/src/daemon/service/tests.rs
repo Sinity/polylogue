@@ -98,7 +98,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         .unwrap();
     thread.join().unwrap();
     assert!(
-        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "daemon_stopping")
+        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "shutting_down")
     );
     assert!(
         Archive::open_or_create(&root).is_ok(),
@@ -174,7 +174,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     ));
     next.shutdown().unwrap();
     assert!(
-        matches!(handle(Request::Status, &old), Response::Error { kind, .. } if kind == "daemon_stopping")
+        matches!(handle(Request::Status, &old), Response::Error { kind, .. } if kind == "shutting_down")
     );
 }
 
@@ -222,13 +222,13 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     runtime.stop_accepting();
     for request in requests {
         assert!(
-            matches!(request.join().unwrap(), Response::Error { kind, .. } if kind == "daemon_stopping")
+            matches!(request.join().unwrap(), Response::Error { kind, .. } if kind == "shutting_down")
         );
     }
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     assert!(
-        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "daemon_stopping")
+        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "shutting_down")
     );
 }
 

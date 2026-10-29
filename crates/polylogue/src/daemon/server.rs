@@ -13,6 +13,12 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surface::OperationTable) {
+    if stream
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .is_err()
+    {
+        return;
+    }
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
@@ -151,7 +157,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         if let Err(response) = produced {
                             let _ = crate::protocol::stream::error(&mut out, &response);
                         }
-                        let _ = out.set_write_timeout(None);
+                        let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
                         continue;
                     }
                     let origin = if channel == polylogue_model::authorship::Channel::Mcp {
@@ -247,10 +253,10 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             if let Err(response) = result {
                 let _ = crate::protocol::stream::error(&mut out, &response);
             }
-            let _ = out.set_write_timeout(None);
+            let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
             continue;
         }
-        let _ = out.set_write_timeout(None);
+        let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
         let typed = match &request {
             Request::Status => Some(("status", serde_json::json!({}))),
             Request::Sql { statement } => Some(("sql", serde_json::json!({"statement":statement}))),
@@ -497,10 +503,22 @@ fn listen(
     }
     drop(listener);
     let _ = quiesce.send(());
-    // Closing peers makes incomplete input and blocked response writes fail
-    // explicitly. A request already in handle finishes before its thread joins.
+    // Stop receiving new input while complete queued requests can still receive
+    // their refusal and an admitted write can publish its durable receipt.
     for (stream, _) in &clients {
-        let _ = stream.shutdown(Shutdown::Both);
+        let _ = stream.shutdown(Shutdown::Read);
+    }
+    let drain_until = std::time::Instant::now() + Duration::from_secs(5);
+    while clients.iter().any(|(_, thread)| !thread.is_finished())
+        && std::time::Instant::now() < drain_until
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Unresponsive peers cannot hold shutdown past the response drain window.
+    for (stream, thread) in &clients {
+        if !thread.is_finished() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
     }
     for (_, thread) in clients {
         if thread.join().is_err() {

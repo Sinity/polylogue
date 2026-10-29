@@ -371,7 +371,7 @@ fn repeated_request(
 pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     if d.stopping.load(Ordering::Acquire) {
         return Err(error(
-            "daemon_stopping",
+            "shutting_down",
             "the daemon has stopped accepting requests",
         ));
     }
@@ -485,7 +485,7 @@ fn handle_inner(
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
-            return error("daemon_stopping", StoreError::ReadPoolClosed);
+            return error("shutting_down", StoreError::ReadPoolClosed);
         }
         Err(e) => return store_error(&e),
     };
