@@ -98,7 +98,7 @@ impl Source {
 }
 
 pub(in crate::writer) trait ValueSource {
-    fn session(&self, pk: i64) -> Result<Option<Session>>;
+    fn session(&self, pk: i64, input: i64, chain: i64) -> Result<Option<Session>>;
     fn assertion(&self, kind: Kind, pk: i64) -> Result<Option<Vec<u8>>>;
     fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>>;
     fn document(
@@ -266,7 +266,7 @@ impl<'a> Projection<'a> {
             let key = (pk, input, chain);
             if let std::collections::btree_map::Entry::Vacant(slot) = session_facts.entry(key)
                 && let Some(session) = values
-                    .map(|values| values.session(pk))
+                    .map(|values| values.session(pk,input,chain))
                     .transpose()?
                     .flatten()
             {
@@ -327,7 +327,7 @@ impl<'a> Projection<'a> {
             if let std::collections::btree_map::Entry::Vacant(slot) =
                 session_facts.entry((session, input, chain))
                 && let Some(facts) = values
-                    .map(|values| values.session(session))
+                    .map(|values| values.session(session,input,chain))
                     .transpose()?
                     .flatten()
             {

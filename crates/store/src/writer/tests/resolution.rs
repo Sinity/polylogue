@@ -653,3 +653,153 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
     );
     tx.commit().unwrap();
 }
+
+fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
+    [
+        ("source-a", 1, 0u8, "partial", None, "/first"),
+        ("source-b", 7, 2u8, "complete", Some("end_turn"), "/second"),
+    ]
+    .into_iter()
+    .map(|(id, chain, rank, text, stop, cwd)| {
+        let mut input = batch(
+            id,
+            rank,
+            0,
+            vec![row(
+                1,
+                text_message("shared-confirmed", "s", Role::Assistant, text, stop),
+            )],
+            &["s"],
+        );
+        input.parse[0].output.sessions[0].cwd.push(cwd.into());
+        let mut reading = ChainReading::new().unwrap();
+        reading.push(&mut input.parse.remove(0)).unwrap();
+        (input.input, chain, input.length, reading)
+    })
+    .collect()
+}
+
+fn apply_confirmed_readings(
+    index: &mut Connection,
+    readings: &mut [(InputKey, i64, u64, ChainReading)],
+) -> Result<()> {
+    let tx = index.transaction()?;
+    for (input, chain, length, reading) in readings {
+        let batch = Batch {
+            input: input.clone(),
+            change: Change::Reparse { chain: *chain },
+            observation: None,
+            continues: false,
+            new_blob: None,
+            blobs: Vec::new(),
+            length: *length,
+            parse: Vec::new(),
+            release: InFlight::default(),
+        };
+        reading.visit(|step| write_rows(&tx, &batch, step, *chain, 1, None).map(|_| ()))?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+#[test]
+fn a_streamed_position_resolves_overlapping_chains_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = Archive::at(dir.path());
+    let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+    crate::schema::create_index(&index).unwrap();
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let mut readings = overlapping_confirmed_readings();
+    resolver
+        .confirmed_readings(&mut readings, &HashMap::new())
+        .unwrap();
+    assert!(!archive.archive_db().exists());
+    apply_confirmed_readings(&mut index, &mut readings).unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message_source", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM parse_state", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    let text: Vec<u8> = index
+        .query_row(
+            "SELECT t.body FROM block b JOIN text t ON t.id=b.text_id",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(crate::encoding::unpack_text(&text).unwrap(), "complete");
+    let mut statement=index.prepare("SELECT i.id,s.facts FROM session_record s JOIN input_ref i ON i.pk=s.input_pk ORDER BY i.id").unwrap();
+    let facts = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                serde_json::from_str::<Json>(&row.get::<_, String>(1)?).unwrap(),
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(facts[0].1["cwd"], serde_json::json!(["/first"]));
+    assert_eq!(facts[1].1["cwd"], serde_json::json!(["/second"]));
+}
+
+#[test]
+fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = Archive::at(dir.path());
+    let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+    crate::schema::create_index(&index).unwrap();
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let mut readings = overlapping_confirmed_readings();
+    resolver
+        .confirmed_readings(&mut readings, &HashMap::new())
+        .unwrap();
+    index.execute_batch("CREATE TRIGGER refuse_second_chain BEFORE INSERT ON parse_state WHEN NEW.chain=7 BEGIN SELECT RAISE(ABORT,'synthetic position refusal'); END;").unwrap();
+    assert!(apply_confirmed_readings(&mut index, &mut readings).is_err());
+    drop(readings);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM parse_state", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    index
+        .execute_batch("DROP TRIGGER refuse_second_chain")
+        .unwrap();
+    let mut retry = overlapping_confirmed_readings();
+    resolver
+        .confirmed_readings(&mut retry, &HashMap::new())
+        .unwrap();
+    apply_confirmed_readings(&mut index, &mut retry).unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM parse_state", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
