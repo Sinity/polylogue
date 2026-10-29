@@ -167,6 +167,9 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
         Product::Request(request) => Some(format!("request:{}", request.request.id)),
+        Product::RestoredRequest { prepared, .. } => {
+            Some(format!("request:{}", prepared.request.id))
+        }
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         _ => None,
     };
@@ -189,7 +192,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
             "input",
         ),
         Product::Blob(_) => (None, None, reference, "blob"),
-        Product::Request(_) => (None, None, reference, "request"),
+        Product::Request(_) | Product::RestoredRequest { .. } => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
         Product::WorkSnapshot { .. } => (None, None, reference, "derived"),
         _ => unreachable!(),
@@ -444,7 +447,10 @@ fn plan(index: &Connection) -> Result<Plan> {
             if let Product::Input { rows, .. } = &product {
                 out.inputs.insert(rows.input.clone());
             }
-            if matches!(product, Product::Request(_)) {
+            if matches!(
+                product,
+                Product::Request(_) | Product::RestoredRequest { .. }
+            ) {
                 out.requests = true;
             }
             if matches!(product, Product::Coverage(_)) {
@@ -703,8 +709,16 @@ fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(0)?;
         let admitted: i64 = row.get(1)?;
-        if let Product::Request(prepared) = unpacked(&bytes)? {
-            super::authored::apply(tx, &prepared, admitted)?;
+        match unpacked(&bytes)? {
+            Product::Request(prepared) => super::authored::apply(tx, &prepared, admitted)?,
+            Product::RestoredRequest {
+                prepared,
+                claims,
+                current,
+            } => {
+                super::authored::restore(tx, &prepared, &claims, &current, admitted)?;
+            }
+            _ => unreachable!(),
         }
     }
     Ok(())
