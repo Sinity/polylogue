@@ -302,7 +302,7 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
         3
     );
     assert!(
-        !archive.archive_db().exists(),
+        !dir.path().join("archive.db").exists(),
         "confirmed materialization does not consult standalone source state"
     );
     let pool = ReadPool::open(&archive).unwrap();
