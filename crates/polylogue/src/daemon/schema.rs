@@ -30,6 +30,13 @@ pub struct Infer {
 }
 impl Infer {
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .origin
+            .as_deref()
+            .is_some_and(|origin| polylogue_sources::origin::by_name(origin).is_none())
+        {
+            return Err("unknown origin".into());
+        }
         if self.revision.is_some_and(|r| r < 1) {
             return Err("revision must be positive".into());
         }
@@ -243,7 +250,9 @@ fn observe(
             }
         }
     }
-    let sample = summary.explicit_inputs || summary.since_ms.is_some();
+    let sample = summary.explicit_inputs
+        || summary.since_ms.is_some()
+        || !summary.missing_revisions.is_empty();
     let origins = observers
         .into_iter()
         .map(|(name, (observer, selected))| {
@@ -327,7 +336,7 @@ fn observe_input(
         };
         (entry.records, entry.unreadable_records) = one.counts();
         observer.merge(one)?;
-        result.map_err(|_| "unreadable_input")
+        result
     })();
     if let Err(reason) = result {
         entry.unreadable = Some(reason.into());
@@ -343,23 +352,23 @@ fn observe_bytes(
     mut bytes: impl BufRead,
     spec: &polylogue_sources::OriginSpec,
     path: &str,
-) -> io::Result<()> {
+) -> Result<(), &'static str> {
     let framing = if spec.capture == Capture::RowDump {
         Framing::RowDump
     } else {
-        match (spec.open)(Path::new(path)).ok_or_else(|| io::Error::other("unsupported_framing"))? {
+        match (spec.open)(Path::new(path)).ok_or("unsupported_framing")? {
             Parse::Lines(_) => Framing::Lines,
             Parse::CaptureLog(_) => Framing::CaptureLog,
             Parse::Document(_) | Parse::Export(_) => {
                 loop {
-                    let buf = bytes.fill_buf()?;
+                    let buf = bytes.fill_buf().map_err(|_| "input_read")?;
                     let spaces = buf.iter().take_while(|b| b.is_ascii_whitespace()).count();
                     if spaces == 0 {
                         break;
                     }
                     bytes.consume(spaces);
                 }
-                if bytes.fill_buf()?.first() == Some(&b'[') {
+                if bytes.fill_buf().map_err(|_| "input_read")?.first() == Some(&b'[') {
                     Framing::Array
                 } else {
                     Framing::Json
@@ -367,7 +376,9 @@ fn observe_bytes(
             }
         }
     };
-    observer.read(bytes, framing)
+    observer
+        .read(bytes, framing)
+        .map_err(|_| "unreadable_input")
 }
 
 pub(super) fn unread(reader: &polylogue_store::Reader<'_>, origin: Option<&str>) -> Response {

@@ -12,7 +12,7 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 - **Polylogue parses once** and sends complete, versioned `polylogue.*` facts keyed by Polylogue's stable IDs, together with its authored records and deliveries.
 - **Native work attribution travels with session facts.** Explicit task and pull-request references, recorded repository identity, captured Git identity and a terminal adapter's host, boot, process and window identity are typed metadata. Each contributing snapshot keeps its material and record anchor in `native_sources`. Conflicting identities stay unknown with a recorded reason; goal prose, shell commands and cwd lookup supply no objective or repository identity. A session reading carrying hook-only metadata is anchored at a contributing hook record.
 - **Authored records originate from request materials.** Each authored write is a request material (the write as received, with its request ID and computed author) plus its event. Its targets (sessions, messages, blocks, assertions, pages) are references in the payload with their `seen_hash`, never Sinex parents. A parser-upgrade replay of a session therefore archives the session's readings and their derived chain but never a note, judgment, highlight or page slot about it; those references resolve to the new readings by natural key. Marker assertions travel with their derived IDs, so the same marker sent from two hosts is one record.
-- **The confirmed-stream consumer is the only way into `index.db`.** One durable subscription applies committed `polylogue.*` records to `index.db` in commit order, saving its stream position in the same transaction. It covers this host's writes, other hosts' writes and a rebuild alike. Polylogue's consumer has its own grant under Sinex's output rules, so it receives its own payloads whole; payloads too large for a message travel as material references and are fetched through the same client.
+- **The confirmed-stream consumer is the only way into `index.db`.** One durable subscription applies committed `polylogue.*` records to `index.db` in commit order, saving its stream position in the same transaction. It covers this host's writes, other hosts' writes and a rebuild alike. Sinex provisions the consumer for this authenticated identity's grants. Payloads are fetched through its public grant-checked API; large replies use the ordinary bounded framed transport.
 - **Lifecycle changes arrive on the stream** and are applied by the same consumer in commit order: an archived reading's rows leave `index.db`, so the index shows what Sinex shows as live; a restored reading's rows return; a newer reading replaces the old one's rows; a tombstoned reading keeps its reference and shows "tombstoned". Session tables recompute for the sessions touched ([measures.md#rules](measures.md#rules)).
 - **Sinex's lifecycle applies to Polylogue's materials** as to any source's, through Sinex's own surfaces. Polylogue itself offers no deletion in either mode ([architecture.md#deletion](architecture.md#deletion)).
 - **Settings shared with Sinex.** The logical day, quiet hours and the interrupt budget are Sinex's settings; Polylogue has no value of its own for them, and its interrupting notices are shown by Sinex's deliverer ([operations.md#notices](operations.md#notices)).
@@ -21,26 +21,66 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 
 Before writing frame bytes, Polylogue checks Sinex's producer welcome with an
 empty hello. This checks the protocol and sealing configuration before its
-producer-owned kinds exist. It then registers its nine `polylogue.*` declarations
+producer-owned kinds exist. It then registers its complete `polylogue.*` declarations
 and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
 version. A refused hello returns Sinex's reason.
 
-Message and tool-call declarations request no Sinex text index. Their field
+Parsed-fact and work-snapshot declarations request no Sinex text index. Their field
 hints describe defaults for operator-configured output rules; they impose no
 kind-wide admission class floor. Event frame names include declaration hashes.
 A producer replay selects the exact declarations and parser/build identities
 for its complete material sequence, and waits for the replacement acknowledgment
-before updating its local index.
+before its replacement becomes visible through the confirmed stream.
+
+### Complete work snapshots
+
+One explicitly configured canonical publisher emits `polylogue.work_snapshot`.
+It is a complete typed set for a logical session and reducer version, containing
+operator messages, tool calls, turns, source copies and native attribution.
+It is derived from full confirmed reading facts using the selection from the
+same confirmed transaction. Its output intent and input position commit
+together. There is no later scan of the read index to send these products.
+
+A replacement omits retired members atomically. An empty retirement snapshot
+carries the session ID and no copied erased session metadata. Historical
+snapshots remain immutable. Snapshot kinds cannot become reducer inputs.
+The durable request identity binds the causal reading, selected policy and
+reducer versions, completed position and read scope. Retries reuse that exact
+identity and contents.
+
+Canonical publication also requires Sinex's proof that the publisher can read
+the required input family, kinds and classes through that completed position.
+Write authority alone does not establish this coverage. Incomplete, locked or
+unavailable coverage suppresses publication and retains the changed sessions
+for a later complete snapshot, preserving the previous canonical output.
 
 ## Local state
 
 What a host keeps locally in primary mode:
 - `index.db`, a cache holding its stream position;
 - the embeddings store, local and backed up, since recomputing it costs money;
-- the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
+- the producer client's spool, where immutable bytes and prepared writes remain until their canonical events have been applied through a confirmed completion barrier; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is a Cargo feature outside the default build.
+
+Raw capture and complete parser output enter durable custody together before
+capture answers `pending`. Queue metadata stays small; parser facts hydrate
+one capture at a time. Shared encoded preparations carry bytes through staging,
+spooling and transport without plaintext disk copies. Material receipts make
+dependent writes ready; they do not retire unconfirmed source custody.
+
+Confirmed pages may end inside one owner transaction. Such pages enter durable
+private staging and remain invisible. A cumulative `PositionComplete` barrier
+promotes every complete change through its position and the applied checkpoint
+atomically. The checkpoint is unknown until the first real barrier, including
+the explicit zero barrier for an empty owner store.
+
+The applied checkpoint is bound to the owner-authoritative grant scope. A scope
+change makes the previous read generation unavailable atomically, cancels its
+readers and cursors, and replays the newly authorized scope. Raw custody,
+pending authored intents and paid embeddings retain their own durability.
+Complete-set intents from the previous scope cannot publish under the new one.
 
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).
 
@@ -73,6 +113,23 @@ and backfill jobs retain their historical statuses with execution eligibility
 - A later write gets a new identity even when its content equals an earlier one.
 - The reading order for a stable key is assigned or checked by Sinex, never taken from a host clock.
 - Material digests keep deduplicating bytes.
+
+Immutable imports are content-idempotent. A mutable sample compares with the
+latest durable observation, including this host's pending captures. Its
+identity includes that predecessor and the observed generation or content;
+an unchanged retry reuses the original capture, while A → B → A records the
+second A as a later observation. Sampling and preparation validate this basis
+under the source's custody owner; observer timestamps do not assign revisions.
+
+## Shared temporal and policy context
+
+Each operation uses one typed Sinex public context snapshot: the logical day,
+quiet hours, interrupt budget, committed owner revision and settings identity.
+The application boundary explicitly resolves any configured named zone.
+Queries, rendering and signals receive that same validated snapshot; libraries
+perform no settings or timezone I/O. Missing, pending, refused and stale
+contexts remain typed failures. A cached earlier context retains its identity
+and age without becoming a current fallback.
 
 ## Degraded primary
 

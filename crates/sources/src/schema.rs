@@ -82,7 +82,21 @@ pub struct Table {
     /// Distinct producer declarations, separate from observed JSON types.
     pub metadata: BTreeSet<TableMetadata>,
     pub unobserved_columns: bool,
+    /// Declared native columns with no captured row-field observation.
+    pub unobserved_declared_columns: BTreeSet<String>,
     pub fields: BTreeMap<String, Field>,
+}
+
+fn unobserved_declared_columns(
+    metadata: &BTreeSet<TableMetadata>,
+    fields: &BTreeMap<String, Field>,
+) -> BTreeSet<String> {
+    metadata
+        .iter()
+        .flat_map(|metadata| metadata.columns.iter())
+        .filter(|column| !fields.contains_key(&format!("/{}", field_name(&column.name))))
+        .map(|column| column.name.clone())
+        .collect()
 }
 
 #[derive(Default)]
@@ -514,8 +528,12 @@ impl Observer {
                             deleted_records: table.deleted_records,
                             headers: table.headers,
                             metadata_headers: table.metadata_headers,
-                            metadata: table.metadata,
                             unobserved_columns: table.records == 0,
+                            unobserved_declared_columns: unobserved_declared_columns(
+                                &table.metadata,
+                                &fields,
+                            ),
+                            metadata: table.metadata,
                             fields,
                         },
                     )

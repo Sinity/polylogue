@@ -102,6 +102,14 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
     assert_eq!(diff(command, &values, true), ExitCode::SUCCESS);
     let diff: serde_json::Value =
         serde_json::from_slice(&std::fs::read(diff_output).unwrap()).unwrap();
+    assert_eq!(diff["comparable"], false);
+    assert!(
+        diff["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "different_selection_coverage")
+    );
     let changes = diff["origins"]["synthetic"]["changes"].as_array().unwrap();
     assert!(
         changes
@@ -112,5 +120,61 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
         changes
             .iter()
             .any(|c| c["path"] == "/b" && c["kind"] == "added")
+    );
+}
+
+#[test]
+fn artifact_diff_reports_declared_type_changes_in_empty_native_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let before = dir.path().join("before.json");
+    let after = dir.path().join("after.json");
+    let result = dir.path().join("diff.json");
+    for (path, declared) in [(&before, "TEXT"), (&after, "INTEGER")] {
+        let header = json!({"schema":{"empty":"private SQL body"},"table_metadata":{"empty":{"columns":[{"cid":0,"name":"value","declared_type":declared,"not_null":false,"primary_key":0,"hidden":0}],"without_rowid":false}}});
+        let mut observer = polylogue_sources::schema::Observer::default();
+        observer
+            .read(
+                io::Cursor::new(serde_json::to_vec(&header).unwrap()),
+                polylogue_sources::schema::Framing::RowDump,
+            )
+            .unwrap();
+        let schema = observer.finish("tool-database".into(), vec![]);
+        let artifact = json!({"selection":{"origin":"tool-database","explicit_inputs":true,"revision":null,"since_ms":null,"unknown_time_inputs":0,"missing_revisions":[],"selected_inputs":1,"selected_bytes":1,"read_bytes":1},"origins":{"tool-database":schema}});
+        std::fs::write(path, serde_json::to_vec(&artifact).unwrap()).unwrap();
+    }
+    let (command, values) = crate::cli::parse(&[
+        "polylogue",
+        "schema",
+        "diff",
+        before.to_str().unwrap(),
+        after.to_str().unwrap(),
+        "--output",
+        result.to_str().unwrap(),
+    ])
+    .unwrap();
+    assert_eq!(diff(command, &values, true), ExitCode::SUCCESS);
+    let bytes = std::fs::read(result).unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let origin = &report["origins"]["tool-database"];
+    assert!(origin["changes"].as_array().unwrap().is_empty());
+    assert_eq!(origin["tables"].as_array().unwrap().len(), 1);
+    let table = &origin["tables"][0];
+    assert_eq!(table["table"], "empty");
+    assert_eq!(
+        table["before"]["metadata"][0]["columns"][0]["declared_type"],
+        "TEXT"
+    );
+    assert_eq!(
+        table["after"]["metadata"][0]["columns"][0]["declared_type"],
+        "INTEGER"
+    );
+    assert_eq!(
+        table["after"]["unobserved_declared_columns"],
+        json!(["value"])
+    );
+    assert!(
+        !String::from_utf8(bytes)
+            .unwrap()
+            .contains("private SQL body")
     );
 }

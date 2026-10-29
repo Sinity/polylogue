@@ -1,5 +1,6 @@
 //! Product failure codes classified once into the shared transport contract.
 pub mod caller;
+pub mod complete;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;
@@ -127,10 +128,42 @@ pub fn failure(code: &str, message: String, detail: Option<&Value>) -> Failure {
 /// Pending writes have a durable local receipt but no confirmed remote commit.
 /// Read outcomes carry their incompleteness in the typed answer payload.
 pub fn answer(value: Value) -> Answer<Value> {
-    if value["pending"].as_bool() == Some(true) || value["state"].as_str() == Some("pending") {
+    if value["pending"].as_bool() == Some(true)
+        || value["state"].as_str() == Some("pending")
+        || value
+            .pointer("/user_state/pending")
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0)
+    {
         Answer::Degraded {
             value,
             notes: vec!["accepted locally; awaiting Sinex confirmation".into()],
+            next: vec![],
+        }
+    } else if let Some(currency) = value
+        .get("currency")
+        .or_else(|| value.pointer("/snapshot/currency"))
+        .or_else(|| value.pointer("/read_at/currency"))
+        .and_then(|value| {
+            serde_json::from_value::<polylogue_model::currency::IndexCurrency>(value.clone()).ok()
+        })
+        && currency.degraded()
+    {
+        use polylogue_model::currency::{CurrencyState, IndexCurrency};
+        let note = match currency {
+            IndexCurrency::Primary {
+                state: CurrencyState::Behind,
+                ..
+            } => "primary index is behind the observed owner position",
+            IndexCurrency::Primary {
+                state: CurrencyState::Unavailable,
+                ..
+            } => "primary owner is unavailable",
+            _ => "primary index currency is unknown",
+        };
+        Answer::Degraded {
+            value,
+            notes: vec![note.into()],
             next: vec![],
         }
     } else if value["incomplete"].as_bool() == Some(true)

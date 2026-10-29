@@ -144,7 +144,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI in particular _CERTAINLY_ requires advanced autocomplete, otherwise it is going to be ~pointless. Ideally that includes integrated fuzzyfinding somehow" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). Ruling, 2026-09-14, on completion with the daemon down: "yes. everything is supposed to be usable." (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
 
-- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The socket `complete` request serves MCP `completion/complete`, HTTP and the web query box from the same catalog in the daemon's memory.
+- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The typed `complete` operation serves MCP `completion/complete`, HTTP and the web query box from the same catalog. MCP supplies the full query in `argument.value`; `_meta["polylogue/position"]` is an optional UTF-8 byte offset, defaulting to the end. Its standard completion values apply each replacement to that full query, preserving the suffix; `_meta["polylogue/completions"]` retains the typed replacement span, kind and help.
 - **The grammar-position completer** is the shared `query-language` function: it takes the whole query text and a cursor offset and returns candidates with their replace range. Polylogue supplies the catalog.
 - **Never** does completion run a search, open the archive or write.
 

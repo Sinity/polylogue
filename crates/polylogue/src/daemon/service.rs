@@ -39,6 +39,54 @@ pub struct Daemon {
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
 
+impl Daemon {
+    /// Currency comes from the reader checkpoint and cached owner observations.
+    pub(crate) fn currency(
+        &self,
+        reader: &polylogue_store::Reader<'_>,
+    ) -> polylogue_store::Result<polylogue_model::currency::IndexCurrency> {
+        use polylogue_model::currency::IndexCurrency;
+        let _ = reader;
+        match &self.mode {
+            ModeState::Standalone => Ok(IndexCurrency::Standalone),
+            #[cfg(feature = "sinex")]
+            ModeState::Primary { connection } => connection
+                .currency(reader.confirmed_checkpoint()?)
+                .map_err(StoreError::from),
+            #[cfg(feature = "sinex")]
+            ModeState::Blocked { error, .. } => Ok(IndexCurrency::primary(
+                reader.confirmed_checkpoint()?,
+                None,
+                None,
+                Some(false),
+                Some(error.clone()),
+            )),
+        }
+    }
+}
+
+fn query_answer(
+    d: &Daemon,
+    reader: &polylogue_store::Reader<'_>,
+    mut data: serde_json::Value,
+) -> Response {
+    let currency = match d.currency(reader) {
+        Ok(currency) => currency,
+        Err(error) => return store_error(&error),
+    };
+    let Some(position) = data
+        .get_mut("read_at")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return error("internal", "a query answer omitted its read position");
+    };
+    position.insert(
+        "currency".into(),
+        serde_json::to_value(currency).expect("currency serializes"),
+    );
+    super::query::response(data)
+}
+
 pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
     Response::Error {
         kind: kind.into(),
@@ -52,7 +100,13 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::PrimaryPending { identity } => ok(serde_json::json!({
             "identity": identity, "pending": true,
         })),
-        StoreError::Conflict(_) => error("conflict", e),
+        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => error("conflict", e),
+        StoreError::Ambiguous { .. } => error("ambiguous", e),
+        StoreError::Projection(issue) => match issue {
+            polylogue_model::bundle::BundleError::ProjectionConflict
+            | polylogue_model::bundle::BundleError::SourceVersionMismatch => error("conflict", e),
+            _ => error("bad_request", e),
+        },
         StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
         StoreError::ReadCancelled => error("cancelled", e),
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
@@ -270,7 +324,6 @@ fn handle_inner(
     d: &Daemon,
     authorship: &polylogue_model::authorship::Authorship,
 ) -> Response {
-    let _ = authorship;
     if let Err(response) = accepting(d) {
         return response;
     }
@@ -441,7 +494,7 @@ fn handle_inner(
             let key =
                 serde_json::json!([text, cursor, page_size, why, session, fields]).to_string();
             if let Some(data) = d.warm.answer(&key, &position) {
-                return super::query::response(data);
+                return query_answer(d, &reader, data);
             }
             super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
                 let ask = super::query::Ask {
@@ -459,7 +512,7 @@ fn handle_inner(
                 match super::query::run(&reader, ask) {
                     Ok(data) => {
                         d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                        super::query::response(data)
+                        query_answer(d, &reader, data)
                     }
                     Err(f) => Response::Error {
                         kind: f.kind,
@@ -551,7 +604,14 @@ fn handle_inner(
             let sent = d
                 .loop_tx
                 .lock()
-                .map(|tx| tx.send(LoopMsg::Import { paths, reply }).is_ok())
+                .map(|tx| {
+                    tx.send(LoopMsg::Import {
+                        paths,
+                        authorship: authorship.clone(),
+                        reply,
+                    })
+                    .is_ok()
+                })
                 .unwrap_or(false);
             if !sent {
                 return error("internal", "the loop has stopped");
@@ -1172,7 +1232,10 @@ pub enum ArchiveMode {
 enum ModeState {
     Standalone,
     #[cfg(feature = "sinex")]
-    Primary,
+    Primary {
+        #[serde(skip)]
+        connection: Arc<polylogue_sinex::Sinex>,
+    },
     #[cfg(feature = "sinex")]
     Blocked {
         configured: Option<&'static str>,
@@ -1235,7 +1298,8 @@ pub fn start(
             path,
             error,
         } => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
+            let (archive, lock) =
+                Archive::open_primary_cache(root).map_err(std::io::Error::other)?;
             let state = ModeState::Blocked {
                 configured,
                 path,
@@ -1244,24 +1308,17 @@ pub fn start(
             (archive, lock, state, None)
         }
         #[cfg(feature = "sinex")]
-        ArchiveMode::Primary {
-            config: sinex,
-            path,
-        } => match crate::sinex::open(root, &sinex)? {
-            (archive, lock, Ok(connection)) => {
-                let engine =
-                    Engine::on_sinex(config, archive.clone(), connection).map_err(|e| to_io(&e))?;
-                (archive, lock, ModeState::Primary, Some(engine))
-            }
-            (archive, lock, Err(error)) => {
-                let state = ModeState::Blocked {
-                    configured: Some("primary"),
-                    path,
-                    error,
-                };
-                (archive, lock, state, None)
-            }
-        },
+        ArchiveMode::Primary { config: sinex, .. } => {
+            let (archive, lock, connection) = crate::sinex::open(root, &sinex)?;
+            let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
+                .map_err(|error| to_io(&error))?;
+            (
+                archive,
+                lock,
+                ModeState::Primary { connection },
+                Some(engine),
+            )
+        }
     };
     let mut engine = engine;
     let writes = engine
