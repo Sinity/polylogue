@@ -3,8 +3,8 @@ pub mod authored;
 pub mod products;
 pub(crate) mod projection;
 pub use products::{
-    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, Material, PendingCapture,
-    PreparedInput, PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
+    Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange, Material,
+    PendingCapture, PreparedInput, PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
 };
 
 use crate::{Result, StoreError};
