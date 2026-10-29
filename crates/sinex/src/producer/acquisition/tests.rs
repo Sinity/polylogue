@@ -27,6 +27,7 @@ pub(super) fn acquire(
     mode: CaptureMode,
 ) -> Result<PreparedWrite> {
     let plan = CapturePlan {
+        required_disposition: None,
         intent: blake3::hash(bytes).to_hex().to_string(),
         bases: vec![basis.clone()],
         count: 1,
@@ -57,6 +58,74 @@ fn accepted(receipt: CaptureReceipt) -> PreparedWrite {
         panic!("accepted preparation required")
     };
     write
+}
+
+#[test]
+fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_disposition() {
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let selector = source(b"/home/op/receiver-constraint.jsonl");
+    let mut plan = CapturePlan {
+        intent: "first".into(),
+        bases: vec![basis(&selector, None)],
+        count: 1,
+        mode: CaptureMode::Mutable,
+        required_disposition: None,
+    };
+    let prepare = |plan: &CapturePlan, bytes: &[u8]| {
+        sinex
+            .prepare_input_group(plan, &mut |emit| {
+                let mut input = capture(bytes, vec![]);
+                input.basis = Some(plan.bases[0].clone());
+                emit(input, body(root.path(), bytes))
+            })
+            .unwrap()
+    };
+    let first = accepted(prepare(&plan, b"A"));
+    let head = sinex
+        .pending_source(&selector, "v")
+        .unwrap()
+        .head
+        .unwrap()
+        .identity;
+    plan.required_disposition = Some(CaptureDisposition::UnresolvedBasisConflict);
+    assert_eq!(accepted(prepare(&plan, b"A")).identity, first.identity);
+    plan.intent = "second".into();
+    plan.bases[0].pending = Some(head.clone());
+    let CaptureReceipt::UnresolvedBasisConflict { custody } = prepare(&plan, b"B") else {
+        panic!()
+    };
+    let page = sinex
+        .pending_group_headers(&custody.identity, None, 1)
+        .unwrap();
+    let retained = sinex.capture_body(&page.headers[0].identity).unwrap();
+    let encoded = hashed_blobs::Prepared::from_encoded(
+        retained.file,
+        retained.descriptor,
+        None,
+        hashed_blobs::ReadLimits::default(),
+    )
+    .unwrap();
+    let mut reader = encoded
+        .reader(None, hashed_blobs::ReadLimits::default())
+        .unwrap();
+    let mut actual = Vec::new();
+    std::io::Read::read_to_end(&mut reader, &mut actual).unwrap();
+    assert_eq!(actual, b"B");
+    plan.required_disposition = None;
+    let CaptureReceipt::UnresolvedBasisConflict { custody: retried } = prepare(&plan, b"B") else {
+        panic!()
+    };
+    assert_eq!(retried, custody);
+    assert_eq!(
+        sinex
+            .pending_source(&selector, "v")
+            .unwrap()
+            .head
+            .unwrap()
+            .identity,
+        head
+    );
 }
 
 #[test]
@@ -173,6 +242,7 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
     let sinex = client(root.path());
     let selector = source(b"import");
     let plan = CapturePlan {
+        required_disposition: None,
         intent: "two-members".into(),
         bases: vec![basis(&selector, None)],
         count: 2,
@@ -258,6 +328,7 @@ fn older_control_capture_is_explicit_when_newer_raw_has_no_parser_state() {
     sinex
         .prepare_input_group(
             &CapturePlan {
+                required_disposition: None,
                 intent: "control".into(),
                 bases: vec![control_basis.clone()],
                 count: 1,
@@ -314,6 +385,7 @@ fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_public
     let selector = source(b"/home/op/mutable.jsonl");
     let original_basis = basis(&selector, None);
     let plan = CapturePlan {
+        required_disposition: None,
         intent: "staged-A".into(),
         bases: vec![original_basis.clone()],
         count: 1,
@@ -386,6 +458,7 @@ fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restar
     let selector = source(b"/home/op/database");
     let source_basis = basis(&selector, None);
     let plan = CapturePlan {
+        required_disposition: None,
         intent: "one-provider-transaction".into(),
         bases: vec![source_basis.clone()],
         count: 2,
@@ -471,6 +544,7 @@ fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change(
     let selector = source(b"/home/op/source");
     let source_basis = basis(&selector, None);
     let plan = CapturePlan {
+        required_disposition: None,
         intent: "same-validated-intent".into(),
         bases: vec![source_basis.clone()],
         count: 1,
@@ -510,6 +584,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     let selector = source(b"/home/op/provider.bin");
     let frozen_basis = basis(&selector, None);
     let plan = CapturePlan {
+        required_disposition: None,
         intent: "one-offered-identity".into(),
         bases: vec![frozen_basis.clone()],
         count: 1,

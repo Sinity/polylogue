@@ -142,6 +142,73 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
 }
 
 #[test]
+fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
+    use polylogue_model::bundle::fragments::{
+        TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord, TextSourceVersion,
+        TextSpanOrigin,
+    };
+    use polylogue_model::{BlobHash, Reference};
+    let container =
+        Reference::Message(polylogue_model::MessageId::parse("codex:morrow-fragment").unwrap());
+    let mut fragment = TextFragment {
+        container: container.clone(),
+        source_version: TextSourceVersion::ContentHash {
+            record: container,
+            hash: BlobHash::of(b"original source value"),
+        },
+        coverage: TextCoverage {
+            start: 7,
+            end: 10,
+            total_bytes: None,
+        },
+        text: "abc".into(),
+        text_hash: BlobHash::of(b"abc"),
+        provenance: TextFragmentProvenance {
+            spans: vec![],
+            sources: vec![],
+            imports: vec![],
+        },
+    };
+    fragment.provenance.spans.push(TextSpanOrigin {
+        reference: fragment.reference(),
+        start: 7,
+        end: 10,
+    });
+    let record = TextFragmentRecord {
+        reference: fragment.reference().to_string(),
+        commit: 9000,
+        fragment,
+    };
+    record.validate().unwrap();
+    let product = Product::Fragment {
+        reading: reading("input-fragment", 12),
+        facts: Box::new(polylogue_model::batch::FragmentRow {
+            offset: 12,
+            end: 47,
+            record,
+        }),
+    };
+    let payload = products::payload(&product, 0).unwrap();
+    let declaration = declarations("polylogue")
+        .into_iter()
+        .find(|declaration| declaration.kind.name == "polylogue.fragment")
+        .unwrap();
+    assert_eq!(declaration.kind.version, 1);
+    jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
+        .unwrap()
+        .validate(&payload)
+        .unwrap();
+    assert_eq!(payload["record"]["facts"]["offset"], 12);
+    assert_eq!(payload["record"]["facts"]["end"], 47);
+    assert_eq!(payload["record"]["facts"]["record"]["commit"], 9000);
+    assert!(payload.get("message").is_none());
+    assert_eq!(
+        products::decode("polylogue.fragment", payload).unwrap(),
+        product
+    );
+}
+
+#[test]
 fn component_replacement_keeps_its_physical_key_across_copy_arrival_and_resolution() {
     use polylogue_model::work_products::component::*;
     let mut status = ComponentStatus {

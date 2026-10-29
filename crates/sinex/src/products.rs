@@ -459,7 +459,11 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     version: match *product {
                         "work_snapshot" => 5,
                         "message" => 4,
-                        "fragment" | "query" | "query_run" | "query_run_outcome" | "work_component_status" => 1,
+                        "fragment"
+                        | "query"
+                        | "query_run"
+                        | "query_run_outcome"
+                        | "work_component_status" => 1,
                         _ => 3,
                     },
                 },

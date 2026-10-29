@@ -272,7 +272,7 @@ impl Sinex {
                 }
             }
         }
-        if !offered_exists && !unresolved_exists && !moved {
+        if !offered_exists && !unresolved_exists && !moved && plan.required_disposition.is_none() {
             queue.publish_acquisition(staged, CaptureDisposition::Prepared)?;
             return Ok(CaptureReceipt::Accepted {
                 write: PreparedWrite {

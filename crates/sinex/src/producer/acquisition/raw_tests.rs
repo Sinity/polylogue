@@ -50,6 +50,7 @@ fn acquire_ranges(
     sinex
         .prepare_input_group(
             &CapturePlan {
+                required_disposition: None,
                 intent: intent.into(),
                 bases: vec![basis.clone()],
                 count: ranges.len() as u64,
