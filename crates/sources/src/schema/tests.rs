@@ -414,3 +414,19 @@ fn row_dump_metadata_variants_survive_merging_without_claiming_observed_column_t
     assert!(table.unobserved_columns);
     assert!(compare(&schema, &schema).unwrap().tables.is_empty());
 }
+
+#[test]
+fn row_dump_hidden_declared_columns_are_explicitly_unobserved_beside_visible_rows() {
+    let schema = infer(br#"{"schema":{"native":"private SQL"},"table_metadata":{"native":{"columns":[{"cid":0,"name":"visible/value","declared_type":"TEXT","not_null":false,"primary_key":0,"hidden":0},{"cid":1,"name":"hidden/value","declared_type":"TEXT","not_null":false,"primary_key":0,"hidden":1}],"without_rowid":false}}}
+{"t":"native","r":{"visible/value":"private cell"}}"#, Framing::RowDump);
+    let table = &schema.tables["native"];
+    assert_eq!(table.records, 1);
+    assert!(!table.unobserved_columns);
+    assert_eq!(
+        table.unobserved_declared_columns,
+        ["hidden/value".into()].into()
+    );
+    assert_eq!(table.fields["/visible~1value"].types["string"], 1);
+    assert!(!table.fields.contains_key("/hidden~1value"));
+    assert!(compare(&schema, &schema).is_ok());
+}
