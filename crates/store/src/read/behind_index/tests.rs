@@ -205,7 +205,10 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
             [],
         )
         .unwrap();
-    let behind = reader.chains_behind_index(&[]).unwrap();
+    assert!(reader.chains_behind_index(&[]).unwrap().is_empty());
+    assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
+    let fresh = pool.reader().unwrap();
+    let behind = fresh.chains_behind_index(&[]).unwrap();
     assert_eq!(behind.len(), 1);
     assert_eq!(
         (
@@ -215,5 +218,5 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
         ),
         (40, 140, false)
     );
-    assert!(!reader.input_progress("metadata").unwrap().unwrap().waiting);
+    assert!(!fresh.input_progress("metadata").unwrap().unwrap().waiting);
 }
