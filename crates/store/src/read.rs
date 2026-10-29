@@ -598,8 +598,13 @@ impl Reader<'_> {
 
     /// Original authenticated owner association, independent of native-origin
     /// eligibility. Absent historical metadata stays unknown.
-    pub fn native_fact_context(&self, event: &str) -> Result<Option<crate::primary::NativeFactContext>> {
-        if !self.pool.archive.is_primary() { return Ok(None); }
+    pub fn native_fact_context(
+        &self,
+        event: &str,
+    ) -> Result<Option<crate::primary::NativeFactContext>> {
+        if !self.pool.archive.is_primary() {
+            return Ok(None);
+        }
         crate::primary::projection::native_context(self.conn()?, event)
     }
 

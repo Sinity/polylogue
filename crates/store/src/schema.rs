@@ -95,7 +95,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     },
     IndexMigration {
         version: 13,
-        target: IndexTarget::PrimaryIndex(&[include_str!("schema/index_13.sql"), crate::primary::derived::SCHEMA]),
+        target: IndexTarget::PrimaryIndex(&[
+            include_str!("schema/index_13.sql"),
+            crate::primary::derived::SCHEMA,
+        ]),
     },
 ];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
@@ -198,7 +201,11 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                     tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
                 }
                 IndexTarget::PrimarySource(_) => {}
-                IndexTarget::PrimaryIndex(statements) if primary => { for sql in statements { tx.execute_batch(sql)?; } },
+                IndexTarget::PrimaryIndex(statements) if primary => {
+                    for sql in statements {
+                        tx.execute_batch(sql)?;
+                    }
+                }
                 IndexTarget::PrimaryIndex(_) => {}
             }
         }

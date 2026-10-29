@@ -169,12 +169,17 @@ impl Reader<'_> {
             CompletenessDimension::Incomplete(search_missing)
         };
         let projection = if self.pool.archive.is_primary() {
-            if crate::primary::projection::replay_state(conn)?.certified_position().is_some() {
+            if crate::primary::projection::replay_state(conn)?
+                .certified_position()
+                .is_some()
+            {
                 CompletenessDimension::Complete
             } else {
                 CompletenessDimension::Unknown(vec![CompletenessReason::OwnerProofUnavailable])
             }
-        } else { CompletenessDimension::NotApplicable };
+        } else {
+            CompletenessDimension::NotApplicable
+        };
         token.check()?;
         Ok(ReadCompleteness {
             parsing,

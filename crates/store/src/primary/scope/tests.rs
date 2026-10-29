@@ -11,7 +11,9 @@ fn cache(archive: &Archive) -> Connection {
         .execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
     index.execute_batch(projection::SCHEMA).unwrap();
-    index.execute_batch(crate::primary::derived::SCHEMA).unwrap();
+    index
+        .execute_batch(crate::primary::derived::SCHEMA)
+        .unwrap();
     crate::archive::generation::create(&index).unwrap();
     index
         .execute(
@@ -271,7 +273,13 @@ fn same_scope_replay_restart_cancels_readers_and_clears_the_previous_epoch() {
     assert!(restart(&mut index, &archive, &resolver, "same-scope").unwrap());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
-    assert_eq!(index.query_row("SELECT count(*) FROM primary_fact", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM primary_fact", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     assert_eq!(current(&index).unwrap().as_deref(), Some("same-scope"));
 }
 
@@ -287,7 +295,19 @@ fn owner_invalidation_is_durable_without_deleting_cached_payload_custody() {
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
     drop(index);
     let index = Connection::open(archive.index_db()).unwrap();
-    assert!(matches!(require_readable(&index), Err(StoreError::ScopeChanged)));
-    assert_eq!(index.query_row("SELECT count(*) FROM primary_fact WHERE event='event-retained'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    assert!(matches!(
+        require_readable(&index),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM primary_fact WHERE event='event-retained'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
     assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
 }

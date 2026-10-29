@@ -62,8 +62,12 @@ pub(crate) fn invalidate(index: &Connection, archive: &Archive) -> Result<()> {
         Ok(())
     })();
     let invalidated = reset.invalidate();
-    let restored = previous.map(|previous| index.pragma_update(None, "synchronous", previous)).transpose();
-    persisted.and(invalidated).and_then(|()| restored.map(|_| ()).map_err(Into::into))
+    let restored = previous
+        .map(|previous| index.pragma_update(None, "synchronous", previous))
+        .transpose();
+    persisted
+        .and(invalidated)
+        .and_then(|()| restored.map(|_| ()).map_err(Into::into))
 }
 
 fn reset_to(

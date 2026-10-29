@@ -17,10 +17,10 @@ pub use raw_acquisition::{
     RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
 };
 pub use replay::{
-    ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeFactContext, NativeKind,
-    NativeSource, NativeDeliveryCursor, ProjectionAvailability, ProjectionCoverage, ProjectionIdentity, RawInputCoverage,
-    RawInputProof, ReplayBasisStatus, ReplayContinuation, ReplayControl, ReplayCursor, ReplayPage,
-    ReplayState,
+    ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeDeliveryCursor,
+    NativeFactContext, NativeKind, NativeSource, ProjectionAvailability, ProjectionCoverage,
+    ProjectionIdentity, RawInputCoverage, RawInputProof, ReplayBasisStatus, ReplayContinuation,
+    ReplayControl, ReplayCursor, ReplayPage, ReplayState,
 };
 pub(crate) mod projection;
 pub(crate) mod scope;

@@ -211,12 +211,27 @@ fn invalid_legacy_variant_time_rolls_back_the_entire_source_upgrade() {
 #[test]
 fn native_metadata_upgrade_retains_original_rows_without_inventing_owner_context() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(include_str!("../fixtures/primary_6.sql")).unwrap();
+    conn.execute_batch(include_str!("../fixtures/primary_6.sql"))
+        .unwrap();
     conn.execute_batch("INSERT INTO primary_fact(event,admitted,changed,source_order,state,product,kind) VALUES('original',3,8,2,'live',X'0102','input'); INSERT INTO primary_pending(position,event,change,product,source_order) VALUES(9,'pending','live',X'0304',1); INSERT INTO primary_complete(position) VALUES(8);").unwrap();
     conn.execute_batch(include_str!("../index_13.sql")).unwrap();
     let fact: (i64, i64, Vec<u8>, Option<Vec<u8>>) = conn.query_row("SELECT admitted,changed,product,native_context FROM primary_fact WHERE event='original'", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
-    assert_eq!(fact, (3,8,vec![1,2],None));
-    let pending: (Vec<u8>, Option<Vec<u8>>) = conn.query_row("SELECT product,native_context FROM primary_pending WHERE event='pending'", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
-    assert_eq!(pending, (vec![3,4],None));
-    assert_eq!(conn.query_row("SELECT evidence FROM primary_complete WHERE position=8", [], |row| row.get::<_, Option<Vec<u8>>>(0)).unwrap(), None);
+    assert_eq!(fact, (3, 8, vec![1, 2], None));
+    let pending: (Vec<u8>, Option<Vec<u8>>) = conn
+        .query_row(
+            "SELECT product,native_context FROM primary_pending WHERE event='pending'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(pending, (vec![3, 4], None));
+    assert_eq!(
+        conn.query_row(
+            "SELECT evidence FROM primary_complete WHERE position=8",
+            [],
+            |row| row.get::<_, Option<Vec<u8>>>(0)
+        )
+        .unwrap(),
+        None
+    );
 }
