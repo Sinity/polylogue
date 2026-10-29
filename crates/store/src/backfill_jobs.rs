@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const CLAIM_MS: i64 = 180_000;
 
 /// A new backfill job, as the writer stores it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NewBackfillJob {
     pub id: String,
     /// The web chat, by the extension's name for it.
@@ -28,7 +28,9 @@ pub struct NewBackfillJob {
 }
 
 /// Conversations a job has handled so far.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct BackfillCounts {
     /// Listed by the provider.
     pub listed: u64,
@@ -41,7 +43,7 @@ pub struct BackfillCounts {
 }
 
 /// What the extension instance holding a job reports.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BackfillReport {
     /// `progress`, `finished` or `failed`.
     pub kind: String,
