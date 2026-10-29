@@ -295,8 +295,10 @@ impl Writer {
             .transpose()?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
-        } else {None};
-        let resolver=resolve::Resolver::new(archive,&index,first_build.clone())?;
+        } else {
+            None
+        };
+        let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
         let mut inner = Inner {
             segment,
             archive: archive_conn,
