@@ -462,15 +462,30 @@ fn budget() -> pager::Budget {
         bytes: NonZeroUsize::new(1600).unwrap(),
     }
 }
+fn framing() -> ReadFraming {
+    ReadFraming {
+        question: QuestionId([7; 32]),
+    }
+}
+fn selection() -> SelectionLocator {
+    SelectionLocator {
+        row: 2,
+        record: ReadRecordLocator {
+            kind: ReadRecordKind::Message,
+            ordinal: 4,
+        },
+    }
+}
+fn item_hash(item: &ReadItem) -> polylogue_model::BlobHash {
+    polylogue_model::BlobHash::of(&crate::encode::json_bytes(item).unwrap())
+}
 fn fragments(original: ReadItem) -> Vec<ReadItem> {
     let mut position = None;
     let mut fragments = vec![];
     for _ in 0..1000 {
-        let mut builder = pager::PageBuilder::new(header(), budget(), position).unwrap();
-        let status = builder
-            .push_at("message:test:session:message", 3, original.clone())
-            .unwrap();
-        let next = builder.position().cloned();
+        let mut builder = pager::PageBuilder::new(header(), budget(), position, framing()).unwrap();
+        let status = builder.push_at(selection(), 3, original.clone()).unwrap();
+        let next = builder.position().copied();
         let doc = builder.finish(ReadFooter::default()).unwrap();
         assert!(!doc.items.is_empty());
         assert!(serde_json::to_vec(&doc).unwrap().len() <= budget().bytes.get());
@@ -492,15 +507,14 @@ fn huge_unicode_text_pages_reconstruct_every_character() {
         let joined = chunks
             .into_iter()
             .map(|item| match item.kind {
-                ItemKind::Fragment {
-                    encoding: FragmentEncoding::Text,
-                    text,
-                    ..
-                } => text,
+                ItemKind::Fragment { text, .. } => text,
                 _ => panic!("fragment"),
             })
             .collect::<String>();
-        assert_eq!(joined, original);
+        assert_eq!(
+            serde_json::from_str::<ReadItem>(&joined).unwrap(),
+            text(&original)
+        );
     }
 }
 #[test]
@@ -516,11 +530,7 @@ fn huge_structured_items_round_trip_without_dropping_any_fields() {
     let json = chunks
         .into_iter()
         .map(|item| match item.kind {
-            ItemKind::Fragment {
-                encoding: FragmentEncoding::ReadItemJson,
-                text,
-                ..
-            } => text,
+            ItemKind::Fragment { text, .. } => text,
             _ => panic!(),
         })
         .collect::<String>();
@@ -528,25 +538,22 @@ fn huge_structured_items_round_trip_without_dropping_any_fields() {
 }
 #[test]
 fn page_cut_uses_canonical_record_position_not_paired_display_source() {
-    let mut builder = pager::PageBuilder::new(header(), budget(), None).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), budget(), None, framing()).unwrap();
     assert_eq!(
-        builder
-            .push_at("message:canonical", 0, text("first"))
-            .unwrap(),
+        builder.push_at(selection(), 0, text("first")).unwrap(),
         pager::Push::Accepted
     );
     assert_eq!(
-        builder
-            .push_at("message:canonical", 1, text("second"))
-            .unwrap(),
+        builder.push_at(selection(), 1, text("second")).unwrap(),
         pager::Push::Full
     );
     assert_eq!(
         builder.position(),
         Some(&ReadPosition {
-            reference: "message:canonical".into(),
+            selection: selection(),
             item: 1,
-            character: 0
+            character: 0,
+            item_hash: item_hash(&text("second"))
         })
     );
 }
@@ -556,14 +563,19 @@ fn missing_or_invalid_cursor_is_an_error_never_a_shifted_page() {
         header(),
         budget(),
         Some(ReadPosition {
-            reference: "message:other".into(),
+            selection: SelectionLocator {
+                row: 99,
+                ..selection()
+            },
             item: 3,
             character: 1,
+            item_hash: item_hash(&text("text")),
         }),
+        framing(),
     )
     .unwrap();
     assert_eq!(
-        builder.push_at("message:canonical", 3, text("text")),
+        builder.push_at(selection(), 3, text("text")),
         Err(pager::PageError::InvalidPosition)
     );
 }
@@ -1059,8 +1071,8 @@ fn orphan_result_names_its_recorded_call_id_in_every_prose_format() {
 }
 #[test]
 fn budgeted_pages_name_the_canonical_token_estimator() {
-    let mut builder = pager::PageBuilder::new(header(), budget(), None).unwrap();
-    builder.push_at("message:test", 0, text("item")).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), budget(), None, framing()).unwrap();
+    builder.push_at(selection(), 0, text("item")).unwrap();
     let doc = builder.finish(ReadFooter::default()).unwrap();
     assert_eq!(doc.footer.estimator.as_deref(), Some(TOKEN_ESTIMATOR));
 }
@@ -1163,22 +1175,17 @@ fn encoded_control_expansion_is_included_in_the_page_byte_budget() {
     let mut position = None;
     let mut restored = String::new();
     for _ in 0..1000 {
-        let mut builder = pager::PageBuilder::new(header(), budget(), position).unwrap();
-        let state = builder
-            .push_at("message:test", 0, original.clone())
-            .unwrap();
-        let next = builder.position().cloned();
+        let mut builder = pager::PageBuilder::new(header(), budget(), position, framing()).unwrap();
+        let state = builder.push_at(selection(), 0, original.clone()).unwrap();
+        let next = builder.position().copied();
         let document = builder.finish(ReadFooter::default()).unwrap();
         let encoded = encode(&document, Format::Json);
         assert!(encoded.len() <= budget().bytes.get());
         for item in document.items {
             match item.kind {
-                ItemKind::Fragment {
-                    encoding: FragmentEncoding::Text,
-                    text,
-                    ..
+                ItemKind::Fragment { text, .. } | ItemKind::Text { text } => {
+                    restored.push_str(&text)
                 }
-                | ItemKind::Text { text } => restored.push_str(&text),
                 _ => panic!(),
             }
         }
@@ -1187,7 +1194,10 @@ fn encoded_control_expansion_is_included_in_the_page_byte_budget() {
         }
         position = next;
     }
-    assert_eq!(restored, "\u{9b}\u{202e}\"\\".repeat(4000));
+    assert_eq!(
+        serde_json::from_str::<ReadItem>(&restored).unwrap(),
+        original
+    );
 }
 #[test]
 fn variant_marks_only_describe_visible_substitutions() {
@@ -1298,18 +1308,18 @@ fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
 fn one_token_pages_and_accessible_empty_text_always_make_progress() {
     let mut limits = budget();
     limits.tokens = NonZeroU64::new(1).unwrap();
-    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None, framing()).unwrap();
     assert_eq!(
-        builder.push_at("message:test", 0, text("λ🙂more")).unwrap(),
+        builder.push_at(selection(), 0, text("λ🙂more")).unwrap(),
         pager::Push::Full
     );
     let position = builder.position().unwrap();
     assert!(position.character > 0);
     let document = builder.finish(ReadFooter::default()).unwrap();
     assert!(!document.items.is_empty());
-    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None, framing()).unwrap();
     assert_eq!(
-        builder.push_at("message:test", 0, text("")).unwrap(),
+        builder.push_at(selection(), 0, text("")).unwrap(),
         pager::Push::Accepted
     );
     assert_eq!(
@@ -1329,7 +1339,7 @@ fn large_footer(position: Option<&ReadPosition>) -> Result<ReadFooter, pager::Pa
     footer.next = position.map(|position| ReadyCall {
         cli: format!(
             "read {} {} {}",
-            position.reference, position.item, position.character
+            position.selection.row, position.item, position.character
         ),
         mcp: json!({"position":position}),
         http: HttpCall {
@@ -1344,17 +1354,17 @@ fn large_footer(position: Option<&ReadPosition>) -> Result<ReadFooter, pager::Pa
 fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
     let mut limits = budget();
     limits.items = NonZeroUsize::new(3).unwrap();
-    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None, framing()).unwrap();
     for n in 0..3 {
         assert_eq!(
             builder
-                .push_at("message:test", n, text(&"a".repeat(100)))
+                .push_at(selection(), n, text(&"a".repeat(100)))
                 .unwrap(),
             pager::Push::Accepted
         );
     }
     assert_eq!(
-        builder.push_at("message:test", 3, text("next")).unwrap(),
+        builder.push_at(selection(), 3, text("next")).unwrap(),
         pager::Push::Full
     );
     let mut attempts = 0;
@@ -1379,23 +1389,23 @@ fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
 fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
     let mut limits = budget();
     limits.items = NonZeroUsize::new(2).unwrap();
-    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None, framing()).unwrap();
     assert_eq!(
         builder
-            .push_at("message:test", 0, text(&"λ".repeat(300)))
+            .push_at(selection(), 0, text(&"λ".repeat(300)))
             .unwrap(),
         pager::Push::Accepted
     );
     assert_eq!(
         builder
-            .push_at("message:test", 1, text(&"n".repeat(600)))
+            .push_at(selection(), 1, text(&"n".repeat(600)))
             .unwrap(),
         pager::Push::Full
     );
     let doc = builder.finish_with(large_footer).unwrap();
     let ItemKind::Fragment {
-        text,
-        from,
+        text: payload,
+        position,
         until,
         total,
         ..
@@ -1403,9 +1413,15 @@ fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
     else {
         panic!()
     };
-    assert_eq!(*from, 0);
-    assert_eq!(*total, 300);
-    assert_eq!(text.chars().count() as u64, *until);
+    assert_eq!(position.character, 0);
+    assert_eq!(
+        *total,
+        String::from_utf8(crate::encode::json_bytes(&text(&"λ".repeat(300))).unwrap())
+            .unwrap()
+            .chars()
+            .count() as u64
+    );
+    assert_eq!(payload.chars().count() as u64, *until);
     assert_eq!(doc.footer.position.as_ref().unwrap().character, *until);
     assert_eq!(doc.footer.position.as_ref().unwrap().item, 0);
     assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
@@ -1645,4 +1661,101 @@ fn supplied_attachment_action_survives_layout_and_all_encoders() {
     assert!(html::inline_media_type("image/png"));
     assert!(!html::inline_media_type("image/svg+xml"));
     assert!(!html::inline_media_type("text/html"));
+}
+
+#[test]
+fn unbounded_native_source_is_inside_lossless_bounded_frames() {
+    let original = ReadItem {
+        source: Source {
+            reference: format!("message:{}", "λ/native:".repeat(4000)),
+            message: Some("natural:".repeat(3000)),
+            block: Some(998),
+            source_session: Some("session:".repeat(3000)),
+            inherited: true,
+        },
+        kind: ItemKind::Other {
+            type_name: "provider_record".into(),
+            data: json!({"time":null,"provider":{"exact":["\u{9b}",false,7]}}),
+        },
+    };
+    let hash = item_hash(&original);
+    let mut encoded = String::new();
+    let mut offset = 0;
+    for chunk in fragments(original.clone()) {
+        assert_eq!(chunk.source, framing().source());
+        let ItemKind::Fragment {
+            text,
+            position,
+            until,
+            total,
+        } = chunk.kind
+        else {
+            panic!()
+        };
+        assert_eq!(position.item_hash, hash);
+        assert_eq!(position.selection, selection());
+        assert_eq!(position.character, offset);
+        assert!(until > offset && until <= total);
+        offset = until;
+        encoded.push_str(&text);
+    }
+    assert_eq!(polylogue_model::BlobHash::of(encoded.as_bytes()), hash);
+    assert_eq!(
+        serde_json::from_str::<ReadItem>(&encoded).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn resumed_item_digest_rejects_late_evidence_changes_before_emitting_a_fragment() {
+    let original = text(&"visible".repeat(1000));
+    let mut first = pager::PageBuilder::new(header(), budget(), None, framing()).unwrap();
+    assert_eq!(
+        first.push_at(selection(), 0, original.clone()).unwrap(),
+        pager::Push::Full
+    );
+    let position = *first.position().unwrap();
+    let mut changed =
+        pager::PageBuilder::new(header(), budget(), Some(position), framing()).unwrap();
+    assert_eq!(
+        changed.push_at(
+            selection(),
+            0,
+            text("changed availability or provider fields")
+        ),
+        Err(pager::PageError::ItemChanged)
+    );
+    let mut shifted =
+        pager::PageBuilder::new(header(), budget(), Some(position), framing()).unwrap();
+    assert_eq!(
+        shifted.push_at(selection(), 1, original.clone()),
+        Err(pager::PageError::InvalidPosition)
+    );
+    let mut other_record =
+        pager::PageBuilder::new(header(), budget(), Some(position), framing()).unwrap();
+    let next_record = SelectionLocator {
+        record: ReadRecordLocator {
+            ordinal: 5,
+            ..selection().record
+        },
+        ..selection()
+    };
+    assert_eq!(
+        other_record.push_at(next_record, 0, original),
+        Err(pager::PageError::InvalidPosition)
+    );
+    let missing = pager::PageBuilder::new(header(), budget(), Some(position), framing()).unwrap();
+    assert!(matches!(
+        missing.finish(ReadFooter::default()),
+        Err(pager::PageError::InvalidPosition)
+    ));
+}
+
+#[test]
+fn prose_encoders_label_json_fragments_as_encoded_transport() {
+    let fragment = fragments(text(&"\u{9b}\n".repeat(2000))).remove(0);
+    let doc = document(vec![fragment]);
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        assert!(encode(&doc, format).contains("Encoded ReadItem JSON fragment"));
+    }
 }

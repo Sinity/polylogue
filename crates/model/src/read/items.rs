@@ -1,4 +1,4 @@
-use super::{BranchState, View};
+use super::{BranchState, ReadPosition, View};
 use crate::{Author, Block, MessageId, Session, SessionId, TimeEvidence, Timestamp};
 use serde::{Deserialize, Serialize};
 
@@ -267,22 +267,14 @@ pub enum ItemKind {
     Raw {
         record: Box<RawRecord>,
     },
-    /// A budget may split one oversized item without discarding fields.
-    /// Concatenate the text fragments and decode according to `encoding`.
+    /// A lossless chunk of a complete encoded ReadItem. Its outer Source names
+    /// the acknowledged query, not the original native record inside the JSON.
     Fragment {
-        encoding: FragmentEncoding,
         text: String,
-        from: u64,
+        position: ReadPosition,
         until: u64,
         total: u64,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FragmentEncoding {
-    Text,
-    ReadItemJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -455,13 +447,6 @@ pub struct RawRecord {
     pub bytes: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadPosition {
-    pub reference: String,
-    pub item: u64,
-    pub character: u64,
-}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReferencedBy {

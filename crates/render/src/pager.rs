@@ -1,6 +1,6 @@
-//! Presentation paging only. The store owns selection and the service seals
-//! `ReadPosition` into a cursor bound to that selection and view.
-use polylogue_model::read::*;
+//! Layout paging under bounded prepared selection coordinates. Store owns
+//! metadata seeks; the service authenticates and seals the captured read scope.
+use polylogue_model::{BlobHash, read::*};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 #[derive(Debug, Clone, Copy)]
@@ -22,6 +22,7 @@ impl Default for Budget {
 pub enum PageError {
     MetadataTooLarge,
     InvalidPosition,
+    ItemChanged,
     AlreadyFull,
     Serialization(String),
 }
@@ -36,11 +37,13 @@ pub enum Push {
     Accepted,
     Full,
 }
-/// Holds at most one transport page. A huge item is fragmented by Unicode
-/// character positions, with exact JSON for a structured item's reconstruction.
-/// The enclosing transport reserves its own envelope bytes before setting budget.
+
+/// At most one page and one encoded item are held. Every fragment uses the
+/// complete original ReadItem JSON domain, including otherwise unbounded Source.
+/// Its outer Source is the genuine bounded question supplied by the service.
 pub struct PageBuilder {
     header: ReadHeader,
+    framing: ReadFraming,
     items: Vec<ReadItem>,
     budget: Budget,
     bytes: usize,
@@ -55,9 +58,10 @@ impl PageBuilder {
         header: ReadHeader,
         budget: Budget,
         start: Option<ReadPosition>,
+        framing: ReadFraming,
     ) -> Result<Self, PageError> {
         let bytes = crate::encode::json_bytes(&header)
-            .map_err(|e| PageError::Serialization(e.to_string()))?
+            .map_err(serialization)?
             .len()
             + 512;
         if bytes >= budget.bytes.get() {
@@ -65,6 +69,7 @@ impl PageBuilder {
         }
         Ok(Self {
             header,
+            framing,
             items: vec![],
             budget,
             bytes,
@@ -75,39 +80,43 @@ impl PageBuilder {
             boundaries: vec![],
         })
     }
-    /// `record` is the producer's stable transfer identity (a canonical record
-    /// reference or prepared presentation-row identity). `ordinal` is separate
-    /// from a paired item's displayed source reference.
+    /// Coordinates come from the same prepared metadata view as resume seeks.
+    /// No native identifier is copied into either the frame or its position.
     pub fn push_at(
         &mut self,
-        record: &str,
+        selection: SelectionLocator,
         ordinal: u64,
         item: ReadItem,
     ) -> Result<Push, PageError> {
         if self.full {
             return Err(PageError::AlreadyFull);
         }
-        let from = if let Some(start) = &self.start {
-            if start.reference != record {
+        let from = if let Some(start) = self.start {
+            if start.selection != selection {
                 return Err(PageError::InvalidPosition);
             }
             if ordinal < start.item {
                 return Ok(Push::Accepted);
             }
-            if ordinal > start.item && start.character != 0 {
+            if ordinal > start.item {
                 return Err(PageError::InvalidPosition);
             }
-            if ordinal == start.item {
-                start.character
-            } else {
-                0
-            }
+            start.character
         } else {
             0
         };
-        let encoded = crate::encode::json_bytes(&item)
-            .map_err(|e| PageError::Serialization(e.to_string()))?;
-        let cost = if matches!(&item.kind,ItemKind::Text {text} if text.is_empty()) {
+        let encoded = crate::encode::json_bytes(&item).map_err(serialization)?;
+        let item_hash = BlobHash::of(&encoded);
+        if self.start.is_some_and(|start| start.item_hash != item_hash) {
+            return Err(PageError::ItemChanged);
+        }
+        let position = ReadPosition {
+            selection,
+            item: ordinal,
+            character: from,
+            item_hash,
+        };
+        let cost = if matches!(&item.kind,ItemKind::Text{text} if text.is_empty()) {
             0
         } else {
             estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64
@@ -119,62 +128,47 @@ impl PageBuilder {
         {
             self.bytes += encoded.len();
             self.tokens += cost;
-            self.boundaries.push(ReadPosition {
-                reference: record.into(),
-                item: ordinal,
-                character: from,
-            });
+            self.boundaries.push(position);
             self.items.push(item);
             self.start = None;
             return Ok(Push::Accepted);
         }
         if !self.items.is_empty() {
-            self.stop(record, ordinal, from);
+            self.stop(position);
             return Ok(Push::Full);
         }
-        let (encoding, text) = match &item.kind {
-            ItemKind::Text { text } => (FragmentEncoding::Text, text.clone()),
-            _ => (
-                FragmentEncoding::ReadItemJson,
-                String::from_utf8(encoded).expect("JSON is UTF-8"),
-            ),
-        };
+        let text = String::from_utf8(encoded).expect("JSON is UTF-8");
         let total = text.chars().count();
         let from = usize::try_from(from).map_err(|_| PageError::InvalidPosition)?;
         if from >= total {
             return Err(PageError::InvalidPosition);
         }
-        // At most one record-sized buffer; binary search avoids quadratic work
-        // for an enormous first item and accounts for JSON escaping overhead.
-        let boundaries: Vec<usize> = text
+        let boundaries: Vec<_> = text
             .char_indices()
             .map(|(i, _)| i)
             .chain(std::iter::once(text.len()))
             .collect();
         let make = |until: usize| ReadItem {
-            source: item.source.clone(),
+            source: self.framing.source(),
             kind: ItemKind::Fragment {
-                encoding,
                 text: text[boundaries[from]..boundaries[until]].into(),
-                from: from as u64,
+                position,
                 until: until as u64,
                 total: total as u64,
             },
         };
         let payload_cost = |text: &str| -> Result<u64, PageError> {
-            let encoded = crate::encode::json_bytes(&text)
-                .map_err(|e| PageError::Serialization(e.to_string()))?;
-            Ok(estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64)
+            let bytes = crate::encode::json_bytes(&text).map_err(serialization)?;
+            Ok(estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64)
         };
         let minimum = payload_cost(&text[boundaries[from]..boundaries[from + 1]])?;
         let token_limit = self.budget.tokens.get().max(minimum);
         let fits = |candidate: &ReadItem| -> Result<bool, PageError> {
-            let json = crate::encode::json_bytes(candidate)
-                .map_err(|e| PageError::Serialization(e.to_string()))?;
+            let bytes = crate::encode::json_bytes(candidate).map_err(serialization)?;
             let ItemKind::Fragment { text, .. } = &candidate.kind else {
                 unreachable!("fragment candidate")
             };
-            Ok(self.bytes + json.len() <= self.budget.bytes.get()
+            Ok(self.bytes + bytes.len() <= self.budget.bytes.get()
                 && payload_cost(text)? <= token_limit)
         };
         if !fits(&make(from + 1))? {
@@ -190,35 +184,33 @@ impl PageBuilder {
             }
         }
         let fragment = make(lo);
-        let json = crate::encode::json_bytes(&fragment)
-            .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
-            .map_err(|e| PageError::Serialization(e.to_string()))?;
-        self.bytes += json.len();
-        self.tokens += estimate_tokens(&json) as u64;
-        self.boundaries.push(ReadPosition {
-            reference: record.into(),
-            item: ordinal,
-            character: from as u64,
-        });
+        let bytes = crate::encode::json_bytes(&fragment).map_err(serialization)?;
+        self.bytes += bytes.len();
+        self.tokens += estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64;
+        self.boundaries.push(position);
         self.items.push(fragment);
         self.start = None;
         if lo < total {
-            self.stop(record, ordinal, lo as u64);
+            self.stop(ReadPosition {
+                character: lo as u64,
+                ..position
+            });
             Ok(Push::Full)
         } else {
             Ok(Push::Accepted)
         }
     }
-    /// Build follow-ups only for the final boundary. Large footer metadata can
-    /// reduce this page; every retry receives the corresponding unread position.
-    /// The callback seals cursors in the product; the renderer does no I/O.
+    /// Follow-ups are regenerated only for the finalized unread coordinate.
     pub fn finish_with(
         mut self,
         mut footer: impl FnMut(Option<&ReadPosition>) -> Result<ReadFooter, PageError>,
     ) -> Result<ReadDocument, PageError> {
+        if self.start.is_some() {
+            return Err(PageError::InvalidPosition);
+        }
         loop {
             let mut footer = footer(self.next.as_ref())?;
-            footer.position = self.next.clone();
+            footer.position = self.next;
             footer.shown = self.items.len() as u64;
             footer.estimator = Some(TOKEN_ESTIMATOR.into());
             let document = ReadDocument {
@@ -226,10 +218,11 @@ impl PageBuilder {
                 items: self.items.clone(),
                 footer,
             };
-            let size = crate::encode::json_bytes(&document)
-                .map_err(|e| PageError::Serialization(e.to_string()))?
-                .len();
-            if size <= self.budget.bytes.get() {
+            if crate::encode::json_bytes(&document)
+                .map_err(serialization)?
+                .len()
+                <= self.budget.bytes.get()
+            {
                 return Ok(document);
             }
             if self.items.len() > 1 {
@@ -240,32 +233,23 @@ impl PageBuilder {
             let Some(item) = self.items.first_mut() else {
                 return Err(PageError::MetadataTooLarge);
             };
-            let boundary = self
+            let boundary = *self
                 .boundaries
                 .first()
                 .expect("accepted item has a boundary");
-            let (encoding, text, from, total) = match &item.kind {
+            let (text, position, total) = match &item.kind {
                 ItemKind::Fragment {
-                    encoding,
                     text,
-                    from,
+                    position,
                     total,
                     ..
-                } => (*encoding, text.clone(), *from, *total),
-                ItemKind::Text { text } => (
-                    FragmentEncoding::Text,
-                    text.clone(),
-                    0,
-                    text.chars().count() as u64,
-                ),
+                } => (text.clone(), *position, *total),
                 _ => {
-                    let text = String::from_utf8(
-                        crate::encode::json_bytes(item)
-                            .map_err(|e| PageError::Serialization(e.to_string()))?,
-                    )
-                    .expect("JSON is UTF-8");
+                    let text =
+                        String::from_utf8(crate::encode::json_bytes(item).map_err(serialization)?)
+                            .expect("JSON is UTF-8");
                     let total = text.chars().count() as u64;
-                    (FragmentEncoding::ReadItemJson, text, 0, total)
+                    (text, boundary, total)
                 }
             };
             let count = text.chars().count();
@@ -273,31 +257,26 @@ impl PageBuilder {
                 return Err(PageError::MetadataTooLarge);
             }
             let keep = count.div_ceil(2);
-            let until = from + keep as u64;
+            let until = position.character + keep as u64;
             let end = text
                 .char_indices()
                 .nth(keep)
                 .map_or(text.len(), |(index, _)| index);
+            item.source = self.framing.source();
             item.kind = ItemKind::Fragment {
-                encoding,
                 text: text[..end].into(),
-                from,
+                position,
                 until,
                 total,
             };
             self.next = Some(ReadPosition {
-                reference: boundary.reference.clone(),
-                item: boundary.item,
                 character: until,
+                ..boundary
             });
         }
     }
-    fn stop(&mut self, record: &str, item: u64, character: u64) {
-        self.next = Some(ReadPosition {
-            reference: record.into(),
-            item,
-            character,
-        });
+    fn stop(&mut self, position: ReadPosition) {
+        self.next = Some(position);
         self.full = true;
     }
     pub fn position(&self) -> Option<&ReadPosition> {
@@ -306,9 +285,12 @@ impl PageBuilder {
     pub fn is_full(&self) -> bool {
         self.full
     }
-    /// The service supplies ready calls/coverage and must reserve their encoded
-    /// size in `Budget::bytes`. A limit violation is explicit, never truncation.
+    /// Static footers must already have their encoded space reserved. Dynamic
+    /// product follow-ups use finish_with so any trim regenerates the cursor.
     pub fn finish(self, mut footer: ReadFooter) -> Result<ReadDocument, PageError> {
+        if self.start.is_some() {
+            return Err(PageError::InvalidPosition);
+        }
         footer.shown = self.items.len() as u64;
         footer.estimator = Some(TOKEN_ESTIMATOR.into());
         footer.position = self.next;
@@ -317,12 +299,16 @@ impl PageBuilder {
             items: self.items,
             footer,
         };
-        let bytes = crate::encode::json_bytes(&document)
-            .map_err(|e| PageError::Serialization(e.to_string()))?
-            .len();
-        if bytes > self.budget.bytes.get() {
+        if crate::encode::json_bytes(&document)
+            .map_err(serialization)?
+            .len()
+            > self.budget.bytes.get()
+        {
             return Err(PageError::MetadataTooLarge);
         }
         Ok(document)
     }
+}
+fn serialization(error: std::io::Error) -> PageError {
+    PageError::Serialization(error.to_string())
 }
