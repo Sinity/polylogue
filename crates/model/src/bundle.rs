@@ -178,11 +178,11 @@ pub struct AuthoredRecord {
 pub enum Record {
     Manifest(Manifest),
     Session(SessionRecord),
-    Message(MessageRecord),
+    Message(Box<MessageRecord>),
     Event(InputEventRecord),
     Link(LinkRecord),
     Document(DocumentRecord),
-    Authored(AuthoredRecord),
+    Authored(Box<AuthoredRecord>),
     Variant(VariantRecord),
     VariantPart(VariantPartRecord),
     Blob(BlobRecord),
