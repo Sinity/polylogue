@@ -6,22 +6,21 @@ fn targets_round_trip_through_their_reference_form() {
         "session:claude-code:abc",
         "message:codex:m:1",
         "tool:claude-code:abc#toolu_01",
-        "work:7",
         "result:018f",
-        "note:018f.1",
+        "assertion:018f.1",
         "repo:polylogue",
         "cwd:/realm/project/polylogue/repo",
     ] {
-        let t = Target::parse(text).unwrap();
+        let t = Reference::parse(text).unwrap();
         assert_eq!(t.to_string(), text);
     }
     assert!(matches!(
-        Target::parse("session"),
-        Err(TargetError::NoKind(_))
+        Reference::parse("session"),
+        Err(ReferenceError::NoKind(_))
     ));
     assert!(matches!(
-        Target::parse("tool:claude-code:abc"),
-        Err(TargetError::Incomplete(_))
+        Reference::parse("tool:claude-code:abc"),
+        Err(ReferenceError::Incomplete(_))
     ));
 }
 

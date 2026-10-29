@@ -22,6 +22,8 @@ mod message;
 mod note;
 pub mod price;
 mod quota;
+mod reference;
+pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
 mod session;
 mod time;
 mod usage;
@@ -46,7 +48,7 @@ pub use message::{
     ApiError, Attribution, Message, Production, PromptKind, Role, ServerToolUse, WrittenBy,
     is_prompt,
 };
-pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
+pub use note::{Author, NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
@@ -77,5 +79,5 @@ macro_rules! string_schema {
     )* };
 }
 string_schema!(
-    Origin, SessionId, MessageId, DocumentId, BlobHash, Target, Author
+    Origin, SessionId, MessageId, DocumentId, BlobHash, Reference, Author
 );
