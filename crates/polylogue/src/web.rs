@@ -290,8 +290,13 @@ pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     let (deadline_ms, cancellation) = READ_LIMIT.try_with(Clone::clone).unwrap_or_default();
     let limit = crate::daemon::execution::limit_for(&request, deadline_ms, cancellation);
     let mut cancel = CancelRead(Some(limit.cancellation.clone()));
+    let authorship = polylogue_model::authorship::compute_authorship(
+        polylogue_model::authorship::Channel::Web,
+        &Default::default(),
+        None,
+    );
     let response = tokio::task::spawn_blocking(move || {
-        crate::daemon::service::handle_with_limit(request, &d, &limit)
+        crate::daemon::service::handle_with_caller(request, &d, &limit, &authorship)
     })
     .await
     .unwrap_or_else(|error| crate::daemon::service::error("internal", error));

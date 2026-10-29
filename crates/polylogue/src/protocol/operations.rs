@@ -109,16 +109,28 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             if let Err(error) = context.check_cancelled() {
                 return Answer::error(error);
             }
-            let cancellation = context
+            let accepted = context
                 .caller()
-                .identity::<crate::protocol::caller::Accepted>()
+                .identity::<crate::protocol::caller::Accepted>();
+            let cancellation = accepted
                 .map(|caller| caller.cancellation.clone())
                 .unwrap_or_default();
+            let authorship = accepted
+                .map(|caller| caller.authorship.clone())
+                .unwrap_or_else(|| {
+                    let via = match context.origin {
+                        command_surface::Origin::Http => polylogue_model::authorship::Channel::Web,
+                        command_surface::Origin::Mcp => polylogue_model::authorship::Channel::Mcp,
+                        _ => polylogue_model::authorship::Channel::Cli,
+                    };
+                    polylogue_model::authorship::compute_authorship(via, &Default::default(), None)
+                });
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let worker = tokio::task::spawn_blocking(move || {
                 let limit = polylogue_store::read::limit::ReadLimit::without_deadline(cancellation);
-                crate::daemon::service::handle_with_limit(request, &daemon, &limit).answer()
+                crate::daemon::service::handle_with_caller(request, &daemon, &limit, &authorship)
+                    .answer()
             });
             let answer = match worker.await {
                 Ok(answer) => answer,

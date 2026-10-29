@@ -139,7 +139,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
                         super::attachment::socket(&out, request, d)
                     })
                 }
-                request => service::handle_with_limit(request, d, &limit),
+                request => service::handle_with_caller(request, d, &limit, &accepted.authorship),
             }
         };
         let Ok(mut text) = serde_json::to_string(&response) else {
