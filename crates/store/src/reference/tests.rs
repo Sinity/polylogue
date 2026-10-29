@@ -3,9 +3,7 @@ use crate::fixture::writer::{WriterArchive, message};
 use polylogue_model::Role;
 
 fn source(id: &str, blocks: Vec<Block>) -> polylogue_model::Message {
-    let mut value = message(id, "s", Role::User, 1, blocks);
-    value.at = None;
-    value
+    message(id, "s", Role::User, 1, blocks)
 }
 fn r(text: &str) -> Reference {
     Reference::parse(text).unwrap()
