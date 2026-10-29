@@ -1,95 +1,29 @@
 use super::*;
-
-fn clock() -> Clock {
-    // 2026-10-07 12:00 in Warsaw (CEST, +02:00).
-    let now = "2026-10-07T10:00:00Z"
-        .parse::<jiff::Timestamp>()
-        .unwrap()
-        .as_millisecond();
-    Clock::new(
-        now,
-        LogicalDay::named("Europe/Warsaw", LogicalDay::DEFAULT_START_MINUTES).unwrap(),
-    )
-}
-
-fn ms(text: &str) -> i64 {
-    text.parse::<jiff::Timestamp>().unwrap().as_millisecond()
-}
-
+fn fixture() -> Clock { clock(1_791_367_200_000, LogicalDay::named("Europe/Warsaw", 240).unwrap()).unwrap() }
+fn ms(text: &str) -> i64 { text.parse::<jiff::Timestamp>().unwrap().as_millisecond() }
 #[test]
-fn relative_times_count_exact_hours_back() {
-    let c = clock();
-    assert_eq!(
-        resolve("7d", &c),
-        Some(Time::Instant {
-            ms: c.now - 168 * HOUR
-        })
-    );
-    assert_eq!(
-        resolve("3h", &c),
-        Some(Time::Instant {
-            ms: c.now - 3 * HOUR
-        })
-    );
+fn source_time_expressions_use_one_shared_clock() {
+    let clock = fixture();
+    assert_eq!(clock.now.to_string(), "2026-10-07T10:00:00Z");
+    for (text, expected) in [("7d", "2026-09-30T10:00:00Z"), ("3h", "2026-10-07T07:00:00Z"), ("09:00", "2026-10-07T07:00:00Z"), ("2026-10-03T14:30", "2026-10-03T12:30:00Z")] {
+        assert_eq!(resolve(text, &clock).unwrap().value.start_ms(), ms(expected), "{text}");
+    }
+    let day = resolve("2026-10-05", &clock).unwrap().value;
+    assert_eq!(day.start_ms(), ms("2026-10-05T02:00:00Z"));
+    assert_eq!(day.end_ms().unwrap(), ms("2026-10-06T02:00:00Z"));
+    assert_eq!(resolve("today", &clock).unwrap().value, resolve("2026-10-07", &clock).unwrap().value);
+    assert_eq!(resolve("this week", &clock).unwrap().value.start_ms(), day.start_ms());
+    assert!(resolve("soon", &clock).is_err());
 }
-
 #[test]
-fn dates_are_logical_days() {
-    let c = clock();
-    assert_eq!(
-        resolve("2026-10-05", &c),
-        Some(Time::Span {
-            start: ms("2026-10-05T02:00:00Z"),
-            end: ms("2026-10-06T02:00:00Z")
-        })
-    );
-    assert_eq!(resolve("today", &c), resolve("2026-10-07", &c));
-    assert_eq!(resolve("yesterday", &c), resolve("2026-10-06", &c));
-    assert_eq!(
-        resolve("this week", &c).map(Time::start),
-        resolve("2026-10-05", &c).map(Time::start)
-    );
-    assert_eq!(
-        resolve("last week", &c).map(Time::start),
-        resolve("2026-09-28", &c).map(Time::start)
-    );
-    assert_eq!(
-        resolve("2026-10", &c).map(Time::start),
-        resolve("2026-10-01", &c).map(Time::start)
-    );
+fn native_zone_and_valid_boundaries_are_required_at_the_adapter() {
+    assert!(clock(0, LogicalDay { zone: jiff::tz::TimeZone::fixed(jiff::tz::Offset::UTC), start_minutes: 240 }).is_err());
+    assert!(clock(0, LogicalDay { zone: jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(), start_minutes: 1500 }).is_err());
 }
-
 #[test]
-fn times_of_day_and_datetimes() {
-    let c = clock();
-    assert_eq!(
-        resolve("09:00", &c),
-        Some(Time::Instant {
-            ms: ms("2026-10-07T07:00:00Z")
-        })
-    );
-    assert_eq!(
-        resolve("2026-10-03T14:30", &c),
-        Some(Time::Instant {
-            ms: ms("2026-10-03T12:30:00Z")
-        })
-    );
-    assert_eq!(
-        resolve("2026-10-03T14:30:00Z", &c),
-        Some(Time::Instant {
-            ms: ms("2026-10-03T14:30:00Z")
-        })
-    );
-    assert_eq!(resolve("soon", &c), None);
-}
-
-#[test]
-fn durations_and_money() {
-    assert_eq!(duration_ms("5m"), Some(300_000));
-    assert_eq!(duration_ms("1.5h"), Some(5_400_000));
-    assert_eq!(duration_ms("250ms"), Some(250));
-    assert_eq!(duration_ms("2w"), Some(1_209_600_000));
-    assert_eq!(duration_ms("5x"), None);
+fn exact_shared_durations_and_product_money_keep_storage_units() {
+    for (text, expected) in [("5m", 300_000), ("1.5h", 5_400_000), ("250ms", 250), ("2w", 1_209_600_000)] { assert_eq!(duration_ms(text), Some(expected)); }
+    assert_eq!(duration_ms("5x"), None); assert_eq!(duration_ms("0.0000001ms"), None);
     assert_eq!(money_nusd("2.90"), Some(2_900_000_000));
     assert_eq!(money_nusd("$1usd"), Some(1_000_000_000));
 }

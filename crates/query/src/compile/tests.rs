@@ -4,10 +4,10 @@ use super::*;
 
 fn opts(saved: &[(&str, &str)]) -> Options {
     Options {
-        clock: crate::Clock::new(
+        clock: crate::time::clock(
             1_790_000_000_000,
             polylogue_model::LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        ),
+        ).unwrap(),
         origins: vec!["claude-code".into(), "codex".into()],
         command_words: vec!["list".into(), "brief".into()],
         page_size: None,

@@ -34,3 +34,6 @@ impl Milliseconds for Time {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

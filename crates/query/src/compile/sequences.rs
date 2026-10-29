@@ -313,7 +313,7 @@ impl<'a> Compiler<'a> {
              SELECT r.session_pk, CASE WHEN r.step = {last} THEN r.mt + 1 ELSE r.mt END, \
              CASE WHEN r.step = {last} THEN 0 ELSE r.step + 1 END, ox.n, ox.at, ox.pk \
              FROM {name} r JOIN {ord} ox ON ox.session_pk = r.session_pk AND ox.n = CASE r.step {cases} END)",
-            first = pick(0, "ow.pk", "0", "NULL"),
+            first = pick(0, "ow.pk", "0", "NULL")?,
             cases = next.join(" ")
         ));
         let mut inner = vec![
