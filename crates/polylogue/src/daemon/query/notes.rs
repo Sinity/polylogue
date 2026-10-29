@@ -3,7 +3,7 @@
 //! by the same rules everywhere.
 
 use super::{Ask, run};
-use polylogue_model::{Note, Target, Timestamp};
+use polylogue_model::{Note, Reference, Timestamp};
 use polylogue_store::{Reader, StoreError};
 
 /// Every note `notes where CONDITIONS` lists, newest first.
@@ -28,7 +28,7 @@ pub fn count(reader: &Reader<'_>, conditions: &str, now: Timestamp) -> Result<u6
 }
 
 /// The condition that a note is about at least one of `targets`.
-pub fn about(targets: &[Target]) -> String {
+pub fn about(targets: &[Reference]) -> String {
     let any: Vec<String> = targets
         .iter()
         .map(|t| format!("target:{}", quoted(&t.to_string())))

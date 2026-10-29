@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{MessageId, SessionId, Target};
+use polylogue_model::{MessageId, Reference, SessionId};
 
 #[derive(Serialize)]
 enum Example {
@@ -7,7 +7,7 @@ enum Example {
     Tuple(MessageId, String),
     #[serde(rename = "new/~")]
     Object {
-        target: Target,
+        target: Reference,
         text: String,
     },
     One(SessionId),
@@ -31,7 +31,7 @@ fn nested_typed_references_survive_without_declaring_their_json_paths() {
             Example::Unit,
             Example::Tuple(message.clone(), secret.into()),
             Example::Object {
-                target: Target::Message(message.clone()),
+                target: Reference::Message(message.clone()),
                 text: secret.into(),
             },
             Example::One(session.clone()),
@@ -51,7 +51,7 @@ fn nested_typed_references_survive_without_declaring_their_json_paths() {
     assert_eq!(data["variants"][1]["Tuple"][0], message.to_string());
     assert_eq!(
         data["variants"][2]["new/~"]["target"],
-        Target::Message(message).to_string()
+        Reference::Message(message).to_string()
     );
     assert_eq!(data["variants"][3]["One"], session.to_string());
     assert_ne!(data["variants"][1]["Tuple"][1], secret);

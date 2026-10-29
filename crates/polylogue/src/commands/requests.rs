@@ -4,7 +4,7 @@ use super::{Caller, Command, LIVE, NOTICES, Values};
 use crate::briefing::{Ask, StartSource};
 use crate::browser::actions::{ChatFile, ChatRequest};
 use crate::daemon::{ReadTarget, Request};
-use polylogue_model::{Author, NewNote, NoteKind, Target};
+use polylogue_model::{Author, NewNote, NoteKind, Reference};
 use std::path::PathBuf;
 
 type Built = Result<Request, String>;
@@ -32,10 +32,10 @@ fn cwd(v: &Values, caller: &Caller) -> Result<PathBuf, String> {
     }
 }
 
-fn targets(texts: &[String]) -> Result<Vec<Target>, String> {
+fn targets(texts: &[String]) -> Result<Vec<Reference>, String> {
     texts
         .iter()
-        .map(|t| Target::parse(t).map_err(|e| e.to_string()))
+        .map(|t| Reference::parse(t).map_err(|e| e.to_string()))
         .collect()
 }
 
@@ -290,10 +290,10 @@ pub fn note_list(_: &Command, v: &Values, caller: &Caller) -> Built {
     if v.0.contains_key("cwd") {
         let dir = cwd(v, caller)?;
         for d in crate::briefing::scope_dirs(&dir) {
-            t.push(Target::Cwd(d));
+            t.push(Reference::Cwd(d));
         }
         if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
-            t.push(Target::Repo(name.to_owned()));
+            t.push(Reference::Repo(name.to_owned()));
         }
     }
     let mut conditions = Vec::new();

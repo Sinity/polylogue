@@ -79,7 +79,7 @@ pub fn resumable(
     now: polylogue_model::Timestamp,
 ) -> Result<Vec<ResumableSession>, StoreError> {
     use crate::daemon::query::notes;
-    use polylogue_model::{NoteKind, Target};
+    use polylogue_model::{NoteKind, Reference};
     let dirs = crate::briefing::scope_dirs(cwd);
     let mut out = Vec::new();
     // Look further back than `limit`: most sessions finish cleanly.
@@ -88,7 +88,7 @@ pub fn resumable(
         let open = reader.open_items(&id)?.unwrap_or_default();
         let conditions = format!(
             "{} (kind:{} OR kind:{}) agent:false",
-            notes::about(&[Target::Session(s.id.clone())]),
+            notes::about(&[Reference::Session(s.id.clone())]),
             NoteKind::Handoff.as_str(),
             NoteKind::Blocker.as_str(),
         );
