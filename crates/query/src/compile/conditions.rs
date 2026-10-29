@@ -87,6 +87,7 @@ impl<'a> Compiler<'a> {
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
             }
             ConditionKind::Compare { operand, op, value } => {
+                if matches!(op, Op::Contains | Op::Prefix) { return Err(not_built("this string comparison operator")); }
                 self.field_cond(field_operand(operand)?, FieldOp::Compare(*op, value_text(value)?), scope, c.span, top)?
             }
             ConditionKind::Between { operand, from, to } => {
@@ -590,6 +591,7 @@ impl<'a> Compiler<'a> {
         };
         match (def.kind, op) {
             (_, FieldOp::Match(Value::Any)) => Ok("1".into()),
+            (_, FieldOp::Match(Value::Unknown)) => Ok(format!("({expr}) IS NULL")),
             (
                 _,
                 FieldOp::Match(Value::Scalar {
@@ -598,11 +600,7 @@ impl<'a> Compiler<'a> {
                 }),
             ) if text.eq_ignore_ascii_case("unknown") => Ok(format!("({expr}) IS NULL")),
             (Kind::Match, FieldOp::Match(v)) => {
-                let values = match v {
-                    Value::Scalar { text, .. } => vec![text.clone()],
-                    Value::Set { any } => any.clone(),
-                    Value::Any => unreachable!("handled above"),
-                };
+                let values = alternatives(v);
                 if let Some(set) = def.values {
                     for x in &values {
                         if !set.iter().any(|s| s.eq_ignore_ascii_case(x)) {

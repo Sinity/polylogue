@@ -696,7 +696,7 @@ fn group_sort(
     let keys = keys.unwrap_or(&[]);
     let mut order = match key {
         Operand::Function { .. } => {
-            let seed = random_seed(key)?;
+            let seed = parse_random_seed(key)?;
             if let Some(seed) = seed.or(random_seed) {
                 let identity = format!(
                     "json_array({})",
@@ -849,7 +849,7 @@ fn group_operand(operand: &Operand) -> Result<(&str, Option<Bucket>), QueryError
         _ => Err(not_built("this group key")),
     }
 }
-fn random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
+fn parse_random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
     let Operand::Function { name, arguments } = operand else { return Ok(None) };
     if name != "random" { return Err(not_built(&format!("sort key {name}"))); }
     arguments.first().map(|v| field_operand(v)?.parse().map_err(|_| not_built("this random seed"))).transpose()

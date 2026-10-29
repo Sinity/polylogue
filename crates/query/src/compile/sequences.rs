@@ -269,7 +269,7 @@ impl<'a> Compiler<'a> {
             }
             rest[i] = format!("EXISTS (SELECT 1 FROM {} WHERE {})", src(i), and_all(&w));
         }
-        let pick = |i: usize, sess: &str, prev_n: &str, prev_at: &str| {
+        let pick = |i: usize, sess: &str, prev_n: &str, prev_at: &str| -> Result<String, QueryError> {
             let mut w = vec![format!("{}.session_pk = {sess}", o(i)), conds[i].clone()];
             if i == 0 {
                 w.push(format!("{}.n > {prev_n}", o(i)));
@@ -279,12 +279,12 @@ impl<'a> Compiler<'a> {
             if !rest[i + 1].is_empty() {
                 w.push(rest[i + 1].clone());
             }
-            format!(
+            Ok(format!(
                 "(SELECT {oi}.n FROM {} WHERE {} ORDER BY {oi}.n LIMIT 1)",
                 src(i),
                 and_all(&w),
                 oi = o(i)
-            )
+            ))
         };
         let name = format!("seqm{}", self.aliases);
         let owners_sql = format!(
@@ -296,13 +296,13 @@ impl<'a> Compiler<'a> {
             next.push(format!(
                 "WHEN {} THEN {}",
                 i - 1,
-                pick(i, "r.session_pk", "r.n", "r.at")
+                pick(i, "r.session_pk", "r.n", "r.at")?
             ));
         }
         next.push(format!(
             "WHEN {} THEN {}",
             k - 1,
-            pick(0, "r.session_pk", "r.n", "NULL")
+            pick(0, "r.session_pk", "r.n", "NULL")?
         ));
         let last = k - 1;
         self.ctes.push(format!(

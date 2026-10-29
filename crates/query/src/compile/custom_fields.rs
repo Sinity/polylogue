@@ -180,7 +180,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     Ok(x.scope
         .a
         .expand(window)
-        .replace("{v}", &t.start().to_string()))
+        .replace("{v}", &t.start_ms().to_string()))
 }
 
 pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
@@ -191,14 +191,14 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     Ok(x.scope
         .a
         .expand(window)
-        .replace("{v}", &t.end().to_string()))
+        .replace("{v}", &t.end_ms()?.to_string()))
 }
 
 /// `evidence_until:T`: the evidence Polylogue had by T, read with today's
 /// parsers and prices. Rows count when their bytes were first
 /// seen by then; notes as each family stood then.
 pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let end = c.time(x.name, &x.value()?, x.span)?.end();
+    let end = c.time(x.name, &x.value()?, x.span)?.end_ms()?;
     let a = &x.scope.a;
     let cutoff = match x.unit {
         Unit::Messages | Unit::Blocks | Unit::ToolCalls => {
@@ -295,7 +295,7 @@ pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     }
     Ok(format!(
         "{} IN ({})",
-        fields::live_state(x.s(), c.opts.clock.now),
+        fields::live_state(x.s(), c.opts.clock.now.as_millisecond()),
         states.join(", ")
     ))
 }
@@ -322,7 +322,7 @@ fn live_flag(c: &mut Compiler<'_>, x: &Call<'_, '_>, states: &str) -> Result<Str
     let not = if want { "" } else { "NOT " };
     Ok(format!(
         "{} {not}IN {states}",
-        fields::live_state(x.s(), c.opts.clock.now)
+        fields::live_state(x.s(), c.opts.clock.now.as_millisecond())
     ))
 }
 
