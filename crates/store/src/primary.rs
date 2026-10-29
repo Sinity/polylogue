@@ -33,6 +33,9 @@ pub trait Sinex: Send + Sync {
         length: u64,
         bytes: &mut dyn std::io::Read,
     ) -> Result<PreparedWrite>;
+    fn canonical_publisher(&self) -> bool {
+        false
+    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
     fn complete_captures(
         &self,

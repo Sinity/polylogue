@@ -543,6 +543,10 @@ impl Reader<'_> {
         crate::primary::projection::position(self.conn()?)
     }
 
+    pub fn confirmed_checkpoint(&self) -> Result<Option<i64>> {
+        crate::primary::projection::checkpoint(self.conn()?)
+    }
+
     pub fn primary_cache_identity(&self) -> Result<String> {
         crate::primary::cache_identity(self.conn()?)
     }
