@@ -64,6 +64,7 @@ pub use context::{
 };
 pub use read::{
     BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
+    scope::ReadScopeToken,
 };
 pub use writer::{
     Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
@@ -115,6 +116,8 @@ pub enum StoreError {
     ReadPoolClosed,
     #[error("read pool is full while this thread holds a reader; reuse or release it")]
     ReadPoolNested,
+    #[error("the access scope changed while this read was in progress")]
+    ScopeChanged,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
     #[error("request {0} was already used for different content")]
