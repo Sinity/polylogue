@@ -225,3 +225,6 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 }
+
+#[cfg(test)]
+mod tests;
