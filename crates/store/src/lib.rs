@@ -13,6 +13,7 @@ pub mod backfill_jobs;
 pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
+pub mod completion;
 mod container_members;
 pub mod context;
 pub mod coverage;
