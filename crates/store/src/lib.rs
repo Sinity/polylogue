@@ -14,6 +14,7 @@ pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
 pub mod completion;
+mod admission;
 mod container_members;
 pub mod context;
 pub mod coverage;

@@ -65,6 +65,26 @@ impl PreparedRows {
                 ));
             }
         }
+        for (receipts, length) in [
+            (&output.session_receipts, output.sessions.len()),
+            (&output.document_receipts, output.documents.len()),
+            (&output.link_receipts, output.links.len()),
+        ] {
+            for (&index, &receipt) in receipts {
+                if index >= length || receipt == 0 || i64::try_from(receipt).is_err() {
+                    return Err(StoreError::Invalid(
+                        "invalid canonical admission receipt".into(),
+                    ));
+                }
+            }
+        }
+        for (&index, &receipt) in &output.event_receipts {
+            if index >= output.events.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid canonical event admission receipt".into(),
+                ));
+            }
+        }
         for (&index, &order) in &output.message_order {
             if index >= output.messages.len() || i64::try_from(order).is_err() {
                 return Err(StoreError::Invalid("invalid imported message order".into()));
