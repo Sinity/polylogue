@@ -102,12 +102,20 @@ async fn answer(
                 Err(failure) => {
                     return json_answer(
                         web,
-                        command_surface::Answer::<serde_json::Value>::error(failure).into(),
+                        command_surface::Answer::<serde_json::Value>::error(failure),
                     );
                 }
                 _ => {}
             }
         }
+        let read_scope = if !c.writes {
+            match web.daemon.reads.scope_token() {
+                Ok(scope) => Some(scope),
+                Err(error) => return json_answer(web, crate::daemon::service::store_error(&error)),
+            }
+        } else {
+            None
+        };
         let table = &web.operations;
         let limit = super::request_limit();
         let accepted = crate::protocol::caller::accept(
@@ -126,7 +134,10 @@ async fn answer(
                 Default::default(),
             )
             .await;
-        return json_answer(web, answer.into());
+        return json_answer(
+            web,
+            crate::protocol::scope_answer(answer, read_scope.as_ref()),
+        );
     }
     match values.and_then(|v| build(c, &v, &caller)) {
         Ok(request) => match c.action {

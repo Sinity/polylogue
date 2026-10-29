@@ -31,6 +31,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             continue;
         }
         if let Some(incoming) = crate::protocol::wire::incoming(&line) {
+            let mut read_scope = None;
             let answer = match incoming {
                 Err(error) => command_surface::Answer::error(crate::protocol::failure(
                     "bad_request",
@@ -38,6 +39,26 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     None,
                 )),
                 Ok((request, caller)) => {
+                    if crate::commands::command(&request.operation)
+                        .is_some_and(|command| !command.writes)
+                    {
+                        match d.reads.scope_token() {
+                            Ok(scope) => read_scope = Some(scope),
+                            Err(error) => {
+                                let answer = service::store_error(&error).answer();
+                                if writeln!(
+                                    out,
+                                    "{}",
+                                    serde_json::to_string(&answer).expect("answer serializes")
+                                )
+                                .is_err()
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     let (evidence, channel) = crate::protocol::caller::peer(&out, &caller)
                         .unwrap_or_else(|_| {
                             (
@@ -123,6 +144,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     ))
                 }
             };
+            let answer = crate::protocol::scope_answer(answer, read_scope.as_ref());
             if writeln!(
                 out,
                 "{}",
@@ -161,6 +183,22 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             cancellation.clone(),
         );
         let request = incoming.request;
+        let read_scope = if request.read_only() {
+            match d.reads.scope_token() {
+                Ok(scope) => Some(scope),
+                Err(error) => {
+                    let _ = writeln!(
+                        out,
+                        "{}",
+                        serde_json::to_string(&service::store_error(&error))
+                            .expect("error serializes")
+                    );
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         let produced = limit.scope(|| {
             crate::protocol::stream::produce(&request, d, &accepted.authorship, &mut out)
         });
@@ -215,7 +253,8 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         } else {
             service::handle_with_caller(request, d, &limit, &accepted.authorship)
         };
-        let Ok(mut text) = serde_json::to_string(&response) else {
+        let answer = crate::protocol::scope_answer(response.answer(), read_scope.as_ref());
+        let Ok(mut text) = serde_json::to_string(&answer) else {
             return;
         };
         text.push('\n');

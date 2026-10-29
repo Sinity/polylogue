@@ -21,12 +21,7 @@ pub struct Failure {
 impl From<polylogue_store::StoreError> for Failure {
     fn from(e: polylogue_store::StoreError) -> Self {
         Failure {
-            kind: match &e {
-                polylogue_store::StoreError::ReadDeadlineExceeded => "deadline_exceeded",
-                polylogue_store::StoreError::ReadCancelled => "cancelled",
-                _ => "store",
-            }
-            .into(),
+            kind: crate::protocol::store_code(&e).into(),
             message: e.to_string(),
             detail: None,
         }
