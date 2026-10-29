@@ -401,6 +401,9 @@ fn wire_shape_unknown_discriminators_and_tables_use_explicit_metadata_without_va
     table.unknown_table_count = 1;
     let mut parsed = step("v1", 0..10, true, vec![table, kind]);
     parsed.output.events.push(polylogue_model::Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: None,
         kind: "fixture".into(),
         at: None,
@@ -654,8 +657,17 @@ fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
         true,
         vec![root(), shape("/new", "number", &[])],
     )];
+    let mut bytes = batch.clone();
+    bytes.parse.clear();
+    let prepared = archive.archive.prepare_bytes(&b"{}"[..]).unwrap();
+    let stored = archive.writer.store_bytes(prepared, bytes).unwrap();
+    batch.change = crate::Change::Reparse {
+        chain: stored.chain,
+    };
+    batch.observation = None;
     archive.writer.send(batch.clone()).unwrap();
-    archive.writer.flush().unwrap();
+    let report = archive.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let before = pool
         .reader()
@@ -678,7 +690,8 @@ fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
         .unwrap();
     assert_eq!(observed.last.sequence, native);
     archive.writer.send(batch.clone()).unwrap();
-    archive.writer.flush().unwrap();
+    let report = archive.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(
         pool.reader()
             .unwrap()
@@ -702,7 +715,8 @@ fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
         vec![root(), shape("/new", "number", &["number"])],
     );
     archive.writer.send(batch).unwrap();
-    archive.writer.flush().unwrap();
+    let report = archive.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
     let current = pool
         .reader()
         .unwrap()
