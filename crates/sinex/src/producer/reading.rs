@@ -25,6 +25,7 @@ impl Sinex {
             {
                 let mut out = std::io::BufWriter::new(&mut body);
                 visit(&mut |product| {
+                    crate::products::require_source(&product.product)?;
                     serde_json::to_writer(&mut out, &product)
                         .map_err(|error| polylogue_store::StoreError::Invalid(error.to_string()))?;
                     out.write_all(b"\n")?;
@@ -137,6 +138,7 @@ impl Sinex {
                 let mut body = std::io::BufReader::new(queue.body(&identity)?);
                 while body.read_line(&mut line)? > 0 {
                     let write: ProductWrite = serde_json::from_str(&line)?;
+                    crate::products::require_source(&write.product)?;
                     events.extend(crate::products::events(&[write])?);
                     line.clear();
                 }
