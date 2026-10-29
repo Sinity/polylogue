@@ -1,17 +1,15 @@
-//! An attachment's stored bytes go only to the interactive CLI, checked on
-//! the socket. Ordinary application calls return masked descriptions.
+//! Checked attachment bytes through the ordinary application operation.
 use super::service::{Daemon, error, store_error};
 use super::{Request, Response};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-mod operator;
-pub(crate) use operator::check_cli;
+pub(crate) const PAGE_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct BytePage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub descriptor: Option<serde_json::Value>,
+    pub descriptor: Option<polylogue_store::assets::AttachmentResolution>,
     pub input: String,
     pub blob: polylogue_model::BlobHash,
     pub size: u64,
@@ -31,21 +29,10 @@ struct Cursor {
     blob: polylogue_model::BlobHash,
 }
 
-pub(super) fn socket(
-    stream: &std::os::unix::net::UnixStream,
-    request: Request,
-    d: &Daemon,
-) -> Response {
+pub(super) fn read(request: Request, d: &Daemon) -> Response {
     if let Err(response) = super::service::accepting(d) {
         return response;
     }
-    match operator::Operator::check(stream) {
-        Ok(operator) => reveal(request, d, operator),
-        Err(e) => error("operator_required", e),
-    }
-}
-
-fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Response {
     let Request::Attachment {
         message,
         block,
@@ -102,10 +89,11 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
         None => None,
     };
     let Some(found) = found else {
-        return error(
-            "attachment_unavailable",
-            "select one of the stored files the attachment descriptor lists",
-        );
+        return Response::Error {
+            kind: "attachment_unavailable".into(),
+            message: "select one of the stored files with --input".into(),
+            detail: Some(serde_json::json!({"attachment": resolution})),
+        };
     };
     if decoded
         .as_ref()
@@ -130,7 +118,9 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
             "attachment cursor is outside the stored bytes",
         );
     }
-    let end = offset.saturating_add(length as u64).min(found.size);
+    let end = offset
+        .saturating_add(length.min(PAGE_BYTES) as u64)
+        .min(found.size);
     let bytes = match reader.attachment_range(found, offset..end) {
         Ok(bytes) => bytes,
         Err(e) => return store_error(&e),
@@ -150,20 +140,7 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
     } else {
         None
     };
-    let descriptor = if initial {
-        let masked = match reader.masked_attachment(&message, block, attachment) {
-            Ok(value) => value,
-            Err(e) => return store_error(&e),
-        };
-        let mut value = match serde_json::to_value(masked) {
-            Ok(value) => value,
-            Err(e) => return error("internal", e),
-        };
-        polylogue_render::mask_json(&mut value);
-        Some(value)
-    } else {
-        None
-    };
+    let descriptor = initial.then(|| resolution.clone());
     let page = BytePage {
         descriptor,
         input: found.input.clone(),
@@ -173,13 +150,8 @@ fn reveal(request: Request, d: &Daemon, _operator: operator::Operator) -> Respon
         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         next,
     };
-    // This byte payload is encoded only after the operator check. Its descriptor
-    // is masked separately; encoded bytes must never enter the text masker.
     match serde_json::to_value(page) {
-        Ok(data) => Response::Ok {
-            data,
-            references: Default::default(),
-        },
+        Ok(data) => Response::Ok { data },
         Err(e) => error("internal", e),
     }
 }

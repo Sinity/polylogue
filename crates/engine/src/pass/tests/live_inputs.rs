@@ -101,7 +101,6 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,

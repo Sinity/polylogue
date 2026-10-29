@@ -816,7 +816,7 @@ impl Reader<'_> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed, m.pem, shown.version_hash, projection.layout,
+            m.cache_write_1h_tokens, m.speed, shown.version_hash, projection.layout,
             CASE WHEN projection.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
             projection.admitted, source_input.id, shown.chain, shown.source_end";
@@ -891,14 +891,13 @@ impl Reader<'_> {
                     r.get::<_, Option<i64>>(16)?,
                     r.get::<_, Option<String>>(17)?,
                 ),
-                r.get::<_, i64>(18)?,
+                r.get::<_, Option<Vec<u8>>>(18)?,
                 r.get::<_, Option<Vec<u8>>>(19)?,
-                r.get::<_, Option<Vec<u8>>>(20)?,
-                r.get::<_, i64>(21)?,
-                r.get::<_, Option<i64>>(22)?,
-                r.get::<_, Option<String>>(23)?,
+                r.get::<_, i64>(20)?,
+                r.get::<_, Option<i64>>(21)?,
+                r.get::<_, Option<String>>(22)?,
+                r.get::<_, Option<i64>>(23)?,
                 r.get::<_, Option<i64>>(24)?,
-                r.get::<_, Option<i64>>(25)?,
             ))
         })?;
         for row in rows {
@@ -916,7 +915,6 @@ impl Reader<'_> {
                 duration,
                 attrs,
                 (w1h, speed),
-                pem,
                 hash,
                 layout,
                 legacy_blocks,
@@ -934,32 +932,28 @@ impl Reader<'_> {
             let n = |x: Option<i64>| x.map(|x| x as u64);
             let attrs: Option<serde_json::Value> =
                 attrs.and_then(|a| serde_json::from_str(&a).ok());
-            let visible = if pem != 0 {
-                true
-            } else {
-                match content.visibility {
-                    None => true,
-                    Some(filter)
-                        if filter.prompts
-                            && !parse_name::<Role>(&role).is_some_and(|role| {
-                                polylogue_model::is_prompt(
-                                    role,
-                                    kind.as_deref().and_then(parse_name::<PromptKind>),
-                                )
-                            }) =>
-                    {
-                        false
-                    }
-                    Some(filter) if filter.kinds.is_empty() => false,
-                    Some(filter) => {
-                        let sql = format!(
-                            "SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND kind IN ({}))",
-                            filter.kinds
-                        );
-                        self.conn()?
-                            .prepare_cached(&sql)?
-                            .query_row([pk], |row| row.get::<_, bool>(0))?
-                    }
+            let visible = match content.visibility {
+                None => true,
+                Some(filter)
+                    if filter.prompts
+                        && !parse_name::<Role>(&role).is_some_and(|role| {
+                            polylogue_model::is_prompt(
+                                role,
+                                kind.as_deref().and_then(parse_name::<PromptKind>),
+                            )
+                        }) =>
+                {
+                    false
+                }
+                Some(filter) if filter.kinds.is_empty() => false,
+                Some(filter) => {
+                    let sql = format!(
+                        "SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND kind IN ({}))",
+                        filter.kinds
+                    );
+                    self.conn()?
+                        .prepare_cached(&sql)?
+                        .query_row([pk], |row| row.get::<_, bool>(0))?
                 }
             };
             let blocks = if visible {

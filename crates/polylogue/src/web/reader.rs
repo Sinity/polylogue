@@ -311,13 +311,7 @@ pub(super) async fn note(
         Response::Ok { data, .. } => page(pages::layout(
             "Note",
             "",
-            &format!(
-                "polylogue note read {}",
-                polylogue_render::shell_quote(&polylogue_render::mask(&access::scrub(
-                    &id,
-                    &web.daemon.archive.root
-                )))
-            ),
+            &format!("polylogue note read {}", polylogue_render::shell_quote(&id)),
             &format!(
                 "<h1>Note</h1><pre>{}</pre>",
                 polylogue_render::html::escape(&serde_json::to_string_pretty(&data).expect("JSON"))

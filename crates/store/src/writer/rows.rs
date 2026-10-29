@@ -381,10 +381,6 @@ pub(super) struct Version {
     complete: bool,
     rank: i64,
     hash: Vec<u8>,
-    /// The most any block of the version holds of PEM private key blocks
-    /// ([`crate::ordered_blocks::pem`]). Written with the version, never
-    /// compared.
-    pem: i64,
 }
 
 pub(super) fn ms(t: Option<Timestamp>) -> Option<i64> {
@@ -500,7 +496,6 @@ impl RowWriter<'_, '_> {
             complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
             rank: self.rank,
             hash: prepared.hash.to_vec(),
-            pem: prepared.pem.iter().copied().max().unwrap_or(0),
         };
         let pk = match pk {
             Some(pk) => pk,
@@ -552,7 +547,6 @@ impl RowWriter<'_, '_> {
                     complete: choice.complete,
                     rank: choice.rank,
                     hash: choice.hash.clone(),
-                    pem: 0,
                 },
                 choice.session,
             )
@@ -591,7 +585,6 @@ impl RowWriter<'_, '_> {
             .prepared
             .as_ref()
             .ok_or_else(|| StoreError::Invalid("a changed version has no prepared body".into()))?;
-        v.pem = prepared.pem.iter().copied().max().unwrap_or(0);
         self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
         self.clear_blocks(pk)?;
         self.update_message(pk, m, session_pk, &v, order)?;
@@ -672,22 +665,22 @@ impl RowWriter<'_, '_> {
                  source_end = ?26, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
                  cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
-                 words = ?25, cost_nusd = ?33, provider_cost_nusd = ?27,
+                 words = ?25, cost_nusd = ?32, provider_cost_nusd = ?27,
                  cache_write_5m_tokens = ?28, cache_write_1h_tokens = ?29, speed = ?30,
-                 record_position = ?31, pem = ?32, at_time = ?35,
+                 record_position = ?31, at_time = ?34,
                  order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
-             WHERE pk = ?1 AND (?34 IS NULL OR pk=?34)"
+             WHERE pk = ?1 AND (?33 IS NULL OR pk=?33)"
         } else {
             "INSERT INTO message(pk, id, session_pk, order_input_pk, seq, arrival_rank, role, written_by,
                  prompt_kind, model, at, parent_id, input_pk, source_chain, source_start,
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
-                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, pem,
+                 cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position,
                  cost_nusd, order_input_id, at_time)
-             VALUES (?34, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
-                 (SELECT id FROM input_ref WHERE pk = ?3), ?35)"
+             VALUES (?33, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32,
+                 (SELECT id FROM input_ref WHERE pk = ?3), ?34)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -728,7 +721,6 @@ impl RowWriter<'_, '_> {
             n(u.cache_write_1h),
             u.speed,
             order.1.1,
-            v.pem,
             // The cost derivation's value, written with the row so a first
             // build's derive does not rewrite every priced message.
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
