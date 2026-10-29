@@ -9,7 +9,7 @@
 pub mod products;
 pub use products::{
     CapturedInput, Confirmed, ConfirmedChange, Material, PreparedInput, PreparedWrite, Product,
-    Reading,
+    ProductWrite, Reading, SourceLocation,
 };
 
 use crate::input_rows::InputRows;

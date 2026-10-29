@@ -135,3 +135,17 @@ pub struct PreparedWrite {
     pub identity: String,
     pub pending: bool,
 }
+
+/// An outbound fact with its native source record and genuine parent readings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProductWrite {
+    pub product: Product,
+    pub location: Option<SourceLocation>,
+    pub parents: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceLocation {
+    pub material: String,
+    pub anchor: u64,
+}
