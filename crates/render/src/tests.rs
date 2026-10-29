@@ -2628,3 +2628,105 @@ fn before_footer_trim_advances_only_the_left_fragment_edge() {
     );
     assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
 }
+
+#[test]
+fn before_input_must_descend_across_rows_families_and_record_ordinals() {
+    let anchor_item = text("anchor");
+    let anchor_selection = SelectionLocator {
+        row: 2,
+        record: ReadRecordLocator {
+            kind: ReadRecordKind::Event,
+            ordinal: 4,
+        },
+    };
+    let anchor = ReadPosition {
+        selection: anchor_selection,
+        item: 5,
+        character: 0,
+        item_hash: item_hash(&anchor_item),
+    };
+    for (selection, ordinal) in [
+        (
+            SelectionLocator {
+                row: 3,
+                ..anchor_selection
+            },
+            0,
+        ),
+        (
+            SelectionLocator {
+                record: ReadRecordLocator {
+                    kind: ReadRecordKind::Link,
+                    ordinal: 0,
+                },
+                ..anchor_selection
+            },
+            0,
+        ),
+        (
+            SelectionLocator {
+                record: ReadRecordLocator {
+                    ordinal: 5,
+                    ..anchor_selection.record
+                },
+                ..anchor_selection
+            },
+            0,
+        ),
+        (anchor_selection, 6),
+    ] {
+        let mut page =
+            pager::PageBuilder::new_before(header(), budget(), anchor, framing()).unwrap();
+        page.push_at(anchor_selection, 5, anchor_item.clone())
+            .unwrap();
+        assert_eq!(
+            page.push_at(selection, ordinal, text("out of order")),
+            Err(pager::PageError::InvalidPosition)
+        );
+    }
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(8).unwrap();
+    limits.bytes = NonZeroUsize::new(5000).unwrap();
+    let mut page = pager::PageBuilder::new_before(header(), limits, anchor, framing()).unwrap();
+    page.push_at(anchor_selection, 5, anchor_item).unwrap();
+    for selection in [
+        SelectionLocator {
+            row: 2,
+            record: ReadRecordLocator {
+                kind: ReadRecordKind::Message,
+                ordinal: 99,
+            },
+        },
+        SelectionLocator {
+            row: 2,
+            record: ReadRecordLocator {
+                kind: ReadRecordKind::Session,
+                ordinal: 100,
+            },
+        },
+        SelectionLocator {
+            row: 1,
+            record: ReadRecordLocator {
+                kind: ReadRecordKind::Link,
+                ordinal: 100,
+            },
+        },
+    ] {
+        assert_eq!(
+            page.push_at(selection, 9, text("earlier")).unwrap(),
+            pager::Push::Accepted
+        );
+    }
+    assert_eq!(page.first_position().unwrap().selection.row, 1);
+    let later_family = SelectionLocator {
+        row: 1,
+        record: ReadRecordLocator {
+            kind: ReadRecordKind::Document,
+            ordinal: 0,
+        },
+    };
+    assert_eq!(
+        page.push_at(later_family, 0, text("later family in same row")),
+        Err(pager::PageError::InvalidPosition)
+    );
+}

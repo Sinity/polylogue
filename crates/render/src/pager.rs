@@ -210,7 +210,7 @@ impl PageBuilder {
     ) -> Result<Push, PageError> {
         if self
             .previous_input
-            .is_some_and(|(last, item)| last == selection && ordinal >= item)
+            .is_some_and(|last| (selection, ordinal) >= last)
         {
             return Err(PageError::InvalidPosition);
         }
