@@ -32,15 +32,20 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     assert_eq!(listed["count"], 1);
     let reference = format!("event:{}", listed["rows"][0]["id"].as_str().unwrap());
     let ordinary: ReadPage = serde_json::from_str(
-        &call(
+        &super::read_pages::read_without_deadline(
             &archive,
-            "read",
-            args(json!({"target":reference,"format":"json"})),
+            json!({"target":reference,"format":"json"}),
         )
         .unwrap(),
     )
     .unwrap();
-    let (ordinary, _) = super::read_pages::collect(&daemon, ordinary, None, None);
+    let (ordinary, _) = super::read_pages::collect(
+        &daemon,
+        ordinary,
+        None,
+        None,
+        command_surface::Deadline::None,
+    );
     let item = ordinary
         .values
         .iter()
@@ -52,10 +57,9 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     assert_eq!(data["event"]["data"]["data"]["text"], text);
     assert_eq!(data["event"]["data"]["data"]["credential"], credential);
     let page: ReadPage = serde_json::from_str(
-        &call(
+        &super::read_pages::read_without_deadline(
             &archive,
-            "read",
-            args(json!({"target":reference,"budget":128})),
+            json!({"target":reference,"budget":128}),
         )
         .unwrap(),
     )
@@ -74,7 +78,8 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     wrong.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
     let error = super::read_pages::execute_ready(&archive, &wrong).unwrap_err();
     assert!(error.contains("bad_request"), "{error}");
-    let (reconstructed, pages) = super::read_pages::collect(&daemon, page, None, None);
+    let (reconstructed, pages) =
+        super::read_pages::collect(&daemon, page, None, None, command_surface::Deadline::None);
     let actual = reconstructed
         .values
         .iter()

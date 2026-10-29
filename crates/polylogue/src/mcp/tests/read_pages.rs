@@ -113,6 +113,7 @@ pub(super) fn collect(
     mut page: ReadPage,
     budget: Option<u64>,
     max_wire_bytes: Option<usize>,
+    expected_deadline: command_surface::Deadline,
 ) -> (Items, usize) {
     let archive = Archive::at(&daemon.daemon.archive.root);
     let query = page.snapshot.query.clone();
@@ -142,6 +143,12 @@ pub(super) fn collect(
             break;
         };
         let envelope = &ready.mcp["arguments"];
+        let child: crate::protocol::operations::McpArguments<Value> =
+            serde_json::from_value(envelope.clone()).unwrap();
+        assert_eq!(
+            child.deadline, expected_deadline,
+            "generated child changed the deadline"
+        );
         let request_id = envelope["request_id"]
             .as_str()
             .expect("complete accepted child envelope");
@@ -167,9 +174,20 @@ pub(super) fn collect(
             .unwrap()
             .expect("root Begin is acknowledged before exposing continuation")
             .value;
-        assert!(
-            acknowledged.binding.original().is_some(),
-            "continuation must point one hop to the original run"
+        let original = acknowledged
+            .binding
+            .original()
+            .expect("continuation must point one hop to the original run");
+        let original: command_surface::RunnableRequest = serde_json::from_value(
+            original
+                .accepted_request
+                .clone()
+                .expect("actual accepted root envelope"),
+        )
+        .unwrap();
+        assert_eq!(
+            original.deadline, expected_deadline,
+            "root deadline was not retained"
         );
         assert_eq!(query, format!("query:{}", acknowledged.question));
         let hash = acknowledged.binding_hash().unwrap();
@@ -187,6 +205,28 @@ pub(super) fn collect(
     }
     items.finish();
     (items, pages)
+}
+
+/// Whole-byte reconstruction uses the documented lifted deadline at the root.
+/// Children retain that accepted choice; the client never edits their deadlines.
+pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Result<String, String> {
+    let command = crate::commands::command("read").unwrap();
+    let envelope = serde_json::to_value(crate::protocol::operations::McpArguments {
+        arguments,
+        request_id: uuid::Uuid::now_v7().to_string(),
+        deadline: command_surface::Deadline::None,
+    })
+    .unwrap();
+    assert_eq!(envelope.get("deadline"), Some(&Value::Null));
+    let (text, _, failed) = call_with_limit(
+        archive,
+        &command.mcp_name(),
+        envelope.as_object().unwrap().clone(),
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+        None,
+    )?;
+    if failed { Err(text) } else { Ok(text) }
 }
 
 pub(super) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
@@ -215,10 +255,9 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
     let source = "synthetic MCP prompt λ🙂 boundary ".repeat(1000);
     let daemon = test_daemon::start(&source);
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let first = call(
+    let first = read_without_deadline(
         &archive,
-        "read",
-        args(json!({"target":"session:claude-code:s1", "budget":256})),
+        json!({"target":"session:claude-code:s1", "budget":256}),
     )
     .unwrap();
     let page: ReadPage = serde_json::from_str(&first).unwrap();
@@ -232,7 +271,13 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
     invalid.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
     let error = execute_ready(&archive, &invalid).unwrap_err();
     assert!(error.contains("bad_request"), "{error}");
-    let (items, pages) = collect(&daemon, page, Some(512), None);
+    let (items, pages) = collect(
+        &daemon,
+        page,
+        Some(512),
+        None,
+        command_surface::Deadline::None,
+    );
     assert!(pages > 1);
     assert_eq!(items.text(), source);
 }
@@ -252,7 +297,13 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     assert!(page.document.footer.next.is_some());
     // A bounded page may finish at a header or inside encoded item JSON.
     // The client follows the actual continuation until the complete body decodes.
-    let (items, pages) = collect(&daemon, page, None, Some(22_000));
+    let (items, pages) = collect(
+        &daemon,
+        page,
+        None,
+        Some(22_000),
+        command_surface::Deadline::Default,
+    );
     assert!(pages > 1);
     assert!(!items.text().is_empty());
     assert_eq!(items.text(), source);
