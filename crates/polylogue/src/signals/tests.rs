@@ -31,7 +31,7 @@ fn signal_schema_uses_common_closed_rule_and_delivery_contract() {
 fn registry() -> Checkpoint {
     let day = query_language::time::DaySetting::new(
         jiff::tz::TimeZone::UTC,
-        jiff::civil::Time::midnight(),
+        jiff::civil::Time::new(0, 0, 0, 0).unwrap(),
     )
     .unwrap();
     Checkpoint {
@@ -259,4 +259,80 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
         })
         .unwrap();
     assert_eq!(receipts.len(), 1);
+}
+
+#[test]
+fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
+    struct Worker {
+        stop: Option<std::sync::mpsc::Sender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.send(());
+            }
+            if let Some(thread) = self.thread.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+    fn observe(mut condition: impl FnMut() -> bool) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < end,
+                "completion cue did not reach the signal controller before its 30s refresh"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let mut fixture = crate::test_daemon::start_with_clock(
+        "synthetic",
+        polylogue_model::WallClock::fixed(
+            jiff::Timestamp::from_millisecond(1_792_332_000_000).unwrap(),
+        ),
+    );
+    fixture.pause_signals();
+    tick(&fixture.daemon).unwrap();
+    *fixture.daemon.signals.lock().unwrap() = Value::Null;
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let daemon = Arc::clone(&fixture.daemon);
+    let _worker = Worker {
+        stop: Some(stop),
+        thread: Some(std::thread::spawn(move || run(daemon, &stopped))),
+    };
+    // The saved baseline makes this startup evaluation read-only. There is no
+    // self-generated checkpoint cue left to mask a missing source subscription.
+    observe(|| fixture.daemon.signals.lock().unwrap()["rules"].is_array());
+    let write = UserWrite::AddNote {
+        note: polylogue_model::NewNote {
+            kind: polylogue_model::NoteKind::Signal,
+            key: None,
+            value: Some(json!({"name":"completion-wake","query":"sessions"}).to_string()),
+            author: polylogue_model::Author::Operator,
+            targets: vec![],
+            relations: vec![],
+            revises: None,
+            valid_until: None,
+        },
+    };
+    fixture
+        .daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .user(
+            fixture
+                .daemon
+                .config
+                .requests
+                .request("cue:rule".into(), write),
+        )
+        .unwrap();
+    observe(|| {
+        fixture.daemon.signals.lock().unwrap()["rules"]
+            .as_array()
+            .is_some_and(|rules| rules.iter().any(|rule| rule["name"] == "completion-wake"))
+    });
 }
