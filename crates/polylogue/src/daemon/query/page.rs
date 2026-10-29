@@ -217,3 +217,6 @@ pub(super) fn question(program: &Program, options: &Options, why: bool) -> Resul
     serde_json::to_writer(&mut digest, &binding).map_err(failed)?;
     Ok(digest.finalize().to_hex().to_string())
 }
+
+#[cfg(test)]
+mod tests;
