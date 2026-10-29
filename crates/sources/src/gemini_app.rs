@@ -228,7 +228,7 @@ fn entry(cell: &str) -> Option<Entry> {
     };
     let date_at = segments
         .iter()
-        .position(|s| parse_time(&text_of(s)).is_some());
+        .position(|s| activity_time_text(&text_of(s)));
     let (notes_end, at, at_text) = match date_at {
         Some(i) => {
             let t = text_of(segments[i]);
@@ -369,6 +369,32 @@ fn decode_entities(s: &str) -> String {
 
 /// `Jul 27, 2026, 10:59:30 PM CEST` (a narrow no-break space before the
 /// meridiem). An unknown zone abbreviation leaves the time unknown.
+// Recognize the native date slot independently of resolving its timezone or
+// civil date, so an unreadable clock keeps its original text and response.
+fn activity_time_text(text: &str) -> bool {
+    let words: Vec<_> = text.split_whitespace().collect();
+    words.len() == 6
+        && matches!(
+            words[0],
+            "Jan"
+                | "Feb"
+                | "Mar"
+                | "Apr"
+                | "May"
+                | "Jun"
+                | "Jul"
+                | "Aug"
+                | "Sep"
+                | "Oct"
+                | "Nov"
+                | "Dec"
+        )
+        && words[1].trim_end_matches(',').parse::<u32>().is_ok()
+        && words[2].trim_end_matches(',').parse::<i64>().is_ok()
+        && words[3].matches(':').count() == 2
+        && matches!(words[4], "AM" | "PM")
+}
+
 fn parse_time(s: &str) -> Option<crate::time::SourceTime> {
     let s = s.replace(['\u{202f}', '\u{a0}'], " ");
     let mut it = s.split_whitespace();
