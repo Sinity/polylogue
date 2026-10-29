@@ -168,7 +168,7 @@ fn socket_authorship(w: &test_daemon::TestDaemon) -> Authorship {
 
 fn context_authorship_path(name: &str) -> Option<&'static str> {
     match name {
-        "query" | "list" => Some("/resolved/context/authorship"),
+        "query" | "list" | "note list" => Some("/resolved/context/authorship"),
         "timeline" | "cost" => Some("/context/authorship"),
         _ => None,
     }
