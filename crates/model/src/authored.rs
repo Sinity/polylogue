@@ -33,6 +33,7 @@ pub struct PreparedRequest {
 /// an entity-deduplicated request's identity and original outcome.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AuthoredEffect {
+    pub variants: crate::VariantEffect,
     pub notes: Vec<NoteRevision>,
     pub withdrawals: Vec<Withdrawal>,
     pub settings: Vec<Setting>,
