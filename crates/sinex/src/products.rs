@@ -18,7 +18,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Background { .. } => "polylogue.background",
         Product::Repository { .. } => "polylogue.repository",
         Product::ParseProgress { .. } => "polylogue.parse_progress",
-        Product::Request(request) => match &request.write {
+        Product::Request(request) => match &request.request.write {
             UserWrite::AddNote { .. }
             | UserWrite::SaveQuery { .. }
             | UserWrite::AnnotateQuery { .. }
@@ -57,7 +57,11 @@ pub(crate) fn key(product: &Product, occurrence: u64) -> Result<String> {
         Product::Background { facts, .. } => json!([facts.session, facts.task_id]),
         Product::Repository { facts, .. } => json!([facts.path]),
         Product::ParseProgress { reading, .. } => json!([reading.start]),
-        Product::Request(request) => json!([request.id]),
+        Product::Request(request) => json!([request.request.id]),
+        Product::Coverage(coverage) => json!([coverage.machine]),
+        Product::WorkSnapshot { snapshot } => {
+            json!([snapshot.session.id, snapshot.reducer_version])
+        }
     };
     let source = product
         .reading()
@@ -110,7 +114,8 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             json!({"session": facts.session, "task": facts.task_id})
         }
         Product::Repository { facts, .. } => json!({"path": facts.path}),
-        Product::Request(request) => {
+        Product::Request(prepared) => {
+            let request = &prepared.request;
             let mut value =
                 json!({"request": request.id, "at": request.at, "machine": request.machine});
             match &request.write {
@@ -187,6 +192,13 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             }
             value
         }
+        Product::Coverage(_) => json!({}),
+        Product::WorkSnapshot { snapshot } => json!({
+            "session":snapshot.session.id,"reducer_version":snapshot.reducer_version,"source_position":snapshot.position,
+            "complete":true,"repo":snapshot.session.repo,"branch":snapshot.session.git_branch,"kind":snapshot.session.kind,"mode":snapshot.session.mode,
+            "machine":Value::Null,"objectives":[],"git_identity":Value::Null,"terminal":Value::Null,"boot_id":Value::Null,
+            "native_sources":[],"native_unavailable":[],
+        }),
         Product::Input { rows, .. } => json!({"input": rows.input}),
         Product::Blob(material) => json!({"blob": material.hash}),
         Product::ParseProgress { reading, .. } => json!({"input": reading.input.id}),
@@ -201,12 +213,44 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
         serde_json::from_value(payload.get("record").cloned().ok_or_else(|| {
             Error::Invalid(format!("confirmed {event_type} has no complete facts"))
         })?)?;
+    if let Product::WorkSnapshot { snapshot } = &product {
+        if payload.get("session") != Some(&serde_json::to_value(&snapshot.session.id)?)
+            || payload.get("reducer_version").and_then(Value::as_u64)
+                != Some(snapshot.reducer_version as u64)
+            || payload.get("source_position").and_then(Value::as_i64) != Some(snapshot.position)
+            || payload.get("complete").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(Error::Invalid(
+                "work snapshot wrapper differs from its complete facts".into(),
+            ));
+        }
+    }
     if kind(&product) != event_type {
         return Err(Error::Invalid(format!(
             "confirmed {event_type} carries another product kind"
         )));
     }
     Ok(product)
+}
+
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct WorkSnapshotMetadata {
+    session: polylogue_model::SessionId,
+    reducer_version: u32,
+    source_position: i64,
+    complete: bool,
+    repo: Option<String>,
+    branch: Option<String>,
+    kind: polylogue_model::SessionKind,
+    mode: Option<String>,
+    machine: Option<String>,
+    objectives: Vec<crate::kinds::Objective>,
+    git_identity: Option<crate::kinds::GitIdentity>,
+    terminal: Option<crate::kinds::TerminalIdentity>,
+    boot_id: Option<String>,
+    native_sources: Vec<crate::kinds::RecordRef>,
+    native_unavailable: Vec<String>,
 }
 
 fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
@@ -271,6 +315,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.delivery", "request"),
         ("polylogue.delivery_outcome", "request"),
         ("polylogue.request", "request"),
+        ("polylogue.coverage", "coverage"),
+        ("polylogue.work_snapshot", "work_snapshot"),
     ];
     let complete =
         serde_json::to_value(schemars::schema_for!(Product)).expect("product schema serializes");
@@ -289,13 +335,40 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             variants.retain(|variant| variant["properties"]["product"]["const"] == *product);
             assert_eq!(variants.len(), 1, "one complete product schema per kind");
             let definitions = reachable_definitions(&facts, &definitions);
-            let schema = json!({
+            let mut schema = json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object", "properties": {
                     "record_key": {"type":"string", "minLength":1}, "record":facts,
                 },
                 "required":["record_key","record"], "$defs":definitions,
             });
+            if *product == "work_snapshot" {
+                let metadata = serde_json::to_value(schemars::schema_for!(WorkSnapshotMetadata))
+                    .expect("metadata schema serializes");
+                let object = schema["properties"]
+                    .as_object_mut()
+                    .expect("schema properties");
+                object.extend(
+                    metadata["properties"]
+                        .as_object()
+                        .expect("metadata properties")
+                        .clone(),
+                );
+                let required = schema["required"].as_array_mut().expect("required fields");
+                required.extend(
+                    metadata["required"]
+                        .as_array()
+                        .expect("metadata required fields")
+                        .clone(),
+                );
+                if let Some(definitions) = metadata["$defs"].as_object() {
+                    schema["$defs"]
+                        .as_object_mut()
+                        .expect("definitions")
+                        .extend(definitions.clone());
+                }
+                schema["additionalProperties"] = false.into();
+            }
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
@@ -305,16 +378,24 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 payload_schema: Some(schema),
                 normalization: Normalization::Json,
                 key_rule: Some(KeyRule::Fields {
-                    fields: vec!["record_key".into()],
+                    fields: if *product == "work_snapshot" {
+                        vec!["session".into(), "reducer_version".into()]
+                    } else {
+                        vec!["record_key".into()]
+                    },
                 }),
                 replace_rule: Some(if *product == "request" || *product == "blob" {
                     ReplaceRule::SuppressRepeat
                 } else {
                     ReplaceRule::ReplaceWhenNewer
                 }),
-                time_rule: Some(TimeRule::FirstPresent {
-                    fields: vec!["at".into(), "started".into()],
-                    quality: TimeQuality::Intrinsic,
+                time_rule: Some(if *product == "work_snapshot" {
+                    TimeRule::Unknown
+                } else {
+                    TimeRule::FirstPresent {
+                        fields: vec!["at".into(), "started".into()],
+                        quality: TimeQuality::Intrinsic,
+                    }
                 }),
                 field_hints: [
                     "record", "text", "value", "targets", "query", "rows", "refs",
@@ -345,8 +426,26 @@ pub(crate) fn events(
         .map(|write| {
             let mut payload = payload(&write.product, write.output_index)?;
             let mut source = write.location.clone();
-            if let Product::Session { facts, .. } = &write.product {
+            let session = match &write.product {
+                Product::Session { facts, .. } => Some(facts),
+                Product::WorkSnapshot { snapshot } => Some(&snapshot.session),
+                _ => None,
+            };
+            if let Some(facts) = session {
                 let mut native = crate::native::Native::new(facts.repo.clone());
+                if let Product::WorkSnapshot { snapshot } = &write.product {
+                    for evidence in &snapshot.native {
+                        native.observe(
+                            &evidence.data,
+                            crate::kinds::RecordRef {
+                                material: MaterialId(evidence.material.parse().map_err(
+                                    |error| Error::Invalid(format!("source material: {error}")),
+                                )?),
+                                anchor: evidence.anchor,
+                            },
+                        );
+                    }
+                }
                 for ProductWrite {
                     product, location, ..
                 } in writes
