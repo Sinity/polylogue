@@ -368,20 +368,6 @@ impl Spool {
         self.prepare_operation(frame, Some(bytes), None, None, None)
     }
 
-    /// Complete parser facts share the material's atomic publication, but
-    /// remain outside queue metadata and the raw provider manifest.
-    pub fn prepare_capture(
-        &self,
-        frame: Ingress,
-        bytes: impl Read,
-        capture: &Capture,
-    ) -> Result<Prepared> {
-        if !matches!(&frame, Ingress::Material { .. }) {
-            return invalid("only a material frame can own a capture");
-        }
-        self.prepare_operation(frame, Some(bytes), None, Some(capture), None)
-    }
-
     pub fn prepare_encoded_material(
         &self,
         frame: Ingress,

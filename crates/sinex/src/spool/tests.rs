@@ -1,6 +1,15 @@
 use super::*;
 use std::process::Command;
 
+trait CaptureFixture {
+    fn prepare_capture(&self, frame: Ingress, bytes: &[u8], capture: &Capture) -> Result<Prepared>;
+}
+impl CaptureFixture for Spool {
+    fn prepare_capture(&self, frame: Ingress, bytes: &[u8], capture: &Capture) -> Result<Prepared> {
+        self.prepare_encoded_capture(frame, crate::tests::body(&self.root, bytes), capture)
+    }
+}
+
 pub(super) fn boundary(name: &str) {
     if std::env::var("POLYLOGUE_SPOOL_CRASH").as_deref() == Ok(name) {
         std::process::exit(77);

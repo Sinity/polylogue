@@ -41,6 +41,7 @@ fn sinex(dir: &Path) -> Running {
     let sinexd = std::env::var("SINEXD").expect("SINEXD names a built sinexd");
     let schema = std::env::var("SINEX_SCHEMA").expect("SINEX_SCHEMA names a built sinex-schema");
     let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
+        required_extensions: vec!["timescaledb".into(), "vector".into()],
         preload: vec!["timescaledb".into()],
         settings: vec![("timescaledb.enable_chunk_skipping".into(), "on".into())],
     })
@@ -115,8 +116,7 @@ fn connect(config: &Config) -> Arc<Sinex> {
 
 /// Builds the Morrow example `example` with its home at `home`, on Sinex.
 fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Config) {
-    let (archive, _lock) =
-        Archive::open_primary(&example.root, &config.store, sinex.as_ref()).unwrap();
+    let (archive, _lock) = Archive::open_primary(&example.root, &config.store).unwrap();
     let mut settings = example.config();
     settings.home = home.to_path_buf();
     let mut engine = Engine::on_sinex(settings, archive, sinex.clone()).unwrap();
@@ -191,8 +191,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     build_on_sinex(&example, &example.home, &sinex, &running.config);
     phase("built on Sinex");
     {
-        let (archive, _lock) =
-            Archive::open_primary(&example.root, &running.config.store, sinex.as_ref()).unwrap();
+        let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
         let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
         example.import_exports(&mut engine);
         engine
@@ -261,6 +260,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         event_types: Some(vec!["polylogue.note".into()]),
         from: None,
         until: None,
+        after: None,
     };
     let mut replay = sinex.replay().unwrap();
     let selection = replay.scope(&scope).unwrap().into_iter().next().unwrap();
