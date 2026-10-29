@@ -246,6 +246,12 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
+    if let Request::Complete { text, position } = &request {
+        if *position > text.len() || !text.is_char_boundary(*position) {
+            return error("bad_request", "completion position must be a UTF-8 byte boundary within the query");
+        }
+        return ok(crate::completion_catalog::complete(&d.archive.root, text, *position));
+    }
     let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
@@ -485,32 +491,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 }
             })
         }
-        Request::Complete { text, position } => {
-            if position > text.len() || !text.is_char_boundary(position) {
-                return self::error(
-                    "bad_request",
-                    "completion position must be a UTF-8 byte boundary within the query",
-                );
-            }
-            let read_position = match reader.change_position() {
-                Ok(p) => p.to_string(),
-                Err(e) => return store_error(&e),
-            };
-            match d.warm.completion(&reader, &read_position) {
-                Ok(data) => {
-                    if let Err(error) = crate::completion_catalog::publish(
-                        &d.archive.root,
-                        &read_position,
-                        &data,
-                        now_ms(),
-                    ) {
-                        return self::error("completion_catalog", error);
-                    }
-                    ok(super::warm::complete_at(&data, &text, position))
-                }
-                Err(error) => self::error("store", error),
-            }
-        }
+        Request::Complete { .. } => unreachable!("completion is handled before opening an archive reader"),
 
         Request::Sql { statement } => match reader.query(&statement, &[]) {
             // The connection is read-only: a statement that writes fails.
@@ -1094,6 +1075,7 @@ pub struct Runtime {
     signals: Option<JoinHandle<()>>,
     counts_stop: Option<Sender<()>>,
     counts: Option<JoinHandle<()>>,
+    completion: Option<crate::completion_catalog::publisher::Publisher>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
@@ -1111,6 +1093,7 @@ impl Runtime {
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        self.completion.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }
@@ -1317,9 +1300,16 @@ pub fn start(
         signals: None,
         counts_stop: None,
         counts: None,
+        completion: None,
         engine: None,
         lock: Some(lock),
     };
+    // Subscribe before the initial snapshot or starting the ingest loop.
+    let completion_commits = runtime.daemon.writes.as_ref().map(WriterSender::completion_commits);
+    let completion_clock = if matches!(&runtime.daemon.mode, ModeState::Standalone) {
+        runtime.daemon.reads.reader().ok().and_then(|reader|super::query::logical_day(&reader).ok()).and_then(|day|polylogue_query::time::clock(now_ms(),day).ok())
+    } else { None };
+    runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(Arc::clone(&runtime.daemon), completion_commits, completion_clock)?);
     let Some(mut engine) = engine.take() else {
         return Ok(runtime);
     };

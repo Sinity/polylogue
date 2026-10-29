@@ -143,7 +143,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI in particular _CERTAINLY_ requires advanced autocomplete, otherwise it is going to be ~pointless. Ideally that includes integrated fuzzyfinding somehow" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). Ruling, 2026-09-14, on completion with the daemon down: "yes. everything is supposed to be usable." (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
 
-- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The socket `complete` request serves MCP `completion/complete`, HTTP and the web query box from the same catalog in the daemon's memory.
+- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The socket `complete` request serves MCP `completion/complete`, HTTP and the web query box through the same read-only catalog lookup.
 - **The grammar-position completer** is the shared `query-language` function: it takes the whole query text and a cursor offset and returns candidates with their replace range. Polylogue supplies the catalog.
 - **Never** does completion run a search, open the archive or write.
 
@@ -171,8 +171,8 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
-- **Format:** versioned binary with a fixed header and offset tables, memory-mapped. A catalog of another format version is ignored, leaving grammar-only completion.
-- **Freshness:** updated incrementally from each committed batch, written by temporary file, sync and rename, at most every 2 s while writes continue. Candidates may trail by that interval; query answers never do.
+- **Format:** a private derived SQLite file with a versioned metadata row, indexed section tables and memory-mapped pages. Completion opens it read-only and loads the active source schemas, field values or session prefixes requested by the shared grammar. A catalog of another format version is ignored, leaving grammar-only completion.
+- **Freshness:** a startup snapshot is written to a private temporary file, synced and renamed. The daemon subscribes to committed index changes before that snapshot, then applies indexed deltas in atomic catalog transactions that commit the published position with their rows, at most every 2 s while writes continue. Idle publishers wait for commit notifications. Candidates may trail by that interval; query answers never do.
 - It is derived and harmless to delete.
 
 ### Registration

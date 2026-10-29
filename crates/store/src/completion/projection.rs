@@ -25,7 +25,10 @@ pub struct NativeSaved {
 pub struct NativeKept {
     pub id: String,
     pub name: Option<String>,
-    pub rows: serde_json::Value,
+    pub unit: String,
+    pub columns: serde_json::Value,
+    pub match_columns: Option<serde_json::Value>,
+    pub row_count: u64,
 }
 impl Reader<'_> {
     /// Streams session-grain projections. `None` is the single startup snapshot;
@@ -102,7 +105,7 @@ impl Reader<'_> {
         }
         if let Some(after) = after {
             let mut removed = conn
-                .prepare("SELECT id FROM removed_session WHERE changed>?1 ORDER BY changed,id")?;
+                .prepare("SELECT r.id FROM removed_session r WHERE r.changed>?1 AND NOT EXISTS(SELECT 1 FROM session s WHERE s.id=r.id) ORDER BY r.changed,r.id")?;
             for id in removed.query_map([after.index], |row| row.get::<_, String>(0))? {
                 visit(SessionChange::Removed(id?))?;
             }
@@ -175,8 +178,8 @@ impl Reader<'_> {
     ) -> Result<()> {
         let conn = self.conn()?;
         let mut statement=conn.prepare(if after.is_some() {
-            "SELECT k.id,k.name,k.rows_json FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id"
-        } else {"SELECT id,name,rows_json FROM source_kept_result ORDER BY id"})?;
+            "SELECT k.id,k.name,json_extract(k.rows_json,'$.unit'),json_extract(k.rows_json,'$.columns'),json_extract(k.rows_json,'$.match_columns'),json_array_length(k.rows_json,'$.rows') FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id"
+        } else {"SELECT id,name,json_extract(rows_json,'$.unit'),json_extract(rows_json,'$.columns'),json_extract(rows_json,'$.match_columns'),json_array_length(rows_json,'$.rows') FROM source_kept_result ORDER BY id"})?;
         let mut rows = if let Some(after) = after {
             statement.query([after])?
         } else {
@@ -187,7 +190,10 @@ impl Reader<'_> {
             visit(NativeKept {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                rows: serde_json::from_str(&row.get::<_, String>(2)?)?,
+                unit: row.get(2)?,
+                columns: serde_json::from_str(&row.get::<_,String>(3)?)?,
+                match_columns: row.get::<_,Option<String>>(4)?.map(|value|serde_json::from_str(&value)).transpose()?,
+                row_count: row.get::<_,i64>(5)? as u64,
             })?;
         }
         Ok(())

@@ -10,8 +10,6 @@
 //!   continuing a cursor is fixed by the cursor's clock and is good until
 //!   the next write; a first page also reads the clock (`since:2h`, live
 //!   states), so it is good for [`FIRST_PAGE_FOR`] at most.
-//! - **Completion data**: unit and field names, values seen and recent
-//!   session IDs, rebuilt on the first request after a write.
 //! - **Archive counts** for `status`: counted by a worker of their own when
 //!   the daemon starts and whenever a `status` finds them older than its
 //!   read, while `status` answers from memory (no counts until the first
@@ -133,7 +131,6 @@ pub struct Warm {
     recount_wanted: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     answers: Mutex<Recent<Answer>>,
-    completion: Mutex<Option<(String, Arc<Completion>)>>,
     counts: Counts,
 }
 
@@ -148,7 +145,6 @@ impl Default for Warm {
             recount_wanted: std::sync::atomic::AtomicBool::new(true),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
             answers: Mutex::new(Recent::new(ANSWERS)),
-            completion: Mutex::new(None),
             counts: Counts::default(),
         }
     }
@@ -263,24 +259,6 @@ impl Warm {
                 },
             );
         }
-    }
-
-    /// Completion data for the read position `position`, built on first
-    /// use after a write.
-    pub fn completion(
-        &self,
-        reader: &Reader<'_>,
-        position: &str,
-    ) -> Result<Arc<Completion>, String> {
-        let mut held = read_lock(&self.completion, reader)?;
-        if let Some((at, data)) = held.as_ref()
-            && at == position
-        {
-            return Ok(Arc::clone(data));
-        }
-        let data = Arc::new(completion(reader).map_err(|e| e.to_string())?);
-        *held = Some((position.to_owned(), Arc::clone(&data)));
-        Ok(data)
     }
 
     /// The archive counts for `status`. When the last count was quick
@@ -408,9 +386,6 @@ impl Warm {
         if let Ok(mut a) = self.answers.lock() {
             a.clear();
         }
-        if let Ok(mut c) = self.completion.lock() {
-            *c = None;
-        }
         if let Ok(mut c) = self.archive_counts.lock() {
             *c = None;
         }
@@ -442,86 +417,6 @@ fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
         took: started.elapsed(),
         status,
     })
-}
-
-/// Values completion offers, read from the index and the archive.
-fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreError> {
-    let origins = polylogue_sources::origin::ORIGINS
-        .iter()
-        .map(|origin| origin.name.to_owned())
-        .collect::<Vec<_>>();
-    let mut data = Completion {
-        catalog: polylogue_query::catalog::catalog(&origins, &crate::commands::command_words()),
-        ..Completion::default()
-    };
-    let column = |sql: &str,
-                  field: &str,
-                  out: &mut BTreeMap<String, Vec<String>>|
-     -> Result<(), polylogue_store::StoreError> {
-        for row in reader.query(sql, &[])? {
-            if let Some(v) = row["v"].as_str().filter(|v| !v.is_empty()) {
-                out.entry(field.into()).or_default().push(v.to_owned());
-            }
-        }
-        Ok(())
-    };
-    let mut values = BTreeMap::new();
-    column(
-        "SELECT DISTINCT model AS v FROM message WHERE model IS NOT NULL ORDER BY model",
-        "model",
-        &mut values,
-    )?;
-    column(
-        "SELECT DISTINCT repo AS v FROM session WHERE repo IS NOT NULL ORDER BY repo",
-        "repo",
-        &mut values,
-    )?;
-    column(
-        "SELECT DISTINCT harness AS v FROM session WHERE harness IS NOT NULL ORDER BY harness",
-        "harness",
-        &mut values,
-    )?;
-    column(
-        &format!(
-            "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'tag' AND n.key IS NOT NULL \
-             AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
-        ),
-        "tag",
-        &mut values,
-    )?;
-    column(
-        &format!(
-            "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'saved_query' AND n.key IS NOT NULL \
-             AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
-        ),
-        "query",
-        &mut values,
-    )?;
-    for origin in polylogue_sources::origin::ORIGINS {
-        values
-            .entry("origin".into())
-            .or_default()
-            .push(origin.name.into());
-    }
-    data.values = values;
-    for row in reader.query(
-        "SELECT id, coalesce(title, derived_title, '') AS title FROM session \
-         WHERE kind = 'main' AND stub = 0 \
-         ORDER BY last_activity_at IS NULL, last_activity_at DESC",
-        &[],
-    )? {
-        if let Some(id) = row["id"].as_str() {
-            data.sessions.push((
-                id.to_owned(),
-                row["title"].as_str().unwrap_or("").to_owned(),
-            ));
-        }
-    }
-    Ok(data)
 }
 
 /// Complete the full source at a byte offset using the shared grammar. Only

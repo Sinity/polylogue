@@ -179,7 +179,7 @@ impl CatalogWriter {
     pub fn put_session(&mut self, session: &Session) -> Result<()> {
         self.conn.execute("INSERT INTO session VALUES(?1,?2,'',?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET native_id=excluded.native_id,title=excluded.title,title_key=excluded.title_key,origin=excluded.origin,repo=excluded.repo,last_activity=excluded.last_activity,first_prompt=excluded.first_prompt",
             params![session.id,session.native_id,session.title,text_key(&session.title),session.origin,session.repo,session.last_activity,session.first_prompt])?;
-        self.put_values(&session.id, &session.values)?;
+        self.put_values(&format!("session:{}",session.id), &session.values)?;
         self.refresh_neighbors(&session.id)
     }
     pub fn put_values(
@@ -205,7 +205,7 @@ impl CatalogWriter {
     }
     pub fn remove_session(&mut self, id: &str) -> Result<()> {
         let neighbors = self.neighbors(id)?;
-        self.remove_values(id)?;
+        self.remove_values(&format!("session:{id}"))?;
         self.conn.execute("DELETE FROM session WHERE id=?1", [id])?;
         for neighbor in neighbors {
             self.refresh_prefix(&neighbor)?;
@@ -406,8 +406,9 @@ impl CatalogReader {
     pub fn saved_names(&self, prefix: &str) -> Result<Vec<Saved>> {
         self.items("saved", prefix)
     }
-    pub fn kept_names(&self, prefix: &str) -> Result<Vec<Kept>> {
-        self.items("kept", prefix)
+    pub fn kept_names(&self,prefix:&str)->Result<Vec<Kept>> {
+        let mut statement=self.conn.prepare("SELECT payload FROM item WHERE kind='kept' AND ((name>=?1 AND (?2 IS NULL OR name<?2)) OR (id>=?1 AND (?2 IS NULL OR id<?2))) ORDER BY name,id")?;
+        statement.query_map(params![prefix,prefix_end(prefix)],|row|row.get::<_,String>(0))?.map(|row|Ok(serde_json::from_str(&row?)?)).collect()
     }
     fn items<T: serde::de::DeserializeOwned>(&self, kind: &str, prefix: &str) -> Result<Vec<T>> {
         let mut statement=self.conn.prepare("SELECT payload FROM item WHERE kind=?1 AND name>=?2 AND (?3 IS NULL OR name<?3) ORDER BY name,id")?;

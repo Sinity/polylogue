@@ -54,9 +54,7 @@ impl clap_complete::engine::ValueCompleter for Query {
                 )
             })
             .unwrap_or_else(|| (current.to_owned(), current.len(), 0, current.len()));
-        let catalog = crate::completion_catalog::read(&polylogue_store::Archive::default_root())
-            .unwrap_or_default();
-        crate::daemon::warm::complete_at(&catalog, &text, position)
+        crate::completion_catalog::complete(&polylogue_store::Archive::default_root(), &text, position)
             .into_iter()
             .filter_map(|completion| {
                 if completion.replace.start < start || completion.replace.end > end {
@@ -115,3 +113,19 @@ fn context(
 
 #[cfg(test)]
 mod tests;
+
+pub struct Setting { pub key:bool }
+impl clap_complete::engine::ValueCompleter for Setting {
+    fn complete(&self,current:&OsStr)->Vec<CompletionCandidate> {
+        let Some(prefix)=current.to_str()else{return vec![];};
+        let root=polylogue_store::Archive::default_root();
+        let key=if self.key {None} else {
+            let Some(call)=INVOCATION.get()else{return vec![];};
+            let mut arguments=call.arguments.clone();
+            if call.index>=arguments.len(){arguments.push("__completion__".into());}else{arguments[call.index]="__completion__".into();}
+            let Ok(matches)=super::command().try_get_matches_from(arguments)else{return vec![];};
+            matches.subcommand_matches("setting").and_then(|setting|setting.get_one::<String>("key")).cloned()
+        };
+        crate::completion_catalog::settings(&root,key.as_deref(),prefix).into_iter().filter_map(|(value,help)|candidate(value,help)).collect()
+    }
+}
