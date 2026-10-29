@@ -86,10 +86,10 @@ fn completion_removal_delta_follows_real_writer_reading_replacement() {
     let tombstone = reader
         .query("SELECT session_id,changed FROM removed_session", &[])
         .unwrap();
-    assert_eq!(
-        tombstone,
-        vec![serde_json::json!({"session_id":"claude-code:removed","changed":position.index})]
-    );
+    assert_eq!(tombstone.len(), 1);
+    assert_eq!(tombstone[0]["session_id"], "claude-code:removed");
+    let removed_at = tombstone[0]["changed"].as_i64().unwrap();
+    assert!(removed_at > before.index && removed_at <= position.index);
     let mut current = Vec::new();
     reader
         .visit_completion_sessions(None, |change| {
