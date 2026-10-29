@@ -83,6 +83,7 @@ impl Inner {
                 let start = match &product {
                     Product::Message { facts, .. } => facts.offset,
                     Product::Document { facts, .. } => facts.offset,
+                    Product::Fragment { facts, .. } => facts.offset,
                     Product::Event { facts, .. } => {
                         facts.range.map_or(reading.start, |range| range.0)
                     }

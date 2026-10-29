@@ -566,8 +566,17 @@ fn plan(index: &Connection) -> Result<Plan> {
                     facts,
                     order,
                     projection,
+                    native_fields,
+                    declared_injections,
                     ..
                 } => {
+                    let ordinal = pending.output.messages.len();
+                    if !native_fields.is_empty() {
+                        pending.output.native_hook_fields.insert(ordinal, native_fields);
+                    }
+                    if !declared_injections.is_empty() {
+                        pending.output.declared_injections.insert(ordinal, declared_injections);
+                    }
                     if let Some(projection) = projection {
                         pending
                             .output
@@ -594,6 +603,10 @@ fn plan(index: &Connection) -> Result<Plan> {
                         .document_receipts
                         .insert(pending.output.documents.len(), admitted);
                     pending.output.documents.push(facts);
+                }
+                Product::Fragment { facts, .. } => {
+                    pending.output.fragment_receipts.insert(pending.output.fragments.len(), admitted);
+                    pending.output.fragments.push(*facts);
                 }
                 Product::Event {
                     id,
