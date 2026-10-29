@@ -75,6 +75,40 @@ fn selection(origin: Option<&str>, inputs: &[&str], revision: Option<i64>) -> In
     }
 }
 
+fn inventory(root: &Path) -> BTreeMap<std::path::PathBuf, Option<blake3::Hash>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        files: &mut BTreeMap<std::path::PathBuf, Option<blake3::Hash>>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            // SQLite's shared memory holds reader coordination, not archive rows.
+            if path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("-shm")
+            {
+                continue;
+            }
+            if path.is_dir() {
+                files.insert(path.strip_prefix(root).unwrap().to_owned(), None);
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    Some(blake3::hash(&std::fs::read(path).unwrap())),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
 #[test]
 fn schema_tools_no_values_exact_stored_revisions_and_unreadable_records() {
     let stored = Stored::new();
@@ -94,11 +128,13 @@ fn schema_tools_no_values_exact_stored_revisions_and_unreadable_records() {
         20,
         b"{\"count\":2}\n",
     );
+    let before = inventory(&stored.archive.root);
     let report = stored.read(selection(
         Some("claude-code"),
         &["selected", "missing"],
         Some(1),
     ));
+    assert_eq!(inventory(&stored.archive.root), before);
     let schema = &report.origins["claude-code"];
     assert_eq!(
         (
@@ -329,6 +365,31 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
 #[test]
 fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
     let daemon = crate::test_daemon::start("private scalar");
+    let provider = daemon.home.join(".claude/projects/-p/s1.jsonl");
+    let mut row: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
+        "u2",
+        "s1",
+        "private second",
+    ))
+    .unwrap();
+    row["unknown_nested"] = serde_json::json!({"unused":"private unseen"});
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&provider)
+        .unwrap()
+        .write_all(format!("{row}\n").as_bytes())
+        .unwrap();
+    let imported = super::super::service::handle(
+        super::super::Request::Import {
+            request_id: "schema-extra-row".into(),
+            paths: vec![provider.clone()],
+        },
+        &daemon.daemon,
+    );
+    assert!(matches!(imported, Response::Ok { .. }), "{imported:?}");
+    daemon.wait_for(|status| status["store"]["messages"] == 2);
+    std::fs::remove_file(provider).unwrap();
     let request = super::super::Request::SchemaInfer {
         selection: selection(Some("claude-code"), &[], None),
     };
@@ -340,7 +401,7 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
         panic!("{response:?}");
     };
     let report: Inference = serde_json::from_value(data).unwrap();
-    assert!(report.origins["claude-code"].records >= 1);
+    assert_eq!(report.origins["claude-code"].records, 2);
     assert!(
         !serde_json::to_string(&report)
             .unwrap()
@@ -354,6 +415,19 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
     let Response::Ok { data, .. } = response else {
         panic!("{response:?}");
     };
+    let shapes = data["shapes"].as_array().unwrap();
+    assert!(
+        shapes
+            .iter()
+            .any(|s| s["path"] == "/unknown_nested/unused"
+                && s["unused_count"].as_u64().unwrap() > 0)
+    );
+    assert!(!shapes.iter().any(|s| s["path"] == "/type"));
+    assert!(
+        !serde_json::to_string(&data)
+            .unwrap()
+            .contains("private unseen")
+    );
     assert!(
         data["shapes"]
             .as_array()

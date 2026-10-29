@@ -102,6 +102,14 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
     assert_eq!(diff(command, &values, true), ExitCode::SUCCESS);
     let diff: serde_json::Value =
         serde_json::from_slice(&std::fs::read(diff_output).unwrap()).unwrap();
+    assert_eq!(diff["comparable"], false);
+    assert!(
+        diff["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "different_selection_coverage")
+    );
     let changes = diff["origins"]["synthetic"]["changes"].as_array().unwrap();
     assert!(
         changes

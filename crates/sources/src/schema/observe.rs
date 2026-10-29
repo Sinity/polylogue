@@ -247,10 +247,10 @@ impl<R: BufRead> Parser<R> {
                                         None
                                     }
                                 };
-                                if let Some(value) = value {
-                                    if fields.insert(key, value).is_some() {
-                                        return Err(invalid());
-                                    }
+                                if let Some(value) = value
+                                    && fields.insert(key, value).is_some()
+                                {
+                                    return Err(invalid());
                                 }
                                 Ok(())
                             })?;

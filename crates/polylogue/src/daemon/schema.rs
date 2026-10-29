@@ -250,7 +250,9 @@ fn observe(
             }
         }
     }
-    let sample = summary.explicit_inputs || summary.since_ms.is_some();
+    let sample = summary.explicit_inputs
+        || summary.since_ms.is_some()
+        || !summary.missing_revisions.is_empty();
     let origins = observers
         .into_iter()
         .map(|(name, (observer, selected))| {
