@@ -11,19 +11,17 @@ impl<'a> Compiler<'a> {
     ) -> Result<Program, QueryError> {
         self.stages_start = q.stages.first().map_or(usize::MAX, |s| s.span.start);
         let (mut scope, wheres, top) = match &q.source {
-            Source::Empty => (RowContext::plain(Unit::Sessions), vec![], vec![]),
-            Source::Sessions { cond } => {
-                let top = top_level(cond);
-                (RowContext::plain(Unit::Sessions), vec![(cond.clone())], top)
-            }
-            Source::Unit { unit, cond } => {
-                let top = cond.as_ref().map(top_level).unwrap_or_default();
+            Source::Unit {
+                unit, condition, ..
+            } => {
+                let top = condition.as_ref().map(top_level).unwrap_or_default();
                 (
-                    RowContext::plain(*unit),
-                    cond.iter().cloned().collect(),
+                    RowContext::plain(bind_unit(unit)?),
+                    condition.iter().cloned().collect::<Vec<_>>(),
                     top,
                 )
             }
+            _ => return Err(not_built("this shared query source")),
         };
         let mut where_sql: Vec<String> = self.defaults(&scope, &top)?;
         let defaults_only = where_sql.clone();
@@ -33,8 +31,8 @@ impl<'a> Compiler<'a> {
             where_sql.push(sql);
         }
         for c in &top {
-            // `near:` ranks rather than filters: it keeps every row.
-            let ranking = matches!(&c.kind, CondKind::Match { field, .. } if field.eq_ignore_ascii_case("near"));
+            // `similar:` ranks rather than filters: it keeps every row.
+            let ranking = matches!(&c.kind, ConditionKind::Similar { .. });
             if ranking {
                 continue;
             }
@@ -79,48 +77,44 @@ impl<'a> Compiler<'a> {
             let grouped = group.is_some() || aggs.is_some();
             if let Some(rel) = &matched {
                 match &stage.kind {
-                    StageKind::Limit { n } => {
+                    StageKind::Limit { count: n } => {
                         let (_, off) = selection.unwrap_or((None, None));
                         selection = Some((Some(*n), off));
                     }
-                    StageKind::Offset { n } => {
+                    StageKind::Offset { count: n } => {
                         let (lim, _) = selection.unwrap_or((None, None));
                         selection = Some((lim, Some(*n)));
                     }
-                    StageKind::Count | StageKind::Agg { .. } if aggs.is_some() => {
+                    StageKind::Aggregate { .. } if aggs.is_some() => {
                         return Err(QueryError::Invalid {
                             message: "a query aggregates once".into(),
                             position: stage.span.start,
                         });
                     }
-                    StageKind::Count => {
-                        aggs = Some(vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-                    }
-                    StageKind::Agg { fns } => {
+                    StageKind::Aggregate { aggregates: fns } => {
                         let mut cols = vec![];
                         for f in fns {
                             cols.extend(match_agg(f, rel, stage.span.start)?);
                         }
                         aggs = Some(cols);
                     }
-                    StageKind::GroupBy { keys } if !grouped => {
+                    StageKind::Group { keys } if !grouped => {
                         let mut cols = vec![];
                         for k in keys {
-                            let (name, kind) = match_column(rel, &k.field, stage.span.start)?;
-                            if k.bucket.is_some() {
+                            let (field, bucket) = group_operand(k)?;
+                            let (name, kind) = match_column(rel, field, stage.span.start)?;
+                            if bucket.is_some() {
                                 return Err(not_built("time buckets after `| matches`"));
                             }
                             cols.push((name.clone(), name, kind));
                         }
                         group = Some(cols);
                     }
-                    StageKind::SortBy {
-                        key: SortKey::Field { field },
-                        descending,
-                        then,
-                    } if !grouped && then.is_empty() => {
+                    StageKind::Sort { keys } if !grouped && keys.len() == 1 => {
+                        let key = &keys[0];
+                        let field = field_operand(&key.operand)?;
                         let (name, _) = match_column(rel, field, stage.span.start)?;
-                        let dir = if *descending { " DESC" } else { "" };
+                        let dir = if key.descending { " DESC" } else { "" };
                         let mut sorted = vec![format!("{name} IS NULL"), format!("{name}{dir}")];
                         for identity in ["parent_id", "session", "match"] {
                             if rel.columns.iter().any(|(name, _)| name == identity) {
@@ -138,7 +132,10 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             match &stage.kind {
-                StageKind::Scope { unit, cond } => {
+                StageKind::Scope {
+                    unit,
+                    condition: cond,
+                } => {
                     if grouped || scope.unit != Unit::Sessions {
                         return Err(QueryError::Invalid {
                             message: "a `| UNIT where …` stage follows a session query".into(),
@@ -160,10 +157,11 @@ impl<'a> Compiler<'a> {
                     self.near_join = None;
                     self.fusion = None;
                     self.shown.clear();
-                    let next = RowContext::plain(*unit);
+                    let unit = bind_unit(unit)?;
+                    let next = RowContext::plain(unit);
                     let ntop = cond.as_ref().map(top_level).unwrap_or_default();
                     let mut w = self.defaults(&next, &ntop)?;
-                    let link = if fields::has_session(*unit) {
+                    let link = if fields::has_session(unit) {
                         format!("{}.pk IN ({sessions})", next.a.s)
                     } else {
                         self.session_link(&next, &sessions)?
@@ -206,7 +204,7 @@ impl<'a> Compiler<'a> {
                     }
                     why.clear();
                 }
-                StageKind::Where { cond } if !grouped => {
+                StageKind::Where { condition: cond } if !grouped => {
                     if selection.is_some() {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
@@ -216,53 +214,50 @@ impl<'a> Compiler<'a> {
                     let sql = self.cond(cond, &scope, order.is_none());
                     where_sql.push(sql?);
                 }
-                StageKind::Where { cond } => {
+                StageKind::Where { condition: cond } => {
                     having.push(self.group_cond(cond, group.as_deref(), aggs.as_deref())?);
                 }
-                StageKind::SortBy {
-                    key,
-                    descending,
-                    then,
-                } if !grouped => {
+                StageKind::Sort { keys } if !grouped => {
                     if selection.is_some() {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
-                    let mut keys = self.sort(key, *descending, &scope, stage.span.start)?;
-                    // The key's own tie-break goes last.
-                    let pk = if !then.is_empty() && keys.len() > 1 {
-                        keys.pop()
-                    } else {
-                        None
-                    };
-                    for (field, desc) in then {
-                        let (expr, kind) = self.expr(field, &scope, stage.span.start)?;
-                        scalar(kind, field, stage.span.start)?;
-                        self.show(field, &expr, kind, Self::field_reference(field, &scope));
-                        let dir = if *desc { " DESC" } else { "" };
-                        keys.push(format!("({expr}) IS NULL"));
-                        keys.push(format!("({expr}){dir}"));
+                    let mut sorted = vec![];
+                    for key in keys {
+                        let mut terms =
+                            self.sort(&key.operand, key.descending, &scope, stage.span.start)?;
+                        // Identity is appended once, after every explicit sort operand.
+                        let identity = units::spec(scope.unit).identity.len();
+                        if keys.len() > 1 && terms.len() >= identity {
+                            terms.truncate(terms.len() - identity);
+                        }
+                        sorted.extend(terms);
                     }
-                    keys.extend(pk);
-                    order = Some(keys);
+                    if keys.len() > 1 {
+                        sorted.extend(
+                            units::spec(scope.unit)
+                                .identity
+                                .iter()
+                                .map(|term| scope.a.expand(term)),
+                        );
+                    }
+                    order = Some(sorted);
                 }
-                StageKind::SortBy { then, .. } if !then.is_empty() => {
-                    return Err(QueryError::Invalid {
-                        message: "a grouped or matched sort takes one key".into(),
-                        position: stage.span.start,
-                    });
+                StageKind::Sort { keys } if keys.len() != 1 => {
+                    return Err(not_built(
+                        "a grouped or matched sort with more than one key",
+                    ));
                 }
-                StageKind::SortBy {
-                    key, descending, ..
-                } => {
+                StageKind::Sort { keys } => {
+                    let key = &keys[0];
                     group_order = Some(group_sort(
-                        key,
-                        *descending,
+                        &key.operand,
+                        key.descending,
                         group.as_deref(),
                         aggs.as_deref(),
                         self.opts.random_seed,
                     )?);
                 }
-                StageKind::GroupBy { keys } => {
+                StageKind::Group { keys } => {
                     if grouped {
                         return Err(QueryError::Invalid {
                             message: "a query groups once".into(),
@@ -278,19 +273,7 @@ impl<'a> Compiler<'a> {
                     }
                     group = Some(cols);
                 }
-                StageKind::Count => {
-                    if aggs.is_some() {
-                        return Err(QueryError::Invalid {
-                            message: "a query aggregates once".into(),
-                            position: stage.span.start,
-                        });
-                    }
-                    if selection.is_some() && group.is_none() {
-                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
-                    }
-                    aggs = Some(vec![("count".into(), "count(*)".into(), ColKind::Number)]);
-                }
-                StageKind::Agg { fns } => {
+                StageKind::Aggregate { aggregates: fns } => {
                     if aggs.is_some() {
                         return Err(QueryError::Invalid {
                             message: "a query aggregates once".into(),
@@ -306,16 +289,19 @@ impl<'a> Compiler<'a> {
                     }
                     aggs = Some(cols);
                 }
-                StageKind::Limit { n } => {
+                StageKind::Limit { count: n } => {
                     let (_, off) = selection.unwrap_or((None, None));
                     selection = Some((Some(*n), off));
                 }
-                StageKind::Offset { n } => {
+                StageKind::Offset { count: n } => {
                     let (lim, _) = selection.unwrap_or((None, None));
                     selection = Some((lim, Some(*n)));
                 }
                 StageKind::Distinct => distinct = true,
-                StageKind::Measure { what } => {
+                StageKind::Measure { name: what, by } => {
+                    if !by.is_empty() {
+                        return Err(not_built("measure by"));
+                    }
                     if grouped || scope.unit != Unit::Sessions || measure.is_some() {
                         return Err(QueryError::Invalid {
                             message: "`| measure WHAT` follows a session query and ends it".into(),
@@ -341,10 +327,13 @@ impl<'a> Compiler<'a> {
                             position: stage.span.start,
                         });
                     }
-                    let found: Vec<&Cond> = top
+                    let found: Vec<&Condition> = top
                         .iter()
                         .filter(|c| {
-                            matches!(c.kind, CondKind::Exists { .. } | CondKind::Seq { .. })
+                            matches!(
+                                c.kind,
+                                ConditionKind::Exists { .. } | ConditionKind::Sequence { .. }
+                            )
                         })
                         .collect();
                     let [c] = found.as_slice() else {
@@ -358,17 +347,28 @@ impl<'a> Compiler<'a> {
                     };
                     let parent_rows = and_all(&where_sql);
                     matched = Some(match &c.kind {
-                        CondKind::Exists { unit, cond } => {
-                            self.exists_matches(*unit, cond, &scope, &parent_rows, c.span)?
-                        }
-                        CondKind::Seq { steps, gaps } => {
-                            self.seq_matches(steps, gaps, &scope, &parent_rows, c.span)?
-                        }
+                        ConditionKind::Exists {
+                            unit,
+                            condition: Some(cond),
+                        } => self.exists_matches(
+                            bind_unit(unit)?,
+                            cond,
+                            &scope,
+                            &parent_rows,
+                            c.span,
+                        )?,
+                        ConditionKind::Sequence {
+                            steps,
+                            gaps,
+                            all: false,
+                            ..
+                        } => self.seq_matches(steps, gaps, &scope, &parent_rows, c.span)?,
                         _ => unreachable!("filtered above"),
                     });
                     order = None;
                     self.notes.push("one row per match".into());
                 }
+                _ => return Err(not_built("this shared query stage")),
             }
         }
 
@@ -387,7 +387,7 @@ impl<'a> Compiler<'a> {
             if pending.is_empty() {
                 Some((from, wh))
             } else {
-                let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+                let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
                 let mut members = vec![format!("SELECT {pk} AS _pk FROM {from} WHERE {wh}")];
                 for other in &pending.unions {
                     let relation = other.row_membership_sql.as_ref().unwrap_or(&other.sql);
@@ -560,7 +560,7 @@ impl<'a> Compiler<'a> {
             }
             let wh = and_all(&where_sql);
             let order = order.unwrap_or_else(|| self.default_order(&scope));
-            let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now);
+            let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
             if !self.opts.fields.is_empty() {
                 cols.clear();
                 let fields = self.opts.fields.clone();
@@ -733,15 +733,16 @@ impl<'a> Compiler<'a> {
             counts_near,
             near: self.near,
             definitions: self.definitions,
-            now: self.opts.clock.now,
-            zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
-            day_start_minutes: self.opts.clock.day.start_minutes,
+            now: self.opts.clock.now.as_millisecond(),
+            zone: self.opts.clock.day.zone_name().to_owned(),
+            day_start_minutes: time::product_day(&self.opts.clock).start_minutes,
+            resolved_times: self.resolved_times.into_inner(),
             measure,
             order,
         })
     }
 
-    /// Words and `near:` together: the conditions and both orders are
+    /// Words and `similar:` together: the conditions and both orders are
     /// evaluated once, over the rows the conditions keep, and each row's
     /// fused rank joins it. Done once, when the rows are complete or when a
     /// combining stage needs their order.
@@ -756,7 +757,7 @@ impl<'a> Compiler<'a> {
         let (Some(text), Some(near)) = (self.rank.clone(), self.near_rank.clone()) else {
             return Ok(());
         };
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
         let rows = format!("f{}", self.ctes.len() + 1);
         self.ctes.push(format!(
             "{rows} AS MATERIALIZED (SELECT {pk} AS k, {text} AS t, {near} AS n FROM {} WHERE {})",
@@ -791,7 +792,7 @@ impl<'a> Compiler<'a> {
         let Some((lim, off)) = selection else {
             return;
         };
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
         if order.is_none() {
             self.setup_near(true);
         }
@@ -831,7 +832,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn defaults(
         &mut self,
         scope: &RowContext,
-        top: &[Cond],
+        top: &[Condition],
     ) -> Result<Vec<String>, QueryError> {
         // OR and NOT keep the outer defaults: only top-level ANDs expand.
         let bound = self.saved_defaults(scope, top)?;
@@ -842,12 +843,12 @@ impl<'a> Compiler<'a> {
             .iter()
             .filter(|d| !(d.unless_reference && reference))
             .filter(|d| !d.unless.iter().any(|f| named.contains(*f)))
-            .map(|d| d.sql.render(&scope.a, self.opts.clock.now))
+            .map(|d| d.sql.render(&scope.a, self.opts.clock.now.as_millisecond()))
             .collect())
     }
 
     /// How the rows rank, lower first: by full-text relevance, by
-    /// similarity to a `near:` text, or, with both, by reciprocal rank
+    /// similarity to a `similar:` text, or, with both, by reciprocal rank
     /// fusion of the two orders over the rows the conditions keep (each
     /// row scores `1/(60 + its place)` in each order it is in; a row with
     /// no vector is in the text order only).

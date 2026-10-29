@@ -23,32 +23,38 @@ impl PendingFusion {
 
 impl<'a> Compiler<'a> {
     /// Another query in parentheses, compiled over this query's parameters.
-    /// Conditions without a unit are on `unit`. Its notes, terms and checks
-    /// join this query's.
+    /// A nested query's bound unit, notes, terms and checks come from its tree.
     pub(super) fn other_query(
         &mut self,
         query: &Query,
-        unit: Unit,
+        _unit: Unit,
         at: usize,
     ) -> Result<Program, QueryError> {
         let mut query = query.clone();
-        if let Source::Sessions { cond } = &query.source {
-            query.source = Source::Unit {
-                unit,
-                cond: Some(cond.clone()),
-            };
+        // This query is compiled on its own, after its inherited unit was bound.
+        if let Source::Unit { implicit, .. } = &mut query.source {
+            *implicit = false;
         }
+        let catalog = source::catalog(self.opts);
+        let bound = query_language::bind::bind(&query, &catalog)
+            .map_err(|error| QueryError::language(error, self.text))?;
+        let text = query_language::format::format_query(bound.query(), &catalog)
+            .map_err(|error| QueryError::language(error, self.text))?;
+        let query = bound.into_query();
         if let Some(child) = query.attach.first() {
             return Err(QueryError::Invalid {
                 message: "a query in parentheses gives rows to compare, not attached rows".into(),
                 position: child.span.start,
             });
         }
-        let mut inner = Compiler::new(self.text, self.opts);
+        let mut inner = Compiler::new(&text, self.opts);
         inner.params = std::mem::take(&mut self.params);
         inner.saved_stack = self.saved_stack.clone();
         let mut program = inner.program(&query)?;
         self.params = std::mem::take(&mut program.params);
+        self.resolved_times
+            .borrow_mut()
+            .extend(program.resolved_times.iter().cloned());
         // A condition is compiled again for `--why`: what it adds is kept once.
         join(&mut self.notes, &mut program.notes);
         join(&mut self.incomplete, &mut program.incomplete);
@@ -68,7 +74,7 @@ impl<'a> Compiler<'a> {
         ) {
             (Some(mine), Some(theirs)) if mine != theirs => {
                 return Err(QueryError::Invalid {
-                    message: "one query ranks by one near: text; this one has two".into(),
+                    message: "one query ranks by one similar: text; this one has two".into(),
                     position: at,
                 });
             }
@@ -128,7 +134,7 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<String, QueryError> {
         let grouped_by_one = query.stages.iter().rev().find_map(|s| match &s.kind {
-            StageKind::GroupBy { keys } => Some(keys.len() == 1),
+            StageKind::Group { keys } => Some(keys.len() == 1),
             _ => None,
         });
         if grouped_by_one != Some(true) {
@@ -175,7 +181,7 @@ impl<'a> Compiler<'a> {
         at: usize,
     ) -> Result<(), QueryError> {
         let other = self.combined_rows(query, scope.unit, at)?;
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
         let not = if how == Combination::Except {
             "NOT "
         } else {
@@ -201,7 +207,7 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         self.setup_near(false);
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
         let any_ranked = self.ranking().is_some() || pending.unions.iter().any(|p| p.ranked);
         if pending.fuses.is_empty() && !any_ranked {
             let mut any = vec![format!("({})", and_all(where_sql))];

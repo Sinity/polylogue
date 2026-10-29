@@ -4,11 +4,11 @@
 //! [`Program::count_sql`]. There is no row cap: a page is how much travels
 //! now, never how much is answered.
 
+use crate::QueryError;
 use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};
-use crate::time::{self, Clock, Time};
+use crate::time::{self, Clock, Milliseconds, Time};
 use crate::units::{self, Index, Search, Via};
-use crate::{QueryError, parse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -20,7 +20,8 @@ mod saved;
 mod sequences;
 mod stages;
 
-use saved::{bind_saved_source, compile_kept};
+use saved::compile_kept;
+mod source;
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
 /// each ranked list it is in; the offset keeps one list's first places
@@ -41,7 +42,7 @@ pub struct Options {
     pub page_size: Option<u64>,
     /// One seed for otherwise unseeded random order across pages.
     pub random_seed: Option<u64>,
-    /// Whether vectors exist to rank `near:` by.
+    /// Whether vectors exist to rank `similar:` by.
     pub embeddings: bool,
     /// The calling session, for `self`.
     pub self_session: Option<String>,
@@ -58,6 +59,58 @@ pub struct Options {
     pub chat_pages: Vec<ChatPage>,
 }
 
+impl Options {
+    /// Declared parameter names use the same AST visitor as execution binding.
+    pub fn definition_parameters(&self, text: &str) -> Result<Vec<String>, QueryError> {
+        definition_parameters(text, &self.catalog())
+    }
+    /// The execution registry plus immutable kept output types for this read.
+    pub fn catalog(&self) -> query_language::catalog::Catalog {
+        source::catalog(self)
+    }
+
+    /// Source field types for completion and binding, without executing SQL.
+    /// A relation keeps its native fields; a shaped result exposes its columns.
+    pub fn output_schema(
+        &self,
+        text: &str,
+    ) -> Result<query_language::catalog::OutputSchema, QueryError> {
+        let (query, _) = source::expand(text, self)?;
+        let catalog = self.catalog();
+        if query.stages.is_empty() && query.attach.is_empty() {
+            if let Source::Unit { unit, .. } = &query.source {
+                let declaration = catalog
+                    .unit(unit)
+                    .ok_or_else(|| not_built("this output unit"))?;
+                return Ok(query_language::catalog::OutputSchema {
+                    unit: Some(declaration.name.clone()),
+                    fields: declaration.fields.clone(),
+                    main_time: declaration.main_time.clone(),
+                });
+            }
+            if let Some(schema) = catalog.source_output(&query.source) {
+                return Ok(schema.clone());
+            }
+        }
+        let program = compile(text, self)?;
+        Ok(source::schema(
+            &catalog,
+            program.unit.name(),
+            &program.columns,
+        ))
+    }
+}
+
+/// Parameter metadata shares execution's AST visitor and never scans DSL text.
+pub fn definition_parameters(text: &str, catalog: &query_language::catalog::Catalog) -> Result<Vec<String>, QueryError> {
+    let mut query=crate::parse::with_catalog(text,catalog)?;
+    saved::Parameters::names(&mut query)
+}
+/// Output types for immutable kept columns, with no execution clock or I/O.
+pub fn columns_schema(catalog: &query_language::catalog::Catalog, unit: &str, columns: &[Column]) -> query_language::catalog::OutputSchema {
+    source::schema(catalog,unit,columns)
+}
+
 /// A saved query's definition: the text of one revision of a
 /// `saved_query` note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -70,7 +123,7 @@ pub struct SavedQuery {
 }
 
 /// A saved query a program ran, by the revision its name resolved to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Definition {
     pub name: String,
     pub revision: String,
@@ -104,7 +157,7 @@ pub enum Param {
     Text(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
     /// One row per unit row.
@@ -118,7 +171,7 @@ pub enum Shape {
     Matches,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ColKind {
     Text,
@@ -137,7 +190,7 @@ pub enum ColKind {
 }
 
 /// The entity named by a scalar column, proven by its owning field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnReference {
     Session,
@@ -146,7 +199,7 @@ pub enum ColumnReference {
     Note,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Column {
     pub name: String,
     pub kind: ColKind,
@@ -184,7 +237,7 @@ pub struct WhyClause {
     pub sql: String,
 }
 
-/// A `near:` term to rank by: the text whose similarity to each stored
+/// A `similar:` term to rank by: the text whose similarity to each stored
 /// text the caller computes and supplies while the query runs
 /// (`pl_similarity`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -224,7 +277,7 @@ pub struct Program {
     pub why: Vec<WhyClause>,
     pub why_of: String,
     pub page_size: u64,
-    /// `near:`: the text to embed and rank by.
+    /// `similar:`: the text to embed and rank by.
     pub near: Option<Near>,
     /// The answer rows have their own semantic similarities to count.
     pub counts_near: bool,
@@ -235,6 +288,8 @@ pub struct Program {
     pub now: i64,
     pub zone: String,
     pub day_start_minutes: u16,
+    /// Shared expression resolutions carried unchanged by every continuation.
+    pub resolved_times: Vec<query_language::time::ResolvedTime>,
     /// `| measure WHAT`: the measurement to run over the sessions `sql`
     /// selects, instead of returning its rows.
     pub measure: Option<Measure>,
@@ -369,77 +424,24 @@ impl Program {
 }
 
 pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
-    if let Some(program) = compile_kept(text, opts)? {
-        return Ok(program);
-    }
-    let Some(bound) = bind_saved_source(text, opts)? else {
-        let query = parse(text)?;
-        refuse_commands(text, &query, opts)?;
-        return Compiler::new(text, opts).program(&query);
+    let (query, definitions) = source::expand(text, opts)?;
+    let catalog = source::catalog(opts);
+    let bound = query_language::bind::bind(&query, &catalog)
+        .map_err(|error| QueryError::language(error, text))?;
+    let rendered = query_language::format::format_query(bound.query(), &catalog)
+        .map_err(|error| QueryError::language(error, text))?;
+    let mut program = if let Some(program) = compile_kept(&rendered, bound.query(), opts)? {
+        program
+    } else {
+        Compiler::new(&rendered, opts).program(bound.query())?
     };
-    let mut query = parse(&bound.text)?;
-    bound.bind(&mut query)?;
-    let mut compiler = Compiler::new(&bound.text, opts);
-    compiler.definitions.push(bound.definition.clone());
-    compiler.program(&query)
-}
-
-/// Words a query may start with only quoted: command names, and near
-/// misses of unit or command names.
-fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), QueryError> {
-    let Source::Sessions { cond } = &query.source else {
-        return Ok(());
-    };
-    let first = match &cond.kind {
-        CondKind::And { all } => &all[0],
-        _ => cond,
-    };
-    let CondKind::Text {
-        text: word,
-        phrase: false,
-    } = &first.kind
-    else {
-        return Ok(());
-    };
-    if first.span.start != text.len() - text.trim_start().len() {
-        return Ok(());
-    }
-    let lower = word.to_ascii_lowercase();
-    if matches!(lower.as_str(), "last" | "latest" | "self") || opts.origins.contains(&lower) {
-        return Ok(());
-    }
-    let rest = text[first.span.end..].trim_start();
-    if opts.command_words.contains(&lower) {
-        return Err(QueryError::NotAQuery {
-            word: word.clone(),
-            message: format!(
-                "\"{word}\" is a command, not a query; to search for the word, quote it"
-            ),
-            suggestion: Some(format!("\"{word}\" {rest}").trim_end().to_owned()),
-        });
-    }
-    let allowed = match lower.chars().count() {
-        0..=3 => 0,
-        4..=6 => 1,
-        _ => 2,
-    };
-    if allowed == 0 {
-        return Ok(());
-    }
-    let units: Vec<&str> = Unit::all().map(Unit::name).collect();
-    for name in units
-        .into_iter()
-        .chain(opts.command_words.iter().map(String::as_str))
-    {
-        if name != lower && strsim::damerau_levenshtein(&lower, name) <= allowed {
-            return Err(QueryError::NotAQuery {
-                word: word.clone(),
-                message: format!("did you mean \"{name}\"?"),
-                suggestion: Some(format!("{name} {rest}").trim_end().to_owned()),
-            });
+    for definition in definitions {
+        if !program.definitions.contains(&definition) {
+            program.definitions.push(definition);
         }
     }
-    Ok(())
+    program.query = text.to_owned();
+    Ok(program)
 }
 
 /// The unit a query's rows currently are, and the aliases they are read
@@ -470,6 +472,7 @@ struct MatchRel {
 }
 
 pub(crate) struct Compiler<'a> {
+    resolved_times: std::cell::RefCell<Vec<query_language::time::ResolvedTime>>,
     text: &'a str,
     opts: &'a Options,
     params: Vec<Param>,
@@ -488,11 +491,11 @@ pub(crate) struct Compiler<'a> {
     /// The full-text ranking expression, when a top-level text term ranks
     /// the rows.
     rank: Option<String>,
-    /// The semantic ranking expression of a `near:` term, and the join
+    /// The semantic ranking expression of a `similar:` term, and the join
     /// that brings its similarities to the unit's rows.
     near_rank: Option<String>,
     near_join: Option<String>,
-    /// Rows ranked by reciprocal rank fusion (words and `near:` together,
+    /// Rows ranked by reciprocal rank fusion (words and `similar:` together,
     /// or a combining stage): the join bringing each row's fused rank.
     fusion: Option<Fusion>,
     near: Option<Near>,
@@ -524,6 +527,7 @@ impl<'a> Compiler<'a> {
             notes: vec![],
             incomplete: vec![],
             text_terms: vec![],
+            resolved_times: Default::default(),
             id_checks: vec![],
             change_generations: vec![],
             shown: vec![],
@@ -597,7 +601,7 @@ fn match_column(rel: &MatchRel, name: &str, at: usize) -> Result<(String, ColKin
 
 /// An aggregate over `| matches` rows: computed over the pairs or tuples.
 fn match_agg(
-    f: &AggFn,
+    f: &Aggregate,
     rel: &MatchRel,
     at: usize,
 ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
@@ -611,18 +615,19 @@ fn match_agg(
         format!("count(*) - count({name})"),
         ColKind::Number,
     );
-    Ok(match f {
-        AggFn::Count => unreachable!("handled above"),
-        AggFn::Sum { .. } => vec![(col, format!("sum({name})"), kind), unknown],
-        AggFn::Avg { .. } => vec![(col, format!("avg({name})"), kind), unknown],
-        AggFn::Min { .. } => vec![(col, format!("min({name})"), kind), unknown],
-        AggFn::Max { .. } => vec![(col, format!("max({name})"), kind), unknown],
-        AggFn::Percentile { p, .. } => {
+    Ok(match &f.function {
+        AggregateFunction::Count => unreachable!("handled above"),
+        AggregateFunction::Sum => vec![(col, format!("sum({name})"), kind), unknown],
+        AggregateFunction::Avg => vec![(col, format!("avg({name})"), kind), unknown],
+        AggregateFunction::Min => vec![(col, format!("min({name})"), kind), unknown],
+        AggregateFunction::Max => vec![(col, format!("max({name})"), kind), unknown],
+        AggregateFunction::Percentile(p) => {
             vec![(col, format!("pl_percentile({name}, {p})"), kind), unknown]
         }
-        AggFn::CountDistinct { .. } => {
+        AggregateFunction::CountDistinct => {
             vec![(col, format!("count(DISTINCT {name})"), ColKind::Number)]
         }
+        _ => return Err(not_built("this aggregate")),
     })
 }
 
@@ -642,22 +647,27 @@ fn and_all(parts: &[String]) -> String {
 
 /// The conditions joined to the rest of the `where` by AND, with
 /// parenthesized ANDs flattened.
-fn top_level(c: &Cond) -> Vec<Cond> {
+fn top_level(c: &Condition) -> Vec<Condition> {
     match &c.kind {
-        CondKind::And { all } => all.iter().flat_map(top_level).collect(),
+        ConditionKind::And { conditions: all } => all.iter().flat_map(top_level).collect(),
         _ => vec![c.clone()],
     }
 }
 
 /// Field names the top-level conditions name, `session.` prefixes removed
 /// for row units.
-fn named_fields(top: &[Cond], unit: Unit) -> HashSet<String> {
+fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
     let mut out = HashSet::new();
     for c in top {
         let f = match &c.kind {
-            CondKind::Match { field, .. }
-            | CondKind::Compare { field, .. }
-            | CondKind::Between { field, .. } => field,
+            ConditionKind::Match { field, .. } => field.as_str(),
+            ConditionKind::Compare { operand, .. }
+            | ConditionKind::Between { operand, .. }
+            | ConditionKind::Since { operand, .. }
+            | ConditionKind::Until { operand, .. } => match operand {
+                Operand::Field { name } => name,
+                _ => continue,
+            },
             _ => continue,
         };
         let f = f.to_ascii_lowercase();
@@ -700,8 +710,10 @@ fn like_prefix(s: &str) -> String {
 
 fn alternatives(v: &Value) -> Vec<String> {
     match v {
-        Value::One { text, .. } => vec![text.clone()],
-        Value::Alternatives { any } => any.clone(),
+        Value::Scalar { text, .. } => vec![text.clone()],
+        Value::Set { values } => values.iter().flat_map(alternatives).collect(),
+        Value::Unknown => vec!["unknown".into()],
+        Value::Parameter { name } => vec![format!("${name}")],
         Value::Any => vec![],
     }
 }
@@ -754,7 +766,7 @@ fn closed_set_message(def: &fields::Field, value: &str) -> String {
 }
 
 fn group_sort(
-    key: &SortKey,
+    key: &Operand,
     desc: bool,
     keys: Option<&[(String, String, ColKind)]>,
     aggs: Option<&[(String, String, ColKind)]>,
@@ -762,7 +774,8 @@ fn group_sort(
 ) -> Result<Vec<String>, QueryError> {
     let keys = keys.unwrap_or(&[]);
     let mut order = match key {
-        SortKey::Random { seed } => {
+        Operand::Function { .. } => {
+            let seed = parse_random_seed(key)?;
             if let Some(seed) = seed.or(random_seed) {
                 let identity = format!(
                     "json_array({})",
@@ -776,7 +789,7 @@ fn group_sort(
                 vec!["random()".into()]
             }
         }
-        SortKey::Field { field } => {
+        Operand::Field { name: field } => {
             let name = flat(field);
             if !keys
                 .iter()
@@ -887,4 +900,71 @@ fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
         });
     }
     Ok(())
+}
+
+fn parse_query(text: &str, opts: &Options) -> Result<Query, QueryError> {
+    crate::parse::with_catalog(text, &source::catalog(opts))
+}
+fn bind_unit(name: &str) -> Result<Unit, QueryError> {
+    Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
+        .ok_or_else(|| not_built(&format!("unit {name}")))
+}
+fn field_operand(operand: &Operand) -> Result<&str, QueryError> {
+    match operand {
+        Operand::Field { name } => Ok(name),
+        _ => Err(not_built("this computed field")),
+    }
+}
+fn value_text(value: &Value) -> Result<&str, QueryError> {
+    match value {
+        Value::Scalar { text, .. } => Ok(text),
+        Value::Unknown => Ok("unknown"),
+        Value::Parameter { name } => Ok(name),
+        _ => Err(not_built("a set in this scalar position")),
+    }
+}
+trait AggregateField {
+    fn field(&self) -> Option<&str>;
+}
+impl AggregateField for Aggregate {
+    fn field(&self) -> Option<&str> {
+        self.fields.first().map(String::as_str)
+    }
+}
+#[derive(Clone, Copy)]
+enum Bucket {
+    Day,
+    Week,
+    Month,
+}
+fn group_operand(operand: &Operand) -> Result<(&str, Option<Bucket>), QueryError> {
+    match operand {
+        Operand::Field { name } => Ok((name, None)),
+        Operand::Function { name, arguments } if arguments.len() == 1 => {
+            let bucket = match name.as_str() {
+                "day" => Bucket::Day,
+                "week" => Bucket::Week,
+                "month" => Bucket::Month,
+                _ => return Err(not_built(&format!("group key {name}"))),
+            };
+            Ok((field_operand(&arguments[0])?, Some(bucket)))
+        }
+        _ => Err(not_built("this group key")),
+    }
+}
+fn parse_random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
+    let Operand::Function { name, arguments } = operand else {
+        return Ok(None);
+    };
+    if name != "random" {
+        return Err(not_built(&format!("sort key {name}")));
+    }
+    arguments
+        .first()
+        .map(|v| {
+            field_operand(v)?
+                .parse()
+                .map_err(|_| not_built("this random seed"))
+        })
+        .transpose()
 }
