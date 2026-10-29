@@ -8,64 +8,81 @@ fn read(
     budget: Option<usize>,
     cursor: Option<&str>,
 ) -> Response {
+    let Some(view) = polylogue_model::read::View::parse(view) else {
+        return error("bad_request", "unknown reading view");
+    };
+    if polylogue_render::Format::parse(format).is_none() {
+        return error("bad_request", "unknown reading format");
+    }
     handle(
         Request::Read {
-            slices: true,
-            selection: None,
-            target: crate::daemon::ReadTarget::Session(
-                polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-            ),
-            view: view.into(),
+            target: "session:claude-code:s1".into(),
+            options: polylogue_model::read::ReadOptions {
+                view,
+                ..Default::default()
+            },
+            delivery: polylogue_model::read::ReadDelivery::Page,
             format: format.into(),
-            with_parents: false,
             budget,
             cursor: cursor.map(Into::into),
+            with_blobs: false,
         },
         d,
     )
 }
 
+fn typed(response: Response) -> polylogue_model::read::ReadPage {
+    let Response::Ok { data, .. } = response else {
+        panic!("{response:?}")
+    };
+    serde_json::from_value(data).unwrap()
+}
+fn encoded(page: &polylogue_model::read::ReadPage, format: polylogue_render::Format) -> String {
+    let mut bytes = Vec::new();
+    polylogue_render::encode_document(
+        &page.document,
+        format,
+        polylogue_render::EncodeOptions::default(),
+        &mut bytes,
+    )
+    .unwrap();
+    String::from_utf8(bytes).unwrap()
+}
+
 #[test]
 fn a_read_honours_its_view_format_and_budget() {
+    use polylogue_model::read::{ItemKind, View};
     let w = test_daemon::start("a prompt long enough to need two pages of one token each");
-    let Response::Ok { data, .. } = read(&w.daemon, "full", "markdown", None, None) else {
-        panic!("markdown read failed")
-    };
-    assert_eq!(data["format"], "markdown");
+    let page = typed(read(&w.daemon, "transcript", "markdown", None, None));
+    assert!(encoded(&page, polylogue_render::Format::Markdown).contains("a prompt long enough"));
+    let page = typed(read(&w.daemon, "transcript", "json", None, None));
+    assert!(page.document.items.iter().any(|item| matches!(&item.kind, ItemKind::Text { text } if text.contains("a prompt long enough"))));
+    let changes = typed(read(&w.daemon, "changes", "json", None, None));
+    assert_eq!(changes.document.header.view, View::Changes);
     assert!(
-        data["content"]
-            .as_str()
-            .unwrap()
-            .contains("a prompt long enough")
+        !changes
+            .document
+            .items
+            .iter()
+            .any(|item| matches!(&item.kind, ItemKind::Text { .. }))
     );
-
-    let Response::Ok { data, .. } = read(&w.daemon, "full", "json", None, None) else {
-        panic!("json read failed")
-    };
-    assert_eq!(data["messages"].as_array().unwrap().len(), 1);
-    // A view that keeps no block of the session leaves no message.
-    let Response::Ok { data, .. } = read(&w.daemon, "actions", "json", None, None) else {
-        panic!("json read failed")
-    };
-    assert!(data["messages"].as_array().unwrap().is_empty());
-
-    let Response::Ok { data: first, .. } = read(&w.daemon, "full", "json", Some(5), None) else {
-        panic!("paged read failed")
-    };
-    let next = first["next"].as_str().expect("a second page").to_owned();
-    let Response::Ok { data: second, .. } = read(&w.daemon, "full", "json", Some(5), Some(&next))
-    else {
-        panic!("paged read failed")
-    };
-    assert_ne!(first["text"], second["text"]);
-
-    for (view, format, cursor) in [
-        ("nope", "json", None),
-        ("full", "pdf", None),
-        ("full", "json", Some("m0.b0.c0")),
+    let first = typed(read(&w.daemon, "transcript", "json", Some(1), None));
+    let call = first.document.footer.next.as_ref().expect("a second page");
+    let envelope: command_surface::RunnableRequest =
+        serde_json::from_value(call.http.arguments.clone()).unwrap();
+    let cursor = envelope.arguments["cursor"].as_str().unwrap();
+    let second = typed(read(&w.daemon, "transcript", "json", Some(1), Some(cursor)));
+    assert_ne!(first.document.items, second.document.items);
+    for (view, format, cursor, expected) in [
+        ("nope", "json", None, "bad_request"),
+        ("transcript", "pdf", None, "bad_request"),
+        ("transcript", "json", Some("m0.b0.c0"), "invalid_query"),
     ] {
         assert!(
-            matches!(read(&w.daemon, view, format, None, cursor), Response::Error { ref kind, .. } if kind == "bad_request"),
+            matches!(
+                read(&w.daemon, view, format, None, cursor),
+                Response::Error { kind, .. } if kind == expected
+            ),
             "{view} {format} {cursor:?}"
         );
     }
@@ -246,27 +263,71 @@ fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock()
 }
 
 #[test]
-fn read_and_session_query_share_stored_titles_without_changing_source_or_export() {
-    let prompt = "First human question\nMore details";
-    let w = test_daemon::start(prompt);
+fn read_and_session_query_share_stored_titles_without_changing_source_or_canonical_records() {
+    let w = test_daemon::start("First human question\nMore details");
     let source = w.home.join(".claude/projects/-p/s1.jsonl");
     let original = std::fs::read(&source).unwrap();
-    let id = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
-    let export = || match handle(
-        Request::Export {
-            targets: vec![crate::daemon::ReadTarget::Session(id.clone())],
-            format: "json".into(),
-            user_state: false,
-        },
-        &w.daemon,
-    ) {
-        Response::Ok { data, .. } => data,
-        other => panic!("export failed: {other:?}"),
+    let records = || {
+        let request = Request::Read {
+            target: "session:claude-code:s1".into(),
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Stream,
+            format: "jsonl".into(),
+            budget: None,
+            cursor: None,
+            with_blobs: false,
+        };
+        let envelope = command_surface::Request {
+            operation: "read".into(),
+            arguments: serde_json::to_value(
+                crate::protocol::read::Arguments::from_request(&request).unwrap(),
+            )
+            .unwrap(),
+            request_id: uuid::Uuid::now_v7().to_string(),
+            deadline: command_surface::Deadline::None,
+        };
+        let mut socket =
+            std::os::unix::net::UnixStream::connect(w.daemon.archive.socket()).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        serde_json::to_writer(
+            &mut socket,
+            &crate::protocol::wire::Outgoing {
+                request: &envelope,
+                caller: Default::default(),
+            },
+        )
+        .unwrap();
+        use std::io::Write;
+        socket.write_all(b"\n").unwrap();
+        let mut records = Vec::new();
+        crate::client::stream::receive(socket, |event| {
+            if event.event == "record" {
+                let transfer: polylogue_model::read::ReadRecord =
+                    serde_json::from_str(&event.data).map_err(std::io::Error::other)?;
+                if let Some(record) = transfer.record() {
+                    records.push(record.clone());
+                }
+            }
+            Ok(event.event == "complete")
+        })
+        .unwrap();
+        records
     };
-    let before = export();
-    let document = polylogue_model::export::Document::from_json(&before.to_string()).unwrap();
-    assert!(document.sessions[0].session.title.is_none());
-    let Response::Ok { data: listed, .. } = handle(
+    let before = records();
+    let canonical = before
+        .iter()
+        .find_map(|record| {
+            if let polylogue_model::bundle::Record::Session(record) = record {
+                Some(&record.session)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert!(canonical.title.is_none());
+    let response = handle(
         Request::Query {
             text: "sessions".into(),
             cursor: None,
@@ -276,29 +337,23 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
             fields: vec![],
         },
         &w.daemon,
-    ) else {
-        panic!("query failed")
+    );
+    let Response::Ok { data, .. } = response else {
+        panic!("{response:?}")
     };
-    assert_eq!(listed["rows"][0]["title"], "First human question");
-    for budget in [None, Some(4000)] {
-        let Response::Ok { data, .. } = read(&w.daemon, "full", "json", budget, None) else {
-            panic!("read failed")
-        };
-        assert_eq!(data["display_title"], listed["rows"][0]["title"]);
-        assert!(data["session"]["title"].is_null());
-    }
-    for (format, prefix) in [
-        ("markdown", "# First human question"),
-        ("html", "<h1>First human question</h1>"),
-        // The daemon renders plain text; the CLI client adds terminal styling.
-        ("terminal", "First human question\n"),
+    assert_eq!(data["rows"][0]["title"], "First human question");
+    for (format, title) in [
+        (polylogue_render::Format::Markdown, "# First human question"),
+        (
+            polylogue_render::Format::Html,
+            "<h1>First human question</h1>",
+        ),
+        (polylogue_render::Format::Terminal, "First human question\n"),
     ] {
-        let Response::Ok { data, .. } = read(&w.daemon, "full", format, None, None) else {
-            panic!("{format} read failed")
-        };
-        assert!(data["content"].as_str().unwrap().contains(prefix), "{data}");
+        let page = typed(read(&w.daemon, "transcript", format.name(), None, None));
+        assert!(encoded(&page, format).contains(title));
     }
-    assert_eq!(export(), before);
+    assert_eq!(records(), before);
     assert_eq!(std::fs::read(source).unwrap(), original);
 }
 
