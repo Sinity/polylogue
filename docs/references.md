@@ -11,7 +11,7 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `message:<id>..<id>` | a range of messages in one session, both ends included, in reading order |
 | `block:<message>#<n>` | the n-th stored block of a message |
 | `tool:<session>#<call id>` | a tool call, by the harness's call ID |
-| `span:<container>#<unit>=<a>-<b>` | a span of text. The container is a message, a block, `assertion:<root>@<rev>` or `variant:<root>@<rev>#<n>`; the unit is `b` (UTF-8 bytes), `c` (code points) or `u16` (UTF-16 code units, as browser selections report them) |
+| `span:<container>#<unit>=<a>-<b>` | a span of text. The container is a message, a block, a document, `assertion:<root>@<rev>` or `variant:<root>@<rev>#<n>`; the unit is `b` (UTF-8 bytes), `c` (code points) or `u16` (UTF-16 code units, as browser selections report them) |
 | `document:<id>` | an imported document, such as a captured harness memory file |
 | `event:<id>` | a Polylogue event |
 | `attachment:<id>` | an attachment |
@@ -28,6 +28,12 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `sx:<sinex reference>` | a Sinex object. Sinex owns the grammar of the string ([Sinex query](https://github.com/Sinity/sinex/blob/master/docs/query.md)); Polylogue resolves it through Sinex's API when Sinex is reachable and shows it `unavailable` otherwise |
 
 Surfaces also accept shorter forms that resolve to one of the above before anything is stored or sent: `self` (the calling session), `last` and `latest`, a bare native ID or a unique prefix of at least eight characters, and a pasted provider URL.
+
+## Text coordinates
+
+Span offsets refer to original stored text, before view filtering or renditions. Message and document text uses the shared text-body recipe with two line feeds between bodies; a block names only its existing text body, and an exact assertion or variant part names its immutable body. UTF-8 bounds must not split a character; UTF-16 bounds must not split a surrogate pair. An accessible empty span differs from an absent or unavailable source.
+
+Portable text fragments retain the original requested spans and their declared normalized UTF-8 bounds. A fragment can preserve selected text when its complete container is unavailable; it does not verify the complete source version from those bytes. Different source versions are not interchangeable.
 
 ## Rules
 
