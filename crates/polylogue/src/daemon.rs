@@ -15,4 +15,4 @@ pub mod server;
 pub mod service;
 pub mod warm;
 
-pub use request::{PageSelection, ReadTarget, Request, Response};
+pub use request::{PageSelection, Request, Response};

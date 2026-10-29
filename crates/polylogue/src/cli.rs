@@ -304,26 +304,6 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     }
 }
 
-/// `export`: the document written to `--out`, or to standard output.
-pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
-    let out = values.text("out").map(PathBuf::from);
-    let out = out.as_deref();
-    let text = match data.get("content").and_then(|c| c.as_str()) {
-        Some(content) => content.to_owned(),
-        None => polylogue_render::terminal::json(data, true),
-    };
-    match out {
-        Some(path) => match std::fs::write(path, text.as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => fail(json, "io", &format!("{}: {e}", path.display()), 1),
-        },
-        None => {
-            print!("{}", polylogue_render::terminal::stdout_text(&text));
-            ExitCode::SUCCESS
-        }
-    }
-}
-
 fn current_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }

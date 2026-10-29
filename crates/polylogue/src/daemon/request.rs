@@ -190,13 +190,6 @@ pub enum Request {
         request_id: String,
         paths: Vec<PathBuf>,
     },
-    Export {
-        targets: Vec<ReadTarget>,
-        format: String,
-        /// Also the archive's user state: every request.
-        #[serde(default)]
-        user_state: bool,
-    },
     AddNote {
         request_id: String,
         note: NewNote,
@@ -343,7 +336,6 @@ impl Request {
             | Self::Read { .. }
             | Self::Outline { .. }
             | Self::Note { .. }
-            | Self::Export { .. }
             | Self::Resumable { .. }
             | Self::Continue { .. }
             | Self::Sql { .. }
@@ -384,34 +376,6 @@ impl Request {
     }
 }
 
-/// What `read` and `export` name: `document:ID`, `event:ID`, or a session
-/// ID (with or without `session:`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-pub enum ReadTarget {
-    Session(SessionId),
-    Document(DocumentId),
-    Event(String),
-}
-
-impl ReadTarget {
-    pub fn parse(text: &str) -> Result<Self, String> {
-        if let Some(id) = text.strip_prefix("event:") {
-            if id.is_empty() {
-                return Err("event reference requires an ID".into());
-            }
-            return Ok(Self::Event(id.to_owned()));
-        }
-        if let Some(id) = text.strip_prefix("document:") {
-            return DocumentId::parse(id)
-                .map(Self::Document)
-                .map_err(|e| e.to_string());
-        }
-        SessionId::parse(text.strip_prefix("session:").unwrap_or(text))
-            .map(Self::Session)
-            .map_err(|e| e.to_string())
-    }
-}
 
 fn attachment_chunk() -> usize {
     64 * 1024

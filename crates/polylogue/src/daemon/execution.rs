@@ -109,7 +109,6 @@ pub fn run(
         Request::Outline { .. } => ("outline", None),
         Request::Changes { .. } => ("changes", None),
         Request::Attachment { .. } => ("attachment", None),
-        Request::Export { .. } => ("export", None),
         Request::SchemaInfer { .. } => ("schema_infer", None),
         Request::SchemaUnread { .. } => ("schema_unread", None),
         _ => ("request", None),

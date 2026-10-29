@@ -1,6 +1,6 @@
 //! Hydrate canonical rows lazily after the shared selector has resolved refs.
 use super::super::{Response, error, store_error};
-use polylogue_model::{Reference, SessionId, bundle::*, read::ProjectionEvidence};
+use polylogue_model::{Reference, SessionId, bundle::*, read::{ProjectionEvidence,ReadPosition}};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
@@ -10,9 +10,9 @@ fn admission(commit: Option<u64>, reference: &str) -> Result<u64, Response> {
     commit.ok_or_else(|| error("unavailable", format!("{reference} has no retained source admission evidence")))
 }
 
-pub(super) fn reference(reader: &Reader<'_>, reference: &Reference, inherited: bool, visit: &mut Visit<'_>) -> Result<bool, Response> {
+pub(super) fn reference(reader: &Reader<'_>, reference: &Reference, inherited: bool, start:Option<&ReadPosition>, visit: &mut Visit<'_>) -> Result<bool, Response> {
     match reference {
-        Reference::Session(id) => session(reader, id, inherited, visit),
+        Reference::Session(id) => session(reader, id, inherited, start, visit),
         Reference::Message(id) | Reference::Block { message: id, .. } => {
             let (message, mut projection) = reader.message_with_projection(id).map_err(|e| store_error(&e))?
                 .ok_or_else(|| error("not_found", format!("no message {id}")))?;
@@ -52,17 +52,26 @@ pub(super) fn reference(reader: &Reader<'_>, reference: &Reference, inherited: b
     }
 }
 
-fn session(reader: &Reader<'_>, id: &SessionId, inherited: bool, visit: &mut Visit<'_>) -> Result<bool, Response> {
-    let session = reader.session(id).map_err(|e| store_error(&e))?
-        .ok_or_else(|| error("not_found", format!("no session {id}")))?;
+fn session(reader: &Reader<'_>, id: &SessionId, inherited: bool, start:Option<&ReadPosition>, visit: &mut Visit<'_>) -> Result<bool, Response> {
     let reference = format!("session:{id}");
-    let commit = admission(reader.session_commit(id).map_err(|e| store_error(&e))?, &reference)?;
-    if !visit(Record::Session(SessionRecord { reference, commit, session }), ProjectionEvidence::default())? {
-        return Ok(false);
+    if start.is_none_or(|start|start.reference==reference) {
+        let session = reader.session(id).map_err(|e| store_error(&e))?
+            .ok_or_else(|| error("not_found", format!("no session {id}")))?;
+        let commit = admission(reader.session_commit(id).map_err(|e| store_error(&e))?, &reference)?;
+        if !visit(Record::Session(SessionRecord { reference, commit, session }), ProjectionEvidence::default())? {
+            return Ok(false);
+        }
     }
     let selected = reader.select_messages(id, inherited).map_err(|e| store_error(&e))?;
+    let message_start=start.and_then(|start|start.reference.strip_prefix("message:"));
+    let from=if let Some(message)=message_start {
+        let message=polylogue_model::MessageId::parse(message).map_err(|e|error("invalid_cursor",e))?;
+        selected.locate(Some(&message)).map_err(|e|store_error(&e))?
+            .ok_or_else(||error("stale_cursor","continued message is no longer selected"))?
+    }else{Default::default()};
+    let skip_messages=start.is_some_and(|start|start.reference.starts_with("event:")||start.reference.starts_with("link:"));
     let mut result = Ok(true);
-    selected.visit_with_record_evidence(|message, projection, commit, order| {
+    if !skip_messages { selected.visit_from_with_record_evidence(from, |message, projection, commit, order| {
         let reference = format!("message:{}", message.id);
         let next = admission(commit, &reference).and_then(|commit| {
             let evidence = ProjectionEvidence { inherited: message.session != *id, ..Default::default() };
@@ -78,7 +87,7 @@ fn session(reader: &Reader<'_>, id: &SessionId, inherited: bool, visit: &mut Vis
             Ok(true) => ControlFlow::Continue(()),
             other => { result = other; ControlFlow::Break(()) }
         }
-    }).map_err(|e| store_error(&e))?;
+    }).map_err(|e| store_error(&e))?; }
     if !result? { return Ok(false); }
     let mut result = Ok(true);
     reader.visit_event_records(id, |event| match visit(Record::Event(event), ProjectionEvidence::default()) {
