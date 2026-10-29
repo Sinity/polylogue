@@ -17,10 +17,10 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn archive_and_embedding_baselines_stay_at_one_while_the_index_migrates() {
     assert_eq!(ARCHIVE_VERSION, 1);
-    assert_eq!(INDEX_VERSION, 2);
+    assert_eq!(INDEX_VERSION, 3);
     for (create, expected) in [
         (ensure_archive as fn(&Connection) -> Result<()>, 1),
-        (ensure_index, 2),
+        (ensure_index, 3),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();

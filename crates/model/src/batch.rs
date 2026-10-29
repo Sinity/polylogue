@@ -33,6 +33,9 @@ pub struct Output {
     /// Selected original block positions retain the original source version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_projections: BTreeMap<usize, crate::bundle::MessageProjection>,
+    /// Immutable admission of each confirmed message fact, indexed by message.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_receipts: BTreeMap<usize, u64>,
     /// Upserted by [`Link::key`]; parts one file lacks are filled from
     /// another ([`Link::merge`]).
     pub links: Vec<Link>,
