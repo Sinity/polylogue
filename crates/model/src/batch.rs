@@ -19,6 +19,13 @@ pub struct Output {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentRow>,
     pub events: Vec<Event>,
+    /// Stable exported identities and their original source claims, indexed by event.
+    /// The containing input still owns the local bytes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub imported_events: BTreeMap<usize, crate::bundle::ImportedEventIdentity>,
+    /// Explicit session reading order, indexed by message; byte ranges stay local.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_order: BTreeMap<usize, u64>,
     /// Upserted by [`Link::key`]; parts one file lacks are filled from
     /// another ([`Link::merge`]).
     pub links: Vec<Link>,
