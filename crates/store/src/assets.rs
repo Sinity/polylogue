@@ -9,12 +9,6 @@ pub use read::{AssetMatch, AttachmentResolution, AttachmentState};
 
 pub const RULES: u32 = 1;
 
-pub(crate) fn invalidate_metadata(conn: &Connection, input: &str) -> Result<()> {
-    conn.execute("DELETE FROM import_asset_metadata WHERE input=?1", [input])?;
-    conn.execute("DELETE FROM import_asset_sidecar WHERE input=?1", [input])?;
-    Ok(())
-}
-
 #[derive(Debug, Clone)]
 pub struct AssetSource {
     pub chain: i64,
