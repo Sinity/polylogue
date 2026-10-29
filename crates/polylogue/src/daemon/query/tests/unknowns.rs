@@ -291,7 +291,14 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     assert_eq!(kept["rows"].as_array().unwrap().len(), 1);
     let id = "claude-code:7f3a2c10-0002-4000-8000-000000000002";
     assert_eq!(kept["rows"][0]["id"], id);
-    let (selection, _) = usage_selection(&reader, text, OCT1, true, Some(&near)).unwrap();
+    let (selection, _) = usage_selection(
+        &reader,
+        text,
+        &fixture_clock(OCT1, "UTC", 0),
+        true,
+        Some(&near),
+    )
+    .unwrap();
     let selected = reader
         .query(
             "SELECT pk FROM session WHERE id=?1",
@@ -303,7 +310,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
         Some(vec![selected[0]["pk"].as_i64().unwrap()])
     );
     assert_eq!(
-        usage_selection(&reader, text, OCT1, true, None)
+        usage_selection(&reader, text, &fixture_clock(OCT1, "UTC", 0), true, None)
             .unwrap_err()
             .kind,
         "embed"
