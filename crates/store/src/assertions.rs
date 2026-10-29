@@ -156,6 +156,14 @@ pub fn apply(conn: &Connection, assertions: &[Assertion], counter: i64) -> Resul
     Ok(())
 }
 
+/// A private preparation overlay has its own counter; copied assertions keep
+/// their original identities, authorship, timestamps and link facts.
+pub fn copy(from: &Connection, to: &Connection) -> Result<()> {
+    visit(from, None, |assertion| {
+        apply(to, std::slice::from_ref(&assertion), 0)
+    })
+}
+
 fn exact(root: &str, revision: &str) -> Reference {
     Reference::Assertion(RevisionReference {
         root: root.into(),

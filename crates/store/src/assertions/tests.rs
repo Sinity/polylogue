@@ -75,6 +75,12 @@ fn frozen_assertions_replay_exact_facts_and_first_admission() {
         Err(StoreError::Conflict(_))
     ));
     assert_eq!(get(&conn, "first").unwrap().unwrap(), actual);
+    let overlay = archive();
+    copy(&conn, &overlay).unwrap();
+    copy(&conn, &overlay).unwrap();
+    let mut expected = actual;
+    expected.commit_seq = 0;
+    assert_eq!(get(&overlay, "first").unwrap(), Some(expected));
 }
 #[test]
 fn canonical_assertion_graph_exposes_forks_and_restoration_in_every_import_order() {
