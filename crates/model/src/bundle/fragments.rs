@@ -102,7 +102,8 @@ pub enum TextFragmentError {
 type Result<T> = std::result::Result<T, TextFragmentError>;
 
 impl TextSourceVersion {
-    fn validate_container(&self, container: &Reference) -> Result<()> {
+    /// Checks exact version/container metadata without attesting source bytes.
+    pub fn validate_container(&self, container: &Reference) -> Result<()> {
         if Reference::parse(&container.to_string()).ok().as_ref() != Some(container) {
             return Err(TextFragmentError::SourceVersion);
         }
