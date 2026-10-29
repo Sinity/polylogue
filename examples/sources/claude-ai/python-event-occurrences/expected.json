@@ -81,9 +81,14 @@
             "metadata": {
               "thinking_config": {
                 "type": "enabled",
-                "budget_tokens": 200
+                "budget_tokens": 100
               }
-            }
+            },
+            "compaction_summary": [
+              {
+                "text": "first summary"
+              }
+            ]
           }
         },
         "offset": 3
@@ -108,7 +113,12 @@
                 "type": "enabled",
                 "budget_tokens": 200
               }
-            }
+            },
+            "compaction_summary": [
+              {
+                "text": "second summary"
+              }
+            ]
           }
         },
         "offset": 3

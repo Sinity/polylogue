@@ -273,7 +273,10 @@ fn an_unterminated_citation_opener_is_kept_as_written() {
         )],
         json!({}),
     ));
-    assert_eq!(message(&p, ":a")["blocks"][0]["text"], "A \u{e200}cite\u{e202}x\u{e201} B \u{e200}open");
+    assert_eq!(
+        message(&p, ":a")["blocks"][0]["text"],
+        "A \u{e200}cite\u{e202}x\u{e201} B \u{e200}open"
+    );
 }
 
 #[test]

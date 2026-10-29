@@ -192,7 +192,10 @@ fn reasoning_is_kept_as_summary_text_raw_text_or_a_redacted_mark() {
         ),
     ]);
     let b = blocks(&p);
-    assert_eq!(*b[0], json!({"type": "thinking", "text": "Sum", "signature": "gAAA"}));
+    assert_eq!(
+        *b[0],
+        json!({"type": "thinking", "text": "Sum", "signature": "gAAA"})
+    );
     assert_eq!(
         *b[1],
         json!({"type": "thinking", "text": null, "redacted": true, "signature": "gBBB"}),
