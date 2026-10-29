@@ -300,12 +300,22 @@ pub(crate) fn apply_using(
             author,
             machine,
         } => {
+            let owner = if matches!(source, crate::source::Source::Cache) {
+                polylogue_model::settings::Owner::Primary
+            } else {
+                polylogue_model::settings::Owner::Standalone
+            };
+            polylogue_model::settings::parse(key, value, owner)
+                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            let target_machine =
+                polylogue_model::settings::target_machine(key, machine.as_deref(), &r.machine)
+                    .map_err(|error| StoreError::Invalid(error.to_string()))?;
             tx.execute(
                 &source.sql("INSERT INTO @source.setting(id, machine, key, value, author, set_at, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"),
                 params![
                     r.id,
-                    machine.as_deref().unwrap_or("*"),
+                    target_machine.as_deref().unwrap_or("*"),
                     key,
                     value,
                     author.to_string(),

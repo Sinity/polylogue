@@ -336,7 +336,13 @@ impl Reader<'_> {
         key: &str,
         machine: &str,
     ) -> Result<Option<polylogue_model::settings::Value>> {
-        Ok(self.setting_current(key, machine)?.value)
+        let current = self.setting_current(key, machine)?;
+        if current.owner == "sinex" {
+            return Err(crate::StoreError::Invalid(
+                polylogue_model::settings::Error::SinexOwned(key.into()).to_string(),
+            ));
+        }
+        Ok(current.value)
     }
 
     pub fn setting_current(
@@ -363,7 +369,11 @@ impl Reader<'_> {
                 authored: None,
             });
         }
-        let row = self.conn()?.query_row("SELECT id,machine,value,author,set_at FROM source_setting WHERE key=?1 AND machine IN (?2,'*') ORDER BY machine='*',set_at DESC,id DESC LIMIT 1", params![key,machine], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,i64>(4)?))).optional()?;
+        let target = match spec.scope {
+            settings::Scope::Archive => "*",
+            settings::Scope::Host => machine,
+        };
+        let row = self.conn()?.query_row("SELECT id,machine,value,author,set_at FROM source_setting WHERE key=?1 AND machine=?2 ORDER BY set_at DESC,id DESC LIMIT 1", params![key,target], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,i64>(4)?))).optional()?;
         let owner = if primary {
             Owner::Primary
         } else {

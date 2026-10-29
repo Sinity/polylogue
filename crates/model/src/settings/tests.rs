@@ -59,3 +59,21 @@ fn typed_values_refuse_invalid_minutes_counts_and_plans() {
         Value::QuietHours(Some([1320, 420]))
     );
 }
+
+#[test]
+fn scope_resolution_uses_accepting_host_and_rejects_archive_overrides() {
+    assert_eq!(
+        target_machine("signal.quiet_hours", None, "host-a").unwrap(),
+        Some("host-a".into())
+    );
+    assert_eq!(
+        target_machine("signal.quiet_hours", Some("host-b"), "host-a").unwrap(),
+        Some("host-b".into())
+    );
+    assert_eq!(
+        target_machine("reading.variants", None, "host-a").unwrap(),
+        None
+    );
+    assert!(target_machine("reading.variants", Some("host-b"), "host-a").is_err());
+    assert!(target_machine("signal.quiet_hours", Some("*"), "host-a").is_err());
+}

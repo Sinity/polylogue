@@ -414,8 +414,8 @@ fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
             "setting",
             2,
             UserWrite::SetSetting {
-                key: "example".into(),
-                value: "value".into(),
+                key: "browser.actions".into(),
+                value: "on".into(),
                 author: Author::Operator,
                 machine: None,
             },

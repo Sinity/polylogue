@@ -183,6 +183,35 @@ pub fn declaration(key: &str) -> Result<&'static Declaration, Error> {
         })
         .ok_or_else(|| Error::UnknownKey(key.to_string()))
 }
+/// Resolve the authored destination from the declared scope. The accepting
+/// daemon supplies its captured machine; request text cannot change that fact.
+pub fn target_machine(
+    key: &str,
+    explicit: Option<&str>,
+    accepting_machine: &str,
+) -> Result<Option<String>, Error> {
+    let spec = declaration(key)?;
+    let invalid = |expected| Error::Invalid {
+        key: key.into(),
+        expected,
+    };
+    match spec.scope {
+        Scope::Archive => {
+            if explicit.is_some() {
+                return Err(invalid("archive scope without a machine override"));
+            }
+            Ok(None)
+        }
+        Scope::Host => {
+            let machine = explicit.unwrap_or(accepting_machine);
+            if machine.trim().is_empty() || machine == "*" || machine.chars().any(char::is_control)
+            {
+                return Err(invalid("a nonempty host machine identity"));
+            }
+            Ok(Some(machine.into()))
+        }
+    }
+}
 pub fn parse(key: &str, text: &str, owner: Owner) -> Result<Value, Error> {
     let spec = declaration(key)?;
     if owner == Owner::Primary && spec.standalone_only {
