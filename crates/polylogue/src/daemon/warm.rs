@@ -516,6 +516,14 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
 pub fn complete_at(data: &Completion, text: &str, position: usize) -> Vec<query_language::complete::Completion> {
     let mut catalog = data.catalog.clone();
     for unit in &mut catalog.units {
+        for (id, _) in &data.sessions {
+            if let Some((origin, _)) = id.split_once(':')
+                && !unit.fields.iter().any(|field| field.name == origin) {
+                unit.fields.push(query_language::catalog::Field { name: origin.into(), kind: query_language::catalog::FieldKind::Reference, ..Default::default() });
+            }
+        }
+    }
+    for unit in &mut catalog.units {
         for field in &mut unit.fields {
             let short = field.name.strip_prefix("session.").unwrap_or(&field.name);
             if let Some(values) = data.values.get(short) {
