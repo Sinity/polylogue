@@ -11,6 +11,7 @@ pub mod authorship;
 pub mod batch;
 mod block;
 pub mod bundle;
+pub mod currency;
 pub mod capture;
 pub mod capture_log;
 mod change_position;
@@ -66,9 +67,7 @@ pub use message::{
 pub use note::{NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
-pub use time::{LogicalDay, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
-pub mod note_sql;
-pub mod session_sql;
+pub use time::{Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};

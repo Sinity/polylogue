@@ -7,15 +7,16 @@
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
 //! - `segments/`: every input blob, in append-only shared frame segments.
 
+mod admission;
 pub mod archive;
 pub mod assertions;
 pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
+pub mod calendar;
 pub mod chat_actions;
 pub mod check_runs;
 pub mod completion;
-mod admission;
 mod container_members;
 pub mod context;
 pub mod coverage;
@@ -32,17 +33,21 @@ pub mod input_rows;
 pub mod legacy_import;
 mod live;
 pub mod measure;
+pub mod note_sql;
 pub mod notes;
 mod ordered_blocks;
 pub mod primary;
+pub mod query;
 pub mod read;
 pub mod reference;
 mod repo_lookup;
 pub mod schema;
 pub mod schema_inputs;
 pub mod search;
+pub mod selection;
 pub mod session_export;
 mod session_row;
+pub mod session_sql;
 pub(crate) mod source;
 pub mod sql_functions;
 pub mod sql_views;
@@ -67,7 +72,7 @@ pub use context::{
 };
 pub use read::{
     BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
-    scope::ReadScopeToken,
+    scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use writer::{
     Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,

@@ -219,6 +219,21 @@ impl Paths {
             runtime,
         })
     }
+    /// Resolve one declared archive selection from supplied deployment values.
+    pub fn archive(
+        &self,
+        overrides: &Overrides,
+        cwd: &Path,
+        file_archive: Option<&Path>,
+        file_base: &Path,
+    ) -> PathBuf {
+        overrides
+            .archive
+            .as_ref()
+            .map(|path| absolute(path.clone(), cwd))
+            .or_else(|| file_archive.map(|path| absolute(path.into(), file_base)))
+            .unwrap_or_else(|| self.data.join("polylogue"))
+    }
     pub fn runtime_dir(&self, archive: &Path) -> PathBuf {
         self.runtime
             .join("polylogue")
@@ -266,6 +281,34 @@ impl Config {
     pub fn standalone_day(&self) -> Result<&DaySetting, Error> {
         self.standalone_day.as_ref().ok_or(Error::SinexDay)
     }
+    /// A separate synthetic archive receives its own explicit day and no
+    /// deployment outlets or paid credentials from the operator's archive.
+    pub fn standalone_for_archive(
+        &self,
+        archive: PathBuf,
+        day: DaySetting,
+    ) -> Result<Arc<Self>, Error> {
+        if !archive.is_absolute() {
+            return Err(Error::Invalid(
+                "the standalone archive path must be absolute".into(),
+            ));
+        }
+        let mut config = self.clone();
+        config.archive = archive;
+        config.standalone_day = Some(day);
+        config.http = HttpConfig {
+            listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            token: None,
+        };
+        config.signals = SignalDeployment::default();
+        config.notification_bus_address = None;
+        config.embedding_credentials = crate::embeddings::Credentials::new(None);
+        #[cfg(feature = "sinex")]
+        {
+            config.primary_auth = polylogue_sinex::Authentication::Anonymous;
+        }
+        Ok(Arc::new(config))
+    }
 }
 pub struct Startup {
     pub config: Arc<Config>,
@@ -273,6 +316,7 @@ pub struct Startup {
     pub mode: crate::daemon::service::ArchiveMode,
     pub clock: WallClock,
     pub output: OutputConfig,
+    pub hook: crate::hook::Inputs,
 }
 #[derive(Debug, Clone, Default)]
 pub struct Overrides {
@@ -282,6 +326,12 @@ pub struct Overrides {
     pub auth_token_file: Option<PathBuf>,
 }
 impl Overrides {
+    pub fn config_path(&self, paths: &Paths, cwd: &Path) -> PathBuf {
+        self.config_file
+            .as_ref()
+            .map(|path| absolute(path.clone(), cwd))
+            .unwrap_or_else(|| paths.config.join("polylogue/polylogue.toml"))
+    }
     pub fn from_matches(matches: &ArgMatches) -> Self {
         Self {
             config_file: matches
@@ -387,6 +437,35 @@ fn optional_file(path: &Path) -> Result<Option<String>, Error> {
         }),
     }
 }
+/// The grammar/completion boundary reads only the deployment file's archive
+/// selection. It opens no archive and resolves no clock, identity or zone.
+pub fn archive_location(process: &ProcessInputs, overrides: &Overrides) -> Result<PathBuf, Error> {
+    let paths = Paths::resolve(&process.environment)?;
+    let cwd = process
+        .cwd
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("the current directory is unavailable".into()))?;
+    let (path, file) = deployment_file(&paths, overrides, cwd)?;
+    let base = path
+        .parent()
+        .ok_or_else(|| Error::Invalid("configuration path has no parent".into()))?;
+    Ok(paths.archive(overrides, cwd, file.archive.as_deref(), base))
+}
+fn deployment_file(
+    paths: &Paths,
+    overrides: &Overrides,
+    cwd: &Path,
+) -> Result<(PathBuf, FileConfig), Error> {
+    let path = overrides.config_path(paths, cwd);
+    let file = optional_file(&path)?
+        .map(|text| {
+            toml::from_str(&text)
+                .map_err(|error| Error::Invalid(format!("{}: {error}", path.display())))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok((path, file))
+}
 impl Startup {
     pub fn load(process: &ProcessInputs, overrides: Overrides) -> Result<Self, Error> {
         let identity = process.identity.clone().map(Ok).unwrap_or_else(|| {
@@ -413,25 +492,11 @@ impl Startup {
             .workers
             .ok_or_else(|| Error::Invalid("the process CPU allowance is unavailable".into()))?;
         let mut paths = Paths::resolve(&process.environment)?;
-        let config_file = overrides
-            .config_file
-            .map(|path| absolute(path, cwd))
-            .unwrap_or_else(|| paths.config.join("polylogue/polylogue.toml"));
-        let file: FileConfig = optional_file(&config_file)?
-            .map(|text| {
-                toml::from_str(&text)
-                    .map_err(|error| Error::Invalid(format!("{}: {error}", config_file.display())))
-            })
-            .transpose()?
-            .unwrap_or_default();
+        let (config_file, file) = deployment_file(&paths, &overrides, cwd)?;
         let base = config_file
             .parent()
             .ok_or_else(|| Error::Invalid("configuration path has no parent".into()))?;
-        let archive = overrides
-            .archive
-            .map(|path| absolute(path, cwd))
-            .or_else(|| file.archive.map(|path| absolute(path, base)))
-            .unwrap_or_else(|| paths.data.join("polylogue"));
+        let archive = paths.archive(&overrides, cwd, file.archive.as_deref(), base);
         if let Some(path) = file.check_history {
             paths.check_history = absolute(path, base);
         }
@@ -549,6 +614,20 @@ impl Startup {
             mode,
             clock: process.clock.clone(),
             output: process.output,
+            hook: crate::hook::Inputs {
+                kitty_pid: process
+                    .environment
+                    .get_os("KITTY_PID")
+                    .and_then(OsStr::to_str)
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|pid| *pid > 0),
+                kitty_window: process
+                    .environment
+                    .get_os("KITTY_WINDOW_ID")
+                    .and_then(OsStr::to_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            },
         })
     }
 }
@@ -607,6 +686,10 @@ impl Startup {
             engine,
             mode: crate::daemon::service::ArchiveMode::Standalone,
             output: OutputConfig::new(false, false, true),
+            hook: crate::hook::Inputs {
+                kitty_pid: None,
+                kitty_window: None,
+            },
         }
     }
 }

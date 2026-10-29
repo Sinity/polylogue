@@ -1,5 +1,6 @@
 //! Native tool timing facts reach the public registry through the real loop.
 use super::super::*;
+use super::fixture_clock;
 use polylogue_testkit::ClaudeHome;
 
 #[test]
@@ -21,8 +22,7 @@ fn reported_duration_and_result_time_preserve_their_native_meaning() {
             page_size: Some(1),
             why: false,
             session: None,
-            now: 0,
-            day: Some(LogicalDay::named("UTC", 240).unwrap()),
+            clock: fixture_clock(0, "UTC", 240),
             embeddings: false,
             near: None,
             fields: &fields,

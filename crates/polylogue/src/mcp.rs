@@ -47,7 +47,7 @@ fn build_request(
         })?;
     let build = match command.action {
         Action::Request(build) | Action::Stream { build, .. } => build,
-        Action::Local(_) => return Err(format!("no tool {name}")),
+        Action::Local(_) | Action::ConfiguredLocal(_) => return Err(format!("no tool {name}")),
     };
     let bad = |e: String| polylogue_render::terminal::escape(&format!("error (bad_request): {e}"));
     let values = Values::from_json(command, Surface::Mcp, arguments).map_err(bad)?;
@@ -466,12 +466,8 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
     })
 }
 
-pub fn serve_stdio() -> io::Result<()> {
-    serve(
-        io::stdin().lock(),
-        io::stdout(),
-        &Archive::at(&Archive::default_root()),
-    )
+pub fn serve_stdio(archive: &Archive) -> io::Result<()> {
+    serve(io::stdin().lock(), io::stdout(), archive)
 }
 
 #[cfg(test)]

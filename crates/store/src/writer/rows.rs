@@ -583,7 +583,7 @@ impl RowWriter<'_, '_> {
                 choice.session,
             )
         });
-        let Some((mut v, session_pk)) = winner else {
+        let Some((v, session_pk)) = winner else {
             if !self.tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)",
                 [pk],

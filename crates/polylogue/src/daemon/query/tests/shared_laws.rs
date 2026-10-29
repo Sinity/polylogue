@@ -1,5 +1,6 @@
 //! Shared independent cases through the product compiler, fixture store and pager.
 use super::super::*;
+use super::fixture_clock;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use query_language::cursor::{PageRequest, SealedCursor};
 use query_language::{
@@ -21,7 +22,7 @@ fn error(message: impl ToString) -> Error {
 }
 fn options() -> Options {
     Options {
-        clock: polylogue_query::time::clock(0, LogicalDay::named("UTC", 240).unwrap()).unwrap(),
+        clock: fixture_clock(0, "UTC", 240),
         origins: vec!["claude-code".into()],
         command_words: vec![],
         page_size: None,
@@ -100,7 +101,7 @@ impl laws::Compiler for Product {
         let options = options();
         let catalog = polylogue_query::catalog::catalog(&options.origins, &options.command_words);
         let text = query_language::format::format_query(&value, &catalog)?;
-        let program = polylogue_query::compile(&text, &options).map_err(error)?;
+        let program = polylogue_store::query::compile(&text, &options).map_err(error)?;
         Ok(Plan {
             text,
             shape: program.shape,
@@ -235,8 +236,7 @@ impl laws::Executor<Plan> for Execution {
                 page_size: Some(request.page_size.get() as u64),
                 why: false,
                 session: None,
-                now: 0,
-                day: Some(LogicalDay::named("UTC", 240).unwrap()),
+                clock: fixture_clock(0, "UTC", 240),
                 embeddings: false,
                 near: None,
                 fields: &["id".into(), "cost".into(), "repo".into()],
@@ -319,7 +319,7 @@ fn shared_language_laws_run_through_product_compilation_and_keyset_pages() {
     )
     .unwrap();
     assert_eq!(
-        polylogue_query::compile(&text, &options())
+        polylogue_store::query::compile(&text, &options())
             .unwrap_err()
             .kind(),
         "not_built"

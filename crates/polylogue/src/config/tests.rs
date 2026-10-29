@@ -247,3 +247,63 @@ fn fixture_configuration_uses_explicit_engine_inputs_and_has_no_external_outlets
     assert!(startup.config.signals.action_commands.is_empty());
     assert!(startup.config.signals.value_targets.is_empty());
 }
+
+#[test]
+fn completion_and_startup_share_declared_archive_selection_without_clock_dependencies() {
+    let root = tempfile::tempdir().unwrap();
+    deployment(
+        root.path(),
+        "archive='file-archive'\n[day]\nzone='Invalid/Zone'\nstart='04:00:00'\n",
+    );
+    let mut inputs = process(root.path());
+    inputs.identity = None;
+    inputs.workers = None;
+    let overrides = Overrides::default();
+    assert_eq!(
+        archive_location(&inputs, &overrides).unwrap(),
+        root.path().join("config/polylogue/file-archive")
+    );
+    assert_eq!(
+        archive_location(
+            &process,
+            &Overrides {
+                archive: Some("chosen".into()),
+                ..Overrides::default()
+            }
+        )
+        .unwrap(),
+        root.path().join("chosen")
+    );
+    deployment(root.path(), "archive='file-archive'\n");
+    let inputs = process(root.path());
+    assert_eq!(
+        archive_location(&inputs, &overrides).unwrap(),
+        Startup::load(&inputs, overrides).unwrap().config.archive
+    );
+}
+
+#[test]
+fn synthetic_archive_gets_an_explicit_day_without_operator_outlets() {
+    let root = tempfile::tempdir().unwrap();
+    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let day = DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(6, 0, 1, 0),
+    )
+    .unwrap();
+    let separate = startup
+        .config
+        .standalone_for_archive(root.path().join("sample"), day.clone())
+        .unwrap();
+    assert_eq!(separate.archive, root.path().join("sample"));
+    assert_eq!(separate.standalone_day().unwrap(), &day);
+    assert!(separate.notification_bus_address.is_none());
+    assert!(separate.signals.action_commands.is_empty());
+    assert!(
+        startup
+            .config
+            .standalone_for_archive("relative".into(), day)
+            .is_err()
+    );
+    assert_ne!(startup.config.archive, separate.archive);
+}

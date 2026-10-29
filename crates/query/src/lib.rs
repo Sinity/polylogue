@@ -1,7 +1,6 @@
 //! The query language: the existing language ported, not a second one. A
 //! read is a query, the columns it shows and the format it is printed in.
-//! Parsing, checking and compiling are pure: the result is SQL with bound parameters that the daemon runs against
-//! `index.db` (with `archive.db` attached as `a`) in one consistent read.
+//! Parsing and binding produce a typed Plan. Store alone lowers and executes it.
 
 pub mod ast;
 pub mod catalog;
@@ -9,12 +8,13 @@ pub mod compile;
 pub mod explain;
 pub mod fields;
 pub mod parse;
+pub mod plan;
 pub mod time;
 pub mod units;
 
 pub use compile::{
-    Attach, ChatPage, ColKind, Column, ColumnReference, Definition, IdCheck, Kept, Measure, Near,
-    Options, OrderKey, Param, Program, RANK_FUSION_OFFSET, SavedQuery, Shape, WhyClause, compile,
+    Bindings, ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery,
+    Shape, compile,
 };
 pub use parse::parse;
 pub use time::Clock;
@@ -93,12 +93,7 @@ impl QueryError {
         Self::Language { error, diagnostic }
     }
 
-    pub(crate) fn syntax(
-        text: &str,
-        at: usize,
-        message: String,
-        suggestion: Option<String>,
-    ) -> Self {
+    pub fn syntax(text: &str, at: usize, message: String, suggestion: Option<String>) -> Self {
         let at = at.min(text.len());
         let line = text.to_owned();
         let caret = format!("{}^", " ".repeat(text[..at].chars().count()));

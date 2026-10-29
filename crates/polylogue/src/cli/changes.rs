@@ -17,9 +17,10 @@ fn invalid(message: &str) -> io::Error {
 pub fn run(
     _: &crate::commands::Values,
     request: &Request,
+    startup: &crate::config::Startup,
     timeout: Option<std::time::Duration>,
 ) -> ExitCode {
-    let archive = Archive::at(&Archive::default_root());
+    let archive = Archive::at(&startup.config.archive);
     match send(&archive, request, &mut io::stdout().lock(), timeout) {
         Ok(code) => ExitCode::from(code),
         Err(e)

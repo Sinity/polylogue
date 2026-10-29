@@ -171,7 +171,16 @@ pub fn visit_record(
             };
             let mark = evidence
                 .variants
-                .values()
+                .iter()
+                .filter(|(ordinal, _)| {
+                    row.block_ordinals
+                        .iter()
+                        .zip(&message.blocks)
+                        .any(|(index, block)| {
+                            index == *ordinal && matches!(block, Block::Text { .. })
+                        })
+                })
+                .map(|(_, variant)| variant)
                 .find(|variant| !variant.mark.stale || options.variants.contains(&variant.mark.key))
                 .map(|variant| variant.mark.clone());
             if !visit(ReadItem {
@@ -421,14 +430,7 @@ fn block_items(
                     return Ok(false);
                 }
                 if let Some(result) = &pair.result {
-                    return result_extras(
-                        &result.block,
-                        &result.source,
-                        ordinal,
-                        options,
-                        evidence,
-                        visit,
-                    );
+                    return result_extras(&result.block, &result.source, options, evidence, visit);
                 }
                 return Ok(true);
             }
@@ -465,7 +467,7 @@ fn block_items(
             }) {
                 return Ok(false);
             }
-            return result_extras(block, &source, ordinal, options, evidence, visit);
+            return result_extras(block, &source, options, evidence, visit);
         }
         Block::Image(attachment) | Block::File(attachment) => {
             attachment_kind(attachment, &source, 0, evidence)?
@@ -508,7 +510,6 @@ fn attachment_kind(
 fn result_extras(
     block: &Block,
     source: &Source,
-    _ordinal: u64,
     options: &ReadOptions,
     evidence: &ProjectionEvidence,
     visit: &mut impl FnMut(ReadItem) -> bool,

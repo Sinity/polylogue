@@ -47,16 +47,27 @@ pub(crate) fn reset(
     }
     // Cancellation precedes visibility. A failed transaction leaves reads blocked
     // until the same authoritative reset can be completed.
-    archive.read_scope.begin_reset()?;
+    let mut reset = archive.read_scope.begin_reset()?;
     // The owner control must survive a failed clear and restart. This is cached
     // grant metadata, independent of pending producer intents or input custody.
-    let previous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
-    index.pragma_update(None, "synchronous", previous.max(2))?;
-    let result = (|| {
+    let mut previous = None;
+    let persisted = (|| {
+        let synchronous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
+        previous = Some(synchronous);
+        index.pragma_update(None, "synchronous", synchronous.max(2))?;
         index.execute("INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [scope])?;
-        clear(index, archive, resolver, scope)
+        Ok(())
     })();
-    let restored = index.pragma_update(None, "synchronous", previous);
+    // Invalidate every registered output even when control persistence fails.
+    // An old publisher cannot race its pointer activation past this callback.
+    let invalidated = reset.invalidate();
+    drop(reset);
+    let result = persisted
+        .and(invalidated)
+        .and_then(|()| clear(index, archive, resolver, scope));
+    let restored = previous
+        .map(|previous| index.pragma_update(None, "synchronous", previous))
+        .transpose();
     result.and_then(|changed| restored.map(|_| changed).map_err(Into::into))
 }
 

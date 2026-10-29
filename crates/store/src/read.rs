@@ -31,17 +31,27 @@ pub use revisions::RevisionPoint;
 mod tool_outcomes;
 pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
+mod order;
 mod rows;
 mod source_commit;
+use order::RecordOrder;
 
 pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
 
-struct MessageAdmission {
+struct MessageEvidence {
+    order: Option<i64>,
     fact: Option<i64>,
     source: Option<(String, i64, i64)>,
 }
 
-impl MessageAdmission {
+impl MessageEvidence {
+    fn record(self, conn: &Connection) -> Result<(Option<u64>, u64)> {
+        let order = order::checked(self.order.ok_or_else(|| {
+            StoreError::Invalid("message snapshot ordinal was not selected".into())
+        })?)?;
+        Ok((self.resolve(conn)?, order))
+    }
+
     fn resolve(self, conn: &Connection) -> Result<Option<u64>> {
         if let Some(fact) = self.fact {
             return u64::try_from(fact)
@@ -95,6 +105,7 @@ pub struct Reader<'a> {
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
+    calendar: crate::sql_functions::CalendarContext,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -315,6 +326,7 @@ impl ReadPool {
             scope,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
+            calendar: crate::sql_functions::CalendarContext::new(),
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
@@ -342,6 +354,7 @@ impl ReadPool {
             conn.progress_handler(1000, Some(move || scope.check().is_err()))?;
         }
         reader.scope.check()?;
+        crate::sql_functions::register_calendar(&conn, &reader.calendar)?;
         conn.execute_batch("BEGIN")?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
@@ -437,6 +450,7 @@ pub(crate) fn ts(ms: Option<i64>) -> Option<Timestamp> {
 }
 
 struct MessageContent<'a> {
+    order: RecordOrder,
     structured: bool,
     visibility: Option<&'a parents::Visibility>,
 }
@@ -719,7 +733,8 @@ impl Reader<'_> {
              LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.id=?1",
                 [id.to_string()],
                 |row| {
-                    Ok(MessageAdmission {
+                    Ok(MessageEvidence {
+                        order: None,
                         fact: row.get(0)?,
                         source: Some((row.get(1)?, row.get(2)?, row.get(3)?)),
                     })
@@ -784,14 +799,13 @@ impl Reader<'_> {
     }
 
     /// A session's own message keys and IDs in reading order.
-    fn own_keys(&self, session_pk: i64) -> Result<Vec<(i64, String)>> {
+    fn own_keys(&self, session_pk: i64) -> Result<Vec<(i64, String, i64)>> {
         Ok(self
             .conn()?
-            .prepare_cached(
-                "SELECT pk, id FROM message WHERE session_pk = ?1 AND duplicate_of IS NULL
-                 ORDER BY order_input_id, seq, record_position, id",
-            )?
-            .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .prepare_cached(&format!("WITH canonical_order AS ({})
+                SELECT m.pk,m.id,c.record_order FROM canonical_order c JOIN message m ON m.pk=c.pk ORDER BY c.record_order",
+                order::canonical_rows("?1")))?
+            .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?)
     }
 
@@ -840,7 +854,7 @@ impl Reader<'_> {
             i64,
             Message,
             Option<MessageProjection>,
-            MessageAdmission,
+            MessageEvidence,
         ) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
@@ -872,14 +886,23 @@ impl Reader<'_> {
                 "the read starts at a message the session does not hold".into(),
             ));
         }
+        let (prefix, join, ordinal) = match content.order {
+            RecordOrder::Skip => (String::new(), "", "NULL".to_owned()),
+            RecordOrder::Known(value) => (String::new(), "", value.to_string()),
+            RecordOrder::OwnSession => (
+                format!("WITH canonical_order AS ({}) ", order::canonical_rows("?1")),
+                " JOIN canonical_order ON canonical_order.pk=m.pk",
+                "canonical_order.record_order".to_owned(),
+            ),
+        };
         let mut stmt = match &start {
             None => self.conn()?.prepare_cached(&format!(
-                "SELECT {COLUMNS} {SOURCE}
+                "{prefix}SELECT {COLUMNS},{ordinal} AS record_order {SOURCE}{join}
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL {ORDER}"
             ))?,
             // Index order from the start message: its key or a later one.
             Some(_) => self.conn()?.prepare_cached(&format!(
-                "SELECT {COLUMNS} {SOURCE}
+                "{prefix}SELECT {COLUMNS},{ordinal} AS record_order {SOURCE}{join}
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
                    AND (m.order_input_id, m.seq, m.record_position) >= (?2, ?3, ?4)
                    AND NOT ((m.order_input_id, m.seq, m.record_position) = (?2, ?3, ?4)
@@ -928,6 +951,7 @@ impl Reader<'_> {
                 r.get::<_, Option<String>>(22)?,
                 r.get::<_, Option<i64>>(23)?,
                 r.get::<_, Option<i64>>(24)?,
+                r.get::<_, Option<i64>>("record_order")?,
             ))
         })?;
         for row in rows {
@@ -952,6 +976,7 @@ impl Reader<'_> {
                 source_input,
                 source_chain,
                 source_end,
+                record_order,
             ) = row?;
             let Ok(id) = MessageId::parse(&id) else {
                 continue;
@@ -1055,7 +1080,8 @@ impl Reader<'_> {
                     Ok::<_, StoreError>(projection)
                 })
                 .transpose()?;
-            let admission = MessageAdmission {
+            let admission = MessageEvidence {
+                order: record_order,
                 fact: admitted,
                 source: source_input
                     .zip(source_chain)
@@ -1390,3 +1416,11 @@ impl Reader<'_> {
 
 #[cfg(test)]
 mod tests;
+
+impl Reader<'_> {
+    /// Execute against one owner-supplied calendar, restoring any enclosing
+    /// query's calendar even when the callback unwinds.
+    pub fn with_clock<T>(&self, clock: &query_language::time::Clock, f: impl FnOnce() -> T) -> T {
+        self.calendar.with_clock(clock, f)
+    }
+}

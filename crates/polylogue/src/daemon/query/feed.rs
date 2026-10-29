@@ -2,7 +2,7 @@
 use super::{Failure, present, validate, values};
 use polylogue_model::ChangePosition;
 use polylogue_query::Options;
-use polylogue_store::Reader;
+use polylogue_store::{Reader,StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::File;
@@ -94,7 +94,7 @@ fn check_change(
 pub(crate) fn prepare_with(
     reader: &Reader<'_>,
     since: Option<&str>,
-    now: i64,
+    clock: &query_language::time::Clock,
     mut file: File,
 ) -> Result<File, Failure> {
     let previous = since
@@ -149,8 +149,7 @@ pub(crate) fn prepare_with(
         // This fixed internal query has neither saved sources nor kept
         // results, so compilation need not load either archive-wide catalog.
         let opts = Options {
-            clock: polylogue_query::time::clock(now, super::logical_day(reader)?)
-                .map_err(|error| StoreError::Invalid(error.to_string()))?,
+            clock: clock.clone(),
             origins: Vec::new(),
             command_words: Vec::new(),
             page_size: None,
@@ -162,7 +161,7 @@ pub(crate) fn prepare_with(
             kept: Default::default(),
             chat_pages: Vec::new(),
         };
-        let program = polylogue_query::compile(&text, &opts)?;
+        let program = polylogue_store::query::compile(&text, &opts)?;
         validate(reader, &program)?;
         reader.query_each(
             &program.sql,

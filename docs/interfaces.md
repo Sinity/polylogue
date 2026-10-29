@@ -144,7 +144,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI in particular _CERTAINLY_ requires advanced autocomplete, otherwise it is going to be ~pointless. Ideally that includes integrated fuzzyfinding somehow" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). Ruling, 2026-09-14, on completion with the daemon down: "yes. everything is supposed to be usable." (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
 
-- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The typed `complete` operation serves MCP `completion/complete`, HTTP and the web query box from the same catalog. MCP supplies the full query in `argument.value`; `_meta["polylogue/position"]` is an optional UTF-8 byte offset, defaulting to the end. Its standard completion values apply each replacement to that full query, preserving the suffix; `_meta["polylogue/completions"]` retains the typed replacement span, kind and help.
+- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The typed `complete` operation serves MCP `completion/complete`, HTTP and the web query box through the same read-only catalog lookup. MCP supplies the full query in `argument.value`; `_meta["polylogue/position"]` is an optional UTF-8 byte offset, defaulting to the end. Its standard completion values apply each replacement to that full query, preserving the suffix; `_meta["polylogue/completions"]` retains the typed replacement span, kind and help.
 - **The grammar-position completer** is the shared `query-language` function: it takes the whole query text and a cursor offset and returns candidates with their replace range. Polylogue supplies the catalog.
 - **Never** does completion run a search, open the archive or write.
 
@@ -172,8 +172,9 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
-- **Format:** versioned binary with a fixed header and offset tables, memory-mapped. A catalog of another format version is ignored, leaving grammar-only completion.
-- **Freshness:** updated incrementally from each committed batch, written by temporary file, sync and rename, at most every 2 s while writes continue. Candidates may trail by that interval; query answers never do.
+- **Format:** a canonical pointer to a private generation-specific derived SQLite file with a versioned metadata row, indexed section tables and memory-mapped pages. Completion opens it read-only and loads the active source schemas, field values or session prefixes requested by the shared grammar. A catalog of another format version is ignored, leaving grammar-only completion.
+- **Freshness:** a startup snapshot is written to a private temporary file, synced and renamed. The daemon subscribes to committed index changes before that snapshot, then applies indexed deltas in atomic catalog transactions that commit the published position with their rows, at most every 2 s while writes continue. Idle publishers wait for commit notifications. Candidates may trail by that interval; query answers never do.
+- Access-scope changes and index generation changes revoke the pointer synchronously through the archive's scope guard. A publisher can activate a generation only under that same guard; a completion lookup checks its pointer again before returning. Primary caches remain unavailable until an actual confirmed barrier is known, including a known empty barrier.
 - It is derived and harmless to delete.
 
 ### Registration
@@ -230,7 +231,7 @@ The reference forms are [references.md](references.md#forms)'s. The command line
 - **"Here"** is the terminal, or, for a caller with no terminal, the calling session (its harness session ID), so agents' tool shells get `@N` and `@last` per session. A caller with neither is refused with "rows are remembered per terminal or session; use the ID".
 - `@` forms are rewritten after argument parsing, and only in arguments of reference or query kind; free text (assertion values, titles, setting values) is kept as typed.
 - `@N` sets travel as a list parameter, not as text, and row numbers never leave the command line: the request carries the resolved references.
-- **The row file**, per terminal or session and per archive, holds the list's query hash and text, unit, read position, the displayed rows' references with hit references, and the next cursor. `next` prints the following page with continued row numbers; a cursor invalidated by a rebuild answers `stale_cursor` and offers to run the query again.
+- **The row file**, per terminal or session and per archive, holds the list's query hash and text, unit, read position, the displayed rows' references with hit references, and the next cursor. `next` prints the following page with continued row numbers; a cursor whose seal key a rebuild retired answers `invalid_query` and offers to run the query again; an authenticated unavailable read context answers `stale_cursor`.
 
 ### Footers and affordances
 
@@ -311,7 +312,7 @@ Exit 78 is used only by the daemon process itself, when it refuses to open an ar
 - **key-parity**: every act in both the picker table and the web key table has the same letter.
 - **at-forms-only-in-references**: `REF assert note "see @2"` stores `see @2`; `@2-4 assert tag x` tags exactly rows 2, 3 and 4; in a harness tool shell without a terminal, `@N` resolves against the calling session's last list.
 - **footer-handle**: every list, search and aggregate printed for a person carries its `query:<hash>` in the footer, and `result:<id>` when kept; `@last read` reproduces the same rows.
-- **next-continues**: `next` after a page prints the following page with continued numbers; after a rebuild it answers `stale_cursor`.
+- **next-continues**: `next` after a page prints the following page with continued numbers; after a rebuild it refuses the retired seal with `invalid_query`.
 - **write-undo**: every write verb prints its undo command, and running it restores the previous current state.
 - **output-gallery**: every command's terminal output on Morrow at widths 60, 80, 120 and 200, with `NO_COLOR=1` and piped, is checked on a terminal-cell model: no ANSI in a pipe, no line over the width, no traceback, no exit code outside the table, and colour never changes the text.
 - **exit-code-per-kind**: one invocation per failure kind exits with its table code.

@@ -3,7 +3,7 @@
 
 mod status;
 
-use super::{ReadTarget, Request, Response};
+use super::{Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
 use polylogue_model::user::{Delivery, UserWrite};
@@ -19,11 +19,13 @@ use std::time::Instant;
 
 /// What request handlers share.
 pub struct Daemon {
+    pub(crate) config: Arc<crate::config::Config>,
     pub archive: Archive,
     pub reads: ReadPool,
+    pub(crate) completion_path: std::path::PathBuf,
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
-    page_ends: read::page_ends::Cache,
+
     feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
@@ -41,6 +43,19 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    pub(crate) fn query_clock(&self) -> Result<query_language::time::Clock, Response> {
+        let day = self.config.standalone_day().map_err(|_| {
+            error(
+                "not_yet_available",
+                "the primary owner day context has not been obtained",
+            )
+        })?;
+        Ok(query_language::time::Clock::new(
+            self.config.requests.now().into(),
+            day.clone(),
+        ))
+    }
+
     pub(crate) fn ready_call(
         &self,
         request: &command_surface::RunnableRequest,
@@ -155,6 +170,7 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::PrimaryPending { identity } => ok(serde_json::json!({
             "identity": identity, "pending": true,
         })),
+
         StoreError::IncompleteParents(issue) => Response::Error {
             kind: "incomplete_parents".into(),
             message: e.to_string(),
@@ -169,30 +185,32 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
 /// before handing it out: prepared is recorded first, delivered is a
 /// separate event the client reports.
 fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) -> Response {
-    if matches!(ask, Ask::SessionStart { .. }) {
-        let off = d
-            .reads
-            .reader()
-            .and_then(|r| r.setting("briefing.session_start", &machine_id()))
-            .is_ok_and(|v| v.as_deref() == Some("off"));
-        if off {
-            return ok(serde_json::json!({ "off": true, "empty": true }));
-        }
-    }
     let prepared = {
         let reader = match d.reads.reader() {
             Ok(r) => r,
             Err(e) => return store_error(&e),
         };
-        let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-            .ok()
-            .flatten();
+        let settings = match reader.settings_snapshot(d.config.requests.machine()) {
+            Ok(settings) => settings,
+            Err(error) => return store_error(&error),
+        };
+        let provider =
+            crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
+                .ok()
+                .flatten();
         let near = |q: &str| match &provider {
             Some(p) => d.warm.similarity(&reader, p, q),
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        let result = briefing::prepare(&reader, ask, &request_id, user_writes::now(), near);
+        let result = briefing::prepare(
+            &reader,
+            ask,
+            &request_id,
+            d.config.requests.now(),
+            near,
+            &d.config.paths.check_history,
+        );
         if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
             && let Err(error) = limit.check()
         {
@@ -238,7 +256,6 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         {
             return store_error(&error);
         }
-        let _invalidation = d.page_ends.mutation();
         let result = writes.user(polylogue_store::user_writes::request_now(request_id, write));
         match result {
             Ok(out) => {
@@ -261,7 +278,6 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
         Ok(writes) => writes,
         Err(response) => return response,
     };
-    let _invalidation = d.page_ends.mutation();
     match writes.user(polylogue_store::user_writes::request_now(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
@@ -374,6 +390,28 @@ fn handle_inner(
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
+    if let Request::Complete { text, position } = &request {
+        if *position > text.len() || !text.is_char_boundary(*position) {
+            return error(
+                "bad_request",
+                "completion position must be a UTF-8 byte boundary within the query",
+            );
+        }
+        let token = match d.archive.scope_token() {
+            Ok(token) => token,
+            Err(error) => return store_error(&error),
+        };
+        let candidates = crate::completion_catalog::complete_file(
+            &d.completion_path,
+            &crate::runtime_dir::archive_key(&d.archive.root),
+            text,
+            *position,
+        );
+        if let Err(error) = token.check() {
+            return store_error(&error);
+        }
+        return ok(candidates);
+    }
     if let Request::SchemaInfer { selection } = request {
         return super::schema::infer(d, selection);
     }
@@ -381,13 +419,29 @@ fn handle_inner(
         return super::attachment::read(request, d);
     }
     let _foreground = d.schema_admission.foreground();
-    let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
             return error("daemon_stopping", StoreError::ReadPoolClosed);
         }
         Err(e) => return store_error(&e),
+    };
+    let clock = if matches!(
+        &request,
+        Request::Query { .. }
+            | Request::Timeline { .. }
+            | Request::Cost { .. }
+            | Request::Keep { .. }
+            | Request::Watch { .. }
+            | Request::Embed { .. }
+    ) || matches!(&request, Request::Explain { subject, .. } if subject == "query")
+    {
+        Some(match d.query_clock() {
+            Ok(clock) => clock,
+            Err(response) => return response,
+        })
+    } else {
+        None
     };
     match request {
         Request::Attachment { .. } => unreachable!("attachment reads own their reader"),
@@ -436,8 +490,10 @@ fn handle_inner(
                             page_size: None,
                             why: false,
                             session,
-                            now: now_ms(),
-                            day: None,
+                            clock: clock
+                                .as_ref()
+                                .expect("query operations resolve a clock")
+                                .clone(),
                             embeddings,
                             near: None,
                             fields: &[],
@@ -478,7 +534,7 @@ fn handle_inner(
                     cursor: cursor.as_deref(),
                     page_size,
                 },
-                now_ms(),
+                clock.as_ref().expect("calendar operations resolve a clock"),
             ) {
                 Ok(data) => ok(data),
                 Err(f) => Response::Error {
@@ -512,7 +568,7 @@ fn handle_inner(
                     cursor: cursor.as_deref(),
                     page_size,
                 },
-                now_ms(),
+                clock.as_ref().expect("calendar operations resolve a clock"),
             ) {
                 Ok(data) => ok(data),
                 Err(f) => Response::Error {
@@ -547,8 +603,10 @@ fn handle_inner(
                     page_size,
                     why,
                     session,
-                    now: now_ms(),
-                    day: None,
+                    clock: clock
+                        .as_ref()
+                        .expect("query operations resolve a clock")
+                        .clone(),
                     embeddings,
                     near: Some(near),
                     fields: &fields,
@@ -566,31 +624,8 @@ fn handle_inner(
                 }
             })
         }
-        Request::Complete { text, position } => {
-            if position > text.len() || !text.is_char_boundary(position) {
-                return self::error(
-                    "bad_request",
-                    "completion position must be a UTF-8 byte boundary within the query",
-                );
-            }
-            let read_position = match reader.change_position() {
-                Ok(p) => p.to_string(),
-                Err(e) => return store_error(&e),
-            };
-            match d.warm.completion(&reader, &read_position) {
-                Ok(data) => {
-                    if let Err(error) = crate::completion_catalog::publish(
-                        &d.archive.root,
-                        &read_position,
-                        &data,
-                        now_ms(),
-                    ) {
-                        return self::error("completion_catalog", error);
-                    }
-                    ok(super::warm::complete_at(&data, &text, position))
-                }
-                Err(error) => self::error("store", error),
-            }
+        Request::Complete { .. } => {
+            unreachable!("completion is handled before opening an archive reader")
         }
 
         Request::Sql { statement } => match reader.query(&statement, &[]) {
@@ -615,33 +650,7 @@ fn handle_inner(
             page_size,
             cursor.as_deref(),
         ),
-        Request::Read {
-            slices,
-            target,
-            view,
-            format,
-            with_parents,
-            budget,
-            cursor,
-            selection,
-        } => {
-            let options = read::Options {
-                slices,
-                view: &view,
-                format: &format,
-                with_parents,
-                budget,
-                cursor: cursor.as_deref(),
-                selection: selection.as_ref(),
-            };
-            match &target {
-                ReadTarget::Session(session) => {
-                    read::run(&reader, session, options, &d.page_ends, read_epoch)
-                }
-                ReadTarget::Document(document) => read::document(&reader, document, options),
-                ReadTarget::Event(event) => read::event(&reader, event, options),
-            }
-        }
+        request @ Request::Read { .. } => read::page(&reader, d, &request, authorship),
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -670,17 +679,29 @@ fn handle_inner(
             unreachable!("inference is admitted before acquiring a reader")
         }
         Request::SchemaUnread { origin } => super::schema::unread(&reader, origin.as_deref()),
-        Request::Export {
-            targets,
-            format,
-            user_state,
-        } => export(&reader, &targets, &format, user_state),
         Request::Embed {
             what,
             query,
             limit,
             yes,
-        } => crate::embeddings::handle(&reader, &what, query.as_deref(), limit, yes),
+        } => {
+            let settings = match reader.settings_snapshot(d.config.requests.machine()) {
+                Ok(settings) => settings,
+                Err(error) => return store_error(&error),
+            };
+            crate::embeddings::handle(
+                &reader,
+                &what,
+                query.as_deref(),
+                limit,
+                yes,
+                crate::embeddings::Context {
+                    settings: &settings,
+                    credentials: &d.config.embedding_credentials,
+                    clock: clock.as_ref().expect("embedding query clock"),
+                },
+            )
+        }
 
         Request::Keep {
             request_id,
@@ -708,8 +729,10 @@ fn handle_inner(
                     page_size: None,
                     why: false,
                     session: None,
-                    now: now_ms(),
-                    day: None,
+                    clock: clock
+                        .as_ref()
+                        .expect("query operations resolve a clock")
+                        .clone(),
                     embeddings,
                     near: Some(near),
                     fields: &[],
@@ -798,8 +821,10 @@ fn handle_inner(
                 page_size: Some(1),
                 why: false,
                 session: None,
-                now: now_ms(),
-                day: None,
+                clock: clock
+                    .as_ref()
+                    .expect("query operations resolve a clock")
+                    .clone(),
                 embeddings: false,
                 near: None,
                 fields: &[],
@@ -860,10 +885,7 @@ fn handle_inner(
             };
             drop(reader);
             match write(d, request_id, resolved) {
-                Response::Ok {
-                    mut data,
-                    references,
-                } => {
+                Response::Ok { mut data } => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
                     });
@@ -872,7 +894,7 @@ fn handle_inner(
                         Ok(None) => return error("not_found", "the committed note is absent"),
                         Err(e) => return store_error(&e),
                     }
-                    Response::Ok { data, references }
+                    Response::Ok { data }
                 }
                 other => other,
             }
@@ -1033,7 +1055,7 @@ fn query_targets(
 ) -> Result<Vec<polylogue_model::Reference>, Response> {
     use polylogue_model::Reference;
     super::query::with_ranking(reader, &d.warm, |embeddings, near| {
-        let now = now_ms();
+        let clock = d.query_clock()?;
         let mut targets = Vec::new();
         let mut seen = HashSet::new();
         let mut cursor: Option<String> = None;
@@ -1044,8 +1066,7 @@ fn query_targets(
                 page_size: Some(1_000),
                 why: false,
                 session: None,
-                now,
-                day: None,
+                clock: clock.clone(),
                 embeddings,
                 near: Some(near),
                 fields: &[],
@@ -1106,78 +1127,6 @@ fn query_targets(
     })
 }
 
-/// Whole sessions in the structured export format (`json`, read back by
-/// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
-/// With `user_state`, the `json` export also carries every request, which `import` replays.
-fn export(
-    reader: &polylogue_store::Reader<'_>,
-    targets: &[ReadTarget],
-    format: &str,
-    user_state: bool,
-) -> Response {
-    let mut sessions = Vec::new();
-    for id in targets.iter().filter_map(|t| match t {
-        ReadTarget::Session(id) => Some(id),
-        _ => None,
-    }) {
-        match reader.session_export(id) {
-            Ok(Some(s)) => sessions.push(s),
-            Ok(None) => return error("not_found", format!("no session {id}")),
-            Err(e) => return store_error(&e),
-        }
-    }
-    let mut documents = Vec::new();
-    for id in targets.iter().filter_map(|t| match t {
-        ReadTarget::Document(id) => Some(id),
-        _ => None,
-    }) {
-        match reader.document(id) {
-            Ok(Some(doc)) => documents.push(doc),
-            Ok(None) => return error("not_found", format!("no document {id}")),
-            Err(e) => return store_error(&e),
-        }
-    }
-    let mut events = Vec::new();
-    for id in targets.iter().filter_map(|t| match t {
-        ReadTarget::Event(id) => Some(id),
-        _ => None,
-    }) {
-        match reader.event_export(id) {
-            Ok(Some(event)) => events.push(event),
-            Ok(None) => return error("not_found", format!("no event {id}")),
-            Err(e) => return store_error(&e),
-        }
-    }
-    let mut doc = polylogue_model::export::Document::new(sessions)
-        .with_documents(documents)
-        .with_events(events);
-    if user_state {
-        if format != "json" {
-            return error("bad_request", "user state is exported only as json");
-        }
-        let entries = match reader.user_state() {
-            Ok(entries) => entries,
-            Err(e) => return store_error(&e),
-        };
-        let entries = match entries
-            .iter()
-            .map(serde_json::to_value)
-            .collect::<Result<Vec<_>, _>>()
-        {
-            Ok(entries) => entries,
-            Err(e) => return error("internal", e.to_string()),
-        };
-        doc = doc.with_user_state(entries);
-    }
-    let Some(format) = polylogue_render::Format::parse(format) else {
-        return error("bad_request", format!("unknown export format {format:?}"));
-    };
-    match polylogue_render::export(doc, format) {
-        Ok(value) => ok(value),
-        Err(error) => self::error("internal", error),
-    }
-}
-
 /// Owns the application workers and writer lock. Transports must stop
 /// before this runtime; external daemon references cannot keep workers alive.
 pub struct Runtime {
@@ -1187,6 +1136,8 @@ pub struct Runtime {
     signals: Option<JoinHandle<()>>,
     counts_stop: Option<Sender<()>>,
     counts: Option<JoinHandle<()>>,
+    completion: Option<crate::completion_catalog::publisher::Publisher>,
+    completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
@@ -1197,13 +1148,13 @@ impl Runtime {
     /// running finish as usual.
     pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
-        self.daemon.page_ends.clear();
         self.daemon.warm.clear();
         self.daemon.reads.close();
     }
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        self.completion.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }
@@ -1236,8 +1187,8 @@ impl Runtime {
                 }
             }
         }
-        self.daemon.page_ends.clear();
         self.daemon.reads.close();
+        self.completion_scope.take();
         self.lock.take();
         failure.map_or(Ok(()), Err)
     }
@@ -1255,6 +1206,7 @@ impl Drop for Runtime {
 /// cannot be read, or a Sinex that cannot be reached at start; never a
 /// fallback to another mode. Only a build with the
 /// `sinex` feature reads a Sinex configuration, so only it can be blocked.
+#[derive(Clone)]
 pub enum ArchiveMode {
     Standalone,
     #[cfg(feature = "sinex")]
@@ -1324,17 +1276,22 @@ impl ModeState {
 /// Opens the archive and starts owned application workers. Startup errors
 /// join any workers already started before releasing the archive lock.
 pub fn start(
-    root: &std::path::Path,
+    deployment: Arc<crate::config::Config>,
     config: Config,
     mode: ArchiveMode,
 ) -> std::io::Result<Runtime> {
+    let root = deployment.archive.as_path();
+    let completion_path = deployment.paths.completion_catalog(root);
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
+    let pointer = polylogue_store::completion::CatalogPointer::new(completion_path.clone());
+    let invalidate = move || pointer.invalidate();
     let settings = config.clone();
-    let (archive, lock, mode, engine) = match mode {
+    let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
+            let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
+                .map_err(std::io::Error::other)?;
             let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
-            (archive, lock, ModeState::Standalone, Some(engine))
+            (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Blocked {
@@ -1342,18 +1299,25 @@ pub fn start(
             path,
             error,
         } => {
-            let (archive, lock) =
-                Archive::open_primary_cache(root).map_err(std::io::Error::other)?;
+            let (archive, lock, scope) =
+                Archive::open_primary_cache_with_invalidator(root, invalidate)
+                    .map_err(std::io::Error::other)?;
             let state = ModeState::Blocked {
                 configured,
                 path,
                 error,
             };
-            (archive, lock, state, None)
+            (archive, lock, state, None, scope)
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Primary { config: sinex, .. } => {
-            let (archive, lock, connection) = crate::sinex::open(root, &sinex)?;
+            let (archive, lock, scope) =
+                Archive::open_primary_with_invalidator(root, &sinex.store, invalidate)
+                    .map_err(std::io::Error::other)?;
+            let connection = Arc::new(
+                polylogue_sinex::Sinex::open(&sinex, &deployment.primary_auth, &settings.host)
+                    .map_err(std::io::Error::other)?,
+            );
             let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
                 .map_err(|error| to_io(&error))?;
             (
@@ -1361,6 +1325,7 @@ pub fn start(
                 lock,
                 ModeState::Primary { connection },
                 Some(engine),
+                scope,
             )
         }
     };
@@ -1386,13 +1351,14 @@ pub fn start(
         ..LoopStatus::default()
     }));
     let daemon = Arc::new(Daemon {
+        config: deployment,
         operations: std::sync::OnceLock::new(),
         archive,
         reads,
+        completion_path,
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
-        page_ends: read::page_ends::Cache::default(),
         feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
         writes,
@@ -1418,9 +1384,23 @@ pub fn start(
         signals: None,
         counts_stop: None,
         counts: None,
+        completion: None,
+        completion_scope: Some(completion_scope),
         engine: None,
         lock: Some(lock),
     };
+    // Subscribe before the initial snapshot or starting the ingest loop.
+    let completion_commits = runtime
+        .daemon
+        .writes
+        .as_ref()
+        .map(WriterSender::completion_commits);
+    if !runtime.daemon.mode.blocked() {
+        runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
+            Arc::clone(&runtime.daemon),
+            completion_commits,
+        )?);
+    }
     let Some(mut engine) = engine.take() else {
         return Ok(runtime);
     };
@@ -1466,8 +1446,11 @@ pub fn start(
             let Ok(reader) = daemon.reads.reader() else {
                 return;
             };
-            if let Ok(Some(provider)) =
-                crate::embeddings::Provider::from_settings(&reader, &machine_id())
+            if let Ok(settings) = reader.settings_snapshot(daemon.config.requests.machine())
+                && let Ok(Some(provider)) = crate::embeddings::Provider::from_settings(
+                    &settings,
+                    &daemon.config.embedding_credentials,
+                )
             {
                 let _ = daemon.warm.vectors(&reader, &provider);
             }
@@ -1476,7 +1459,7 @@ pub fn start(
 }
 
 mod browser;
-mod read;
+pub(crate) mod read;
 
 #[cfg(test)]
 mod tests;

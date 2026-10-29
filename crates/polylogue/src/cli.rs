@@ -2,13 +2,14 @@
 //! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
 //! everything else. Every command takes `--json` for programs and agents.
 
-mod attachment;
+pub(crate) mod attachment;
 pub mod changes;
 pub(crate) mod completion;
 pub mod local;
 pub mod print;
 pub(crate) mod schema;
 pub(crate) mod staged_file;
+pub(crate) mod write_out;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
 use crate::daemon::{Request, Response};
@@ -85,7 +86,7 @@ pub fn command() -> clap::Command {
             }
         }
     }
-    root
+    crate::config::augment_command(root)
 }
 
 fn subcommand(c: &Command) -> clap::Command {
@@ -94,7 +95,15 @@ fn subcommand(c: &Command) -> clap::Command {
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
     for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-        sub = sub.arg(clap_arg(a));
+        let mut arg = clap_arg(a);
+        if c.name == "setting" && matches!(a.name, "key" | "value") {
+            arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+                completion::Setting {
+                    key: a.name == "key",
+                },
+            ));
+        }
+        sub = sub.arg(arg);
     }
     sub
 }
@@ -190,7 +199,23 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
     Ok((c, values(c, m)))
 }
 
-pub fn run(matches: &ArgMatches) -> ExitCode {
+pub fn run_local(matches: &ArgMatches) -> Option<ExitCode> {
+    let (command, matches) = chosen(matches)?;
+    let Action::Local(run) = command.action else {
+        return None;
+    };
+    Some(run(
+        command,
+        &values(command, matches),
+        matches.get_flag("json"),
+    ))
+}
+
+pub fn run(
+    matches: &ArgMatches,
+    startup: &crate::config::Startup,
+    cwd: &std::path::Path,
+) -> ExitCode {
     let json = matches.get_flag("json");
     let Some((cmd, m)) = chosen(matches) else {
         return fail(json, "bad_request", "no such command", 2);
@@ -198,11 +223,12 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     let values = values(cmd, m);
     let build = match cmd.action {
         Action::Local(f) => return f(cmd, &values, json),
+        Action::ConfiguredLocal(f) => return f(cmd, &values, startup, json),
         Action::Request(build) | Action::Stream { build, .. } => build,
     };
     let caller = Caller {
         surface: Surface::Cli,
-        cwd: Some(current_dir()),
+        cwd: Some(cwd.to_owned()),
         json,
     };
     let request = match build(cmd, &values, &caller) {
@@ -214,9 +240,9 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         .copied()
         .map(std::time::Duration::from_secs);
     if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&values, &request, timeout);
+        return cli(&values, &request, startup, timeout);
     }
-    let root = Archive::default_root();
+    let root = startup.config.archive.clone();
     let result = if cmd.register.is_some() {
         let deadline = timeout.map_or(command_surface::Deadline::Default, |duration| {
             command_surface::Deadline::Milliseconds(
@@ -274,7 +300,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
             }
             match cmd.output {
-                Some(output) => output(&values, &data, json),
+                Some(output) => output(&values, &data, startup, json),
                 None => {
                     if json {
                         println!(
@@ -303,33 +329,18 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     }
 }
 
-/// `export`: the document written to `--out`, or to standard output.
-pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
-    let out = values.text("out").map(PathBuf::from);
-    let out = out.as_deref();
-    let text = match data.get("content").and_then(|c| c.as_str()) {
-        Some(content) => content.to_owned(),
-        None => polylogue_render::terminal::json(data, true),
-    };
-    match out {
-        Some(path) => match std::fs::write(path, text.as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => fail(json, "io", &format!("{}: {e}", path.display()), 1),
-        },
-        None => {
-            print!("{}", polylogue_render::terminal::stdout_text(&text));
-            ExitCode::SUCCESS
-        }
-    }
-}
-
 fn current_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 /// `continue --exec`: replaces this process with the session's native
 /// resume command; without `--exec`, the plan is printed.
-pub fn resume_output(values: &Values, data: &Value, json: bool) -> ExitCode {
+pub fn resume_output(
+    values: &Values,
+    data: &Value,
+    _startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     if !values.flag("exec") {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));

@@ -78,7 +78,8 @@ pub fn start(
     daemon: Arc<Daemon>,
     operations: Arc<command_surface::OperationTable>,
 ) -> std::io::Result<Server> {
-    start_on(daemon, operations, access::wanted_port())
+    let port=daemon.config.http.listen.port();
+    start_on(daemon, operations, port)
 }
 
 fn start_on(
@@ -88,7 +89,7 @@ fn start_on(
 ) -> std::io::Result<Server> {
     use std::future::IntoFuture;
     let key = crate::runtime_dir::archive_key(&daemon.archive.root);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    let listener = std::net::TcpListener::bind(std::net::SocketAddr::new(daemon.config.http.listen.ip(),port))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -99,8 +100,8 @@ fn start_on(
         let _entered = runtime.enter();
         tokio::net::TcpListener::from_std(listener)?
     };
-    let token = access::new_token()?;
-    let directory = crate::runtime_dir::runtime_dir(&key);
+    let token=match &daemon.config.http.token {Some(token)=>token.expose().to_owned(),None=>access::new_token()?};
+    let directory=daemon.config.paths.runtime_dir(&daemon.archive.root);
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,
@@ -175,8 +176,8 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/m/{id}", get(reader::message))
         .route("/n/{id}", get(reader::note))
         .route("/auth", get(auth_page).post(auth_exchange))
-        .route("/assets/reader.css", get(css))
-        .route("/assets/reader.js", get(js))
+        .route("/assets/auth.js", get(auth_js))
+        .route("/assets/{*path}", get(asset))
         .route("/assets/live.js", get(live_js))
         .nest("/api/v1", api::routes())
         .layer(middleware::from_fn_with_state(Arc::clone(&web), guard))
@@ -260,37 +261,27 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
         {
             Some(value) => Some(value),
             None => {
-                return json_answer(
+                return web_shell::assets::secure(json_answer(
                     &web,
                     crate::daemon::service::error(
                         "bad_request",
                         "x-polylogue-deadline-ms must be Unix milliseconds",
                     ),
-                );
+                ));
             }
         },
         None => None,
     };
+    let is_asset = req.uri().path().starts_with("/assets/");
     let mut response = READ_LIMIT
         .scope((deadline_ms, cancellation), guarded(web, req, next))
         .await;
-    let h = response.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        ),
-    );
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    h.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    if !is_asset {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    web_shell::assets::secure(response)
 }
 
 /// Runs a request on a blocking thread, as the socket would.
@@ -539,18 +530,22 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn css() -> HttpResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("web/assets/reader.css"),
-    )
-        .into_response()
+async fn asset(request: HttpRequest) -> HttpResponse {
+    let (parts, _) = request.into_parts();
+    let request = axum::http::Request::from_parts(parts, ());
+    let theme = web_shell::theme::Theme {
+        stylesheet: Some(include_str!("web/assets/theme.css").into()),
+        fallback_reason: None,
+    };
+    web_shell::assets::serve_with_theme(&request, Some(&theme)).map(axum::body::Body::from)
 }
-
-async fn js() -> HttpResponse {
+async fn auth_js() -> HttpResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("web/assets/reader.js"),
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("web/assets/auth.js"),
     )
         .into_response()
 }

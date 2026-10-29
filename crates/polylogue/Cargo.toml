@@ -14,6 +14,10 @@ sinex = ["dep:polylogue-sinex"]
 [dependencies]
 command-surface.workspace = true
 schemars = "1"
+
+web-shell.workspace = true
+maud = "0.27"
+
 rustix = { workspace = true, features = ["event"] }
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
@@ -23,8 +27,10 @@ polylogue-store.workspace = true
 polylogue-engine.workspace = true
 polylogue-query.workspace = true
 query-language.workspace = true
+hashed-blobs.workspace = true
 shared-signals.workspace = true
 toml = "0.9"
+
 jiff.workspace = true
 libc.workspace = true
 polylogue-render.workspace = true

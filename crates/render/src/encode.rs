@@ -563,6 +563,11 @@ fn json(out: &mut dyn Write, value: &impl Serialize) -> io::Result<()> {
         })
 }
 
+pub(crate) fn json_bytes(value: &impl Serialize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    json(&mut bytes, value)?;
+    Ok(bytes)
+}
 pub fn encode_document(
     document: &ReadDocument,
     format: Format,

@@ -3,7 +3,7 @@
 use super::{Caller, Command, LIVE, NOTICES, Values};
 use crate::briefing::{Ask, StartSource};
 use crate::browser::actions::{ChatFile, ChatRequest};
-use crate::daemon::{ReadTarget, Request};
+use crate::daemon::Request;
 use polylogue_model::{Author, NewNote, NoteKind, Reference};
 use std::path::PathBuf;
 
@@ -164,24 +164,6 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
             .map_err(|_| "budget exceeds address space")?,
         cursor: v.text("cursor"),
         with_blobs: v.flag("with_blobs"),
-    })
-}
-
-pub fn export(_: &Command, v: &Values, _: &Caller) -> Built {
-    let names = v.list("sessions");
-    let user_state = names.iter().any(|text| text == "user-state");
-    let targets = names
-        .iter()
-        .filter(|text| *text != "user-state")
-        .map(|text| ReadTarget::parse(text))
-        .collect::<Result<Vec<_>, _>>()?;
-    if targets.is_empty() && !user_state {
-        return Err("name at least one session, document or event, or user-state".into());
-    }
-    Ok(Request::Export {
-        targets,
-        format: v.text("format").unwrap_or_else(|| "json".into()),
-        user_state,
     })
 }
 

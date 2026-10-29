@@ -4,66 +4,93 @@ use query_language::catalog::{
     Catalog, Field, FieldKind, OutputSchema, OutputSource, SourceOutput,
 };
 
-pub(super) fn catalog(options: &Options) -> Catalog {
+pub(crate) fn catalog(options: &Bindings) -> Catalog {
     let mut catalog = crate::catalog::catalog(&options.origins, &options.command_words);
     for (id, kept) in &options.kept {
         for (part, columns) in [
             (ResultPart::Rows, &kept.columns),
             (ResultPart::Matches, &kept.match_columns),
         ] {
-            let unit = catalog.unit(&kept.unit);
-            let fields: Vec<Field> = columns
-                .iter()
-                .map(|column| {
-                    let kind = match column.kind {
-                        ColKind::Text => FieldKind::Text,
-                        ColKind::Number => FieldKind::Number,
-                        ColKind::Time => FieldKind::Time,
-                        ColKind::Money => FieldKind::Money,
-                        ColKind::Duration => FieldKind::Duration,
-                        ColKind::Bool => FieldKind::Bool,
-                        ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),
-                        ColKind::Json => FieldKind::Json,
-                    };
-                    let mut field = unit
-                        .and_then(|unit| {
-                            unit.fields
-                                .iter()
-                                .find(|field| field.name == column.name && field.kind == kind)
-                        })
-                        .cloned()
-                        .unwrap_or_default();
-                    field.name = column.name.clone();
-                    field.kind = if column.reference.is_some() && column.kind == ColKind::Text {
-                        FieldKind::Reference
-                    } else {
-                        kind
-                    };
-                    field
-                })
-                .collect();
-            let main_time = unit
-                .and_then(|unit| unit.main_time.clone())
-                .filter(|name| fields.iter().any(|field| &field.name == name));
+            let schema = schema(&catalog, &kept.unit, columns);
             catalog.source_outputs.push(SourceOutput {
                 source: OutputSource::Result {
                     reference: format!("result:{id}"),
                     part,
                 },
-                schema: OutputSchema {
-                    unit: Some(kept.unit.clone()),
-                    fields,
-                    main_time,
-                },
+                schema,
             });
         }
     }
     catalog
 }
 
-pub(super) fn expand(
+pub(crate) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> OutputSchema {
+    let unit = catalog.unit(unit_name);
+    let fields: Vec<Field> = columns
+        .iter()
+        .map(|column| {
+            let kind = match column.kind {
+                ColKind::Text => FieldKind::Text,
+                ColKind::Number => FieldKind::Number,
+                ColKind::Time => FieldKind::Time,
+                ColKind::Money => FieldKind::Money,
+                ColKind::Duration => FieldKind::Duration,
+                ColKind::Bool => FieldKind::Bool,
+                ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),
+                ColKind::Json => FieldKind::Json,
+            };
+            let mut field = unit
+                .and_then(|unit| {
+                    unit.fields.iter().find(|field| {
+                        (field.name == column.name
+                            || field.name.replace(['.', '-'], "_") == column.name)
+                            && (field.kind == kind
+                                || column.kind == ColKind::Text
+                                    && matches!(
+                                        field.kind,
+                                        FieldKind::Match
+                                            | FieldKind::Text
+                                            | FieldKind::Substring
+                                            | FieldKind::Subtree
+                                            | FieldKind::Reference
+                                    ))
+                    })
+                })
+                .cloned()
+                .unwrap_or_default();
+            field.name = column.name.clone();
+            field.kind = if column.reference.is_some() && column.kind == ColKind::Text {
+                FieldKind::Reference
+            } else if column.kind == ColKind::Text
+                && matches!(
+                    field.kind,
+                    FieldKind::Match
+                        | FieldKind::Text
+                        | FieldKind::Substring
+                        | FieldKind::Subtree
+                        | FieldKind::Reference
+                )
+            {
+                field.kind.clone()
+            } else {
+                kind
+            };
+            field
+        })
+        .collect();
+    let main_time = unit
+        .and_then(|unit| unit.main_time.clone())
+        .filter(|name| fields.iter().any(|field| &field.name == name));
+    OutputSchema {
+        unit: Some(unit_name.to_owned()),
+        fields,
+        main_time,
+    }
+}
+
+pub(crate) fn expand(
     text: &str,
-    options: &Options,
+    options: &Bindings,
 ) -> Result<(Query, Vec<Definition>), QueryError> {
     let mut query = parse_query(text, options)?;
     let mut definitions = vec![];
@@ -74,7 +101,7 @@ pub(super) fn expand(
 fn expand_query(
     query: &mut Query,
     text: &str,
-    options: &Options,
+    options: &Bindings,
     stack: &mut Vec<String>,
     definitions: &mut Vec<Definition>,
 ) -> Result<(), QueryError> {
@@ -178,7 +205,7 @@ fn expand_query(
 fn expand_condition(
     condition: &mut Condition,
     text: &str,
-    options: &Options,
+    options: &Bindings,
     stack: &mut Vec<String>,
     definitions: &mut Vec<Definition>,
 ) -> Result<(), QueryError> {
@@ -205,4 +232,17 @@ fn expand_condition(
         _ => {}
     }
     Ok(())
+}
+
+pub(crate) fn column_kind(kind: ColKind) -> FieldKind {
+    match kind {
+        ColKind::Text => FieldKind::Text,
+        ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),
+        ColKind::Json => FieldKind::Json,
+        ColKind::Number => FieldKind::Number,
+        ColKind::Money => FieldKind::Money,
+        ColKind::Time => FieldKind::Time,
+        ColKind::Duration => FieldKind::Duration,
+        ColKind::Bool => FieldKind::Bool,
+    }
 }

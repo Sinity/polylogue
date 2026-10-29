@@ -145,7 +145,7 @@ pub fn item_with_inline_limit(item: &ReadItem, inline_limit: usize) -> Markup {
     visible_controls(item_markup(item, inline_limit))
 }
 fn item_markup(item: &ReadItem, inline_limit: usize) -> Markup {
-    html! { section class="read-item" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
+    html! { section class="read-item" data-row="" tabindex="-1" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
         ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at|at.to_string()).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"?".into())) "/" (total.map(|n|n.to_string()).unwrap_or_else(||"?".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call)) } } } code { (&item.source.reference) } @for assertion in &header.assertions { aside { "◆ " (&assertion.kind) ": " (&assertion.value) " · " (format!("{:?}",assertion.author)) } } },
         ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
         ItemKind::Thinking { words,content } => { @match content {

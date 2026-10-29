@@ -579,4 +579,5 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
     assert_eq!(actual, expected);
 }
 
+mod checkpoints;
 mod receipts;

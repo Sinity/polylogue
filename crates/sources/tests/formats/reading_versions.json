@@ -28,15 +28,15 @@
     "0ea7851b65c55d85e6fa8c6622ad118a85d2dda92938d1a8656ef3704f8c330e"
   ],
   "claude-code": [
-    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=1",
-    "fa95e22c32577d6fca5f3f3bc2c85743ad75755c8107df339dba48f48b711bbf"
+    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=2",
+    "d9f4194d5d3ebdcf3939c41adfadf040ef5c077b3e3aba62e3c04d4909ad10ac"
   ],
   "claude-code-history": [
-    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=1,crate::claude_code::side::VERSION=1",
+    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=2,crate::claude_code::side::VERSION=1",
     "92acebf5b2e325829b05a23fbae4b3dcbfdb4f354196541a71ca2f8c418e12f2"
   ],
   "claude-code-side": [
-    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=1,crate::claude_code::side::VERSION=1",
+    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::claude_code::VERSION=2,crate::claude_code::side::VERSION=1",
     "27ae0456023092a3d499b9990d3a91a86704b81e3cd6d9ba14a3a572bb2167a8"
   ],
   "claude-design": [
@@ -44,15 +44,15 @@
     "3c18cef36ae3a1a6771c81f25aac746115b8bddcc624a57e937cf92e767eb8ba"
   ],
   "codex": [
-    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=1",
-    "f38027831b4751ca433b05b6c9d41b8ddbeca03a9abc8075d0005032b76a9350"
+    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=2",
+    "7c977b7f7941dfda8e197c85924473938383e8d9d8965d2a8a48082aec8134aa"
   ],
   "codex-cloud": [
     "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::export::VERSION=1,crate::codex_cloud::VERSION=1",
     "6988b8c06af2ea2f35ae16db9f9bd1d89442b920dd34a24fbe30078d79e1b7ec"
   ],
   "codex-database": [
-    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=1,crate::codex::database::VERSION=2",
+    "parse=1,lines=1,records=1,fields=1,document=1,time=2,command=1,crate::codex::VERSION=2,crate::codex::database::VERSION=2",
     "5b981ebacae6be17a31dc47b1500a135a1b4697a53f03aa6b06c9ff9fe027f90"
   ],
   "gemini-app": [

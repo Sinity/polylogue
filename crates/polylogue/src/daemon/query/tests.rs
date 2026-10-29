@@ -376,8 +376,7 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: None,
         why: false,
         session: None,
-        now: OCT1 + 7 * DAY,
-        day: Some(LogicalDay::named("UTC", 0).unwrap()),
+        clock: fixture_clock(OCT1 + 7 * DAY, "UTC", 0),
         embeddings: false,
         near: None,
         fields: &[],
@@ -1286,3 +1285,19 @@ mod measures;
 mod shared_laws;
 
 mod reported_timing;
+
+fn fixture_clock(now: i64, zone: &str, start_minutes: u16) -> Clock {
+    Clock::new(
+        jiff::Timestamp::from_millisecond(now).unwrap(),
+        DaySetting::new(
+            jiff::tz::TimeZone::get(zone).unwrap(),
+            jiff::civil::Time::constant(
+                (start_minutes / 60) as i8,
+                (start_minutes % 60) as i8,
+                0,
+                0,
+            ),
+        )
+        .unwrap(),
+    )
+}

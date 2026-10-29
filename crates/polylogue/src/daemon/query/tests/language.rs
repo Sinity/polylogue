@@ -1,6 +1,5 @@
 //! Query-language behavior over the archive built through the real loop.
-use polylogue_model::LogicalDay;
-use polylogue_query::{Options, Param, QueryError, compile};
+use polylogue_store::query::{Options, Param, QueryError, compile};
 use polylogue_store::{Reader, SqlValue};
 use polylogue_testkit::{Morrow, Set, short};
 use serde_json::{Value, json};
@@ -8,11 +7,14 @@ use std::collections::BTreeSet;
 
 fn options() -> Options {
     Options {
-        clock: polylogue_query::time::clock(
-            1_791_453_600_000,
-            LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        )
-        .unwrap(),
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_791_453_600_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
+        ),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|origin| origin.name.to_owned())
@@ -323,7 +325,7 @@ fn no_sort_key_holds_bytes() {
                 .map(|f| format!("{} | sort by {}", unit.name, f.name)),
         );
         for question in questions {
-            let Ok(program) = polylogue_query::compile(&question, &opts) else {
+            let Ok(program) = polylogue_store::query::compile(&question, &opts) else {
                 continue;
             };
             if program.order.is_empty() {
@@ -352,4 +354,52 @@ fn no_sort_key_holds_bytes() {
         }
     }
     assert!(checked > 100, "{checked}");
+}
+
+#[test]
+fn shared_prefix_text_mode_selects_prefixes_while_a_word_stays_exact() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:prefix",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, text) in [
+        ("exact", "parse"),
+        ("prefix", "parser"),
+        ("other", "paring"),
+    ] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    text: Some(text),
+                    role: "user",
+                    written_by: "human",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.commit_search().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (text, expected) in [
+        ("messages where parse | sort by id", vec!["exact"]),
+        (
+            "messages where parse* | sort by id",
+            vec!["exact", "prefix"],
+        ),
+    ] {
+        let answer = q(&reader, text);
+        let actual: Vec<&str> = rows(&answer)
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(actual, expected, "{text}");
+    }
 }

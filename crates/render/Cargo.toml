@@ -7,6 +7,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+
+command-surface.workspace = true
+
 schemars = "1"
 polylogue-model.workspace = true
 serde_json.workspace = true

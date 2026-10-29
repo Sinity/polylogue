@@ -55,7 +55,7 @@ impl PageBuilder {
         budget: Budget,
         start: Option<ReadPosition>,
     ) -> Result<Self, PageError> {
-        let bytes = serde_json::to_vec(&header)
+        let bytes = crate::encode::json_bytes(&header)
             .map_err(|e| PageError::Serialization(e.to_string()))?
             .len()
             + 512;
@@ -102,8 +102,8 @@ impl PageBuilder {
         } else {
             0
         };
-        let encoded =
-            serde_json::to_vec(&item).map_err(|e| PageError::Serialization(e.to_string()))?;
+        let encoded = crate::encode::json_bytes(&item)
+            .map_err(|e| PageError::Serialization(e.to_string()))?;
         let cost = estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64;
         if from == 0
             && self.items.len() < self.budget.items.get()
@@ -150,7 +150,8 @@ impl PageBuilder {
             },
         };
         let fits = |candidate: &ReadItem| -> Result<bool, PageError> {
-            let json = serde_json::to_string(candidate)
+            let json = crate::encode::json_bytes(candidate)
+                .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
                 .map_err(|e| PageError::Serialization(e.to_string()))?;
             Ok(self.bytes + json.len() <= self.budget.bytes.get()
                 && estimate_tokens(&json) as u64 <= self.budget.tokens.get())
@@ -168,7 +169,8 @@ impl PageBuilder {
             }
         }
         let fragment = make(lo);
-        let json = serde_json::to_string(&fragment)
+        let json = crate::encode::json_bytes(&fragment)
+            .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
             .map_err(|e| PageError::Serialization(e.to_string()))?;
         self.bytes += json.len();
         self.tokens += estimate_tokens(&json) as u64;
@@ -206,7 +208,7 @@ impl PageBuilder {
             items: self.items,
             footer,
         };
-        let bytes = serde_json::to_vec(&document)
+        let bytes = crate::encode::json_bytes(&document)
             .map_err(|e| PageError::Serialization(e.to_string()))?
             .len();
         if bytes > self.budget.bytes.get() {

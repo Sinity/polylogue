@@ -205,6 +205,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
                     .unwrap()
             );
         }
+        let b = w.commit_source(b, &SOURCE_RECORD).unwrap();
         w.writer.send(b).unwrap();
         let report = w.writer.flush().unwrap();
         assert!(report.errors.is_empty(), "{mode}: {:?}", report.errors);
@@ -284,8 +285,8 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             });
             let mut b = batch("input1", 0, 0, vec![row(1, message)], &["s"]);
             b.parse[0].output.events.push(Event {
-                at_quality: polylogue_model::TimeQuality::Unknown,
-                at_precision: None,
+                at_quality: polylogue_model::TimeQuality::Intrinsic,
+                at_precision: Some(polylogue_model::Precision::Instant),
                 at_until: None,
                 session: Some(sid("s")),
                 kind: kind.into(),
@@ -297,6 +298,7 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             if prepared {
                 b.parse[0].prepare();
             }
+            let b = w.commit_source(b, &SOURCE_RECORD).unwrap();
             w.writer.send(b).unwrap();
             assert!(w.writer.flush().unwrap().errors.is_empty());
             let pool = ReadPool::open(&w.archive).unwrap();

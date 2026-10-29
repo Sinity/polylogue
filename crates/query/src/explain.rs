@@ -1,37 +1,17 @@
-//! Grammar and execution shape, without opening or querying a store.
-
-use crate::{Options, QueryError, ast, compile};
+//! Pure query shape and source dependencies.
+use crate::{Options, QueryError};
 use serde::Serialize;
-
 #[derive(Debug, Serialize)]
 pub struct Explanation {
-    pub parsed: ast::Query,
-    pub units: Vec<ast::Unit>,
-    pub program: crate::Program,
+    pub parsed: crate::ast::Query,
+    pub output: query_language::catalog::OutputSchema,
+    pub definitions: Vec<crate::plan::ResolvedDefinition>,
 }
-
-/// Uses the same validation and compilation as execution.
-pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryError> {
-    let parsed = crate::parse::with_catalog(
-        expression,
-        &crate::catalog::catalog(&options.origins, &options.command_words),
-    )?;
-    let program = compile(expression, options)?;
+pub fn query(text: &str, options: &Options) -> Result<Explanation, QueryError> {
+    let plan = crate::compile(text, options)?;
     Ok(Explanation {
-        units: selected_units(&parsed, ast::Unit::Sessions),
-        parsed,
-        program,
+        parsed: plan.bound_query().query().clone(),
+        output: options.output_schema(text)?,
+        definitions: plan.definitions().to_vec(),
     })
-}
-
-fn selected_units(query: &ast::Query, _implicit_unit: ast::Unit) -> Vec<ast::Unit> {
-    let mut units = Vec::new();
-    query.visit_units(&mut |name| {
-        if let Some(unit) = ast::Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
-            && !units.contains(&unit)
-        {
-            units.push(unit);
-        }
-    });
-    units
 }

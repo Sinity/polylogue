@@ -72,7 +72,7 @@ fn a_read_honours_its_view_format_and_budget() {
 }
 
 fn config(home: &std::path::Path) -> Config {
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = home.to_owned();
     config.tool_dirs.clear();
     config.workers = 1;

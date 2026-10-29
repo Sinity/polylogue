@@ -62,6 +62,7 @@ impl Inner {
 
     pub(super) fn restore_authored(&mut self, mut restoration: Restoration) -> Result<UserOutcome> {
         if let Some(sinex) = self.sinex.as_ref().map(Arc::clone) {
+            self.primary_cache_ready()?;
             let mut outcome = restoration.prepared.outcome.clone();
             if observed(&self.index, &restoration)? {
                 outcome.repeat = true;
