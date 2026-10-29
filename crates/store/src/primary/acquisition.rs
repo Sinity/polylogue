@@ -126,6 +126,16 @@ pub struct SourceSnapshot {
     pub pending: PendingSource,
 }
 
+/// One bounded page of retained original group members. Exhaustion says
+/// nothing about provider EOF or missing members already applied elsewhere.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PendingGroupPage {
+    pub headers: Vec<PendingCapture>,
+    /// Original ordinal, exclusive, for the next page.
+    pub next: Option<u64>,
+}
+
 /// Enumerates owned encoded bodies one member at a time. The SDK stages every
 /// body and complete private facts before atomically publishing the group.
 pub type CaptureEmitter<'a> = dyn FnMut(CapturedInput, PreparedBody) -> Result<()> + 'a;
