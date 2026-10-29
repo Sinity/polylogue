@@ -3,7 +3,8 @@ pub use crate::source::SourceBoundary;
 pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
-    AcquisitionReceipt, AcquisitionRoute, CaptureEmitter, CaptureMembers, CaptureMode, CapturePlan,
+    AcquisitionReceipt, AcquisitionRoute, CaptureDisposition, CaptureEmitter, CaptureMembers,
+    CaptureMode, CapturePlan, CaptureReceipt, RawCustodyReceipt,
     ConfirmedSource, PendingCheckpoint, PendingGroupPage, PendingSource, RawRange, SourceBasis,
     SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
 };
@@ -46,7 +47,7 @@ pub trait Sinex: Send + Sync {
         &self,
         plan: &CapturePlan,
         members: &mut CaptureMembers<'_>,
-    ) -> Result<PreparedWrite>;
+    ) -> Result<CaptureReceipt>;
     /// Reads only local durable source headers and one verified selected control.
     fn pending_source(
         &self,
