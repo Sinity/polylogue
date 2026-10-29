@@ -482,7 +482,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     name: (*name).into(),
                     version: match *product {
                         "work_snapshot" => 5,
-                        "message" => 4,
+                        "input" | "message" | "request" | "restored_request" => 4,
                         "fragment"
                         | "query"
                         | "query_run"

@@ -6,7 +6,7 @@ use polylogue_model::{
 };
 
 struct Calendar;
-impl signals::Calendar for Calendar {
+impl ::signals::Calendar for Calendar {
     fn logical_day(&self, _: i64) -> String {
         "synthetic-day".into()
     }
@@ -24,7 +24,7 @@ fn generic_source_paths_refuse_live_and_restored_signal_state_before_spool_publi
     let sinex = client(root.path());
     let checkpoint = Checkpoint {
         owner: "fixture-machine".into(),
-        evaluator: signals::Evaluator::new(0, vec![], signals::Policy::default(), &Calendar)
+        evaluator: ::signals::Evaluator::new(0, vec![], ::signals::Policy::default(), &Calendar)
             .unwrap(),
         rules: vec![],
         rule_sources: Default::default(),

@@ -26,6 +26,20 @@ and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
 version. A refused hello returns Sinex's reason.
 
+The current adapter artifact is `polylogue` source version 2. Its complete
+declarations include input observations and authored request wrappers at kind
+version 4, messages at version 4, fragments at version 1 and work snapshots at
+version 5. Source version 1 and its definition hashes remain immutable.
+Fragments enter the full index projection; they cannot establish complete
+message coverage or membership in the ten semantic raw-input classes. A new
+certificate binds the exact current declaration hashes; an earlier certificate
+is never reinterpreted under the new source catalog.
+
+`cargo run -p polylogue-sinex --example source_declaration -- <configured-producer>`
+exports the exact adapter declaration and its fingerprint for owner review.
+Installing the artifact and granting canonical publication are separate owner
+operations.
+
 Parsed-fact and work-snapshot declarations request no Sinex text index. Their field
 hints describe defaults for operator-configured output rules; they impose no
 kind-wide admission class floor. Event frame names include declaration hashes.
