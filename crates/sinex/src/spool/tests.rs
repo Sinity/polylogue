@@ -586,16 +586,17 @@ fn parsed_capture(bytes: &[u8], text: &str) -> Capture {
     output.messages.push(serde_json::from_value(serde_json::json!({
         "offset":0,"end":bytes.len(),"message":{"id":"codex:message","session":"codex:session","role":"assistant","attrs":{},"blocks":[{"type":"text","text":text}]}
     })).unwrap());
-    let step = polylogue_store::ParseStep::new(
+    let mut step = polylogue_store::ParseStep::new(
         output,
         polylogue_model::RecordCounts::default(),
         0..bytes.len() as u64,
         true,
     );
+    step.prepare();
     let parsed = vec![polylogue_store::primary::CapturedReading::from_step(&step).unwrap()];
     Capture::Input(serde_json::from_value(serde_json::json!({
         "input":{"origin":"codex","path":"/fixture/session.jsonl","host":"fixture-host"},
-        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":polylogue_model::BlobHash::of(bytes)}},
+        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob_offset":0,"blob":polylogue_model::BlobHash::of(bytes)}},
         "index":0,"previous":null,"hash":polylogue_model::BlobHash::of(bytes),"length":bytes.len(),"group":null,"arrival_rank":1,"parsed":parsed
     })).unwrap())
 }
