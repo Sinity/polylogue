@@ -20,7 +20,8 @@ mod saved;
 mod sequences;
 mod stages;
 
-use saved::{bind_saved_source, compile_kept};
+use saved::compile_kept;
+mod source;
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
 /// each ranked list it is in; the offset keeps one list's first places
@@ -363,18 +364,24 @@ impl Program {
 }
 
 pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
-    if let Some(program) = compile_kept(text, opts)? {
-        return Ok(program);
-    }
-    let Some(bound) = bind_saved_source(text, opts)? else {
-        let query = parse_query(text, opts)?;
-        return Compiler::new(text, opts).program(&query);
+    let (query, definitions) = source::expand(text, opts)?;
+    let catalog = source::catalog(opts);
+    let bound = query_language::bind::bind(&query, &catalog)
+        .map_err(|error| QueryError::language(error, text))?;
+    let rendered = query_language::format::format_query(bound.query(), &catalog)
+        .map_err(|error| QueryError::language(error, text))?;
+    let mut program = if let Some(program) = compile_kept(&rendered, bound.query(), opts)? {
+        program
+    } else {
+        Compiler::new(&rendered, opts).program(bound.query())?
     };
-    let mut query = parse_query(&bound.text, opts)?;
-    bound.bind(&mut query)?;
-    let mut compiler = Compiler::new(&bound.text, opts);
-    compiler.definitions.push(bound.definition.clone());
-    compiler.program(&query)
+    for definition in definitions {
+        if !program.definitions.contains(&definition) {
+            program.definitions.push(definition);
+        }
+    }
+    program.query = text.to_owned();
+    Ok(program)
 }
 
 /// The unit a query's rows currently are, and the aliases they are read
@@ -836,10 +843,7 @@ fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
 }
 
 fn parse_query(text: &str, opts: &Options) -> Result<Query, QueryError> {
-    crate::parse::with_catalog(
-        text,
-        &crate::catalog::catalog(&opts.origins, &opts.command_words),
-    )
+    crate::parse::with_catalog(text, &source::catalog(opts))
 }
 fn bind_unit(name: &str) -> Result<Unit, QueryError> {
     Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))

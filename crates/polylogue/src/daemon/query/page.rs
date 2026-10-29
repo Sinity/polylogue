@@ -107,7 +107,10 @@ fn binding(options: &Options, why: bool) -> Result<String, Failure> {
     )
 }
 fn definitions(program: &Program) -> Result<String, Failure> {
-    context_digest("definitions", &program.definitions)
+    let mut definitions: Vec<_> = program.definitions.iter().collect();
+    definitions.sort_by(|a, b| (&a.name, &a.revision).cmp(&(&b.name, &b.revision)));
+    definitions.dedup();
+    context_digest("definitions", &definitions)
 }
 
 pub(super) fn context(

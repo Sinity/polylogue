@@ -79,6 +79,7 @@ fn query(value: &mut Query) {
     if let Source::Unit {
         unit,
         condition: Some(value),
+        ..
     } = &mut value.source
     {
         condition(value, unit == "tool_calls");

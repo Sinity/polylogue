@@ -58,7 +58,7 @@ impl<'a> Compiler<'a> {
         }
         let definition = saved_definition(self.text, span.start, name, self.opts)?;
         let mut query = parse_query(&definition.text, self.opts)?;
-        Parameters::new(name, arguments, None).bind(&mut query, span.start)?;
+        Parameters::new(name, arguments).bind(&mut query, span.start)?;
         if !query.stages.is_empty() || !query.attach.is_empty() {
             return Err(QueryError::Invalid {
                 message: format!(
@@ -69,7 +69,9 @@ impl<'a> Compiler<'a> {
             });
         }
         let (unit, cond) = match query.source {
-            Source::Unit { unit, condition } => (bind_unit(&unit)?, condition),
+            Source::Unit {
+                unit, condition, ..
+            } => (bind_unit(&unit)?, condition),
             _ => return Err(not_built("a saved source of this kind as a condition")),
         };
         self.used(name, definition);
@@ -134,62 +136,40 @@ fn same_unit(name: &str, selected: Unit, expected: Unit, span: Span) -> Result<(
 /// A query whose source is a kept result (`result:<id>`, `.rows` or
 /// `.matches`): its stored values, read as they were kept, never re-run.
 /// Only stages may follow.
-pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>, QueryError> {
-    let lead = text.len() - text.trim_start().len();
-    let trimmed = text.trim_start();
-    if !trimmed
-        .get(..7)
-        .is_some_and(|p| p.eq_ignore_ascii_case("result:"))
-    {
+pub(super) fn compile_kept(
+    text: &str,
+    query: &Query,
+    opts: &Options,
+) -> Result<Option<Program>, QueryError> {
+    let Source::Result {
+        reference,
+        part,
+        condition,
+        ..
+    } = &query.source
+    else {
         return Ok(None);
-    }
-    let mut query = parse_query(text, opts)?;
-    let (value, quoted) = match &query.source {
-        Source::Result { reference } if query.attach.is_empty() => {
-            (reference.trim_start_matches("result:").to_owned(), false)
-        }
-        Source::Unit {
-            condition:
-                Some(Condition {
-                    kind:
-                        ConditionKind::Match {
-                            field,
-                            value: Value::Scalar { text, quoted },
-                        },
-                    ..
-                }),
-            ..
-        } if field.eq_ignore_ascii_case("result") && query.attach.is_empty() => {
-            (text.clone(), *quoted)
-        }
-        _ => {
-            return Err(QueryError::Invalid {
-                message: "A kept result takes stages, not conditions or attached rows".into(),
-                position: lead,
-            });
-        }
     };
-    let (id, part) = if quoted {
-        (value.as_str(), "rows")
-    } else {
-        match value.rsplit_once('.') {
-            Some((id, p @ ("rows" | "matches"))) => (id, p),
-            _ => (value.as_str(), "rows"),
-        }
+    if condition.is_some() || !query.attach.is_empty() {
+        return Err(QueryError::Invalid {
+            message: "A kept result takes stages, not conditions or attached rows".into(),
+            position: 0,
+        });
+    }
+    let mut query = query.clone();
+    let id = reference.strip_prefix("result:").unwrap_or(reference);
+    let part = match part {
+        ResultPart::Rows => "rows",
+        ResultPart::Matches => "matches",
     };
     let kept = opts.kept.get(id).ok_or_else(|| {
-        QueryError::syntax(
-            text,
-            lead + 7,
-            format!("no kept result has the ID {id:?}"),
-            None,
-        )
+        QueryError::syntax(text, 0, format!("no kept result has the ID {id:?}"), None)
     })?;
     let columns = if part == "matches" {
         if kept.match_columns.is_empty() {
             return Err(QueryError::Invalid {
                 message: format!("result:{id} kept no match rows (its query has no exists or seq)"),
-                position: lead,
+                position: 0,
             });
         }
         &kept.match_columns
@@ -198,6 +178,7 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     };
     query.source = Source::Unit {
         unit: Unit::Sessions.name().into(),
+        implicit: false,
         condition: None,
     };
     let unit = Unit::all()
@@ -232,116 +213,6 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
         program.columns = columns.clone();
     }
     Ok(Some(program))
-}
-
-/// A query that starts with `query:NAME` reads that saved query as its
-/// source: the rest of the text only narrows it. A saved relation (`U where
-/// C`) takes the rest as further conditions; a shaped result (with stages)
-/// takes only further stages.
-pub(super) struct BoundSource {
-    /// The saved query with the rest of the text joined to it.
-    pub text: String,
-    pub definition: Definition,
-    parameters: Parameters,
-}
-
-impl BoundSource {
-    /// Binds the saved query's parameters in the parsed text; a `$word`
-    /// the caller wrote stays a word.
-    pub fn bind(&self, query: &mut Query) -> Result<(), QueryError> {
-        self.parameters.bind(query, 0)
-    }
-}
-
-pub(super) fn bind_saved_source(
-    text: &str,
-    opts: &Options,
-) -> Result<Option<BoundSource>, QueryError> {
-    let lead = text.len() - text.trim_start().len();
-    let starts = text[lead..]
-        .get(..6)
-        .is_some_and(|p| p.eq_ignore_ascii_case("query:"));
-    if !starts {
-        return Ok(None);
-    }
-    let query = parse_query(text, opts)?;
-    let (name, arguments, first_end) = match &query.source {
-        Source::Saved { name, arguments } => {
-            let end = query.stages.first().map_or(text.len(), |s| {
-                text[..s.span.start].rfind('|').unwrap_or(s.span.start)
-            });
-            (name, arguments, end)
-        }
-        Source::Unit {
-            condition: Some(cond),
-            ..
-        } => {
-            let first = match &cond.kind {
-                ConditionKind::And { conditions } => &conditions[0],
-                _ => cond,
-            };
-            let ConditionKind::Saved { name, arguments } = &first.kind else {
-                return Ok(None);
-            };
-            if first.span.start != lead {
-                return Ok(None);
-            }
-            (name, arguments, first.span.end)
-        }
-        _ => return Ok(None),
-    };
-    let definition = saved_definition(text, lead + 6, name, opts)?;
-    let saved = definition.text.as_str();
-    let rest = text[first_end..].trim();
-    let shape = parse_query(saved, opts)?;
-    let shaped = !shape.stages.is_empty() || !shape.attach.is_empty();
-    let (conds, stages) = match rest.find('|') {
-        Some(i) => (rest[..i].trim(), &rest[i..]),
-        None => (rest, ""),
-    };
-    let bound = |text: String, region: std::ops::Range<usize>| {
-        Ok(Some(BoundSource {
-            text,
-            definition: Definition {
-                name: name.clone(),
-                revision: definition.revision.clone(),
-            },
-            parameters: Parameters::new(name, arguments, Some(region)),
-        }))
-    };
-    if shaped {
-        if !conds.is_empty() {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "query:{name} is a shaped result (it has stages); read it as \
-                     `query:{name} | where …`, it cannot take conditions"
-                ),
-                position: lead,
-            });
-        }
-        return bound(format!("{saved} {stages}"), 0..saved.len());
-    }
-    let (unit, cond) = match &shape.source {
-        Source::Unit { unit, condition } => (bind_unit(unit)?, condition.as_ref()),
-        _ => return Err(not_built("this saved source")),
-    };
-    let Some(cond) = cond else {
-        // Every row by the unit's defaults, narrowed by the rest.
-        let joined = if conds.is_empty() {
-            unit.name().to_owned()
-        } else {
-            format!("{} where {conds}", unit.name())
-        };
-        return bound(format!("{joined} {stages}").trim_end().to_owned(), 0..0);
-    };
-    let head = format!("{} where (", unit.name());
-    let cond = &saved[cond.span.start..cond.span.end];
-    let region = head.len()..head.len() + cond.len();
-    let mut joined = format!("{head}{cond})");
-    if !conds.is_empty() {
-        joined = format!("{joined} {conds}");
-    }
-    bound(format!("{joined} {stages}").trim_end().to_owned(), region)
 }
 
 /// The definition a saved query's name resolves to: the current revision
@@ -388,24 +259,20 @@ pub(super) fn saved_definition<'o>(
 /// A saved query's parameters: each `$word` standing for a value in its
 /// text is replaced by the value the call gives, in the parsed query, so a
 /// value never changes the query's shape.
-struct Parameters {
+pub(super) struct Parameters {
     name: String,
     arguments: Vec<Argument>,
-    /// The part of the text the saved query's own words are in; elsewhere
-    /// a `$word` is the caller's and stays as written.
-    region: Option<std::ops::Range<usize>>,
 }
 
 impl Parameters {
-    fn new(name: &str, arguments: &[Argument], region: Option<std::ops::Range<usize>>) -> Self {
+    pub(super) fn new(name: &str, arguments: &[Argument]) -> Self {
         Self {
             name: name.to_owned(),
             arguments: arguments.to_vec(),
-            region,
         }
     }
 
-    fn bind(&self, query: &mut Query, position: usize) -> Result<(), QueryError> {
+    pub(super) fn bind(&self, query: &mut Query, position: usize) -> Result<(), QueryError> {
         let mut used = vec![];
         self.query(query, &mut used, position)?;
         if let Some(unused) = self.arguments.iter().find(|a| !used.contains(&a.parameter)) {
@@ -432,11 +299,32 @@ impl Parameters {
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
-        if let Source::Unit {
-            condition: Some(c), ..
-        } = &mut query.source
-        {
-            self.cond(c, used, position)?;
+        match &mut query.source {
+            Source::Unit {
+                condition: Some(condition),
+                ..
+            }
+            | Source::RecallLast {
+                condition: Some(condition),
+                ..
+            }
+            | Source::Result {
+                condition: Some(condition),
+                ..
+            } => self.cond(condition, used, position)?,
+            Source::Saved {
+                arguments,
+                condition,
+                ..
+            } => {
+                for argument in arguments {
+                    self.value(&mut argument.value, used, position)?;
+                }
+                if let Some(condition) = condition {
+                    self.cond(condition, used, position)?;
+                }
+            }
+            _ => {}
         }
         for child in &mut query.attach {
             for window in &mut child.windows {
@@ -465,10 +353,6 @@ impl Parameters {
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
-        let inside = self
-            .region
-            .as_ref()
-            .is_none_or(|r| r.start <= c.span.start && c.span.end <= r.end);
         match &mut c.kind {
             ConditionKind::And { conditions }
             | ConditionKind::Or { conditions }
@@ -494,16 +378,12 @@ impl Parameters {
             | ConditionKind::Since { value, .. }
             | ConditionKind::Until { value, .. }
             | ConditionKind::Similar { value }
-            | ConditionKind::TimeRange { value, .. }
-                if inside =>
-            {
-                self.value(value, used, position)?
-            }
-            ConditionKind::Between { from, to, .. } if inside => {
+            | ConditionKind::TimeRange { value, .. } => self.value(value, used, position)?,
+            ConditionKind::Between { from, to, .. } => {
                 self.value(from, used, position)?;
                 self.value(to, used, position)?;
             }
-            ConditionKind::Text { text, mode } if inside => {
+            ConditionKind::Text { text, mode } => {
                 if let Some(argument) = self.argument(text, used, position)? {
                     *text = value_text(&argument.value)?.into();
                     *mode = if matches!(argument.value, Value::Scalar { quoted: true, .. }) {
@@ -513,7 +393,7 @@ impl Parameters {
                     };
                 }
             }
-            ConditionKind::Saved { arguments, .. } if inside => {
+            ConditionKind::Saved { arguments, .. } => {
                 for argument in arguments {
                     self.value(&mut argument.value, used, position)?;
                 }

@@ -129,3 +129,33 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
         "invalid_query"
     );
 }
+
+#[test]
+fn definition_order_does_not_retire_the_same_semantic_question() {
+    let options = options();
+    let mut program = polylogue_query::compile("sessions", &options).unwrap();
+    program.definitions = ["a", "b"]
+        .map(|name| polylogue_query::Definition {
+            name: name.into(),
+            revision: format!("{name}-revision"),
+        })
+        .to_vec();
+    let continuation = Continuation {
+        context: context(
+            identity("sessions", &options).unwrap(),
+            &position(),
+            (1, 2),
+            &options,
+            &program,
+            9,
+            false,
+        )
+        .unwrap(),
+        after: OrderPosition {
+            values: vec![Value::Null; program.order.len()],
+            row_identity: "row-a".into(),
+        },
+    };
+    program.definitions.reverse();
+    check(&continuation, &program, &options, false).unwrap();
+}

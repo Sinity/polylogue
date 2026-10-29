@@ -30,14 +30,24 @@ impl<'a> Compiler<'a> {
         _unit: Unit,
         at: usize,
     ) -> Result<Program, QueryError> {
-        let query = query.clone();
+        let mut query = query.clone();
+        // This query is compiled on its own, after its inherited unit was bound.
+        if let Source::Unit { implicit, .. } = &mut query.source {
+            *implicit = false;
+        }
+        let catalog = source::catalog(self.opts);
+        let bound = query_language::bind::bind(&query, &catalog)
+            .map_err(|error| QueryError::language(error, self.text))?;
+        let text = query_language::format::format_query(bound.query(), &catalog)
+            .map_err(|error| QueryError::language(error, self.text))?;
+        let query = bound.into_query();
         if let Some(child) = query.attach.first() {
             return Err(QueryError::Invalid {
                 message: "a query in parentheses gives rows to compare, not attached rows".into(),
                 position: child.span.start,
             });
         }
-        let mut inner = Compiler::new(self.text, self.opts);
+        let mut inner = Compiler::new(&text, self.opts);
         inner.params = std::mem::take(&mut self.params);
         inner.saved_stack = self.saved_stack.clone();
         let mut program = inner.program(&query)?;

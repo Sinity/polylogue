@@ -220,8 +220,9 @@ fn repairs_and_product_depth_guard_are_stable() {
 
 #[test]
 fn saved_arguments_are_values_and_literals_do_not_bind_namespaces() {
-    let Source::Saved { name, arguments } =
-        p("query:failing(repo=morrow, phrase=\"two words\")").source
+    let Source::Saved {
+        name, arguments, ..
+    } = p("query:failing(repo=morrow, phrase=\"two words\")").source
     else {
         panic!()
     };
