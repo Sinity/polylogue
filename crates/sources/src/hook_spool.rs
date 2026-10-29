@@ -92,7 +92,8 @@ static FIELDS: Fields = Fields::new(&[
         "payload",
         Rule::Kept("the hook's input, kept whole as the event's data"),
     ),
-]);
+])
+.for_kind("record");
 
 /// `PreToolUse` → `hook_pre_tool_use`.
 fn event_kind(event_type: &str) -> String {

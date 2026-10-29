@@ -49,7 +49,7 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
         Rule::Excluded("the export format's version string"),
     ),
     ("title", Rule::Read(T::String)),
-    ("characters", Rule::Read(T::Array)),
+    ("characters", Rule::Kept("complete room_models event")),
     ("messages", Rule::Read(T::Array)),
     ("artifacts", Rule::Kept("artifact panes, kept as an event")),
     (
@@ -64,9 +64,13 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
         "artifactFileContents",
         Rule::Kept("artifact panes, kept as an event"),
     ),
-]);
+])
+.shape(&["characters"], &[])
+.for_kind("document");
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
+    ("attachments[].type", Rule::Read(T::String)),
+    ("attachments[].content", Rule::Read(T::String)),
     ("id", Rule::Read(T::String)),
     ("type", Rule::Read(T::String)),
     ("content", Rule::Read(T::StringOrArray)),
@@ -111,7 +115,8 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         Rule::Kept("plugins enabled for the reply"),
     ),
     ("metadata.reasoning", Rule::Read(T::String)),
-]);
+])
+.for_kind("message");
 
 impl ExportParser for OpenRouter {
     fn scan(

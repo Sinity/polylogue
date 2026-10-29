@@ -135,6 +135,7 @@ static CALL: Fields = Fields::new(&[
 
 static OUTPUT: Fields = Fields::new(&[
     ("type", Read(T::String)),
+    ("timestamp", Read(T::StringOrNumber)),
     ("id", Read(T::String)),
     ("call_id", Read(T::String)),
     ("output", Kept("complete structured output in tool result")),
@@ -268,7 +269,8 @@ pub static ITEM_COMPLETED: Fields = Fields::new(&[
             "SubAgentActivity",
         ],
     }],
-);
+)
+.for_kind("item_completed");
 
 pub static USER_MESSAGE: Fields = Fields::new(&[
     ("type", Read(T::String)),
@@ -276,4 +278,5 @@ pub static USER_MESSAGE: Fields = Fields::new(&[
     ("message", Read(T::String)),
     ("images", Read(T::Array)),
     ("images[]", Read(T::String)),
-]);
+])
+.for_kind("user_message");

@@ -155,6 +155,7 @@ pub struct WireShape {
     pub dynamic_map: bool,
     pub known_kinds: Vec<String>,
     pub unknown_kind_count: u64,
+    pub unused_count: u64,
     pub table: Option<String>,
     pub unknown_table_count: u64,
 }
@@ -163,6 +164,7 @@ impl WireShape {
         self.record_kind.clone_from(&other.record_kind);
         self.path.clone_from(&other.path);
         self.unknown_kind_count += other.unknown_kind_count;
+        self.unused_count += other.unused_count;
         self.unknown_table_count += other.unknown_table_count;
         if other.table.is_some() {
             self.table.clone_from(&other.table);

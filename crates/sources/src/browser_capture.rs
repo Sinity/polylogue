@@ -77,7 +77,8 @@ static CAPTURE_FIELDS: Fields = Fields::new(&[
     ),
     ("raw_provider_payload", Rule::Read(T::Object)),
     ("session", Rule::Read(T::Object)),
-]);
+])
+.for_kind("capture");
 
 static NATIVE_SESSION_FIELDS: Fields = Fields::new(&[
     ("provider", Rule::Read(T::String)),
@@ -123,7 +124,8 @@ static TURN_FIELDS: Fields = Fields::new(&[
         "identity_observation",
         Rule::Kept("how the adapter matched the turn to the page; no reader yet"),
     ),
-]);
+])
+.for_kind("turn");
 
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.

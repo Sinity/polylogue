@@ -237,8 +237,16 @@ fn copied_token_records_keep_their_parent_scope_and_original_observation_identit
             .output
             .events
             .iter()
-            .filter(|e| e.kind != "response_boundaries_unknown")
+            .filter(|e| e.kind != "response_boundaries_unknown" && e.kind != "session_meta")
             .all(|e| e.session.as_ref().unwrap().native().as_str() == PARENT)
+    );
+    assert!(
+        child
+            .output
+            .events
+            .iter()
+            .any(|event| event.kind == "session_meta"
+                && event.session.as_ref().unwrap().native().as_str() == THREAD)
     );
 }
 

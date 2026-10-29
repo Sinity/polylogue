@@ -60,7 +60,7 @@ fn unknown_database_table_has_explicit_schema_identity_without_row_values() {
         0,
     )
     .unwrap();
-    let key = serde_json::to_string(&("future_facts", "")).unwrap();
+    let key = serde_json::to_string(&("row", "future_facts", "")).unwrap();
     let shape = &step.counts.wire_shapes[&key];
     assert_eq!(shape.table.as_deref(), Some("future_facts"));
     assert_eq!(shape.unknown_table_count, 1);

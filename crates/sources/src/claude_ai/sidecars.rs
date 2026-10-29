@@ -75,7 +75,8 @@ static ACCOUNT: Fields = Fields::new(&[
     ("project_memories", Rule::Read(T::Object)),
     ("created_at", Rule::Read(T::StringOrNumber)),
     ("updated_at", Rule::Read(T::StringOrNumber)),
-]);
+])
+.for_kind("account");
 static PROJECT: Fields = Fields::new(&[
     ("uuid", Rule::Read(T::String)),
     ("name", Rule::Read(T::String)),
@@ -93,7 +94,8 @@ static PROJECT: Fields = Fields::new(&[
         "creator",
         Rule::Kept("project creator is not text authorship"),
     ),
-]);
+])
+.for_kind("project");
 static DOC: Fields = Fields::new(&[
     ("uuid", Rule::Read(T::String)),
     ("filename", Rule::Read(T::String)),
@@ -109,7 +111,8 @@ static DOC: Fields = Fields::new(&[
         Rule::Kept("reference descriptor; original bytes are not supplied"),
     ),
     ("url", Rule::Kept("reference kept without fetching")),
-]);
+])
+.for_kind("doc");
 
 fn names(fields: &BTreeMap<String, Field<'_>>) -> Json {
     Json::Object(fields.keys().map(|key| (key.clone(), Json::Null)).collect())

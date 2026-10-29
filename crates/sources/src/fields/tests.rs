@@ -10,7 +10,8 @@ fn unused_leaf_counted_below_declared_containers_and_unknown_arrays() {
         ("message.content[].text", Rule::Read(T::String)),
         ("saved", Rule::Kept("copied into row attrs")),
         ("ignored", Rule::Excluded("known but not indexed")),
-    ]);
+    ])
+    .for_kind("record");
     assert_eq!(
         unaccounted(
             &json!({
@@ -23,15 +24,16 @@ fn unused_leaf_counted_below_declared_containers_and_unknown_arrays() {
             "ignored.reason",
             "message.content[].future.x",
             "message.content[].future.x",
-            "unknown[][]",
-            "unknown[].leaf"
+            "unknown[].leaf",
+            "unknown[][]"
         ]
     );
 }
 
 #[test]
 fn retained_attributes_copy_wire_values_without_covering_unknown_siblings() {
-    static FIELDS: Fields = Fields::new(&[("message.meta", Rule::Kept("provider metadata"))]);
+    static FIELDS: Fields =
+        Fields::new(&[("message.meta", Rule::Kept("provider metadata"))]).for_kind("record");
     let source = json!({"message":{"meta":{"nested":[{"text":"given"}]},"other":{"x":1}}});
     assert_eq!(
         attributes(&source, &FIELDS),
@@ -45,7 +47,7 @@ fn retained_attributes_copy_wire_values_without_covering_unknown_siblings() {
 
 #[test]
 fn empty_containers_and_null_are_values_at_their_own_paths() {
-    static FIELDS: Fields = Fields::new(&[("read", Rule::Read(T::String))]);
+    static FIELDS: Fields = Fields::new(&[("read", Rule::Read(T::String))]).for_kind("record");
     assert_eq!(
         unaccounted(&json!({"a":[],"b":{},"c":null,"read":[]}), &FIELDS),
         ["a", "b", "c"]
@@ -54,7 +56,7 @@ fn empty_containers_and_null_are_values_at_their_own_paths() {
 
 #[test]
 fn declaration_lookup_is_shared_by_parsing_threads() {
-    static FIELDS: Fields = Fields::new(&[("a[].x", Rule::Read(T::String))]);
+    static FIELDS: Fields = Fields::new(&[("a[].x", Rule::Read(T::String))]).for_kind("record");
     std::thread::scope(|scope| {
         let readers: Vec<_> = (0..8)
             .map(|_| {
@@ -112,7 +114,7 @@ fn wire_observation_counts_types_and_declarations_without_scalar_bodies() {
 
 #[test]
 fn observed_paths_distinguish_literal_keys_arrays_and_nested_fields() {
-    static EMPTY: Fields = Fields::new(&[]);
+    static EMPTY: Fields = Fields::new(&[]).for_kind("empty");
     let observed = inspect(
         &json!({"a.b":1,"a":{"b":2},"[]":3,"*":4,"/":5,"~":6,"list":[7]}),
         &EMPTY,
@@ -127,7 +129,8 @@ fn literal_keys_do_not_impersonate_declared_nested_or_array_paths() {
     static FIELDS: Fields = Fields::new(&[
         ("a.b", Rule::Read(T::Number)),
         ("list[].n", Rule::Read(T::Number)),
-    ]);
+    ])
+    .for_kind("record");
     let source = json!({"a.b":1,"a":{"b":2},"list[].n":3,"list":[{"n":4}]});
     assert_eq!(unaccounted(&source, &FIELDS), ["a.b", "list[].n"]);
     let observed = inspect(&source, &FIELDS);
@@ -142,7 +145,8 @@ fn declared_open_values_and_dynamic_members_differ_from_new_kept_object_fields()
         ("ignored", Rule::Excluded("not indexed")),
         ("map", Rule::Kept("dynamic attributes")),
     ])
-    .shape(&["map"], &[]);
+    .shape(&["map"], &[])
+    .for_kind("record");
     let got = inspect(
         &json!({"saved":{"new_field":1},"ignored":true,"map":{"id":{"n":2}}}),
         &FIELDS,
@@ -169,4 +173,25 @@ fn new_kind_is_counted_without_retaining_its_scalar_value() {
             .unwrap()
             .contains("distinctive-new-kind")
     );
+}
+
+#[test]
+fn typed_dynamic_members_override_open_map_expectations() {
+    static FIELDS: Fields = Fields::new(&[
+        ("mapping", Rule::Kept("native key map")),
+        ("mapping.*.role", Rule::Read(T::String)),
+        ("/literal/~2", Rule::Read(T::Number)),
+    ])
+    .shape(&["mapping"], &[])
+    .for_kind("record");
+    let got = inspect(
+        &json!({"mapping":{"first":{"role":"assistant"},"second":{"role":1}},"literal":{"*":2}}),
+        &FIELDS,
+    );
+    assert_eq!(got.shapes["/mapping/*/role"].expected, ["null", "string"]);
+    assert_eq!(
+        got.shapes["/mapping/*/role"].types,
+        BTreeMap::from([("string".into(), 1), ("number".into(), 1)])
+    );
+    assert_eq!(got.shapes["/literal/~2"].expected, ["null", "number"]);
 }

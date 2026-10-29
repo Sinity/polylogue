@@ -38,20 +38,41 @@ impl Records {
         self.counts.add(kind, outcome);
     }
 
-    /// Record fields neither read nor excluded by this format's declaration.
+    /// Count unused leaves and derived shapes in one walk.
     pub fn fields(&mut self, kind: &str, value: &Json, declared: &Fields) {
+        self.account(kind, value, declared, None, false);
+    }
+
+    fn account(
+        &mut self,
+        kind: &str,
+        value: &Json,
+        declared: &Fields,
+        table: Option<&str>,
+        unknown: bool,
+    ) {
         self.field_checks += 1;
         let accounting = inspect(value, declared);
         for path in accounting.unused {
             self.counts.unread(kind, &path);
         }
+        let public_kind = declared.kind(kind);
         for (path, mut shape) in accounting.shapes {
-            shape.record_kind = kind.to_owned();
-            let key = serde_json::to_string(&(kind, &path)).expect("string tuple");
-            let observed = self.counts.wire_shapes.entry(key).or_default();
-            observed.record_kind.clone_from(&shape.record_kind);
-            observed.path.clone_from(&shape.path);
-            observed.merge(&shape);
+            shape.record_kind = public_kind.to_owned();
+            shape.table = table.map(str::to_owned);
+            if unknown && path.is_empty() {
+                shape.unknown_table_count += 1;
+            }
+            let key = match table {
+                Some(table) => serde_json::to_string(&(public_kind, table, &path)),
+                None => serde_json::to_string(&(public_kind, &path)),
+            }
+            .expect("string tuple");
+            self.counts
+                .wire_shapes
+                .entry(key)
+                .or_default()
+                .merge(&shape);
         }
     }
 
@@ -61,16 +82,38 @@ impl Records {
         static ROW: Fields = Fields::new(&[(
             "",
             crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
-        )]);
-        self.fields(kind, row, &ROW);
-        let key = serde_json::to_string(&(kind, "")).expect("string tuple");
-        let root = self
-            .counts
-            .wire_shapes
-            .get_mut(&key)
-            .expect("row root observed");
-        root.table = Some(table.to_owned());
-        root.unknown_table_count += 1;
+        )])
+        .for_kind("row");
+        self.account(kind, row, &ROW, Some(table), true);
+    }
+    /// A row disappearance carries table identity and framing fields rather
+    /// than a replacement sample of that table's columns.
+    pub fn unknown_table_gone(&mut self, table: &str, record: &Json) {
+        static GONE: Fields = Fields::new(&[
+            (
+                "t",
+                crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+            ),
+            (
+                "k",
+                crate::fields::Rule::Read(crate::fields::ExpectedType::Any),
+            ),
+            (
+                "gone",
+                crate::fields::Rule::Read(crate::fields::ExpectedType::Boolean),
+            ),
+        ])
+        .for_kind("gone");
+        self.account("gone", record, &GONE, Some(table), true);
+    }
+
+    pub fn unknown_table_schema(&mut self, table: &str, schema: &Json) {
+        static SCHEMA: Fields = Fields::new(&[(
+            "",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::Any),
+        )])
+        .for_kind("schema");
+        self.account("schema", schema, &SCHEMA, Some(table), true);
     }
 
     pub(crate) fn field_checks(&self) -> u64 {
@@ -90,13 +133,15 @@ impl Records {
             ("", Rule::Kept("complete event payload")),
             ("type", Rule::Read(T::String)),
             ("timestamp", Rule::Read(T::StringOrNumber)),
-        ]);
+        ])
+        .for_kind("event");
         static PAYLOAD: Fields = Fields::new(&[
             ("type", Rule::Read(T::String)),
             ("timestamp", Rule::Read(T::StringOrNumber)),
             ("payload", Rule::Kept("complete native event payload")),
-        ]);
-        static UNREAD: Fields = Fields::new(&[]);
+        ])
+        .for_kind("event");
+        static UNREAD: Fields = Fields::new(&[]).for_kind("*");
         self.fields(
             kind,
             value,

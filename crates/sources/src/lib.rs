@@ -37,6 +37,7 @@ pub mod parse;
 pub mod polylogue_export;
 mod records;
 pub mod repo_lookup;
+pub mod row_dump;
 pub mod schema;
 pub mod time;
 
