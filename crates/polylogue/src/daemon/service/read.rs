@@ -132,8 +132,8 @@ fn prepared<T>(
     ) -> Result<T, Response>,
 ) -> Result<T, Response> {
     options.validate().map_err(|e| error("bad_request", e))?;
-    let clock=d.query_clock()?;
-    let ran_at:Timestamp=clock.now.into();
+    let clock = d.query_clock()?;
+    let ran_at: Timestamp = clock.now.into();
     crate::daemon::query::with_ranking(reader, &d.warm, |embeddings, near| {
         let ask = crate::daemon::query::Ask {
             text: target,
@@ -141,7 +141,7 @@ fn prepared<T>(
             page_size: None,
             why: false,
             session: None,
-            clock:clock.clone(),
+            clock: clock.clone(),
             embeddings,
             near: Some(near),
             fields: &[],
