@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::authored::*;
 use polylogue_model::user::{BackfillJob, ChatAction, UserWrite};
-use polylogue_model::{Author, Note, NoteKind, Relation, Reference, Timestamp};
+use polylogue_model::{Author, Note, NoteKind, Reference, Relation, Timestamp};
 
 fn event_index(n: i64) -> Result<usize> {
     usize::try_from(

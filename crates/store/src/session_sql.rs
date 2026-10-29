@@ -67,7 +67,6 @@ pub const MESSAGE_COUNTS: &[(&str, &str)] = &[
 
 pub use polylogue_model::derived::COUNT_FIELDS;
 
-
 /// The same aggregate as the stored column, computed for a behind session.
 pub fn compute_count(s: &str, column: &str) -> String {
     if let Some((_, expr)) = MESSAGE_COUNTS.iter().find(|(name, _)| *name == column) {
