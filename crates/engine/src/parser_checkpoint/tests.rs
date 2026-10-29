@@ -66,6 +66,7 @@ fn job(
     size: u64,
 ) -> crate::pool::Job {
     crate::pool::Job {
+        acquisition: None,
         path: path.to_path_buf(),
         origin,
         input: polylogue_store::InputKey {

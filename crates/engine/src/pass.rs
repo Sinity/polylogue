@@ -1007,7 +1007,14 @@ impl Engine {
                 if !self.load_stored(&mut plan)? {
                     continue;
                 }
-                let job = plan.next_job();
+                let mut job = plan.next_job();
+                if matches!(job.source, pool::Bytes::File) {
+                    job.acquisition = Some(self.acquisition_context(
+                        &job.path,
+                        &job.input.format,
+                        polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                    ));
+                }
                 pass.bytes_read += job.end - job.start;
                 pool.submit(job);
                 outstanding += 1;

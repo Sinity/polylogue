@@ -29,6 +29,7 @@ pub struct Job {
     pub input: InputKey,
     pub change: Change,
     pub observation: Option<Observation>,
+    pub(crate) acquisition: Option<crate::acquisition::AcquisitionContext>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -408,6 +409,18 @@ pub(crate) fn run(
         },
         None => None,
     };
+    let acquisition = new_blob
+        .as_ref()
+        .zip(job.acquisition.as_ref())
+        .map(|(blob, context)| {
+            context.finish(
+                polylogue_store::primary::RawRange {
+                    start: job.store_from.expect("new body has a source interval"),
+                    end: job.store_from.expect("new body has a source interval") + blob.size,
+                },
+                blob.hash,
+            )
+        });
     let mut extra = Vec::new();
     let parser = (job.origin.open)(&job.path).or_else(|| {
         job.origin
@@ -531,7 +544,7 @@ pub(crate) fn run(
         blobs: extra,
         length: job.length,
         parse,
-        acquisition: None,
+        acquisition,
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)

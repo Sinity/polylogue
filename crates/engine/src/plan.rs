@@ -144,6 +144,7 @@ impl Plan {
             ),
         };
         Job {
+            acquisition: None,
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),
