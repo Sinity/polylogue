@@ -23,27 +23,14 @@ impl PendingFusion {
 
 impl<'a> Compiler<'a> {
     /// Another query in parentheses, compiled over this query's parameters.
-    /// Conditions without a unit are on `unit`. Its notes, terms and checks
-    /// join this query's.
+    /// A nested query's bound unit, notes, terms and checks come from its tree.
     pub(super) fn other_query(
         &mut self,
         query: &Query,
-        unit: Unit,
+        _unit: Unit,
         at: usize,
     ) -> Result<Program, QueryError> {
-        let mut query = query.clone();
-        if let Source::Unit {
-            unit: name,
-            condition: Some(cond),
-        } = &query.source
-            && name == "sessions"
-            && !self.text[cond.span.start..].starts_with("sessions")
-        {
-            query.source = Source::Unit {
-                unit: unit.name().into(),
-                condition: Some(cond.clone()),
-            };
-        }
+        let query = query.clone();
         if let Some(child) = query.attach.first() {
             return Err(QueryError::Invalid {
                 message: "a query in parentheses gives rows to compare, not attached rows".into(),
