@@ -87,8 +87,12 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
             break;
         };
         assert!(page_number < 999, "continuation failed to reach the end");
-        let request = serde_json::to_string(&next.http.arguments).unwrap();
-        output = cli(&fixture, &["--json", "read", "--request", &request]);
+        let stages = polylogue_model::command::effective_stages(&next.cli);
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].program, "polylogue");
+        let mut arguments = vec!["--json"];
+        arguments.extend(stages[0].args.iter().map(String::as_str));
+        output = cli(&fixture, &arguments);
     }
     assert_eq!(reconstructed, expected);
     let destination = directory.path().join("bundle");
