@@ -1,7 +1,7 @@
 use crate::{Archive, Result, StoreError};
-use std::os::unix::ffi::OsStrExt;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::os::unix::ffi::OsStrExt;
 
 /// A pre-acquisition cut of source authority. It is not an index write counter.
 /// Primary cuts require the owner's full projection certificate; a raw-input
@@ -50,7 +50,10 @@ impl SourceBoundary {
             [],
             |row| row.get(0),
         )?;
-        if archive.is_primary() || generation != self.generation || scope_root(archive) != self.scope_root {
+        if archive.is_primary()
+            || generation != self.generation
+            || scope_root(archive) != self.scope_root
+        {
             return Err(StoreError::ScopeChanged);
         }
         match self.authority {
@@ -61,11 +64,13 @@ impl SourceBoundary {
 
 fn source_position(conn: &Connection) -> Result<Option<u64>> {
     let source = super::Source::reading(conn)?;
-    let position: Option<String> = conn.query_row(
-        &source.sql("SELECT value FROM @source.meta WHERE key='write_counter'"),
-        [],
-        |row| row.get(0),
-    ).optional()?;
+    let position: Option<String> = conn
+        .query_row(
+            &source.sql("SELECT value FROM @source.meta WHERE key='write_counter'"),
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
     if let Some(position) = position {
         return position.parse::<u64>().map(Some).map_err(|_| {
             StoreError::Invalid("source admission fence is not a nonnegative integer".into())

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Missing states carry no value; zero is an ordinary measured value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub enum ValueState<T> {
     Value {
         value: T,
@@ -242,7 +243,13 @@ pub enum ItemKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inline_bytes: Option<Vec<u8>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        verified_hash: Option<crate::BlobHash>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         open: Option<Box<ReadyCall>>,
+    },
+    TextFragment {
+        record: Box<crate::bundle::TextFragmentRecord>,
+        origin: ValueState<super::FragmentOrigin>,
     },
     Other {
         type_name: String,
@@ -493,6 +500,7 @@ pub enum TargetKind {
     Message,
     Block,
     Document,
+    TextFragment,
     Event,
     Authored,
     Query,

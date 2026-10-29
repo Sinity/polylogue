@@ -14,6 +14,11 @@ pub(super) fn project(
     footer: &mut ReadFooter,
 ) -> Result<Option<ReadRecord>, Response> {
     let reference = record.reference().unwrap_or_default().to_owned();
+    let target_kind = match &record {
+        Record::Document(_) => Some(TargetKind::Document),
+        Record::TextFragment(_) => Some(TargetKind::TextFragment),
+        _ => None,
+    };
     match project_record(record, options, evidence) {
         Ok(Some(record)) => {
             let parts =
@@ -28,16 +33,17 @@ pub(super) fn project(
             view,
             target,
             accepted_views,
-        }) if mixed && target.starts_with("document:") => {
+        }) if mixed && target_kind.is_some() => {
+            let target_kind = target_kind.expect("checked target family");
             if let Some(coverage) = footer
                 .coverage
                 .iter_mut()
-                .find(|coverage| coverage.target == TargetKind::Document && coverage.view == view)
+                .find(|coverage| coverage.target == target_kind && coverage.view == view)
             {
                 coverage.omitted += 1;
             } else {
                 footer.coverage.push(Coverage {
-                    target: TargetKind::Document,
+                    target: target_kind,
                     view,
                     omitted: 1,
                     accepted_views,
@@ -48,8 +54,18 @@ pub(super) fn project(
                     source: Source::record(reference),
                     kind: ItemKind::Omission {
                         count: ValueState::known(1),
-                        unit: "document".into(),
-                        why: format!("{view} does not read documents; use transcript or raw"),
+                        unit: match target_kind {
+                            TargetKind::Document => "document",
+                            TargetKind::TextFragment => "text fragment",
+                            _ => unreachable!("mixed canonical family"),
+                        }
+                        .into(),
+                        why: ReadError::UnsupportedTarget {
+                            view,
+                            target,
+                            accepted_views: vec![],
+                        }
+                        .to_string(),
                         continue_call: None,
                     },
                 })],
@@ -148,6 +164,16 @@ fn read_error(error: ReadError) -> Response {
         } => (
             "not_built",
             Some(serde_json::json!({"view":view,"target":target,"accepted_views":accepted_views})),
+        ),
+        ReadError::RequiredExpansion {
+            view,
+            target,
+            option,
+        } => (
+            "bad_request",
+            Some(
+                serde_json::json!({"view":view,"target":target,"option":option,"required":"full"}),
+            ),
         ),
         ReadError::MissingEvidence {
             view,

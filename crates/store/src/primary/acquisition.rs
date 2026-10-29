@@ -36,7 +36,11 @@ impl AcquisitionReceipt {
     pub const VERSION: u32 = 1;
 
     pub fn validate_for(&self, input: &crate::InputKey) -> Result<()> {
-        let invalid = || StoreError::Invalid("acquisition evidence does not match its generation or input".into());
+        let invalid = || {
+            StoreError::Invalid(
+                "acquisition evidence does not match its generation or input".into(),
+            )
+        };
         if self.version != Self::VERSION || self.source.origin != input.format {
             return Err(invalid());
         }
@@ -52,10 +56,17 @@ impl AcquisitionReceipt {
         let stream = generation.stream();
         let window = generation.window();
         if stream.source != self.source
-            || stream.input.id != input.id || stream.input.format != input.format
-            || self.range.start < window.start || self.range.end > window.end
-            || self.raw_total.is_some_and(|end| end != window.end || end != self.range.end)
-            || self.raw_predecessor.as_ref().is_some_and(|body| body.is_empty() || self.range.start == window.start)
+            || stream.input.id != input.id
+            || stream.input.format != input.format
+            || self.range.start < window.start
+            || self.range.end > window.end
+            || self
+                .raw_total
+                .is_some_and(|end| end != window.end || end != self.range.end)
+            || self
+                .raw_predecessor
+                .as_ref()
+                .is_some_and(|body| body.is_empty() || self.range.start == window.start)
             || matches!(generation,
                 super::SourceGeneration::File { stream: super::RawStream { role: super::RawStreamRole::ProviderBytes, .. }, observed, .. }
                 if self.raw_total.is_some_and(|end| end != observed.size))
@@ -158,7 +169,9 @@ impl CapturePlan {
             ));
         }
         if self.required_disposition == Some(CaptureDisposition::Prepared) {
-            return Err(StoreError::Invalid("an acquisition constraint cannot require acceptance".into()));
+            return Err(StoreError::Invalid(
+                "an acquisition constraint cannot require acceptance".into(),
+            ));
         }
         let mut seen = std::collections::BTreeSet::new();
         for basis in &self.bases {

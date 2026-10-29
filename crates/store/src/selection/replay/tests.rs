@@ -64,7 +64,7 @@ fn acknowledged_execution() -> (
     let object = {
         let reader = pool.reader().unwrap();
         reader
-            .prepare_query_selection("sessions", &options)
+            .prepare_query_selection("sessions | count", &options)
             .unwrap()
             .query_object()
             .unwrap()
@@ -73,7 +73,7 @@ fn acknowledged_execution() -> (
     let (run, continuation) = {
         let reader = pool.reader().unwrap();
         let selection = reader
-            .prepare_query_selection("sessions", &options)
+            .prepare_query_selection("sessions | count", &options)
             .unwrap();
         let binding = selection
             .execution_binding(
@@ -118,10 +118,20 @@ fn acknowledged_execution() -> (
             run,
             Continuation {
                 context,
-                after: OrderPosition {
-                    values: vec![],
-                    row_identity: String::new(),
-                },
+                after: polylogue_model::read::ReadPosition {
+                    selection: polylogue_model::read::SelectionLocator {
+                        row: 0,
+                        record: polylogue_model::read::ReadRecordLocator {
+                            kind: polylogue_model::read::ReadRecordKind::Presentation,
+                            ordinal: 0,
+                        },
+                    },
+                    item: 0,
+                    character: 0,
+                    item_hash: polylogue_model::BlobHash::of(b"synthetic item"),
+                }
+                .to_order_position()
+                .unwrap(),
             },
         )
     };
@@ -215,4 +225,33 @@ fn acknowledged_run_history_does_not_stale_unchanged_selected_content() {
         &run.id
     );
     assert_eq!(position, continuation.after);
+}
+
+#[test]
+fn an_authentic_root_seal_cannot_authorize_an_unbounded_legacy_position() {
+    let (_dir, _lock, pool, options, run, mut continuation) = acknowledged_execution();
+    let reader = pool.reader().unwrap();
+    continuation.after = OrderPosition {
+        values: vec![serde_json::json!("native-id")],
+        row_identity: "native-key".into(),
+    };
+    let cursor = CursorSeal::new(reader.cursor_key().unwrap())
+        .seal(&continuation)
+        .unwrap();
+    let error = reader
+        .prepare_authenticated_run_selection(
+            &cursor,
+            &run.id,
+            None,
+            RunReplayContext {
+                current_clock: &options.clock,
+                current_versions: &BTreeMap::new(),
+                ranking_identity: None,
+                page_size: None,
+                near: None,
+            },
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), "invalid_cursor");
 }

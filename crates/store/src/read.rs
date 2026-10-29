@@ -22,10 +22,12 @@ pub mod scope;
 
 mod behind_index;
 mod completeness;
-pub use completeness::{CompletenessDimension, CompletenessReason, ReadCompleteness, ReadingContract};
+pub use completeness::{
+    CompletenessDimension, CompletenessReason, ReadCompleteness, ReadingContract,
+};
 mod captured;
-mod native_hook_fields;
 mod fragment;
+mod native_hook_fields;
 pub use fragment::{
     FragmentAvailability, FragmentClaim, FragmentClaims, FragmentConflict, FragmentSelection,
 };

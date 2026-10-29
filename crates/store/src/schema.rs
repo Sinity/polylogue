@@ -45,24 +45,61 @@ enum IndexTarget {
     PrimarySource(&'static str),
 }
 const INDEX_MIGRATIONS: &[IndexMigration] = &[
-    IndexMigration { version: 2, target: IndexTarget::Index(include_str!("schema/index_2.sql")) },
-    IndexMigration { version: 3, target: IndexTarget::Index(include_str!("schema/index_3.sql")) },
-    IndexMigration { version: 4, target: IndexTarget::Index(include_str!("schema/index_4.sql")) },
-    IndexMigration { version: 5, target: IndexTarget::Index(include_str!("schema/index_5.sql")) },
-    IndexMigration { version: 6, target: IndexTarget::PrimarySource(include_str!("schema/archive_2.sql")) },
-    IndexMigration { version: 8, target: IndexTarget::PrimarySource(concat!(
-        include_str!("schema/variant_3.sql"), "\n", include_str!("schema/index_8.sql")
-    )) },
-    IndexMigration { version: 9, target: IndexTarget::Index(include_str!("schema/index_9.sql")) },
-    IndexMigration { version: 10, target: IndexTarget::IndexAndPrimary(
-        include_str!("schema/attachment_bindings.sql"), crate::primary::projection::REFERENCE_INDEX
-    ) },
-    IndexMigration { version: 11, target: IndexTarget::PrimarySource(include_str!("schema/index_11.sql")) },
-    IndexMigration { version: 12, target: IndexTarget::Index(include_str!("schema/index_12.sql")) },
+    IndexMigration {
+        version: 2,
+        target: IndexTarget::Index(include_str!("schema/index_2.sql")),
+    },
+    IndexMigration {
+        version: 3,
+        target: IndexTarget::Index(include_str!("schema/index_3.sql")),
+    },
+    IndexMigration {
+        version: 4,
+        target: IndexTarget::Index(include_str!("schema/index_4.sql")),
+    },
+    IndexMigration {
+        version: 5,
+        target: IndexTarget::Index(include_str!("schema/index_5.sql")),
+    },
+    IndexMigration {
+        version: 6,
+        target: IndexTarget::PrimarySource(include_str!("schema/archive_2.sql")),
+    },
+    IndexMigration {
+        version: 8,
+        target: IndexTarget::PrimarySource(concat!(
+            include_str!("schema/variant_3.sql"),
+            "\n",
+            include_str!("schema/index_8.sql")
+        )),
+    },
+    IndexMigration {
+        version: 9,
+        target: IndexTarget::Index(include_str!("schema/index_9.sql")),
+    },
+    IndexMigration {
+        version: 10,
+        target: IndexTarget::IndexAndPrimary(
+            include_str!("schema/attachment_bindings.sql"),
+            crate::primary::projection::REFERENCE_INDEX,
+        ),
+    },
+    IndexMigration {
+        version: 11,
+        target: IndexTarget::PrimarySource(include_str!("schema/index_11.sql")),
+    },
+    IndexMigration {
+        version: 12,
+        target: IndexTarget::Index(include_str!("schema/index_12.sql")),
+    },
 ];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
     include_str!("schema/archive_2.sql"),
-    concat!(include_str!("schema/variant_3.sql"), "\n", include_str!("schema/archive_3.sql")),
+    concat!(
+        include_str!("schema/variant_3.sql"),
+        "\n",
+        include_str!("schema/archive_3.sql")
+    ),
     include_str!("schema/archive_4.sql"),
 ];
 
@@ -137,14 +174,19 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         create_index_in(&tx, primary)?;
     } else {
         if found != 1 && !INDEX_MIGRATIONS.iter().any(|step| step.version == found) {
-            return Err(StoreError::NoMigration { database: "index", found });
+            return Err(StoreError::NoMigration {
+                database: "index",
+                found,
+            });
         }
         for step in INDEX_MIGRATIONS.iter().filter(|step| step.version > found) {
             match step.target {
                 IndexTarget::Index(sql) => tx.execute_batch(sql)?,
                 IndexTarget::IndexAndPrimary(sql, primary_sql) => {
                     tx.execute_batch(sql)?;
-                    if primary { tx.execute_batch(primary_sql)?; }
+                    if primary {
+                        tx.execute_batch(primary_sql)?;
+                    }
                 }
                 IndexTarget::PrimarySource(sql) if primary => {
                     tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
@@ -205,9 +247,12 @@ fn legacy_variant_time(conn: &Connection) -> Result<()> {
             let millis: i64 = context.get(0)?;
             polylogue_model::Timestamp::from_unix_ms(millis)
                 .map(|at| at.to_string())
-                .ok_or_else(|| rusqlite::Error::UserFunctionError(Box::new(
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, "legacy variant time is out of range"),
-                )))
+                .ok_or_else(|| {
+                    rusqlite::Error::UserFunctionError(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "legacy variant time is out of range",
+                    )))
+                })
         },
     )?;
     Ok(())

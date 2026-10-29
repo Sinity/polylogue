@@ -20,8 +20,12 @@ pub struct RawInputProof {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum RawInputCoverage {
-    Complete { proof: RawInputProof },
-    Incomplete { reason: String },
+    Complete {
+        proof: RawInputProof,
+    },
+    Incomplete {
+        reason: String,
+    },
     #[default]
     NotRequested,
 }
@@ -58,7 +62,10 @@ pub enum ProjectionAvailability {
     Certified,
     Unverified,
     /// Optional owner identities do not assert an epoch transition.
-    Invalidated { policy_epoch: Option<i64>, scope: Option<String> },
+    Invalidated {
+        policy_epoch: Option<i64>,
+        scope: Option<String>,
+    },
 }
 
 /// Persisted with bounded page facts in the same SQLite transaction. A fresh
@@ -80,8 +87,13 @@ pub struct ReplayState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ReplayContinuation {
-    Next { cursor: String },
-    Complete { projection: FullProjectionComplete, raw_inputs: RawInputCoverage },
+    Next {
+        cursor: String,
+    },
+    Complete {
+        projection: FullProjectionComplete,
+        raw_inputs: RawInputCoverage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -95,17 +107,29 @@ pub struct ReplayPage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ReplayBasisStatus {
-    Invalidated { policy_epoch: Option<i64>, scope: Option<String> },
+    Invalidated {
+        policy_epoch: Option<i64>,
+        scope: Option<String>,
+    },
     Unverified,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "control", rename_all = "snake_case")]
 pub enum ReplayControl {
-    Page { page: ReplayPage },
-    BasisStatus { status: ReplayBasisStatus },
-    Completion { position: i64, delivered: DeliveredCompletion },
-    ErasedThrough { position: i64 },
+    Page {
+        page: ReplayPage,
+    },
+    BasisStatus {
+        status: ReplayBasisStatus,
+    },
+    Completion {
+        position: i64,
+        delivered: DeliveredCompletion,
+    },
+    ErasedThrough {
+        position: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -106,6 +106,22 @@ pub struct ContextEvidence {
     #[serde(default)]
     pub not_recorded: Vec<String>,
 }
+/// Selection expansion over an indivisible frozen authored request. The
+/// service establishes current grants over every fact, effect and native parent
+/// before supplying this evidence; this value is not a grant or admission proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AuthoredSelection {
+    pub selected: crate::Reference,
+    pub coverage: AuthoredCoverage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthoredCoverage {
+    WholeRequest,
+}
+
 /// Evidence is per record/page, never an entire session required to produce
 /// the next item. Variants change layout, not the canonical source record.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -117,6 +133,10 @@ pub struct ProjectionEvidence {
     pub branch: BranchState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authored: Option<AuthoredSelection>,
+    #[serde(default)]
+    pub fragment_origin: ValueState<super::FragmentOrigin>,
     #[serde(default)]
     pub before: Vec<PreparedIndicator>,
     #[serde(default)]
@@ -152,6 +172,10 @@ pub struct AttachmentEvidence {
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<Box<ReadyCall>>,
+    /// Minted only after a complete granted read hashes to the pinned candidate.
+    /// Historical attachment claims do not establish this value or availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_hash: Option<crate::BlobHash>,
     /// The store has resolved access and supplied original content bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_bytes: Option<Vec<u8>>,

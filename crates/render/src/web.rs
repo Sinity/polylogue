@@ -87,50 +87,7 @@ fn follow(call: &ReadyCall, label: &str, next: bool) -> Markup {
         Err(_) => html! { span class="view-state" { (label) ": " code { (&call.cli) } } },
     }
 }
-/// Encode the operation's complete HTTP form; no cursor parsing, target
-/// selection or option defaults occur here. Complex fields use JSON.
-pub fn http_url(call: &HttpCall) -> Result<String, Failure> {
-    if call.method != "GET"
-        || !call.path.starts_with('/')
-        || call.path.starts_with("//")
-        || call.path.contains(['?', '#'])
-        || !crate::html::safe_url(&call.path)
-    {
-        return Err(Failure::new(
-            FailureKind::BadRequest,
-            "read navigation requires a local GET operation",
-        ));
-    }
-    let fields = call.arguments.as_object().ok_or_else(|| {
-        Failure::new(
-            FailureKind::BadRequest,
-            "read HTTP arguments must be an object",
-        )
-    })?;
-    let mut url = call.path.clone();
-    let mut first = true;
-    for (name, value) in fields {
-        if value.is_null() {
-            continue;
-        }
-        let values = match value {
-            Value::Array(values) => values.as_slice(),
-            _ => std::slice::from_ref(value),
-        };
-        for value in values {
-            let value = match value {
-                Value::String(value) => value.clone(),
-                _ => value.to_string(),
-            };
-            url.push(if first { '?' } else { '&' });
-            first = false;
-            url.push_str(&crate::html::encode_path_segment(name));
-            url.push('=');
-            url.push_str(&crate::html::encode_path_segment(&value));
-        }
-    }
-    Ok(url)
-}
+pub use crate::ready::http_url;
 fn currency(currency: &IndexCurrency) -> Markup {
     html! { @match currency {
         IndexCurrency::Standalone=>{span data-mode="standalone" {"Standalone archive"}},

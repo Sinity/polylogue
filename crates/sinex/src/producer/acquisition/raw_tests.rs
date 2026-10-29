@@ -417,7 +417,7 @@ fn an_explicit_tail_anchor_pins_its_branch_and_never_chooses_a_fork_by_queue_ord
             &generation,
             "left",
             &[RawRange { start: 1, end: 2 }],
-            basis(&generation.stream().source, None),
+            basis(&generation.stream().source, Some(start.clone())),
             Some(start.clone()),
         ),
     );
@@ -429,7 +429,7 @@ fn an_explicit_tail_anchor_pins_its_branch_and_never_chooses_a_fork_by_queue_ord
             &generation,
             "right",
             &[RawRange { start: 1, end: 2 }],
-            basis(&generation.stream().source, None),
+            basis(&generation.stream().source, Some(start.clone())),
             Some(start.clone()),
         ),
     );
@@ -441,7 +441,7 @@ fn an_explicit_tail_anchor_pins_its_branch_and_never_chooses_a_fork_by_queue_ord
             &generation,
             "end",
             &[RawRange { start: 2, end: 3 }],
-            basis(&generation.stream().source, None),
+            basis(&generation.stream().source, Some(left.clone())),
             Some(left.clone()),
         ),
     );
@@ -458,10 +458,7 @@ fn an_explicit_tail_anchor_pins_its_branch_and_never_chooses_a_fork_by_queue_ord
     assert_eq!(cursor.root_body(), start);
     assert_eq!(cursor.last_body(), end);
     assert!(cursor.is_complete_stream());
-    assert_eq!(
-        cursor.disposition(),
-        Some(CaptureDisposition::UnresolvedBasisConflict)
-    );
+    assert_eq!(cursor.disposition(), Some(CaptureDisposition::Prepared));
     drop(sinex);
     assert_eq!(
         client(root.path())
