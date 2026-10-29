@@ -1,11 +1,10 @@
-use super::*;
 use crate::{Archive, Change, ReadPool, Writer};
 
 #[test]
 fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
-    let mut writer = Writer::start(&archive).unwrap();
+    let writer = Writer::start(&archive).unwrap();
     let mut batch = crate::fixture::writer::step(
         "native-checkpoint",
         "claude-code",
