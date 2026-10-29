@@ -77,7 +77,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
         &reader,
         &ask,
         "d1",
-        &fixture_clock(Timestamp::from_unix_ms(0).unwrap()),
+        &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
         None,
         &dir.path().join("check-history.sqlite"),
     )
@@ -291,7 +291,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         &reader,
         &ask,
         "d1",
-        &fixture_clock(now),
+        &fixture_context(now),
         None,
         &dir.path().join("history.db"),
     )
@@ -398,7 +398,7 @@ fn recall_pages_continue_by_cursor() {
             &reader,
             &ask,
             "d",
-            &fixture_clock(now),
+            &fixture_context(now),
             None,
             &dir.path().join("check-history.sqlite"),
         )
@@ -429,7 +429,7 @@ fn recall_pages_continue_by_cursor() {
             &reader,
             &ask,
             "d",
-            &fixture_clock(now),
+            &fixture_context(now),
             None,
             &dir.path().join("check-history.sqlite")
         )
@@ -437,13 +437,21 @@ fn recall_pages_continue_by_cursor() {
     );
 }
 
-fn fixture_clock(now: Timestamp) -> query_language::time::Clock {
-    query_language::time::Clock::new(
-        now.into(),
-        query_language::time::DaySetting::new(
-            jiff::tz::TimeZone::UTC,
-            jiff::civil::Time::constant(4, 0, 0, 0),
-        )
-        .unwrap(),
+fn fixture_context(now: Timestamp) -> std::sync::Arc<crate::operation::Context> {
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(4, 0, 0, 0),
     )
+    .unwrap();
+    std::sync::Arc::new(crate::operation::Context::standalone(
+        crate::operation::Invocation::new(
+            now,
+            "synthetic-briefing".into(),
+            polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
+        ),
+        day,
+    ))
 }

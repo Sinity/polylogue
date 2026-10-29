@@ -289,7 +289,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
         let mut socket =
             std::os::unix::net::UnixStream::connect(w.daemon.archive.socket()).unwrap();
         socket
-            .set_read_timeout(Some(Duration::from_secs(30)))
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
             .unwrap();
         serde_json::to_writer(
             &mut socket,
