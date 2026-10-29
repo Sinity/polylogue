@@ -23,9 +23,9 @@ const ASKED: &[(&str, &[&str])] = &[
         &["sessions where ori | count", "--position", "18"],
     ),
     ("list", &[]),
-    ("read", &["claude-code:s1"]),
+    ("read", &["session:claude-code:s1"]),
     ("outline", &["claude-code:s1"]),
-    ("read", &["claude-code:missing"]),
+    ("read", &["session:claude-code:missing"]),
     ("attachment", &["claude-code:missing", "0"]),
     ("note list", &[]),
     ("note read", &["missing"]),
@@ -151,6 +151,35 @@ fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answ
     }
 }
 
+// A full read records its own Run. Observe each invocation's descriptor from a
+// fresh native reader before making the call, releasing it before transport I/O.
+fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition {
+    w.daemon.reads.reader().unwrap().change_position().unwrap()
+}
+
+fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition) {
+    let value = answer.as_ref().expect("canonical session read succeeds");
+    let page: polylogue_model::read::ReadPage = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        &page.snapshot.read_at, position,
+        "the page must report the independently observed native descriptor"
+    );
+    assert!(
+        page.document.footer.next.is_none(),
+        "small full-read fixture fits one page"
+    );
+    let body = page
+        .document
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            polylogue_model::read::ItemKind::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert_eq!(body, "look at the parser");
+}
+
 #[test]
 fn every_client_answers_the_same_request_identically() {
     let offered: Vec<&str> = COMMANDS
@@ -185,9 +214,25 @@ fn every_client_answers_the_same_request_identically() {
         }
         argv.extend(*args);
         let (c, values) = crate::cli::parse(&argv).unwrap();
+        let cli_position = (*name == "read").then(|| read_position(&w));
         let cli = cli_answer(&w, &argv);
+        let mcp_position = (*name == "read").then(|| read_position(&w));
         let mcp = mcp_answer(&w, c, &values);
+        let http_position = (*name == "read").then(|| read_position(&w));
         let http = http_answer(&web, c, &values);
+        if *name == "read" && args.first() == Some(&"session:claude-code:s1") {
+            assert_read_page(&cli, cli_position.as_ref().unwrap());
+            assert_read_page(&mcp, mcp_position.as_ref().unwrap());
+            assert_read_page(&http, http_position.as_ref().unwrap());
+            // Keep the complete raw answer. Only its expected per-invocation
+            // descriptor differs, and that value was observed outside the answer.
+            let mut expected = cli.as_ref().unwrap().clone();
+            expected["snapshot"]["read_at"] = serde_json::to_value(mcp_position.unwrap()).unwrap();
+            assert_eq!(Ok(expected.clone()), mcp, "whole MCP read answer");
+            expected["snapshot"]["read_at"] = serde_json::to_value(http_position.unwrap()).unwrap();
+            assert_eq!(Ok(expected), http, "whole HTTP read answer");
+            continue;
+        }
         assert_eq!(
             cli,
             mcp,
