@@ -178,7 +178,6 @@ pub struct Paths {
     pub home: PathBuf,
     pub config: PathBuf,
     pub data: PathBuf,
-    pub state: PathBuf,
     pub cache: PathBuf,
     pub runtime: PathBuf,
     pub check_history: PathBuf,
@@ -214,7 +213,6 @@ impl Paths {
             home,
             config,
             data,
-            state,
             cache,
             runtime,
         })
@@ -645,7 +643,6 @@ impl Config {
             cache: engine.home.join(".cache"),
             runtime: state.join("runtime"),
             check_history: state.join("devkit/history.sqlite"),
-            state,
         };
         Arc::new(Self {
             paths,

@@ -165,9 +165,6 @@ impl Context {
             owner: self.owner.clone(),
         }
     }
-    pub fn owner(&self) -> &Owner {
-        &self.owner
-    }
     /// Callers authenticate the cursor and compare these versions before replay.
     pub fn cursor_versions(&self) -> BTreeMap<String, String> {
         let owner = match &self.owner {

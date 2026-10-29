@@ -5,22 +5,9 @@ use query_language::{
     catalog::{Catalog, OutputSource, SourceOutput},
     complete::{Completion, CompletionKind},
 };
-use std::path::{Path, PathBuf};
+use std::path::Path;
 pub mod publisher;
 
-pub fn path(root: &Path) -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".cache")
-        });
-    base.join("polylogue")
-        .join(crate::runtime_dir::archive_key(root))
-        .join("catalog")
-}
 pub(super) fn base_catalog() -> Catalog {
     let origins = polylogue_sources::origin::ORIGINS
         .iter()
