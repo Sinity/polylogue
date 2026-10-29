@@ -1,7 +1,6 @@
 //! The archive's runtime directory, `$XDG_RUNTIME_DIR/polylogue/<key>/`:
 //! the web token and port, and the terminal row numbers.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The first 12 hex digits of BLAKE3 over the archive directory's resolved

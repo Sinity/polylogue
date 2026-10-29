@@ -261,6 +261,7 @@ impl Engine {
                     machine: self.config.machine.clone(),
                     host: self.config.host.clone(),
                     path: path.display().to_string(),
+                    path_bytes: path.as_os_str().as_encoded_bytes().to_vec(),
                     facts: None,
                     seen_at_ms: self.config.clock.now().as_millisecond(),
                     import: None,
@@ -271,6 +272,7 @@ impl Engine {
                 blobs: vec![],
                 length: st.stored,
                 parse: Vec::new(),
+                acquisition: None,
                 release: Default::default(),
             };
             self.writer.send(batch)?;
@@ -499,9 +501,44 @@ impl Engine {
     /// Decides what to read for one tracked path.
     fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
         let obs = self.observation(path, Some(now));
+        let restored = if let Some(st) = self.inputs.get(path)
+            && st.parser_state.is_none()
+            && st.parsed_upto > 0
+        {
+            let known = self.reads.reader()?.known_watched_input_at(
+                &self.config.machine,
+                path.as_os_str().as_encoded_bytes(),
+            )?;
+            if let Some(known) = known
+                && known.input_id == st.input_id
+                && known.facts == st.facts
+                && known.stored == st.stored
+                && known.parsed_upto == st.parsed_upto
+            {
+                known
+                    .chain
+                    .map(|chain| {
+                        self.restored_parser_state(
+                            &st.input_id,
+                            chain,
+                            st.parsed_upto,
+                            &st.origin.reading_version(),
+                        )
+                    })
+                    .transpose()?
+                    .flatten()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let st = self.inputs.get_mut(path).expect("tracked input");
         if st.failed == Some(now) {
             return Ok(None);
+        }
+        if st.parser_state.is_none() {
+            st.parser_state = restored;
         }
         let parsed = st.origin.support != Support::Kept;
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
@@ -535,21 +572,12 @@ impl Engine {
         let never_parsed = parsed && !st.parsed;
         let (stored_upto, parse_pos, parser_state, priority) = match &change {
             Change::First | Change::Rewritten => (0, 0, None, Priority::Bulk),
-            Change::Appended { .. } => {
-                let resumable = st.parser_state.is_some()
-                    || st.parsed_upto == 0
-                    || (st.origin.open)(path).is_some_and(|p| p.is_capture_log());
-                if resumable && !never_parsed {
-                    (
-                        st.stored,
-                        st.parsed_upto,
-                        st.parser_state.take(),
-                        Priority::Live,
-                    )
-                } else {
-                    (st.stored, 0, None, Priority::Live)
-                }
-            }
+            Change::Appended { .. } => (
+                st.stored,
+                if never_parsed { 0 } else { st.parsed_upto },
+                st.parser_state.take(),
+                Priority::Live,
+            ),
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
             Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
         };
@@ -574,6 +602,7 @@ impl Engine {
             stored_upto,
             parse_pos,
             storing_started: false,
+            parser_deferred: never_parsed && st.stored > 0,
             parser_state,
             tail: None,
             span: span(st.origin, path, self.config.chunk),
@@ -805,19 +834,33 @@ impl Engine {
         let pool::Bytes::Unloaded {
             chain,
             length,
-            decoded,
+            mut decoded,
         } = plan.source
         else {
             return Ok(true);
         };
-        let stored = match self
+        if !whole(plan.origin, &plan.path) && plan.origin.support == Support::Parsed {
+            let reader = self.reads.reader()?;
+            if let Some(stored) =
+                reader.parser_checkpoint(&plan.input.id, chain, &plan.origin.reading_version())?
+                && stored.reading_version == plan.origin.reading_version()
+                && stored.parsed_upto > 0
+            {
+                plan.parse_pos = stored.parsed_upto;
+                plan.replace = false;
+                plan.parser_state = self.restored_parser_state(
+                    &plan.input.id,
+                    chain,
+                    stored.parsed_upto,
+                    &stored.reading_version,
+                )?;
+                decoded = false;
+            }
+        }
+        let stored = self
             .reads
             .reader()?
-            .stored_chain(&plan.input.id, chain, length)
-        {
-            Ok(stored) => stored,
-            Err(error) => return Err(error.into()),
-        };
+            .stored_chain(&plan.input.id, chain, length)?;
         plan.source = if decoded {
             pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
                 stored,
@@ -989,7 +1032,7 @@ impl Engine {
                 if plan.tracked {
                     let known = self.reads.reader()?.known_watched_input_at(
                         &self.config.machine,
-                        &plan.path.to_string_lossy(),
+                        plan.path.as_os_str().as_encoded_bytes(),
                     )?;
                     if let Some(state) = self.inputs.get_mut(&plan.path) {
                         state.facts = known.as_ref().and_then(|known| known.facts);
@@ -1006,6 +1049,12 @@ impl Engine {
                 continue;
             }
             pass.bytes_stored += d.stored;
+            if d.continuation_missing && !plan.parser_deferred {
+                pass.errors.push(format!(
+                    "parser continuation unavailable at {}:{}; captured bytes retained",
+                    plan.input.id, plan.parse_pos
+                ));
+            }
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
             }
@@ -1031,7 +1080,7 @@ impl Engine {
 
     /// Records what a finished plan leaves for the next pass. Parser state
     /// is kept in memory only for files written recently; an older file's
-    /// state is rebuilt by parsing it again if it ever grows.
+    /// state is restored from its admitted checkpoint if it grows.
     pub(crate) fn finish_plan(&mut self, plan: Plan) {
         if let Change::Reparse { chain } = plan.change
             && let Some(st) = self.inputs.get_mut(&plan.path)
@@ -1081,7 +1130,7 @@ impl Engine {
             });
             st.facts = plan.facts;
             st.parsed_upto = plan.parse_pos.min(plan.size);
-            st.parsed = true;
+            st.parsed = !plan.parser_deferred || st.parsed;
             st.waiting = plan.waiting;
             st.parser_state = if recent { plan.parser_state } else { None };
             st.tail = plan.tail;

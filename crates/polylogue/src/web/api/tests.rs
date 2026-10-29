@@ -20,7 +20,7 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
     fn failed(
         _: &Request,
         _: &Daemon,
-        _: &polylogue_model::authorship::Authorship,
+        _: &std::sync::Arc<crate::operation::Context>,
         _: &mut dyn Write,
     ) -> Option<Result<(), Response>> {
         Some(Err(error("bad_request", "invalid selection")))
@@ -35,6 +35,7 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
                 &web(&daemon),
                 Request::Changes { since: None },
                 failed,
+                None,
                 None,
             )
             .await;
@@ -53,11 +54,23 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
     fn failed(
         _: &Request,
         _: &Daemon,
-        authorship: &polylogue_model::authorship::Authorship,
+        authorship: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
     ) -> Option<Result<(), Response>> {
-        assert_eq!(authorship.author, polylogue_model::Author::Operator);
-        assert_eq!(authorship.via, polylogue_model::authorship::Channel::Web);
+        assert_eq!(
+            authorship.authorship.author,
+            polylogue_model::Author::Operator
+        );
+        assert_eq!(
+            authorship.authorship.via,
+            polylogue_model::authorship::Channel::Web
+        );
+        let accepted = authorship
+            .accepted_request()
+            .expect("canonical accepted request");
+        assert_eq!(accepted.request_id, "http-accepted-stream");
+        assert_eq!(accepted.deadline, command_surface::Deadline::None);
+        assert_eq!(accepted.arguments["uncapped"], true);
         crate::protocol::stream::event(
             output,
             "begin",
@@ -77,6 +90,12 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
                 Request::Changes { since: None },
                 failed,
                 None,
+                Some(command_surface::Request {
+                    operation: "changes".into(),
+                    arguments: serde_json::json!({"uncapped":true}),
+                    request_id: "http-accepted-stream".into(),
+                    deadline: command_surface::Deadline::None,
+                }),
             )
             .await;
             assert_eq!(response.status(), StatusCode::OK);
@@ -102,7 +121,7 @@ fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() 
     fn large(
         _: &Request,
         _: &Daemon,
-        _: &polylogue_model::authorship::Authorship,
+        _: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
     ) -> Option<Result<(), Response>> {
         let result = (|| {
@@ -121,7 +140,13 @@ fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() 
         .block_on(async {
             let response = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                stream(&web(&daemon), Request::Changes { since: None }, large, None),
+                stream(
+                    &web(&daemon),
+                    Request::Changes { since: None },
+                    large,
+                    None,
+                    None,
+                ),
             )
             .await
             .unwrap();
@@ -235,5 +260,70 @@ fn read_html_negotiates_on_the_same_typed_operation_route() {
             let text = String::from_utf8(bytes.to_vec()).unwrap();
             assert!(text.contains("HTML same operation witness"), "{text}");
             assert!(text.contains("&lt;script&gt;"), "{text}");
+        });
+}
+
+#[test]
+fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() {
+    fn reset_after_begin(
+        _: &Request,
+        daemon: &Daemon,
+        _: &std::sync::Arc<crate::operation::Context>,
+        output: &mut dyn Write,
+    ) -> Option<Result<(), Response>> {
+        let reader = match daemon.reads.reader() {
+            Ok(reader) => reader,
+            Err(error) => return Some(Err(crate::daemon::service::store_error(&error))),
+        };
+        let result = (|| {
+            crate::protocol::stream::event(
+                output,
+                "begin",
+                &serde_json::json!({"generation":reader.change_position()?.to_string()}),
+            )?;
+            daemon.archive.advance_generation_for_test()?;
+            crate::protocol::stream::event(
+                output,
+                "record",
+                &serde_json::json!({"stale":"must not escape"}),
+            )?;
+            crate::protocol::stream::event(output, "complete", &serde_json::json!({}))?;
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })();
+        Some(result.map_err(|error| crate::daemon::service::error("io", error)))
+    }
+    let daemon = crate::test_daemon::start("native generation stream witness");
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let response = stream(
+                &web(&daemon),
+                Request::Changes { since: None },
+                reset_after_begin,
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let events = command_surface::SseDecoder::new().push(&bytes).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|event| event.event.as_str())
+                    .collect::<Vec<_>>(),
+                ["begin", "error"]
+            );
+            let answer: command_surface::Answer<serde_json::Value> =
+                serde_json::from_str(&events[1].data).unwrap();
+            let command_surface::Answer::Error { error, .. } = answer else {
+                panic!("stale stream was successful")
+            };
+            assert_eq!(error.code.as_deref(), Some("scope_changed"));
+            assert_eq!(error.kind, command_surface::FailureKind::Conflict);
         });
 }

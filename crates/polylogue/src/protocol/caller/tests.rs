@@ -18,7 +18,13 @@ fn nearest_harness_ancestor_selects_the_identity_that_actually_launched_the_clie
         (17, Origin::new("codex").unwrap()),
         (12, Origin::new("claude-code").unwrap()),
     ];
-    let caller = select(&env, &ancestors, true, Some("shell.scope".into()));
+    let caller = select(
+        "synthetic-machine",
+        &env,
+        &ancestors,
+        true,
+        Some("shell.scope".into()),
+    );
     assert_eq!(caller.session.unwrap().to_string(), "codex:inner");
     assert_eq!(caller.harness_pid, Some(17));
     assert_eq!(caller.tool_call_id.as_deref(), Some("call-one"));
@@ -27,6 +33,7 @@ fn nearest_harness_ancestor_selects_the_identity_that_actually_launched_the_clie
 #[test]
 fn known_harness_without_session_remains_an_agent_identity() {
     let caller = select(
+        "synthetic-machine",
         &BTreeMap::new(),
         &[(17, Origin::new("gemini-cli").unwrap())],
         true,
@@ -77,11 +84,33 @@ fn conflicting_environment_identities_without_a_harness_ancestor_stay_unattribut
         ("CLAUDE_CODE_SESSION_ID", "one"),
         ("CODEX_THREAD_ID", "two"),
     ]);
-    let caller = select(&env, &[], true, Some("shell.scope".into()));
+    let caller = select(
+        "synthetic-machine",
+        &env,
+        &[],
+        true,
+        Some("shell.scope".into()),
+    );
     assert!(caller.controlling_terminal);
     assert!(caller.ambiguous_harness);
     assert_eq!(
         polylogue_model::authorship::compute_authorship(Channel::Cli, &caller, None).author,
         polylogue_model::Author::Unattributed
     );
+}
+
+#[test]
+fn concurrent_request_identity_distinguishes_the_accepting_channel() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = hooks::Registry::new(directory.path().to_owned());
+    let evidence = CallerEvidence {
+        controlling_terminal: true,
+        ..Default::default()
+    };
+    let cli = accept(&registry, &evidence, Channel::Cli, Default::default());
+    let web = accept(&registry, &evidence, Channel::Web, Default::default());
+    assert_eq!(cli.authorship.author, web.authorship.author);
+    assert_ne!(cli.scope(), web.scope());
+    let repeated_cli = accept(&registry, &evidence, Channel::Cli, Default::default());
+    assert_eq!(cli.scope(), repeated_cli.scope());
 }

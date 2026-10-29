@@ -1,11 +1,11 @@
-//! Containers are completely decoded and checked into private scratch files
+//! Containers are completely decoded and checked into private encoded files
 //! before the first archive write. Payload memory is bounded by stream buffers.
 use super::*;
 use std::io::{Read, Seek};
 
 pub(super) struct Member {
     pub path: PathBuf,
-    pub bytes: tempfile::TempPath,
+    pub bytes: polylogue_store::staging::PreparedBytes,
     pub container: bool,
     pub origin: Option<&'static OriginSpec>,
     pub parent: Option<(usize, u64)>,
@@ -15,11 +15,11 @@ pub(super) struct Member {
 
 pub(super) fn stage(
     path: &Path,
-    scratch: &Path,
+    archive: &Archive,
     format: Option<&str>,
 ) -> std::io::Result<Vec<Member>> {
     if path.is_dir()
-        && let Some(members) = super::legacy::stage(path, scratch)?
+        && let Some(members) = super::legacy::stage(path, archive)?
     {
         return Ok(members);
     }
@@ -30,18 +30,18 @@ pub(super) fn stage(
         for child in paths {
             expand(
                 child.clone(),
-                copy_source(&child, scratch)?,
+                copy_source(&child, archive)?,
                 None,
-                scratch,
+                archive,
                 &mut members,
             )?;
         }
     } else {
         expand(
             path.to_path_buf(),
-            copy_source(path, scratch)?,
+            copy_source(path, archive)?,
             None,
-            scratch,
+            archive,
             &mut members,
         )?;
     }
@@ -50,23 +50,27 @@ pub(super) fn stage(
     Ok(members)
 }
 
-fn copy_source(path: &Path, scratch: &Path) -> std::io::Result<tempfile::TempPath> {
+fn copy_source(
+    path: &Path,
+    archive: &Archive,
+) -> std::io::Result<polylogue_store::staging::PreparedBytes> {
     let mut source = std::fs::File::open(path)?;
     let before = FileFacts::of(&source.metadata()?);
-    let mut copied = tempfile::NamedTempFile::new_in(scratch)?;
-    let len = std::io::copy(&mut source, &mut copied)?;
-    unchanged(&source, before, len)?;
-    Ok(copied.into_temp_path())
+    let copied = archive
+        .prepare_bytes(&mut source)
+        .map_err(std::io::Error::other)?;
+    unchanged(&source, before, copied.len())?;
+    Ok(copied)
 }
 
 fn expand(
     path: PathBuf,
-    bytes: tempfile::TempPath,
+    bytes: polylogue_store::staging::PreparedBytes,
     parent: Option<(usize, u64)>,
-    scratch: &Path,
+    archive: &Archive,
     out: &mut Vec<Member>,
 ) -> std::io::Result<()> {
-    let mut file = std::fs::File::open(&bytes)?;
+    let mut file = bytes.reader().map_err(std::io::Error::other)?;
     let mut magic = [0; 512];
     let n = file.read(&mut magic)?;
     file.rewind()?;
@@ -98,33 +102,26 @@ fn expand(
                 continue;
             }
             let name = member.name_raw().to_vec();
+            let display = member.name().to_owned();
             let expected = member.size();
-            let mut decoded = tempfile::NamedTempFile::new_in(scratch)?;
-            let written = std::io::copy(&mut member, &mut decoded)?;
-            if written != expected {
+            let decoded = archive
+                .prepare_bytes(&mut member)
+                .map_err(std::io::Error::other)?;
+            if decoded.len() != expected {
                 return Err(std::io::Error::other(
                     "container member length differs from declaration",
                 ));
             }
-            decoded.rewind()?;
-            children.push((name, i as u64, decoded.into_temp_path()));
+            children.push((name, i as u64, decoded, Some(display)));
         }
     } else {
-        let mut decoded = tempfile::tempfile_in(scratch)?;
-        if magic[..n].starts_with(&[0x1f, 0x8b]) {
-            std::io::copy(
-                &mut flate2::read::MultiGzDecoder::new(&mut file),
-                &mut decoded,
-            )?;
+        let decoded: Box<dyn Read + '_> = if magic[..n].starts_with(&[0x1f, 0x8b]) {
+            Box::new(flate2::read::MultiGzDecoder::new(&mut file))
         } else if magic[..n].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-            std::io::copy(
-                &mut zstd::stream::read::Decoder::new(&mut file)?,
-                &mut decoded,
-            )?;
+            Box::new(zstd::stream::read::Decoder::new(&mut file)?)
         } else {
-            std::io::copy(&mut file, &mut decoded)?;
-        }
-        decoded.rewind()?;
+            Box::new(&mut file)
+        };
         let mut tar = tar::Archive::new(decoded);
         for (i, entry) in tar.entries()?.enumerate() {
             let mut entry = entry?;
@@ -132,15 +129,20 @@ fn expand(
                 continue;
             }
             let name = entry.path()?.into_owned();
-            let mut member = tempfile::NamedTempFile::new_in(scratch)?;
-            std::io::copy(&mut entry, &mut member)?;
-            member.rewind()?;
+            let member = archive
+                .prepare_bytes(&mut entry)
+                .map_err(std::io::Error::other)?;
             children.push((
                 name.as_os_str().as_encoded_bytes().to_vec(),
                 i as u64,
-                member.into_temp_path(),
+                member,
+                None,
             ));
         }
+        // A tar iterator stops at its end marker before the compression
+        // footer. Drain the decoder so checksum/truncation failures still
+        // refuse the whole package before admission.
+        std::io::copy(&mut tar.into_inner(), &mut std::io::sink())?;
     }
     drop(file);
     out.push(Member {
@@ -161,15 +163,17 @@ fn expand(
     } else {
         "tar"
     };
-    for (name, i, member) in children {
+    for (name, i, member, display) in children {
         let child = out.len();
-        let display = String::from_utf8(name.clone())
-            .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect());
+        let display = display.unwrap_or_else(|| {
+            String::from_utf8(name.clone())
+                .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect())
+        });
         expand(
             PathBuf::from(format!("{}!/{display}", path.display())),
             member,
             Some((index, i)),
-            scratch,
+            archive,
             out,
         )?;
         out[child].container_kind = Some(kind.into());
@@ -195,7 +199,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
     for member in members.iter_mut().filter(|member| !member.container) {
         member.origin = super::recognition::declared(
             &member.path,
-            &mut std::fs::File::open(&member.bytes)?,
+            &mut member.bytes.reader().map_err(std::io::Error::other)?,
             format,
         )?;
         let name = member

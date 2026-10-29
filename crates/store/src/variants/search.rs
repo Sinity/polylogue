@@ -58,15 +58,12 @@ impl Reader<'_> {
             if !heads(conn, &variant.root)?.iter().any(|v| v.id == id) {
                 continue;
             }
-            super::rows::parts(conn, &id, |part| {
-                if i64::try_from(part.n).ok() == Some(n) {
-                    visit(VariantMatch {
-                        variant: variant.clone(),
-                        part,
-                    })?;
-                }
-                Ok(())
+            let n = u64::try_from(n)
+                .map_err(|_| StoreError::Invalid("negative indexed variant part number".into()))?;
+            let part = super::rows::get_part(conn, &id, n)?.ok_or_else(|| {
+                StoreError::Invalid("variant search refers to an absent part".into())
             })?;
+            visit(VariantMatch { variant, part })?;
         }
         Ok(())
     }

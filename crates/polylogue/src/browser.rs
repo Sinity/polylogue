@@ -64,12 +64,19 @@ impl BrowserHost {
     pub fn actions_setting(&self) -> Option<bool> {
         let request = Request::Setting {
             request_id: None,
-            key: "browser.actions".into(),
+            key: Some("browser.actions".into()),
             value: None,
-            machine: false,
+            machine: None,
         };
         match self.ask(&request) {
-            Some(Response::Ok { data, .. }) => Some(data["value"] == "on"),
+            Some(Response::Ok { data, .. }) => {
+                let current: polylogue_model::settings::Current =
+                    serde_json::from_value(data).ok()?;
+                match current.value {
+                    Some(polylogue_model::settings::Value::Boolean(enabled)) => Some(enabled),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }

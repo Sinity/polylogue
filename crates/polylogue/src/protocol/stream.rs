@@ -22,12 +22,12 @@ pub fn error(output: &mut dyn Write, response: &Response) -> io::Result<()> {
 pub fn produce(
     request: &Request,
     daemon: &Daemon,
-    authorship: &polylogue_model::authorship::Authorship,
+    operation: &std::sync::Arc<crate::operation::Context>,
     output: &mut dyn Write,
 ) -> Option<Result<(), Response>> {
     crate::commands::COMMANDS.iter().find_map(|command| {
         if let crate::commands::Action::Stream { produce, .. } = command.action {
-            produce(request, daemon, authorship, output)
+            produce(request, daemon, operation, output)
         } else {
             None
         }
@@ -82,12 +82,12 @@ impl Write for GuardedWriter<'_> {
 pub(crate) fn produce_limited(
     request: &Request,
     daemon: &Daemon,
-    authorship: &polylogue_model::authorship::Authorship,
+    operation: &std::sync::Arc<crate::operation::Context>,
     output: &mut dyn Write,
     limit: &polylogue_store::read::limit::ReadLimit,
 ) -> Option<Result<(), Response>> {
     let mut writer = GuardedWriter::new(output, limit.clone());
-    let result = produce(request, daemon, authorship, &mut writer);
+    let result = produce(request, daemon, operation, &mut writer);
     match writer.failure() {
         Some(failure) => Some(Err(failure)),
         None => result,

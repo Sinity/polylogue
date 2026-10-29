@@ -26,6 +26,15 @@ pub struct Accepted {
     pub authorship: Authorship,
     pub cancellation: polylogue_store::read::limit::ReadCancellation,
     pub working_directory: Option<PathBuf>,
+    pub invocation: Option<crate::operation::Invocation>,
+    pub admitted_request: Option<crate::daemon::Request>,
+}
+
+impl Accepted {
+    /// Coalescing must use the same actor and channel as durable request identity.
+    pub fn scope(&self) -> String {
+        serde_json::to_string(&self.authorship).expect("computed authorship serializes")
+    }
 }
 
 pub fn accept(
@@ -39,6 +48,8 @@ pub fn accept(
         authorship: polylogue_model::authorship::compute_authorship(via, evidence, hook.as_ref()),
         cancellation,
         working_directory: None,
+        invocation: None,
+        admitted_request: None,
     }
 }
 
@@ -47,6 +58,7 @@ pub fn accept(
 pub fn peer(
     stream: &std::os::unix::net::UnixStream,
     supplied: &CallerEvidence,
+    machine: &str,
 ) -> std::io::Result<(CallerEvidence, Channel)> {
     let credentials = rustix::net::sockopt::socket_peercred(stream)?;
     let root = PathBuf::from(format!("/proc/{}", credentials.pid.as_raw_pid()));
@@ -74,7 +86,7 @@ pub fn peer(
     let unit = std::fs::read_to_string(root.join("cgroup"))
         .ok()
         .and_then(|value| unit(&value));
-    let mut evidence = select(&environment, &ancestors(parent), terminal, unit);
+    let mut evidence = select(machine, &environment, &ancestors(parent), terminal, unit);
     let arguments = std::fs::read(root.join("cmdline"))?;
     let words = arguments
         .split(|byte| *byte == 0)
@@ -103,14 +115,14 @@ struct Identity {
 
 static CALLER: std::sync::OnceLock<CallerEvidence> = std::sync::OnceLock::new();
 
-pub fn initialize(environment: &crate::config::EnvSnapshot) {
-    let _ = CALLER.set(capture(environment));
+pub fn initialize(environment: &crate::config::EnvSnapshot, machine: &str) {
+    let _ = CALLER.set(capture(environment, machine));
 }
 pub fn evidence() -> CallerEvidence {
     CALLER.get().cloned().unwrap_or_default()
 }
 
-fn capture(snapshot: &crate::config::EnvSnapshot) -> CallerEvidence {
+fn capture(snapshot: &crate::config::EnvSnapshot, machine: &str) -> CallerEvidence {
     let environment = ENVIRONMENT
         .into_iter()
         .filter_map(|name| {
@@ -127,7 +139,7 @@ fn capture(snapshot: &crate::config::EnvSnapshot) -> CallerEvidence {
         .read(true)
         .open("/dev/tty")
         .is_ok();
-    select(&environment, &ancestors, terminal, unit)
+    select(machine, &environment, &ancestors, terminal, unit)
 }
 
 fn channel(words: &[&str]) -> Channel {
@@ -166,6 +178,7 @@ fn channel(words: &[&str]) -> Channel {
 }
 
 fn select(
+    machine: &str,
     environment: &BTreeMap<String, OsString>,
     ancestors: &[(u32, Origin)],
     terminal: bool,
@@ -218,11 +231,7 @@ fn select(
                             .get("HOME")
                             .map(|home| Path::new(home).join(".hermes/state.db"))
                     })?;
-                polylogue_sources::hermes::session_at(
-                    &polylogue_store::user_writes::machine_id(),
-                    &state,
-                    native,
-                )
+                polylogue_sources::hermes::session_at(machine, &state, native)
             } else {
                 SessionId::parse(&format!("{origin}:{native}")).ok()
             }

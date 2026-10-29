@@ -9,6 +9,7 @@
 
 mod admission;
 pub mod archive;
+pub mod assertions;
 pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
@@ -39,6 +40,7 @@ pub mod primary;
 pub mod query;
 pub mod query_objects;
 pub mod read;
+pub mod reference;
 mod repo_lookup;
 pub mod schema;
 pub mod schema_inputs;
@@ -129,6 +131,11 @@ pub enum StoreError {
     ReadIndexReplaced,
     #[error("request {0} was already used for different content")]
     Conflict(String),
+    #[error("{reference} is stale; current revisions: {current:?}")]
+    Stale {
+        reference: String,
+        current: Vec<String>,
+    },
     #[error("{reference} is ambiguous: {candidates:?}")]
     Ambiguous {
         reference: String,
@@ -149,6 +156,8 @@ pub enum StoreError {
     Sinex(String),
     #[error("{0}")]
     Invalid(String),
+    #[error("text of {reference} is unavailable: {reason}")]
+    ReferenceUnavailable { reference: String, reason: String },
 }
 
 impl From<rusqlite::Error> for StoreError {

@@ -219,7 +219,7 @@ fn hook_emission_claim_requires_an_exact_typed_receipt_and_never_trusts_a_payloa
         let step = run(
             &HookSpool,
             &mut ParserState::default(),
-            &lines(&[value.clone()]),
+            &lines(std::slice::from_ref(&value)),
             0,
         )
         .unwrap();

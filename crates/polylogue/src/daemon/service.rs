@@ -5,10 +5,11 @@ mod status;
 
 use super::{Request, Response};
 use crate::briefing::{self, Ask};
+use crate::operation::{Context, Invocation};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
 use polylogue_model::user::{Delivery, UserWrite};
-use polylogue_model::{Author, NewNote, NoteKind};
-use polylogue_store::user_writes::{self as user_writes, machine_id};
+use polylogue_model::{NewNote, NoteKind};
+use polylogue_store::user_writes;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,7 +27,6 @@ pub struct Daemon {
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
-    feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
@@ -53,7 +53,12 @@ impl Daemon {
         &self,
         authorship: &polylogue_model::authorship::Authorship,
     ) -> Result<Arc<crate::operation::Context>, Response> {
-        let invocation = self.invocation(authorship);
+        self.resolve_operation_context(self.invocation(authorship))
+    }
+    pub(crate) fn resolve_operation_context(
+        &self,
+        invocation: crate::operation::Invocation,
+    ) -> Result<Arc<crate::operation::Context>, Response> {
         let context = match &self.mode {
             ModeState::Standalone => crate::operation::Context::standalone(
                 invocation,
@@ -220,13 +225,19 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
 /// Prepares context and, when a sender is named, records it as a delivery
 /// before handing it out: prepared is recorded first, delivered is a
 /// separate event the client reports.
-fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) -> Response {
+fn context(
+    d: &Daemon,
+    request_id: String,
+    ask: &Ask,
+    sender: Option<String>,
+    operation: &Arc<Context>,
+) -> Response {
     let prepared = {
         let reader = match d.reads.reader() {
             Ok(r) => r,
             Err(e) => return store_error(&e),
         };
-        let settings = match reader.settings_snapshot(d.config.requests.machine()) {
+        let settings = match reader.settings_snapshot(&operation.machine) {
             Ok(settings) => settings,
             Err(error) => return store_error(&error),
         };
@@ -239,15 +250,11 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        let clock = match d.query_clock() {
-            Ok(clock) => clock,
-            Err(response) => return response,
-        };
         let result = briefing::prepare(
             &reader,
             ask,
             &request_id,
-            &clock,
+            operation,
             near,
             &d.config.paths.check_history,
         );
@@ -296,7 +303,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         {
             return store_error(&error);
         }
-        let result = writes.user(polylogue_store::user_writes::request_now(request_id, write));
+        let result = writes.user(operation.request(request_id, write));
         match result {
             Ok(out) => {
                 pending = out.pending;
@@ -313,12 +320,12 @@ fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
     d.writes.as_ref().ok_or_else(|| d.mode.write_refusal())
 }
 
-fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
+fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) -> Response {
     let writes = match writer(d) {
         Ok(writes) => writes,
         Err(response) => return response,
     };
-    match writes.user(polylogue_store::user_writes::request_now(request_id, w)) {
+    match writes.user(invocation.request(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
     }
@@ -345,9 +352,16 @@ fn repeated_request(
     reader: &polylogue_store::Reader<'_>,
     id: &str,
     intended: &UserWrite,
+    invocation: &Invocation,
 ) -> Result<Option<UserWrite>, Response> {
     match reader.user_request(id).map_err(|e| store_error(&e))? {
-        Some(previous) if intended.intent() == previous.write.intent() => Ok(Some(previous.write)),
+        Some(previous)
+            if previous.machine == invocation.machine
+                && previous.authorship == invocation.authorship
+                && intended.intent() == previous.write.intent() =>
+        {
+            Ok(Some(previous.write))
+        }
         Some(_) => Err(store_error(&StoreError::Conflict(id.into()))),
         None => Ok(None),
     }
@@ -357,7 +371,7 @@ fn repeated_request(
 pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     if d.stopping.load(Ordering::Acquire) {
         return Err(error(
-            "daemon_stopping",
+            "shutting_down",
             "the daemon has stopped accepting requests",
         ));
     }
@@ -368,14 +382,14 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
-    _authorship: &polylogue_model::authorship::Authorship,
+    operation: &Arc<crate::operation::Context>,
     output: &mut dyn std::io::Write,
 ) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {
         return None;
     };
     Some(accepting(d).and_then(|()| {
-        let mut file = d.feeds.read(d, since.as_deref())?;
+        let mut file = feeds::read(d, since.as_deref(), operation)?;
         std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
         Ok(())
     }))
@@ -407,6 +421,15 @@ pub fn handle_with_caller(
     limit: &polylogue_store::read::limit::ReadLimit,
     authorship: &polylogue_model::authorship::Authorship,
 ) -> Response {
+    handle_with_invocation(request, d, limit, &d.invocation(authorship))
+}
+
+pub(crate) fn handle_with_invocation(
+    request: Request,
+    d: &Daemon,
+    limit: &polylogue_store::read::limit::ReadLimit,
+    invocation: &crate::operation::Invocation,
+) -> Response {
     #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(crate::test_daemon::ReadObservation {
@@ -415,14 +438,14 @@ pub fn handle_with_caller(
         });
     }
     super::execution::run(request, limit, |request| {
-        handle_inner(request, d, authorship)
+        handle_inner(request, d, invocation)
     })
 }
 
 fn handle_inner(
     request: Request,
     d: &Daemon,
-    authorship: &polylogue_model::authorship::Authorship,
+    invocation: &crate::operation::Invocation,
 ) -> Response {
     if let Err(response) = accepting(d) {
         return response;
@@ -462,22 +485,24 @@ fn handle_inner(
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
-            return error("daemon_stopping", StoreError::ReadPoolClosed);
+            return error("shutting_down", StoreError::ReadPoolClosed);
         }
         Err(e) => return store_error(&e),
     };
-    let clock = if matches!(
+    let operation = if matches!(
         &request,
         Request::Query { .. }
             | Request::Timeline { .. }
             | Request::Cost { .. }
-            | Request::Keep { .. }
             | Request::Watch { .. }
             | Request::Embed { .. }
+            | Request::Read { .. }
+            | Request::Context { .. }
+            | Request::Resumable { .. }
     ) || matches!(&request, Request::Explain { subject, .. } if subject == "query")
     {
-        Some(match d.query_clock() {
-            Ok(clock) => clock,
+        Some(match d.resolve_operation_context(invocation.clone()) {
+            Ok(operation) => operation,
             Err(response) => return response,
         })
     } else {
@@ -498,7 +523,7 @@ fn handle_inner(
         | Request::BackfillClaim { .. }
         | Request::BackfillReport { .. }
         | Request::Conversations { .. }
-        | Request::StoredFiles { .. } => browser::handle(request, d, reader),
+        | Request::StoredFiles { .. } => browser::handle(request, d, reader, invocation),
         Request::Changes { .. } => error(
             "stream_required",
             "the change feed uses the finite socket stream",
@@ -530,9 +555,9 @@ fn handle_inner(
                             page_size: None,
                             why: false,
                             session,
-                            clock: clock
+                            context: operation
                                 .as_ref()
-                                .expect("query operations resolve a clock")
+                                .expect("evaluated operation context")
                                 .clone(),
                             embeddings,
                             near: None,
@@ -574,7 +599,7 @@ fn handle_inner(
                     cursor: cursor.as_deref(),
                     page_size,
                 },
-                clock.as_ref().expect("calendar operations resolve a clock"),
+                operation.as_ref().expect("calendar operation context"),
             ) {
                 Ok(data) => ok(data),
                 Err(f) => Response::Error {
@@ -608,7 +633,7 @@ fn handle_inner(
                     cursor: cursor.as_deref(),
                     page_size,
                 },
-                clock.as_ref().expect("calendar operations resolve a clock"),
+                operation.as_ref().expect("calendar operation context"),
             ) {
                 Ok(data) => ok(data),
                 Err(f) => Response::Error {
@@ -626,44 +651,30 @@ fn handle_inner(
             why,
             session,
             fields,
-        } => {
-            let position = match reader.change_position() {
-                Ok(p) => format!("{p}:{}", polylogue_store::vectors::writes()),
-                Err(e) => return store_error(&e),
+        } => super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
+            let ask = super::query::Ask {
+                text: &text,
+                cursor: cursor.as_deref(),
+                page_size,
+                why,
+                session,
+                context: operation
+                    .as_ref()
+                    .expect("evaluated operation context")
+                    .clone(),
+                embeddings,
+                near: Some(near),
+                fields: &fields,
             };
-            let key =
-                serde_json::json!([text, cursor, page_size, why, session, fields]).to_string();
-            if let Some(data) = d.warm.answer(&key, &position) {
-                return query_answer(d, &reader, data);
+            match super::query::run(&reader, ask) {
+                Ok(data) => query_answer(d, &reader, data),
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
             }
-            super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
-                let ask = super::query::Ask {
-                    text: &text,
-                    cursor: cursor.as_deref(),
-                    page_size,
-                    why,
-                    session,
-                    clock: clock
-                        .as_ref()
-                        .expect("query operations resolve a clock")
-                        .clone(),
-                    embeddings,
-                    near: Some(near),
-                    fields: &fields,
-                };
-                match super::query::run(&reader, ask) {
-                    Ok(data) => {
-                        d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                        query_answer(d, &reader, data)
-                    }
-                    Err(f) => Response::Error {
-                        kind: f.kind,
-                        message: f.message,
-                        detail: f.detail,
-                    },
-                }
-            })
-        }
+        }),
         Request::Complete { .. } => {
             unreachable!("completion is handled before opening an archive reader")
         }
@@ -690,7 +701,12 @@ fn handle_inner(
             page_size,
             cursor.as_deref(),
         ),
-        request @ Request::Read { .. } => read::page(&reader, d, &request, authorship),
+        request @ Request::Read { .. } => read::page(
+            &reader,
+            d,
+            &request,
+            operation.as_ref().expect("read operation context"),
+        ),
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -700,7 +716,7 @@ fn handle_inner(
                 .map(|tx| {
                     tx.send(LoopMsg::Import {
                         paths,
-                        authorship: authorship.clone(),
+                        authorship: invocation.authorship.clone(),
                         reply,
                     })
                     .is_ok()
@@ -738,7 +754,7 @@ fn handle_inner(
                 crate::embeddings::Context {
                     settings: &settings,
                     credentials: &d.config.embedding_credentials,
-                    clock: clock.as_ref().expect("embedding query clock"),
+                    operation: operation.as_ref().expect("embedding operation context"),
                 },
             )
         }
@@ -754,14 +770,18 @@ fn handle_inner(
                 rows_json: String::new(),
                 read_at: String::new(),
             };
-            match repeated_request(&reader, &request_id, &intended) {
+            match repeated_request(&reader, &request_id, &intended, invocation) {
                 Ok(Some(previous)) => {
                     drop(reader);
-                    return write(d, request_id, previous);
+                    return write(d, invocation, request_id, previous);
                 }
                 Err(response) => return response,
                 Ok(None) => {}
             }
+            let operation = match d.resolve_operation_context(invocation.clone()) {
+                Ok(operation) => operation,
+                Err(response) => return response,
+            };
             let kept =
                 super::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, near| {
                     let ask = super::query::Ask {
@@ -770,10 +790,7 @@ fn handle_inner(
                         page_size: None,
                         why: false,
                         session: None,
-                        clock: clock
-                            .as_ref()
-                            .expect("query operations resolve a clock")
-                            .clone(),
+                        context: operation.clone(),
                         embeddings,
                         near: Some(near),
                         fields: &[],
@@ -794,6 +811,7 @@ fn handle_inner(
             let read_at = serde_json::json!({ "now": kept["now"] }).to_string();
             write(
                 d,
+                invocation,
                 request_id,
                 UserWrite::KeepResult {
                     name,
@@ -807,13 +825,11 @@ fn handle_inner(
             request_id,
             name,
             text,
-            author,
         } => {
             let mut note = NewNote {
                 kind: NoteKind::SavedQuery,
                 key: Some(name.clone()),
                 value: Some(text.clone()),
-                author,
                 targets: vec![],
                 relations: vec![],
                 revises: None,
@@ -823,10 +839,11 @@ fn handle_inner(
                 &reader,
                 &request_id,
                 &UserWrite::SaveQuery { note: note.clone() },
+                invocation,
             ) {
                 Ok(Some(previous)) => {
                     drop(reader);
-                    return write(d, request_id, previous);
+                    return write(d, invocation, request_id, previous);
                 }
                 Err(response) => return response,
                 Ok(None) => {}
@@ -837,7 +854,7 @@ fn handle_inner(
             };
             drop(reader);
             note.revises = revises;
-            write(d, request_id, UserWrite::SaveQuery { note })
+            write(d, invocation, request_id, UserWrite::SaveQuery { note })
         }
         Request::Watch {
             request_id,
@@ -845,7 +862,6 @@ fn handle_inner(
             name,
             hold,
             notify,
-            author,
         } => {
             if let Some(hold) = &hold
                 && crate::signals::duration(hold).is_none()
@@ -862,9 +878,9 @@ fn handle_inner(
                 page_size: Some(1),
                 why: false,
                 session: None,
-                clock: clock
+                context: operation
                     .as_ref()
-                    .expect("query operations resolve a clock")
+                    .expect("evaluated operation context")
                     .clone(),
                 embeddings: false,
                 near: None,
@@ -892,17 +908,16 @@ fn handle_inner(
                 kind: NoteKind::Signal,
                 key: name,
                 value: Some(rule.to_string()),
-                author,
                 targets: vec![],
                 relations: vec![],
                 revises: None,
                 valid_until: None,
             };
-            write(d, request_id, UserWrite::AddNote { note })
+            write(d, invocation, request_id, UserWrite::AddNote { note })
         }
         Request::AddNote { request_id, note } => {
             drop(reader);
-            write(d, request_id, UserWrite::AddNote { note })
+            write(d, invocation, request_id, UserWrite::AddNote { note })
         }
         Request::AnnotateQuery {
             request_id,
@@ -913,10 +928,10 @@ fn handle_inner(
                 query: query.clone(),
                 note: note.clone(),
             };
-            let resolved = match repeated_request(&reader, &request_id, &intended) {
+            let resolved = match repeated_request(&reader, &request_id, &intended, invocation) {
                 Ok(Some(previous)) => previous,
                 Ok(None) => {
-                    note.targets = match query_targets(d, &reader, &query) {
+                    note.targets = match query_targets(d, &reader, &query, invocation) {
                         Ok(targets) => targets,
                         Err(response) => return response,
                     };
@@ -925,7 +940,7 @@ fn handle_inner(
                 Err(response) => return response,
             };
             drop(reader);
-            match write(d, request_id, resolved) {
+            match write(d, invocation, request_id, resolved) {
                 Response::Ok { mut data } => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
@@ -963,7 +978,6 @@ fn handle_inner(
                 kind: polylogue_model::NoteKind::Judgment,
                 key: Some(if accepted { "accepted" } else { "rejected" }.into()),
                 value: reason,
-                author: Author::Operator,
                 targets: vec![polylogue_model::Reference::Assertion(
                     polylogue_model::RevisionReference {
                         root: found.first_note,
@@ -974,23 +988,24 @@ fn handle_inner(
                 revises: None,
                 valid_until: None,
             };
-            write(d, request_id, UserWrite::AddNote { note: judgment })
+            write(
+                d,
+                invocation,
+                request_id,
+                UserWrite::AddNote { note: judgment },
+            )
         }
         Request::Withdraw {
             request_id,
             note,
-            author,
             reason,
         } => {
             drop(reader);
             write(
                 d,
+                invocation,
                 request_id,
-                UserWrite::Withdraw {
-                    note,
-                    author,
-                    reason,
-                },
+                UserWrite::Withdraw { note, reason },
             )
         }
         Request::Context {
@@ -999,7 +1014,13 @@ fn handle_inner(
             sender,
         } => {
             drop(reader);
-            context(d, request_id, &ask, sender)
+            context(
+                d,
+                request_id,
+                &ask,
+                sender,
+                operation.as_ref().expect("briefing operation context"),
+            )
         }
         Request::AdviceDelivered {
             request_id,
@@ -1010,6 +1031,7 @@ fn handle_inner(
             drop(reader);
             write(
                 d,
+                invocation,
                 request_id,
                 UserWrite::DeliveredAdvice(Delivery {
                     recipient_kind: if session.is_some() {
@@ -1036,6 +1058,7 @@ fn handle_inner(
             drop(reader);
             write(
                 d,
+                invocation,
                 user_writes::new_request_id(),
                 UserWrite::DeliveryEvent {
                     delivery,
@@ -1045,10 +1068,14 @@ fn handle_inner(
             )
         }
         Request::Resumable { cwd, limit } => {
-            match d.query_clock().and_then(|clock| {
-                crate::resume::resumable(&reader, &cwd, limit.unwrap_or(10), &clock)
-                    .map_err(|e| store_error(&e))
-            }) {
+            match crate::resume::resumable(
+                &reader,
+                &cwd,
+                limit.unwrap_or(10),
+                operation.as_ref().expect("resumable operation context"),
+            )
+            .map_err(|error| store_error(&error))
+            {
                 Ok(c) => ok(c),
                 Err(e) => e,
             }
@@ -1058,15 +1085,41 @@ fn handle_inner(
             Err(e) => store_error(&e),
         },
         Request::Setting {
-            request_id,
+            request_id: _,
             key,
             value: None,
-            machine: _,
+            machine,
         } => {
-            let _ = request_id;
-            match reader.setting(&key, &machine_id()) {
-                Ok(v) => ok(serde_json::json!({ "key": key, "value": v })),
-                Err(e) => store_error(&e),
+            let selected = machine.as_deref().unwrap_or(&invocation.machine);
+            if let Some(key) = key {
+                if let Err(error) = polylogue_model::settings::target_machine(
+                    &key,
+                    machine.as_deref(),
+                    &invocation.machine,
+                ) {
+                    return self::error("bad_value", error);
+                }
+                match reader.setting_current(&key, selected) {
+                    Ok(current) => ok(current),
+                    Err(error) => store_error(&error),
+                }
+            } else {
+                for spec in polylogue_model::settings::CATALOG
+                    .iter()
+                    .filter(|spec| spec.scope == polylogue_model::settings::Scope::Host)
+                {
+                    if let Err(error) = polylogue_model::settings::target_machine(
+                        spec.key,
+                        machine.as_deref(),
+                        &invocation.machine,
+                    ) {
+                        return self::error("bad_value", error);
+                    }
+                }
+                match reader.settings_catalog(selected) {
+                    Ok(catalog) => ok(catalog),
+                    Err(error) => store_error(&error),
+                }
             }
         }
         Request::Setting {
@@ -1075,15 +1128,18 @@ fn handle_inner(
             value: Some(value),
             machine,
         } => {
+            let Some(key) = key else {
+                return error("bad_request", "a value requires a setting key");
+            };
             drop(reader);
             write(
                 d,
+                invocation,
                 request_id.unwrap_or_else(user_writes::new_request_id),
                 UserWrite::SetSetting {
                     key,
                     value,
-                    author: Author::Operator,
-                    machine: machine.then(machine_id),
+                    machine,
                 },
             )
         }
@@ -1096,10 +1152,11 @@ fn query_targets(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     query: &str,
+    invocation: &crate::operation::Invocation,
 ) -> Result<Vec<polylogue_model::Reference>, Response> {
     use polylogue_model::Reference;
     super::query::with_ranking(reader, &d.warm, &d.config, |embeddings, near| {
-        let clock = d.query_clock()?;
+        let operation = d.resolve_operation_context(invocation.clone())?;
         let mut targets = Vec::new();
         let mut seen = HashSet::new();
         let mut cursor: Option<String> = None;
@@ -1110,7 +1167,7 @@ fn query_targets(
                 page_size: Some(1_000),
                 why: false,
                 session: None,
-                clock: clock.clone(),
+                context: operation.clone(),
                 embeddings,
                 near: Some(near),
                 fields: &[],
@@ -1196,8 +1253,33 @@ impl Runtime {
         self.daemon.reads.close();
     }
 
+    /// A finished continuous worker is a failure; slow work remains live.
+    pub fn worker_failure(&self) -> Option<&'static str> {
+        if self.daemon.stopping.load(Ordering::Acquire) {
+            return None;
+        }
+        if self.engine.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Some("engine worker terminated");
+        }
+        if self.signals.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Some("signal worker terminated");
+        }
+        if self.counts.as_ref().is_some_and(JoinHandle::is_finished) {
+            return Some("count worker terminated");
+        }
+        self.completion
+            .as_ref()
+            .and_then(|worker| worker.worker_failure())
+    }
+
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        let mut failure = None;
+        if let Some(completion) = self.completion.as_mut()
+            && let Err(error) = completion.shutdown()
+        {
+            failure = Some(error);
+        }
         self.completion.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
@@ -1209,13 +1291,12 @@ impl Runtime {
         if let Some(counts) = self.counts.take()
             && counts.join().is_err()
         {
-            eprintln!("polylogue: the count worker panicked");
+            failure.get_or_insert_with(|| std::io::Error::other("count worker panicked"));
         }
-        let mut failure = None;
         if let Some(signals) = self.signals.take()
             && signals.join().is_err()
         {
-            failure = Some(std::io::Error::other("signal worker panicked"));
+            failure.get_or_insert_with(|| std::io::Error::other("signal worker panicked"));
         }
         if let Ok(tx) = self.daemon.loop_tx.lock() {
             let _ = tx.send(LoopMsg::Stop);
@@ -1403,7 +1484,6 @@ pub fn start(
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
-        feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
         writes,
         mode,

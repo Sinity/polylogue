@@ -70,7 +70,7 @@ pub struct Position {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Resolved {
-    pub clock: query_language::time::ClockWire,
+    pub context: polylogue_model::context::Provenance,
     #[serde(default)]
     pub times: Vec<query_language::time::ResolvedTime>,
 }

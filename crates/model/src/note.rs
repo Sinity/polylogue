@@ -3,75 +3,10 @@
 //! a new note in the same family (`first_note`); the current revision of a
 //! family is its newest note that is not withdrawn.
 
-use crate::{Origin, Reference, ReferenceError, SessionId, Timestamp};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::fmt;
-
-/// Who wrote a note. Agent notes are shown with their author and are
-/// pulled on request only: nothing injects them into context
-/// automatically.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Author {
-    Operator,
-    /// An agent, by the session it wrote from when known.
-    Agent(Option<SessionId>),
-    /// The harness is known but no session identity was recorded.
-    AgentOrigin(Origin),
-    /// No evidence identifies a person, agent or named program.
-    Unattributed,
-    /// A program acting for the operator, by name.
-    Script(String),
-}
-
-impl Author {
-    pub fn is_agent(&self) -> bool {
-        matches!(self, Self::Agent(_) | Self::AgentOrigin(_))
-    }
-
-    /// The stored form: `operator`, `agent`, `agent:<session>`,
-    /// `script:<name>`.
-    pub fn parse(text: &str) -> Result<Self, ReferenceError> {
-        match text.split_once(':') {
-            None if text == "operator" => Ok(Self::Operator),
-            None if text == "agent" => Ok(Self::Agent(None)),
-            None if text == "unattributed" => Ok(Self::Unattributed),
-            Some(("agent", origin)) if !origin.contains(':') => Ok(Self::AgentOrigin(
-                Origin::new(origin).map_err(|e| ReferenceError::Id(text.to_owned(), e))?,
-            )),
-            Some(("agent", s)) => Ok(Self::Agent(Some(
-                SessionId::parse(s).map_err(|e| ReferenceError::Id(text.to_owned(), e))?,
-            ))),
-            Some(("script", name)) if !name.is_empty() => Ok(Self::Script(name.to_owned())),
-            _ => Err(ReferenceError::UnknownKind(text.to_owned())),
-        }
-    }
-}
-
-impl fmt::Display for Author {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Operator => f.write_str("operator"),
-            Self::Agent(None) => f.write_str("agent"),
-            Self::Agent(Some(s)) => write!(f, "agent:{s}"),
-            Self::AgentOrigin(origin) => write!(f, "agent:{origin}"),
-            Self::Unattributed => f.write_str("unattributed"),
-            Self::Script(n) => write!(f, "script:{n}"),
-        }
-    }
-}
-
-impl Serialize for Author {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for Author {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(d)?;
-        Self::parse(&text).map_err(serde::de::Error::custom)
-    }
-}
+#[cfg(test)]
+use crate::ReferenceError;
+use crate::{Author, Reference, Timestamp};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

@@ -91,7 +91,7 @@ The commands this area owns, each with the reason it is a command rather than a 
 | bare `polylogue` | orientation |
 | `status [--json]` | a snapshot of the daemon, not of archive rows |
 | `daemon [--until-idle] [--json] [--archive DIR]` | runs the service |
-| `import PATH…` | brings an outside file into the archive ([capture.md#import](capture.md#import)) |
+| `import PATH…` | brings explicit daemon-host paths into the archive ([capture.md#import](capture.md#import)); relative paths require the accepting native caller’s working directory |
 | `verify` | an on-demand check of stored bytes |
 | `setting [NAME [VALUE]]` | writes an authored `setting` record |
 | `schema infer\|diff\|unread` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
@@ -171,7 +171,7 @@ Deployment configuration is loaded once by `main`, from the config file, then fl
 
 `signals.toml` has `[notifications]` (`route = "dbus"`, `"command"` or `"both"`, `deadline_ms`, and optional `command = { program = "...", arguments = ["..."] }`), `[value_targets.NAME]` (`path`) and `[action_commands.NAME]` (`program`, `arguments`). Programs and arguments are separate values. Relative paths resolve against the file; a configuration digest identifies the resolved definitions frozen by a delivery.
 
-**Authored settings** are insert-only assertions with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused. `polylogue setting` lists every setting with its value, who set it and when. Any author may change a setting; `status` lists changes by anyone but the operator until he next looks ([assertions.md](assertions.md#authorship)).
+**Authored settings** are insert-only assertions with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused. `polylogue setting` lists every setting with its value, who set it and when. The typed answer also includes each key’s kind, declared scope, default and owner. `setting KEY` reads one catalog entry; `setting KEY VALUE` authors a change. Host-scoped keys use the captured accepting machine unless `--machine NAME` selects a named host; archive-scoped keys refuse a machine override. Primary attention entries identify Sinex as owner and expose no Polylogue default or locally authored value. Any author may change a setting; `status` lists changes by anyone but the operator until he next looks ([assertions.md](assertions.md#authorship)).
 
 **Not configurable,** because a dominant option exists: provider locations (fixed per origin, honouring a tool's own documented home variable such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`; [capture.md#locations](capture.md#locations)); whether the session-start brief is injected (removing the hooks is the off switch); brief sizes and budgets; worker counts and memory targets (derived from the cgroup CPU quota and affinity); pacing; deadlines (defaults any caller lifts).
 

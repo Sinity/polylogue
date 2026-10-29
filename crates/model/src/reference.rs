@@ -1,5 +1,11 @@
 //! Natural archive addresses. Parsing does not read an archive or resolve a
 //! shorthand; an address may name a target that has not arrived yet.
+mod span;
+pub use span::{
+    SpanBounds, SpanError, TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece,
+    span_bodies, text_body,
+};
+
 use crate::{DocumentId, IdError, MessageId, RunId, SessionId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -66,6 +72,7 @@ pub enum Reference {
         part: Option<u64>,
     },
     Page(RevisionReference),
+    Role(RevisionReference),
     Query {
         key: String,
         parameters: Vec<(String, String)>,
@@ -178,6 +185,7 @@ impl Reference {
                 }
             }
             "page" => Self::Page(revision(rest)?),
+            "role" => Self::Role(revision(rest)?),
             "query" => {
                 let mut parameters = Vec::new();
                 let key = if let Some((key, args)) = rest.split_once('(') {
@@ -263,6 +271,7 @@ impl Reference {
                 if !matches!(
                     container.as_ref(),
                     Self::Message(_)
+                        | Self::Document(_)
                         | Self::Block { .. }
                         | Self::Assertion(RevisionReference {
                             revision: Some(_),
@@ -278,7 +287,7 @@ impl Reference {
                         }
                 ) {
                     return Err(invalid(
-                        "span container must be a message, block, exact assertion or exact variant part",
+                        "span container must be a message, document, block, exact assertion or exact variant part",
                     ));
                 }
                 Self::Span {
@@ -290,6 +299,27 @@ impl Reference {
             }
             _ => return Err(ReferenceError::UnknownKind(text.into())),
         })
+    }
+    /// The direct container named by this address. Message/session membership
+    /// and relationships requiring stored data are resolved by the store.
+    pub fn container(&self) -> Option<Self> {
+        match self {
+            Self::Span { container, .. } => Some((**container).clone()),
+            Self::Block { message, .. } => Some(Self::Message(message.clone())),
+            Self::ToolCall(session, _) => Some(Self::Session(session.clone())),
+            Self::Variant {
+                revision,
+                part: Some(_),
+            } => Some(Self::Variant {
+                revision: revision.clone(),
+                part: None,
+            }),
+            Self::Result { id, row: Some(_) } => Some(Self::Result {
+                id: id.clone(),
+                row: None,
+            }),
+            _ => None,
+        }
     }
     pub fn session(&self) -> Option<&SessionId> {
         match self {
@@ -319,6 +349,7 @@ impl fmt::Display for Reference {
                 Ok(())
             }
             Self::Page(revision) => write!(f, "page:{revision}"),
+            Self::Role(revision) => write!(f, "role:{revision}"),
             Self::Query { key, parameters } => {
                 write!(f, "query:{key}")?;
                 if !parameters.is_empty() {

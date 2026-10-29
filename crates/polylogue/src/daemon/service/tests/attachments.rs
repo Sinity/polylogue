@@ -18,7 +18,7 @@ fn attachment_read_refuses_once_the_daemon_stops_accepting() {
         },
         &daemon.daemon,
     );
-    assert!(matches!(response,Response::Error { kind,.. } if kind=="daemon_stopping"));
+    assert!(matches!(response,Response::Error { kind,.. } if kind=="shutting_down"));
 }
 
 #[test]

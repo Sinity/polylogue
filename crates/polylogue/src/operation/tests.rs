@@ -56,11 +56,11 @@ fn replayed_evaluation_time_never_rewrites_the_accepting_invocation() {
 #[test]
 fn public_context_evidence_and_debug_never_expose_the_owner_bearer_token() {
     let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
-    let invocation = Invocation {
+    let invocation = Invocation::new(
         at,
-        machine: "synthetic-machine".into(),
-        authorship: Context::worker_authorship("polylogue-signals"),
-    };
+        "synthetic-machine".into(),
+        Context::worker_authorship("polylogue-signals"),
+    );
     let policy = polylogue_sinex::ResolvedContext {
         context_token: "synthetic-private-owner-token".into(),
         settings_identity: "public-settings:17".into(),
@@ -93,4 +93,50 @@ fn public_context_evidence_and_debug_never_expose_the_owner_bearer_token() {
             "{public}"
         );
     }
+}
+
+#[test]
+fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() {
+    let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
+    for deadline in [
+        command_surface::Deadline::Default,
+        command_surface::Deadline::None,
+        command_surface::Deadline::Milliseconds(37),
+    ] {
+        let envelope = Arc::new(command_surface::Request {
+            operation: "read".into(),
+            arguments: serde_json::json!({"target":"synthetic-private-input", "options":{"output_lines":0}}),
+            request_id: "actual-accepted-id".into(),
+            deadline,
+        });
+        let invocation =
+            Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))
+                .with_accepted_request(Some(envelope.clone()));
+        let day = DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::constant(4, 0, 0, 0),
+        )
+        .unwrap();
+        let context = Context::standalone(invocation, day.clone());
+        let replay = context
+            .replay_clock(Clock::new("2026-10-28T08:00:00Z".parse().unwrap(), day))
+            .unwrap();
+        assert_eq!(replay.accepted_request(), Some(envelope.as_ref()));
+        assert_eq!(
+            replay.invocation().accepted_request(),
+            Some(envelope.as_ref())
+        );
+        assert!(!format!("{replay:?}").contains("synthetic-private-input"));
+        assert!(
+            !serde_json::to_string(&replay.provenance())
+                .unwrap()
+                .contains("actual-accepted-id")
+        );
+        assert_eq!(replay.ran_at, at);
+    }
+    assert!(
+        Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))
+            .accepted_request()
+            .is_none()
+    );
 }

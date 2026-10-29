@@ -125,35 +125,37 @@ async fn answer(
                 return json_answer(web, crate::daemon::service::error("bad_request", error));
             }
         };
-        if let Action::Stream { produce, .. } = c.action
-            && let Some(build) = c.build_typed
-        {
-            match build(request.arguments.clone(), &caller, &request.request_id) {
-                Ok(internal) if internal.streaming() => {
-                    let cancellation = super::request_limit().cancellation;
-                    let duration = request
-                        .deadline
-                        .duration(crate::protocol::operations::deadlines().get(c.latency));
-                    let limit = match duration {
-                        Some(duration) => {
-                            polylogue_store::read::limit::ReadLimit::new(duration, cancellation)
-                        }
-                        None => {
-                            polylogue_store::read::limit::ReadLimit::without_deadline(cancellation)
-                        }
-                    };
-                    return stream(web, internal, produce, Some(limit)).await;
-                }
+        let internal = match c.build_typed {
+            Some(build) => match build(request.arguments.clone(), &caller, &request.request_id) {
+                Ok(internal) => Some(internal),
                 Err(failure) => {
                     return json_answer(
                         web,
                         command_surface::Answer::<serde_json::Value>::error(failure),
                     );
                 }
-                _ => {}
-            }
+            },
+            None => None,
+        };
+        let scope_required =
+            crate::protocol::operations::read_scope_required(Some(c), internal.as_ref());
+        let admitted_request = internal.clone();
+        if let Action::Stream { produce, .. } = c.action
+            && let Some(internal) = internal.filter(crate::daemon::Request::streaming)
+        {
+            let cancellation = super::request_limit().cancellation;
+            let duration = request
+                .deadline
+                .duration(crate::protocol::operations::deadlines().get(c.latency));
+            let limit = match duration {
+                Some(duration) => {
+                    polylogue_store::read::limit::ReadLimit::new(duration, cancellation)
+                }
+                None => polylogue_store::read::limit::ReadLimit::without_deadline(cancellation),
+            };
+            return stream(web, internal, produce, Some(limit), Some(request)).await;
         }
-        let read_scope = if !c.writes {
+        let read_scope = if scope_required {
             match web.daemon.reads.scope_token() {
                 Ok(scope) => Some(scope),
                 Err(error) => return json_answer(web, crate::daemon::service::store_error(&error)),
@@ -163,13 +165,19 @@ async fn answer(
         };
         let table = &web.operations;
         let limit = super::request_limit();
-        let accepted = crate::protocol::caller::accept(
+        let mut accepted = crate::protocol::caller::accept(
             &web.daemon.callers,
             &Default::default(),
             polylogue_model::authorship::Channel::Web,
             limit.cancellation,
         );
-        let scope = accepted.authorship.author.to_string();
+        accepted.admitted_request = admitted_request;
+        accepted.invocation = Some(
+            web.daemon
+                .invocation(&accepted.authorship)
+                .with_accepted_request(Some(Arc::new(request.clone()))),
+        );
+        let scope = accepted.scope();
         let trusted = command_surface::Caller::authenticated(scope, accepted);
         let answer = table
             .call_as(
@@ -226,7 +234,7 @@ async fn answer(
         Input::Ready(_) => Err("this operation does not accept a typed envelope".into()),
     }) {
         Ok(request) => match c.action {
-            Action::Stream { produce, .. } => stream(web, request, produce, None).await,
+            Action::Stream { produce, .. } => stream(web, request, produce, None, None).await,
             _ => json_answer(web, ask(web, request).await),
         },
         Err(message) => json_answer(web, crate::daemon::service::error("bad_request", message)),
@@ -240,6 +248,7 @@ async fn stream(
     request: crate::daemon::Request,
     produce: crate::commands::StreamProducer,
     limit: Option<polylogue_store::read::limit::ReadLimit>,
+    accepted_request: Option<command_surface::RunnableRequest>,
 ) -> HttpResponse {
     let worker = Arc::clone(web);
     let limit = limit.unwrap_or_else(super::request_limit);
@@ -250,6 +259,10 @@ async fn stream(
         polylogue_model::authorship::Channel::Web,
         cancellation.clone(),
     );
+    let invocation = web
+        .daemon
+        .invocation(&accepted.authorship)
+        .with_accepted_request(accepted_request.map(Arc::new));
     let (output, input) = tokio::io::duplex(64 * 1024);
     let (ready, first) = tokio::sync::oneshot::channel();
     let runtime = tokio::runtime::Handle::current();
@@ -261,14 +274,12 @@ async fn stream(
             ready: Some(ready),
         };
         let mut guarded = crate::protocol::stream::GuardedWriter::new(&mut output, limit.clone());
-        let result = limit.scope(|| {
-            produce(
-                &worker_request,
-                &worker.daemon,
-                &accepted.authorship,
-                &mut guarded,
-            )
-        });
+        let result = limit.scope(
+            || match worker.daemon.resolve_operation_context(invocation) {
+                Ok(operation) => produce(&worker_request, &worker.daemon, &operation, &mut guarded),
+                Err(response) => Some(Err(response)),
+            },
+        );
         let result = match guarded.failure() {
             Some(failure) => Some(Err(failure)),
             None => result,

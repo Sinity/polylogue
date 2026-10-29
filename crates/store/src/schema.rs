@@ -27,8 +27,12 @@ pub(crate) const INDEX_MIGRATIONS: &[&str] = &[
     include_str!("schema/index_2.sql"),
     include_str!("schema/index_3.sql"),
     include_str!("schema/index_4.sql"),
+    include_str!("schema/index_5.sql"),
+    // Index6 updates only the primary source cache; standalone uses archive2.
+    include_str!("schema/archive_2.sql"),
 ];
-pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
+pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[include_str!("schema/archive_2.sql")];
+const NATIVE_PATH_INDEX_VERSION: u32 = 6;
 
 /// The index schema and row encoding version. Parser changes carry their
 /// own reading versions and never advance this value.
@@ -101,8 +105,14 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     if found == 0 {
         create_index_in(&tx, primary)?;
     } else {
-        for step in &INDEX_MIGRATIONS[found as usize - 1..] {
-            tx.execute_batch(step)?;
+        for (offset, step) in INDEX_MIGRATIONS[found as usize - 1..].iter().enumerate() {
+            if found + offset as u32 + 1 == NATIVE_PATH_INDEX_VERSION {
+                if primary {
+                    tx.execute_batch(&crate::source::Source::Cache.sql(step))?;
+                }
+            } else {
+                tx.execute_batch(step)?;
+            }
         }
         tx.execute_batch(READ_INDEXES)?;
         let matches = if building(&tx)? {
@@ -175,7 +185,7 @@ pub(crate) fn ensure(
         }
     } else {
         for step in &migrations[found as usize - 1..] {
-            tx.execute_batch(step)?;
+            tx.execute_batch(&crate::source::Source::Ledger.sql(step))?;
         }
         if !same_schema(&tx, sql)? {
             return Err(StoreError::NoMigration { database, found });

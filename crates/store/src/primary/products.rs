@@ -158,6 +158,12 @@ pub struct CapturedInput {
     pub group: Option<CaptureGroup>,
     pub arrival_rank: u8,
     pub parsed: Vec<CapturedReading>,
+    /// Original acquired interval, independent of tentative source coordinates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_range: Option<super::RawRange>,
+    /// None is legacy unknown evidence, never a freshly observed source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<super::SourceBasis>,
 }
 
 /// Complete parser facts retained with an immutable source acquisition.
@@ -222,6 +228,9 @@ impl CapturedReading {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaptureGroup {
     pub identity: String,
+    /// Stable content intent; legacy missing intent cannot prove a retry.
+    #[serde(default)]
+    pub intent: String,
     pub ordinal: u64,
     pub count: u64,
 }

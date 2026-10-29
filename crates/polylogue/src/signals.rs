@@ -616,9 +616,9 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 ));
             }
         }
-        let wait = eval
-            .next_due()
-            .map_or(30_000, |due| (due - d.config.requests.now().unix_ms()).clamp(1_000, 30_000));
+        let wait = eval.next_due().map_or(30_000, |due| {
+            (due - d.config.requests.now().unix_ms()).clamp(1_000, 30_000)
+        });
         if !matches!(
             stop.recv_timeout(std::time::Duration::from_millis(wait as u64)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)

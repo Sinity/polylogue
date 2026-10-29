@@ -3,6 +3,12 @@ use polylogue_model::ChangePosition;
 use polylogue_store::completion::{CatalogWriter, Kept, Metadata, Saved, Session};
 use query_language::catalog::{Field, FieldKind, OutputSchema};
 use std::collections::BTreeMap;
+pub(super) fn request_metadata() -> polylogue_model::user::RequestMetadata {
+    polylogue_model::user::RequestMetadata::new(
+        "synthetic-machine".into(),
+        polylogue_model::WallClock::fixed("2026-01-01T00:00:00Z".parse().unwrap()),
+    )
+}
 fn populated(path: &Path) {
     let metadata = Metadata {
         archive: "synthetic".into(),
@@ -181,7 +187,7 @@ fn real_writer_deltas_publish_source_values_and_native_first_prompt() {
     let mut archive = WriterArchive::new();
     let subscription = archive.writer.sender().unwrap().completion_commits();
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let mut state = publisher::State::new(false);
+    let mut state = publisher::State::new(false, request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -316,7 +322,7 @@ fn unavailable_kept_schema_does_not_prevent_other_vocabulary_publication() {
         .kept_result("missing-shape", "sessions", "{}")
         .unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(false);
+    let mut publisher = publisher::State::new(false, request_metadata());
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -347,7 +353,7 @@ fn primary_unknown_checkpoint_does_not_activate_an_empty_catalog() {
     let fixture =
         polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(true);
+    let mut publisher = publisher::State::new(true, request_metadata());
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -449,7 +455,7 @@ fn saved_output_fields_and_closed_values_publish_without_an_execution_clock() {
         )
         .unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(false);
+    let mut publisher = publisher::State::new(false, request_metadata());
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();

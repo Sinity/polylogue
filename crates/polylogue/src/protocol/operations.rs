@@ -32,6 +32,17 @@ pub trait CommandType: Send + Sync + 'static {
     const NAME: &'static str;
 }
 
+/// Mixed read/write rows are classified from their admitted request, not row metadata.
+pub(crate) fn read_scope_required(
+    command: Option<&Command>,
+    admitted: Option<&crate::daemon::Request>,
+) -> bool {
+    admitted.map_or_else(
+        || command.is_some_and(|command| !command.writes),
+        crate::daemon::Request::read_only,
+    )
+}
+
 pub fn register<C: CommandType>(daemon: Arc<Daemon>, table: &mut OperationTable) {
     table
         .register(TypedCommand::<C> {
@@ -120,16 +131,32 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     ));
                 }
             };
-            let request = match build(command, &values, &caller) {
-                Ok(request) => request,
-                Err(error) => return Answer::error(Failure::new(FailureKind::BadRequest, error)),
+            let accepted = context
+                .caller()
+                .identity::<crate::protocol::caller::Accepted>();
+            let admitted = accepted
+                .filter(|accepted| {
+                    accepted
+                        .invocation
+                        .as_ref()
+                        .and_then(|invocation| invocation.accepted_request())
+                        .is_some_and(|request| {
+                            request.operation == C::NAME && request.request_id == context.request_id
+                        })
+                })
+                .and_then(|accepted| accepted.admitted_request.clone());
+            let request = match admitted {
+                Some(request) => request,
+                None => match build(command, &values, &caller) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return Answer::error(Failure::new(FailureKind::BadRequest, error));
+                    }
+                },
             };
             if let Err(error) = context.check_cancelled() {
                 return Answer::error(error);
             }
-            let accepted = context
-                .caller()
-                .identity::<crate::protocol::caller::Accepted>();
             let cancellation = accepted
                 .map(|caller| caller.cancellation.clone())
                 .unwrap_or_default();
@@ -143,12 +170,19 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     };
                     polylogue_model::authorship::compute_authorship(via, &Default::default(), None)
                 });
+            let invocation = accepted.and_then(|caller| caller.invocation.clone());
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let worker = tokio::task::spawn_blocking(move || {
                 let limit = polylogue_store::read::limit::ReadLimit::without_deadline(cancellation);
-                crate::daemon::service::handle_with_caller(request, &daemon, &limit, &authorship)
-                    .answer()
+                let invocation = invocation.unwrap_or_else(|| daemon.invocation(&authorship));
+                crate::daemon::service::handle_with_invocation(
+                    request,
+                    &daemon,
+                    &limit,
+                    &invocation,
+                )
+                .answer()
             });
             let answer = match worker.await {
                 Ok(answer) => answer,

@@ -2,11 +2,13 @@
 pub mod attachment;
 pub mod caller;
 pub mod complete;
+pub mod import;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;
 pub mod read;
 pub mod schema;
+pub mod setting;
 pub mod status;
 pub mod stream;
 pub mod wire;
@@ -89,7 +91,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
     (FailureKind::StoppedEarly, &["stopped_early"]),
     (
         FailureKind::NotRunning,
-        &["not_running", "daemon_required", "daemon_stopping"],
+        &["not_running", "daemon_required", "shutting_down"],
     ),
     (FailureKind::Timeout, &["timeout", "deadline_exceeded"]),
     (FailureKind::Cancelled, &["cancelled"]),
@@ -156,6 +158,8 @@ pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
         StoreError::ScopeChanged => "scope_changed",
         StoreError::Conflict(_) | StoreError::ReadIndexReplaced => "conflict",
         StoreError::Ambiguous { .. } => "ambiguous",
+        StoreError::Stale { .. } => "stale",
+        StoreError::ReferenceUnavailable { .. } => "not_yet_available",
         StoreError::Projection(issue) => match issue {
             polylogue_model::bundle::BundleError::ProjectionConflict
             | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
@@ -163,7 +167,7 @@ pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
         },
         StoreError::ReadDeadlineExceeded => "deadline_exceeded",
         StoreError::ReadCancelled => "cancelled",
-        StoreError::ReadPoolClosed => "daemon_stopping",
+        StoreError::ReadPoolClosed => "shutting_down",
         StoreError::NotFound(_) => "not_found",
         StoreError::Invalid(_) => "bad_request",
         StoreError::IncompleteParents(_) => "incomplete_parents",

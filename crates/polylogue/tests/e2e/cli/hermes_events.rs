@@ -8,11 +8,7 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
     std::fs::create_dir_all(&home).unwrap();
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let source = dir.path().join("synthetic.atof.jsonl");
     let credential = "--secret=\"unfinished --token=\"synthetic-later-value\" tail";
     let raw = format!(
@@ -83,11 +79,8 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
         transfer.push_str(&format!(",\"padding\":{leading},\"format\":{format}}}"));
         std::fs::write(&imported_path, transfer).unwrap();
         let second_archive = dir.path().join("second-archive");
-        let second_env = [
-            ("POLYLOGUE_HOME", home.as_path()),
-            ("POLYLOGUE_ARCHIVE", second_archive.as_path()),
-            ("XDG_CONFIG_HOME", config.as_path()),
-        ];
+        let second_env =
+            crate::Fixture::new(second_archive.as_path(), home.as_path(), config.as_path());
         {
             let _second = start_daemon(&second_env);
             let result = cli(&second_env, &["import", imported_path.to_str().unwrap()]);
@@ -165,7 +158,7 @@ fn hermes_observer_public_query_masks_evidence_and_rebuilds_without_conversation
     assert_eq!(json(&out)["rows"], first["rows"]);
 }
 
-fn ledger_rows(env: &[(&str, &Path)]) -> serde_json::Value {
+fn ledger_rows(env: &crate::Fixture) -> serde_json::Value {
     let out = cli(env, &["--json", "events where source:hermes | sort by id"]);
     assert!(out.status.success(), "{out:?}");
     json(&out)
@@ -179,7 +172,7 @@ fn ledger_count(rows: &serde_json::Value, kind: &str) -> usize {
         .count()
 }
 fn wait_ledger(
-    env: &[(&str, &Path)],
+    env: &crate::Fixture,
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
     loop {
@@ -207,11 +200,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
     drop(db);
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let before_rebuild = {
         let daemon = start_daemon(&env);
         let initial = wait_ledger(&env, |rows| {
@@ -298,11 +287,7 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_mask_ordered_parts() {
     std::fs::create_dir_all(&home).unwrap();
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let value = json!({"schema_version":"ATIF-v1.7","trajectory_id":"native-trajectory","session_id":"default","agent":{"name":"synthetic","version":"1"},"steps":[
         {"step_id":1,"source":"user","message":[{"type":"text","text":" exact user λ🙂 "},{"type":"image","source":{"media_type":"image/png","path":"images/input.png"}}]},
         {"step_id":2,"source":"agent","llm_call_count":0,"message":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"text","text":"synthetic-atif-message-tail\n-----END PRIVATE KEY-----"}],"tool_calls":[{"tool_call_id":"native-call","function_name":"terminal","arguments":{"command":"printf synthetic"}}],"observation":{"results":[{"source_call_id":"native-call","content":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"image","source":{"media_type":"image/png","path":"images/result.png"}},{"type":"text","text":"synthetic-atif-result-tail\n-----END PRIVATE KEY-----"}]}]}}

@@ -98,7 +98,6 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
             request_id: "save-explain".into(),
             name: "mine".into(),
             text: "self".into(),
-            author: polylogue_model::Author::Operator,
         },
         &w.daemon,
     ));

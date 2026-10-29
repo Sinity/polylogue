@@ -87,7 +87,6 @@ fn archive_with_notes() -> Morrow {
                     kind,
                     key: key.map(Into::into),
                     value: value.map(Into::into),
-                    author: Author::Operator,
                     targets,
                     relations: vec![],
                     revises: None,

@@ -3,17 +3,22 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Seek};
+use std::io::Read;
 
-pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<package::Member>>> {
-    let mut catalog = tempfile::NamedTempFile::new_in(scratch)?;
-    let Some(inputs) = polylogue_store::legacy_import::inputs(root, |row| {
-        serde_json::to_writer(&mut catalog, row)?;
-        std::io::Write::write_all(&mut catalog, b"\n")?;
-        Ok(())
-    })
-    .map_err(std::io::Error::other)?
-    else {
+pub(super) fn stage(
+    root: &Path,
+    archive: &Archive,
+) -> std::io::Result<Option<Vec<package::Member>>> {
+    let (catalog, inputs) = archive
+        .prepare_write(|mut catalog| {
+            polylogue_store::legacy_import::inputs(root, |row| {
+                serde_json::to_writer(&mut catalog, row)?;
+                std::io::Write::write_all(&mut catalog, b"\n")?;
+                Ok(())
+            })
+        })
+        .map_err(std::io::Error::other)?;
+    let Some(inputs) = inputs else {
         return Ok(None);
     };
     let mut declared = BTreeMap::new();
@@ -38,31 +43,35 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
         let mut source = std::fs::File::open(&path).map_err(|error| {
             std::io::Error::other(format!("missing predecessor blob {hash}: {error}"))
         })?;
-        let mut copy = tempfile::NamedTempFile::new_in(scratch)?;
-        let mut actual = Sha256::new();
-        let mut length = 0;
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            let n = source.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            actual.update(&buffer[..n]);
-            std::io::Write::write_all(&mut copy, &buffer[..n])?;
-            length += n as u64;
-        }
-        let actual: [u8; 32] = actual.finalize().into();
-        if length != input.blob_size || actual != input.blob_hash {
-            return Err(std::io::Error::other(format!(
-                "predecessor blob {hash} differs from its catalog hash or size"
-            )));
-        }
-        blobs.insert(input.raw_id.clone(), copy.into_temp_path());
+        let (copy, ()) = archive
+            .prepare_write(|output| {
+                let mut actual = Sha256::new();
+                let mut length = 0;
+                let mut buffer = [0; 64 * 1024];
+                loop {
+                    let n = source.read(&mut buffer)?;
+                    if n == 0 {
+                        break;
+                    }
+                    actual.update(&buffer[..n]);
+                    output.write_all(&buffer[..n])?;
+                    length += n as u64;
+                }
+                let actual: [u8; 32] = actual.finalize().into();
+                if length != input.blob_size || actual != input.blob_hash {
+                    return Err(polylogue_store::StoreError::Invalid(format!(
+                        "predecessor blob {hash} differs from its catalog hash or size"
+                    )));
+                }
+                Ok(())
+            })
+            .map_err(std::io::Error::other)?;
+        blobs.insert(input.raw_id.clone(), copy);
     }
     let mut members = Vec::new();
     members.push(package::Member {
         path: PathBuf::from(format!("{}!/raw_sessions/catalog.jsonl", root.display())),
-        bytes: catalog.into_temp_path(),
+        bytes: catalog,
         container: false,
         origin: polylogue_sources::origin::by_name(KEPT),
         parent: None,
@@ -87,7 +96,13 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
                     root.display(),
                     input.raw_id
                 )),
-                bytes: copy(&blobs[&input.raw_id], scratch)?,
+                bytes: archive
+                    .prepare_bytes(
+                        blobs[&input.raw_id]
+                            .reader()
+                            .map_err(std::io::Error::other)?,
+                    )
+                    .map_err(std::io::Error::other)?,
                 container: false,
                 origin: polylogue_sources::origin::by_name(KEPT),
                 parent: None,
@@ -115,27 +130,25 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
                 return Err(std::io::Error::other("predecessor append changes origin"));
             }
         }
-        let mut combined = tempfile::NamedTempFile::new_in(scratch)?;
-        let mut length = std::io::copy(
-            &mut std::fs::File::open(&blobs[&current.raw_id])?,
-            &mut combined,
-        )?;
-        for append in chain.into_iter().rev() {
-            if append.append_start != Some(length)
-                || append.append_end != length.checked_add(append.blob_size)
-            {
-                return Err(std::io::Error::other(
-                    "predecessor append offsets do not join its recorded bytes",
-                ));
-            }
-            length += std::io::copy(
-                &mut std::fs::File::open(&blobs[&append.raw_id])?,
-                &mut combined,
-            )?;
-        }
-        combined.rewind()?;
+        let (combined, ()) = archive
+            .prepare_write(|output| {
+                let mut length = std::io::copy(&mut blobs[&current.raw_id].reader()?, output)?;
+                for append in chain.into_iter().rev() {
+                    if append.append_start != Some(length)
+                        || append.append_end != length.checked_add(append.blob_size)
+                    {
+                        return Err(polylogue_store::StoreError::Invalid(
+                            "predecessor append offsets do not join its recorded bytes".into(),
+                        ));
+                    }
+                    length += std::io::copy(&mut blobs[&append.raw_id].reader()?, output)?;
+                }
+                Ok(())
+            })
+            .map_err(std::io::Error::other)?;
+        let mut reader = combined.reader().map_err(std::io::Error::other)?;
         let mut head = [0; 64];
-        let n = combined.read(&mut head)?;
+        let n = reader.read(&mut head)?;
         let at = PathBuf::from(format!(
             "{}!/raw_sessions/{}/{name}",
             root.display(),
@@ -148,7 +161,7 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
         };
         members.push(package::Member {
             path: at,
-            bytes: combined.into_temp_path(),
+            bytes: combined,
             container: false,
             origin: Some(spec),
             parent: None,
@@ -157,11 +170,6 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
         });
     }
     Ok(Some(members))
-}
-fn copy(path: &Path, scratch: &Path) -> std::io::Result<tempfile::TempPath> {
-    let mut file = tempfile::NamedTempFile::new_in(scratch)?;
-    std::io::copy(&mut std::fs::File::open(path)?, &mut file)?;
-    Ok(file.into_temp_path())
 }
 fn origin(origin: &str) -> Option<&'static str> {
     Some(match origin {

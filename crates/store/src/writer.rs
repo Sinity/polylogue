@@ -33,6 +33,7 @@ mod confirmed;
 mod primary;
 mod primary_capture;
 mod query_objects;
+mod source_snapshot;
 pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
 mod rows;
@@ -78,6 +79,12 @@ enum Msg {
     ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
     SynchronizePrimary(SyncSender<Result<i64>>),
+    CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
+    SourceSnapshot(
+        crate::primary::SourceSelector,
+        String,
+        SyncSender<Result<crate::primary::SourceSnapshot>>,
+    ),
     RestoreAuthored(
         Box<authored::Restoration>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
@@ -493,6 +500,24 @@ impl Writer {
         coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
     }
 
+    /// Pins one locally durable pending source body without network I/O.
+    pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
+        capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
+    }
+
+    /// Reads confirmed identity and local durable pending source evidence in writer order.
+    pub fn source_snapshot(
+        &self,
+        source: crate::primary::SourceSelector,
+        reading_version: &str,
+    ) -> Result<crate::primary::SourceSnapshot> {
+        source_snapshot_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            source,
+            reading_version,
+        )
+    }
+
     /// Installs export associations derived from committed source observations.
     pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
         let (reply, wait) = sync_channel(1);
@@ -665,10 +690,46 @@ impl WriterSender {
         coverage_via(&self.0, coverage)
     }
 
+    /// As [`Writer::capture_body`].
+    pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
+        capture_body_via(&self.0, identity)
+    }
+
+    /// As [`Writer::source_snapshot`].
+    pub fn source_snapshot(
+        &self,
+        source: crate::primary::SourceSelector,
+        reading_version: &str,
+    ) -> Result<crate::primary::SourceSnapshot> {
+        source_snapshot_via(&self.0, source, reading_version)
+    }
+
     /// As [`Writer::derive`].
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
     }
+}
+
+fn capture_body_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::PreparedBody> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::CaptureBody(identity, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn source_snapshot_via(
+    tx: &WriterQueue,
+    source: crate::primary::SourceSelector,
+    reading_version: &str,
+) -> Result<crate::primary::SourceSnapshot> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::SourceSnapshot(
+        source,
+        reading_version.to_owned(),
+        reply,
+    ))
+    .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 fn coverage_via(tx: &WriterQueue, coverage: polylogue_model::capture::Coverage) -> Result<()> {
@@ -764,6 +825,8 @@ impl Inner {
         let mut coverage = Vec::new();
         let mut confirmations = Vec::new();
         let mut synchronizations = Vec::new();
+        let mut snapshots = Vec::new();
+        let mut pending_bodies = Vec::new();
         let mut restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
@@ -819,6 +882,14 @@ impl Inner {
                     }
                     Msg::RestoreAuthored(restoration, reply) => {
                         restorations.push((restoration, reply));
+                        false
+                    }
+                    Msg::CaptureBody(identity, reply) => {
+                        pending_bodies.push((identity, reply));
+                        false
+                    }
+                    Msg::SourceSnapshot(source, version, reply) => {
+                        snapshots.push((source, version, reply));
                         false
                     }
                     Msg::SynchronizePrimary(reply) => {
@@ -921,6 +992,21 @@ impl Inner {
             }
             for (fact, reply) in coverage.drain(..) {
                 let _ = reply.send(self.write_coverage(*fact));
+            }
+            for (identity, reply) in pending_bodies.drain(..) {
+                let result = self
+                    .sinex
+                    .as_ref()
+                    .ok_or_else(|| {
+                        StoreError::Invalid(
+                            "pending source bodies require a primary producer".into(),
+                        )
+                    })
+                    .and_then(|sinex| sinex.capture_body(&identity));
+                let _ = reply.send(result);
+            }
+            for (source, version, reply) in snapshots.drain(..) {
+                let _ = reply.send(self.source_snapshot(source, &version));
             }
             for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
@@ -1086,7 +1172,7 @@ impl Inner {
                 "prepared bytes do not match the new blob".into(),
             ));
         }
-        let prepared = file.into_prepared();
+        let prepared = file.into_prepared()?;
         if self.segment.is_none() {
             self.segment = Some(crate::blobs::open_writer(
                 &self.archive,
@@ -1094,7 +1180,7 @@ impl Inner {
             )?);
         }
         let writer = self.segment.as_mut().expect("opened segment writer");
-        let pending = match writer.append_group(vec![prepared], |_| Ok(None)) {
+        let pending = match writer.append_group(std::iter::once(Ok(prepared)), |_| Ok(None)) {
             Ok(pending) => pending,
             Err(error) => {
                 self.segment.take();

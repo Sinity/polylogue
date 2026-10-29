@@ -5,16 +5,13 @@ use std::fs::File;
 
 const HOSTILE: &str = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
 
-fn terminal(env: &[(&str, &Path)], args: &[&str], no_color: bool) -> String {
+fn terminal(env: &crate::Fixture, args: &[&str], no_color: bool) -> String {
     let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
     let master = openpt(flags).unwrap();
     grantpt(&master).unwrap();
     unlockpt(&master).unwrap();
     let slave = ioctl_tiocgptpeer(&master, flags).unwrap();
-    let mut command = Command::new(crate::BIN);
-    for (key, value) in env {
-        command.env(key, value);
-    }
+    let mut command = env.command();
     command.env_remove("NO_COLOR");
     if no_color {
         command.env("NO_COLOR", "");
@@ -56,11 +53,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
     std::fs::create_dir(&home).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let seed = json!({"format":"polylogue-export","version":1,"sessions":[{"session":{"id":"claude-code:hostile","kind":"main","title":{"text":HOSTILE,"source":"custom"}},"messages":[{"id":"claude-code:hostile/1","session":"claude-code:hostile","role":"user","prompt_kind":"prose","blocks":[{"type":"text","text":HOSTILE}]}]}]});
     let source = dir.path().join("seed.json");

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 pub fn request_hash(request: &UserRequest) -> Result<[u8; 32]> {
     Ok(*blake3::hash(&serde_json::to_vec(&(
         &request.machine,
+        &request.authorship,
         request.write.intent(),
     ))?)
     .as_bytes())

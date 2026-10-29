@@ -301,7 +301,7 @@ pub struct MessageProjection {
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(deny_unknown_fields)]
-pub struct EventSourceClaim {
+pub struct SourceClaim {
     pub input: String,
     pub source: String,
     pub source_chain: i64,
@@ -317,7 +317,7 @@ pub struct EventSourceClaim {
 #[serde(deny_unknown_fields)]
 pub struct ImportedEventIdentity {
     pub id: String,
-    pub sources: Vec<EventSourceClaim>,
+    pub sources: Vec<SourceClaim>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -366,7 +366,7 @@ pub enum BundleError {
     InvalidEventAssociation,
 }
 
-impl EventSourceClaim {
+impl SourceClaim {
     pub fn validate(&self) -> Result<(), BundleError> {
         if self.input.is_empty()
             || self.source.is_empty()
@@ -388,7 +388,7 @@ impl ImportedEventIdentity {
         if self.id.is_empty() || self.sources.is_empty() {
             return Err(BundleError::InvalidEventIdentity);
         }
-        self.sources.iter().try_for_each(EventSourceClaim::validate)
+        self.sources.iter().try_for_each(SourceClaim::validate)
     }
 
     pub fn canonicalize(&mut self) {

@@ -4,6 +4,7 @@
 #[macro_use]
 mod stored_names;
 
+pub mod assertion;
 pub mod atomic_write;
 pub mod authored;
 pub mod authorship;
@@ -13,7 +14,7 @@ pub mod bundle;
 pub mod capture;
 pub mod capture_log;
 mod change_position;
-mod clock;
+pub mod clock;
 pub mod currency;
 pub use clock::WallClock;
 pub mod command;
@@ -30,7 +31,10 @@ mod note;
 pub mod price;
 mod quota;
 mod reference;
-pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
+pub use reference::{
+    Reference, ReferenceError, RevisionReference, SpanBounds, SpanError, SpanUnit,
+    TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece, span_bodies, text_body,
+};
 pub mod query_objects;
 pub mod read;
 mod session;
@@ -58,11 +62,12 @@ pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, RunId, SessionId};
 pub mod reports;
+pub use authorship::Author;
 pub use message::{
     ApiError, Attribution, Message, Production, PromptKind, Role, ServerToolUse, WrittenBy,
     is_prompt,
 };
-pub use note::{Author, NewNote, Note, NoteKind, Relation};
+pub use note::{NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};

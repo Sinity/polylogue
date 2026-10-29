@@ -51,7 +51,7 @@ impl std::fmt::Debug for Credentials {
 pub struct Context<'a> {
     pub settings: &'a polylogue_model::settings::Snapshot,
     pub credentials: &'a Credentials,
-    pub clock: &'a query_language::time::Clock,
+    pub operation: &'a std::sync::Arc<crate::operation::Context>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,7 +462,7 @@ pub fn ranking_key(reader: &Reader<'_>, provider: Option<&Provider>) -> Option<S
 fn query_sessions(
     reader: &Reader<'_>,
     query: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<String>, Response> {
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
@@ -473,7 +473,7 @@ fn query_sessions(
             page_size: Some(1_000),
             why: false,
             session: None,
-            clock: clock.clone(),
+            context: std::sync::Arc::clone(context),
             embeddings: false,
             near: None,
             fields: &[],
@@ -534,7 +534,7 @@ pub fn handle(
     // A query limits the work to the sessions it finds.
     let sessions: Option<Vec<String>> = match query.filter(|q| !q.trim().is_empty()) {
         None => None,
-        Some(q) => match query_sessions(reader, q, context.clock) {
+        Some(q) => match query_sessions(reader, q, context.operation) {
             Ok(ids) => Some(ids),
             Err(response) => return response,
         },

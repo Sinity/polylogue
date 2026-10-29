@@ -313,6 +313,7 @@ impl Engine {
                 }),
                 blobs: Vec::new(),
                 parse: Vec::new(),
+                acquisition: None,
                 release: Default::default(),
             },
             files: bytes.into_iter().collect(),

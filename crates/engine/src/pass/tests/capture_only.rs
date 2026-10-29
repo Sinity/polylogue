@@ -12,7 +12,7 @@ fn an_origin_without_a_parser_keeps_bytes_and_commits_capture_progress() {
     assert!(first.errors.is_empty(), "{first:?}");
     let reader = engine.reads.reader().unwrap();
     let known = reader
-        .known_input_at("test-machine", &path.to_string_lossy())
+        .known_input_at("test-machine", path.as_os_str().as_encoded_bytes())
         .unwrap()
         .unwrap();
     assert_eq!(known.parsed_upto, bytes.len() as u64);

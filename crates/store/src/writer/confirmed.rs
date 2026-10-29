@@ -16,6 +16,7 @@ pub(crate) fn apply_confirmed_readings(
             blobs: Vec::new(),
             length: *length,
             parse: Vec::new(),
+            acquisition: None,
             release: Default::default(),
         };
         reading.visit(|step| {
