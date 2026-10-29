@@ -15,6 +15,7 @@ pub mod chat_actions;
 pub mod check_runs;
 mod container_members;
 pub mod context;
+pub mod coverage;
 pub mod derive;
 pub mod documents;
 mod encoding;
