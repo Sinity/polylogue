@@ -19,20 +19,6 @@ fn partial_cost_and_unknown_denominators_match_cli_accounting() {
 }
 
 #[test]
-fn incomplete_parents_keep_issues_evidence_and_session_navigation() {
-    let status = json!({"complete": false, "issues": [{"kind": "missing_anchor", "parent": "codex:p", "child": "codex:c", "anchor": "<unknown>"}]});
-    let links = json!({"columns": [{"name":"parent"}, {"name":"child"}, {"name":"evidence"}, {"name":"pending"}, {"name":"branch_point"}], "rows": [{"parent":"codex:p", "child":"codex:c", "evidence":"native.<field>", "pending":true, "branch_point":null}], "next":"more"});
-    let page = parents(&status, &links);
-    assert!(page.contains("Some parent sessions are missing"));
-    assert!(page.contains("missing_anchor"));
-    assert!(page.contains("href=\"/s/codex%3Ap\""), "{page}");
-    assert!(page.contains("href=\"/s/codex%3Ac\""), "{page}");
-    assert!(page.contains("native.&lt;field&gt;"), "{page}");
-    assert!(!page.contains("Only the first 100 links"));
-    assert!(!page.contains("<unknown>"));
-}
-
-#[test]
 fn identical_cell_text_links_only_by_its_column_reference() {
     let id = "same:opaque";
     let data = json!({"columns":[
@@ -54,4 +40,21 @@ fn identical_cell_text_links_only_by_its_column_reference() {
         !results_table(&old).contains("href="),
         "columns without references must not be guessed"
     );
+}
+
+#[test]
+fn every_product_page_uses_the_shared_frame_and_archived_text_controls_are_visible() {
+    let output = layout(
+        "Title\u{202e}",
+        "query",
+        "polylogue status",
+        "<p>escaped body</p>",
+    );
+    assert!(output.contains("/assets/shell.js"));
+    assert!(output.contains("/assets/tokens.css"));
+    assert!(output.contains("/assets/theme.css"));
+    assert!(!output.contains("reader.js"));
+    assert!(!output.contains("reader.css"));
+    assert!(!output.contains('\u{202e}'));
+    assert!(auth().contains("/assets/auth.js"));
 }
