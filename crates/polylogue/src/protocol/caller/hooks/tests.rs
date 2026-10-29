@@ -29,7 +29,7 @@ fn event(kind: &str, session: &str, tool: Option<&str>, agent: Option<&str>) -> 
 }
 
 #[test]
-fn latest_session_and_exact_tool_call_replace_stale_startup_identity() {
+fn exact_tool_evidence_selects_the_worker_and_explicit_session_stays_session_only() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
     let registry = Registry::new(directory.path().into());
