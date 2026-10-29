@@ -37,6 +37,7 @@ fn fragment(start: u64, text: &str) -> TextFragment {
 fn text_fragment_overlap_union_is_commutative_idempotent_and_keeps_gaps_unknown() {
     let left = fragment(0, "A😀");
     let right = fragment(1, "😀B");
+    assert_eq!(left.validate_overlap(&right).unwrap(), Some(()));
     let merged = left.merge(&right).unwrap().unwrap();
     assert_eq!(merged.text, "A😀B");
     assert_eq!(
@@ -57,7 +58,7 @@ fn text_fragment_overlap_union_is_commutative_idempotent_and_keeps_gaps_unknown(
 #[test]
 fn text_fragment_rejects_conflicting_overlap_and_known_totals_without_selecting_a_version() {
     assert_eq!(
-        fragment(0, "A😀").merge(&fragment(1, "xxxxB")),
+        fragment(0, "A😀").validate_overlap(&fragment(1, "xxxxB")),
         Err(TextFragmentError::Conflict)
     );
     let mut left = fragment(0, "A");
@@ -138,7 +139,7 @@ fn text_fragment_absolute_boundary_stays_unattested_until_complete_source_exists
         Err(TextFragmentError::CharacterBoundary)
     );
     assert_eq!(
-        fragment(0, "A😀").merge(&fragment(2, "X")),
+        fragment(0, "A😀").validate_overlap(&fragment(2, "X")),
         Err(TextFragmentError::CharacterBoundary)
     );
 }
