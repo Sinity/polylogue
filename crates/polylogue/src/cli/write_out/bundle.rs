@@ -92,14 +92,16 @@ impl Bundle {
     pub fn staging(&self) -> &Path {
         &self.staging
     }
-    pub fn abort(&mut self, message: impl ToString) -> Error { self.error(message) }
+    pub fn abort(&mut self, message: impl ToString) -> Error {
+        self.error(message)
+    }
     fn error(&mut self, message: impl ToString) -> Error {
         self.failed = true;
         let mut message = message.to_string();
-        if let Some(items) = &mut self.items {
-            if let Err(error) = items.checkpoint() {
-                message.push_str(&format!("; staging checkpoint failed: {error}"));
-            }
+        if let Some(items) = &mut self.items
+            && let Err(error) = items.checkpoint()
+        {
+            message.push_str(&format!("; staging checkpoint failed: {error}"));
         }
         Error {
             message,
