@@ -77,12 +77,121 @@ impl OfflineProducer {
     }
 }
 impl crate::primary::Sinex for OfflineProducer {
+    fn prepare_input_group(
+        &self,
+        plan: &crate::primary::CapturePlan,
+        members: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        plan.validate()?;
+        if plan.count != 1 {
+            return Err(StoreError::Invalid(
+                "synthetic offline adapter supports one member".into(),
+            ));
+        }
+        let mut count = 0;
+        members(&mut |mut input, body| {
+            if count != 0 {
+                return Err(StoreError::Invalid(
+                    "too many synthetic capture members".into(),
+                ));
+            }
+            input.group = Some(crate::primary::CaptureGroup {
+                identity: "offline-capture".into(),
+                intent: plan.intent.clone(),
+                ordinal: 0,
+                count: 1,
+            });
+            self.prepare_input(&input, body)?;
+            count += 1;
+            Ok(())
+        })?;
+        if count != 1 {
+            return Err(StoreError::Invalid(
+                "missing synthetic capture member".into(),
+            ));
+        }
+        Ok(crate::primary::PreparedWrite {
+            identity: "offline-capture".into(),
+            pending: true,
+        })
+    }
+    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+        let path = self.root.join("source");
+        Ok(crate::primary::PreparedBody {
+            file: std::fs::File::open(&path)?,
+            descriptor: hashed_blobs::EncodedBlob::decode(&std::fs::read(
+                self.root.join("descriptor"),
+            )?)?,
+            path: Some(path),
+        })
+    }
+    fn pending_source(
+        &self,
+        source: &crate::primary::SourceSelector,
+        version: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        use crate::primary::{PendingCheckpoint, PendingSource, SourceSelector, SourceStatus};
+        if !self.root.join("capture.json").exists() {
+            return Ok(PendingSource {
+                status: SourceStatus::Ready,
+                ..Default::default()
+            });
+        }
+        let mut full = self.captured();
+        let selector = full
+            .basis
+            .as_ref()
+            .map(|basis| basis.source.clone())
+            .or_else(|| {
+                full.rows.observation.as_ref().and_then(|o| {
+                    o.path_bytes.as_ref().map(|bytes| SourceSelector {
+                        origin: full.rows.format.clone(),
+                        machine: o.machine.clone(),
+                        path_bytes: bytes.clone(),
+                    })
+                })
+            });
+        let Some(selector) = selector else {
+            return Ok(PendingSource::default());
+        };
+        if &selector != source {
+            return Ok(PendingSource {
+                status: SourceStatus::Ready,
+                ..Default::default()
+            });
+        }
+        let checkpoint = full
+            .parsed
+            .iter()
+            .rev()
+            .filter_map(|p| p.checkpoint.as_ref())
+            .find(|c| c.reading_version == version)
+            .cloned();
+        full.parsed.clear();
+        let head = PendingCapture {
+            identity: "offline-capture".into(),
+            captured: Capture::Input(Box::new(full.clone())),
+            material: None,
+            anchor: None,
+        };
+        Ok(PendingSource {
+            status: SourceStatus::Ready,
+            raw: full.raw_range.map(|_| head.clone()),
+            head: Some(head),
+            continuation: checkpoint.map(|checkpoint| PendingCheckpoint {
+                capture: "offline-capture".into(),
+                header: full,
+                checkpoint,
+            }),
+        })
+    }
     fn prepare_input(
         &self,
         captured: &CapturedInput,
         body: crate::primary::PreparedBody,
     ) -> Result<PreparedInput> {
         std::fs::create_dir_all(&self.root)?;
+        std::fs::write(self.root.join("descriptor"), body.descriptor.encode())?;
         let prepared = hashed_blobs::Prepared::from_encoded(
             body.file,
             body.descriptor,

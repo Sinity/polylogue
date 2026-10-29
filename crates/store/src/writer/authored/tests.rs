@@ -125,6 +125,23 @@ impl Producer {
     }
 }
 impl crate::primary::Sinex for Producer {
+    fn prepare_input_group(
+        &self,
+        _: &crate::primary::CapturePlan,
+        _: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<PreparedWrite> {
+        Self::unavailable()
+    }
+    fn pending_source(
+        &self,
+        _: &crate::primary::SourceSelector,
+        _: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        Ok(Default::default())
+    }
+    fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
+        Self::unavailable()
+    }
     fn prepare_input(
         &self,
         _: &CapturedInput,
