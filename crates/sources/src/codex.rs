@@ -51,6 +51,9 @@ pub const LOCATIONS: &[&str] = &[
     "session_index.jsonl",
 ];
 
+mod header;
+pub use header::rollout_id;
+
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     File::from_path(path).is_some()
         && head
@@ -129,6 +132,7 @@ pub enum File {
 impl File {
     pub fn from_path(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_str()?;
+        let name = name.strip_suffix(".zst").unwrap_or(name);
         match name {
             "history.jsonl" => Some(Self::History),
             "session_index.jsonl" => Some(Self::SessionIndex),

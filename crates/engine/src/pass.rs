@@ -250,6 +250,7 @@ impl Engine {
                     facts: None,
                     seen_at_ms: now_ms(),
                     import: None,
+                    container: None,
                 }),
                 continues: false,
                 new_blob: None,
@@ -310,6 +311,18 @@ impl Engine {
             };
             pass.inputs_seen += 1;
             let now = FileFacts::of(&meta);
+            if compressed::is_rollout(&f) {
+                match self.capture_rollout(&f, now, pass) {
+                    Ok(Some(plan)) if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) => {
+                        plans.push(plan)
+                    }
+                    Ok(_) => {}
+                    Err(error) => pass
+                        .errors
+                        .push(format!("capture {}: {error}", f.path.display())),
+                }
+                continue;
+            }
             if !self.track(&f) {
                 continue;
             }
@@ -413,10 +426,25 @@ impl Engine {
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;
             };
+            let now = FileFacts::of(&meta);
+            if compressed::is_rollout(f) {
+                match self.capture_rollout(f, now, pass) {
+                    Ok(Some(mut plan))
+                        if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) =>
+                    {
+                        plan.priority = Priority::Live;
+                        plans.push(plan);
+                    }
+                    Ok(_) => {}
+                    Err(error) => pass
+                        .errors
+                        .push(format!("capture {}: {error}", f.path.display())),
+                }
+                continue;
+            }
             if !self.track(f) {
                 continue;
             }
-            let now = FileFacts::of(&meta);
             if self.inputs[&f.path].facts == Some(now) {
                 continue;
             }

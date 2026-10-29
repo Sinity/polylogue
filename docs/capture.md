@@ -125,6 +125,8 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 - **Importing the same bytes again changes nothing.** A newer export merges by field ([sessions.md](sessions.md#one-conversation-through-several-routes)), so a field only the older export had survives.
 - An encrypted or corrupt member refuses its whole container before anything is stored.
 - Container observations record the container input, encoding kind, member index and exact member-name bytes. Display names are escaped when the original name is not UTF-8. Container membership is independent of explicit import membership.
+- Codex plain and zstd rollout copies use the recorded native thread identity. Captured compressed bytes and decoded member bytes remain separate; re-encoding equal decoded content adds an observation without a logical revision. Appends preserve the existing byte chain.
+- Native Codex local-image references are read before parsing the observed rollout. Relative names require a recorded absolute working directory. A stored coverage manifest records each reference, its source record range, the recorded directory, and collected, missing, unreadable or unresolved status. Available files retain their exact bytes as content-addressed inputs.
 - The answer lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets. `--explain` classifies every member without storing anything.
 
 | Structure | Recognized by | Origin |
