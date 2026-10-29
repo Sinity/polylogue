@@ -64,6 +64,8 @@ pub struct Ask<'a> {
     /// One captured invocation and owner policy for the complete operation.
     pub context: std::sync::Arc<crate::operation::Context>,
     pub embeddings: bool,
+    /// Captured provider/vector basis; never inferred from availability.
+    pub ranking_identity: Option<String>,
     /// For `similar:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
     /// The columns to show instead of the unit's defaults.
@@ -79,7 +81,7 @@ pub(crate) fn with_ranking<T>(
     reader: &Reader<'_>,
     warm: &super::warm::Warm,
     config: &crate::config::Config,
-    run: impl FnOnce(bool, &NearFn<'_>) -> T,
+    run: impl FnOnce(bool, Option<String>, &NearFn<'_>) -> T,
 ) -> T {
     let settings = reader.settings_snapshot(config.requests.machine()).ok();
     let provider = settings.as_ref().and_then(|settings| {
@@ -87,12 +89,12 @@ pub(crate) fn with_ranking<T>(
             .ok()
             .flatten()
     });
-    let available = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
+    let identity = crate::embeddings::ranking_key(reader, provider.as_ref());
     let near = |text: &str| match &provider {
         Some(provider) => warm.similarity(reader, provider, text),
         None => Err("embeddings are off".into()),
     };
-    run(available, &near)
+    run(identity.is_some(), identity, &near)
 }
 
 fn with_similarity<T>(
@@ -204,11 +206,17 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "catalog".into(),
         polylogue_query::plan::catalog_fingerprint(),
     );
+    if let Some(identity) = &ask.ranking_identity {
+        operation_versions.insert(
+            "ranking_identity".into(),
+            blake3::hash(identity.as_bytes()).to_hex().to_string(),
+        );
+    }
     if let Some(scope) = reader.query_scope_fingerprint()? {
         operation_versions.insert("scope".into(), scope);
     }
     if let Some(cursor) = &cursor {
-        for key in ["operation_context", "catalog", "scope"] {
+        for key in ["operation_context", "catalog", "scope", "ranking_identity"] {
             if cursor.context.versions.get(key) != operation_versions.get(key) {
                 return Err(Failure {
                     kind: "stale_cursor".into(),
@@ -544,6 +552,7 @@ pub(crate) fn prepare_usage(
         session: None,
         context,
         embeddings,
+        ranking_identity: None,
         near: None,
         fields: &[],
     };

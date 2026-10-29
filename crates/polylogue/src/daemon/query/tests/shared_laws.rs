@@ -238,6 +238,7 @@ impl laws::Executor<Plan> for Execution {
                 session: None,
                 context: fixture_context(0, "UTC", 240),
                 embeddings: false,
+                ranking_identity: None,
                 near: None,
                 fields: &["id".into(), "cost".into(), "repo".into()],
             },

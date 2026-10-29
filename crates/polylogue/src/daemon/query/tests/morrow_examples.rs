@@ -111,6 +111,7 @@ fn ask(text: &str) -> Ask<'_> {
         session: None,
         context: fixture_context(NOW, "Europe/Warsaw", 240),
         embeddings: false,
+        ranking_identity: None,
         near: None,
         fields: &[],
     }
