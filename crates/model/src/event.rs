@@ -11,6 +11,12 @@ pub struct Event {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Timestamp>,
+    #[serde(default = "crate::time::unknown_quality")]
+    pub at_quality: crate::TimeQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_precision: Option<crate::Precision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_until: Option<Timestamp>,
     /// The message the event follows, when the source places it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<MessageId>,
@@ -123,3 +129,26 @@ impl Link {
 
 #[cfg(test)]
 mod tests;
+
+impl Event {
+    pub fn time_evidence(&self) -> crate::TimeEvidence {
+        crate::TimeEvidence {
+            quality: self.at_quality,
+            precision: self.at_precision,
+            until: self.at_until,
+        }
+    }
+
+    pub fn set_time(
+        &mut self,
+        at: Option<Timestamp>,
+        evidence: crate::TimeEvidence,
+    ) -> Result<(), crate::TimeEvidenceError> {
+        evidence.validate(at)?;
+        self.at = at;
+        self.at_quality = evidence.quality;
+        self.at_precision = evidence.precision;
+        self.at_until = evidence.until;
+        Ok(())
+    }
+}
