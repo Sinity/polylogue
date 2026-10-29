@@ -76,7 +76,9 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
             std::str::from_utf8(&tampered).unwrap(),
             &seal,
             question,
-            &position(), (1, 2), &options
+            &position(),
+            (1, 2),
+            &options
         )
         .unwrap_err()
         .kind,

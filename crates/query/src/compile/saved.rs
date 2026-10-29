@@ -433,8 +433,9 @@ impl Parameters {
         position: usize,
     ) -> Result<(), QueryError> {
         if let Source::Unit {
-                condition: Some(c), ..
-            } = &mut query.source {
+            condition: Some(c), ..
+        } = &mut query.source
+        {
             self.cond(c, used, position)?;
         }
         for child in &mut query.attach {

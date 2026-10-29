@@ -9,7 +9,9 @@ pub fn clock(now: i64, day: LogicalDay) -> Result<Clock, QueryError> {
         position: 0,
     };
     if day.start_minutes >= 24 * 60 {
-        return Err(invalid("logical day start must be within one civil day".into()));
+        return Err(invalid(
+            "logical day start must be within one civil day".into(),
+        ));
     }
     let now = jiff::Timestamp::from_millisecond(now).map_err(|e| invalid(e.to_string()))?;
     let start = jiff::civil::Time::new(

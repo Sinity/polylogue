@@ -242,5 +242,8 @@ fn former_semantic_spelling_refuses_with_the_canonical_correction() {
     let error = parse("near:dates").unwrap_err();
     assert_eq!(error.kind(), "unknown_field");
     assert_eq!(error.suggestion(), Some("similar:dates"));
-    assert!(matches!(cond("similar:dates"), ConditionKind::Similar { .. }));
+    assert!(matches!(
+        cond("similar:dates"),
+        ConditionKind::Similar { .. }
+    ));
 }

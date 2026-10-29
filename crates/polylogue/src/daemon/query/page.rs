@@ -64,7 +64,8 @@ pub(super) fn open(
         },
         |context| {
             context.read_positions.get("generation") == Some(&position.generation)
-                && context.read_positions.get("index_file") == Some(&format!("{}:{}", index_file.0, index_file.1))
+                && context.read_positions.get("index_file")
+                    == Some(&format!("{}:{}", index_file.0, index_file.1))
                 && context
                     .read_positions
                     .get("index")
@@ -83,19 +84,30 @@ pub(super) fn open(
     .map_err(failure)
 }
 
+fn context_digest(domain: &str, value: &impl Serialize) -> Result<String, Failure> {
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"polylogue.query.cursor-context\0");
+    digest.update(domain.as_bytes());
+    digest.update(b"\0");
+    serde_json::to_writer(&mut digest, value)
+        .map_err(|_| invalid("the query context cannot be encoded"))?;
+    Ok(digest.finalize().to_hex().to_string())
+}
+
 fn binding(options: &Options, why: bool) -> Result<String, Failure> {
-    serde_json::to_string(&(
-        &options.self_session,
-        &options.fields,
-        options.embeddings,
-        why,
-        options.clock.day.wire(),
-    ))
-    .map_err(|_| invalid("the query context cannot be encoded"))
+    context_digest(
+        "options",
+        &(
+            &options.self_session,
+            &options.fields,
+            options.embeddings,
+            why,
+            options.clock.day.wire(),
+        ),
+    )
 }
 fn definitions(program: &Program) -> Result<String, Failure> {
-    serde_json::to_string(&program.definitions)
-        .map_err(|_| invalid("the query definitions cannot be encoded"))
+    context_digest("definitions", &program.definitions)
 }
 
 pub(super) fn context(
@@ -125,7 +137,10 @@ pub(super) fn context(
         random_seed: seed,
         read_positions: BTreeMap::from([
             ("generation".into(), position.generation.clone()),
-            ("index_file".into(), format!("{}:{}", index_file.0, index_file.1)),
+            (
+                "index_file".into(),
+                format!("{}:{}", index_file.0, index_file.1),
+            ),
             ("index".into(), position.index.to_string()),
             ("archive".into(), position.archive.to_string()),
         ]),
