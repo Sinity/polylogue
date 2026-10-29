@@ -414,22 +414,12 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
     }
 }
 
-/// Completions for a query word, from the daemon; none when it
-/// does not answer within a moment, so a shell never hangs on a tab.
+/// Query completion runs in the CLI process from the last published vocabulary.
 fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
-    let Some(word) = current.to_str() else {
-        return Vec::new();
-    };
-    let socket = Archive::at(&Archive::default_root()).socket();
-    let request = Request::Complete {
-        word: word.to_owned(),
-    };
-    let Ok(Response::Ok { data, .. }) =
-        crate::client::send_with_budget(&socket, &request, std::time::Duration::from_millis(500))
-    else {
-        return Vec::new();
-    };
-    completion_candidates(&data)
+    let Some(text) = current.to_str() else { return Vec::new(); };
+    let data = crate::completion_catalog::read(&Archive::default_root()).unwrap_or_default();
+    let values = crate::daemon::warm::completions(&data, text).into_iter().map(|(value, help)| serde_json::json!({"value":value,"help":help})).collect::<Vec<_>>();
+    completion_candidates(&Value::Array(values))
 }
 
 fn completion_candidates(data: &Value) -> Vec<clap_complete::CompletionCandidate> {

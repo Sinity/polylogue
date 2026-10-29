@@ -8,6 +8,7 @@ mod browser;
 mod cli;
 mod client;
 mod commands;
+mod completion_catalog;
 mod daemon;
 mod demo;
 mod embeddings;

@@ -499,13 +499,16 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 Err(e) => return store_error(&e),
             };
             match d.warm.completion(&reader, &position) {
-                Ok(data) => ok(super::warm::completions(&data, &word)
-                    .into_iter()
-                    .map(|(value, help)| serde_json::json!({"value": value, "help": help}))
-                    .collect::<Vec<_>>()),
-                Err(e) => error("store", e),
+                Ok(data) => {
+                    if let Err(error) = crate::completion_catalog::publish(&d.archive.root, &position, &data, now_ms()) {
+                        return self::error("completion_catalog", error);
+                    }
+                    ok(super::warm::completions(&data, &word).into_iter().map(|(value, help)| serde_json::json!({"value":value,"help":help})).collect::<Vec<_>>())
+                }
+                Err(error) => self::error("store", error),
             }
         }
+
         Request::Sql { statement } => match reader.query(&statement, &[]) {
             // The connection is read-only: a statement that writes fails.
             Ok(rows) => ok(rows),
