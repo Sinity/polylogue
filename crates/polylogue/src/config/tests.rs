@@ -225,3 +225,25 @@ fn unreadable_primary_deployment_stays_blocked_without_local_day() {
     ));
     assert!(startup.config.standalone_day().is_err());
 }
+
+#[test]
+fn fixture_configuration_uses_explicit_engine_inputs_and_has_no_external_outlets() {
+    let root = tempfile::tempdir().unwrap();
+    let engine = polylogue_engine::Config::new(
+        root.path().join("home"),
+        BTreeMap::new(),
+        "fixture-machine".into(),
+        "fixture-host".into(),
+        2,
+        WallClock::fixed("2026-03-08T12:34:56Z".parse().unwrap()),
+    )
+    .unwrap();
+    let startup = Startup::for_test(engine.clone(), &root.path().join("archive"));
+    assert_eq!(startup.config.identity.machine, "fixture-machine");
+    assert_eq!(startup.config.requests.now(), engine.clock.now().into());
+    assert_eq!(startup.clock.now(), engine.clock.now());
+    assert_eq!(startup.config.standalone_day().unwrap().zone_name(), "UTC");
+    assert!(startup.config.notification_bus_address.is_none());
+    assert!(startup.config.signals.action_commands.is_empty());
+    assert!(startup.config.signals.value_targets.is_empty());
+}
