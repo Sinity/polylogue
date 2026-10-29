@@ -267,9 +267,10 @@ impl Reader<'_> {
     ) -> Result<PreparedSelection<'read>, SelectionError> {
         self.with_clock(&options.clock, || {
             self.check()?;
-            polylogue_query::plan::validate_result_outputs(
+            crate::query_objects::validate_result_bindings(
+                self.conn()?,
+                crate::source::Source::Cache,
                 object,
-                &self.selection_kept_results()?,
             )?;
             let plan = polylogue_query::plan::replay(object, expected_catalog)?;
             let program = crate::query::lower(&plan, options)?;
