@@ -737,7 +737,7 @@ fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart()
     let expected = encoded.descriptor();
     let spool = Spool::open(directory.path(), "host").unwrap();
     spool
-        .prepare_encoded_capture(frame.clone(), encoded, &capture)
+        .prepare_encoded_capture(frame.clone(), prepared_body(encoded, None), &capture)
         .unwrap();
     let (path, actual) = spool.encoded_body("encoded").unwrap();
     assert_eq!(actual, expected);
@@ -759,7 +759,7 @@ fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart()
         "fixture distinguishes recompression"
     );
     spool
-        .prepare_encoded_capture(frame, retry, &capture)
+        .prepare_encoded_capture(frame, prepared_body(retry, None), &capture)
         .unwrap();
     assert_eq!(spool.encoded_body("encoded").unwrap().1, expected);
     assert_eq!(spool.capture("encoded").unwrap(), capture);
@@ -795,11 +795,89 @@ fn corrupted_encoded_custody_is_rejected_before_publication() {
     let spool = Spool::open(directory.path(), "host").unwrap();
     assert!(
         spool
-            .prepare_encoded_material(material("invalid", bytes), encoded)
+            .prepare_encoded_material(material("invalid", bytes), prepared_body(encoded, None))
             .is_err()
     );
     assert!(spool.get("invalid").unwrap().is_none());
     assert!(spool.pending_after(None, 1).unwrap().is_empty());
+}
+
+fn prepared_body(
+    prepared: hashed_blobs::Prepared,
+    path: Option<PathBuf>,
+) -> polylogue_store::primary::PreparedBody {
+    polylogue_store::primary::PreparedBody {
+        descriptor: prepared.descriptor(),
+        file: prepared.into_file(),
+        path,
+    }
+}
+
+#[test]
+fn prepared_path_links_only_the_pinned_inode_and_survives_original_path_drop() {
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let source = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+    let bytes = b"synthetic exact encoded source";
+    let encoded = Preparation::new(directory.path())
+        .unwrap()
+        .plain_into(source.as_file().try_clone().unwrap(), bytes.as_slice(), 3)
+        .unwrap();
+    let inode = source.as_file().metadata().unwrap().ino();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .prepare_encoded_material(
+            material("linked", bytes),
+            prepared_body(encoded, Some(source.path().into())),
+        )
+        .unwrap();
+    let (path, _) = spool.encoded_body("linked").unwrap();
+    assert_eq!(fs::metadata(path).unwrap().ino(), inode);
+    drop(source);
+    let mut decoded = Vec::new();
+    spool
+        .body("linked")
+        .unwrap()
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, bytes);
+}
+
+#[test]
+fn changed_or_symlinked_prepared_path_falls_back_to_the_verified_pinned_file() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    let directory = tempfile::tempdir().unwrap();
+    let wrong = directory.path().join("different-inode");
+    fs::write(&wrong, b"not the pinned data").unwrap();
+    let alias = directory.path().join("symlink");
+    symlink(&wrong, &alias).unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    for (identity, path) in [("different", wrong.clone()), ("symlinked", alias)] {
+        let bytes = b"the pinned source";
+        let encoded = Preparation::new(directory.path())
+            .unwrap()
+            .plain(bytes.as_slice(), 3)
+            .unwrap();
+        spool
+            .prepare_encoded_material(
+                material(identity, bytes),
+                prepared_body(encoded, Some(path)),
+            )
+            .unwrap();
+        let (path, _) = spool.encoded_body(identity).unwrap();
+        assert_ne!(
+            fs::metadata(path).unwrap().ino(),
+            fs::metadata(&wrong).unwrap().ino()
+        );
+        let mut decoded = Vec::new();
+        spool
+            .body(identity)
+            .unwrap()
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, bytes);
+    }
+    assert_eq!(fs::read(wrong).unwrap(), b"not the pinned data");
 }
 
 #[test]

@@ -388,7 +388,11 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
-                    version: 3,
+                    version: if *name == "polylogue.work_snapshot" {
+                        4
+                    } else {
+                        3
+                    },
                 },
                 declaring_producer: producer.into(),
                 payload_schema: Some(schema),

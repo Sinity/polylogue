@@ -49,7 +49,8 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
     declaration
         .evaluate(&payload, sinex_model::Class::Open)
         .unwrap();
-    let validator = jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap()).unwrap();
+    let validator =
+        jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap()).unwrap();
     validator.validate(&payload).unwrap();
     let mut malformed = payload;
     malformed["record"]["facts"]["message"]["usage"] = json!("invalid usage");
@@ -59,7 +60,7 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
 #[test]
 fn complete_snapshot_schema_keys_session_and_reducer_and_carries_honest_unknown_time() {
     let snapshot = polylogue_model::work_products::WorkSnapshot {
-        reducer_version: 1,
+        reducer_version: polylogue_model::work_products::VERSION,
         position: 42,
         session_id: polylogue_model::SessionId::parse("codex:s").unwrap(),
         session: None,
@@ -107,7 +108,14 @@ fn complete_snapshot_schema_keys_session_and_reducer_and_carries_honest_unknown_
 #[test]
 fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
     for declaration in declarations("polylogue") {
-        assert_eq!(declaration.kind.version, 3);
+        assert_eq!(
+            declaration.kind.version,
+            if declaration.kind.name == "polylogue.work_snapshot" {
+                4
+            } else {
+                3
+            }
+        );
         assert!(
             declaration
                 .field_hints

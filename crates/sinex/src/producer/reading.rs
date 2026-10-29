@@ -69,7 +69,7 @@ impl Sinex {
                             locator: root.into(),
                             host: self.host.clone(),
                         },
-                        blob: format!("blake3:{hash}"),
+                        blob: hash.to_string(),
                         length,
                         parser: "polylogue-reading".into(),
                         parser_version: 3,
@@ -88,7 +88,11 @@ impl Sinex {
                         },
                     }),
                 },
-                body,
+                PreparedBody {
+                    descriptor: body.descriptor(),
+                    file: body.into_file(),
+                    path: None,
+                },
             )?;
             Ok(PreparedWrite {
                 identity,

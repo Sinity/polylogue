@@ -5,12 +5,11 @@ use polylogue_model::{
     authored::{PendingAuthored, PreparedRequest},
 };
 use polylogue_store::primary::{
-    Capture, CapturedInput, Material, PendingCapture, PreparedInput, PreparedWrite, Product,
-    ProductWrite, SourceLocation,
+    Capture, CapturedInput, Material, PendingCapture, PreparedBody, PreparedInput, PreparedWrite,
+    Product, ProductWrite, SourceLocation,
 };
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
-use std::io::Read;
 mod reading;
 
 impl Sinex {
@@ -53,7 +52,18 @@ impl Sinex {
         }
     }
 
-    fn prepared_capture(&self, captured: Capture, bytes: &mut dyn Read) -> Result<PreparedWrite> {
+    fn prepared_capture(&self, captured: Capture, body: PreparedBody) -> Result<PreparedWrite> {
+        let (expected_hash, expected_length) = match &captured {
+            Capture::Input(input) => (input.hash, input.length),
+            Capture::Blob { hash, length } => (*hash, *length),
+        };
+        if body.descriptor.hash.0 != expected_hash.0
+            || body.descriptor.decoded_len != expected_length
+        {
+            return Err(Error::Invalid(
+                "prepared capture descriptor differs from its declared source bytes".into(),
+            ));
+        }
         let mut intent = serde_json::to_value(&captured)?;
         if let Some(observation) = intent
             .pointer_mut("/rows/observation")
@@ -122,14 +132,6 @@ impl Sinex {
         };
         let header = crate::spool::capture_header(&captured);
         let observation = matches!(&captured,Capture::Input(input) if input.rows.extent.is_none());
-        let observation_bytes = if observation {
-            Some(serde_json::to_vec(&header)?)
-        } else {
-            None
-        };
-        let (hash, length) = observation_bytes.as_ref().map_or((hash, length), |bytes| {
-            (BlobHash::of(bytes), bytes.len() as u64)
-        });
         let frame = Ingress::Material {
             frame: identity.clone(),
             material: Box::new(MaterialFrame {
@@ -159,10 +161,7 @@ impl Sinex {
                 },
             }),
         };
-        match observation_bytes {
-            Some(bytes) => queue.prepare_capture(frame, bytes.as_slice(), &captured)?,
-            None => queue.prepare_capture(frame, bytes, &captured)?,
-        };
+        queue.prepare_encoded_capture(frame, body, &captured)?;
         Ok(PreparedWrite {
             identity,
             pending: true,
@@ -172,11 +171,11 @@ impl Sinex {
     pub(crate) fn prepare_input(
         &self,
         captured: &CapturedInput,
-        bytes: &mut dyn Read,
+        body: PreparedBody,
     ) -> Result<PreparedInput> {
         Ok(PreparedInput::Pending {
             identity: self
-                .prepared_capture(Capture::Input(Box::new(captured.clone())), bytes)?
+                .prepared_capture(Capture::Input(Box::new(captured.clone())), body)?
                 .identity,
         })
     }
@@ -184,9 +183,9 @@ impl Sinex {
         &self,
         hash: BlobHash,
         length: u64,
-        bytes: &mut dyn Read,
+        body: PreparedBody,
     ) -> Result<PreparedWrite> {
-        self.prepared_capture(Capture::Blob { hash, length }, bytes)
+        self.prepared_capture(Capture::Blob { hash, length }, body)
     }
 
     fn capture_material(

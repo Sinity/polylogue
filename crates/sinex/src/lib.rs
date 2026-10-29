@@ -253,17 +253,17 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn prepare_input(
         &self,
         captured: &polylogue_store::primary::CapturedInput,
-        bytes: &mut dyn std::io::Read,
+        body: polylogue_store::primary::PreparedBody,
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedInput> {
-        Ok(self.prepare_input(captured, bytes)?)
+        Ok(self.prepare_input(captured, body)?)
     }
     fn prepare_blob(
         &self,
         hash: polylogue_model::BlobHash,
         length: u64,
-        bytes: &mut dyn std::io::Read,
+        body: polylogue_store::primary::PreparedBody,
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
-        Ok(self.prepare_blob(hash, length, bytes)?)
+        Ok(self.prepare_blob(hash, length, body)?)
     }
     fn pending_captures(
         &self,

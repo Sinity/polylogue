@@ -331,7 +331,7 @@ impl Spool {
     pub fn prepare_encoded_material(
         &self,
         frame: Ingress,
-        bytes: hashed_blobs::Prepared,
+        bytes: polylogue_store::primary::PreparedBody,
     ) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame can own encoded bytes");
@@ -342,7 +342,7 @@ impl Spool {
     pub fn prepare_encoded_capture(
         &self,
         frame: Ingress,
-        bytes: hashed_blobs::Prepared,
+        bytes: polylogue_store::primary::PreparedBody,
         capture: &Capture,
     ) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
@@ -704,7 +704,7 @@ impl Spool {
         mut body: Option<R>,
         captures: Option<(&[&str], String)>,
         full_capture: Option<&Capture>,
-        encoded_body: Option<hashed_blobs::Prepared>,
+        encoded_body: Option<polylogue_store::primary::PreparedBody>,
     ) -> Result<Prepared> {
         self.ensure_indexes()?;
         let identity = frame.frame().to_owned();
@@ -740,9 +740,9 @@ impl Spool {
                 }
             }
             if let Some(encoded) = encoded_body {
-                let descriptor = encoded.descriptor();
+                let descriptor = encoded.descriptor;
                 let _validated = hashed_blobs::Prepared::from_encoded(
-                    encoded.into_file(),
+                    encoded.file,
                     descriptor.clone(),
                     None,
                     ReadLimits::default(),
@@ -1206,9 +1206,36 @@ fn write_encoded_json(path: &Path, value: &impl Serialize) -> Result<Bytes> {
     encoded.into_file().sync_all()?;
     Ok(Bytes::new(&descriptor))
 }
-fn write_prepared(path: &Path, prepared: hashed_blobs::Prepared) -> Result<Bytes> {
-    let descriptor = prepared.descriptor();
-    let mut input = prepared.into_file();
+fn write_prepared(path: &Path, prepared: polylogue_store::primary::PreparedBody) -> Result<Bytes> {
+    use std::os::unix::fs::MetadataExt;
+    let descriptor = prepared.descriptor;
+    let checked = hashed_blobs::Prepared::from_encoded(
+        prepared.file,
+        descriptor.clone(),
+        None,
+        ReadLimits::default(),
+    )?;
+    let mut input = checked.into_file();
+    if let Some(source) = prepared.path
+        && fs::hard_link(source, path).is_ok()
+    {
+        if let Ok(linked) = regular(path) {
+            let a = input.metadata()?;
+            let b = linked.metadata()?;
+            if a.dev() == b.dev() && a.ino() == b.ino() {
+                hashed_blobs::Prepared::from_encoded(
+                    linked,
+                    descriptor.clone(),
+                    None,
+                    ReadLimits::default(),
+                )?
+                .into_file()
+                .sync_all()?;
+                return Ok(Bytes::new(&descriptor));
+            }
+        }
+        fs::remove_file(path)?;
+    }
     input.rewind()?;
     let mut output = create_payload(path)?;
     std::io::copy(&mut input, &mut output)?;
