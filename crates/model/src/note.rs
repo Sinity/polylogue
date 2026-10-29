@@ -148,7 +148,7 @@ impl Author {
             None if text == "agent" => Ok(Self::Agent(None)),
             None if text == "unattributed" => Ok(Self::Unattributed),
             Some(("agent", origin)) if !origin.contains(':') => Ok(Self::AgentOrigin(
-                Origin::new(origin).map_err(|e| ReferenceError::Id(text.to_owned(), e))?,
+                Origin::new(origin).map_err(|e| TargetError::Id(text.to_owned(), e))?,
             )),
             Some(("agent", s)) => Ok(Self::Agent(Some(
                 SessionId::parse(s).map_err(|e| TargetError::Id(text.to_owned(), e))?,
