@@ -141,9 +141,9 @@ pub struct ProjectionEvidence {
     pub cards: Vec<Card>,
     #[serde(default)]
     pub raw: Vec<RawRecord>,
-    /// Source block reference -> metadata aligned with its attachment positions.
+    /// Canonical source reference -> original block ordinal -> attachment positions.
     #[serde(default)]
-    pub attachments: BTreeMap<String, Vec<AttachmentEvidence>>,
+    pub attachments: BTreeMap<String, BTreeMap<u64, Vec<AttachmentEvidence>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expand_inherited: Option<ReadyCall>,
 }

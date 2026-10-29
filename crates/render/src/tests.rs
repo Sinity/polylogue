@@ -792,18 +792,21 @@ fn multiple_result_attachments_keep_individual_availability_and_source() {
     let mut evidence = ProjectionEvidence::default();
     evidence.attachments.insert(
         "block:test:session:message#0".into(),
-        vec![
-            AttachmentEvidence {
-                availability: ValueState::known("present".into()),
-                ..Default::default()
-            },
-            AttachmentEvidence {
-                availability: ValueState::Unavailable {
-                    reason: "source missing".into(),
+        std::collections::BTreeMap::from([(
+            0,
+            vec![
+                AttachmentEvidence {
+                    availability: ValueState::known("present".into()),
+                    ..Default::default()
                 },
-                ..Default::default()
-            },
-        ],
+                AttachmentEvidence {
+                    availability: ValueState::Unavailable {
+                        reason: "source missing".into(),
+                    },
+                    ..Default::default()
+                },
+            ],
+        )]),
     );
     let items = layout(record, &ReadOptions::default(), &evidence);
     assert!(
@@ -1078,4 +1081,52 @@ fn a_recorded_call_with_unknown_tool_name_is_not_an_orphan_result() {
     assert!(!call.orphan);
     assert_eq!(call.call_id.as_deref(), Some("known-call"));
     assert!(!crate::encode::call_label(call).contains("unknown call"));
+}
+
+#[test]
+fn document_attachments_at_different_blocks_do_not_share_availability() {
+    let mut document = polylogue_model::Document::new(
+        polylogue_model::DocumentId::parse("test:document").unwrap(),
+        polylogue_model::DocumentPurpose::Transcript,
+    );
+    document.blocks = vec![
+        Block::File(Default::default()),
+        Block::File(Default::default()),
+    ];
+    let record = Record::Document(polylogue_model::bundle::DocumentRecord {
+        reference: "document:test:document".into(),
+        commit: 1,
+        document,
+    });
+    let mut evidence = ProjectionEvidence::default();
+    evidence.attachments.insert(
+        "document:test:document".into(),
+        std::collections::BTreeMap::from([
+            (
+                0,
+                vec![AttachmentEvidence {
+                    availability: ValueState::known("present".into()),
+                    ..Default::default()
+                }],
+            ),
+            (
+                1,
+                vec![AttachmentEvidence {
+                    availability: ValueState::Unavailable {
+                        reason: "missing".into(),
+                    },
+                    ..Default::default()
+                }],
+            ),
+        ]),
+    );
+    let items = layout(record, &ReadOptions::default(), &evidence);
+    assert!(
+        matches!(&items[0].kind,ItemKind::Attachment{availability:ValueState::Value{value},..} if value=="present")
+    );
+    assert!(
+        matches!(&items[1].kind,ItemKind::Attachment{availability:ValueState::Unavailable{reason},..} if reason=="missing")
+    );
+    assert_eq!(items[0].source.reference, items[1].source.reference);
+    assert_ne!(items[0].source.block, items[1].source.block);
 }

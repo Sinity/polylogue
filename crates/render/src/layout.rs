@@ -486,6 +486,7 @@ fn attachment_kind(
     let prepared = evidence
         .attachments
         .get(&source.reference)
+        .and_then(|blocks| source.block.and_then(|ordinal| blocks.get(&ordinal)))
         .and_then(|attachments| attachments.get(index));
     let inline_bytes = prepared.and_then(|prepared| prepared.inline_bytes.clone());
     if let Some(bytes) = &inline_bytes
