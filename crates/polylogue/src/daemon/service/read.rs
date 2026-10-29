@@ -13,6 +13,7 @@ use query_language::cursor::{
 use serde::{Deserialize, Serialize};
 use std::{io::Write, num::NonZeroU64, ops::ControlFlow};
 
+mod blobs;
 mod outline;
 mod output;
 mod records;
@@ -92,12 +93,12 @@ fn open(
         )
         .map_err(language_error)?;
     if continuation.after.values.len() != 1 {
-        return Err(error("invalid_cursor", "invalid read position"));
+        return Err(error("bad_request", "invalid read position"));
     }
     let resume: Resume = serde_json::from_value(continuation.after.values[0].clone())
-        .map_err(|e| error("invalid_cursor", e))?;
+        .map_err(|e| error("bad_request", e))?;
     if resume.position.reference != continuation.after.row_identity {
-        return Err(error("invalid_cursor", "read position identity disagrees"));
+        return Err(error("bad_request", "read position identity disagrees"));
     }
     Ok((continuation, resume))
 }
@@ -199,6 +200,7 @@ fn visit(
     options: &ReadOptions,
     resume: Option<&Resume>,
     near: Option<&polylogue_store::selection::NearFn<'_>>,
+    mixed: bool,
     footer: &mut ReadFooter,
     mut emit: impl FnMut(ReadRecord, Option<OrderPosition>) -> Result<bool, Response>,
 ) -> Result<(), Response> {
@@ -221,7 +223,7 @@ fn visit(
                         }
                         pending = None;
                     }
-                    let Some(record) = output::project(record, options, &evidence, true, footer)?
+                    let Some(record) = output::project(record, options, &evidence, mixed, footer)?
                     else {
                         return Ok(true);
                     };
@@ -304,13 +306,13 @@ pub(super) fn page(
                 .len();
             limit.bytes =
                 std::num::NonZeroUsize::new(limit.bytes.get().saturating_sub(snapshot_bytes))
-                    .ok_or_else(|| error("read", "reading metadata exceeds page budget"))?;
+                    .ok_or_else(|| error("bad_request", "reading metadata exceeds page budget"))?;
             let mut pager = PageBuilder::new(
                 header,
                 limit,
                 resume.as_ref().map(|resume| resume.position.clone()),
             )
-            .map_err(|e| error("read", e))?;
+            .map_err(|e| error("bad_request", e))?;
             let mut footer = ReadFooter::default();
             let mut next_before = None;
             let visited = visit(
@@ -319,6 +321,10 @@ pub(super) fn page(
                 options,
                 resume.as_ref(),
                 near,
+                !matches!(
+                    polylogue_model::Reference::parse(target),
+                    Ok(polylogue_model::Reference::Document(_))
+                ),
                 &mut footer,
                 |record, before| {
                     let reference = record
@@ -334,12 +340,12 @@ pub(super) fn page(
                                 }
                             })
                         })
-                        .ok_or_else(|| error("read", "reading has no source position"))?;
+                        .ok_or_else(|| error("bad_request", "reading has no source position"))?;
                     for (ordinal, part) in record.parts().iter().enumerate() {
                         if let ReadPart::Item(item) = part {
                             if pager
                                 .push_at(&reference, ordinal as u64, item.clone())
-                                .map_err(|e| error("read", e))?
+                                .map_err(|e| error("bad_request", e))?
                                 == Push::Full
                             {
                                 next_before = Some(before);
@@ -382,7 +388,7 @@ pub(super) fn page(
                     detail: serde_json::to_value(e).ok(),
                 })?);
             }
-            let document = pager.finish(footer).map_err(|e| error("read", e))?;
+            let document = pager.finish(footer).map_err(|e| error("bad_request", e))?;
             scope.check().map_err(|e| store_error(&e))?;
             Ok(ReadPage {
                 snapshot: ReadPageSnapshot::from(&snapshot),
@@ -408,6 +414,7 @@ pub(crate) fn produce(
         target,
         options,
         cursor,
+        with_blobs,
         ..
     } = request
     else {
@@ -437,6 +444,11 @@ pub(crate) fn produce(
                     options: options.clone(),
                 };
                 let mut stream = output::Stream::begin(output, &check, &begin)?;
+                let mut blobs = if *with_blobs {
+                    Some(blobs::Blobs::new(&reader)?)
+                } else {
+                    None
+                };
                 let mut footer = ReadFooter::default();
                 let visited = visit(
                     &reader,
@@ -444,9 +456,16 @@ pub(crate) fn produce(
                     options,
                     resume.as_ref(),
                     near,
+                    !matches!(
+                        polylogue_model::Reference::parse(target),
+                        Ok(polylogue_model::Reference::Document(_))
+                    ),
                     &mut footer,
                     |record, _| {
                         stream.record(&record)?;
+                        if let Some(blobs) = &mut blobs {
+                            blobs.record(&record, &mut stream, &check)?;
+                        }
                         Ok(true)
                     },
                 );

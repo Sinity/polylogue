@@ -141,6 +141,7 @@ pub fn refusal(
 ) -> Response {
     let kind = match error {
         polylogue_store::StoreError::ReadCancelled => "cancelled",
+        polylogue_store::StoreError::ScopeChanged => "scope_changed",
         _ => "deadline_exceeded",
     };
     let query = info["text"]

@@ -16,8 +16,8 @@ pub(super) fn project(
     let reference = record.reference().unwrap_or_default().to_owned();
     match project_record(record, options, evidence) {
         Ok(Some(record)) => {
-            let parts = polylogue_render::layout_record(&record, options, evidence)
-                .map_err(|e| error("read", e))?;
+            let parts =
+                polylogue_render::layout_record(&record, options, evidence).map_err(read_error)?;
             Ok(Some(ReadRecord::Canonical {
                 record: Box::new(record),
                 parts,
@@ -55,7 +55,7 @@ pub(super) fn project(
                 })],
             }))
         }
-        Err(e) => Err(error("read", e)),
+        Err(e) => Err(read_error(e)),
     }
 }
 
@@ -85,12 +85,15 @@ impl<'a> Stream<'a> {
 
     fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Response> {
         (self.check)()?;
-        crate::protocol::stream::event(self.output, name, payload).map_err(|e| error("output", e))
+        crate::protocol::stream::event(self.output, name, payload).map_err(|e| error("io", e))
     }
 
     pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Response> {
         if matches!(record.record(), Some(Record::Manifest(_))) {
-            return Err(error("read", "a read cannot emit an embedded manifest"));
+            return Err(error(
+                "bad_request",
+                "a read cannot emit an embedded manifest",
+            ));
         }
         self.emit("record", record)?;
         if let Some(record) = record.record() {
@@ -105,7 +108,10 @@ impl<'a> Stream<'a> {
                 Record::VariantPart(_) => self.counts.variant_parts += 1,
                 Record::Blob(_) => self.counts.blobs += 1,
                 Record::Manifest(_) => {
-                    return Err(error("read", "a read cannot emit an embedded manifest"));
+                    return Err(error(
+                        "bad_request",
+                        "a read cannot emit an embedded manifest",
+                    ));
                 }
             }
         }
@@ -129,5 +135,32 @@ impl<'a> Stream<'a> {
             counts: self.counts,
         };
         self.emit("complete", &complete)
+    }
+}
+
+fn read_error(error: ReadError) -> Response {
+    let (kind, detail) = match &error {
+        ReadError::UnsupportedTarget {
+            view,
+            target,
+            accepted_views,
+        } => (
+            "not_built",
+            Some(serde_json::json!({"view":view,"target":target,"accepted_views":accepted_views})),
+        ),
+        ReadError::MissingEvidence {
+            view,
+            evidence,
+            reference,
+        } => (
+            "not_yet_available",
+            Some(serde_json::json!({"view":view,"evidence":evidence,"ref":reference})),
+        ),
+        _ => ("bad_request", None),
+    };
+    Response::Error {
+        kind: kind.into(),
+        message: error.to_string(),
+        detail,
     }
 }

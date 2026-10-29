@@ -13,7 +13,7 @@ type Visit<'a> = dyn FnMut(Record, ProjectionEvidence) -> Result<bool, Response>
 fn admission(commit: Option<u64>, reference: &str) -> Result<u64, Response> {
     commit.ok_or_else(|| {
         error(
-            "unavailable",
+            "not_yet_available",
             format!("{reference} has no retained source admission evidence"),
         )
     })
@@ -43,7 +43,7 @@ pub(super) fn reference(
                 .map_err(|e| store_error(&e))?
                 .ok_or_else(|| {
                     error(
-                        "unavailable",
+                        "not_yet_available",
                         format!("{reference_text} has no physical reading position"),
                     )
                 })?;
@@ -55,7 +55,7 @@ pub(super) fn reference(
                     .position(|ordinal| ordinal == n)
                 else {
                     return Err(error(
-                        "unavailable",
+                        "not_yet_available",
                         format!("block:{id}#{n} is not recorded in the selected source version"),
                     ));
                 };
@@ -142,7 +142,7 @@ fn session(
     let message_start = start.and_then(|start| start.reference.strip_prefix("message:"));
     let from = if let Some(message) = message_start {
         let message =
-            polylogue_model::MessageId::parse(message).map_err(|e| error("invalid_cursor", e))?;
+            polylogue_model::MessageId::parse(message).map_err(|e| error("bad_request", e))?;
         selected
             .locate(Some(&message))
             .map_err(|e| store_error(&e))?

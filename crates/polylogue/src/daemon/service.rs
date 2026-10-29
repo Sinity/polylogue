@@ -163,6 +163,7 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         },
         StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
         StoreError::ReadCancelled => error("cancelled", e),
+        StoreError::ScopeChanged => error("scope_changed", e),
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
         StoreError::NotFound(_) => error("not_found", e),
         StoreError::Invalid(_) => error("bad_request", e),
