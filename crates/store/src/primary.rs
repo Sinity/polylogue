@@ -82,7 +82,7 @@ pub struct Part {
 
 /// What an input is, in words Sinex keeps: the origin that wrote it, its
 /// path (or `drive:<id>`, an import's file name, …) and the host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InputName {
     pub origin: String,
     pub path: String,
