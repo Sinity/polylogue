@@ -43,12 +43,7 @@ fn dropped_and_foreign_preparations_leave_no_named_parts_or_committed_blobs() {
         Err(StoreError::NotFound(_))
     ));
     drop(prepared);
-    assert_eq!(
-        std::fs::read_dir(archive.parts_dir().unwrap())
-            .unwrap()
-            .count(),
-        0
-    );
+    assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
     let foreign = other.prepare_bytes(body.as_slice()).unwrap();
     assert!(matches!(
         writer.store_bytes(foreign, batch(&hash.to_string(), body.len() as u64)),
@@ -58,12 +53,7 @@ fn dropped_and_foreign_preparations_leave_no_named_parts_or_committed_blobs() {
         store.extent(&hashed_blobs::Hash(hash.0)),
         Err(StoreError::NotFound(_))
     ));
-    assert_eq!(
-        std::fs::read_dir(other.parts_dir().unwrap())
-            .unwrap()
-            .count(),
-        0
-    );
+    assert_eq!(std::fs::read_dir(other.staging_dir()).unwrap().count(), 0);
 }
 
 #[test]
@@ -139,12 +129,7 @@ fn preparation_encodes_once_and_hands_off_the_same_inode_after_seekable_inspecti
         std::fs::metadata(path).unwrap().ino()
     );
     assert!(body.descriptor.stored_len < bytes.len() as u64 / 10);
-    assert_eq!(
-        std::fs::read_dir(archive.parts_dir().unwrap())
-            .unwrap()
-            .count(),
-        1
-    );
+    assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 1);
     let descriptor = body.descriptor;
     drop(prepared);
     assert!(!path.exists());
@@ -169,10 +154,77 @@ fn failed_stream_inspection_releases_the_encoded_preparation() {
         Err::<(), _>(StoreError::Invalid("synthetic inspection refusal".into()))
     });
     assert!(matches!(result, Err(StoreError::Invalid(_))));
-    assert_eq!(
-        std::fs::read_dir(archive.parts_dir().unwrap())
-            .unwrap()
-            .count(),
-        0
-    );
+    assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
+}
+
+#[test]
+fn encoded_preparation_crash_child() {
+    let Some(root) = std::env::var_os("POLYLOGUE_ENCODED_PREP_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let path = root.join("archive");
+    let (_lock, _prepared) = if std::env::var_os("POLYLOGUE_ENCODED_PREP_PRIMARY").is_some() {
+        let (archive, lock) = Archive::open_primary(&path, &root.join("bytes")).unwrap();
+        (
+            lock,
+            archive
+                .prepare_bytes(b"unaccepted encoded source".as_slice())
+                .unwrap(),
+        )
+    } else {
+        let (archive, lock) = Archive::open_or_create(&path).unwrap();
+        (
+            lock,
+            archive
+                .prepare_bytes(b"unaccepted encoded source".as_slice())
+                .unwrap(),
+        )
+    };
+    std::fs::write(root.join("ready"), b"ready").unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
+#[test]
+fn ordinary_open_releases_encoded_preparations_after_process_death_in_both_modes() {
+    for primary in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "writer::staging::tests::encoded_preparation_crash_child",
+                "--nocapture",
+            ])
+            .env("POLYLOGUE_ENCODED_PREP_ROOT", directory.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if primary {
+            command.env("POLYLOGUE_ENCODED_PREP_PRIMARY", "1");
+        }
+        let mut child = command.spawn().unwrap();
+        let started = std::time::Instant::now();
+        while !directory.path().join("ready").exists() {
+            if child.try_wait().unwrap().is_some()
+                || started.elapsed() > std::time::Duration::from_secs(30)
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("preparation child did not reach custody boundary");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let path = directory.path().join("archive");
+        assert_eq!(std::fs::read_dir(path.join("staging")).unwrap().count(), 1);
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+        let (archive, _lock) = if primary {
+            Archive::open_primary(&path, &directory.path().join("bytes")).unwrap()
+        } else {
+            Archive::open_or_create(&path).unwrap()
+        };
+        assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
+    }
 }

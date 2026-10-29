@@ -89,7 +89,7 @@ impl crate::Archive {
         &self,
         write: impl FnOnce(&mut dyn std::io::Write) -> Result<T>,
     ) -> Result<(PreparedBytes, T)> {
-        let directory = self.parts_dir()?;
+        let directory = self.staging_dir();
         std::fs::create_dir_all(&directory)?;
         let temporary = tempfile::NamedTempFile::new_in(&directory)?;
         let mut encoded = hashed_blobs::Preparation::new(&directory)?

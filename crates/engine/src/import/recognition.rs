@@ -126,7 +126,6 @@ pub(super) fn declared(
     file: &mut (impl std::io::Read + std::io::Seek),
     format: Option<&str>,
 ) -> std::io::Result<Option<&'static OriginSpec>> {
-    use std::io::{Read, Seek};
     file.rewind()?;
     let mut head = [0; 64];
     let n = file.read(&mut head)?;

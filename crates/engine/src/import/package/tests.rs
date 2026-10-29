@@ -327,7 +327,7 @@ fn package_preflight_keeps_only_encoded_members_and_releases_refused_or_dropped_
     assert_eq!(restored, asset);
     // Every named private file is an encoded preparation. No expanded asset or
     // tar stream is written as a second plaintext scratch representation.
-    let parts = archive.parts_dir().unwrap();
+    let parts = archive.staging_dir();
     let files: Vec<_> = std::fs::read_dir(&parts).unwrap().collect();
     assert_eq!(files.len(), 3);
     for file in files {
