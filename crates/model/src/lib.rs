@@ -7,6 +7,7 @@ mod stored_names;
 pub mod atomic_write;
 pub mod batch;
 mod block;
+pub mod bundle;
 pub mod capture_log;
 mod change_position;
 pub mod command;
