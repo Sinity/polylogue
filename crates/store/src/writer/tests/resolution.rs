@@ -979,6 +979,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     );
     let mut empty = retry;
     empty.parse[0].output = Output::default();
+    empty.parse[0].reading_version = "replacement-reading".into();
     empty.parse[0].counts = counts(0);
     second.writer.send(empty).unwrap();
     let report = second.writer.flush().unwrap();
