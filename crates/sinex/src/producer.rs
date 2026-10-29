@@ -395,6 +395,70 @@ impl Sinex {
         })
     }
 
+    pub(crate) fn prepare_canonical_products(
+        &self,
+        identity: &str,
+        writes: &[ProductWrite],
+        proof: &polylogue_store::primary::RawInputProof,
+    ) -> Result<PreparedWrite> {
+        if identity.is_empty()
+            || writes.is_empty()
+            || proof.position < 0
+            || proof.policy_epoch < 0
+            || proof.scope.is_empty()
+            || proof.stamp.is_empty()
+        {
+            return Err(Error::Invalid(
+                "canonical publication requires an owner proof and immutable batch".into(),
+            ));
+        }
+        for write in writes {
+            if write.location.is_some() {
+                return Err(Error::Invalid(
+                    "canonical products cannot claim a source location".into(),
+                ));
+            }
+            match &write.product {
+                Product::WorkSnapshot { snapshot } if snapshot.position == proof.position => {
+                    snapshot
+                        .validate()
+                        .map_err(|error| Error::Invalid(error.into()))?;
+                }
+                Product::WorkComponentStatus { status } if status.position == proof.position => {
+                    status
+                        .validate()
+                        .map_err(|error| Error::Invalid(error.into()))?;
+                }
+                Product::AttachmentBinding { .. } => {}
+                _ => {
+                    return Err(Error::Invalid(
+                        "unsupported or mismatched canonical product".into(),
+                    ));
+                }
+            }
+        }
+        let mut events = crate::products::events(writes)?;
+        for event in &mut events {
+            event.reading_order = Some(proof.position);
+        }
+        self.queue()?.prepare(Ingress::Events {
+            frame: identity.into(),
+            source: None,
+            coverage: Some(sinex_protocol::CoverageProof {
+                stamp: proof.stamp.clone(),
+                position: proof.position,
+                policy_epoch: proof.policy_epoch,
+                scope: proof.scope.clone(),
+            }),
+            events,
+            failures: Vec::new(),
+        })?;
+        Ok(PreparedWrite {
+            identity: identity.into(),
+            pending: true,
+        })
+    }
+
     pub(crate) fn drain_observations(&self) -> Result<()> {
         let mut ready = Vec::new();
         self.visit_prepared(|queue, entry| {

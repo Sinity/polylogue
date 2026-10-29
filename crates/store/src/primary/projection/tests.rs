@@ -8,6 +8,7 @@ fn cache(path: &std::path::Path) -> Connection {
         .execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
     index.execute_batch(SCHEMA).unwrap();
+    index.execute_batch(crate::primary::derived::SCHEMA).unwrap();
     index
 }
 

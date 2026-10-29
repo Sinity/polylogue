@@ -35,7 +35,7 @@ message coverage or membership in the ten semantic raw-input classes. A new
 certificate binds the exact current declaration hashes; an earlier certificate
 is never reinterpreted under the new source catalog.
 
-`cargo run -p polylogue-sinex --example source_declaration -- <configured-producer>`
+`cargo run -p polylogue-sinex --example source_declaration`
 exports the exact adapter declaration and its fingerprint for owner review.
 Installing the artifact and granting canonical publication are separate owner
 operations.

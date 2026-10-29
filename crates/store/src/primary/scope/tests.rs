@@ -11,6 +11,7 @@ fn cache(archive: &Archive) -> Connection {
         .execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
     index.execute_batch(projection::SCHEMA).unwrap();
+    index.execute_batch(crate::primary::derived::SCHEMA).unwrap();
     crate::archive::generation::create(&index).unwrap();
     index
         .execute(

@@ -8,6 +8,7 @@ pub use acquisition::{
     PendingSource, RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
     SourceStatus, SourceSubject,
 };
+pub mod derived;
 pub mod products;
 pub mod raw_acquisition;
 pub mod replay;
@@ -131,6 +132,13 @@ pub trait Sinex: Send + Sync {
         &self,
         identity: &str,
         products: &[ProductWrite],
+    ) -> Result<PreparedWrite>;
+    /// Owner-certified canonical batch, separate from native acquisition facts.
+    fn prepare_canonical_products(
+        &self,
+        identity: &str,
+        products: &[ProductWrite],
+        proof: &RawInputProof,
     ) -> Result<PreparedWrite>;
     fn discard_confirmed(
         &self,

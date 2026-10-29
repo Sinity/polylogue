@@ -5,10 +5,15 @@ use crate::primary::{
     ReplayBasisStatus, ReplayContinuation, ReplayControl, ReplayCursor, ReplayState,
 };
 
-#[derive(serde::Serialize, serde::Deserialize)]
-enum CompletionEvidence {
+#[derive(PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum CompletionBasis {
     Snapshot(ProjectionCoverage),
     Native(crate::primary::DeliveredCompletion),
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CompletionEvidence {
+    basis: CompletionBasis,
+    publication: Option<crate::primary::RawInputProof>,
 }
 
 pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
@@ -83,15 +88,17 @@ fn basis(state: &mut ReplayState, status: &ReplayBasisStatus) {
         },
     };
 }
-fn barrier(conn: &Connection, position: i64, evidence: CompletionEvidence) -> Result<()> {
+fn barrier(conn: &Connection, position: i64, basis: CompletionBasis) -> Result<()> {
     if position < 0 { return Err(invalid("a completed owner position cannot be negative")); }
-    let bytes = packed(&evidence)?;
     let old: Option<Option<Vec<u8>>> = conn.query_row(
         "SELECT evidence FROM primary_complete WHERE position=?1", [position], |row| row.get(0),
     ).optional()?;
-    if old.as_ref().is_some_and(|old| old.as_ref().is_some_and(|old| old != &bytes)) {
-        return Err(invalid("a completed owner position changed its evidence"));
-    }
+    let publication = if let Some(Some(bytes)) = old {
+        let old: CompletionEvidence = unpacked(&bytes)?;
+        if old.basis != basis { return Err(invalid("a completed owner position changed its evidence")); }
+        old.publication
+    } else { None };
+    let bytes = packed(&CompletionEvidence { basis, publication })?;
     conn.execute("INSERT INTO primary_complete(position,evidence) VALUES (?1,?2) ON CONFLICT(position) DO UPDATE SET evidence=excluded.evidence", params![position,bytes])?;
     Ok(())
 }
@@ -126,10 +133,24 @@ pub(super) fn stage_control(conn: &Connection, state: &mut ReplayState, control:
                 let epoch = state.policy_epoch.ok_or_else(|| invalid("publication proof has no owner epoch"))?;
                 let scope = state.scope.as_deref().ok_or_else(|| invalid("publication proof has no owner scope"))?;
                 validate_raw(coverage, proof.position, epoch, scope)?;
-                if state.certified_position() != Some(proof.position) {
-                    return Err(invalid("publication proof does not cover the applied full projection"));
+                if matches!(state.availability, ProjectionAvailability::Invalidated { .. }) {
+                    return Err(invalid("publication proof cannot revive an invalidated full basis"));
                 }
-                state.publication = Some(proof.clone());
+                let staged: Option<Option<Vec<u8>>> = conn.query_row(
+                    "SELECT evidence FROM primary_complete WHERE position=?1", [proof.position], |row| row.get(0),
+                ).optional()?;
+                if let Some(Some(bytes)) = staged {
+                    let mut evidence: CompletionEvidence = unpacked(&bytes)?;
+                    if evidence.publication.as_ref().is_some_and(|old| old != proof) {
+                        return Err(invalid("a staged completion changed its publication proof"));
+                    }
+                    evidence.publication = Some(proof.clone());
+                    conn.execute("UPDATE primary_complete SET evidence=?2 WHERE position=?1", params![proof.position, packed(&evidence)?])?;
+                } else if state.certified_position() == Some(proof.position) {
+                    state.publication = Some(proof.clone());
+                } else {
+                    return Err(invalid("publication proof has no matching staged or applied full completion"));
+                }
             }
             RawInputCoverage::Incomplete { basis: status, .. } => basis(state, status),
             RawInputCoverage::NotRequested => state.publication = None,
@@ -158,7 +179,7 @@ pub(super) fn stage_control(conn: &Connection, state: &mut ReplayState, control:
                     { return Err(invalid("full projection certificate differs from its replay page")); }
                     validate_raw(raw_inputs, page.position, page.policy_epoch, &page.scope)?;
                     validate_pending(conn, page.position, page.policy_epoch)?;
-                    barrier(conn, page.position, CompletionEvidence::Snapshot(ProjectionCoverage {
+                    barrier(conn, page.position, CompletionBasis::Snapshot(ProjectionCoverage {
                         policy_epoch: page.policy_epoch, projection: projection.clone(), raw_inputs: raw_inputs.clone(),
                     }))?;
                     state.cursor = None;
@@ -184,7 +205,7 @@ pub(super) fn stage_control(conn: &Connection, state: &mut ReplayState, control:
                 || state.scope.as_deref() != Some(coverage.projection.scope.as_str())
             { return Err(invalid("native completion differs from its certified full projection basis")); }
             validate_pending(conn, *position, coverage.policy_epoch)?;
-            barrier(conn, *position, CompletionEvidence::Native(delivered.clone()))?;
+            barrier(conn, *position, CompletionBasis::Native(delivered.clone()))?;
         }
     }
     Ok(())
@@ -196,18 +217,20 @@ pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
     state.applied_position = Some(position);
     state.publication = None;
     if let Some(evidence) = evidence {
-        match unpacked(&evidence)? {
-            CompletionEvidence::Snapshot(coverage) => {
+        let evidence: CompletionEvidence = unpacked(&evidence)?;
+        match evidence.basis {
+            CompletionBasis::Snapshot(coverage) => {
                 state.policy_epoch = Some(coverage.policy_epoch);
                 state.scope = Some(coverage.projection.scope.clone());
                 state.coverage = Some(coverage);
                 state.completion = None;
             }
-            CompletionEvidence::Native(delivered) => state.completion = Some(delivered),
+            CompletionBasis::Native(delivered) => state.completion = Some(delivered),
         }
         if state.erasure_fence.is_some_and(|fence| position >= fence) { state.erasure_fence = None; }
         if state.erasure_fence.is_none() {
             state.availability = ProjectionAvailability::Certified;
+            state.publication = evidence.publication;
             conn.execute("DELETE FROM meta WHERE key='confirmed_replay_blocked'", [])?;
         }
     }

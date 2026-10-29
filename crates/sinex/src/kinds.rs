@@ -51,11 +51,11 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
 
 /// Complete immutable adapter artifact. Installing it and granting native or
 /// canonical publication authority remain separate owner operations.
-pub fn source_declaration(producer: &str) -> sinex_model::SourceDeclaration {
+pub fn source_declaration() -> sinex_model::SourceDeclaration {
     sinex_model::SourceDeclaration {
         source: crate::source_reference(),
         family: "polylogue".into(),
-        kinds: declarations(producer),
+        kinds: declarations("polylogue"),
     }
 }
 

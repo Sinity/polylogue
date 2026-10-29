@@ -98,6 +98,7 @@ impl Inner {
         // Staging is durable even when a large position has not reached its barrier.
         let state = crate::primary::projection::replay_state(&self.index)?;
         sinex.acknowledge(&state)?;
+        crate::primary::derived::publish(&self.index, sinex.as_ref(), &state)?;
         Ok(applied)
     }
 

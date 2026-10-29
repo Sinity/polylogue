@@ -144,6 +144,13 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
         }
     }
     replay::save(&tx, &state)?;
+    if events.iter().any(|event| matches!(&event.change, ConfirmedChange::Control(control)
+        if matches!(control.as_ref(), super::ReplayControl::Coverage { coverage: super::RawInputCoverage::Complete { .. } })))
+        && let (Some(position), Some(proof)) = (state.certified_position(), state.publication.as_ref())
+    {
+        let counter: i64 = tx.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'", [], |row| row.get(0)).optional()?.unwrap_or(0);
+        super::derived::stage(&tx, position, counter, Some(proof))?;
+    }
     crate::fault::check("primary.stage_commit", "")?;
     tx.commit()?;
     Ok(())
@@ -240,7 +247,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. } => {
             (None, None, reference, "query")
         }
-        Product::WorkSnapshot { .. } => (None, None, reference, "derived"),
+        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => (None, None, reference, "derived"),
         _ => unreachable!(),
     }
 }
@@ -272,6 +279,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
             .optional()?;
         let next = match change {
             ConfirmedChange::Live(product) => {
+                super::derived::validate_confirmed(&product)?;
                 let bytes = packed(&product)?;
                 if let Some(old) = &old {
                     if old
@@ -295,6 +303,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
+                let reference = super::derived::reference(&product)?.or(reference);
                 let session = match product.as_ref() {
                     Product::Session { facts, .. } => Some(facts.id.to_string()),
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
@@ -989,6 +998,8 @@ pub(crate) fn apply(
         )?;
         remember_blobs(&tx)?;
         replay::complete(&tx, next)?;
+        let state = replay_state(&tx)?;
+        super::derived::stage(&tx, next, counter, state.publication.as_ref())?;
         tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;

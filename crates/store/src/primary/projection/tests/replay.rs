@@ -188,3 +188,26 @@ fn certified_empty_owner_position_zero_is_distinct_from_unknown_application() {
     assert_eq!(replay_state(&index).unwrap().certified_position(), Some(0));
     assert_eq!(checkpoint(&index).unwrap(), Some(0));
 }
+
+#[test]
+fn offered_write_proof_waits_in_staging_until_its_full_completion_transaction_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.db");
+    let mut index = cache(&path);
+    initialize(&index);
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    index.execute_batch("CREATE TRIGGER refuse_atomic BEFORE INSERT ON source_input BEGIN SELECT raise(ABORT,'refuse'); END").unwrap();
+    let offer = control(ReplayControl::Coverage { coverage: RawInputCoverage::Complete {
+        proof: RawInputProof { stamp: "atomic-write-proof".into(), position: 20, policy_epoch: 7, scope: "scope".into() },
+    } });
+    assert!(apply(&mut index, &resolver, &[native_input(), complete(), offer]).is_err());
+    assert_eq!(replay_state(&index).unwrap().publication, None);
+    assert_eq!(checkpoint(&index).unwrap(), None);
+    drop(index);
+    let mut index = Connection::open(path).unwrap();
+    index.execute_batch("DROP TRIGGER refuse_atomic").unwrap();
+    apply(&mut index, &resolver, &[]).unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(20));
+    assert_eq!(replay_state(&index).unwrap().publication.unwrap().stamp, "atomic-write-proof");
+}
