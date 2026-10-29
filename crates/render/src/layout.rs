@@ -362,7 +362,10 @@ fn block_items(
     if !options.view.block_kinds().contains(&block.kind()) {
         return Ok(true);
     }
-    if visible_text(block, options) && !variant_indicator(&source, options, evidence, visit) {
+    if !evidence.tool_pairs.contains_key(&ordinal)
+        && visible_text(block, options)
+        && !variant_indicator(&source, options, evidence, visit)
+    {
         return Ok(false);
     }
     let presented = presentation_block(block, &source, options, evidence)?;
