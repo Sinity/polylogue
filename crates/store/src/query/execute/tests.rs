@@ -142,3 +142,39 @@ fn native_time_predicates_accept_a_declared_fixture_event_instant() {
     present(&program, &mut page.rows[0]).unwrap();
     assert_eq!(page.rows[0]["at"], "1970-01-01T00:00:01Z");
 }
+
+#[test]
+fn native_time_missing_related_metadata_keeps_unknown_truth() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "test:parent",
+            ..Default::default()
+        })
+        .unwrap();
+    fixture
+        .link(
+            "test:parent",
+            "test:missing-child",
+            "spawn",
+            "native-marker",
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields.clear();
+    for (text, count) in [
+        ("links where child.started >= 2026-10-01", 0),
+        ("links where NOT child.started >= 2026-10-01", 0),
+        ("links where child.started:unknown", 1),
+    ] {
+        let program = crate::query::compile(text, &options).unwrap();
+        assert_eq!(
+            reader.query_page(&program, None).unwrap().count,
+            count,
+            "{text}"
+        );
+    }
+}
