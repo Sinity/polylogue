@@ -66,6 +66,8 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
         container: false,
         origin: polylogue_sources::origin::by_name(KEPT),
         parent: None,
+        container_kind: None,
+        member_path_bytes: None,
     });
     for input in &inputs {
         let format = origin(&input.origin).ok_or_else(|| {
@@ -89,6 +91,8 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
                 container: false,
                 origin: polylogue_sources::origin::by_name(KEPT),
                 parent: None,
+                container_kind: None,
+                member_path_bytes: None,
             });
         }
         let mut chain = Vec::new();
@@ -148,6 +152,8 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
             container: false,
             origin: Some(spec),
             parent: None,
+            container_kind: None,
+            member_path_bytes: None,
         });
     }
     Ok(Some(members))

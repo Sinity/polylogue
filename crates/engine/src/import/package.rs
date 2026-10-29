@@ -10,7 +10,6 @@ pub(super) struct Member {
     pub origin: Option<&'static OriginSpec>,
     pub parent: Option<(usize, u64)>,
     pub container_kind: Option<String>,
-    pub member_path: Option<String>,
     pub member_path_bytes: Option<Vec<u8>>,
 }
 
@@ -85,7 +84,6 @@ fn expand(
             origin: None,
             parent,
             container_kind: None,
-            member_path: None,
             member_path_bytes: None,
         });
         return Ok(());
@@ -161,7 +159,6 @@ fn expand(
         origin: Some(polylogue_sources::origin::by_name(KEPT).expect("container origin")),
         parent,
         container_kind: None,
-        member_path: None,
         member_path_bytes: None,
     });
     let kind = if magic[..n].starts_with(ZIP_MAGIC) {
@@ -185,7 +182,6 @@ fn expand(
             out,
         )?;
         out[child].container_kind = Some(kind.into());
-        out[child].member_path = Some(display);
         out[child].member_path_bytes = Some(name);
     }
     Ok(())

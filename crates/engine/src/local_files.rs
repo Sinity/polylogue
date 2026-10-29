@@ -52,15 +52,13 @@ fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> st
 impl Engine {
     pub(crate) fn capture_local_files(
         &mut self,
-        decoded: &mut std::fs::File,
+        mut source: impl BufRead,
         transcript: &str,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        decoded.rewind()?;
         let mut manifest = tempfile::tempfile_in(self.archive.staging_dir())?;
         let mut directory: Option<PathBuf> = None;
         let mut line = Vec::new();
-        let mut source = std::io::BufReader::new(decoded);
         let mut offset = 0u64;
         let mut references = 0u64;
         while source.read_until(b'\n', &mut line)? > 0 {

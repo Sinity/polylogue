@@ -26,6 +26,18 @@ fn plain_moved_compressed_and_reencoded_rollouts_share_native_input_without_extr
     let p = e.run_pass().unwrap();
     assert!(p.errors.is_empty(), "{p:?}");
     assert_eq!(captured(&e, "codex:rollout:same-native"), bytes.as_bytes());
+    let sessions = polylogue_model::SessionId::parse("codex:same-native").unwrap();
+    assert_eq!(
+        e.reads
+            .reader()
+            .unwrap()
+            .messages(&sessions, false)
+            .unwrap()
+            .iter()
+            .map(polylogue_model::Message::text)
+            .collect::<Vec<_>>(),
+        ["independent payload"]
+    );
     let moved = w.home.join(".codex/archived_sessions");
     std::fs::create_dir_all(&moved).unwrap();
     std::fs::remove_file(&plain).unwrap();
@@ -51,6 +63,7 @@ fn plain_moved_compressed_and_reencoded_rollouts_share_native_input_without_extr
     );
     drop(e);
     drop(lock);
+    std::fs::remove_file(w.root.join("index.db")).unwrap();
     let (mut e, _lock) = engine(&w, 64);
     assert!(e.run_pass().unwrap().errors.is_empty());
     assert_eq!(captured(&e, "codex:rollout:same-native"), bytes.as_bytes());
@@ -73,11 +86,33 @@ fn appended_plain_rollout_extends_the_native_chain_and_corrupt_encoding_keeps_or
         .unwrap();
     file.write_all(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}\n")
         .unwrap();
-    assert!(e.run_pass().unwrap().errors.is_empty());
+    let appended = e.run_pass().unwrap();
+    assert!(appended.errors.is_empty());
+    assert_eq!(
+        appended.bytes_stored,
+        b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}\n".len() as u64
+    );
     assert_eq!(w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:append-native'"),1);
     std::fs::write(dir.join("rollout-corrupt.jsonl.zst"), b"not zstd").unwrap();
     let before = w.count("SELECT count(*) AS n FROM a.input");
     let p = e.run_pass().unwrap();
     assert_eq!(p.errors.len(), 1);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), before);
+}
+
+#[test]
+fn a_large_compressed_record_has_no_decoded_size_cap() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let header=serde_json::json!({"type":"session_meta","payload":{"id":"large-native","instructions":"x".repeat(17*1024*1024)}}).to_string()+"\n";
+    let encoded = zstd::stream::encode_all(header.as_bytes(), 1).unwrap();
+    std::fs::write(dir.join("rollout-large.jsonl.zst"), encoded).unwrap();
+    let (mut e, _lock) = engine(&w, 1 << 20);
+    let p = e.run_pass().unwrap();
+    assert!(p.errors.is_empty(), "{p:?}");
+    assert_eq!(
+        captured(&e, "codex:rollout:large-native"),
+        header.as_bytes()
+    );
 }

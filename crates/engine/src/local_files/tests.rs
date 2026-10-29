@@ -49,3 +49,31 @@ fn recorded_directory_captures_original_assets_and_reports_missing_and_unresolve
     statuses.sort();
     assert_eq!(statuses, ["collected", "missing", "unresolved"]);
 }
+
+#[test]
+fn every_reference_after_four_thousand_is_still_reported() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let images = (0..4097)
+        .map(|i| format!("missing-{i}.png"))
+        .collect::<Vec<_>>();
+    let row = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"attachment list","local_images":images}});
+    std::fs::write(
+        dir.join("rollout-many.jsonl"),
+        format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"many-native\"}}}}\n{row}\n"),
+    )
+    .unwrap();
+    let (mut e, _lock) = engine(&w, 4096);
+    let p = e.run_pass().unwrap();
+    assert!(p.errors.is_empty(), "{p:?}");
+    let reader = e.reads.reader().unwrap();
+    let rows=reader.query("SELECT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.format='tool-context' AND o.path='codex-local-references/codex:rollout:many-native.jsonl'",&[]).unwrap();
+    assert_eq!(rows.len(), 1);
+    let input = rows[0]["input"].as_str().unwrap();
+    let progress = reader.input_progress(input).unwrap().unwrap();
+    let bytes = reader
+        .stored_range(input, progress.chain, 0, progress.length, &e.blobs)
+        .unwrap();
+    assert_eq!(bytes.iter().filter(|b| **b == b'\n').count(), 4097);
+}
