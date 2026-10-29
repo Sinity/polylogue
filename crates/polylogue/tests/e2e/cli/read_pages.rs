@@ -13,11 +13,7 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_cursors() {
         line("u1", "pages", "λ🙂 synthetic prompt with several pages"),
     )
     .unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     wait_status(&env, |status| {
         status["store"]["messages"] == 1 && status["store"]["search_pending"] == 0

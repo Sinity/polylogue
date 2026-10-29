@@ -47,12 +47,26 @@ fn gemini_hooks_install_and_uninstall_through_the_public_command() {
 fn manual_runs_offline_as_text_and_json() {
     let dir = tempfile::tempdir().unwrap();
     let archive = dir.path().join("absent-archive");
-    let plain = cli(&[("POLYLOGUE_ARCHIVE", &archive)], &["manual"]);
+    let plain = cli(
+        &crate::Fixture::new(
+            &archive,
+            &dir.path().join("home"),
+            &dir.path().join("config"),
+        ),
+        &["manual"],
+    );
     assert!(plain.status.success(), "{plain:?}");
     let text = String::from_utf8(plain.stdout).unwrap();
     assert!(text.contains("polylogue"));
     assert!(text.contains("sessions where"));
-    let structured = cli(&[("POLYLOGUE_ARCHIVE", &archive)], &["--json", "manual"]);
+    let structured = cli(
+        &crate::Fixture::new(
+            &archive,
+            &dir.path().join("home"),
+            &dir.path().join("config"),
+        ),
+        &["--json", "manual"],
+    );
     assert!(structured.status.success(), "{structured:?}");
     assert_eq!(json(&structured)["manual"], text);
     assert!(!archive.exists());
@@ -97,8 +111,6 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
         });
         let mut child = crate::command(dir.path())
             .args(["hook", event, "--harness", "gemini-cli"])
-            .env("POLYLOGUE_ARCHIVE", &archive)
-            .env("POLYLOGUE_HOME", &home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

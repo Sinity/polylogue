@@ -9,12 +9,16 @@ fn public_morrow_tour_matches_current_query_examples() {
     std::os::unix::fs::symlink(&actual, &alias).unwrap();
     let directory = alias.join("t\u{9b}\x7f\u{202e}");
     let operator_archive = temp.path().join("operator-archive");
-    let output = crate::command(temp.path())
-        .args(["--json", "demo", "tour"])
-        .arg(&directory)
-        .env("POLYLOGUE_ARCHIVE", &operator_archive)
-        .output()
-        .unwrap();
+    let output = crate::Fixture::new(
+        &operator_archive,
+        &temp.path().join("home"),
+        &temp.path().join("config"),
+    )
+    .command()
+    .args(["--json", "demo", "tour"])
+    .arg(&directory)
+    .output()
+    .unwrap();
     assert!(!operator_archive.exists());
     assert!(output.status.success(), "{output:?}");
     let text = std::str::from_utf8(&output.stdout).unwrap();
@@ -135,11 +139,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     // The README daemon uses this machine's identity and the same absolute paths.
     let archive = directory.join("archive");
     let config = directory.join("config");
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let before = {
         let pool =
             polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();

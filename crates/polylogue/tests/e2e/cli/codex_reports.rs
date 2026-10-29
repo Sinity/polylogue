@@ -13,11 +13,7 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
     let source = sessions.join(format!("rollout-synthetic-{THREAD}.jsonl"));
     let original = polylogue_testkit::codex::observations(THREAD);
     std::fs::write(&source, &original).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let answer = loop {
         let out = cli(&env, &["--json", "measure", "usage"]);

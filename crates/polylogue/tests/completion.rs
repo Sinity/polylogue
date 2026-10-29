@@ -1,11 +1,13 @@
 //! Real shell callbacks over an offline synthetic catalog.
+#[path = "support/process.rs"]
+mod process;
+
 use polylogue_model::ChangePosition;
 use polylogue_store::completion::{CatalogWriter, Kept, Metadata, Saved, Session, Setting};
 use query_language::catalog::{Field, FieldKind, OutputSchema};
 use std::{
     collections::BTreeMap,
     path::Path,
-    process::Command,
     time::{Duration, Instant},
 };
 const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
@@ -104,18 +106,23 @@ fn callback(
     program: &str,
 ) -> (String, Duration) {
     let at = Instant::now();
-    let output = Command::new(BIN)
-        .env("COMPLETE", shell)
-        .env("XDG_CACHE_HOME", cache)
-        .env("_CLAP_COMPLETE_INDEX", (words.len() + 2).to_string())
-        .env("_CLAP_IFS", "\n")
-        .arg("--")
-        .arg(program)
-        .arg("--archive")
-        .arg(root)
-        .args(words)
-        .output()
-        .unwrap();
+    let output = process::Fixture::new(
+        root,
+        &root.parent().unwrap().join("home"),
+        &root.parent().unwrap().join("config"),
+    )
+    .native_command()
+    .env("COMPLETE", shell)
+    .env("XDG_CACHE_HOME", cache)
+    .env("_CLAP_COMPLETE_INDEX", (words.len() + 2).to_string())
+    .env("_CLAP_IFS", "\n")
+    .arg("--")
+    .arg(program)
+    .arg("--archive")
+    .arg(root)
+    .args(words)
+    .output()
+    .unwrap();
     assert!(
         output.status.success(),
         "{shell} {words:?}: {}",

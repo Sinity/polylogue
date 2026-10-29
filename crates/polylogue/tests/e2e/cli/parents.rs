@@ -13,7 +13,7 @@ fn exported(name: &str, text: &str, parent: Option<(&str, Option<&str>)>) -> Val
     }], "links": links})
 }
 
-fn with_parents(env: &[(&str, &Path)], session: &str, format: &str) -> Value {
+fn with_parents(env: &crate::Fixture, session: &str, format: &str) -> Value {
     let out = cli(
         env,
         &[
@@ -36,11 +36,7 @@ fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     std::fs::create_dir_all(&home).unwrap();
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let mut sessions = Vec::new();
     for i in 0usize..1030 {

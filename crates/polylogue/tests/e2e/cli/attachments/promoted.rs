@@ -9,11 +9,7 @@ fn promoted_chatgpt_import_resolves_assets_and_pages_after_provider_free_rebuild
     let source = dir.path().join("export");
     std::fs::create_dir(&home).unwrap();
     std::fs::create_dir(&source).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let unknown = dir.path().join("renamed.json");
     let body = conversation();
     std::fs::write(&unknown, &body).unwrap();
@@ -51,7 +47,7 @@ fn promoted_chatgpt_import_resolves_assets_and_pages_after_provider_free_rebuild
     }
 }
 
-fn check(env: &[(&str, &Path)]) {
+fn check(env: &crate::Fixture) {
     let descriptor = cli(env, &["--json", "attachment", MESSAGE, "0"]);
     assert!(descriptor.status.success(), "{descriptor:?}");
     assert_eq!(json(&descriptor)["descriptor"]["state"], "available");

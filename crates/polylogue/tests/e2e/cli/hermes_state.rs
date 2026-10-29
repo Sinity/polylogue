@@ -24,11 +24,7 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
     drop(db);
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     wait_status(&env, |status| {
         status["store"]["messages"].as_u64() == Some(3)
@@ -129,11 +125,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
     drop(db);
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));
     let listed = cli(&env, &["--json", "origin:hermes"]);

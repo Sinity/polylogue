@@ -14,16 +14,13 @@ struct Mcp {
 }
 
 impl Mcp {
-    fn start(env: &[(&str, &Path)]) -> Self {
-        let mut command = Command::new(crate::BIN);
+    fn start(env: &crate::Fixture) -> Self {
+        let mut command = env.command();
         command
             .arg("mcp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (key, value) in env {
-            command.env(key, value);
-        }
         let mut process = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
         let input = process.0.stdin.take().unwrap();
         let output = BufReader::new(process.0.stdout.take().unwrap());
@@ -86,7 +83,7 @@ fn failure(error: &Value) -> (String, String) {
 }
 
 fn answer(
-    env: &[(&str, &Path)],
+    env: &crate::Fixture,
     archive: &Path,
     mcp: &mut Mcp,
     surface: &str,
@@ -155,11 +152,7 @@ fn every_surface_refuses_command_words_and_values_outside_a_set() {
         line("q1", "query", "synthetic walrus prompt"),
     )
     .unwrap();
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
     let mut mcp = Mcp::start(&env);
