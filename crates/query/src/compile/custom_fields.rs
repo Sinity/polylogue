@@ -83,7 +83,7 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     if !x.top || x.span.start >= c.stages_start || c.near_request.is_some() {
         return Err(QueryError::Invalid {
             message:
-                "near: ranks the whole query, so it appears once among the top-level conditions"
+                "similar: ranks the whole query, so it appears once among the top-level conditions"
                     .into(),
             position: x.span.start,
         });
@@ -91,7 +91,7 @@ pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     if !matches!(x.unit, Unit::Sessions | Unit::Messages | Unit::Blocks) {
         return Err(QueryError::Invalid {
             message: format!(
-                "near: ranks sessions, messages and blocks, not {}",
+                "similar: ranks sessions, messages and blocks, not {}",
                 x.unit.name()
             ),
             position: x.span.start,

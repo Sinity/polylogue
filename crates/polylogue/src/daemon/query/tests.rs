@@ -857,12 +857,12 @@ fn an_empty_result_explains_itself() {
     assert_eq!(v["why"][0]["matches"], 0);
     assert_eq!(v["why"][0]["of"], 7);
     // 33: semantic search is not enabled.
-    let v = q(&w, "near:\"ambiguous date formats\"");
+    let v = q(&w, "similar:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "incomplete");
     assert_eq!(v["count"], 7);
 }
 
-/// Similarities for `near:` computed from stored vectors: the texts of the
+/// Similarities for `similar:` computed from stored vectors: the texts of the
 /// sessions whose ID is `LIKE like` lie along the query, every other text
 /// across it.
 fn similarity(w: &TestArchive, like: &str) -> std::sync::Arc<polylogue_store::vectors::Similarity> {
@@ -905,7 +905,7 @@ fn near_ranks_every_row_by_similarity() {
         assert_eq!(q, "ambiguous date formats");
         Ok(std::sync::Arc::clone(&s))
     };
-    let mut a = ask("near:\"ambiguous date formats\"");
+    let mut a = ask("similar:\"ambiguous date formats\"");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -923,7 +923,7 @@ fn near_applies_its_conditions_before_ranking() {
     // excludes #2 still ranks what it keeps instead of finding nothing.
     let s = similarity(&w, "%0002-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let mut a = ask("near:x -id:claude-code:7f3a2c10-0002");
+    let mut a = ask("similar:x -id:claude-code:7f3a2c10-0002");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -947,7 +947,7 @@ fn text_and_similarity_rank_together() {
     let mut text_only = ask("messages where parser");
     text_only.page_size = Some(100);
     let lexical = run_q(&w, text_only).unwrap();
-    let mut both = ask("messages where parser near:x");
+    let mut both = ask("messages where parser similar:x");
     both.page_size = Some(100);
     both.embeddings = true;
     both.near = Some(&near);

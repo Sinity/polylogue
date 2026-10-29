@@ -29,8 +29,8 @@ impl<'a> Compiler<'a> {
             where_sql.push(sql);
         }
         for c in &top {
-            // `near:` ranks rather than filters: it keeps every row.
-            let ranking = matches!(&c.kind, ConditionKind::Match { field, .. } if field.eq_ignore_ascii_case("near"));
+            // `similar:` ranks rather than filters: it keeps every row.
+            let ranking = matches!(&c.kind, ConditionKind::Similar { .. });
             if ranking {
                 continue;
             }
@@ -694,7 +694,7 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// Words and `near:` together: the conditions and both orders are
+    /// Words and `similar:` together: the conditions and both orders are
     /// evaluated once, over the rows the conditions keep, and each row's
     /// fused rank joins it. Done once, when the rows are complete or when a
     /// combining stage needs their order.
@@ -792,7 +792,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// How the rows rank, lower first: by full-text relevance, by
-    /// similarity to a `near:` text, or, with both, by reciprocal rank
+    /// similarity to a `similar:` text, or, with both, by reciprocal rank
     /// fusion of the two orders over the rows the conditions keep (each
     /// row scores `1/(60 + its place)` in each order it is in; a row with
     /// no vector is in the text order only).

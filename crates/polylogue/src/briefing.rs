@@ -1015,7 +1015,7 @@ fn recall_query(
     if similarity {
         lists.push((
             "semantic",
-            format!("messages where near:{}", notes::quoted(text)),
+            format!("messages where similar:{}", notes::quoted(text)),
         ));
     }
     let ((_, first), rest) = lists.split_first()?;

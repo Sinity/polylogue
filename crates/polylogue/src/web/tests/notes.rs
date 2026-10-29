@@ -280,8 +280,8 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
                 .unwrap();
         }
         for (n, text) in [
-            "messages where near:synthetic origin:claude-code",
-            "messages where synthetic near:synthetic origin:claude-code",
+            "messages where similar:synthetic origin:claude-code",
+            "messages where synthetic similar:synthetic origin:claude-code",
         ]
         .into_iter()
         .enumerate()

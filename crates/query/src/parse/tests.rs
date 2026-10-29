@@ -45,7 +45,7 @@ fn every_spec_example_parses_through_the_product_catalog() {
         "origin:(chatgpt|claude-ai)",
         "notes where kind:decision",
         "origin:codex with messages(id, role)[role:assistant, last:1]",
-        "near:\"ambiguous date formats\"",
+        "similar:\"ambiguous date formats\"",
         "repo:other",
         "links where kind:continuation",
         "link:fork",
@@ -235,4 +235,12 @@ fn saved_arguments_are_values_and_literals_do_not_bind_namespaces() {
         }
     );
     assert!(p("repo:\"sx.events\"").namespaces().is_empty());
+}
+
+#[test]
+fn former_semantic_spelling_refuses_with_the_canonical_correction() {
+    let error = parse("near:dates").unwrap_err();
+    assert_eq!(error.kind(), "unknown_field");
+    assert_eq!(error.suggestion(), Some("similar:dates"));
+    assert!(matches!(cond("similar:dates"), ConditionKind::Similar { .. }));
 }

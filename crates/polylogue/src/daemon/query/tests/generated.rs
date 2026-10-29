@@ -640,8 +640,8 @@ proptest! {
 
     /// A ranking orders rows and never changes which match or how many:
     /// words ranked by relevance against the same rows sorted by time, and
-    /// `near:` with vectors for every text, for some, and disabled. A
-    /// count after `near:` needs no ranking, so it computes no similarity.
+    /// `similar:` with vectors for every text, for some, and disabled. A
+    /// count after `similar:` needs no ranking, so it computes no similarity.
     #[test]
     fn a_ranking_never_changes_which_rows_match(
         rows in rows(),
@@ -657,7 +657,7 @@ proptest! {
 
         let query = over(Unit::Sessions, &format!("({})", s.text()));
         let plain = all(&w, &query);
-        let ranked_text = format!("{query} near:\"how dates are parsed\"");
+        let ranked_text = format!("{query} similar:\"how dates are parsed\"");
         // Stored vectors stay, so each variant adds to the one before.
         for vectors in ["none", "some texts", "every text"] {
             let similarity = match vectors {
@@ -823,7 +823,7 @@ fn shuffle<T>(items: &mut [T], seed: u64) {
     }
 }
 
-/// Similarities for `near:` from vectors stored for the prose of the
+/// Similarities for `similar:` from vectors stored for the prose of the
 /// sessions `has_vector` accepts (by session ID); other texts have none.
 pub(super) fn vectors_for(
     w: &TestArchive,

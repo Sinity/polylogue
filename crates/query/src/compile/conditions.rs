@@ -38,7 +38,7 @@ impl<'a> Compiler<'a> {
                         ConditionKind::Text { text, mode }
                             if !self.is_reference(x) && text_unit(scope.unit) =>
                         {
-                            words.push((text.clone(), *mode == TextMode::Phrase, x.span));
+                            words.push((search_word(text, *mode)?, *mode == TextMode::Phrase, x.span));
                         }
                         _ => parts.push(self.cond(x, scope, top)?),
                     }
@@ -63,7 +63,7 @@ impl<'a> Compiler<'a> {
                     self.reference_word(text, scope, c.span)?
                 } else {
                     self.text(
-                        &[(text.clone(), *mode == TextMode::Phrase, c.span)],
+                        &[(search_word(text, *mode)?, *mode == TextMode::Phrase, c.span)],
                         scope,
                         Index::Prose,
                         top,
@@ -140,7 +140,7 @@ impl<'a> Compiler<'a> {
                 top,
             )?,
             ConditionKind::Similar { value } => {
-                self.field_cond("near", FieldOp::Match(value), scope, c.span, top)?
+                self.field_cond("similar", FieldOp::Match(value), scope, c.span, top)?
             }
             _ => return Err(not_built("this shared condition")),
         })
@@ -843,5 +843,13 @@ impl<'a> Compiler<'a> {
         let exact = self.text_param(path);
         let below = self.text_param(&format!("{}/", path.trim_end_matches('/')));
         format!("({expr} = {exact} OR substr({expr}, 1, length({below})) = {below})")
+    }
+}
+
+fn search_word(text: &str, mode: TextMode) -> Result<String, QueryError> {
+    match mode {
+        TextMode::Prefix => Ok(format!("{text}*")),
+        TextMode::Word | TextMode::Phrase => Ok(text.to_owned()),
+        TextMode::Approximate => Err(not_built("approximate text search")),
     }
 }
