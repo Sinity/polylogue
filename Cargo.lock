@@ -1781,6 +1781,7 @@ name = "polylogue-sinex"
 version = "0.1.0"
 dependencies = [
  "async-nats",
+ "base64 0.22.1",
  "blake3",
  "devkit",
  "futures-util",

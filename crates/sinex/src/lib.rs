@@ -1,31 +1,22 @@
-//! Polylogue on Sinex. In `standalone` mode, the default, this crate is not
-//! used. In `primary` mode Sinex holds the archive and Polylogue is one of its
-//! producers:
-//!
-//! - each step of a captured file's appended bytes is a part: a material of
-//!   its real input (origin, path, host), a growing file a chain of parts,
-//!   named with the Polylogue parser that reads it ([`parts`]);
-//! - a look at a file that found no new bytes, each request a person or agent
-//!   makes is a small register material, with a typed event
-//!   for notes, settings, kept results, deliveries
-//!   ([`register`]);
-//! - parsed sessions, messages, tool calls and turns are events keyed by
-//!   Polylogue's IDs and anchored at their records ([`sessions`]).
-//!
-//! The local register and index are written only after Sinex acknowledged
-//! what they describe, and are rebuilt from what Sinex holds.
+//! Primary mode: durable prepared materials and complete product facts go to
+//! Sinex through its ingress. One confirmed-stream consumer writes the local
+//! read index. Captures and authored writes remain in the producer spool
+//! through outages and retries, under their original identities.
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 mod client;
 pub mod kinds;
+mod material;
 pub(crate) mod native;
-mod parts;
-mod register;
+mod producer;
+mod products;
 mod replay;
 pub use replay::Replay;
-mod sessions;
+mod spool;
+mod status;
+pub use status::Status;
 
 use client::Client;
 
@@ -163,32 +154,45 @@ impl Config {
 /// A connection to Sinex as the producer `config.producer`, used by the
 /// writer thread and the loop. One frame is in flight at a time.
 pub struct Sinex {
+    config: Config,
+    health: Arc<Mutex<status::Health>>,
+    spool: Arc<Mutex<spool::Spool>>,
     runtime: tokio::runtime::Runtime,
     /// `None` only while dropping.
     client: Mutex<Option<Client>>,
     /// This host's name, for the register materials of requests.
     host: String,
-    /// Where the sessions last sent stand, beside the index they were read
-    /// from ([`sessions`]).
-    sent: PathBuf,
 }
 
 impl Sinex {
-    /// Connects to Sinex for the archive at `root`.
-    pub fn connect(config: &Config, root: &Path) -> Result<Self> {
+    /// Opens the durable producer spool before making any network connection.
+    /// Capture can prepare writes while Sinex is unavailable.
+    pub fn open(config: &Config) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let client = runtime.block_on(Client::connect(config))?;
+        let spool = Arc::new(Mutex::new(spool::Spool::open(
+            &config.store,
+            &config.producer,
+        )?));
         let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
-            .map(|h| h.trim().to_owned())
+            .map(|host| host.trim().to_owned())
             .unwrap_or_default();
         Ok(Self {
+            config: config.clone(),
+            health: Arc::new(Mutex::new(status::Health::default())),
+            spool,
             runtime,
-            client: Mutex::new(Some(client)),
+            client: Mutex::new(None),
             host,
-            sent: root.join("sinex-sent.json"),
         })
+    }
+
+    /// Opens this producer and requires Sinex to answer immediately.
+    pub fn connect(config: &Config) -> Result<Self> {
+        let sinex = Self::open(config)?;
+        sinex.with(async |_client| Ok(()))?;
+        Ok(sinex)
     }
 
     /// Runs `work` on the connection; frames never interleave.
@@ -197,15 +201,42 @@ impl Sinex {
             .client
             .lock()
             .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
-        let client = client
-            .as_mut()
-            .ok_or_else(|| Error::Invalid("the Sinex connection is closed".into()))?;
-        self.runtime.block_on(work(client))
+        if client.is_none() {
+            let connected = self.runtime.block_on(Client::connect(
+                &self.config,
+                Arc::clone(&self.spool),
+                Arc::clone(&self.health),
+            ));
+            match connected {
+                Ok(connected) => *client = Some(connected),
+                Err(error) => {
+                    if let Ok(mut health) = self.health.lock() {
+                        health.reachable = Some(!matches!(error, Error::Unreachable(_)));
+                        health.error = Some(error.to_string());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        let result = self
+            .runtime
+            .block_on(work(client.as_mut().expect("connected client")));
+        if let Ok(mut health) = self.health.lock() {
+            health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
+            health.error = result.as_ref().err().map(ToString::to_string);
+        }
+        if matches!(result, Err(Error::Unreachable(_))) {
+            // The immutable spool keeps every unacknowledged frame. A fresh
+            // connection retries those identities after the next successful hello.
+            let _inside = self.runtime.enter();
+            client.take();
+        }
+        result
     }
 
     /// Sinex's store root.
     pub fn store_root(&self) -> Result<PathBuf> {
-        self.with(async |client| Ok(client.store_root.clone()))
+        Ok(self.config.store.clone())
     }
 
     /// Whether Sinex answers.
@@ -231,45 +262,134 @@ impl Drop for Sinex {
 }
 
 impl polylogue_store::primary::Sinex for Sinex {
-    fn send_part(
+    fn prepare_input(
         &self,
-        part: &polylogue_store::primary::Part,
+        captured: &polylogue_store::primary::CapturedInput,
         bytes: &mut dyn std::io::Read,
-    ) -> polylogue_store::Result<polylogue_store::primary::ConfirmedBlob> {
-        Ok(self.with(async |client| parts::send(client, part, bytes).await)?)
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedInput> {
+        Ok(self.prepare_input(captured, bytes)?)
     }
-
-    fn send_blob(
+    fn prepare_blob(
         &self,
         hash: polylogue_model::BlobHash,
         length: u64,
         bytes: &mut dyn std::io::Read,
-    ) -> polylogue_store::Result<polylogue_store::primary::ConfirmedBlob> {
-        Ok(self
-            .with(async |client| parts::send_blob(client, &self.host, hash, length, bytes).await)?)
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_blob(hash, length, bytes)?)
     }
-
-    fn send_change(
+    fn pending_captures(
         &self,
-        change: &polylogue_store::primary::RegisterChange,
-    ) -> polylogue_store::Result<String> {
-        Ok(self.with(async |client| register::send(client, &self.host, change).await)?)
+    ) -> polylogue_store::Result<Vec<polylogue_store::primary::PendingCapture>> {
+        Ok(self.pending_captures()?)
     }
-
-    fn held(&self, after: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
-        Ok(self.with(async |client| {
-            let page = client.materials(after).await?;
-            let store = hashed_blobs::Reader::new(client.store_root.clone());
-            page.into_iter()
-                .map(|held| parts::held(&store, held))
-                .collect::<Result<Vec<_>>>()
-        })?)
+    fn capture(
+        &self,
+        identity: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::Capture> {
+        Ok(self.capture(identity)?)
     }
-
-    fn send_sessions(&self, reads: &polylogue_store::ReadPool) -> polylogue_store::Result<()> {
-        Ok(sessions::send(self, reads)?)
+    fn complete_captures(
+        &self,
+        identities: &[String],
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.complete_captures(identities, products)?)
+    }
+    fn prepare_products(
+        &self,
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_products(products)?)
+    }
+    fn prepare_request(
+        &self,
+        request: &polylogue_model::authored::PreparedRequest,
+    ) -> polylogue_store::Result<polylogue_model::user::UserOutcome> {
+        Ok(self.prepare_request(request)?)
+    }
+    fn canonical_publisher(&self) -> bool {
+        self.health
+            .lock()
+            .is_ok_and(|health| health.canonical_publisher)
+    }
+    fn visit_pending_requests(
+        &self,
+        visit: &mut dyn FnMut(
+            &polylogue_model::authored::PendingAuthored,
+        ) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        self.visit_pending_requests(visit)
+    }
+    fn visit_pending_blobs(
+        &self,
+        visit: &mut dyn FnMut(&polylogue_store::NewBlob) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        self.visit_pending_blobs(visit)
+    }
+    fn prepare_named_products(
+        &self,
+        identity: &str,
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_named_products(identity, products)?)
+    }
+    fn discard_confirmed(
+        &self,
+        identities: &[String],
+        position: i64,
+        applied: i64,
+    ) -> polylogue_store::Result<()> {
+        let receipts = self.with(async |client| client.recorded(identities).await)?;
+        let queue = self
+            .spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
+        let mut admitted = false;
+        for receipt in receipts.into_values() {
+            if let Some(entry) = queue.get(&receipt.frame)? {
+                admitted |= matches!(
+                    entry.kind,
+                    spool::Kind::Events | spool::Kind::ReplaySequence
+                ) && receipt.refusal.is_none()
+                    && receipt.commit_seq.is_some();
+                queue.acknowledge(receipt)?;
+            }
+        }
+        if admitted {
+            queue.retire(applied)?;
+        } else {
+            queue.discard_confirmed(identities, position, applied)?;
+        }
+        Ok(())
+    }
+    fn prepare_reading(
+        &self,
+        root: &str,
+        version: &str,
+        visit: &mut polylogue_store::primary::ReadingProducts<'_>,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        self.prepare_reading(root, version, visit)
+    }
+    fn confirmed(
+        &self,
+        after: i64,
+        cache: &str,
+    ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
+        self.resume_publication();
+        Ok(self.with(async |client| client.confirmed(after, cache).await)?)
+    }
+    fn acknowledge(&self, position: i64) -> polylogue_store::Result<()> {
+        Ok(self.with(async |client| client.acknowledge(position).await)?)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// A prepared material identity is determined by its immutable frame identity.
+fn material_id(frame: &str) -> sinex_model::MaterialId {
+    let hash = blake3::hash(frame.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash.as_bytes()[..16]);
+    sinex_model::MaterialId(uuid::Uuid::from_bytes(bytes))
+}

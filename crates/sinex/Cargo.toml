@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-sinex"
-description = "Polylogue on Sinex (primary mode): inputs, records and parsed sessions sent to Sinex, and the local register rebuilt from it"
+description = "Polylogue on Sinex: durable capture, canonical facts and a confirmed read index"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,10 +8,11 @@ publish.workspace = true
 
 [dependencies]
 schemars = "1"
+base64.workspace = true
+tempfile.workspace = true
 blake3.workspace = true
 polylogue-store.workspace = true
 polylogue-model.workspace = true
-polylogue-query.workspace = true
 hashed-blobs.workspace = true
 sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "41e79f09661fa466e88bfa4e7496054b3bbe05a5" }
 sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "41e79f09661fa466e88bfa4e7496054b3bbe05a5" }
@@ -26,7 +27,7 @@ thiserror.workspace = true
 toml = "0.9"
 
 [dev-dependencies]
-tempfile.workspace = true
+jsonschema = { version = "0.42", default-features = false }
 polylogue-testkit.workspace = true
 polylogue-engine.workspace = true
 devkit = { workspace = true, features = ["pg", "nats"] }

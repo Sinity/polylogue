@@ -374,3 +374,36 @@ fn usage_keeps_one_hour_cache_writes_and_the_speed() {
     assert_eq!(u.service_tier.as_deref(), Some("standard"));
     assert_eq!(u.speed.as_deref(), Some("fast"));
 }
+
+#[test]
+fn native_background_notification_keeps_reported_clock_precision_or_unknown() {
+    use polylogue_model::{Precision, TimeEvidence, Timestamp};
+    for (clock, precision) in [
+        (Some("2026-03-01T10:00:05Z"), Some(Precision::Second)),
+        (
+            Some("2026-03-01T10:00:05.123456789Z"),
+            Some(Precision::Instant),
+        ),
+        (None, None),
+    ] {
+        let mut record = json!({"type":"queue-operation","sessionId":"s1","content":"<task-notification><task-id>bg7</task-id><status>completed</status></task-notification>"});
+        if let Some(clock) = clock {
+            record["timestamp"] = json!(clock);
+        }
+        let step = run(
+            &main_file("s1"),
+            &mut ParserState::default(),
+            &jsonl(&[record]),
+            0,
+        )
+        .unwrap();
+        let [update] = step.output.background.as_slice() else {
+            panic!("{:?}", step.output.background)
+        };
+        assert_eq!(update.result_at, clock.and_then(Timestamp::parse_rfc3339));
+        assert_eq!(
+            update.result_at_evidence,
+            precision.map_or(TimeEvidence::UNKNOWN, TimeEvidence::intrinsic)
+        );
+    }
+}

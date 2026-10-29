@@ -1184,7 +1184,10 @@ pub enum ArchiveMode {
 enum ModeState {
     Standalone,
     #[cfg(feature = "sinex")]
-    Primary,
+    Primary {
+        #[serde(skip)]
+        connection: Arc<polylogue_sinex::Sinex>,
+    },
     #[cfg(feature = "sinex")]
     Blocked {
         configured: Option<&'static str>,
@@ -1194,6 +1197,33 @@ enum ModeState {
 }
 
 impl ModeState {
+    fn primary_status(&self, reader: &polylogue_store::Reader<'_>) -> Option<serde_json::Value> {
+        #[cfg(feature = "sinex")]
+        if let Self::Primary { connection } = self {
+            return Some(match connection.status() {
+                Ok(status) => {
+                    let mut status = serde_json::to_value(status)
+                        .unwrap_or_else(|error| serde_json::json!({"error":error.to_string()}));
+                    match reader.confirmed_position() {
+                        Ok(position) => {
+                            status["applied_position"] = position.into();
+                            status["lag_positions"] = status["owner_position"]
+                                .as_i64()
+                                .map(|owner| owner.saturating_sub(position))
+                                .map(serde_json::Value::from)
+                                .unwrap_or(serde_json::Value::Null);
+                        }
+                        Err(error) => status["position_error"] = error.to_string().into(),
+                    }
+                    status
+                }
+                Err(error) => serde_json::json!({"error":error.to_string()}),
+            });
+        }
+        let _ = reader;
+        None
+    }
+
     /// Writes are paused until the Sinex configuration is fixed or Sinex
     /// can be reached.
     fn blocked(&self) -> bool {
@@ -1247,7 +1277,8 @@ pub fn start(
             path,
             error,
         } => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
+            let (archive, lock) =
+                Archive::open_primary_cache(root).map_err(std::io::Error::other)?;
             let state = ModeState::Blocked {
                 configured,
                 path,
@@ -1256,24 +1287,17 @@ pub fn start(
             (archive, lock, state, None)
         }
         #[cfg(feature = "sinex")]
-        ArchiveMode::Primary {
-            config: sinex,
-            path,
-        } => match crate::sinex::open(root, &sinex)? {
-            (archive, lock, Ok(connection)) => {
-                let engine =
-                    Engine::on_sinex(config, archive.clone(), connection).map_err(|e| to_io(&e))?;
-                (archive, lock, ModeState::Primary, Some(engine))
-            }
-            (archive, lock, Err(error)) => {
-                let state = ModeState::Blocked {
-                    configured: Some("primary"),
-                    path,
-                    error,
-                };
-                (archive, lock, state, None)
-            }
-        },
+        ArchiveMode::Primary { config: sinex, .. } => {
+            let (archive, lock, connection) = crate::sinex::open(root, &sinex)?;
+            let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
+                .map_err(|error| to_io(&error))?;
+            (
+                archive,
+                lock,
+                ModeState::Primary { connection },
+                Some(engine),
+            )
+        }
     };
     let mut engine = engine;
     let writes = engine

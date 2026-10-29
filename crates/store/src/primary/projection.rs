@@ -248,7 +248,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
                     Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
                     Product::Background { facts, .. } => Some(facts.session.to_string()),
-                    Product::WorkSnapshot { snapshot } => Some(snapshot.session.id.to_string()),
+                    Product::WorkSnapshot { snapshot } => Some(snapshot.session_id.to_string()),
                     _ => None,
                 };
                 let reading = product.reading();
@@ -705,7 +705,7 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     drop(rows);
     drop(q);
     for input in &plan.inputs {
-        tx.execute("DELETE FROM source_observation_container WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
+        tx.execute("DELETE FROM source_observation_zip WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
         tx.execute("DELETE FROM source_observation WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_extent WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_revision WHERE input=?1", [input])?;
