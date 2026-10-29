@@ -214,10 +214,10 @@ pub(super) fn declared(
         return Ok(polylogue_sources::origin::by_name(name));
     }
     for name in ["browser-capture", "hook-spool", "hermes", "claude-design"] {
-        if let Some(origin) = polylogue_sources::origin::by_name(name) {
-            if (origin.recognize)(path, &head[..n]) {
-                return Ok(Some(origin));
-            }
+        if let Some(origin) = polylogue_sources::origin::by_name(name)
+            && (origin.recognize)(path, &head[..n])
+        {
+            return Ok(Some(origin));
         }
     }
     // Outside a tool's root its preserved layout is the declaration.
