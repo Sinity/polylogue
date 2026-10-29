@@ -142,7 +142,10 @@ fn stored_blocks(
     Ok(changed.then_some(normalized))
 }
 
-fn restore_values(blocks: &mut [Block], prepared: &crate::encoding::PreparedContent) -> Result<()> {
+pub(super) fn restore_values(
+    blocks: &mut [Block],
+    prepared: &crate::encoding::PreparedContent,
+) -> Result<()> {
     for (index, block) in blocks.iter_mut().enumerate() {
         match block {
             Block::ToolCall { .. } | Block::Other { .. } => {
