@@ -1,56 +1,43 @@
-//! Content selection shared by every reading surface.
+//! The read contract shared by selection, view projection, layout and delivery.
+//! Canonical source records stay separate from presentation substitutions.
+mod evidence;
+mod items;
+mod options;
+mod projection;
+mod tokens;
+pub use evidence::*;
+pub use items::*;
+pub use options::*;
+pub use projection::*;
+pub use tokens::*;
 
-use crate::{Block, Message};
-
-/// Which blocks a view keeps.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum View {
-    /// Everything, tool calls and results included.
-    Full,
-    /// What the people and models said: prose and thinking, no tool output.
-    Dialogue,
-    /// The operator's own prompts only.
-    Prompts,
-    /// Tool calls and their outcomes.
-    Actions,
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReadError {
+    #[error("view {view} does not read {target}; use transcript or raw")]
+    UnsupportedTarget {
+        view: View,
+        target: String,
+        accepted_views: Vec<View>,
+    },
+    #[error(
+        "unknown view {name:?}; views: transcript, dialogue, summary, context, links, changes, live, raw"
+    )]
+    UnknownView { name: String },
+    #[error("view {view} does not accept {option}; accepted by {accepted_by}")]
+    UnsupportedOption {
+        view: View,
+        option: String,
+        accepted_by: String,
+    },
+    #[error("{view} needs prepared {evidence} evidence for {reference}")]
+    MissingEvidence {
+        view: View,
+        evidence: String,
+        reference: String,
+    },
+    #[error("invalid read evidence: {0}")]
+    InvalidEvidence(String),
 }
 
-impl View {
-    pub const NAMES: &[&str] = &["full", "dialogue", "prompts", "actions"];
-
-    pub fn parse(name: &str) -> Option<View> {
-        Some(match name {
-            "full" => View::Full,
-            "dialogue" => View::Dialogue,
-            "prompts" => View::Prompts,
-            "actions" => View::Actions,
-            _ => return None,
-        })
-    }
-
-    /// Whether this view shows `block` of `message`.
-    pub fn keeps(self, message: &Message, block: &Block) -> bool {
-        self.keeps_block(crate::is_prompt(message.role, message.prompt_kind), block)
-    }
-
-    pub fn block_kinds(self) -> &'static [crate::BlockKind] {
-        use crate::BlockKind::*;
-        match self {
-            Self::Full => &[Text, Thinking, ToolCall, ToolResult, Image, File, Other],
-            Self::Dialogue => &[Text, Thinking],
-            Self::Prompts => &[Text],
-            Self::Actions => &[ToolCall, ToolResult],
-        }
-    }
-
-    pub fn prompts_only(self) -> bool {
-        self == Self::Prompts
-    }
-
-    pub fn keeps_block(self, prompt: bool, block: &Block) -> bool {
-        (!self.prompts_only() || prompt) && self.block_kinds().contains(&block.kind())
-    }
-}
+#[cfg(test)]
+mod tests;
