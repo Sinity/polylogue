@@ -134,7 +134,6 @@ impl Reader<'_> {
             .transpose()
             .ok()
             .flatten()
-            .ok()
             .filter(|reference| {
                 matches!(
                     reference,
