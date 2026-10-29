@@ -44,7 +44,7 @@ impl SelectionError {
     }
     pub fn detail(&self) -> Option<Value> {
         match self {
-            Self::Query(error) => serde_json::to_value(error).ok(),
+            Self::Query(error) => error.detail(),
             Self::Language(error) => serde_json::to_value(error).ok(),
             Self::Invalid { detail, .. } => detail.clone(),
             Self::Store(_) => None,
