@@ -39,6 +39,7 @@ pub mod schema_inputs;
 pub mod search;
 pub mod session_export;
 mod session_row;
+pub(crate) mod source;
 pub mod sql_functions;
 pub mod sql_views;
 pub mod staging;
@@ -48,8 +49,10 @@ pub mod timing;
 pub mod tool_databases;
 pub mod user_state;
 pub mod user_writes;
+pub mod variants;
 pub mod vectors;
 mod versions;
+pub mod wire_shapes;
 mod write_lock;
 pub mod writer;
 
@@ -122,6 +125,8 @@ pub enum StoreError {
     #[error("backfill job refused: {0}")]
     Backfill(&'static str),
     /// Sinex could not be reached, or refused what was sent (primary mode).
+    #[error("capture {identity} is durable and waiting for Sinex confirmation")]
+    PrimaryPending { identity: String },
     #[error("Sinex: {0}")]
     Sinex(String),
     #[error("{0}")]

@@ -23,6 +23,8 @@ mod captured;
 mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;
+mod revisions;
+pub use revisions::RevisionPoint;
 mod tool_outcomes;
 pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
@@ -134,6 +136,8 @@ pub struct Status {
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer.
     pub search_pending: u64,
+    /// The latest confirmed full discovery walk from each source machine.
+    pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
 }
 
 impl ReadPool {
@@ -191,10 +195,20 @@ impl ReadPool {
 
     fn connect(&self) -> Result<Connection> {
         let conn = open_read(&self.archive.index_db())?;
-        let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
-        conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+        // Set temp storage before creating views: changing it drops TEMP objects.
+        conn.pragma_update(None, "temp_store", "file")?;
+        conn.pragma_update(Some("temp"), "cache_size", -1024)?;
+        if !self.archive.is_primary() {
+            let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
+            conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+            crate::source::views(&conn)?;
+        }
         crate::sql_views::create(&conn)?;
-        for schema in ["main", "a"] {
+        for &schema in if self.archive.is_primary() {
+            &["main"][..]
+        } else {
+            &["main", "a"][..]
+        } {
             conn.pragma_update(Some(schema), "cache_size", -self.cache_kib)?;
             conn.pragma_update(Some(schema), "mmap_size", 0)?;
         }
@@ -522,7 +536,7 @@ impl Reader<'_> {
                 // the register (`a`). The shared lock keeps register commits
                 // out of the gap between the two, so they see a committed pair.
                 conn.query_row(
-                    "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM a.meta)",
+                    "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM source_meta)",
                     [],
                     |_| Ok(()),
                 )?;
@@ -530,6 +544,18 @@ impl Reader<'_> {
             }
         }
         Ok(conn)
+    }
+
+    pub fn confirmed_position(&self) -> Result<i64> {
+        crate::primary::projection::position(self.conn()?)
+    }
+
+    pub fn confirmed_checkpoint(&self) -> Result<Option<i64>> {
+        crate::primary::projection::checkpoint(self.conn()?)
+    }
+
+    pub fn primary_cache_identity(&self) -> Result<String> {
+        crate::primary::cache_identity(self.conn()?)
     }
 
     /// The index file this reader's read transaction started on.
@@ -555,7 +581,7 @@ impl Reader<'_> {
         Ok(self.conn()?.query_row(
             "SELECT (SELECT value FROM main.meta WHERE key='generation'),
              COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0),
-             COALESCE((SELECT CAST(value AS INTEGER) FROM a.meta WHERE key='write_counter'),0)",
+             COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0)",
             [],
             |r| {
                 Ok(polylogue_model::ChangePosition {
@@ -702,7 +728,7 @@ impl Reader<'_> {
         mut keep: impl FnMut(i64) -> bool,
         visit: &mut impl FnMut(i64, Message) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
-        const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at, m.parent_id,
+        const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
             m.cache_write_1h_tokens, m.speed, m.pem";
@@ -757,7 +783,7 @@ impl Reader<'_> {
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<i64>>(5)?,
+                crate::encoding::read_time(r, 5)?,
                 r.get::<_, Option<String>>(6)?,
                 [
                     r.get::<_, Option<i64>>(7)?,
@@ -841,7 +867,10 @@ impl Reader<'_> {
                 session: session.clone(),
                 parent: parent.and_then(|p| MessageId::parse(&p).ok()),
                 role: parse_name(&role).unwrap_or(Role::User),
-                at: ts(at),
+                at: at.0,
+                at_quality: at.1.quality,
+                at_precision: at.1.precision,
+                at_until: at.1.until,
                 model,
                 prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
                 blocks,
@@ -906,12 +935,13 @@ impl Reader<'_> {
             messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
             documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
             tool_calls: count("SELECT n FROM main.row_count WHERE name = 'tool_call'")?,
-            inputs: count("SELECT n FROM a.row_count WHERE name = 'input'")?,
-            revisions: count("SELECT n FROM a.row_count WHERE name = 'revision'")?,
-            stored_bytes: count("SELECT n FROM a.row_count WHERE name = 'stored_bytes'")?,
+            inputs: count("SELECT n FROM source_row_count WHERE name = 'input'")?,
+            revisions: count("SELECT n FROM source_row_count WHERE name = 'revision'")?,
+            stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
             search_pending: count("SELECT COUNT(*) FROM search_pending")?,
+            capture_coverage: self.all_capture_coverage()?,
         })
     }
 
@@ -926,7 +956,7 @@ impl Reader<'_> {
         chain: i64,
         range: std::ops::Range<u64>,
     ) -> Result<()> {
-        crate::staging::require_range(self.conn()?, "a.", input, chain, range)
+        crate::staging::require_range(self.conn()?, "source_", input, chain, range)
     }
 
     /// The stored bytes of an input's revision chain, for parsing them
@@ -938,7 +968,7 @@ impl Reader<'_> {
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
         self.check_bytes_present(input, chain, 0..length)?;
-        crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
+        crate::blobs::StoredChain::load(self.conn()?, "source_", input, chain, length)
     }
 
     /// Reads only the extents a range covers, with their integrity checks.
@@ -951,7 +981,7 @@ impl Reader<'_> {
         store: &crate::blobs::Blobs,
     ) -> Result<Vec<u8>> {
         self.check_bytes_present(input, chain, start..end)?;
-        crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
+        crate::blobs::StoredChain::load_range(self.conn()?, "source_", input, chain, start, end)?
             .read_range(store, start, end)
     }
 
@@ -977,7 +1007,7 @@ impl Reader<'_> {
     }
 
     /// Existing content, with no writable handle or directory setup.
-    pub fn blob_reader(&self) -> crate::blobs::Blobs {
+    pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
         self.pool.archive.blob_reader()
     }
 
@@ -1061,29 +1091,29 @@ impl Reader<'_> {
             (
                 "x.machine = ?1 AND x.path = ?2",
                 "SELECT r.input FROM (
-                 SELECT DISTINCT input FROM a.observation WHERE machine = ?1 AND path = ?2
-             ) paths CROSS JOIN a.revision r ON r.input = paths.input
+                 SELECT DISTINCT input FROM source_observation WHERE machine = ?1 AND path = ?2
+             ) paths CROSS JOIN source_revision r ON r.input = paths.input
              WHERE r.produced = 'imported'",
             )
         } else {
             (
                 "x.machine = ?1",
-                "SELECT input FROM a.revision WHERE produced = 'imported'",
+                "SELECT input FROM source_revision WHERE produced = 'imported'",
             )
         };
         let sql = format!(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
-                    (SELECT chain FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
-                    (SELECT length FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
+                    (SELECT chain FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
+                    (SELECT length FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
              FROM (
-                 SELECT MAX(x.rowid) AS latest FROM a.observation x
+                 SELECT MAX(x.rowid) AS latest FROM source_observation x
                  WHERE {location}
                    AND (?3 OR x.input NOT IN ({imported}))
                  GROUP BY x.path
              ) latest
-             JOIN a.observation o ON o.rowid = latest.latest
-             JOIN a.input i ON i.id = o.input"
+             JOIN source_observation o ON o.rowid = latest.latest
+             JOIN source_input i ON i.id = o.input"
         );
         let mut stmt = self.conn()?.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![machine, path, include_imported], |r| {
@@ -1160,7 +1190,7 @@ impl Reader<'_> {
             .conn()?
             .prepare_cached(
                 "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status = 'waiting' AND p.detail = CAST(r.length AS TEXT), 0), r.chain
-             FROM a.revision r
+             FROM source_revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
              WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1",

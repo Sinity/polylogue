@@ -66,7 +66,7 @@ pub(crate) fn write(
             tx.last_insert_rowid()
         }
     };
-    set_source(tx, pk, source, row, time, &prepared.hash, false)?;
+    set_source(tx, pk, source, row, time, prepared, false)?;
     Ok(())
 }
 
@@ -126,14 +126,14 @@ fn set_source(
     source: &Source<'_>,
     row: &DocumentRow,
     time: Option<i64>,
-    hash: &[u8; 32],
+    prepared: &PreparedDocument,
     shown: bool,
 ) -> Result<()> {
-    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,arrival_rank,source_time,version_hash,shown)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,arrival_rank,source_time,version_hash,shown,time)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
         ON CONFLICT(document_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,source_end=excluded.source_end,
-            arrival_rank=excluded.arrival_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown",
-        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&hash[..],shown])?;
+            arrival_rank=excluded.arrival_rank,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown,time=excluded.time",
+        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.rank,time,&prepared.hash[..],shown,prepared.time])?;
     Ok(())
 }
 
@@ -329,7 +329,7 @@ impl DocumentRead<'_, '_> {
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             let input: String = row.get(0)?;
-            let locations=self.reader.conn()?.prepare("SELECT machine,path,seen_at FROM a.observation WHERE input=?1 ORDER BY seen_at,machine,path")?.query_map([&input],|r|Ok(serde_json::json!({"machine":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"seen_at_ms":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let locations=self.reader.conn()?.prepare("SELECT machine,path,seen_at FROM source_observation WHERE input=?1 ORDER BY seen_at,machine,path")?.query_map([&input],|r|Ok(serde_json::json!({"machine":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"seen_at_ms":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             out.push(DocumentSource {
                 input,
                 chain: row.get(1)?,

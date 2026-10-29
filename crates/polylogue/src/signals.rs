@@ -383,7 +383,7 @@ fn history(d: &Daemon) -> Vec<Sent> {
     };
     let rows = r
         .query(
-            "SELECT at, refs_json FROM a.delivery WHERE sender = 'signal' ORDER BY at",
+            "SELECT at, refs_json FROM source_delivery WHERE sender = 'signal' ORDER BY at",
             &[],
         )
         .unwrap_or_default();

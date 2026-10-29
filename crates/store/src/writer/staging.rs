@@ -87,6 +87,9 @@ impl Inner {
         if group.is_empty() {
             return Vec::new();
         }
+        if self.sinex.is_some() {
+            return self.primary_store_group(group);
+        }
         for item in &group {
             if let Err(error) = self.check_staged(item) {
                 return errors(&group, error);
@@ -233,7 +236,7 @@ impl Inner {
         let mut stored = Vec::new();
         let mut seen = BTreeSet::new();
         for item in group.iter_mut() {
-            let PreparedBatch { batch: b, files } = item;
+            let PreparedBatch { batch: b, files: _ } = item;
             // An immutable import named by its bytes may be stored already, or
             // appear twice in a group (equal container members).
             let known: Option<(i64, i64)> = tx
@@ -261,16 +264,12 @@ impl Inner {
                 b.change = Change::Unchanged;
                 b.new_blob = None;
             }
-            let (chain, rows) = write_bytes(&tx, b, seq)?;
+            let (chain, _) = write_bytes(&tx, b, seq)?;
             let chain = chain
                 .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
-            if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
-                let new_blob = b.new_blob.as_ref().map(|new_blob| new_blob.hash);
-                let file = new_blob.and_then(|hash| files.iter().find(|f| f.hash() == hash));
-                send_to_sinex(sinex.as_ref(), &tx, rows, file, b.new_blob.as_ref())?;
-            }
             crate::fault::check("import.rows", &b.input.id)?;
-            let already_stored = again || matches!(b.change, Change::Unchanged);
+            let already_stored =
+                again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,
@@ -347,78 +346,6 @@ fn errors(group: &[PreparedBatch], error: StoreError) -> Vec<Result<StoredInput>
         .iter()
         .map(|_| Err(StoreError::Invalid(reason.clone())))
         .collect()
-}
-
-/// Sends what one step stored to Sinex, before its rows commit: its new
-/// bytes as a part of the input, or, when it found none, the rows alone.
-pub(super) fn send_to_sinex(
-    sinex: &dyn crate::primary::Sinex,
-    tx: &Connection,
-    rows: &crate::input_rows::InputRows,
-    file: Option<&PreparedBytes>,
-    _new_blob: Option<&NewBlob>,
-) -> Result<()> {
-    let input = input_name(tx, rows)?;
-    let Some(extent) = &rows.extent else {
-        if rows.observation.is_some() {
-            let change = crate::primary::RegisterChange::Observation {
-                input,
-                stored: Box::new(rows.clone()),
-            };
-            let material = sinex.send_change(&change)?;
-            crate::primary::change_material(tx, &change, &material)?;
-        }
-        return Ok(());
-    };
-    let (index, previous) = crate::primary::next_part(tx, &rows.input, extent.chain)?;
-    let mut bytes: Box<dyn std::io::Read> = match file.map(|f| &f.file) {
-        Some(crate::staging::Prepared::Part { file, .. }) => Box::new(file.reopen()?),
-        _ => {
-            return Err(StoreError::Invalid(
-                "Sinex input has no bytes to send".into(),
-            ));
-        }
-    };
-    let material = sinex.send_part(
-        &crate::primary::Part {
-            input,
-            index,
-            previous,
-            hash: extent.blob,
-            length: extent.length as u64,
-            rows: rows.clone(),
-        },
-        &mut bytes,
-    )?;
-    let extent = material.extent(extent.blob, extent.length as u64)?;
-    crate::blobs::insert_extent(tx, extent)?;
-    crate::primary::part_material(tx, rows, index, &material.id)
-}
-
-/// The input's origin, its latest path and the host it was seen on.
-fn input_name(
-    tx: &Connection,
-    rows: &crate::input_rows::InputRows,
-) -> Result<crate::primary::InputName> {
-    let (path, host) = match &rows.observation {
-        Some(o) => (o.path.clone(), o.host.clone()),
-        None => tx
-            .prepare_cached(
-                "SELECT o.path, coalesce((SELECT host FROM machine m WHERE m.id = o.machine
-                     ORDER BY first_seen DESC LIMIT 1), '')
-                 FROM observation o WHERE o.input = ?1 ORDER BY o.rowid DESC LIMIT 1",
-            )?
-            .query_row([&rows.input], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?
-            .ok_or_else(|| {
-                StoreError::Invalid(format!("input {} has no observation", rows.input))
-            })?,
-    };
-    Ok(crate::primary::InputName {
-        origin: rows.format.clone(),
-        path,
-        host,
-    })
 }
 
 #[cfg(test)]

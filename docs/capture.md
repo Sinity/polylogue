@@ -114,6 +114,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 
 - **A tool's SQLite database is captured as committed rows, never as a database image.** Each capture keeps rows the tool later deleted (a row seen once stays in the archive) and writes no export side file. Uncommitted write-ahead-log rows are not read.
 - Captured: Codex `state`, `goals`, `memories`, `queue`; Hermes `state.db`, `verification_evidence.db` and each profile's `state.db`; Antigravity `conversations/*.db`, `conversation_summaries.db` and each `state.vscdb`; Grok `memory-v2/**/*.sqlite` and `worktrees.db`; `llm` `logs.db`.
+- Row-dump headers retain the original SQL and structured native column metadata from the same SQLite read transaction: column names and order, declared type, nullability, primary-key order, hidden/generated status and `WITHOUT ROWID`. Schema tools report this metadata separately from observed JSON types and omit SQL and default expressions. A historical SQL-only header establishes table presence; its unobserved columns remain unknown.
 - A table whose schema no parser knows keeps its raw rows readable and is reported as [format drift](archive.md#format-drift).
 
 ## Import
@@ -159,6 +160,14 @@ AI Studio stores its prompts in Google Drive, which is a known location like a t
 - The collector is on whenever the user has authorized a token; the one-time OAuth consent is the only gate, because a known location is never dark behind a setting. Without a token, status shows "not authorized" with the command to run.
 - A prompt deleted in Drive keeps its archived revisions and is marked gone.
 
+## Source clocks
+
+Native parsers carry a decoded time together with its quality, reported precision and any source-declared interval end. Whole epoch seconds and offset timestamps without fractions have second precision; fractional timestamps, epoch milliseconds and native nanoseconds retain subsecond instants. A missing or unreadable native clock has no instant and unknown quality. Capture observations and file metadata keep their own quality and never fill a missing message clock.
+
+Where a native format records events rather than a separate session creation time, the earliest native record or activity time supplies the session start. That start describes the first recorded activity. An OTLP span event retains its native start and end as a bounded interval. Its output message uses the call start and records that basis and both original clock fields in `otel_span_clock`; input history without message times stays unknown.
+
+Gemini activity times retain their original text and zone. Explicit unambiguous source offsets are resolved independently of the host timezone; ambiguous abbreviations without source timezone settings remain unknown. AI Studio chunk times are intrinsic; the Drive listing's file clock is file metadata, separate from message times.
+
 ## Capture status
 
 `polylogue status` (CLI, MCP, HTTP and web) answers "is everything being captured?" in one place. Its capture section holds:
@@ -192,3 +201,7 @@ Its figures and verdicts use the shared status format of [command-surface](https
 - **tool-database-keeps-deleted-rows**: a row deleted by the tool after one capture stays in the archive, and no database image or side file is written.
 
 A completed full discovery walk publishes one capture-coverage snapshot per machine. Every declared root is present, including accessible empty roots, absent roots, unavailable roots and roots with unreadable descendants. Entries aggregate file counts, byte counts and newest source mtime by collection class and declared pattern; ignored entries retain their reason. Status reads the last confirmed full-walk snapshot and its observation time. Incremental file events update inputs without replacing that snapshot.
+
+Coverage uses one unrecognized aggregate per root, independent of how many unknown subdirectories exist. Child symbolic links and special filesystem entries are ignored with explicit reasons; discovery does not follow them during either full walks or incremental events.
+
+Python predecessor archives containing `source.db`, `raw_sessions` and their declared blob files are supported external captured-data packages. Import reads their metadata without opening the archive for writing, validates exact source bytes and explicit append lineage, and preserves the original source facts. This is distinct from retired Rust archive storage layouts, whose codecs belong only to the private, explicit storage converter. Neither form authorizes a live archive conversion or reset.

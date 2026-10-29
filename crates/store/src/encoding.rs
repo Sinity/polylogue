@@ -46,11 +46,34 @@ pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(pack_bytes(&serde_json::to_vec(value)?)?)
 }
 
+/// Canonical source time; SQL milliseconds are only query caches.
+pub(crate) fn time_bytes(
+    at: Option<Timestamp>,
+    evidence: polylogue_model::TimeEvidence,
+) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&(at, evidence))?)
+}
+
+pub(crate) fn read_time(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+) -> rusqlite::Result<(Option<Timestamp>, polylogue_model::TimeEvidence)> {
+    let bytes: Vec<u8> = row.get(column)?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Blob,
+            Box::new(error),
+        )
+    })
+}
+
 /// One message's identity and packed rows, prepared together before its parsed
 /// payloads are released. The writer borrows these bytes without repacking.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
+    pub(crate) time: Vec<u8>,
     pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
@@ -85,6 +108,7 @@ impl std::ops::DerefMut for PreparedMessage {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedDocument {
     pub(crate) id: DocumentId,
+    pub(crate) time: Vec<u8>,
     /// The document without its blocks, packed JSON.
     pub(crate) fields: Vec<u8>,
     pub(crate) body: Vec<u8>,
@@ -162,6 +186,7 @@ impl RowPacker {
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
         Ok(PreparedMessage {
             id: message.id.clone(),
+            time: time_bytes(message.at, message.time_evidence())?,
             body: self.pack_version(message, &message.blocks)?,
             content: self.pack_content(message, &message.blocks, None)?,
         })
@@ -173,12 +198,16 @@ impl RowPacker {
             purpose: document.purpose,
             title: document.title.clone(),
             source_time: document.source_time,
+            source_time_quality: document.source_time_quality,
+            source_time_precision: document.source_time_precision,
+            source_time_until: document.source_time_until,
             authorship: document.authorship,
             blocks: Vec::new(),
             metadata: document.metadata.clone(),
         };
         Ok(PreparedDocument {
             id: document.id.clone(),
+            time: time_bytes(document.source_time, document.time_evidence())?,
             body: self.pack_version(document, &document.blocks)?,
             fields: self.pack_json(&fields)?,
             content: self.pack_content(

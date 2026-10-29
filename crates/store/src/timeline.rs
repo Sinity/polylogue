@@ -72,7 +72,7 @@ fn sources(
     (vec![
         "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m CROSS JOIN session s ON s.pk=m.session_pk WHERE 1".into(),
         "SELECT e.at, 'event' AS kind, e.id, s.id AS session, e.kind AS label, 'Recorded event time' AS time_source FROM event e LEFT JOIN session s ON s.pk=e.session_pk WHERE 1".into(),
-        "SELECT n.created_at AS at, 'note' AS kind, n.id, NULL AS session, n.kind AS label, 'Note writer clock' AS time_source FROM a.note n WHERE 1".into(),
+        "SELECT n.created_at AS at, 'note' AS kind, n.id, NULL AS session, n.kind AS label, 'Note writer clock' AS time_source FROM source_note n WHERE 1".into(),
     ], vec![])
 }
 
@@ -90,7 +90,7 @@ fn representable(column: &str, undated: bool) -> String {
 /// year. Empty years and individual records are never walked.
 fn years(reader: &Reader<'_>, day: &LogicalDay, through: jiff::civil::Date) -> Result<Vec<i16>> {
     let mut years = std::collections::BTreeSet::new();
-    for column in ["message.at", "event.at", "a.note.created_at"] {
+    for column in ["message.at", "event.at", "source_note.created_at"] {
         let (table, field) = column.rsplit_once('.').unwrap();
         let mut since = jiff::Timestamp::MIN.as_millisecond();
         loop {
@@ -413,7 +413,7 @@ pub fn calendar(
         "SELECT pl_timeline_date(at) AS date,count(*) AS records FROM (
         SELECT at FROM message WHERE at >= ?1 AND at < ?2
         UNION ALL SELECT at FROM event WHERE at >= ?1 AND at < ?2
-        UNION ALL SELECT created_at AS at FROM a.note WHERE created_at >= ?1 AND created_at < ?2
+        UNION ALL SELECT created_at AS at FROM source_note WHERE created_at >= ?1 AND created_at < ?2
     ) GROUP BY date ORDER BY date",
         &[SqlValue::Int(since), SqlValue::Int(until)],
     )

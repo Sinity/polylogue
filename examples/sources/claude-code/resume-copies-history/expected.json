@@ -8,7 +8,9 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "continued-in.sessionId": 1
+    }
   },
   "output": {
     "background": [],
@@ -42,7 +44,9 @@
           "id": "claude-code:old-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:s1"
+          "session": "claude-code:s1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -59,7 +63,9 @@
           "id": "claude-code:old-2",
           "parent": "claude-code:old-1",
           "role": "assistant",
-          "session": "claude-code:s1"
+          "session": "claude-code:s1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 136
       },
@@ -77,7 +83,9 @@
           "parent": "claude-code:old-2",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:s2"
+          "session": "claude-code:s2",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 341
       }
@@ -86,12 +94,16 @@
       {
         "id": "claude-code:s1",
         "kind": "main",
-        "started": "2026-03-01T09:00:00Z"
+        "started": "2026-03-01T09:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       },
       {
         "id": "claude-code:s2",
         "kind": "main",
-        "started": "2026-03-02T09:00:00Z"
+        "started": "2026-03-02T09:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

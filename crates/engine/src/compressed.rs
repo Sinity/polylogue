@@ -26,6 +26,47 @@ fn decoded(source: &std::fs::File, compressed: bool) -> std::io::Result<Box<dyn 
     }
 }
 
+fn recorded_copy(
+    reader: &polylogue_store::Reader<'_>,
+    blobs: &Arc<polylogue_store::blobs::Blobs>,
+    input: &str,
+    source: &std::fs::File,
+    compressed: bool,
+) -> polylogue_store::Result<Option<polylogue_store::read::RevisionPoint>> {
+    let mut stream = decoded(source, compressed)?;
+    let mut hash = blake3::Hasher::new();
+    let mut length = 0u64;
+    let mut buffer = [0; 65536];
+    loop {
+        let n = stream.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+        length += n as u64;
+    }
+    let expected = hash.finalize();
+    let mut found = None;
+    reader.visit_revisions_at_length(input, length, |point| {
+        let chain = reader.stored_chain(input, point.chain, point.length)?;
+        let mut stream = chain.reader(Arc::clone(blobs));
+        let mut actual = blake3::Hasher::new();
+        loop {
+            let n = stream.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            actual.update(&buffer[..n]);
+        }
+        let matches = actual.finalize() == expected;
+        if matches {
+            found = Some(point);
+        }
+        Ok(matches)
+    })?;
+    Ok(found)
+}
+
 impl Engine {
     pub(crate) fn capture_rollout(
         &mut self,
@@ -39,6 +80,19 @@ impl Engine {
             .get(path)
             .is_some_and(|s| s.facts == Some(facts))
         {
+            let id = self.inputs[path].input_id.clone();
+            if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
+                let state = self.inputs.get_mut(path).expect("known rollout");
+                if state.chain != Some(progress.chain) || state.stored != progress.length {
+                    state.parser_state = None;
+                    state.tail = None;
+                }
+                state.chain = Some(progress.chain);
+                state.stored = progress.length;
+                state.parsed_upto = progress.parsed_upto;
+                state.parsed = progress.parsed;
+                state.waiting = progress.waiting;
+            }
             return self.stored_plan(path);
         }
         let mut source = std::fs::File::open(path)?;
@@ -59,6 +113,7 @@ impl Engine {
         let mut stream = decoded(&source, compressed)?;
         let mut same = false;
         let mut appended = false;
+        let mut historical = None;
         if let (Some(id), Some(previous)) = (&native_id, &previous) {
             let chain = reader.stored_chain(id, previous.chain, previous.length)?;
             let mut stored = chain.reader(Arc::clone(&self.blobs));
@@ -87,10 +142,11 @@ impl Engine {
                 same = stream.fill_buf()?.is_empty();
                 appended = !same;
             } else {
+                historical = recorded_copy(&reader, &self.blobs, id, &source, compressed)?;
                 stream = decoded(&source, compressed)?;
             }
         }
-        let prepared = if same {
+        let prepared = if same || historical.is_some() {
             None
         } else {
             Some(self.archive.prepare_bytes(stream)?)
@@ -116,7 +172,9 @@ impl Engine {
         {
             return Err(std::io::Error::other("source changed during rollout capture").into());
         }
-        let length = if same {
+        let length = if let Some(point) = historical {
+            point.length
+        } else if same {
             previous.as_ref().expect("same stored input").length
         } else {
             prepared.as_ref().expect("new bytes").len()
@@ -126,7 +184,7 @@ impl Engine {
                     0
                 }
         };
-        let added = if same {
+        let added = if same || historical.is_some() {
             0
         } else {
             prepared.as_ref().expect("new bytes").len()
@@ -166,7 +224,12 @@ impl Engine {
                     .to_vec(),
             });
         }
-        let change = if same {
+        let change = if let Some(point) = historical {
+            Change::Observed {
+                revision: point.number,
+                chain: point.chain,
+            }
+        } else if same {
             Change::Unchanged
         } else if appended {
             Change::Appended {
@@ -183,16 +246,22 @@ impl Engine {
             change,
             observation,
             length,
-            if same { None } else { prepared },
+            if same || historical.is_some() {
+                None
+            } else {
+                prepared
+            },
         ));
-        let stored = self
-            .writer
+        self.writer
             .sender()?
             .store_group(group, Arc::clone(&self.blobs))?
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?
             .pop()
             .expect("transcript result");
+        let progress = self.reads.reader()?.input_progress(&id)?.ok_or_else(|| {
+            std::io::Error::other("captured native input has no current revision")
+        })?;
         pass.bytes_read += facts.size;
         pass.bytes_stored += raw_added + added;
         self.inputs.insert(
@@ -201,17 +270,13 @@ impl Engine {
                 input_id: id,
                 origin,
                 facts: Some(facts),
-                stored: stored.length,
-                parsed_upto: if same {
-                    previous.as_ref().map_or(0, |p| p.parsed_upto)
-                } else {
-                    0
-                },
-                parsed: same && previous.as_ref().is_some_and(|p| p.parsed),
-                waiting: same && previous.as_ref().is_some_and(|p| p.waiting),
+                stored: progress.length,
+                parsed_upto: progress.parsed_upto,
+                parsed: progress.parsed,
+                waiting: progress.waiting,
                 parser_state: None,
                 tail: None,
-                chain: Some(stored.chain),
+                chain: Some(progress.chain),
                 failed: None,
                 failed_history: HashMap::new(),
             },

@@ -17,7 +17,7 @@ pub const DEEP: &[&str] = &["roles", "written_by", "block_kinds", "actions", "fl
 
 pub(super) fn tags_sql() -> String {
     format!("SELECT DISTINCT s.pk,lower(CASE WHEN n.key IS NULL THEN n.value WHEN n.value IS NULL THEN n.key ELSE n.key||':'||n.value END) AS value
-        FROM session s JOIN a.note_target nt ON nt.ref='session:'||s.id JOIN a.note n ON n.id=nt.note_id
+        FROM session s JOIN source_note_target nt ON nt.ref='session:'||s.id JOIN source_note n ON n.id=nt.note_id
         WHERE n.kind='tag' AND {}",polylogue_model::note_sql::live_note("n"))
 }
 

@@ -14,7 +14,7 @@ use crate::origin::Root;
 use crate::parse::{DocumentParser, Output, Parse, Parser};
 use crate::time;
 use crate::{RecordOutcome, Records};
-use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, Timestamp, TitleSource};
+use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, TitleSource};
 use std::path::Path;
 
 pub const SIDE_ROOT: Root = ROOT;
@@ -151,13 +151,19 @@ fn whole(session: &str, kind: &str, data: Json, len: usize, out: &mut Output) ->
     let Some(session) = session_id(session) else {
         return RecordOutcome::unreadable("session ID in the path is empty");
     };
-    out.events.push(Event {
-        session: Some(session),
-        kind: kind.to_owned(),
-        at: None,
-        after: None,
-        range: Some((0, len as u64)),
-        data,
+    out.events.push({
+        let (at, time_evidence) = crate::time::parts(None);
+        Event {
+            session: Some(session),
+            kind: kind.to_owned(),
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            after: None,
+            range: Some((0, len as u64)),
+            data,
+        }
     });
     RecordOutcome::Used
 }
@@ -282,7 +288,8 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
         s.offer_cwd(cwd);
     }
     if let Some(at) = v.get("createdAt").and_then(time::rfc3339) {
-        s.offer_start(at);
+        s.offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     if let Some(version) = v.get("cliVersion").and_then(Json::as_str) {
         s.tool_version = Some(version.to_owned());
@@ -363,16 +370,20 @@ impl Parser for History {
         let Some(session) = session_id(sid) else {
             return RecordOutcome::unreadable("session ID is not valid");
         };
-        out.events.push(Event {
-            session: Some(session),
-            kind: "prompt_history".to_owned(),
-            at: v
-                .get("timestamp")
-                .and_then(Json::as_i64)
-                .and_then(Timestamp::from_unix_ms),
-            after: None,
-            range: Some(super::range(record)),
-            data: v.clone(),
+        out.events.push({
+            let (at, time_evidence) =
+                crate::time::parts(v.get("timestamp").and_then(crate::time::epoch_millis));
+            Event {
+                session: Some(session),
+                kind: "prompt_history".to_owned(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: Some(super::range(record)),
+                data: v.clone(),
+            }
         });
         RecordOutcome::Used
     }

@@ -24,7 +24,25 @@
       "progress/bash_progress: progress tick; the tool's own result supersedes it": 1,
       "system: system record without a subtype": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "agent-color.color": 1,
+      "agent-color.sessionId": 1,
+      "agent-color.type": 1,
+      "atis-latch.atis": 1,
+      "atis-latch.sessionId": 1,
+      "atis-latch.type": 1,
+      "brand-new-record.sessionId": 1,
+      "brand-new-record.type": 1,
+      "mode.mode": 1,
+      "mode.sessionId": 1,
+      "mode.type": 1,
+      "progress/bash_progress.data.output": 1,
+      "progress/bash_progress.data.type": 1,
+      "progress/bash_progress.sessionId": 1,
+      "progress/bash_progress.type": 1,
+      "system.sessionId": 1,
+      "system.type": 1
+    }
   },
   "output": {
     "background": [
@@ -49,7 +67,8 @@
           133,
           207
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "at": "2026-03-01T12:00:00Z",
@@ -68,7 +87,9 @@
           208,
           362
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "at": "2026-03-01T12:00:01Z",
@@ -88,7 +109,9 @@
           363,
           541
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {
@@ -102,7 +125,8 @@
           542,
           620
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -115,7 +139,26 @@
           656,
           720
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
+      },
+      {
+        "session": "claude-code:s1",
+        "kind": "agent_progress",
+        "range": [
+          721,
+          835
+        ],
+        "data": {
+          "type": "progress",
+          "sessionId": "s1",
+          "parentToolUseID": "toolu_9",
+          "data": {
+            "type": "agent_progress",
+            "agentId": "ab12"
+          }
+        },
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -131,7 +174,8 @@
           920,
           1012
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -145,7 +189,8 @@
           1013,
           1178
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       }
     ],
     "links": [
@@ -169,7 +214,9 @@
         "title": {
           "source": "custom",
           "text": "Build fix"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

@@ -8,7 +8,7 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InputRows {
     pub input: String,
     /// The origin that parses it (`claude-code`).
@@ -24,7 +24,7 @@ pub struct InputRows {
     pub observation: Option<ObservationRow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Revision {
     pub number: i64,
     pub produced: String,
@@ -32,16 +32,18 @@ pub struct Revision {
     pub length: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Extent {
     pub chain: i64,
     pub offset: i64,
     pub length: i64,
     pub blob: BlobHash,
+    /// Offset into the original captured material after an exact prefix overlap.
+    pub blob_offset: i64,
 }
 
 /// One look at a path that found something.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ObservationRow {
     pub id: String,
     pub machine: String,
@@ -70,41 +72,47 @@ impl InputRows {
     /// again, longer. Everything else present is left as it is, so inserting
     /// the rows twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
-        tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
-            .execute(params![self.input, self.format])?;
+        let source = crate::source::Source::of(tx)?;
+        tx.prepare_cached(
+            &source.sql("INSERT OR IGNORE INTO @source.input(id, format) VALUES (?1, ?2)"),
+        )?
+        .execute(params![self.input, self.format])?;
         if let Some(r) = &self.revision {
-            tx.prepare_cached(
-                "INSERT INTO revision(input, number, produced, chain, length, commit_seq)
+            tx.prepare_cached(&source.sql(
+                "INSERT INTO @source.revision(input, number, produced, chain, length, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(input, number) DO UPDATE SET length = excluded.length",
-            )?
+            ))?
             .execute(params![
                 self.input, r.number, r.produced, r.chain, r.length, seq
             ])?;
         }
         if let Some(e) = &self.extent {
             tx.prepare_cached(
-                "INSERT OR REPLACE INTO extent(input, chain, offset, length, blob, blob_offset)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(input,chain,offset) DO UPDATE SET
+                     commit_seq=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN min(commit_seq,excluded.commit_seq) ELSE excluded.commit_seq END,
+                     length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"),
             )?
             .execute(params![
                 self.input,
                 e.chain,
                 e.offset,
                 e.length,
-                &e.blob.0[..]
+                &e.blob.0[..],e.blob_offset,seq
             ])?;
         }
         if let Some(o) = &self.observation {
-            tx.prepare_cached(
-                "INSERT OR IGNORE INTO machine(id, host, first_seen) VALUES (?1, ?2, ?3)",
-            )?
+            tx.prepare_cached(&source.sql(
+                "INSERT OR IGNORE INTO @source.machine(id, host, first_seen) VALUES (?1, ?2, ?3)",
+            ))?
             .execute(params![o.machine, o.host, o.seen_at])?;
             tx.prepare_cached(
-                "INSERT OR IGNORE INTO observation(id, input, machine, path, class, revision, length,
+                &source.sql("INSERT OR IGNORE INTO @source.observation(id, input, machine, path, class, revision, length,
                      device, inode, size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq,
                      details_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
             )?
             .execute(params![
                 o.id,
@@ -126,7 +134,7 @@ impl InputRows {
             ])?;
             if let Some(c) = &o.container {
                 tx.prepare_cached(
-                    "INSERT OR IGNORE INTO observation_container VALUES (?1, ?2, ?3, ?4, ?5)",
+                    &source.sql("INSERT OR IGNORE INTO @source.observation_container VALUES (?1, ?2, ?3, ?4, ?5)"),
                 )?
                 .execute(params![
                     o.id,

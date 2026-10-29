@@ -311,13 +311,13 @@ impl Resolver {
         let mut latest = BTreeMap::<String, Option<(i64, i64)>>::new();
         for b in batches {
             keys.insert(Key::new(Kind::Input, b.input.id.as_bytes()));
-            let prior = if matches!(b.change, Change::Reparse { .. }) {
+            let prior = if matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 None
             } else {
                 match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?}
             };
             let chain = match (&b.change, b.continues, prior) {
-                (Change::Reparse { chain }, _, _) => *chain,
+                (Change::Reparse { chain } | Change::Observed { chain, .. }, _, _) => *chain,
                 (_, true, Some((_, chain)))
                 | (
                     Change::Appended { .. } | Change::Unchanged | Change::Disappeared,
@@ -326,7 +326,7 @@ impl Resolver {
                 ) => chain,
                 _ => prior.map_or(1, |(number, _)| number + 1),
             };
-            if !matches!(b.change, Change::Reparse { .. }) {
+            if !matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 let number = match (&b.change, b.continues, prior) {
                     (_, true, Some((number, _)))
                     | (Change::Unchanged | Change::Disappeared, _, Some((number, _))) => number,
@@ -399,34 +399,15 @@ impl Resolver {
                 for hash in p.prepared.texts.keys() {
                     keys.insert(Key::new(Kind::Text, hash.as_slice()));
                 }
-                let mut occurrences = BTreeMap::<(u64, u64), u64>::new();
-                for (i, (event, packed)) in
-                    p.output.events.iter().zip(&p.prepared.events).enumerate()
-                {
+                let event_ids = p.event_identities(&b.input.id, chain)?;
+                for (index, event) in p.output.events.iter().enumerate() {
                     if let Some(session) = &event.session {
                         keys.insert(Key::new(Kind::Session, session.to_string().into_bytes()));
                     }
                     if let Some(message) = &event.after {
                         keys.insert(Key::new(Kind::Message, message.to_string().into_bytes()));
                     }
-                    let occurrence = if event.session.is_none() {
-                        let next = occurrences
-                            .entry(event.range.unwrap_or_default())
-                            .or_default();
-                        let value = *next;
-                        *next += 1;
-                        value
-                    } else {
-                        0
-                    };
-                    keys.insert(Key::new(
-                        Kind::Event,
-                        match p.output.imported_events.get(&i) {
-                            Some(identity) => identity.id.clone(),
-                            None => event_id(&b.input.id, chain, event, &packed.0, occurrence)?,
-                        }
-                        .into_bytes(),
-                    ));
+                    keys.insert(Key::new(Kind::Event, event_ids[index].as_bytes()));
                 }
                 for link in &p.output.links {
                     keys.insert(Key::new(Kind::Link, link_key(link)?));

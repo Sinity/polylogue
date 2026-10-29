@@ -9,8 +9,16 @@ use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
-pub const ARCHIVE: &str = include_str!("schema/archive.sql");
-pub const INDEX: &str = include_str!("schema/index.sql");
+pub const ARCHIVE: &str = concat!(
+    include_str!("schema/archive.sql"),
+    "\n",
+    include_str!("schema/variants.sql")
+);
+pub const INDEX: &str = concat!(
+    include_str!("schema/index.sql"),
+    "\n",
+    include_str!("schema/wire_shapes.sql")
+);
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
@@ -36,9 +44,34 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 }
 
 pub fn create_index(conn: &Connection) -> Result<()> {
+    create_index_in(conn, false)
+}
+
+fn add_primary(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&crate::source::schema()?.ddl)?;
+    conn.execute_batch(crate::primary::projection::SCHEMA)?;
+    Ok(())
+}
+
+fn base_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
+    conn.execute_batch(crate::coverage::SCHEMA)?;
+    Ok(())
+}
+
+fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
+    base_index(conn)?;
     conn.execute_batch(READ_INDEXES)?;
-    conn.execute("INSERT INTO meta(key,value) VALUES ('building','1')", [])?;
+    if primary {
+        add_primary(conn)?;
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES ('primary_cache',?1)",
+            [uuid::Uuid::now_v7().to_string()],
+        )?;
+    }
+    if !primary {
+        conn.execute("INSERT INTO meta(key,value) VALUES ('building','1')", [])?;
+    }
     crate::archive::generation::create(conn)?;
     set_version(conn, INDEX_VERSION)?;
     Ok(())
@@ -46,6 +79,12 @@ pub fn create_index(conn: &Connection) -> Result<()> {
 
 /// Applies numbered index migrations without replacing committed rows.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
+    ensure_index_in(conn, false)
+}
+pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
+    ensure_index_in(conn, true)
+}
+fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     let found = version(conn)?;
     if found > INDEX_VERSION {
         return Err(StoreError::IndexVersion {
@@ -55,16 +94,24 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     if found == 0 {
-        create_index(&tx)?;
+        create_index_in(&tx, primary)?;
     } else {
         for step in &INDEX_MIGRATIONS[found as usize - 1..] {
             tx.execute_batch(step)?;
         }
         tx.execute_batch(READ_INDEXES)?;
         let matches = if building(&tx)? {
-            same_build_schema(&tx)?
+            if primary {
+                same_build_schema_in(&tx, true)?
+            } else {
+                same_build_schema(&tx)?
+            }
         } else {
-            same_index_schema(&tx)?
+            if primary {
+                same_index_schema_in(&tx, true)?
+            } else {
+                same_index_schema(&tx)?
+            }
         };
         if !matches {
             return Err(StoreError::NoMigration {
@@ -91,16 +138,6 @@ pub fn building(conn: &Connection) -> Result<bool> {
 /// Creates `archive.db` in an empty file and brings an older one forward.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
-}
-
-/// The tables of `sinex.db`, primary mode's register: the archive's tables
-/// and the Sinex material of each part.
-pub(crate) const SINEX: [&str; 2] = [ARCHIVE, crate::primary::SCHEMA];
-
-/// Creates `sinex.db` in an empty file and brings an older one forward with
-/// the archive's migrations.
-pub fn ensure_sinex(conn: &Connection) -> Result<()> {
-    ensure(conn, "sinex", &SINEX, ARCHIVE_MIGRATIONS)
 }
 
 /// Creates `embeddings.db` in an empty file; refuses one with other tables.
@@ -158,8 +195,14 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
 
 /// Missing read indexes can be created without rebuilding parsed rows.
 pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
+    same_index_schema_in(conn, false)
+}
+fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
+    base_index(&expected)?;
+    if primary {
+        add_primary(&expected)?;
+    }
     let base = shape(&expected)?;
     expected.execute_batch(READ_INDEXES)?;
     let expected = shape(&expected)?;
@@ -177,9 +220,15 @@ pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
 
 /// A pending first build may lack only the indexes the writer deferred.
 pub(crate) fn same_build_schema(conn: &Connection) -> Result<bool> {
+    same_build_schema_in(conn, false)
+}
+fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
-    expected.execute_batch(INDEX)?;
+    base_index(&expected)?;
     expected.execute_batch(READ_INDEXES)?;
+    if primary {
+        add_primary(&expected)?;
+    }
     let found = shape(conn)?;
     let mut wanted = shape(&expected)?;
     wanted.retain(|(kind, name, _)| {

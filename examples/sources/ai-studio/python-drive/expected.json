@@ -21,7 +21,8 @@
           0,
           255
         ],
-        "session": "ai-studio:1abc"
+        "session": "ai-studio:1abc",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -38,7 +39,8 @@
           "id": "ai-studio:4:1abc#id:11:matrix-user",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:1abc"
+          "session": "ai-studio:1abc",
+          "at_quality": "unknown"
         },
         "offset": 39
       },
@@ -54,7 +56,8 @@
           "id": "ai-studio:4:1abc#id:16:matrix-assistant",
           "parent": "ai-studio:4:1abc#id:11:matrix-user",
           "role": "assistant",
-          "session": "ai-studio:1abc"
+          "session": "ai-studio:1abc",
+          "at_quality": "unknown"
         },
         "offset": 133
       }
@@ -62,7 +65,8 @@
     "sessions": [
       {
         "id": "ai-studio:1abc",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

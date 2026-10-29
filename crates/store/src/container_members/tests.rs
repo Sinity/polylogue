@@ -184,3 +184,58 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
     names.sort();
     assert_eq!(names, ["file-Native.dat", "first.dat"]);
 }
+
+#[test]
+fn historical_observation_requires_the_exact_stored_revision_point_and_has_no_new_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let blobs = Arc::new(archive.blobs().unwrap());
+    let result = writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![stage(&archive, ORIGINAL, "one", "source", None)],
+            Arc::clone(&blobs),
+        )
+        .unwrap();
+    assert!(result[0].is_ok());
+    let mut observed = stage(&archive, ORIGINAL, "two", "copy", None);
+    observed.batch.change = Change::Observed {
+        revision: 1,
+        chain: 1,
+    };
+    observed.batch.new_blob = None;
+    observed.files.clear();
+    let result = writer
+        .sender()
+        .unwrap()
+        .store_group(vec![observed], Arc::clone(&blobs))
+        .unwrap();
+    assert!(result[0].as_ref().unwrap().already_stored);
+    let mut wrong = stage(&archive, ORIGINAL, "three", "wrong", None);
+    wrong.batch.change = Change::Observed {
+        revision: 1,
+        chain: 2,
+    };
+    wrong.batch.new_blob = None;
+    wrong.files.clear();
+    let result = writer
+        .sender()
+        .unwrap()
+        .store_group(vec![wrong], blobs)
+        .unwrap();
+    assert!(result[0].is_err());
+    let db = crate::archive::open_read(&archive.archive_db()).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM revision", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM observation", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}

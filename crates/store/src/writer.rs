@@ -28,6 +28,10 @@ mod attachments;
 mod batch;
 mod bytes;
 mod chain;
+mod confirmed;
+mod primary;
+mod primary_capture;
+pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
 mod rows;
 mod search;
@@ -60,12 +64,18 @@ enum Msg {
         Box<crate::export_items::ExportItems>,
         SyncSender<Result<()>>,
     ),
+    Coverage(
+        Box<polylogue_model::capture::Coverage>,
+        SyncSender<Result<()>>,
+    ),
     /// Bytes no input holds (a chat action's attachment), as one blob.
     StoreBlob(
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
     ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
+    Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
+    SynchronizePrimary(SyncSender<Result<i64>>),
     Stop,
     /// A user write is waiting in its own queue.
     Wake,
@@ -250,7 +260,17 @@ impl Writer {
         archive: &Archive,
         sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
     ) -> Result<Self> {
+        if archive.is_primary() != sinex.is_some() {
+            return Err(StoreError::Invalid(
+                "the writer mode must match its archive".into(),
+            ));
+        }
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
+        if !archive.is_primary() {
+            let uri = format!("file:{}?mode=ro", archive.archive_db().display());
+            index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+            crate::source::views(&index)?;
+        }
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
@@ -288,7 +308,11 @@ impl Writer {
         } else {
             Vec::new()
         };
-        let archive_conn = crate::archive::open_archive_writer(archive)?;
+        let archive_conn = if archive.is_primary() {
+            crate::archive::open_read(&archive.index_db())?
+        } else {
+            crate::archive::open_archive_writer(archive)?
+        };
         let first_build = building
             .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
             .transpose()?;
@@ -299,6 +323,7 @@ impl Writer {
         };
         let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
         let mut inner = Inner {
+            resolver: Arc::clone(&resolver),
             segment,
             archive: archive_conn,
             index,
@@ -330,6 +355,25 @@ impl Writer {
         })
     }
 
+    pub fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Confirmed(events, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+    pub fn synchronize_primary(&self) -> Result<i64> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::SynchronizePrimary(reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Whether the index was empty when the writer started.
     pub fn started_empty(&self) -> bool {
         self.started_empty
@@ -338,7 +382,9 @@ impl Writer {
     /// Queues one batch. Blocks while the writer is busy and its queue is
     /// full, which is what holds the parse pool back.
     pub fn send(&self, mut batch: Batch) -> Result<()> {
-        self.resolver.batches(&mut [&mut batch])?;
+        if !self.resolver.location().is_primary() {
+            self.resolver.batches(&mut [&mut batch])?;
+        }
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
@@ -397,6 +443,12 @@ impl Writer {
             .send(Msg::StoreBlob(Box::new((new_blob, file)), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Accepts one completed discovery walk. Primary visibility follows its
+    /// confirmed product; standalone visibility follows the index transaction.
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
     }
 
     /// Installs export associations derived from committed source observations.
@@ -467,7 +519,9 @@ impl WriterSender {
         store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
         let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
-        self.0.resolver.batches(&mut batches)?;
+        if !self.0.resolver.location().is_primary() {
+            self.0.resolver.batches(&mut batches)?;
+        }
         let (reply, wait) = sync_channel(1);
         self.0
             .send(Msg::StoreGroup(group, store, reply))
@@ -476,7 +530,9 @@ impl WriterSender {
     }
 
     pub fn send(&self, mut batch: Batch) -> Result<()> {
-        self.0.resolver.batches(&mut [&mut batch])?;
+        if !self.0.resolver.location().is_primary() {
+            self.0.resolver.batches(&mut [&mut batch])?;
+        }
         self.0
             .send(Msg::Batch(Box::new(batch)))
             .map_err(|_| StoreError::WriterGone)
@@ -504,7 +560,9 @@ impl WriterSender {
         mut reading: ChainReading,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
-        reading.resolve(&self.0.resolver, &input, chain, length)?;
+        if !self.0.resolver.location().is_primary() {
+            reading.resolve(&self.0.resolver, &input, chain, length)?;
+        }
         let (reply, wait) = sync_channel(1);
         crate::timing::reading_commit_queue(1);
         if self
@@ -539,10 +597,22 @@ impl WriterSender {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// As [`Writer::coverage`].
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(&self.0, coverage)
+    }
+
     /// As [`Writer::derive`].
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
     }
+}
+
+fn coverage_via(tx: &WriterQueue, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Coverage(Box::new(coverage), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 fn derive_via(tx: &WriterQueue) -> Result<u64> {
@@ -563,6 +633,7 @@ fn user_via(
 }
 
 struct Inner {
+    resolver: Arc<resolve::Resolver>,
     segment: Option<hashed_blobs::SegmentWriter>,
     archive: Connection,
     index: Connection,
@@ -601,6 +672,9 @@ impl Inner {
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
         let mut assets = Vec::new();
+        let mut coverage = Vec::new();
+        let mut confirmations = Vec::new();
+        let mut synchronizations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
@@ -637,12 +711,24 @@ impl Inner {
                         assets.push((staged, reply));
                         false
                     }
+                    Msg::Coverage(fact, reply) => {
+                        coverage.push((fact, reply));
+                        false
+                    }
                     Msg::StoreBlob(blob, reply) => {
                         blobs.push((blob, reply));
                         false
                     }
                     Msg::ReplaceChain(input, chain, length, reading, reply) => {
                         replacements.push((input, chain, length, reading, reply));
+                        false
+                    }
+                    Msg::Confirmed(events, reply) => {
+                        confirmations.push((events, reply));
+                        false
+                    }
+                    Msg::SynchronizePrimary(reply) => {
+                        synchronizations.push(reply);
                         false
                     }
                     Msg::Stop => {
@@ -678,6 +764,12 @@ impl Inner {
                         Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                     }
                 }
+            }
+            for (events, reply) in confirmations.drain(..) {
+                let _ = reply.send(self.apply_confirmed(&events));
+            }
+            for reply in synchronizations.drain(..) {
+                let _ = reply.send(self.synchronize_primary());
             }
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
@@ -726,6 +818,9 @@ impl Inner {
                 self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
+            for (fact, reply) in coverage.drain(..) {
+                let _ = reply.send(self.write_coverage(*fact));
+            }
             for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
@@ -735,6 +830,29 @@ impl Inner {
             }
         }
         let _ = self.finish_build();
+    }
+
+    fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage
+            .validate()
+            .map_err(|error| StoreError::Invalid(error.into()))?;
+        if let Some(sinex) = &self.sinex {
+            let machine = coverage.machine.clone();
+            sinex.prepare_products(&[crate::primary::ProductWrite {
+                product: crate::primary::Product::Coverage(coverage),
+                location: None,
+                parents: Vec::new(),
+                machine: Some(machine),
+                output_index: 0,
+            }])?;
+            return Ok(());
+        }
+        let tx = self.index.transaction()?;
+        bump_counter(&tx)?;
+        crate::coverage::apply(&tx, &coverage)?;
+        crate::write_lock::commit(tx)?;
+        self.report.transactions += 1;
+        Ok(())
     }
 
     /// Derives from the rows written since the last derive. With nothing
@@ -846,6 +964,9 @@ impl Inner {
         new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
+        if self.sinex.is_some() {
+            return self.primary_blob(new_blob, file);
+        }
         if crate::blobs::load_extent(&self.archive, "", &hashed_blobs::Hash(new_blob.hash.0))?
             .is_some()
         {
@@ -860,18 +981,6 @@ impl Inner {
             return Err(StoreError::Invalid(
                 "prepared bytes do not match the new blob".into(),
             ));
-        }
-        if let Some(sinex) = &self.sinex {
-            let crate::staging::Prepared::Part { file, .. } = file.file else {
-                return Err(StoreError::Invalid(
-                    "local frames reached Sinex writer".into(),
-                ));
-            };
-            let confirmed = sinex.send_blob(new_blob.hash, new_blob.size, &mut file.reopen()?)?;
-            let tx = self.archive.transaction()?;
-            crate::blobs::insert_extent(&tx, confirmed.extent(new_blob.hash, new_blob.size)?)?;
-            crate::write_lock::commit(tx)?;
-            return Ok(new_blob.hash);
         }
         let crate::staging::Prepared::Local { prepared } = file.file else {
             return Err(StoreError::Invalid(
@@ -928,27 +1037,39 @@ impl Inner {
         &mut self,
         request: &polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
+        if self.sinex.is_some() {
+            return self.primary_request(request);
+        }
         let tx = self.archive.transaction()?;
-        let seq = bump_counter(&tx)?;
+        let known: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
+            [&request.id],
+            |row| row.get(0),
+        )?;
+        let seq = if known {
+            tx.query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+        } else {
+            bump_counter(&tx)?
+        };
         let outcome = crate::user_writes::apply(&tx, request, seq)?;
-        if outcome.repeat {
-            // A resent request: nothing to keep, not even the counter bump.
+        if known {
             tx.rollback()?;
         } else {
-            if let Some(sinex) = &self.sinex {
-                let change = crate::primary::RegisterChange::Request {
-                    request: Box::new(request.clone()),
-                    first_note: crate::user_writes::first_note_of_request(&tx, request)?,
-                };
-                let material = sinex.send_change(&change)?;
-                crate::primary::change_material(&tx, &change, &material)?;
-            }
             crate::write_lock::commit(tx)?;
         }
         Ok(outcome)
     }
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
+        if self.sinex.is_some() {
+            return self.primary_products(batches);
+        }
         for b in batches.clone() {
             if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
@@ -978,16 +1099,7 @@ impl Inner {
             let atx = self.archive.transaction()?;
             let seq = bump_counter(&atx)?;
             for batch in batches.clone() {
-                let (chain, rows) = write_bytes(&atx, batch, seq)?;
-                if let (Some(sinex), Some(rows)) = (&self.sinex, &rows) {
-                    staging::send_to_sinex(
-                        sinex.as_ref(),
-                        &atx,
-                        rows,
-                        None,
-                        batch.new_blob.as_ref(),
-                    )?;
-                }
+                let (chain, _) = write_bytes(&atx, batch, seq)?;
                 chains.push(chain);
             }
             crate::fault::check("write.archive_commit", "")?;
@@ -1004,7 +1116,21 @@ impl Inner {
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
-                    stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_deref())?;
+                    let receipt = crate::source::Source::reading_receipt(
+                        &itx,
+                        &b.input.id,
+                        chain,
+                        p.parsed_upto,
+                    )?;
+                    stats.1 += write_rows(
+                        &itx,
+                        b,
+                        p,
+                        chain,
+                        counter,
+                        self.first_build.as_deref(),
+                        Some(&receipt),
+                    )?;
                 }
                 if b.parse.iter().any(|p| p.at_end) {
                     rows::prune_sessions(&itx, &b.input.id, chain)?;

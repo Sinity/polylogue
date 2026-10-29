@@ -82,6 +82,12 @@ pub struct Message {
     pub role: Role,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Timestamp>,
+    #[serde(default = "crate::time::unknown_quality")]
+    pub at_quality: crate::TimeQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_precision: Option<crate::Precision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_until: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,6 +263,35 @@ pub struct ApiError {
 }
 
 impl Message {
+    /// BLAKE3 of the source value's sorted canonical JSON, the message
+    /// version identity used by storage. Projection never redefines it.
+    pub fn content_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        value.sort_all_objects();
+        Ok(crate::BlobHash::of(&serde_json::to_vec(&value)?))
+    }
+
+    pub fn time_evidence(&self) -> crate::TimeEvidence {
+        crate::TimeEvidence {
+            quality: self.at_quality,
+            precision: self.at_precision,
+            until: self.at_until,
+        }
+    }
+
+    pub fn set_time(
+        &mut self,
+        at: Option<Timestamp>,
+        evidence: crate::TimeEvidence,
+    ) -> Result<(), crate::TimeEvidenceError> {
+        evidence.validate(at)?;
+        self.at = at;
+        self.at_quality = evidence.quality;
+        self.at_precision = evidence.precision;
+        self.at_until = evidence.until;
+        Ok(())
+    }
+
     /// Prose text of the message, blocks joined by blank lines.
     pub fn text(&self) -> String {
         let parts: Vec<&str> = self.blocks.iter().filter_map(|b| b.text()).collect();

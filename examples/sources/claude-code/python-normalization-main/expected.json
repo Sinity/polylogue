@@ -23,7 +23,8 @@
         },
         "output_file": "/tmp/task-bg.output",
         "session": "claude-code:claude-normalization-main",
-        "task_id": "task-bg"
+        "task_id": "task-bg",
+        "result_at": "2026-07-01T10:00:09Z"
       }
     ],
     "blobs": [],
@@ -43,7 +44,9 @@
           3018,
           3446
         ],
-        "session": "claude-code:claude-normalization-main"
+        "session": "claude-code:claude-normalization-main",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [
@@ -74,7 +77,9 @@
           "id": "claude-code:main-u1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -125,7 +130,9 @@
             "input": 120,
             "output": 40,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 191
       },
@@ -151,7 +158,9 @@
           "parent": "claude-code:main-a1",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 942
       },
@@ -169,7 +178,9 @@
           "parent": "claude-code:main-bg-start",
           "prompt_kind": "command",
           "role": "user",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1288
       },
@@ -186,7 +197,9 @@
           "id": "claude-code:other-u1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:claude-normalization-other"
+          "session": "claude-code:claude-normalization-other",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1579
       },
@@ -203,7 +216,9 @@
           "id": "claude-code:main-u1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1755
       },
@@ -221,7 +236,9 @@
           "parent": "claude-code:main-command",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1946
       },
@@ -239,7 +256,9 @@
           "parent": "claude-code:main-context",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 2211
       },
@@ -267,7 +286,9 @@
           "model": "claude-sonnet-4-5-20250929",
           "parent": "claude-code:main-context",
           "role": "assistant",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 2398
       },
@@ -289,7 +310,9 @@
           "parent": "claude-code:main-a2",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:claude-normalization-main"
+          "session": "claude-code:claude-normalization-main",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 2752
       },
@@ -307,7 +330,9 @@
           "model": "claude-haiku-4-5-20251001",
           "parent": "claude-code:other-u1",
           "role": "assistant",
-          "session": "claude-code:claude-normalization-other"
+          "session": "claude-code:claude-normalization-other",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3447
       },
@@ -334,7 +359,9 @@
             "input": 25,
             "output": 8,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3682
       }
@@ -346,7 +373,9 @@
         ],
         "id": "claude-code:claude-normalization-main",
         "kind": "main",
-        "started": "2026-07-01T10:00:00Z"
+        "started": "2026-07-01T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       },
       {
         "cwd": [
@@ -354,12 +383,16 @@
         ],
         "id": "claude-code:claude-normalization-main/sidechain",
         "kind": "sidechain",
-        "started": "2026-07-01T10:00:10Z"
+        "started": "2026-07-01T10:00:10Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       },
       {
         "id": "claude-code:claude-normalization-other",
         "kind": "main",
-        "started": "2026-07-01T10:00:03.5Z"
+        "started": "2026-07-01T10:00:03.5Z",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

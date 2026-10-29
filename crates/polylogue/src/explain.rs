@@ -115,7 +115,7 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
                 "mcp": c.mcp, "http": c.http, "writes": c.writes,
                 "arguments": commands::schema(c),
             })).collect();
-            entries.extend(polylogue_render::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));
+            entries.extend(polylogue_model::read::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));
             entries.extend(polylogue_render::Format::NAMES.iter().map(|name| json!({"kind": "format", "name": name})));
             entries
         }

@@ -234,3 +234,59 @@ fn non_utf8_container_names_keep_distinct_original_bytes() {
     );
     assert_ne!(members[2].path, members[3].path);
 }
+
+#[test]
+fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("scratch");
+    std::fs::create_dir(&scratch).unwrap();
+    let sentinel = root.path().join("asset.bin");
+    std::fs::write(&sentinel, b"untouched").unwrap();
+    let source = root.path().join("names.zip");
+    zip(
+        &source,
+        &[
+            ("../conversations.json", CHAT.as_bytes()),
+            ("../asset.bin", b"archive asset"),
+            ("/absolute/conversations.json", CHAT.as_bytes()),
+        ],
+    );
+    let members = stage(&source, &scratch, None).unwrap();
+    assert_eq!(members.len(), 4);
+    assert_eq!(
+        members[1].member_path_bytes.as_deref(),
+        Some(b"../conversations.json".as_slice())
+    );
+    assert_eq!(
+        members[2].member_path_bytes.as_deref(),
+        Some(b"../asset.bin".as_slice())
+    );
+    assert_eq!(
+        members[3].member_path_bytes.as_deref(),
+        Some(b"/absolute/conversations.json".as_slice())
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+    let source = root.path().join("names.tar");
+    let mut tar = tar::Builder::new(std::fs::File::create(&source).unwrap());
+    for name in ["../conversations.json", "/absolute/conversations.json"] {
+        let mut header = tar::Header::new_gnu();
+        header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+        header.set_size(CHAT.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append(&header, CHAT.as_bytes()).unwrap();
+    }
+    tar.finish().unwrap();
+    drop(tar);
+    let members = stage(&source, &scratch, None).unwrap();
+    assert_eq!(members.len(), 3);
+    assert_eq!(
+        members[1].member_path_bytes.as_deref(),
+        Some(b"../conversations.json".as_slice())
+    );
+    assert_eq!(
+        members[2].member_path_bytes.as_deref(),
+        Some(b"/absolute/conversations.json".as_slice())
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+}

@@ -41,10 +41,10 @@ pub const VIEWS: &[(&str, &str)] = &[
     (
         "v1_notes",
         "SELECT n.id, n.first_note, n.kind, n.key, n.value, n.author, n.created_at, \
-         (SELECT group_concat(nt.ref, ' ') FROM (SELECT ref FROM a.note_target WHERE note_id = n.id ORDER BY ref) nt) AS targets, \
-         NOT EXISTS (SELECT 1 FROM a.note later WHERE later.first_note = n.first_note AND later.commit_seq > n.commit_seq) AS current, \
-         EXISTS (SELECT 1 FROM a.note_relation w WHERE w.kind = 'withdraws' AND w.other = 'note:' || n.first_note) AS withdrawn \
-         FROM a.note n WHERE n.kind <> 'withdrawal'",
+         (SELECT group_concat(nt.ref, ' ') FROM (SELECT ref FROM source_note_target WHERE note_id = n.id ORDER BY ref) nt) AS targets, \
+         NOT EXISTS (SELECT 1 FROM source_note later WHERE later.first_note = n.first_note AND later.commit_seq > n.commit_seq) AS current, \
+         EXISTS (SELECT 1 FROM source_note_relation w WHERE w.kind = 'withdraws' AND w.other = 'note:' || n.first_note) AS withdrawn \
+         FROM source_note n WHERE n.kind <> 'withdrawal'",
     ),
 ];
 

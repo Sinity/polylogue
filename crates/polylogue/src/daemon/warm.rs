@@ -489,7 +489,7 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
     )?;
     column(
         &format!(
-            "SELECT DISTINCT n.key AS v FROM a.note n WHERE n.kind = 'tag' AND n.key IS NOT NULL \
+            "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'tag' AND n.key IS NOT NULL \
              AND {} AND NOT {} ORDER BY n.key",
             polylogue_query::fields::current_note("n"),
             polylogue_query::fields::withdrawn_note("n"),
@@ -499,7 +499,7 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
     )?;
     column(
         &format!(
-            "SELECT DISTINCT n.key AS v FROM a.note n WHERE n.kind = 'saved_query' AND n.key IS NOT NULL \
+            "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'saved_query' AND n.key IS NOT NULL \
              AND {} AND NOT {} ORDER BY n.key",
             polylogue_query::fields::current_note("n"),
             polylogue_query::fields::withdrawn_note("n"),

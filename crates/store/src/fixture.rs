@@ -75,7 +75,10 @@ impl Fixture {
         let (archive, lock) = Archive::open_or_create(root)?;
         let index = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
         let notes = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
-        index.execute("INSERT INTO input_ref(id) VALUES ('fixture')", [])?;
+        index.execute(
+            "INSERT INTO input_ref(id,format) VALUES ('fixture','fixture')",
+            [],
+        )?;
         let input_pk = index.last_insert_rowid();
         Ok(Self {
             archive,
@@ -115,8 +118,8 @@ impl Fixture {
         let kind = if s.kind.is_empty() { "main" } else { s.kind };
         self.index.execute(
             "INSERT INTO session(id, origin, native_id, kind, title, cwd, cwd_json, repo, record_repo,
-                 started_at, last_activity_at, changed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, 1)",
+                 started_at, last_activity_at, changed, started_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, 1, ?11)",
             params![
                 s.id,
                 origin,
@@ -127,7 +130,8 @@ impl Fixture {
                 s.cwd.map(|c| serde_json::json!([c]).to_string()),
                 s.repo,
                 s.started,
-                s.last
+                s.last,
+                fixture_time(s.started)?,
             ],
         )?;
         Ok(self.index.last_insert_rowid())
@@ -203,8 +207,8 @@ impl Fixture {
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
             "INSERT INTO message(id, session_pk, order_input_pk, seq, role, written_by, prompt_kind,
-                 model, at, input_pk, cost_nusd, on_active_path, words, order_input_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, (SELECT id FROM input_ref WHERE pk = ?3))",
+                 model, at, input_pk, cost_nusd, on_active_path, words, order_input_id, at_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, (SELECT id FROM input_ref WHERE pk = ?3), ?13)",
             params![
                 m.id,
                 session_pk,
@@ -217,7 +221,8 @@ impl Fixture {
                 m.at,
                 m.cost_nusd,
                 m.on_active_path.map(i64::from),
-                words
+                words,
+                fixture_time(m.at)?,
             ],
         )?;
         let pk = self.index.last_insert_rowid();
@@ -353,6 +358,9 @@ impl Fixture {
                     r.get(0)
                 })?;
         let fields = crate::encoding::pack_json(&polylogue_model::Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(
                 polylogue_model::SessionId::parse(&session)
                     .map_err(|error| crate::StoreError::Invalid(error.to_string()))?,
@@ -364,7 +372,7 @@ impl Fixture {
             data: serde_json::Value::Null,
         })?;
         self.index.execute(
-            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data,fields) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data,fields,source_chain) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)",
             params![id, session_pk, self.seq, kind, at, self.input_pk, data,fields],
         )?;
         let hash = *blake3::hash(b"{}").as_bytes();
@@ -479,4 +487,16 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
         FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
     conn.execute("UPDATE parse_state SET reading_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
     Ok(size)
+}
+
+fn fixture_time(at: Option<i64>) -> Result<Vec<u8>> {
+    let at = at.and_then(polylogue_model::Timestamp::from_unix_ms);
+    crate::encoding::time_bytes(
+        at,
+        if at.is_some() {
+            polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant)
+        } else {
+            polylogue_model::TimeEvidence::UNKNOWN
+        },
+    )
 }

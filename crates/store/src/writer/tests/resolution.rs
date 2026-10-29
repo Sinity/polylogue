@@ -282,6 +282,9 @@ fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
     let data = serde_json::json!({"shared":42});
     let mut input = batch("value-route", 0, 0, Vec::new(), &["s"]);
     input.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: Some(sid("s")),
         kind: "value".into(),
         at: None,
@@ -436,7 +439,10 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
     let tx = index.transaction().unwrap();
     readings[0]
         .3
-        .visit(|step| rows::write_confirmed_rows(&tx, &input, step, 41, 1, None).map(|_| ()))
+        .visit(|step| {
+            rows::write_confirmed_rows(&tx, &input, step, 41, 1, None, Some(&fixture_receipt()))
+                .map(|_| ())
+        })
         .unwrap();
     tx.commit().unwrap();
     let (chain, position): (i64, i64) = index
@@ -626,45 +632,6 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     tx.commit().unwrap();
 }
 
-#[test]
-fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut index = crate::archive::open_write(&dir.path().join("index.db"), 1).unwrap();
-    crate::schema::create_index(&index).unwrap();
-    let tx = index.transaction().unwrap();
-    let mut input = batch(
-        "confirmed-subset",
-        0,
-        100,
-        vec![row(
-            120,
-            text_message("live", "s", Role::User, "retained fact", None),
-        )],
-        &["s"],
-    );
-    resolve::prepare_index(&tx, &mut input, 1, false).unwrap();
-    assert!(write_rows(&tx, &input, &input.parse[0], 1, 1, None).is_err());
-    assert_eq!(
-        tx.query_row("SELECT count(*) FROM message", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    rows::write_confirmed_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
-    assert_eq!(
-        tx.query_row("SELECT parsed_upto FROM parse_state", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        200
-    );
-    assert_eq!(
-        tx.query_row("SELECT source_start FROM message", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        120
-    );
-    tx.commit().unwrap();
-}
-
 fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
     [
         ("source-a", 1, 0u8, "partial", None, "/first"),
@@ -707,7 +674,9 @@ fn apply_confirmed_readings(
             parse: Vec::new(),
             release: InFlight::default(),
         };
-        reading.visit(|step| write_rows(&tx, &batch, step, *chain, 1, None).map(|_| ()))?;
+        reading.visit(|step| {
+            write_rows(&tx, &batch, step, *chain, 1, None, Some(&fixture_receipt())).map(|_| ())
+        })?;
     }
     tx.commit()?;
     Ok(())
@@ -822,6 +791,9 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     let tx = conn.transaction().unwrap();
     let mut input = batch("original", 0, 0, Vec::new(), &[]);
     let event = Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: None,
         kind: "input.report".into(),
         at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z"),
@@ -892,10 +864,19 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     newer.range = Some((500, 999));
     newer.data = serde_json::json!({"remaining":7});
     competing.parse[0].output.events.push(newer.clone());
-    competing.parse[0]
-        .output
-        .imported_events
-        .insert(0, reexported.identity);
+    competing.parse[0].output.imported_events.insert(
+        0,
+        polylogue_model::bundle::ImportedEventIdentity {
+            id: id.clone(),
+            sources: vec![polylogue_model::bundle::EventSourceClaim {
+                input: "newer-original".into(),
+                source: "native".into(),
+                source_chain: 1,
+                source_start: Some(500),
+                source_end: Some(999),
+            }],
+        },
+    );
     write_test_rows(&tx, &competing, &competing.parse[0], 1, 3, None).unwrap();
     assert_eq!(
         tx.query_row("SELECT count(*) FROM event_source", [], |r| r
@@ -920,6 +901,22 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .event,
         newer
     );
+    let selected = reads.reader().unwrap().event_record(&id).unwrap().unwrap();
+    assert!(
+        selected
+            .identity
+            .sources
+            .iter()
+            .all(|claim| claim.input != "original" && claim.input != "bundle-local")
+    );
+    assert!(
+        selected
+            .identity
+            .sources
+            .iter()
+            .any(|claim| claim.input == "newer-original")
+    );
+
     let tx = conn.transaction().unwrap();
     let empty = batch("preferred-local", 0, 0, Vec::new(), &[]);
     write_test_rows(&tx, &empty, &empty.parse[0], 1, 4, None).unwrap();
@@ -934,4 +931,205 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .event,
         event
     );
+}
+
+#[test]
+fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = crate::archive::open_write(&dir.path().join("index.db"), 1).unwrap();
+    crate::schema::create_index(&index).unwrap();
+    let tx = index.transaction().unwrap();
+    let mut input = batch(
+        "confirmed-subset",
+        0,
+        100,
+        vec![row(
+            120,
+            text_message("live", "s", Role::User, "retained fact", None),
+        )],
+        &["s"],
+    );
+    resolve::prepare_index(&tx, &mut input, 1, false).unwrap();
+    assert!(
+        write_rows(
+            &tx,
+            &input,
+            &input.parse[0],
+            1,
+            1,
+            None,
+            Some(&fixture_receipt())
+        )
+        .is_err()
+    );
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM message", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    rows::write_confirmed_rows(
+        &tx,
+        &input,
+        &input.parse[0],
+        1,
+        1,
+        None,
+        Some(&fixture_receipt()),
+    )
+    .unwrap();
+    assert_eq!(
+        tx.query_row("SELECT parsed_upto FROM parse_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        200
+    );
+    assert_eq!(
+        tx.query_row("SELECT source_start FROM message", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        120
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
+fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_caches() {
+    use polylogue_model::{
+        Document, DocumentId, DocumentPurpose, DocumentRow, Precision, TimeEvidence, TimeQuality,
+    };
+    let w = test_archive();
+    let at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z");
+    let evidence = TimeEvidence {
+        quality: TimeQuality::Operator,
+        precision: Some(Precision::Bounded),
+        until: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456999Z"),
+    };
+    let mut message = text_message("precise", "s", Role::User, "precise source time", None);
+    message.set_time(at, evidence).unwrap();
+    let mut document = Document::new(
+        DocumentId::parse("claude-code:precise-document").unwrap(),
+        DocumentPurpose::Context,
+    );
+    document.blocks = vec![Block::Text {
+        text: "later canonical document".into(),
+    }];
+    document.set_time(at, evidence).unwrap();
+    let mut input = batch(
+        "precise-source",
+        0,
+        0,
+        vec![row(1, message.clone())],
+        &["s"],
+    );
+    input.parse[0].output.sessions[0]
+        .set_time(at, evidence)
+        .unwrap();
+    let session = input.parse[0].output.sessions[0].clone();
+    input.parse[0].output.documents.push(DocumentRow {
+        offset: 2,
+        end: 3,
+        document: document.clone(),
+    });
+    let mut event = Event {
+        session: Some(sid("s")),
+        kind: "precise.event".into(),
+        at: None,
+        at_quality: TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some((4, 5)),
+        data: serde_json::json!({"exact":true}),
+    };
+    event.set_time(at, evidence).unwrap();
+    input.parse[0].output.events.push(event.clone());
+    w.writer.send(input).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    conn.execute_batch("UPDATE message SET at=0;UPDATE session SET started_at=0;UPDATE event SET at=0;UPDATE document_source SET source_time=0;").unwrap();
+    let reads = ReadPool::open(&w.archive).unwrap();
+    {
+        let reader = reads.reader().unwrap();
+        assert_eq!(reader.messages(&sid("s"), false).unwrap(), vec![message]);
+        assert_eq!(reader.session(&sid("s")).unwrap(), Some(session));
+        assert_eq!(
+            reader.document(&document.id).unwrap(),
+            Some(document.clone())
+        );
+        assert_eq!(reader.events(&sid("s")).unwrap(), vec![event]);
+    }
+    let mut earlier = document.clone();
+    earlier.blocks = vec![Block::Text {
+        text: "earlier canonical document".into(),
+    }];
+    earlier
+        .set_time(
+            Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456700Z"),
+            TimeEvidence::intrinsic(Precision::Instant),
+        )
+        .unwrap();
+    let mut other = batch("other-source", 0, 0, Vec::new(), &[]);
+    other.parse[0].output.documents.push(DocumentRow {
+        offset: 2,
+        end: 3,
+        document: earlier,
+    });
+    w.writer.send(other).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    assert_eq!(
+        reads.reader().unwrap().document(&document.id).unwrap(),
+        Some(document)
+    );
+}
+
+#[test]
+fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection() {
+    let w = test_archive();
+    let event = Event {
+        session: None,
+        kind: "native.input".into(),
+        at: None,
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some((3, 17)),
+        data: serde_json::json!({"same":true}),
+    };
+    let mut full = batch("native-source", 0, 0, Vec::new(), &[]);
+    full.parse[0].output.events = vec![event.clone(), event.clone()];
+    full.parse[0].prepare();
+    let ids = full.parse[0].event_identities("native-source", 1).unwrap();
+    assert_ne!(ids[0], ids[1]);
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    write_test_rows(&tx, &full, &full.parse[0], 1, 1, None).unwrap();
+    let mut subset = batch("native-source", 0, 0, Vec::new(), &[]);
+    subset.parse[0].output.events.push(event);
+    subset.parse[0].output.event_ids.insert(0, ids[1].clone());
+    write_test_rows(&tx, &subset, &subset.parse[0], 1, 2, None).unwrap();
+    let remaining: String = tx
+        .query_row("SELECT id FROM event", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(remaining, ids[1]);
+    subset.parse[0].output.imported_events.insert(
+        0,
+        polylogue_model::bundle::ImportedEventIdentity {
+            id: "contradictory-id".into(),
+            sources: vec![polylogue_model::bundle::EventSourceClaim {
+                input: "original".into(),
+                source: "native".into(),
+                source_chain: 1,
+                source_start: Some(3),
+                source_end: Some(17),
+            }],
+        },
+    );
+    assert!(write_test_rows(&tx, &subset, &subset.parse[0], 1, 3, None).is_err());
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM event", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    tx.commit().unwrap();
 }
