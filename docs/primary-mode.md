@@ -45,6 +45,10 @@ identity. When Sinex reports a changed scope, Polylogue first invalidates active
 reads and prepared output, then atomically clears cached facts and search data,
 rotates read cursors and saves the new scope. Queries interrupted by this change
 return `scope_changed`; streams end with that error and no completion record.
+Dependent cache publishers register before producer startup. They invalidate their
+published pointer synchronously under the same fence used to activate it, so an
+older publisher cannot reactivate retired data after the transition. Native index
+generation changes use this fence in standalone mode too.
 The same consumer identity replays the history Sinex authorizes. Its position
 remains unknown until a complete confirmed barrier arrives, including an explicit
 zero barrier for an accessible empty store. Raw producer spools, pending authored

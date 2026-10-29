@@ -159,3 +159,59 @@ fn a_boot_generation_change_fences_publishers_in_both_archive_modes() {
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 }
+
+#[test]
+fn the_transport_fixture_uses_the_native_transition_and_keeps_source_rows() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let root = tempfile::tempdir().unwrap();
+    let (archive, _lock) = crate::Archive::open_or_create(root.path()).unwrap();
+    let source = super::super::open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    crate::input_rows::InputRows {
+        input: "retained-source".into(),
+        format: "synthetic".into(),
+        revision: None,
+        extent: None,
+        observation: None,
+    }
+    .insert(&source, 1)
+    .unwrap();
+    let available = Arc::new(AtomicBool::new(true));
+    let invalidate = Arc::clone(&available);
+    let _registration = crate::Archive::register_scope_invalidator(root.path(), move || {
+        invalidate.store(false, Ordering::SeqCst);
+        Ok(())
+    })
+    .unwrap();
+    let token = archive.scope_token().unwrap();
+    token
+        .with_current(|| {
+            available.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+    let index = super::super::open_read(&archive.index_db()).unwrap();
+    let old = value(&index, "generation");
+    archive.advance_generation_for_test().unwrap();
+    assert!(!available.load(Ordering::SeqCst));
+    assert!(matches!(
+        token.check(),
+        Err(crate::StoreError::ScopeChanged)
+    ));
+    assert_ne!(value(&index, "generation"), old);
+    assert_eq!(
+        source
+            .query_row("SELECT id FROM input", [], |row| row.get::<_, String>(0))
+            .unwrap(),
+        "retained-source"
+    );
+    assert!(
+        archive
+            .scope_token()
+            .unwrap()
+            .with_current(|| Ok(()))
+            .is_ok()
+    );
+}

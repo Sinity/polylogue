@@ -56,7 +56,8 @@ impl Archive {
 
     /// Register before opening the producer or exposing a derived cache. The
     /// callback runs immediately and at each reset, under the publication fence;
-    /// it must durably invalidate its pointer without re-entering store APIs.
+    /// it must durably invalidate its pointer without acquiring archive readers
+    /// or re-entering the scope fence.
     pub fn register_scope_invalidator(
         root: &Path,
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
@@ -68,6 +69,22 @@ impl Archive {
     /// confirmed checkpoint; this token alone cannot authorize cache activation.
     pub fn scope_token(&self) -> Result<crate::ReadScopeToken> {
         self.read_scope.token()
+    }
+
+    /// Exercise the native generation transition in synthetic transport tests.
+    /// This changes cursor identity only; primary grant resets use confirmed facts.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn advance_generation_for_test(&self) -> Result<()> {
+        let mut index = open_write(&self.index_db(), cache::SETUP)?;
+        index.pragma_update(None, "synchronous", 2)?;
+        let mut reset = self.read_scope.begin_reset()?;
+        reset.invalidate()?;
+        drop(reset);
+        let tx = index.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        generation::rotate(&tx)?;
+        tx.commit()?;
+        self.read_scope.finish_reset();
+        Ok(())
     }
 
     /// Where source rows are read: the standalone ledger or the primary index cache.
