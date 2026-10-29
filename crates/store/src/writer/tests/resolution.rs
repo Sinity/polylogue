@@ -404,3 +404,58 @@ fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
     assert!(report.errors.is_empty(), "{report:?}");
     assert_eq!(texts(&w, "s"), ["after"]);
 }
+
+#[test]
+fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = Archive::at(dir.path());
+    let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+    crate::schema::create_index(&index).unwrap();
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let blob = BlobHash::of(b"confirmed image");
+    let mut message = text_message("confirmed", "s", Role::User, "confirmed text", None);
+    message
+        .blocks
+        .push(Block::Image(polylogue_model::Attachment {
+            blob: Some(blob),
+            ..Default::default()
+        }));
+    let mut input = batch("confirmed-input", 0, 0, vec![row(1, message)], &["s"]);
+    input.change = Change::Reparse { chain: 41 };
+    let available = HashMap::from([(blob, Some(15))]);
+    resolver.confirmed(&mut [&mut input], &available).unwrap();
+    assert!(!archive.archive_db().exists());
+    let tx = index.transaction().unwrap();
+    write_rows(&tx, &input, &input.parse[0], 41, 1, None).unwrap();
+    tx.commit().unwrap();
+    let (chain, position): (i64, i64) = index
+        .query_row("SELECT chain,parsed_upto FROM parse_state", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!((chain, position), (41, 100));
+    let stored: (Vec<u8>, i64) = index
+        .query_row(
+            "SELECT blob_hash,size FROM block WHERE kind='image'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (blob.0.to_vec(), 15));
+    assert!(!archive.archive_db().exists());
+}
+
+#[test]
+fn confirmed_readings_require_the_confirmed_chain_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = Archive::at(dir.path());
+    let index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+    crate::schema::create_index(&index).unwrap();
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let mut input = batch("confirmed-input", 0, 0, Vec::new(), &[]);
+    assert!(matches!(
+        resolver.confirmed(&mut [&mut input], &HashMap::new()),
+        Err(StoreError::Invalid(_))
+    ));
+    assert!(!archive.archive_db().exists());
+}

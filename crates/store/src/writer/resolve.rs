@@ -76,7 +76,7 @@ struct Active {
     // after another group committed it and released its prepared bytes.
     values: BTreeMap<Key, (i64, std::sync::Weak<Reservation>)>,
 }
-pub(super) struct Resolver {
+pub(crate) struct Resolver {
     archive: Archive,
     active: Mutex<Active>,
     available: Condvar,
@@ -107,7 +107,7 @@ impl Resolver {
     pub(super) fn location(&self) -> &Archive {
         &self.archive
     }
-    pub(super) fn new(
+    pub(crate) fn new(
         archive: &Archive,
         index: &Connection,
         first: Option<Arc<crate::first_build::FirstBuild>>,
@@ -474,32 +474,77 @@ impl Resolver {
     }
 
     pub(super) fn batches(self: &Arc<Self>, batches: &mut [&mut Batch]) -> Result<()> {
-        if batches.iter().all(|b| b.parse.is_empty()) {
+        if batches.iter().all(|batch| batch.parse.is_empty()) {
+            return Ok(());
+        }
+        let archive = crate::archive::open_read(&self.archive.archive_db())?;
+        self.prepare(batches, SourceLookup::Archive(&archive))
+    }
+
+    /// Batches keep their key leases until they are dropped after the transaction
+    /// result. Rebuild the batches from the confirmed facts when retrying a failed
+    /// transaction, so a retry takes a fresh snapshot.
+    pub(crate) fn confirmed(
+        self: &Arc<Self>,
+        batches: &mut [&mut Batch],
+        available: &HashMap<BlobHash, Option<u64>>,
+    ) -> Result<()> {
+        if batches
+            .iter()
+            .any(|batch| !matches!(batch.change, Change::Reparse { .. }))
+        {
+            return Err(StoreError::Invalid(
+                "confirmed readings require explicit input chains".into(),
+            ));
+        }
+        self.prepare(batches, SourceLookup::Confirmed(available))
+    }
+
+    fn prepare(
+        self: &Arc<Self>,
+        batches: &mut [&mut Batch],
+        source: SourceLookup<'_>,
+    ) -> Result<()> {
+        if batches.iter().all(|batch| batch.parse.is_empty()) {
             return Ok(());
         }
         loop {
             let index = crate::archive::open_read(&self.archive.index_db())?;
-            let archive = crate::archive::open_read(&self.archive.archive_db())?;
-            let (keys, _) = self.gather(batches, &index, &archive)?;
+            let (keys, _) = match source {
+                SourceLookup::Archive(archive) => self.gather(batches, &index, archive)?,
+                SourceLookup::Confirmed(_) => self.gather(batches, &index, &index)?,
+            };
             drop(index);
-            drop(archive);
             let lease = self.lease(keys.clone());
             let index = crate::archive::open_read(&self.archive.index_db())?;
             let snapshot = index.unchecked_transaction()?;
-            let archive = crate::archive::open_read(&self.archive.archive_db())?;
-            let (fresh, chains) = self.gather(batches, &snapshot, &archive)?;
+            let (fresh, chains) = match source {
+                SourceLookup::Archive(archive) => self.gather(batches, &snapshot, archive)?,
+                SourceLookup::Confirmed(_) => self.gather(batches, &snapshot, &snapshot)?,
+            };
             if fresh != keys {
                 drop(snapshot);
                 drop(lease);
                 continue;
             }
-            let pending: HashMap<_, _> = batches
-                .iter()
-                .flat_map(|batch| batch.new_blob.iter().chain(&batch.blobs))
-                .map(|blob| (blob.hash, blob.size))
-                .collect();
-            for batch in batches.iter_mut() {
-                attachments::normalize(batch, &archive, &pending)?;
+            match source {
+                SourceLookup::Archive(archive) => {
+                    let pending: HashMap<_, _> = batches
+                        .iter()
+                        .flat_map(|batch| batch.new_blob.iter().chain(&batch.blobs))
+                        .map(|blob| (blob.hash, blob.size))
+                        .collect();
+                    for batch in batches.iter_mut() {
+                        attachments::normalize(batch, archive, &pending)?;
+                    }
+                }
+                SourceLookup::Confirmed(available) => {
+                    for batch in batches.iter_mut() {
+                        for step in &mut batch.parse {
+                            attachments::normalize_known(step, available)?;
+                        }
+                    }
+                }
             }
             let mut resolved = ResolvedKeys::default();
             for key in keys {
@@ -524,6 +569,12 @@ impl Resolver {
             return Ok(());
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum SourceLookup<'a> {
+    Archive(&'a Connection),
+    Confirmed(&'a HashMap<BlobHash, Option<u64>>),
 }
 
 #[derive(Debug, PartialEq)]
