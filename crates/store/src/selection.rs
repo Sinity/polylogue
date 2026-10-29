@@ -16,6 +16,8 @@ use query_language::{
 use serde_json::Value;
 mod content;
 mod execution;
+mod replay;
+pub use replay::RunReplayContext;
 mod seek;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
@@ -77,6 +79,7 @@ pub struct PreparedSelection<'read> {
     context: CursorContext,
     direct: Option<Reference>,
     execution_options: polylogue_model::query_objects::QueryExecutionOptions,
+    replay_authority: Option<replay::ReplayAuthority>,
 }
 impl PreparedSelection<'_> {
     pub fn query_object(
@@ -376,6 +379,7 @@ impl Reader<'_> {
             context,
             direct,
             execution_options: crate::query::execute::options_snapshot(options, false, None)?,
+            replay_authority: None,
         })
     }
 
