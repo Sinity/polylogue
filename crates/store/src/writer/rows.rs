@@ -153,16 +153,6 @@ pub(super) fn write_rows(
             .transpose()?;
         let packed = &p.prepared.events[i];
         rows.write_event(e, session_pk, packed, p.order_from, p.start, occurrence, i)?;
-        if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
-            tx.prepare_cached(
-                "UPDATE session SET live_reparse=1 WHERE pk=?1 AND ?2<=live_last_event_at",
-            )?
-            .execute(params![session_pk, ms(e.at)])?;
-            // Prepared events release their JSON payload before writing. Live
-            // facts must read the same payload as the stored event.
-            let event = choices.live_events[i].clone();
-            crate::live::apply(tx, session_pk, &event, counter)?;
-        }
     }
     for (i, l) in p.output.links.iter().enumerate() {
         rows.write_link(l, i)?;
@@ -188,6 +178,24 @@ pub(super) fn write_rows(
     for pk in sessions.values() {
         tx.prepare_cached("UPDATE session SET changed = ?2 WHERE pk = ?1 AND changed IS NOT ?2")?
             .execute(params![pk, counter])?;
+    }
+    // Hooks name the selected tool-call rows, which message projection just wrote.
+    for (i, e) in p.output.events.iter().enumerate() {
+        let session_pk = e
+            .session
+            .as_ref()
+            .map(|id| rows.session_pk(&mut sessions, id))
+            .transpose()?;
+        if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
+            tx.prepare_cached(
+                "UPDATE session SET live_reparse=1 WHERE pk=?1 AND ?2<=live_last_event_at",
+            )?
+            .execute(params![session_pk, ms(e.at)])?;
+            // Prepared events release their JSON payload before writing. Live
+            // facts must read the same payload as the stored event.
+            let event = choices.live_events[i].clone();
+            crate::live::apply(tx, session_pk, &event, counter)?;
+        }
     }
     for u in &p.output.background {
         let (outcome, reason, exit) = outcome_columns(&u.outcome);

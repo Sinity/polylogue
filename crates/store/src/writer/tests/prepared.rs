@@ -238,8 +238,8 @@ fn misaligned_prepared_rows_refuse_before_writing() {
             b.parse[0].prepared.messages[0].blocks.clear();
         }
         b.parse[0].prepare();
-        w.writer.send(b).unwrap();
-        assert!(!w.writer.flush().unwrap().errors.is_empty());
+        assert!(w.writer.send(b).is_err());
+        assert!(w.writer.flush().unwrap().errors.is_empty());
         let pool = ReadPool::open(&w.archive).unwrap();
         assert_eq!(
             pool.reader()
