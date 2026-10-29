@@ -240,6 +240,7 @@ fn shared_message_document_text_keeps_vectors_after_both_sources_disappear() {
     for input in ["message-input", "document-input"] {
         let mut gone = batch(input, 2, 0, vec![], &[]);
         gone.change = Change::Disappeared;
+        gone.parse.clear();
         w.writer.send(gone).unwrap();
     }
     assert!(w.writer.flush().unwrap().errors.is_empty());
@@ -295,8 +296,11 @@ fn a_later_record_of_the_same_chain_can_supply_a_newer_document_time() {
     let mut newer = doc_batch("a", document("ordered", "newer", 2000), true);
     newer.change = Change::Reparse { chain: 1 };
     newer.parse[0].reset = false;
-    newer.parse[0].output.documents[0].offset = 20;
-    newer.parse[0].output.documents[0].end = 30;
+    newer.parse[0].start = 100;
+    newer.parse[0].parsed_upto = 200;
+    newer.length = 200;
+    newer.parse[0].output.documents[0].offset = 120;
+    newer.parse[0].output.documents[0].end = 130;
     w.writer.send(newer).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let reads = ReadPool::open(&w.archive).unwrap();

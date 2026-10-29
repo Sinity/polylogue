@@ -128,11 +128,12 @@ fn input_events_require_record_coordinates_and_cannot_claim_after_message_associ
         } else {
             "invalid"
         };
-        w.writer
-            .send(unbound(input, 0, vec![invalid], true))
-            .unwrap();
-        let result = w.writer.flush().unwrap();
-        assert!(!result.errors.is_empty());
+        assert!(
+            w.writer
+                .send(unbound(input, 0, vec![invalid], true))
+                .is_err()
+        );
+        assert!(w.writer.flush().unwrap().errors.is_empty());
         assert!(rows(&w.archive).is_empty());
         let pool = ReadPool::open(&w.archive).unwrap();
         let r = pool.reader().unwrap();

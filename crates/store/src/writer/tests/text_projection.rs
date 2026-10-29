@@ -21,7 +21,7 @@ fn current_blocks_reuse_stored_text_identities() {
             )
         })
         .collect();
-    let b = batch("input", 0, 100, rows, &["session"]);
+    let b = batch("input", 0, 0, rows, &["session"]);
     assert_eq!(
         write_test_rows(&tx, &b, &b.parse[0], 1, 1, None).unwrap(),
         32
