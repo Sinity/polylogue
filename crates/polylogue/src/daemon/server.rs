@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
+fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surface::OperationTable) {
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
@@ -28,6 +28,110 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
             return;
         };
         if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(incoming) = crate::protocol::wire::incoming(&line) {
+            let answer = match incoming {
+                Err(error) => command_surface::Answer::error(crate::protocol::failure(
+                    "bad_request",
+                    error.to_string(),
+                    None,
+                )),
+                Ok((request, caller)) => {
+                    let (evidence, channel) = crate::protocol::caller::peer(&out, &caller)
+                        .unwrap_or_else(|_| {
+                            (
+                                Default::default(),
+                                polylogue_model::authorship::Channel::Cli,
+                            )
+                        });
+                    let mut accepted = crate::protocol::caller::accept(
+                        &d.callers,
+                        &evidence,
+                        channel,
+                        cancellation.clone(),
+                    );
+                    accepted.working_directory =
+                        crate::protocol::caller::working_directory(&out).ok();
+                    if let Some(command) = crate::commands::command(&request.operation)
+                        && let crate::commands::Action::Stream { .. } = command.action
+                        && let Some(build) = command.build_typed
+                    {
+                        let caller = crate::commands::Caller {
+                            surface: if channel == polylogue_model::authorship::Channel::Mcp {
+                                crate::commands::Surface::Mcp
+                            } else {
+                                crate::commands::Surface::Cli
+                            },
+                            cwd: accepted.working_directory.clone(),
+                            json: true,
+                        };
+                        match build(request.arguments.clone(), &caller, &request.request_id) {
+                            Err(failure) => {
+                                let answer =
+                                    command_surface::Answer::<serde_json::Value>::error(failure);
+                                if writeln!(
+                                    out,
+                                    "{}",
+                                    serde_json::to_string(&answer).expect("answer serializes")
+                                )
+                                .is_err()
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
+                            Ok(internal) if internal.streaming() => {
+                                let limit = request.deadline.duration(crate::protocol::operations::deadlines().get(command.latency))
+                                    .map_or_else(|| polylogue_store::read::limit::ReadLimit::without_deadline(cancellation.clone()), |duration| polylogue_store::read::limit::ReadLimit::new(duration, cancellation.clone()));
+                                let produced = limit.scope(|| match limit.check() {
+                                    Ok(()) => crate::protocol::stream::produce(
+                                        &internal,
+                                        d,
+                                        &accepted.authorship,
+                                        &mut out,
+                                    )
+                                    .expect("stream command owns its request"),
+                                    Err(error) => Err(service::store_error(&error)),
+                                });
+                                if let Err(response) = produced {
+                                    let _ = crate::protocol::stream::error(&mut out, &response);
+                                }
+                                continue;
+                            }
+                            Ok(_) => {}
+                        }
+                    }
+                    let origin = if channel == polylogue_model::authorship::Channel::Mcp {
+                        command_surface::Origin::Mcp
+                    } else {
+                        command_surface::Origin::Socket
+                    };
+                    let trusted = command_surface::Caller::authenticated(
+                        accepted.authorship.author.to_string(),
+                        accepted,
+                    );
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("operation runtime starts");
+                    runtime.block_on(operations.call_as(
+                        request,
+                        origin,
+                        trusted,
+                        Default::default(),
+                    ))
+                }
+            };
+            if writeln!(
+                out,
+                "{}",
+                serde_json::to_string(&answer).expect("answer serializes")
+            )
+            .is_err()
+            {
+                return;
+            }
             continue;
         }
         let incoming = match serde_json::from_str::<super::execution::Incoming>(&line) {
@@ -48,51 +152,27 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
                     polylogue_model::authorship::Channel::Cli,
                 )
             });
-        let accepted =
+        let mut accepted =
             crate::protocol::caller::accept(&d.callers, &evidence, channel, cancellation.clone());
+        accepted.working_directory = crate::protocol::caller::working_directory(&out).ok();
         let limit = super::execution::limit_for(
             &incoming.request,
             incoming.deadline_ms,
             cancellation.clone(),
         );
         let request = incoming.request;
-        let prepared = limit.scope(|| {
-            crate::commands::COMMANDS
-                .iter()
-                .find_map(|command| match command.action {
-                    crate::commands::Action::Stream { prepare, .. } => prepare(&request, d, None),
-                    _ => None,
-                })
+        let produced = limit.scope(|| {
+            crate::protocol::stream::produce(&request, d, &accepted.authorship, &mut out)
         });
-        if let Some(prepared) = prepared {
-            let prepared = limit
-                .check()
-                .map_err(|e| {
-                    super::execution::refusal(&e, &serde_json::json!({"op":"changes"}), &limit)
-                })
-                .and(prepared);
-            match prepared {
-                Ok(mut file) => {
-                    if std::io::copy(&mut file, &mut out).is_err() {
-                        return;
-                    }
-                }
-                Err(response) => {
-                    if writeln!(
-                        out,
-                        "{}",
-                        serde_json::to_string(&response).unwrap_or_default()
-                    )
-                    .is_err()
-                    {
-                        return;
-                    }
-                }
+        if let Some(result) = produced {
+            if let Err(response) = result {
+                let _ = crate::protocol::stream::error(&mut out, &response);
             }
             continue;
         }
         let typed = match &request {
             Request::Status => Some(("status", serde_json::json!({}))),
+            Request::Sql { statement } => Some(("sql", serde_json::json!({"statement":statement}))),
             request => crate::protocol::query::Arguments::from_request(request).map(|arguments| {
                 (
                     "query",
@@ -101,7 +181,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
             }),
         };
         let response = if let Some((operation, arguments)) = typed {
-            let table = crate::protocol::operations::table(Arc::clone(d));
+            let table = operations;
             let request = command_surface::Request {
                 operation: operation.into(),
                 arguments,
@@ -133,14 +213,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
                 ))
                 .into()
         } else {
-            match request {
-                request @ Request::Attachment { reveal: true, .. } => {
-                    super::execution::run(request, &limit, |request| {
-                        super::attachment::socket(&out, request, d)
-                    })
-                }
-                request => service::handle_with_caller(request, d, &limit, &accepted.authorship),
-            }
+            service::handle_with_caller(request, d, &limit, &accepted.authorship)
         };
         let Ok(mut text) = serde_json::to_string(&response) else {
             return;
@@ -179,13 +252,14 @@ pub fn serve() -> std::io::Result<()> {
     #[cfg(not(feature = "sinex"))]
     let mode = service::ArchiveMode::Standalone;
     let runtime = service::start(&root, Config::from_env(), mode)?;
-    let server = Server::start(Arc::clone(&runtime.daemon))?;
+    let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;
     eprintln!(
         "polylogue: serving {} on {}",
         root.display(),
         runtime.daemon.archive.socket().display()
     );
-    let _web = match crate::web::start(Arc::clone(&runtime.daemon)) {
+    let _web = match crate::web::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
+    {
         Ok(web) => {
             eprintln!("polylogue: web reader on http://127.0.0.1:{}/", web.port);
             Some(web)
@@ -207,7 +281,10 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Self> {
+    pub fn start(
+        daemon: Arc<Daemon>,
+        operations: Arc<command_surface::OperationTable>,
+    ) -> std::io::Result<Self> {
         let listener = bind(&daemon)?;
         let (stop, stopped) = channel();
         let (quiesce, quiescing) = channel();
@@ -221,7 +298,7 @@ impl Server {
         server.thread = Some(
             std::thread::Builder::new()
                 .name("polylogue-socket".into())
-                .spawn(move || listen(listener, daemon, stopped, quiesce))?,
+                .spawn(move || listen(listener, daemon, operations, stopped, quiesce))?,
         );
         Ok(server)
     }
@@ -278,6 +355,7 @@ pub fn bind(daemon: &Daemon) -> std::io::Result<UnixListener> {
 fn listen(
     listener: UnixListener,
     daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
     stopped: Receiver<()>,
     quiesce: Sender<()>,
 ) -> std::io::Result<()> {
@@ -295,9 +373,10 @@ fn listen(
                         }
                     };
                     let daemon = Arc::clone(&daemon);
+                    let operations = Arc::clone(&operations);
                     match std::thread::Builder::new()
                         .name("polylogue-client".into())
-                        .spawn(move || serve_client(stream, &daemon))
+                        .spawn(move || serve_client(stream, &daemon, &operations))
                     {
                         Ok(thread) => clients.push((to_close, thread)),
                         Err(error) => {

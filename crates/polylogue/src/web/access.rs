@@ -212,6 +212,35 @@ pub fn scrub(text: &str, root: &Path) -> String {
     text.replace(root.as_ref(), "[archive]")
 }
 
+/// HTTP hides this host path even when it occurs in a stored value or key.
+pub(super) fn scrub_value(value: &mut serde_json::Value, root: &Path) {
+    match value {
+        serde_json::Value::String(text) => *text = scrub(text, root),
+        serde_json::Value::Array(values) => {
+            values.iter_mut().for_each(|value| scrub_value(value, root))
+        }
+        serde_json::Value::Object(object) => {
+            let original = std::mem::take(object);
+            // Original keys keep their names when a transformed key collides.
+            let (unchanged, changed): (Vec<_>, Vec<_>) = original
+                .into_iter()
+                .partition(|(key, _)| scrub(key, root) == *key);
+            for (key, mut value) in unchanged.into_iter().chain(changed) {
+                scrub_value(&mut value, root);
+                let base = scrub(&key, root);
+                let mut key = base.clone();
+                let mut ordinal = 2;
+                while object.contains_key(&key) {
+                    key = format!("{base} #{ordinal}");
+                    ordinal += 1;
+                }
+                object.insert(key, value);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Only one declared media type is accepted; parameters such as UTF-8 do
 /// not change the body format. Duplicate headers cannot select a parser.
 pub(super) fn content_type(headers: &axum::http::HeaderMap, expected: &str) -> bool {

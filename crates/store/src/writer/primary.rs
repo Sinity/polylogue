@@ -10,6 +10,33 @@ impl Inner {
                 "confirmed facts require a primary cache".into(),
             ));
         }
+        if let Some(reset) = events.iter().find(|event| {
+            matches!(
+                event.change,
+                crate::primary::ConfirmedChange::ScopeReset { .. }
+            )
+        }) {
+            if events.len() != 1
+                || reset.position != 0
+                || !reset.event.is_empty()
+                || reset.output_index != 0
+            {
+                return Err(StoreError::Invalid(
+                    "scope reset must be a separate owner control page".into(),
+                ));
+            }
+            let crate::primary::ConfirmedChange::ScopeReset { scope } = &reset.change else {
+                unreachable!()
+            };
+            if crate::primary::scope::reset(&mut self.index, &self.location, &self.resolver, scope)?
+            {
+                self.commits.committed();
+                self.derive_due = false;
+                self.derived_version = None;
+                self.report.transactions += 1;
+            }
+            return crate::primary::projection::position(&self.index);
+        }
         let before = crate::primary::projection::checkpoint(&self.index)?;
         let position = crate::primary::projection::apply(&mut self.index, &self.resolver, events)?;
         if crate::primary::projection::checkpoint(&self.index)? != before {
@@ -29,7 +56,8 @@ impl Inner {
         );
         let after = crate::primary::projection::position(&self.index)?;
         let identity = crate::primary::cache_identity(&self.index)?;
-        let events = sinex.confirmed(after, &identity)?;
+        let scope = crate::primary::scope::current(&self.index)?;
+        let events = sinex.confirmed(after, &identity, scope.as_deref())?;
         let applied = self.apply_confirmed(&events)?;
         // Staging is durable even when a large position has not reached its barrier.
         sinex.acknowledge(applied)?;

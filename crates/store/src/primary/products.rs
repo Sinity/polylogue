@@ -129,6 +129,7 @@ pub enum ConfirmedChange {
     Tombstoned,
     Ignored,
     PositionComplete,
+    ScopeReset { scope: String },
 }
 
 /// A source capture waiting in the producer spool, before cache application.

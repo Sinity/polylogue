@@ -1,5 +1,7 @@
 //! Authored statements and their one set of typed links. Currency and target
 //! state are computed from these facts, rather than stored on a statement.
+pub mod currency;
+
 use crate::{Author, BlobHash, Json, Reference, Timestamp, authorship::Channel};
 use serde::{Deserialize, Serialize};
 

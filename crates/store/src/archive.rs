@@ -1,7 +1,6 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
-mod scanner_key;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -39,6 +38,7 @@ pub struct Archive {
     /// inputs' bytes, and the register is a cache of what Sinex holds.
     sinex_store: Option<PathBuf>,
     primary: bool,
+    pub(crate) read_scope: std::sync::Arc<crate::read::scope::ReadScopeState>,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -105,6 +105,7 @@ impl Archive {
             root: root.to_path_buf(),
             sinex_store: None,
             primary: false,
+            read_scope: crate::read::scope::state(root),
         }
     }
 
@@ -115,6 +116,7 @@ impl Archive {
             root: root.to_path_buf(),
             sinex_store: Some(store.to_path_buf()),
             primary: true,
+            read_scope: crate::read::scope::state(root),
         }
     }
 
@@ -125,6 +127,7 @@ impl Archive {
             root: root.to_path_buf(),
             sinex_store: None,
             primary: true,
+            read_scope: crate::read::scope::state(root),
         };
         archive.finish_open()?;
         Ok((archive, lock))

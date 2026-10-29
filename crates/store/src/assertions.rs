@@ -3,9 +3,11 @@
 use crate::{Result, StoreError, source::Source};
 use polylogue_model::{
     Author, BlobHash, Reference, RevisionReference, Timestamp,
-    assertion::{Assertion, AssertionKind, AssertionLink, LinkRole},
+    assertion::{
+        Assertion, AssertionKind, AssertionLink, LinkRole,
+        currency::{Currency, CurrencyError, RevisionLinks},
+    },
     authorship::Channel,
-    currency::{Currency, CurrencyError, RevisionLinks},
 };
 use rusqlite::{Connection, params};
 

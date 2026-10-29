@@ -19,7 +19,7 @@
 //! - on resume, only what changed since the session's last brief; after
 //!   compaction, every prompt the operator typed in the session, verbatim.
 //!
-//! A brief fits its budget (`briefing.budget`, in tokens of about four
+//! A brief fits its fixed budget (in tokens of about four
 //! bytes; [`DEFAULT_BUDGET`]). Sections fill in the order above and each
 //! names what did not fit and the command that shows it. The operator's
 //! prompts after compaction are never cut.
@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 const RECENT_SESSIONS: u64 = 5;
 /// Hits a recall returns per page.
 const RECALL_PAGE: u64 = 20;
-/// A brief's budget in tokens when `briefing.budget` is unset.
+/// A brief's fixed budget in tokens.
 pub const DEFAULT_BUDGET: u64 = 2_000;
 /// Bytes kept for the lines that name what did not fit.
 const POINTER_RESERVE: usize = 600;
@@ -219,13 +219,22 @@ pub fn prepare(
     delivery_id: &str,
     now: Timestamp,
     near: Option<&NearFn<'_>>,
+    check_history: &Path,
 ) -> Result<Prepared, StoreError> {
     match ask {
         Ask::SessionStart {
             cwd,
             session,
             source,
-        } => session_start(reader, cwd, session.as_ref(), *source, delivery_id, now),
+        } => session_start(
+            reader,
+            cwd,
+            session.as_ref(),
+            *source,
+            delivery_id,
+            now,
+            check_history,
+        ),
         Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, now),
         Ask::Recall {
             text, cwd, cursor, ..
@@ -420,37 +429,6 @@ impl Fitter {
     }
 }
 
-/// The budget in tokens: `briefing.budget`, else [`DEFAULT_BUDGET`].
-fn budget(reader: &Reader<'_>) -> Result<u64, StoreError> {
-    let machine = polylogue_store::user_writes::machine_id();
-    match reader.setting("briefing.budget", &machine)? {
-        None => Ok(DEFAULT_BUDGET),
-        Some(v) => v
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|b| *b > 0)
-            .ok_or_else(|| {
-                StoreError::Invalid(format!(
-                    "briefing.budget is {v:?}; it is a number of tokens, such as 2000"
-                ))
-            }),
-    }
-}
-
-/// Where the development tooling's check history is: the
-/// `briefing.check_history` setting, else devkit's file under the home
-/// directory.
-fn check_history(reader: &Reader<'_>) -> Result<PathBuf, StoreError> {
-    let machine = polylogue_store::user_writes::machine_id();
-    Ok(match reader.setting("briefing.check_history", &machine)? {
-        Some(path) => PathBuf::from(path),
-        None => polylogue_store::check_runs::default_path(Path::new(
-            &std::env::var_os("HOME").unwrap_or_default(),
-        )),
-    })
-}
-
 /// Sessions working under `dirs` now, other than `me`, through the query
 /// `live` runs.
 fn live_here(
@@ -639,6 +617,7 @@ fn session_start(
     source: StartSource,
     delivery_id: &str,
     now: Timestamp,
+    check_history: &Path,
 ) -> Result<Prepared, StoreError> {
     let dirs = scope_dirs(cwd);
     let here = cwd.display().to_string();
@@ -702,7 +681,7 @@ fn session_start(
             }
         }
     }
-    let mut fit = Fitter::new(budget(reader)?, header);
+    let mut fit = Fitter::new(DEFAULT_BUDGET, header);
     fit.refs.extend(prompt_refs);
 
     fit.section(
@@ -770,7 +749,7 @@ fn session_start(
     // AgentCTL's check and test jobs run) come first; checks a session ran
     // itself follow.
     let mut failing: Vec<Item> =
-        polylogue_store::check_runs::failed_since(&check_history(reader)?, &dirs, since)?
+        polylogue_store::check_runs::failed_since(check_history, &dirs, since)?
             .into_iter()
             .map(|f| {
                 let mut text = format!(

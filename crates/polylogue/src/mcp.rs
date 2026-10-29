@@ -5,6 +5,8 @@
 //! answered with its text and recorded as a delivery from `mcp`. Refusals
 //! are tool errors.
 
+mod completion;
+
 use crate::commands::{self, Action, COMMANDS, Caller, Command, Surface, Values};
 use crate::daemon::{Request, Response};
 use polylogue_store::Archive;
@@ -15,7 +17,7 @@ use std::io::{self, BufRead, Write};
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
-        .filter(|c| c.mcp && matches!(c.action, Action::Request(_)))
+        .filter(|c| c.mcp && matches!(c.action, Action::Request(_) | Action::Stream { .. }))
 }
 
 pub fn tools() -> Vec<Value> {
@@ -43,10 +45,9 @@ fn build_request(
         .ok_or_else(|| {
             polylogue_render::terminal::escape(&format!("error (bad_request): no tool {name}"))
         })?;
-    let Action::Request(build) = command.action else {
-        return Err(polylogue_render::terminal::escape(&format!(
-            "error (bad_request): no tool {name}"
-        )));
+    let build = match command.action {
+        Action::Request(build) | Action::Stream { build, .. } => build,
+        Action::Local(_) => return Err(format!("no tool {name}")),
     };
     let bad = |e: String| polylogue_render::terminal::escape(&format!("error (bad_request): {e}"));
     let values = Values::from_json(command, Surface::Mcp, arguments).map_err(bad)?;
@@ -85,7 +86,10 @@ fn call_with_limit(
     cancelled: &tokio_util::sync::CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
-    let request = build_request(name, arguments)?;
+    let command = tool_commands()
+        .find(|command| command.mcp_name() == name)
+        .ok_or_else(|| format!("no tool {name}"))?;
+    let request = build_request(name, arguments.clone())?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -94,22 +98,45 @@ fn call_with_limit(
     if tool_call_id.is_some() {
         caller.tool_call_id = tool_call_id;
     }
-    let response = runtime.block_on(crate::client::send_ready_as(
-        archive,
-        &request,
-        deadline_ms,
-        cancelled,
-        caller,
-    ));
-    let structured = match &response {
-        Ok(response) => serde_json::to_value(response.answer()).expect("answer serializes"),
+    let answer = if command.register.is_some() {
+        let values = Values::from_json(command, Surface::Mcp, arguments)?;
+        let deadline = deadline_ms.map_or(command_surface::Deadline::Default, |deadline| {
+            command_surface::Deadline::Milliseconds(
+                crate::daemon::execution::remaining(Some(deadline))
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
+            )
+        });
+        let call = crate::protocol::operations::request(
+            command,
+            values.clone(),
+            values.request_id(),
+            deadline,
+        );
+        runtime.block_on(crate::client::call_ready_as(
+            archive, &call, cancelled, caller,
+        ))
+    } else {
+        runtime
+            .block_on(crate::client::send_ready_as(
+                archive,
+                &request,
+                deadline_ms,
+                cancelled,
+                caller,
+            ))
+            .map(|response| response.answer())
+    };
+    let structured = match &answer {
+        Ok(answer) => serde_json::to_value(answer).expect("answer serializes"),
         Err(error) => serde_json::to_value(command_surface::Answer::<Value>::error(
             crate::protocol::failure("not_running", error.to_string(), None),
         ))
         .expect("failure serializes"),
     };
-    let failed = matches!(response, Ok(Response::Error { .. }) | Err(_));
-    let text = match format_answer(&request, response) {
+    let failed = matches!(answer, Ok(command_surface::Answer::Error { .. }) | Err(_));
+    let text = match format_answer(&request, answer.map(Response::from)) {
         Ok(text) | Err(text) => text,
     };
     Ok((text, structured, failed))
@@ -131,6 +158,12 @@ struct Session {
 
 enum Reply {
     Message(Value),
+    Completion {
+        id: Value,
+        arguments: crate::protocol::complete::Arguments,
+        deadline_ms: Option<i64>,
+        with_result_type: bool,
+    },
     Tool {
         id: Value,
         name: String,
@@ -193,7 +226,7 @@ impl Session {
             return Reply::Message(success(
                 id,
                 json!({
-                    "protocolVersion": version, "capabilities": {"tools": {}},
+                    "protocolVersion": version, "capabilities": {"tools": {}, "completions": {}},
                     "serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": crate::manual::text(),
                 }),
@@ -239,7 +272,7 @@ impl Session {
                 id,
                 json!({
                     "resultType": "complete", "supportedVersions": VERSIONS,
-                    "capabilities": {"tools": {}}, "instructions": crate::manual::text(),
+                    "capabilities": {"tools": {}, "completions": {}}, "instructions": crate::manual::text(),
                     "ttlMs": 0, "cacheScope": "private",
                     "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")}},
                 }),
@@ -247,6 +280,15 @@ impl Session {
         }
         let with_result_type = self.request_metadata || with_result_type;
         match method {
+            "completion/complete" => match completion::arguments(&params) {
+                Ok(arguments) => Reply::Completion {
+                    id,
+                    arguments,
+                    deadline_ms: meta["deadline_ms"].as_i64(),
+                    with_result_type,
+                },
+                Err(message) => invalid(-32602, message),
+            },
             "tools/list" => {
                 let mut result = json!({"tools": tools()});
                 if with_result_type {
@@ -290,6 +332,19 @@ impl Reply {
         match self {
             Self::None => None,
             Self::Message(message) => Some(message),
+            Self::Completion {
+                id,
+                arguments,
+                deadline_ms,
+                with_result_type,
+            } => Some(completion::answer(
+                id,
+                archive,
+                arguments,
+                deadline_ms,
+                cancelled,
+                with_result_type,
+            )),
             Self::Tool {
                 id,
                 name,
@@ -381,7 +436,7 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
                     }
                     Err(_) => Reply::Message(error(Value::Null, -32700, "Parse error")),
                 };
-                if let Reply::Tool { ref id, .. } = reply {
+                if let Reply::Tool { ref id, .. } | Reply::Completion { ref id, .. } = reply {
                     let id = id.clone();
                     let cancelled = tokio_util::sync::CancellationToken::new();
                     let worker_cancelled = cancelled.clone();

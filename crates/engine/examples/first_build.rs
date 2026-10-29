@@ -292,8 +292,7 @@ fn main() {
     let started = Instant::now();
     let root = dir.join("archive");
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    let mut config = Config::from_env();
-    config.home = home;
+    let mut config = measurement_config(home);
     // The measured tree is exactly `--home`; the tools' own directory
     // variables point at the real one.
     config.tool_dirs.clear();
@@ -422,3 +421,17 @@ fn counter_delta(before: Option<u64>, after: Option<u64>) -> Option<u64> {
 #[cfg(test)]
 #[path = "first_build/tests.rs"]
 mod tests;
+
+fn measurement_config(home: std::path::PathBuf) -> Config {
+    Config::new(
+        home,
+        Default::default(),
+        "measurement-machine".into(),
+        "measurement-host".into(),
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .expect("CPU allowance"),
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    )
+    .expect("measurement configuration")
+}

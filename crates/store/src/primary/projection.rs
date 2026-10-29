@@ -60,6 +60,11 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let applied = position(&tx)?;
     for event in events {
+        if matches!(event.change, ConfirmedChange::ScopeReset { .. }) {
+            return Err(StoreError::Invalid(
+                "scope reset must precede confirmed data application".into(),
+            ));
+        }
         if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
             tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
             continue;
@@ -248,7 +253,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
                     Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
                     Product::Background { facts, .. } => Some(facts.session.to_string()),
-                    Product::WorkSnapshot { snapshot } => Some(snapshot.session.id.to_string()),
+                    Product::WorkSnapshot { snapshot } => Some(snapshot.session_id.to_string()),
                     _ => None,
                 };
                 let reading = product.reading();
@@ -310,7 +315,9 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 fact.changed = position;
                 fact
             }),
-            ConfirmedChange::Ignored | ConfirmedChange::PositionComplete => None,
+            ConfirmedChange::Ignored
+            | ConfirmedChange::PositionComplete
+            | ConfirmedChange::ScopeReset { .. } => None,
         };
         if let Some(next) = next {
             next.insert(index, "primary_candidate")?;
@@ -705,7 +712,7 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     drop(rows);
     drop(q);
     for input in &plan.inputs {
-        tx.execute("DELETE FROM source_observation_container WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
+        tx.execute("DELETE FROM source_observation_zip WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
         tx.execute("DELETE FROM source_observation WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_extent WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_revision WHERE input=?1", [input])?;

@@ -9,6 +9,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{marker::PhantomData, sync::Arc};
 
+pub const PRODUCT: &str = "polylogue";
+
 pub trait CommandType: Send + Sync + 'static {
     type Arguments: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     type Answer: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
@@ -68,17 +70,15 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     command_surface::Origin::Mcp => Surface::Mcp,
                     _ => Surface::Cli,
                 },
-                cwd: None,
+                cwd: context
+                    .caller()
+                    .identity::<crate::protocol::caller::Accepted>()
+                    .and_then(|caller| caller.working_directory.clone()),
                 json: true,
             };
-            let values = serde_json::to_value(arguments).expect("typed arguments serialize");
-            let values = values
-                .as_object()
-                .expect("command arguments are objects")
-                .clone();
-            let values = match Values::from_json(command, caller.surface, values) {
+            let values = match checked_values::<C>(arguments, &caller, &context.request_id) {
                 Ok(values) => values,
-                Err(error) => return Answer::error(Failure::new(FailureKind::BadRequest, error)),
+                Err(error) => return Answer::error(error),
             };
             let narrower = values
                 .text("query")
@@ -93,14 +93,17 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                         deadline: command_surface::Deadline::Default,
                     }
                 });
-            if let Err(error) = context.progress(C::NAME, 0, narrower) {
+            if let Err(error) = context.progress_unknown(C::NAME, narrower) {
                 return Answer::error(error);
             }
-            let Action::Request(build) = command.action else {
-                return Answer::error(Failure::new(
-                    FailureKind::BadRequest,
-                    "command is not a finite daemon operation",
-                ));
+            let build = match command.action {
+                Action::Request(build) | Action::Stream { build, .. } => build,
+                Action::Local(_) => {
+                    return Answer::error(Failure::new(
+                        FailureKind::BadRequest,
+                        "command runs locally",
+                    ));
+                }
             };
             let request = match build(command, &values, &caller) {
                 Ok(request) => request,
@@ -184,17 +187,59 @@ impl<C: CommandType> Operation for TypedCommand<C> {
     }
 }
 
-pub fn table(daemon: Arc<Daemon>) -> OperationTable {
+fn checked_values<C: CommandType>(
+    arguments: C::Arguments,
+    caller: &Caller,
+    request_id: &str,
+) -> Result<Values, Failure> {
+    let command = crate::commands::command(C::NAME).expect("typed command exists");
+    let mut values = serde_json::to_value(arguments)
+        .expect("typed arguments serialize")
+        .as_object()
+        .expect("command arguments are objects")
+        .clone();
+    if command.writes {
+        values.insert("request_id".into(), Value::String(request_id.into()));
+    }
+    Values::from_json(command, caller.surface, values)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error))
+}
+
+/// Streams and finite answers validate through the same declaration adapter.
+pub fn build<C: CommandType>(
+    arguments: Value,
+    caller: &Caller,
+    request_id: &str,
+) -> Result<crate::daemon::Request, Failure> {
+    let arguments: C::Arguments = serde_json::from_value(arguments)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error.to_string()))?;
+    let values = checked_values::<C>(arguments, caller, request_id)?;
+    let command = crate::commands::command(C::NAME).expect("typed command exists");
+    match command.action {
+        Action::Request(build) | Action::Stream { build, .. } => build(command, &values, caller)
+            .map_err(|error| Failure::new(FailureKind::BadRequest, error)),
+        Action::Local(_) => Err(Failure::new(
+            FailureKind::BadRequest,
+            "command runs locally",
+        )),
+    }
+}
+
+pub fn deadlines() -> command_surface::Deadlines {
     let mut deadlines = command_surface::Deadlines::default();
-    deadlines.set(
-        LatencyClass::Search,
-        Some(crate::daemon::execution::timeout()),
-    );
-    deadlines.set(
-        LatencyClass::Status,
-        Some(std::time::Duration::from_millis(500)),
-    );
-    let mut table = OperationTable::new("polylogue", deadlines);
+    for (class, milliseconds) in [
+        (LatencyClass::Status, 80),
+        (LatencyClass::Read, 250),
+        (LatencyClass::Search, 2000),
+        (LatencyClass::Aggregate, 400),
+    ] {
+        deadlines.set(class, Some(std::time::Duration::from_millis(milliseconds)));
+    }
+    deadlines
+}
+
+pub fn table(daemon: Arc<Daemon>) -> OperationTable {
+    let mut table = OperationTable::new(PRODUCT, deadlines());
     for (kind, codes) in super::FAILURE_CLASSES {
         for code in *codes {
             table
@@ -218,7 +263,18 @@ pub fn request(
 ) -> command_surface::RunnableRequest {
     command_surface::Request {
         operation: command.name.into(),
-        arguments: Value::Object(arguments.0),
+        arguments: Value::Object(
+            arguments
+                .0
+                .into_iter()
+                .filter(|(name, _)| {
+                    command
+                        .args
+                        .iter()
+                        .any(|argument| argument.name == name && !argument.cli_only)
+                })
+                .collect(),
+        ),
         request_id,
         deadline,
     }

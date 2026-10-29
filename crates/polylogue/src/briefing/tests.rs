@@ -79,6 +79,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
         "d1",
         Timestamp::from_unix_ms(0).unwrap(),
         None,
+        &dir.path().join("check-history.sqlite"),
     )
     .unwrap();
     // Each list has one first-place hit. Equal ranks and unknown times
@@ -272,14 +273,12 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
         )
         .unwrap();
     }
-    f.setting("briefing.check_history", &history.to_string_lossy())
-        .unwrap();
     (dir, f)
 }
 
 #[test]
 fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
-    let (_dir, f) = worked_directory();
+    let (dir, f) = worked_directory();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let ask = Ask::SessionStart {
@@ -288,7 +287,15 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         source: StartSource::Startup,
     };
     let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
-    let p = prepare(&reader, &ask, "d1", now, None).unwrap();
+    let p = prepare(
+        &reader,
+        &ask,
+        "d1",
+        now,
+        None,
+        &dir.path().join("history.db"),
+    )
+    .unwrap();
     let t = &p.text;
     assert!(!p.empty);
     for expected in [
@@ -387,7 +394,15 @@ fn recall_pages_continue_by_cursor() {
             for_session: None,
             cursor: cursor.clone(),
         };
-        let p = prepare(&reader, &ask, "d", now, None).unwrap();
+        let p = prepare(
+            &reader,
+            &ask,
+            "d",
+            now,
+            None,
+            &dir.path().join("check-history.sqlite"),
+        )
+        .unwrap();
         seen.extend(p.refs.iter().filter(|r| r.starts_with("message:")).cloned());
         match p.next {
             Some(next) => {
@@ -409,5 +424,15 @@ fn recall_pages_continue_by_cursor() {
         for_session: None,
         cursor: first_next,
     };
-    assert!(prepare(&reader, &ask, "d", now, None).is_err());
+    assert!(
+        prepare(
+            &reader,
+            &ask,
+            "d",
+            now,
+            None,
+            &dir.path().join("check-history.sqlite")
+        )
+        .is_err()
+    );
 }

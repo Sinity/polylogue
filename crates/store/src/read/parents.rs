@@ -2,7 +2,6 @@
 use super::*;
 mod navigation;
 pub use navigation::OutlineEntry;
-use polylogue_model::masking::MessageMasker;
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
 
@@ -259,8 +258,7 @@ impl MessageSelection<'_, '_> {
         self
     }
 
-    /// Hidden messages without PEM markers cannot change ordered masking
-    /// state. Keep their metadata positions while leaving their bodies unread.
+    /// Keep hidden messages' metadata positions while leaving their bodies unread.
     pub fn for_blocks(mut self, kinds: &[polylogue_model::BlockKind], prompts: bool) -> Self {
         self.structured = false;
         self.visibility = Some(Visibility {
@@ -307,9 +305,8 @@ impl MessageSelection<'_, '_> {
             .map(drop)
     }
 
-    /// Skip source messages before hydrating their blocks. Rendering callers must
-    /// restore masking state checked against this exact selection. With the
-    /// start message's key, a session's own messages before it are not read
+    /// Skip source messages before hydrating their blocks. With the start
+    /// message's key, a session's own messages before it are not read
     /// at all. Returns the key of the last message visited.
     pub fn visit_from(
         &self,
@@ -507,62 +504,6 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    /// The masking state before the selection's message `message` when a
-    /// private key block may be open there; `None` when masking starts
-    /// afresh. An open key is the only masking state that crosses a block
-    /// boundary, and only messages holding a PEM header or END line
-    /// (`message.pem`) open or close one. So the state is the masker after
-    /// those messages alone, in order from the first that leaves a key open.
-    pub fn masking_before(&self, message: usize) -> Result<Option<MessageMasker>> {
-        Ok(self.masking_states()?.before(message))
-    }
-
-    /// Recover the ordered states at PEM markers once for a backward page.
-    pub fn masking_states(&self) -> Result<MaskingStates> {
-        let conn = self.reader.conn()?;
-        let mut marked = HashMap::new();
-        let mut statement =
-            conn.prepare_cached("SELECT pk,pem FROM message WHERE session_pk=?1 AND pem<>0")?;
-        for (session, _) in self.sessions() {
-            for row in statement.query_map([session], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })? {
-                let (key, pem) = row?;
-                marked.insert(key, pem);
-            }
-        }
-        if !marked.values().any(|pem| *pem == 2) {
-            return Ok(MaskingStates(Vec::new()));
-        }
-        let positions: HashMap<_, _> = self
-            .keys()?
-            .into_iter()
-            .enumerate()
-            .map(|(index, key)| (key, index))
-            .collect();
-        let mut states = Vec::new();
-        let mut masker = MessageMasker::default();
-        let mut started = false;
-        let current = std::cell::Cell::new(0);
-        self.visit_kept(
-            None,
-            0,
-            |pk| {
-                current.set(pk);
-                marked.contains_key(&pk)
-            },
-            |mut message| {
-                masker.message_text(&mut message);
-                started |= marked[&current.get()] == 2;
-                if started {
-                    states.push((positions[&current.get()] + 1, masker.clone()));
-                }
-                ControlFlow::Continue(())
-            },
-        )?;
-        Ok(MaskingStates(states))
-    }
-
     pub(super) fn keys(&self) -> Result<Vec<i64>> {
         match &self.with_parents {
             Some(keys) => Ok(keys.iter().map(|key| key.message_pk).collect()),
@@ -682,13 +623,4 @@ fn hash_row(hash: &mut blake3::Hasher, row: &rusqlite::Row<'_>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Private masking states indexed by the next source message.
-pub struct MaskingStates(Vec<(usize, MessageMasker)>);
-impl MaskingStates {
-    pub fn before(&self, message: usize) -> Option<MessageMasker> {
-        let end = self.0.partition_point(|(at, _)| *at <= message);
-        end.checked_sub(1).map(|index| self.0[index].1.clone())
-    }
 }

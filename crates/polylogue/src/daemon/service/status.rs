@@ -30,6 +30,10 @@ pub(super) fn answer(d: &Daemon, reader: &polylogue_store::Reader<'_>) -> Respon
         Ok(mode) => mode,
         Err(problem) => return error("internal", problem),
     };
+    let currency = match d.currency(reader) {
+        Ok(currency) => currency,
+        Err(error) => return store_error(&error),
+    };
     let answer = Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -55,6 +59,7 @@ pub(super) fn answer(d: &Daemon, reader: &polylogue_store::Reader<'_>) -> Respon
         notices,
         warm: d.warm.summary(),
         mode,
+        currency,
         #[cfg(feature = "sinex")]
         primary: primary(d, reader),
     };

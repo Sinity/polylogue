@@ -100,6 +100,19 @@ impl Drop for Lease {
 }
 
 impl Resolver {
+    /// A confirmed scope change discards private natural-key reservations before
+    /// replay. The stream owner first drains prepared work and cancels readers.
+    pub(crate) fn discard_cached(&self) -> Result<()> {
+        let mut active = self.active.lock().expect("resolver lock");
+        if !active.keys.is_empty() {
+            return Err(StoreError::Invalid(
+                "cannot discard resolver keys with active readings".into(),
+            ));
+        }
+        active.values.clear();
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(super) fn observe_wait(&self, observer: std::sync::mpsc::Sender<()>) {
         *self.waiting.lock().expect("wait observer") = Some(observer);
@@ -634,3 +647,6 @@ pub(super) fn prepare_index(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

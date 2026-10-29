@@ -34,7 +34,7 @@ an invalid request instead of guessing fields.
 
 Cite exact session, message or document IDs and distinguish source text from
 inference. Report missing coverage, incomplete parents and omitted content
-when they affect the answer. Credentials are masked in output.
+when they affect the answer.
 
 Agent notes are proposals until the operator accepts them. Use `note_add`
 with a concrete target and a useful decision, handoff or lesson; consult its

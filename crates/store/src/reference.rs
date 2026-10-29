@@ -131,7 +131,7 @@ impl Reader<'_> {
                     reference: reference.to_string(),
                 };
                 crate::ordered_blocks::visit_text(conn, pk, |block| {
-                    text.block(&block.block)?;
+                    text.block(&block)?;
                     Ok(ControlFlow::Continue(()))
                 })?;
                 Ok(true)

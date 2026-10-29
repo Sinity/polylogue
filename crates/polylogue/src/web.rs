@@ -25,6 +25,7 @@ use std::sync::Arc;
 /// What every handler shares.
 pub struct Web {
     pub daemon: Arc<Daemon>,
+    pub operations: Arc<command_surface::OperationTable>,
     pub key: String,
     pub token: String,
     pub port: u16,
@@ -73,11 +74,18 @@ impl Drop for Server {
 
 /// Binds the port and returns the owner of the HTTP worker. Socket serving
 /// can continue independently if HTTP startup fails.
-pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Server> {
-    start_on(daemon, access::wanted_port())
+pub fn start(
+    daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
+) -> std::io::Result<Server> {
+    start_on(daemon, operations, access::wanted_port())
 }
 
-fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
+fn start_on(
+    daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
+    port: u16,
+) -> std::io::Result<Server> {
     use std::future::IntoFuture;
     let key = crate::runtime_dir::archive_key(&daemon.archive.root);
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
@@ -96,6 +104,7 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,
+        operations,
         key,
         token: token.clone(),
         port,
@@ -322,7 +331,18 @@ impl Drop for CancelRead {
 }
 
 fn browser_response(response: Response, root: &std::path::Path) -> Response {
-    let mut response = response.clean(|text| access::scrub(text, root));
+    let mut response = response;
+    match &mut response {
+        Response::Ok { data } => access::scrub_value(data, root),
+        Response::Error {
+            message, detail, ..
+        } => {
+            *message = access::scrub(message, root);
+            if let Some(detail) = detail {
+                access::scrub_value(detail, root);
+            }
+        }
+    }
     if let Response::Ok { data, .. } = &mut response
         && let Some(data) = data.as_object_mut()
     {
@@ -336,9 +356,7 @@ pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
     if let Some(o) = value.as_object_mut() {
         o.remove("archive");
     }
-    polylogue_model::masking::mask_json_values(&mut value, |text| {
-        access::scrub(text, &web.daemon.archive.root)
-    });
+    access::scrub_value(&mut value, &web.daemon.archive.root);
     value
 }
 

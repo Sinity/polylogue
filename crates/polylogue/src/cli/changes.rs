@@ -1,10 +1,11 @@
 //! Printing the change feed. A completion line is forwarded only after every
 //! preceding line has been validated and written, then stdout is flushed.
-use super::{Archive, Request, Response, fail, wait_for_ready};
+use super::{Archive, Request, fail};
 use crate::daemon::query::feed::Line;
 use polylogue_model::ChangePosition;
-use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+#[cfg(test)]
+use std::io::Read;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 fn invalid(message: &str) -> io::Error {
@@ -13,7 +14,11 @@ fn invalid(message: &str) -> io::Error {
 
 /// `changes`: writes one finite batch to stdout, ending with its
 /// completion line.
-pub fn run(request: &Request, timeout: Option<std::time::Duration>) -> ExitCode {
+pub fn run(
+    _: &crate::commands::Values,
+    request: &Request,
+    timeout: Option<std::time::Duration>,
+) -> ExitCode {
     let archive = Archive::at(&Archive::default_root());
     match send(&archive, request, &mut io::stdout().lock(), timeout) {
         Ok(code) => ExitCode::from(code),
@@ -49,52 +54,39 @@ fn send(
                 .ok_or_else(|| invalid("the change position is invalid"))
         })
         .transpose()?;
-    // Only the connection is retried. A partial stream is never resent
-    // within this output attempt; the caller keeps its previous position.
-    let duration = timeout.unwrap_or_else(crate::daemon::execution::timeout);
-    let deadline_ms = Some(crate::daemon::execution::deadline(duration));
-    let mut socket = wait_for_ready(archive, deadline_ms, || {
-        UnixStream::connect(archive.socket())
-    })?;
-    socket.set_read_timeout(Some(
-        crate::daemon::execution::remaining(deadline_ms) + std::time::Duration::from_secs(1),
-    ))?;
-    socket.set_write_timeout(Some(duration))?;
-    let outgoing = crate::daemon::execution::Outgoing::new(request, deadline_ms);
-    serde_json::to_writer(&mut socket, &outgoing)?;
-    socket.write_all(b"\n")?;
-    receive(BufReader::new(socket), output, previous.as_deref())
+    consume(output, previous.as_deref(), |callback| {
+        crate::client::stream::run(archive, request, timeout, callback)
+    })
 }
 
-fn receive(
-    mut input: impl BufRead,
+#[cfg(test)]
+fn receive(input: impl Read, output: &mut impl Write, previous: Option<&str>) -> io::Result<u8> {
+    consume(output, previous, |callback| {
+        crate::client::stream::receive(input, callback)
+    })
+}
+
+fn consume(
     output: &mut impl Write,
     previous: Option<&str>,
+    run: impl FnOnce(
+        &mut dyn FnMut(command_surface::SseEvent) -> io::Result<bool>,
+    ) -> Result<(), crate::client::stream::Error>,
 ) -> io::Result<u8> {
     let mut begun = None;
     let mut seen = 0_u64;
-    let mut text = String::new();
-    loop {
-        text.clear();
-        if input.read_line(&mut text)? == 0 || !text.ends_with('\n') {
-            return Err(invalid(
-                "the change feed stopped before its completion line",
-            ));
-        }
-        let response: Response = serde_json::from_str(&text).map_err(io::Error::other)?;
-        let value = match response {
-            Response::Ok { data, .. } => data,
-            response @ Response::Error { .. } => {
-                serde_json::to_writer(&mut *output, &response)?;
-                output.write_all(b"\n")?;
-                output.flush()?;
-                let Response::Error { kind, .. } = response else {
-                    unreachable!()
-                };
-                return Ok(crate::daemon::execution::exit_code(&kind));
-            }
-        };
+    let result = run(&mut |frame| {
+        let value: serde_json::Value =
+            serde_json::from_str(&frame.data).map_err(io::Error::other)?;
         let line: Line = serde_json::from_value(value.clone()).map_err(io::Error::other)?;
+        let expected = match &line {
+            Line::Begin { .. } => "begin",
+            Line::Change { .. } => "record",
+            Line::Complete { .. } => "complete",
+        };
+        if frame.event != expected {
+            return Err(invalid("the stream event does not match its payload"));
+        }
         let complete = match line {
             Line::Begin {
                 position,
@@ -170,7 +162,19 @@ fn receive(
         output.write_all(b"\n")?;
         if complete {
             output.flush()?;
-            return Ok(0);
+            return Ok(true);
+        }
+        Ok(false)
+    });
+    match result {
+        Ok(()) => Ok(0),
+        Err(crate::client::stream::Error::Io(error)) => Err(error),
+        Err(crate::client::stream::Error::Answer(answer)) => {
+            let code = answer.exit_code();
+            serde_json::to_writer(&mut *output, &answer)?;
+            output.write_all(b"\n")?;
+            output.flush()?;
+            Ok(code)
         }
     }
 }

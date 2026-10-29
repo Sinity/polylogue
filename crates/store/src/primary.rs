@@ -2,6 +2,7 @@
 pub mod authored;
 pub mod products;
 pub(crate) mod projection;
+pub(crate) mod scope;
 pub use products::{
     Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange, Material,
     PendingCapture, PreparedInput, PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
@@ -72,7 +73,7 @@ pub trait Sinex: Send + Sync {
         tombstone_position: i64,
         applied: i64,
     ) -> Result<()>;
-    fn confirmed(&self, after: i64, cache: &str) -> Result<Vec<Confirmed>>;
+    fn confirmed(&self, after: i64, cache: &str, scope: Option<&str>) -> Result<Vec<Confirmed>>;
     fn acknowledge(&self, position: i64) -> Result<()>;
 }
 

@@ -628,3 +628,78 @@ fn absent_quota_facts_remain_absent_and_extreme_resets_do_not_overflow() {
 }
 
 mod reports;
+
+fn native_background_start() -> Vec<Json> {
+    vec![
+        meta(json!({})),
+        env(
+            2,
+            "response_item",
+            json!({"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"build\"}","call_id":"call_a"}),
+        ),
+        env(
+            3,
+            "response_item",
+            json!({"type":"function_call_output","call_id":"call_a","output":"Chunk ID: x\nWall time: 1.0 seconds\nProcess running with session ID 4242\nOutput:\n"}),
+        ),
+    ]
+}
+
+#[test]
+fn native_background_poll_preserves_event_precision_and_missing_clock() {
+    use polylogue_model::{Precision, TimeEvidence, Timestamp};
+    for (clock, precision) in [
+        (Some("2026-03-01T10:00:05Z"), Some(Precision::Second)),
+        (
+            Some("2026-03-01T10:00:05.123456789Z"),
+            Some(Precision::Instant),
+        ),
+        (None, None),
+    ] {
+        let mut records = native_background_start();
+        records.push(env(4,"response_item",json!({"type":"function_call","name":"write_stdin","arguments":"{\"session_id\":4242,\"chars\":\"\"}","call_id":"call_b"})));
+        let mut done = env(
+            5,
+            "response_item",
+            json!({"type":"function_call_output","call_id":"call_b","output":"Chunk ID: y\nWall time: 5.0 seconds\nProcess exited with code 0\nOutput:\ndone"}),
+        );
+        if let Some(clock) = clock {
+            done["timestamp"] = json!(clock);
+        } else {
+            done.as_object_mut().unwrap().remove("timestamp");
+        }
+        records.push(done);
+        let step = run(&rollout(), &mut ParserState::default(), &jsonl(&records), 0).unwrap();
+        let [update] = step.output.background.as_slice() else {
+            panic!("{:?}", step.output.background)
+        };
+        assert_eq!(update.result_at, clock.and_then(Timestamp::parse_rfc3339));
+        assert_eq!(
+            update.result_at_evidence,
+            precision.map_or(TimeEvidence::UNKNOWN, TimeEvidence::intrinsic)
+        );
+    }
+}
+
+#[test]
+fn native_background_modern_and_legacy_completion_keep_their_clock_evidence() {
+    use polylogue_model::{Precision, TimeEvidence};
+    for payload in [
+        json!({"type":"item_completed","item":{"type":"CommandExecution","id":"call_a","status":"completed","exit_code":0}}),
+        json!({"type":"exec_command_end","call_id":"call_a","exit_code":0}),
+    ] {
+        let mut records = native_background_start();
+        let mut done = env(4, "event_msg", payload);
+        done["timestamp"] = json!("2026-03-01T10:00:04.123456789Z");
+        records.push(done);
+        let step = run(&rollout(), &mut ParserState::default(), &jsonl(&records), 0).unwrap();
+        let [update] = step.output.background.as_slice() else {
+            panic!("{:?}", step.output.background)
+        };
+        assert_eq!(update.result_at.unwrap().unix_ns(), 1772359204123456789);
+        assert_eq!(
+            update.result_at_evidence,
+            TimeEvidence::intrinsic(Precision::Instant)
+        );
+    }
+}

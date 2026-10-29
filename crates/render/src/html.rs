@@ -1,336 +1,218 @@
-//! HTML content shared by exported documents and the web reader.
+//! Maud fragments shared by the web reader and script-free HTML exports.
+use crate::encode::value_text;
+use maud::{Markup, PreEscaped, html};
+use polylogue_model::read::*;
+use std::fmt::Display;
 
-use super::{Rendered, View, outcome_label, rendered_blocks};
-use polylogue_model::{Block, Message};
-use std::collections::HashMap;
-use std::fmt::Write as _;
-use std::io;
-
-/// Escape text for HTML content and quoted attributes.
-pub fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
+pub fn escape(text: &str) -> String {
+    maud::html! { (text) }.into_string()
 }
-
-/// An ID percent-encoded once as a whole, for a URL path segment.
 pub fn encode_path_segment(id: &str) -> String {
+    use std::fmt::Write;
     let mut out = String::new();
-    for b in id.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
+    for byte in id.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
         } else {
-            let _ = write!(out, "%{b:02X}");
+            let _ = write!(out, "%{byte:02X}");
         }
     }
     out
 }
-
-/// Render a structured page already masked by the shared pager. A page never
-/// hydrates hidden tool output; continuation is an ordinary reader link.
-pub fn page_slices(
-    slices: &[crate::model_pages::BlockSlice],
-    out: &mut dyn io::Write,
-) -> io::Result<()> {
-    if slices.first().is_some_and(|slice| slice.from > 0) {
-        write!(
-            out,
-            "<p class=\"meta\">This page starts within a source block.</p>"
-        )?;
+/// Only ordinary web URLs and local references may enter an href. Control
+/// characters and protocol-relative URLs are refused before scheme checks.
+pub fn safe_url(url: &str) -> bool {
+    if url.is_empty()
+        || url.chars().any(|c| c.is_control() || c.is_whitespace())
+        || url.starts_with("//")
+        || url.contains('\\')
+    {
+        return false;
     }
-    let mut current = None;
-    for slice in slices {
-        let id = slice.message.as_ref().map(|m| &m.id);
-        if id != current {
-            if current.is_some() {
-                write!(out, "</section>")?;
-            }
-            if let Some(message) = &slice.message {
-                let encoded = encode_path_segment(&message.id.to_string());
-                write!(
-                    out,
-                    "<section class=\"message {}\" id=\"m-{encoded}\" tabindex=\"-1\" data-reference=\"message:{}\"><h2><a href=\"/m/{encoded}\">{}</a> <span class=\"meta\">{}</span></h2>",
-                    message.role.as_str(),
-                    escape(&message.id.to_string()),
-                    message.role.as_str(),
-                    escape(
-                        &message
-                            .at
-                            .map_or_else(|| "Time unknown".into(), |at| at.to_string())
-                    )
-                )?;
-                write!(
-                    out,
-                    "<p class=\"meta\">Written by {}{}</p>",
-                    message.written_by.as_str(),
-                    message
-                        .model
-                        .as_deref()
-                        .map(|model| format!(" · {}", escape(model)))
-                        .unwrap_or_default()
-                )?;
-            }
-            current = id;
-        }
-        let label = slice.label.as_deref().unwrap_or(&slice.kind);
-        write!(
-            out,
-            "<div class=\"block {}\" data-block=\"{}\" data-from=\"{}\" data-until=\"{}\">",
-            escape(&slice.kind),
-            slice.block,
-            slice.from,
-            slice.until
-        )?;
-        if slice.kind == "text" {
-            write!(out, "<div class=\"text\">{}</div>", escape(&slice.text))?;
-        } else if slice.kind == "tool_call" {
-            let outcome = slice.outcome.map_or("unknown", |outcome| outcome.as_str());
-            write!(
-                out,
-                "<details class=\"tool\"><summary><span class=\"outcome {outcome}\">{outcome}</span> <b>{}</b> <code>{}</code></summary><pre>{}</pre></details>",
-                escape(label),
-                escape(&first_line(&slice.text)),
-                escape(&slice.text)
-            )?;
-        } else if matches!(slice.kind.as_str(), "tool_result" | "thinking") {
-            write!(
-                out,
-                "<details class=\"{}\"><summary>{}</summary><pre>{}</pre></details>",
-                if slice.kind == "thinking" {
-                    "thinking"
-                } else {
-                    "tool result"
-                },
-                escape(label),
-                escape(&slice.text)
-            )?;
-        } else {
-            write!(
-                out,
-                "<p class=\"meta\">{}</p><pre>{}</pre>",
-                escape(label),
-                escape(&slice.text)
-            )?;
-        }
-        if slice.more {
-            write!(
-                out,
-                "<span class=\"meta\">Continues on the next page</span>"
-            )?;
-        }
-        write!(out, "</div>")?;
+    match url.split_once(':') {
+        Some((scheme, _)) => matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto"
+        ),
+        None => true,
     }
-    if current.is_some() {
-        write!(out, "</section>")?;
-    }
-    Ok(())
 }
-
-/// Render content without a document frame. Tool calls and their results
-/// share one rendering policy on the command line and in the web reader.
-/// Source content is masked before this function filters and pairs messages.
-pub fn fragment(items: &[Rendered<'_>], view: View, out: &mut dyn io::Write) -> io::Result<()> {
-    let messages: Vec<&Message> = items
-        .iter()
-        .filter_map(|item| match item {
-            Rendered::Message(message) => Some(*message),
-            _ => None,
-        })
-        .collect();
-    let results = results_by_call(&messages);
-    let mut paired = std::collections::HashSet::new();
-    for item in items {
-        match item {
-            Rendered::SessionHeader { session, title } => {
-                write!(
-                    out,
-                    "<h1>{}</h1><p class=\"id\"><code>{}</code></p>",
-                    escape(&super::title(session, *title)),
-                    escape(&session.id.to_string())
-                )?;
-            }
-            Rendered::Document(doc) => super::documents::html(doc, view, out)?,
-            Rendered::Message(value) => {
-                write!(out, "{}", message(value, view, &results, &mut paired))?;
-            }
-            Rendered::Event(event) if view == View::Full => super::events::html(event, out)?,
-            Rendered::Event(_) => {}
-            Rendered::Notice(notice) => write!(out, "<aside>{}</aside>", escape(notice))?,
+pub fn value<T: Display>(state: &ValueState<T>) -> Markup {
+    use web_shell::ValueState as Shared;
+    let shared = match state {
+        ValueState::Value { value } => Shared::Measured(value.to_string()),
+        ValueState::Unknown { reason } => Shared::Unknown {
+            reason: reason.clone(),
+        },
+        ValueState::NotRecorded => Shared::NotRecorded,
+        ValueState::NotApplicable => Shared::NotApplicable,
+        ValueState::Partial { value, unknown } => Shared::Partial {
+            value: value.to_string(),
+            unknown: *unknown,
+        },
+        ValueState::Inferred { value } => Shared::Inferred(value.to_string()),
+        ValueState::Pending => Shared::Pending,
+        ValueState::Error { reason } => Shared::Error {
+            reason: reason.clone(),
+        },
+        ValueState::Unavailable { .. } => {
+            return html! { span class="value-state" data-state="unavailable" { (value_text(state)) } };
         }
-    }
-    Ok(())
-}
-
-pub(crate) fn document(
-    items: &[Rendered<'_>],
-    view: View,
-    out: &mut dyn io::Write,
-) -> io::Result<()> {
-    writeln!(
-        out,
-        "<!doctype html><meta charset=\"utf-8\"><article class=\"polylogue\">"
-    )?;
-    fragment(items, view, out)?;
-    writeln!(out, "</article>")
-}
-
-struct Outcome<'a> {
-    label: String,
-    text: &'a str,
-}
-
-fn results_by_call<'a>(messages: &[&'a Message]) -> HashMap<String, Outcome<'a>> {
-    let mut out = HashMap::new();
-    for m in messages {
-        for b in &m.blocks {
-            if let Block::ToolResult {
-                call_id: Some(id),
-                outcome,
-                output,
-                ..
-            } = b
-            {
-                out.insert(
-                    id.clone(),
-                    Outcome {
-                        label: outcome_label(outcome),
-                        text: output.as_deref().unwrap_or(""),
-                    },
-                );
-            }
+        ValueState::Stale { .. } => {
+            return html! { span class="value-state" data-state="stale" { (value_text(state)) } };
         }
-    }
-    out
-}
-
-fn message(
-    m: &Message,
-    view: View,
-    results: &HashMap<String, Outcome<'_>>,
-    paired: &mut std::collections::HashSet<String>,
-) -> String {
-    let ps = rendered_blocks(m, view);
-    // Call IDs of this message's blocks, in the order `rendered blocks` keeps them.
-    let call_ids: Vec<Option<&String>> = m
-        .blocks
-        .iter()
-        .filter_map(|b| match b {
-            Block::ToolCall { call_id, .. } | Block::ToolResult { call_id, .. } => {
-                Some(call_id.as_ref())
-            }
-            _ => None,
-        })
-        .collect();
-    let mut calls = call_ids.into_iter();
-    let mut inner = String::new();
-    for p in &ps {
-        match p.kind {
-            "text" => {
-                let _ = write!(inner, "<div class=\"text\">{}</div>", paragraphs(&p.text));
-            }
-            "thinking" => {
-                let _ = write!(
-                    inner,
-                    "<details class=\"thinking\"><summary>thinking</summary><pre>{}</pre></details>",
-                    escape(&p.text)
-                );
-            }
-            "tool_call" => {
-                let id = calls.next().flatten();
-                let result = id.and_then(|id| {
-                    paired.insert(id.clone());
-                    results.get(id)
-                });
-                let (label, output) = result.map_or(("no result", String::new()), |r| {
-                    (r.label.as_str(), r.text.to_owned())
-                });
-                let class = if label == "ok" {
-                    "ok"
-                } else if label == "no result" || label == "unknown" {
-                    "unknown"
-                } else {
-                    "error"
-                };
-                let _ = write!(
-                    inner,
-                    "<details class=\"tool\"><summary><span class=\"outcome {class}\">{}</span> <b>{}</b> <code>{}</code></summary><pre class=\"input\">{}</pre>{}</details>",
-                    escape(label),
-                    escape(p.label.as_deref().unwrap_or("tool")),
-                    escape(&first_line(&p.text)),
-                    escape(&p.text),
-                    if output.is_empty() {
-                        String::new()
-                    } else {
-                        format!("<pre class=\"output\">{}</pre>", escape(&output))
-                    }
-                );
-            }
-            "tool_result" => {
-                let id = calls.next().flatten();
-                if id.is_some_and(|id| paired.contains(id)) {
-                    continue;
-                }
-                let _ = write!(
-                    inner,
-                    "<details class=\"tool result\"><summary><span class=\"outcome\">{}</span> result</summary><pre class=\"output\">{}</pre></details>",
-                    escape(p.label.as_deref().unwrap_or("")),
-                    escape(&p.text)
-                );
-            }
-            kind => {
-                let _ = write!(
-                    inner,
-                    "<div class=\"{kind}\">[{}{}] {}</div>",
-                    escape(kind),
-                    p.label
-                        .as_deref()
-                        .map(|l| format!(" {}", escape(l)))
-                        .unwrap_or_default(),
-                    escape(&p.text)
-                );
-            }
+        ValueState::Inherited { .. } => {
+            return html! { span class="value-state" data-state="inherited" { (value_text(state)) } };
         }
+    };
+    web_shell::value_cell(&shared)
+}
+pub fn header(header: &ReadHeader) -> Markup {
+    visible_controls(header_markup(header))
+}
+fn header_markup(header: &ReadHeader) -> Markup {
+    html! { header class="read-header" { h1 { @if let Some(title) = header.title.value() { (title) } @else { (&header.target) } } p class="meta" { code { (&header.target) } " · " (header.view) } dl { @for figure in &header.figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } }
     }
-    if inner.is_empty() {
-        return String::new();
-    }
-    let role = super::who(m);
-    format!(
-        "<section class=\"message {role}\" id=\"m-{}\" tabindex=\"-1\"><h2>{role}{}{}</h2>{inner}</section>",
-        encode_path_segment(&m.id.to_string()),
-        m.at.map(|t| format!(" <time>{}</time>", escape(&t.to_string())))
-            .unwrap_or_default(),
-        m.model
-            .as_deref()
-            .map(|x| format!(" <span class=\"model\">{}</span>", escape(x)))
-            .unwrap_or_default(),
+}
+/// Archived Markdown is parsed with raw HTML disabled and link destinations
+/// checked. Images become links so an export never fetches archive text URLs.
+fn markdown(text: &str) -> Markup {
+    use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd};
+    let events = Parser::new_ext(
+        text,
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
     )
+    .map(|event| match event {
+        Event::Html(text) | Event::InlineHtml(text) => Event::Text(text),
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: if safe_url(&dest_url) {
+                dest_url
+            } else {
+                CowStr::Borrowed("#")
+            },
+            title,
+            id,
+        }),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: if safe_url(&dest_url) {
+                dest_url
+            } else {
+                CowStr::Borrowed("#")
+            },
+            title,
+            id,
+        }),
+        Event::End(TagEnd::Image) => Event::End(TagEnd::Link),
+        other => other,
+    });
+    let mut output = String::new();
+    pulldown_cmark::html::push_html(&mut output, events);
+    PreEscaped(output)
 }
-
-fn first_line(s: &str) -> String {
-    let line = s.lines().next().unwrap_or_default();
-    if line.chars().count() > 120 {
-        format!("{}…", line.chars().take(119).collect::<String>())
-    } else {
-        line.to_owned()
+fn ready(call: &ReadyCall) -> Markup {
+    html! { code class="ready-call" { (&call.cli) } }
+}
+fn edit(edit: &EditView) -> Markup {
+    html! { section class="edit" { h3 { (&edit.path) } p { @if edit.applied { "applied" } @else { "failed, may have changed the file" } " · " (edit.failed_edits) " failed edits" } pre { (value_text(&edit.diff)) } } }
+}
+fn card(card: &Card) -> Markup {
+    html! { section class="read-card" { @match card {
+        Card::Fields { title,figures } => { h3 { (title) } dl { @for figure in figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } },
+        Card::Session { session,open } => { h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } @for line in crate::encode::session_lines(session) { p { (line) } } @if let Some(call)=open { (ready(call)) } },
+        Card::LinkNode { reference,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call)) } },
+        Card::LinkEdge { from,to,relation,how,cross_link } => { p { code { (from) } " → " code { (to) } " · " (relation) @if let Some(how)=how { " (" (how) ")" } @if *cross_link { " · cross-link" } } },
+        Card::Change { edit:e } => { (edit(e)) },
+        Card::Live { state,waits_on,call,task,peers,processes } => { dl { dt { "State" } dd { (value(state)) } dt { "Waits on" } dd { (value(waits_on)) } dt { "Call" } dd { (value(call)) } dt { "Task" } dd { (value(task)) } } p { "Peers: " (peers.join(", ")) } ul { @for process in processes { li { code { (&process.reference) } " (parent " (process.parent.as_deref().unwrap_or("unknown")) ") · " (value(&process.command)) " · " (value(&process.state)) } } } },
+        Card::Delegation { card } => { h3 { "→ " (&card.child) } dl { dt { "Objective" } dd { (value(&card.objective)) } dt { "Result" } dd { (value(&card.result)) } dt { "Duration (ms)" } dd { (value(&card.duration_ms)) } dt { "Cost" } dd { (value(&card.cost)) } dt { "Result use" } dd { (value(&card.result_use)) } } p { "Retries: " (card.retries.join(", ")) } @if let Some(call)=&card.open { (ready(call)) } },
+    } } }
+}
+pub fn item(item: &ReadItem) -> Markup {
+    item_with_inline_limit(item, 0)
+}
+pub fn item_with_inline_limit(item: &ReadItem, inline_limit: usize) -> Markup {
+    visible_controls(item_markup(item, inline_limit))
+}
+fn item_markup(item: &ReadItem, inline_limit: usize) -> Markup {
+    html! { section class="read-item" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
+        ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at|at.to_string()).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"?".into())) "/" (total.map(|n|n.to_string()).unwrap_or_else(||"?".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call)) } } } code { (&item.source.reference) } @for assertion in &header.assertions { aside { "◆ " (&assertion.kind) ": " (&assertion.value) " · " (format!("{:?}",assertion.author)) } } },
+        ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
+        ItemKind::Thinking { words,content } => { @match content {
+            ThinkingContent::Text { text } => { details class="thinking" { summary { "thinking (" (value(words)) " words)" } pre { (text) } } },
+            ThinkingContent::Collapsed => { p class="thinking" { "thinking (" (value(words)) " words)" } },
+            ThinkingContent::Encrypted => { p class="thinking" { "thinking (encrypted)" } }, ThinkingContent::Redacted => { p class="thinking" { "thinking (redacted)" } }, ThinkingContent::Absent { blocks } => { p class="thinking" { "thinking absent · " (blocks) " blocks" } }
+        } },
+        ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) " " code { (value(&call.target)) } " " (value(&call.outcome)) @if let Some(exit)=call.exit { " · exit " (exit) } " · " (value(&call.duration_ms)) " ms" } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open)) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() })) } } },
+        ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) } },
+        ItemKind::Other { type_name,data } => { details { summary { (type_name) } pre { (serde_json::to_string_pretty(data).expect("JSON serializes")) } } },
+        ItemKind::Indicator { indicator,text,expand } => { aside class="indicator" data-kind=(format!("{indicator:?}")) { (text) @if let Some(call)=expand { " " (ready(call)) } } },
+        ItemKind::Omission { count,unit,why,continue_call } => { aside class="omission" { "… " (value(count)) " " (unit) ": " (why) @if let Some(call)=continue_call { " " (ready(call)) } } },
+        ItemKind::Card { card:c } => { (card(c)) },
+        ItemKind::Raw { record } => { p { (&record.reference) " · " (&record.input) " · " (&record.media_type) } @if let Ok(text)=std::str::from_utf8(&record.bytes) { pre { (text) } } @else { @let encoded = { use base64::Engine; base64::engine::general_purpose::STANDARD.encode(&record.bytes) }; p { "binary bytes (base64)" } pre { (encoded) } } },
+        ItemKind::Fragment { encoding,text,from,until,total } => { pre data-encoding=(format!("{encoding:?}")) { (text) } p class="fragment-position" { "… characters " (from) ".." (until) " of " (total) } },
+    } } }
+}
+/// Ordinary navigation consumes the daemon's sealed calls, never guesses URLs.
+pub fn footer(footer: &ReadFooter) -> Markup {
+    visible_controls(footer_markup(footer))
+}
+fn footer_markup(footer: &ReadFooter) -> Markup {
+    html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (format!("{:?}",coverage.target)) " omitted from " (coverage.view) } } @for reference in &footer.referenced_by { p { "Referenced by " (&reference.reference) " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call)) } } } @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call)) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call)) } } } }
+}
+pub fn document(document: &ReadDocument) -> Markup {
+    html! { article class="read-document" { (header(&document.header)) @for i in &document.items { (item(i)) } (footer(&document.footer)) } }
+}
+/// Shared design tokens are embedded directly in the export. This is the same
+/// stylesheet served by web-shell, obtained through its pure asset adapter.
+pub(crate) fn export_css() -> String {
+    let request = http::Request::get("/assets/tokens.css")
+        .body(())
+        .expect("constant request");
+    let response = web_shell::assets::serve(&request);
+    let mut css = String::from_utf8(response.into_body()).expect("shared CSS is UTF-8");
+    // Exports use system fonts; shared @font-face URLs belong to the web host.
+    if let Some(start) = css.find(":root{") {
+        css = css[start..].to_owned();
     }
+    css.push_str("body{font-family:system-ui,sans-serif;color:var(--ink);background:var(--ground);max-width:80rem;margin:auto;padding:2rem}pre,code{font-family:monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere}h2{font-size:1rem;border-top:1px solid var(--line);padding-top:1rem}.read-item{margin-block:1rem}.unknown,.omission,.meta{color:var(--muted-ink)}.value-state[data-state=unknown]{text-decoration:underline dotted}.read-card{border:1px solid var(--line);padding:1rem}dt{font-weight:bold}dd{margin-bottom:.5rem}");
+    css
 }
 
-fn paragraphs(text: &str) -> String {
-    text.split("\n\n")
-        .filter(|p| !p.trim().is_empty())
-        .map(|p| format!("<p>{}</p>", escape(p).replace('\n', "<br>")))
-        .collect()
+fn inline_image(
+    attachment: &polylogue_model::Attachment,
+    bytes: Option<&[u8]>,
+    limit: usize,
+) -> Option<String> {
+    let bytes = bytes?;
+    let mime = attachment.media_type.as_deref()?;
+    if bytes.len() > limit
+        || limit == 0
+        || !matches!(
+            mime,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+        )
+        || attachment.blob.as_ref() != Some(&polylogue_model::BlobHash::of(bytes))
+    {
+        return None;
+    }
+    use base64::Engine;
+    Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
-#[cfg(test)]
-mod tests;
+fn visible_controls(markup: Markup) -> Markup {
+    PreEscaped(crate::terminal::escape(&markup.into_string()))
+}

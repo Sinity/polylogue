@@ -22,6 +22,7 @@ pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
+    operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
     page_ends: read::page_ends::Cache,
     feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
@@ -39,13 +40,113 @@ pub struct Daemon {
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
 
+impl Daemon {
+    pub(crate) fn ready_call(
+        &self,
+        request: &command_surface::RunnableRequest,
+    ) -> Result<polylogue_model::read::ReadyCall, command_surface::Failure> {
+        use command_surface::{Failure, FailureKind};
+        let table = self
+            .operations
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| {
+                Failure::new(
+                    FailureKind::NotRunning,
+                    "the operation table is unavailable",
+                )
+            })?;
+        let description = table
+            .descriptions()
+            .into_iter()
+            .find(|description| description.spec.name == request.operation)
+            .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
+        let command =
+            crate::commands::command(&request.operation).expect("registered command exists");
+        if let Some(build) = command.build_typed {
+            build(
+                request.arguments.clone(),
+                &crate::commands::Caller {
+                    surface: crate::commands::Surface::Http,
+                    cwd: None,
+                    json: true,
+                },
+                &request.request_id,
+            )?;
+        }
+        let mut body = serde_json::to_value(request).expect("request serializes");
+        body.as_object_mut()
+            .expect("request is an object")
+            .remove("operation");
+        Ok(polylogue_model::read::ReadyCall {
+            cli: table.cli_command(request)?,
+            mcp: serde_json::json!({"name":description.spec.mcp_name(crate::protocol::operations::PRODUCT), "arguments":body}),
+            http: polylogue_model::read::HttpCall {
+                method: if description.spec.write {
+                    "POST"
+                } else {
+                    "GET"
+                }
+                .into(),
+                path: description.spec.http_route,
+                arguments: serde_json::to_value(request).expect("request serializes"),
+            },
+        })
+    }
+
+    /// Currency comes from the reader checkpoint and cached owner observations.
+    pub(crate) fn currency(
+        &self,
+        reader: &polylogue_store::Reader<'_>,
+    ) -> polylogue_store::Result<polylogue_model::currency::IndexCurrency> {
+        use polylogue_model::currency::IndexCurrency;
+        let _ = reader;
+        match &self.mode {
+            ModeState::Standalone => Ok(IndexCurrency::Standalone),
+            #[cfg(feature = "sinex")]
+            ModeState::Primary { connection } => connection
+                .currency(reader.confirmed_checkpoint()?)
+                .map_err(StoreError::from),
+            #[cfg(feature = "sinex")]
+            ModeState::Blocked { error, .. } => Ok(IndexCurrency::primary(
+                reader.confirmed_checkpoint()?,
+                None,
+                None,
+                Some(false),
+                Some(error.clone()),
+            )),
+        }
+    }
+}
+
+fn query_answer(
+    d: &Daemon,
+    reader: &polylogue_store::Reader<'_>,
+    mut data: serde_json::Value,
+) -> Response {
+    let currency = match d.currency(reader) {
+        Ok(currency) => currency,
+        Err(error) => return store_error(&error),
+    };
+    let Some(position) = data
+        .get_mut("read_at")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return error("internal", "a query answer omitted its read position");
+    };
+    position.insert(
+        "currency".into(),
+        serde_json::to_value(currency).expect("currency serializes"),
+    );
+    super::query::response(data)
+}
+
 pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
     Response::Error {
         kind: kind.into(),
         message: message.to_string(),
         detail: None,
     }
-    .masked()
 }
 
 pub(crate) fn store_error(e: &StoreError) -> Response {
@@ -53,10 +154,15 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::PrimaryPending { identity } => ok(serde_json::json!({
             "identity": identity, "pending": true,
         })),
-        StoreError::Conflict(_) => error("conflict", e),
-        StoreError::Stale { .. } => error("stale", e),
+        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => error("conflict", e),
         StoreError::Ambiguous { .. } => error("ambiguous", e),
+        StoreError::Stale { .. } => error("stale", e),
         StoreError::ReferenceUnavailable { .. } => error("not_yet_available", e),
+        StoreError::Projection(issue) => match issue {
+            polylogue_model::bundle::BundleError::ProjectionConflict
+            | polylogue_model::bundle::BundleError::SourceVersionMismatch => error("conflict", e),
+            _ => error("bad_request", e),
+        },
         StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
         StoreError::ReadCancelled => error("cancelled", e),
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
@@ -186,7 +292,10 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 pub(crate) fn ok(data: impl serde::Serialize) -> Response {
-    super::request::References::default().response(data)
+    match serde_json::to_value(data) {
+        Ok(data) => Response::Ok { data },
+        Err(cause) => error("internal", cause),
+    }
 }
 
 fn repeated_request(
@@ -212,19 +321,21 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     Ok(())
 }
 
-/// Transport-specific string cleaning stays with the transport.
-pub(crate) type Cleaner = fn(&str, &std::path::Path) -> String;
-
-/// Prepare this stream request, or leave a different request for its handler.
+/// Produces this finite feed, or leaves another request to its operation.
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
-    clean: Option<Cleaner>,
-) -> Option<Result<std::fs::File, Response>> {
+    _authorship: &polylogue_model::authorship::Authorship,
+    output: &mut dyn std::io::Write,
+) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {
         return None;
     };
-    Some(accepting(d).and_then(|()| d.feeds.read(d, since.as_deref(), clean)))
+    Some(accepting(d).and_then(|()| {
+        let mut file = d.feeds.read(d, since.as_deref())?;
+        std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
+        Ok(())
+    }))
 }
 
 /// Answers one request. Reads use the read pool; imports go to the loop
@@ -261,7 +372,7 @@ pub fn handle_with_caller(
         });
     }
     super::execution::run(request, limit, |request| {
-        handle_inner(request, d, authorship).masked()
+        handle_inner(request, d, authorship)
     })
 }
 
@@ -270,7 +381,6 @@ fn handle_inner(
     d: &Daemon,
     authorship: &polylogue_model::authorship::Authorship,
 ) -> Response {
-    let _ = authorship;
     if let Err(response) = accepting(d) {
         return response;
     }
@@ -279,6 +389,9 @@ fn handle_inner(
     }
     if let Request::SchemaInfer { selection } = request {
         return super::schema::infer(d, selection);
+    }
+    if matches!(&request, Request::Attachment { .. }) {
+        return super::attachment::read(request, d);
     }
     let _foreground = d.schema_admission.foreground();
     let read_epoch = d.page_ends.epoch();
@@ -290,28 +403,7 @@ fn handle_inner(
         Err(e) => return store_error(&e),
     };
     match request {
-        Request::Attachment {
-            message,
-            block,
-            attachment,
-            reveal,
-            cursor,
-            ..
-        } => {
-            if reveal {
-                return error(
-                    "operator_required",
-                    "exact attachment bytes require the interactive CLI operator path",
-                );
-            }
-            if cursor.is_some() {
-                return error("bad_request", "a cursor continues an exact attachment read");
-            }
-            match reader.masked_attachment(&message, block, attachment) {
-                Ok(resolution) => ok(resolution),
-                Err(e) => store_error(&e),
-            }
-        }
+        Request::Attachment { .. } => unreachable!("attachment reads own their reader"),
         Request::ChatSend { .. }
         | Request::ChatActions
         | Request::ChatAction { .. }
@@ -459,7 +551,7 @@ fn handle_inner(
             let key =
                 serde_json::json!([text, cursor, page_size, why, session, fields]).to_string();
             if let Some(data) = d.warm.answer(&key, &position) {
-                return super::query::response(data);
+                return query_answer(d, &reader, data);
             }
             super::query::with_ranking(&reader, &d.warm, |embeddings, near| {
                 let ask = super::query::Ask {
@@ -477,7 +569,7 @@ fn handle_inner(
                 match super::query::run(&reader, ask) {
                     Ok(data) => {
                         d.warm.keep_answer(key, position, cursor.is_none(), &data);
-                        super::query::response(data)
+                        query_answer(d, &reader, data)
                     }
                     Err(f) => Response::Error {
                         kind: f.kind,
@@ -569,7 +661,14 @@ fn handle_inner(
             let sent = d
                 .loop_tx
                 .lock()
-                .map(|tx| tx.send(LoopMsg::Import { paths, reply }).is_ok())
+                .map(|tx| {
+                    tx.send(LoopMsg::Import {
+                        paths,
+                        authorship: authorship.clone(),
+                        reply,
+                    })
+                    .is_ok()
+                })
                 .unwrap_or(false);
             if !sent {
                 return error("internal", "the loop has stopped");
@@ -1096,6 +1195,7 @@ fn export(
 /// before this runtime; external daemon references cannot keep workers alive.
 pub struct Runtime {
     pub daemon: Arc<Daemon>,
+    pub operations: Arc<command_surface::OperationTable>,
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
     counts_stop: Option<Sender<()>>,
@@ -1189,7 +1289,10 @@ pub enum ArchiveMode {
 enum ModeState {
     Standalone,
     #[cfg(feature = "sinex")]
-    Primary,
+    Primary {
+        #[serde(skip)]
+        connection: Arc<polylogue_sinex::Sinex>,
+    },
     #[cfg(feature = "sinex")]
     Blocked {
         configured: Option<&'static str>,
@@ -1252,7 +1355,8 @@ pub fn start(
             path,
             error,
         } => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
+            let (archive, lock) =
+                Archive::open_primary_cache(root).map_err(std::io::Error::other)?;
             let state = ModeState::Blocked {
                 configured,
                 path,
@@ -1261,24 +1365,17 @@ pub fn start(
             (archive, lock, state, None)
         }
         #[cfg(feature = "sinex")]
-        ArchiveMode::Primary {
-            config: sinex,
-            path,
-        } => match crate::sinex::open(root, &sinex)? {
-            (archive, lock, Ok(connection)) => {
-                let engine =
-                    Engine::on_sinex(config, archive.clone(), connection).map_err(|e| to_io(&e))?;
-                (archive, lock, ModeState::Primary, Some(engine))
-            }
-            (archive, lock, Err(error)) => {
-                let state = ModeState::Blocked {
-                    configured: Some("primary"),
-                    path,
-                    error,
-                };
-                (archive, lock, state, None)
-            }
-        },
+        ArchiveMode::Primary { config: sinex, .. } => {
+            let (archive, lock, connection) = crate::sinex::open(root, &sinex)?;
+            let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
+                .map_err(|error| to_io(&error))?;
+            (
+                archive,
+                lock,
+                ModeState::Primary { connection },
+                Some(engine),
+            )
+        }
     };
     let mut engine = engine;
     let writes = engine
@@ -1302,6 +1399,7 @@ pub fn start(
         ..LoopStatus::default()
     }));
     let daemon = Arc::new(Daemon {
+        operations: std::sync::OnceLock::new(),
         archive,
         reads,
         callers: crate::protocol::caller::hooks::Registry::new(
@@ -1321,8 +1419,14 @@ pub fn start(
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
+    let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
+    assert!(
+        daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
+        "runtime installs its operation table once"
+    );
     let mut runtime = Runtime {
         daemon,
+        operations,
         signals_stop: None,
         signals: None,
         counts_stop: None,

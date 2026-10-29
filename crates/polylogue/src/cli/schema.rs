@@ -19,6 +19,13 @@ pub fn diff(_: &Command, values: &Values, json: bool) -> ExitCode {
         let before = read("before")?;
         let after = read("after")?;
         let mut origins = serde_json::Map::new();
+        let mut reasons = std::collections::BTreeSet::new();
+        if before.selection != after.selection {
+            reasons.insert("different_selection_coverage");
+        }
+        if before.selection.selected_inputs == 0 || after.selection.selected_inputs == 0 {
+            reasons.insert("empty_selection");
+        }
         let names: std::collections::BTreeSet<_> =
             before.origins.keys().chain(after.origins.keys()).collect();
         for name in names {
@@ -35,14 +42,30 @@ pub fn diff(_: &Command, values: &Values, json: bool) -> ExitCode {
                     serde_json::json!({"kind": if left.is_some() { "removed_origin" } else { "added_origin" }, "before": left, "after": right})
                 }
             };
+            if report.get("kind").is_some() {
+                reasons.insert("different_origins");
+            } else if report["comparable"] != true {
+                reasons.insert("incomparable_origin_samples");
+            }
             origins.insert(name.clone(), report);
         }
-        let report = serde_json::json!({"origins": origins, "before": before.selection, "after": after.selection});
+        let report = serde_json::json!({"origins": origins, "before": before.selection, "after": after.selection, "comparable": reasons.is_empty(), "reasons": reasons});
         serde_json::to_value(report).map_err(|e| e.to_string())
     })
 }
 
 pub fn output(values: &Values, value: &serde_json::Value, json: bool) -> ExitCode {
+    if json && values.text("output").is_none() {
+        let answer = crate::protocol::answer(value.clone());
+        println!(
+            "{}",
+            polylogue_render::terminal::json(
+                &serde_json::to_value(&answer).expect("answer serializes"),
+                false
+            )
+        );
+        return ExitCode::from(answer.exit_code());
+    }
     run(values, json, || Ok(value.clone()))
 }
 

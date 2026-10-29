@@ -115,7 +115,13 @@ fn startup_failure_after_workers_start_releases_the_runtime_and_lock() {
         weak = Arc::downgrade(&runtime.daemon);
         // A directory cannot be replaced by the Unix socket binder.
         std::fs::create_dir(runtime.daemon.archive.socket()).unwrap();
-        assert!(crate::daemon::server::Server::start(Arc::clone(&runtime.daemon)).is_err());
+        assert!(
+            crate::daemon::server::Server::start(
+                Arc::clone(&runtime.daemon),
+                Arc::clone(&runtime.operations)
+            )
+            .is_err()
+        );
     }
     assert!(weak.upgrade().is_none());
     assert!(Archive::open_or_create(&root).is_ok());

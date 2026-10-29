@@ -14,6 +14,12 @@ pub struct TimeEvidence {
     pub until: Option<Timestamp>,
 }
 
+impl Default for TimeEvidence {
+    fn default() -> Self {
+        Self::UNKNOWN
+    }
+}
+
 impl TimeEvidence {
     pub const UNKNOWN: Self = Self {
         quality: TimeQuality::Unknown,
@@ -108,6 +114,17 @@ impl Timestamp {
 
     pub fn unix_ns(self) -> i128 {
         self.0.as_nanosecond()
+    }
+}
+
+impl From<jiff::Timestamp> for Timestamp {
+    fn from(value: jiff::Timestamp) -> Self {
+        Self(value)
+    }
+}
+impl From<Timestamp> for jiff::Timestamp {
+    fn from(value: Timestamp) -> Self {
+        value.0
     }
 }
 

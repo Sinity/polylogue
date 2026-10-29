@@ -133,3 +133,20 @@ fn only_a_listener_on_127_0_0_1_counts() {
     let without = table.lines().take(3).collect::<Vec<_>>().join("\n");
     assert_eq!(listener_in(&without, &v4_hex(loopback)), None);
 }
+
+#[test]
+fn archive_path_substitution_preserves_colliding_keys_and_other_source_text() {
+    let root = std::path::Path::new("/synthetic/archive");
+    let token = format!("ghp_{}", "q".repeat(36));
+    let mut value = serde_json::json!({
+        "[archive]": "existing", "/synthetic/archive": "host key",
+        "source": [token.clone(), "/synthetic/archive/blobs/example", ""]
+    });
+    super::scrub_value(&mut value, root);
+    assert_eq!(value["[archive]"], "existing");
+    assert_eq!(value["[archive] #2"], "host key");
+    assert_eq!(
+        value["source"],
+        serde_json::json!([token, "[archive]/blobs/example", ""])
+    );
+}

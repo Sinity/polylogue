@@ -250,67 +250,6 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
 }
 
 #[test]
-fn a_read_starts_anywhere_with_the_masking_state_masking_from_the_start_reaches() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    session(
-        &mut f,
-        "keyed",
-        &[
-            "ordinary",
-            "closed -----BEGIN RSA PRIVATE KEY-----x-----END RSA PRIVATE KEY----- block",
-            "left open -----BEGIN RSA PRIVATE KEY-----",
-            "inside the open key",
-            "still inside",
-            "closes -----END RSA PRIVATE KEY----- shown",
-            "after the key",
-            "a second -----BEGIN EC PRIVATE KEY----- never closed",
-            "hidden to the end",
-        ],
-    );
-    session(&mut f, "plain", &["one", "two", "three"]);
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let plain = reader
-        .select_messages(&SessionId::parse("claude-code:plain").unwrap(), false)
-        .unwrap();
-    assert!(plain.masking_before(2).unwrap().is_none());
-    let keyed = reader
-        .select_messages(&SessionId::parse("claude-code:keyed").unwrap(), false)
-        .unwrap();
-    let mut messages = Vec::new();
-    keyed
-        .visit(|message| {
-            messages.push(message);
-            ControlFlow::Continue(())
-        })
-        .unwrap();
-    let shown = |mut masker: polylogue_model::masking::MessageMasker, from: usize| {
-        messages[from..]
-            .iter()
-            .map(|message| {
-                let mut message = message.clone();
-                masker.message_text(&mut message);
-                message.text()
-            })
-            .collect::<Vec<_>>()
-    };
-    for at in 0..messages.len() {
-        let mut from_start = polylogue_model::masking::MessageMasker::default();
-        for message in &messages[..at] {
-            from_start.message_text(&mut message.clone());
-        }
-        let resumed = keyed.masking_before(at).unwrap();
-        assert_eq!(resumed.is_none(), at <= 2, "at {at}");
-        assert_eq!(
-            shown(resumed.unwrap_or_default(), at),
-            shown(from_start, at),
-            "at {at}"
-        );
-    }
-}
-
-#[test]
 fn outline_and_anchors_keep_shared_ancestry_in_selected_order() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
