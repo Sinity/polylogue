@@ -950,7 +950,7 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
         &["s"],
     );
     resolve::prepare_index(&tx, &mut input, 1, false).unwrap();
-    assert!(write_rows(&tx, &input, &input.parse[0], 1, 1, None).is_err());
+    assert!(write_rows(&tx, &input, &input.parse[0], 1, 1, None, None).is_err());
     assert_eq!(
         tx.query_row("SELECT count(*) FROM message", [], |r| r.get::<_, i64>(0))
             .unwrap(),
