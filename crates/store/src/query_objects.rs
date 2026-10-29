@@ -1,6 +1,8 @@
 //! Canonical questions and executions, shared by the writer and confirmed replay.
 use crate::{Reader, Result, StoreError, primary::Product, source::Source};
-use polylogue_model::query_objects::{QueryCustody, QueryEdge, QueryLookup, QueryObject, QueryRun};
+use polylogue_model::query_objects::{
+    QueryCustody, QueryEdge, QueryLookup, QueryObject, QueryRun, QueryRunOutcome,
+};
 use query_language::identity::{QuestionId, question_id_from_normal_form};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
@@ -116,23 +118,47 @@ pub(crate) fn validate_result_bindings(
 }
 
 pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
-    if run.id.is_empty() || run.machine.trim().is_empty() {
+    if run.machine.trim().is_empty() {
         return Err(invalid(
             "a query run requires its identity and accepting machine",
         ));
     }
-    if run.replay.context.question != run.question {
+    if run.binding.replay.context.question != run.question {
         return Err(invalid(
             "a query run's replay context names another question",
         ));
     }
-    if run.exact && run.count.is_none() {
-        return Err(invalid("an exact query run requires a known count"));
+    for (key, expected) in [
+        ("generation", run.read_at.generation.clone()),
+        ("index", run.read_at.index.to_string()),
+        ("archive", run.read_at.archive.to_string()),
+    ] {
+        if run
+            .binding
+            .replay
+            .context
+            .read_positions
+            .get(key)
+            .is_some_and(|actual| actual != &expected)
+        {
+            return Err(invalid(
+                "a query run's replay context contradicts its read position",
+            ));
+        }
     }
-    if let polylogue_model::query_objects::RunOutcome::Error { kind } = &run.outcome
-        && kind.is_empty()
+    if let Some(scope) = run.binding.replay.context.versions.get("scope")
+        && run.binding.replay.scope_fingerprint.as_ref() != Some(scope)
     {
-        return Err(invalid("a failed query run requires its error kind"));
+        return Err(invalid(
+            "a query run's replay context contradicts its grant scope",
+        ));
+    }
+    if let polylogue_model::query_objects::ExecutionPresentation::Read { options, .. } =
+        &run.binding.presentation
+    {
+        options
+            .validate()
+            .map_err(|error| invalid(error.to_string()))?;
     }
     if polylogue_model::ChangePosition::parse(&run.read_at.to_string()).as_ref()
         != Some(&run.read_at)
@@ -164,6 +190,46 @@ pub(crate) fn known_object(conn: &Connection, object: &QueryObject) -> Result<bo
     let existing: QueryObject = crate::encoding::unpack_json(&bytes)?;
     if !equivalent(&existing, object) {
         return Err(StoreError::Conflict(format!("query:{}", object.id)));
+    }
+    Ok(true)
+}
+
+pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
+    let source = Source::of(conn)?;
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            &source.sql("SELECT run FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
+            [run.id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(bytes) = bytes else {
+        return Ok(false);
+    };
+    let existing: QueryRun = crate::encoding::unpack_json(&bytes)?;
+    if existing != *run {
+        return Err(StoreError::Conflict(format!("run:{}", run.id)));
+    }
+    Ok(true)
+}
+
+pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) -> Result<bool> {
+    let source = Source::of(conn)?;
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            &source.sql(
+                "SELECT completion FROM @source.query_run WHERE id=?1 AND completion IS NOT NULL",
+            ),
+            [outcome.run.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(bytes) = bytes else {
+        return Ok(false);
+    };
+    let existing: QueryRunOutcome = crate::encoding::unpack_json(&bytes)?;
+    if existing != *outcome {
+        return Err(StoreError::Conflict(format!("run outcome:{}", outcome.run)));
     }
     Ok(true)
 }
@@ -232,30 +298,79 @@ pub(crate) fn apply_run(
 ) -> Result<()> {
     validate_run(run)?;
     let source = Source::of(conn)?;
-    let existing: Option<Vec<u8>> = conn
+    let binding_hash = run.binding.hash()?.to_string();
+    let existing: Option<(String, Option<Vec<u8>>)> = conn
         .query_row(
-            &source.sql("SELECT run FROM @source.query_run WHERE id=?1"),
-            [&run.id],
-            |row| row.get(0),
+            &source.sql("SELECT binding_hash,run FROM @source.query_run WHERE id=?1"),
+            [run.id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    if let Some(existing) = existing {
-        let existing: QueryRun = crate::encoding::unpack_json(&existing)?;
-        if existing != *run {
+    if let Some((hash, body)) = existing {
+        if hash != binding_hash {
             return Err(StoreError::Conflict(format!("run:{}", run.id)));
         }
-        return Ok(());
+        if let Some(body) = body {
+            let existing: QueryRun = crate::encoding::unpack_json(&body)?;
+            return if existing == *run {
+                Ok(())
+            } else {
+                Err(StoreError::Conflict(format!("run:{}", run.id)))
+            };
+        }
     }
     let order = i64::try_from(source_order)
         .map_err(|_| invalid("query run order exceeds SQLite's integer range"))?;
     conn.execute(
-        &source.sql("INSERT INTO @source.query_run(id,query,at,read_at,author,via,outcome,count,exact,commit_seq,source_order,run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"),
-        params![run.id, run.question.to_string(), run.at.unix_ns().to_string(), run.read_at.to_string(),
-            serde_json::to_string(&run.authorship.author)?, run.authorship.via.as_str(),
-            serde_json::to_string(&run.outcome)?, run.count.map(|count| count.to_string()),
-            run.exact, commit_seq, order, pack(run)?],
+        &source.sql("INSERT INTO @source.query_run(id,binding_hash,query,at,read_at,author,via,commit_seq,source_order,run) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(id) DO UPDATE SET query=excluded.query,at=excluded.at,read_at=excluded.read_at,author=excluded.author,via=excluded.via,commit_seq=excluded.commit_seq,source_order=excluded.source_order,run=excluded.run"),
+        params![run.id.as_str(),binding_hash,run.question.to_string(),run.at.unix_ns().to_string(),run.read_at.to_string(),serde_json::to_string(&run.authorship.author)?,run.authorship.via.as_str(),commit_seq,order,pack(run)?],
     )?;
     first_run(conn, source, &run.question.to_string())
+}
+
+pub(crate) fn validate_run_outcome(outcome: &QueryRunOutcome) -> Result<()> {
+    if outcome.exact && outcome.count.is_none() {
+        return Err(invalid(
+            "a run outcome requires its run and a known exact count",
+        ));
+    }
+    if let polylogue_model::query_objects::RunOutcome::Error { kind } = &outcome.outcome
+        && kind.is_empty()
+    {
+        return Err(invalid("a failed query run requires its error kind"));
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) -> Result<()> {
+    validate_run_outcome(outcome)?;
+    let source = Source::of(conn)?;
+    let hash = outcome.binding_hash.to_string();
+    let existing: Option<(String, Option<Vec<u8>>)> = conn
+        .query_row(
+            &source.sql("SELECT binding_hash,completion FROM @source.query_run WHERE id=?1"),
+            [outcome.run.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((existing_hash, body)) = existing {
+        if existing_hash != hash {
+            return Err(StoreError::Conflict(format!("run:{}", outcome.run)));
+        }
+        if let Some(body) = body {
+            let existing: QueryRunOutcome = crate::encoding::unpack_json(&body)?;
+            return if existing == *outcome {
+                Ok(())
+            } else {
+                Err(StoreError::Conflict(format!("run outcome:{}", outcome.run)))
+            };
+        }
+    }
+    conn.execute(
+        &source.sql("INSERT INTO @source.query_run(id,binding_hash,outcome,count,exact,finished_at,completion) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET outcome=excluded.outcome,count=excluded.count,exact=excluded.exact,finished_at=excluded.finished_at,completion=excluded.completion"),
+        params![outcome.run.as_str(),hash,serde_json::to_string(&outcome.outcome)?,outcome.count.map(|count|count.to_string()),outcome.exact,outcome.at.unix_ns().to_string(),pack(outcome)?],
+    )?;
+    Ok(())
 }
 
 /// A confirmed projection supplies this only when historical coverage proves it.
@@ -352,14 +467,14 @@ impl Reader<'_> {
 
     pub fn query_run(
         &self,
-        id: &str,
+        id: &polylogue_model::RunId,
         pending: Option<&dyn crate::primary::Sinex>,
     ) -> Result<Option<QueryLookup<QueryRun>>> {
         let conn = self.conn()?;
         let bytes: Option<Vec<u8>> = conn
             .query_row(
-                "SELECT run FROM source_query_run WHERE id=?1",
-                [id],
+                "SELECT run FROM source_query_run WHERE id=?1 AND run IS NOT NULL",
+                [id.as_str()],
                 |row| row.get(0),
             )
             .optional()?;
@@ -376,7 +491,7 @@ impl Reader<'_> {
                 &crate::primary::NamedProductSelector::Exact(format!("query-run:{id}")),
                 &mut |product| {
                     if let Product::QueryRun { run } = product
-                        && run.id == id
+                        && &run.id == id
                     {
                         validate_run(run)?;
                         if let Some(existing) = &found {
@@ -386,6 +501,54 @@ impl Reader<'_> {
                         } else {
                             found = Some(QueryLookup {
                                 value: *run.clone(),
+                                custody: QueryCustody::Queued,
+                            });
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        self.conn()?;
+        Ok(found)
+    }
+
+    pub fn query_run_outcome(
+        &self,
+        id: &polylogue_model::RunId,
+        pending: Option<&dyn crate::primary::Sinex>,
+    ) -> Result<Option<QueryLookup<QueryRunOutcome>>> {
+        let bytes: Option<Vec<u8>> = self
+            .conn()?
+            .query_row(
+                "SELECT completion FROM source_query_run WHERE id=?1 AND completion IS NOT NULL",
+                [id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut found = bytes
+            .map(|body| {
+                crate::encoding::unpack_json(&body).map(|value| QueryLookup {
+                    value,
+                    custody: QueryCustody::Canonical,
+                })
+            })
+            .transpose()?;
+        if let Some(pending) = pending {
+            pending.visit_named_products(
+                &crate::primary::NamedProductSelector::Exact(format!("query-run-outcome:{id}")),
+                &mut |product| {
+                    if let Product::QueryRunOutcome { outcome } = product
+                        && &outcome.run == id
+                    {
+                        validate_run_outcome(outcome)?;
+                        if let Some(existing) = &found {
+                            if existing.value != **outcome {
+                                return Err(StoreError::Conflict(format!("run outcome:{id}")));
+                            }
+                        } else {
+                            found = Some(QueryLookup {
+                                value: *outcome.clone(),
                                 custody: QueryCustody::Queued,
                             });
                         }

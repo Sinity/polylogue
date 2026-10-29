@@ -86,6 +86,9 @@ pub enum Product {
     QueryRun {
         run: Box<polylogue_model::query_objects::QueryRun>,
     },
+    QueryRunOutcome {
+        outcome: Box<polylogue_model::query_objects::QueryRunOutcome>,
+    },
     Request(PreparedRequest),
     RestoredRequest {
         prepared: PreparedRequest,
@@ -113,6 +116,7 @@ impl Product {
             | Self::Blob(_)
             | Self::Query { .. }
             | Self::QueryRun { .. }
+            | Self::QueryRunOutcome { .. }
             | Self::Request(_)
             | Self::RestoredRequest { .. }
             | Self::Coverage(_)

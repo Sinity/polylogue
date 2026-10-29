@@ -42,6 +42,18 @@ pub struct FrozenDefinition {
     pub ast: Query,
 }
 
+/// Execution choices that remain after semantic references have been bound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryExecutionOptions {
+    pub fields: Vec<String>,
+    pub self_session: Option<crate::SessionId>,
+    pub embeddings: bool,
+    pub why: bool,
+    /// The actual provider, model and vector basis required by this execution.
+    pub ranking_identity: Option<String>,
+}
+
 /// Rebinding uses these captured inputs, never current names or the wall clock.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +82,29 @@ impl PartialEq for ReplayBinding {
     }
 }
 
+/// Complete accepted inputs retained before an execution exposes continuation calls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionBinding {
+    pub replay: ReplayBinding,
+    pub query_options: QueryExecutionOptions,
+    pub presentation: ExecutionPresentation,
+    /// Original trusted envelope without credentials; provenance grants no authority.
+    /// Internal calls may have none. Replay uses current operation validation.
+    pub accepted_request: Option<serde_json::Value>,
+}
+
+/// Selected source facts are read under the authenticated snapshot, not copied here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExecutionPresentation {
+    Query,
+    Read {
+        options: crate::read::ReadOptions,
+        delivery: crate::read::ReadDelivery,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunOutcome {
@@ -81,16 +116,51 @@ pub enum RunOutcome {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRun {
-    pub id: String,
+    pub id: crate::RunId,
     pub question: QuestionId,
     pub at: Timestamp,
     pub read_at: ChangePosition,
     pub machine: String,
     pub authorship: Authorship,
+    pub binding: ExecutionBinding,
+}
+
+/// Completion never replaces the immutable execution inputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryRunOutcome {
+    pub run: crate::RunId,
+    pub binding_hash: crate::BlobHash,
+    pub at: Timestamp,
     pub outcome: RunOutcome,
     pub count: Option<u64>,
     pub exact: bool,
-    pub replay: ReplayBinding,
+}
+
+impl ExecutionBinding {
+    /// Stable identity across JSON map insertion orders and feature unions.
+    pub fn hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        fn ordered(value: serde_json::Value) -> serde_json::Value {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    let fields: BTreeMap<_, _> = fields.into_iter().collect();
+                    serde_json::Value::Object(
+                        fields
+                            .into_iter()
+                            .map(|(key, value)| (key, ordered(value)))
+                            .collect(),
+                    )
+                }
+                serde_json::Value::Array(values) => {
+                    serde_json::Value::Array(values.into_iter().map(ordered).collect())
+                }
+                value => value,
+            }
+        }
+        let mut bytes = b"polylogue-execution-binding-v1\0".to_vec();
+        bytes.extend(serde_json::to_vec(&ordered(serde_json::to_value(self)?))?);
+        Ok(crate::BlobHash::of(&bytes))
+    }
 }
 
 /// Composition is recorded in semantic question coordinates, not mutable names.
