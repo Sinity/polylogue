@@ -107,7 +107,8 @@ fn native_path_migrations_preserve_unknown_historical_bytes_in_both_modes() {
     for primary in [false, true] {
         let conn = Connection::open_in_memory().unwrap();
         if primary {
-            crate::schema::ensure_index(&conn).unwrap();
+            conn.execute_batch(include_str!("../../schema/fixtures/index_5.sql")).unwrap();
+            crate::archive::generation::create(&conn).unwrap();
             conn.execute_batch(&from_archive(historical).unwrap().ddl)
                 .unwrap();
             conn.execute_batch(crate::primary::projection::SCHEMA)

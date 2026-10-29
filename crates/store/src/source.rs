@@ -21,7 +21,7 @@ pub(crate) fn schema() -> Result<&'static SourceSchema> {
     Ok(SCHEMA.get().expect("source schema initialized"))
 }
 
-fn from_archive(archive: &str) -> Result<SourceSchema> {
+pub(crate) fn from_archive(archive: &str) -> Result<SourceSchema> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch(archive)?;
     let tables:Vec<String>=conn.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?
