@@ -30,10 +30,8 @@ impl Engine {
     ) -> Result<ImportReport, EngineError> {
         let started = Instant::now();
         let mut report = ImportReport::default();
-        let scratch = self.archive.staging_dir();
-        std::fs::create_dir_all(&scratch)?;
         for path in paths {
-            let members = match package::stage(path, &scratch, options.format.as_deref()) {
+            let members = match package::stage(path, &self.archive, options.format.as_deref()) {
                 Ok(members) => members,
                 Err(error) => {
                     recognition::refuse(&mut report, path, error.to_string());
@@ -77,10 +75,16 @@ impl Engine {
                 if options.explain {
                     continue;
                 }
-                let mut file = std::fs::File::open(&member.bytes)?;
-                let facts = FileFacts::of(&file.metadata()?);
-                let mut captured = Captured::file(&self.archive, &mut file)?;
-                unchanged(&file, facts, captured.prepared.len())?;
+                let authored_bytes = (origin.name == "polylogue-bundle")
+                    .then(|| member.bytes.reader())
+                    .transpose()?;
+                let mut captured = Captured {
+                    prepared: member.bytes,
+                    member: None,
+                    container: None,
+                    #[cfg(test)]
+                    head: Vec::new(),
+                };
                 ids.push(captured.prepared.hash().to_string());
                 hashes.insert(index, captured.prepared.hash().to_string());
                 captured.member = Some(polylogue_store::ImportMember {
@@ -134,14 +138,14 @@ impl Engine {
                     authored_records.push((
                         member.path.clone(),
                         captured.prepared.hash().to_string(),
-                        member.bytes,
+                        authored_bytes.expect("bundle reader"),
                     ));
                 }
                 items.push((member.path, origin, None, captured));
             }
             if !options.explain {
                 let executed = self.store_import_group(items, &mut report)?;
-                for (at, id, bytes) in authored_records {
+                for (at, id, mut bytes) in authored_records {
                     if executed.contains(&id) {
                         continue;
                     }
@@ -166,12 +170,7 @@ impl Engine {
                                 },
                             )?,
                         };
-                        self.restore_bundle_authored(
-                            &at,
-                            &mut std::fs::File::open(&bytes)?,
-                            &current,
-                            &mut report,
-                        )?;
+                        self.restore_bundle_authored(&at, &mut bytes, &current, &mut report)?;
                     }
                 }
                 let counts = self.reads.reader()?.import_counts(&ids)?;
@@ -505,17 +504,7 @@ struct Captured {
 }
 
 impl Captured {
-    fn file(archive: &Archive, file: &mut std::fs::File) -> polylogue_store::Result<Self> {
-        Ok(Self {
-            prepared: archive.prepare_bytes(file)?,
-            member: None,
-            container: None,
-            #[cfg(test)]
-            head: Vec::new(),
-        })
-    }
-
-    /// Bytes that can be read only once, inspected from a scratch copy.
+    /// Bytes that can be read only once, inspected through their encoded preparation.
     #[cfg(test)]
     fn stream(archive: &Archive, reader: impl std::io::Read) -> polylogue_store::Result<Self> {
         let mut reader = CaptureReader {
