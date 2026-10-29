@@ -235,6 +235,17 @@ pub fn copy(from: &Connection, to: &Connection) -> Result<()> {
 }
 
 impl Reader<'_> {
+    /// This indexed metadata check avoids streaming an unrelated source's text
+    /// merely to discover that it has no rendition facts.
+    pub fn has_variant_source(&self, source_reference: &str) -> Result<bool> {
+        let conn = self.conn()?;
+        let source = Source::reading(conn)?;
+        Ok(conn.query_row(
+            &source.sql("SELECT EXISTS(SELECT 1 FROM @source.variant WHERE source=?1)"),
+            [source_reference],
+            |row| row.get(0),
+        )?)
+    }
     pub fn variant(&self, id: &str) -> Result<Option<Variant>> {
         rows::get(self.conn()?, id)
     }

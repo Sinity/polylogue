@@ -199,6 +199,9 @@ fn variant_restoration_is_exact_idempotent_and_refuses_changed_facts() {
 #[test]
 fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
     let archive = crate::fixture::writer::WriterArchive::new();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let before = pool.reader().unwrap();
+    assert!(!before.has_variant_source("message:codex:source").unwrap());
     let mut first = request("first", None, "uniqueword");
     let UserWrite::Variant { variant } = &mut first.write else {
         unreachable!()
@@ -218,8 +221,15 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
         },
     ]);
     archive.writer.user(first).unwrap();
-    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    assert!(!before.has_variant_source("message:codex:source").unwrap());
+    drop(before);
     let reader = pool.reader().unwrap();
+    assert!(reader.has_variant_source("message:codex:source").unwrap());
+    assert!(
+        !reader
+            .has_variant_source("message:codex:unrelated")
+            .unwrap()
+    );
     let variant = reader.variant("first").unwrap().unwrap();
     assert_eq!(variant.author, Author::Agent(None));
     assert_eq!(variant.via, "mcp");
