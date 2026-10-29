@@ -99,7 +99,7 @@ impl crate::primary::Sinex for OfflineProducer {
         &self,
         _: &str,
         _: &str,
-        _: &mut dyn FnMut(&mut dyn FnMut(ProductWrite) -> Result<()>) -> Result<()>,
+        _: &mut crate::primary::ReadingProducts<'_>,
     ) -> Result<crate::primary::PreparedWrite> {
         Self::unavailable()
     }
@@ -149,7 +149,7 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn prepare_request(
         &self,
-        _: &polylogue_model::authored::PendingAuthored,
+        _: &polylogue_model::authored::PreparedRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
         Self::unavailable()
     }
