@@ -7,9 +7,9 @@
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
 //! what Sinex holds ([`load`]). `polylogue-sinex` implements [`Sinex`].
 use crate::input_rows::InputRows;
-use crate::user_writes::UserRequest;
 use crate::{ReadPool, Result, StoreError};
 use polylogue_model::BlobHash;
+use polylogue_model::user::UserRequest;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 

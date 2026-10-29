@@ -1,6 +1,6 @@
 use super::*;
-use crate::user_writes::{UserRequest, UserWrite};
 use crate::{Archive, ReadPool, Writer};
+use polylogue_model::user::UserWrite;
 
 fn setup() -> (
     tempfile::TempDir,
@@ -16,14 +16,14 @@ fn setup() -> (
     (dir, archive, lock, writer, reads)
 }
 
-fn write(writer: &Writer, write: UserWrite) -> Result<crate::UserOutcome> {
-    writer.user(UserRequest::now(
+fn write(writer: &Writer, write: UserWrite) -> Result<polylogue_model::user::UserOutcome> {
+    writer.user(crate::user_writes::request_now(
         crate::user_writes::new_request_id(),
         write,
     ))
 }
 
-fn start(writer: &Writer, id: &str, provider: &str) -> crate::UserOutcome {
+fn start(writer: &Writer, id: &str, provider: &str) -> polylogue_model::user::UserOutcome {
     write(
         writer,
         UserWrite::BackfillStart(NewBackfillJob {

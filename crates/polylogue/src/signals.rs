@@ -23,8 +23,8 @@
 //! so what fired survives restarts and index rebuilds.
 
 use crate::daemon::service::{Daemon, now_ms};
+use polylogue_model::user::{Delivery, UserWrite};
 use polylogue_model::{Author, Note, NoteKind, Timestamp};
-use polylogue_store::{Delivery, UserRequest, UserWrite};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -578,7 +578,10 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 left_out: vec![],
             };
             if writes
-                .user(UserRequest::now(id.clone(), UserWrite::Deliver(delivery)))
+                .user(polylogue_store::user_writes::request_now(
+                    id.clone(),
+                    UserWrite::Deliver(delivery),
+                ))
                 .is_err()
             {
                 continue;
@@ -598,7 +601,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 )),
             };
             if let Some((what, detail)) = event {
-                let _ = writes.user(UserRequest::now(
+                let _ = writes.user(polylogue_store::user_writes::request_now(
                     polylogue_store::user_writes::new_request_id(),
                     UserWrite::DeliveryEvent {
                         delivery: id,

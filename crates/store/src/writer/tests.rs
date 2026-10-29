@@ -858,9 +858,9 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     sender
         .0
         .send_user((
-            Box::new(crate::UserRequest::now(
+            Box::new(crate::user_writes::request_now(
                 crate::user_writes::new_request_id(),
-                crate::UserWrite::SetSetting {
+                polylogue_model::user::UserWrite::SetSetting {
                     key: "shutdown-test".into(),
                     value: "stored".into(),
                     author: polylogue_model::Author::Operator,
@@ -1061,9 +1061,9 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     let user = std::thread::spawn({
         let sender = sender.clone();
         move || {
-            sender.user(crate::UserRequest::now(
+            sender.user(crate::user_writes::request_now(
                 crate::user_writes::new_request_id(),
-                crate::UserWrite::SetSetting {
+                polylogue_model::user::UserWrite::SetSetting {
                     key: "ahead".into(),
                     value: "yes".into(),
                     author: polylogue_model::Author::Operator,

@@ -10,48 +10,13 @@
 //! the reported position.
 
 use crate::{Reader, Result, StoreError};
+use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 /// How long a claim lasts without a report from the extension instance
 /// holding it; an expired claim lets the job be claimed again.
 pub const CLAIM_MS: i64 = 180_000;
-
-/// A new backfill job, as the writer stores it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NewBackfillJob {
-    pub id: String,
-    /// The web chat, by the extension's name for it.
-    pub provider: String,
-    /// Only conversations the provider changed at or after this time (ms).
-    pub since: Option<i64>,
-}
-
-/// Conversations a job has handled so far.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackfillCounts {
-    /// Listed by the provider.
-    pub listed: u64,
-    /// Captured and stored.
-    pub captured: u64,
-    /// Already in the archive as the provider has them.
-    pub unchanged: u64,
-    /// Could not be captured.
-    pub failed: u64,
-}
-
-/// What the extension instance holding a job reports.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackfillReport {
-    /// `progress`, `finished` or `failed`.
-    pub kind: String,
-    /// Where in the provider's conversation list to continue.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub position: Option<String>,
-    pub counts: BackfillCounts,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
 
 /// One thing that happened to a backfill job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

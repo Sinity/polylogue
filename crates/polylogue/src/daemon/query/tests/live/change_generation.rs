@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_store::{UserRequest, UserWrite};
+use polylogue_model::user::{UserRequest, UserWrite};
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 #[test]

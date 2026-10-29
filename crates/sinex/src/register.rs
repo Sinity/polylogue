@@ -9,8 +9,8 @@ use crate::kinds as event;
 use crate::parts::{REGISTER, parser_version};
 use crate::{Error, Result};
 use polylogue_model::Timestamp;
+use polylogue_model::user::{UserRequest, UserWrite};
 use polylogue_store::primary::RegisterChange;
-use polylogue_store::user_writes::{UserRequest, UserWrite};
 use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
 use sinex_protocol::{Ingress, MaterialFrame, ProducerEvent};
 

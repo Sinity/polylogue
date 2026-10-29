@@ -24,6 +24,7 @@ mod quota;
 mod session;
 mod time;
 mod usage;
+pub mod user;
 mod work;
 
 pub use batch::{

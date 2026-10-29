@@ -6,9 +6,9 @@
 //! it needs Sinex's binaries: `SINEXD` and `SINEX_SCHEMA` name them
 //! (`cargo build -p sinexd -p sinex-schema` in a Sinex checkout).
 use polylogue_engine::Engine;
+use polylogue_model::user::UserWrite;
 use polylogue_model::{Author, NewNote, NoteKind, Target};
 use polylogue_sinex::{Config, Mode, Sinex};
-use polylogue_store::user_writes::{UserRequest, UserWrite};
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{Morrow, Set};
 use std::collections::BTreeMap;
@@ -198,7 +198,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         engine
             .writer()
             .unwrap()
-            .user(UserRequest::now(
+            .user(polylogue_store::user_writes::request_now(
                 "0199d8a0-0000-7000-8000-00000000a001".into(),
                 UserWrite::AddNote {
                     note: NewNote {
