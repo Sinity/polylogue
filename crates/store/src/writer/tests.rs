@@ -47,6 +47,49 @@ struct TestArchive {
     _dir: tempfile::TempDir,
 }
 
+impl TestArchive {
+    /// Capture explicit bytes and their parsed reading through the production group path.
+    fn store_reading(
+        &self,
+        mut batch: Batch,
+        bytes: Option<&[u8]>,
+    ) -> Result<crate::staging::StoredInput> {
+        let files = if let Some(bytes) = bytes {
+            assert!(batch.new_blob.is_none());
+            let (blob, file) = self.archive.prepare_blob(bytes)?;
+            batch.new_blob = Some(blob);
+            file.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        self.writer
+            .store_group(
+                vec![crate::staging::PreparedBatch { batch, files }],
+                std::sync::Arc::new(self.archive.blobs()?),
+            )
+            .into_iter()
+            .next()
+            .expect("one source reading")
+    }
+
+    /// Separate raw capture from queued parsing when a law observes asynchronous work.
+    fn commit_source(&self, mut reading: Batch, bytes: &[u8]) -> Result<Batch> {
+        let mut raw = reading.clone();
+        raw.parse.clear();
+        let prepared = self.archive.prepare_bytes(bytes)?;
+        let stored = self.writer.store_bytes(prepared, raw)?;
+        reading.change = Change::Reparse {
+            chain: stored.chain,
+        };
+        reading.observation = None;
+        reading.continues = false;
+        Ok(reading)
+    }
+}
+
+// Each synthetic writer record occupies the test's declared 100-byte chunk.
+const SOURCE_RECORD: [u8; 100] = [b'r'; 100];
+
 fn test_archive() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
