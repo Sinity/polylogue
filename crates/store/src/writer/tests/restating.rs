@@ -44,7 +44,7 @@ fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
         let mut seed = batch("a", 0, 0, vec![], &[]);
         seed.length = 300;
         seed.parse.clear();
-        w.writer.send(seed).unwrap();
+        w.store_reading(seed, Some(&[b'r'; 300])).unwrap();
         w.writer.flush().unwrap();
         let mut observations = Vec::new();
         for (at, leaf) in [(0, "a"), (100, "b"), (200, "a")] {
@@ -68,7 +68,7 @@ fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
             observations.reverse();
         }
         for (index, b) in observations.into_iter().enumerate() {
-            w.writer.send(b).unwrap();
+            w.store_reading(b, None).unwrap();
             w.writer.derive().unwrap();
             if !reverse {
                 let expected = ["claude-code:a", "claude-code:b", "claude-code:a"][index];
@@ -100,8 +100,12 @@ fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
             for (input, leaf, at) in observations {
                 let mut b = restating(input, 0, &[("a", "A"), ("b", "B")]);
                 b.parse[0].output.events.push(polylogue_model::Event {
-                    at_quality: polylogue_model::TimeQuality::Unknown,
-                    at_precision: None,
+                    at_quality: if timed {
+                        polylogue_model::TimeQuality::Intrinsic
+                    } else {
+                        polylogue_model::TimeQuality::Unknown
+                    },
+                    at_precision: timed.then_some(polylogue_model::Precision::Instant),
                     at_until: None,
                     session: Some(sid("s")),
                     kind: "active_leaf".into(),
@@ -110,7 +114,7 @@ fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
                     range: None,
                     data: Json::Null,
                 });
-                w.writer.send(b).unwrap();
+                w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
             }
             w.writer.derive().unwrap();
             let selected = active(&w);
@@ -135,7 +139,7 @@ fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
             let mut seed = batch("a", 0, 0, vec![], &[]);
             seed.length = 300;
             seed.parse.clear();
-            w.writer.send(seed).unwrap();
+            w.store_reading(seed, Some(&[b'r'; 300])).unwrap();
             w.writer.flush().unwrap();
             let mut observations = Vec::new();
             for (at, empty) in [(0, last_empty), (100, !last_empty), (200, last_empty)] {
@@ -164,7 +168,7 @@ fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
                 observations.reverse();
             }
             for b in observations {
-                w.writer.send(b).unwrap();
+                w.store_reading(b, None).unwrap();
                 w.writer.derive().unwrap();
             }
             let pool = ReadPool::open(&w.archive).unwrap();
@@ -207,7 +211,7 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
                 data: Json::Null,
             });
         }
-        w.writer.send(b).unwrap();
+        w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
         w.writer.derive().unwrap();
         let pool = ReadPool::open(&w.archive).unwrap();
         let activity = || {
@@ -230,7 +234,7 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
             range: None,
             data: Json::Null,
         });
-        w.writer.send(b).unwrap();
+        w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
         w.writer.derive().unwrap();
         assert_eq!(activity(), 0);
         let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
@@ -263,8 +267,12 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
             for (input, empty, at) in inputs {
                 let mut b = restating(input, 0, &[("a", "A")]);
                 b.parse[0].output.events.push(polylogue_model::Event {
-                    at_quality: polylogue_model::TimeQuality::Unknown,
-                    at_precision: None,
+                    at_quality: if timed {
+                        polylogue_model::TimeQuality::Intrinsic
+                    } else {
+                        polylogue_model::TimeQuality::Unknown
+                    },
+                    at_precision: timed.then_some(polylogue_model::Precision::Instant),
                     at_until: None,
                     session: Some(sid("s")),
                     kind: if empty {
@@ -278,7 +286,7 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
                     range: None,
                     data: Json::Null,
                 });
-                w.writer.send(b).unwrap();
+                w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
             }
             w.writer.derive().unwrap();
             let pool = ReadPool::open(&w.archive).unwrap();
@@ -303,17 +311,17 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
 #[test]
 fn a_later_restating_record_replaces_the_earlier_version_and_keeps_absent_messages() {
     let w = test_archive();
-    w.writer
-        .send(restating("a", 0, &[("a", "old A"), ("b", "old B")]))
-        .unwrap();
-    w.writer
-        .send(restating("a", 100, &[("b", "new B")]))
+    w.store_reading(
+        restating("a", 0, &[("a", "old A"), ("b", "old B")]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    w.store_reading(restating("a", 100, &[("b", "new B")]), Some(&SOURCE_RECORD))
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(read(&w), ["old A", "new B"]);
     // A later observation may carry earlier content again.
-    w.writer
-        .send(restating("a", 200, &[("b", "old B")]))
+    w.store_reading(restating("a", 200, &[("b", "old B")]), Some(&SOURCE_RECORD))
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(read(&w), ["old A", "old B"]);

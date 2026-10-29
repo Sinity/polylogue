@@ -73,8 +73,8 @@ fn fixture(changed: bool) -> Vec<Batch> {
         (&mut child, 100),
     ] {
         b.parse[0].output.events.push(Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
+            at_quality: polylogue_model::TimeQuality::Intrinsic,
+            at_precision: Some(polylogue_model::Precision::Instant),
             at_until: None,
             session: Some(sid("main")),
             kind: "quota_report".into(),
@@ -94,8 +94,8 @@ fn fixture(changed: bool) -> Vec<Batch> {
     }
     if !changed {
         main.parse[0].output.events.push(Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
+            at_quality: polylogue_model::TimeQuality::Intrinsic,
+            at_precision: Some(polylogue_model::Precision::Instant),
             at_until: None,
             session: Some(sid("main")),
             kind: "hook_notification".into(),
@@ -120,6 +120,8 @@ fn fixture(changed: bool) -> Vec<Batch> {
         .into(),
     }];
     doc.source_time = Timestamp::from_unix_ms(if changed { 2000 } else { 1000 });
+    doc.source_time_quality = polylogue_model::TimeQuality::Intrinsic;
+    doc.source_time_precision = Some(polylogue_model::Precision::Instant);
     main.parse[0].output.documents.push(DocumentRow {
         offset: 60,
         end: 70,
@@ -151,7 +153,9 @@ fn write(w: &TestArchive, batches: impl IntoIterator<Item = Batch>) {
         for step in &mut b.parse {
             step.prepare();
         }
-        w.writer.send(b).unwrap();
+        let bytes =
+            (!matches!(b.change, Change::Reparse { .. })).then_some(SOURCE_RECORD.as_slice());
+        w.store_reading(b, bytes).unwrap();
     }
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
@@ -426,7 +430,7 @@ fn newest_chain_is_selected_before_comparing_inputs() {
         for b in &batches {
             let mut bytes = b.clone();
             bytes.parse.clear();
-            w.writer.send(bytes).unwrap();
+            w.store_reading(bytes, Some(&SOURCE_RECORD)).unwrap();
         }
         assert!(w.writer.flush().unwrap().errors.is_empty());
         for i in order {
@@ -434,7 +438,7 @@ fn newest_chain_is_selected_before_comparing_inputs() {
             b.change = Change::Reparse {
                 chain: if i == 2 { 2 } else { 1 },
             };
-            w.writer.send(b).unwrap();
+            w.store_reading(b, None).unwrap();
         }
         assert!(w.writer.flush().unwrap().errors.is_empty());
         let got = texts(&w, "s");
@@ -564,8 +568,8 @@ fn hook_event_times_produce_the_same_live_state_in_both_input_orders() {
     let make = |input, kind: &str, at, data| {
         let mut b = batch(input, 0, 0, Vec::new(), &["s"]);
         b.parse[0].output.events.push(Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
+            at_quality: polylogue_model::TimeQuality::Intrinsic,
+            at_precision: Some(polylogue_model::Precision::Instant),
             at_until: None,
             session: Some(sid("s")),
             kind: kind.into(),
@@ -651,8 +655,8 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
     let make = |input, session, rank, limit| {
         let mut b = batch(input, rank, 0, Vec::new(), &[session]);
         b.parse[0].output.events.push(Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
+            at_quality: polylogue_model::TimeQuality::Intrinsic,
+            at_precision: Some(polylogue_model::Precision::Instant),
             at_until: None,
             session: Some(sid(session)),
             kind: "quota_report".into(),
@@ -849,6 +853,7 @@ fn repeated_kind_facts_use_the_same_first_kind_in_whole_and_appended_steps() {
         &["main"],
     );
     let fresh = test_archive();
+    let whole = fresh.commit_source(whole, &[b'r'; 200]).unwrap();
     write(&fresh, [whole, main.clone()]);
     let parts = test_archive();
     write(&parts, [facts]);
@@ -878,8 +883,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     let mut events = batch("events", 0, 0, vec![], &["events"]);
     for (kind, range) in [("message_position", None), ("own_position", Some((7, 8)))] {
         events.parse[0].output.events.push(Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
+            at_quality: polylogue_model::TimeQuality::Intrinsic,
+            at_precision: Some(polylogue_model::Precision::Instant),
             at_until: None,
             session: Some(sid("events")),
             kind: kind.into(),
