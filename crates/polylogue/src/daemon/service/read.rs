@@ -10,6 +10,8 @@ use polylogue_store::{
 use query_language::cursor::{Continuation, CursorContext, CursorSeal};
 use std::{io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
 
+mod backward;
+mod before;
 mod blobs;
 mod outline;
 mod output;
@@ -82,12 +84,6 @@ fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::
         .transpose()
         .map_err(|e| error("internal", e))
 }
-fn new_run() -> RunId {
-    uuid::Uuid::now_v7()
-        .to_string()
-        .parse()
-        .expect("generated UUID is a run identity")
-}
 fn layout_contract(options: &ReadOptions, format: Format) -> Result<String, Response> {
     // This layout uses only the selected canonical record and explicit options.
     // Prepared external evidence must add its own metadata dependency commitment.
@@ -104,7 +100,7 @@ fn prepared<T>(
     run: impl FnOnce(
         &PreparedSelection,
         &Execution,
-        Option<ReadPosition>,
+        Option<ReadSeek>,
         ReadSnapshot,
         ReadHeader,
         Option<&polylogue_store::selection::NearFn<'_>>,
@@ -120,7 +116,7 @@ fn prepared<T>(
                 error("not_yet_available", "read execution custody is unavailable")
             })?;
             let versions = operation.cursor_versions();
-            let id = new_run();
+            let id = RunId::new_v4();
             let (selection, binding, root, start, budget_override) = match request {
                 Request::Read {
                     target,
@@ -220,7 +216,7 @@ fn prepared<T>(
                             near: Some(near),
                         },
                     )?;
-                    let position = ReadPosition::from_order_position(&position)
+                    let position = ReadSeek::from_order_position(&position)
                         .map_err(|e| error("stale_cursor", e))?;
                     let (root, binding) = selection.authenticated_execution(reader)?;
                     let root = root.clone();
@@ -286,11 +282,11 @@ fn prepared<T>(
                 .versions
                 .insert("read_binding".into(), hash.to_string());
             polylogue_store::query::continuation::compact_resolved_times(&mut context)?;
-            let run_binding = if let Some(position) = start {
+            let run_binding = if let Some(seek) = start {
                 RunBinding::Continuation {
                     root: root.clone(),
                     binding_hash: hash,
-                    position,
+                    seek,
                     accepted_request: accepted(operation)?,
                 }
             } else {
@@ -449,30 +445,7 @@ fn visit(
                 return Err(error("stale_cursor", "the continued result row changed"));
             }
             pending = None;
-            emit(
-                ReadRecord::Presentation {
-                    parts: vec![ReadPart::Item(ReadItem {
-                        source: Source::record(format!("query:{}", selection.question_id())),
-                        kind: ItemKind::Card {
-                            card: Box::new(Card::Fields {
-                                title: "Query result".into(),
-                                figures: row
-                                    .values
-                                    .as_object()
-                                    .into_iter()
-                                    .flat_map(|object| object.iter())
-                                    .map(|(name, value)| Figure {
-                                        name: name.clone(),
-                                        value: ValueState::known(value.clone()),
-                                        unit: None,
-                                    })
-                                    .collect(),
-                            }),
-                        },
-                    })],
-                },
-                at,
-            )?
+            emit(presentation(selection, &row.values), at)?
         };
         Ok(if keep {
             ControlFlow::Continue(())
@@ -488,15 +461,36 @@ fn visit(
     }
     Ok(())
 }
+fn presentation(selection: &PreparedSelection, values: &serde_json::Value) -> ReadRecord {
+    ReadRecord::Presentation {
+        parts: vec![ReadPart::Item(ReadItem {
+            source: Source::record(format!("query:{}", selection.question_id())),
+            kind: ItemKind::Card {
+                card: Box::new(Card::Fields {
+                    title: "Query result".into(),
+                    figures: values
+                        .as_object()
+                        .into_iter()
+                        .flat_map(|object| object.iter())
+                        .map(|(name, value)| Figure {
+                            name: name.clone(),
+                            value: ValueState::known(value.clone()),
+                            unit: None,
+                        })
+                        .collect(),
+                }),
+            },
+        })],
+    }
+}
+
 fn next_call(
     reader: &Reader<'_>,
     d: &Daemon,
     execution: &Execution,
-    position: ReadPosition,
+    seek: ReadSeek,
 ) -> Result<ReadyCall, Response> {
-    let after = position
-        .to_order_position()
-        .map_err(|e| error("internal", e))?;
+    let after = seek.to_order_position().map_err(|e| error("internal", e))?;
     let cursor = CursorSeal::new(reader.cursor_key().map_err(|e| store_error(&e))?)
         .seal(&Continuation {
             context: execution.context.clone(),
@@ -511,7 +505,7 @@ fn next_call(
     let arguments = crate::protocol::read::Arguments::from_request(&request)
         .map_err(|e| error("internal", e))?;
     let arguments = serde_json::to_value(arguments).map_err(|e| error("internal", e))?;
-    let identity = serde_json::to_vec(&(execution.hash, position, execution.budget))
+    let identity = serde_json::to_vec(&(execution.hash, seek, execution.budget))
         .map_err(|e| error("internal", e))?;
     let call = command_surface::RunnableRequest {
         operation: "read".into(),
@@ -553,26 +547,43 @@ pub(super) fn page(
             budget.bytes =
                 std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(snapshot_bytes))
                     .ok_or_else(|| error("bad_request", "reading metadata exceeds page framing"))?;
-            let mut pager = PageBuilder::new(
-                header,
-                budget,
-                start,
-                ReadFraming {
-                    question: selection.question_id(),
-                },
-            )
+            let framing = ReadFraming {
+                question: selection.question_id(),
+            };
+            let anchor = start.map(|seek| seek.anchor);
+            let backwards = start.is_some_and(|seek| seek.direction == ReadDirection::Before);
+            let mut pager = if backwards {
+                PageBuilder::new_before(
+                    header,
+                    budget,
+                    anchor.expect("Before has an anchor"),
+                    framing,
+                )
+            } else {
+                PageBuilder::new(header, budget, anchor, framing)
+            }
             .map_err(page_error)?;
             let mut footer = ReadFooter::default();
-            visit(
-                reader,
-                selection,
-                &execution.options,
-                start,
-                near,
-                selection.direct_reference().is_none(),
-                &mut footer,
-                |record, at| {
-                    for (ordinal, part) in record.parts().iter().enumerate() {
+            let mut emit = |record: ReadRecord, at: SelectionLocator| {
+                let parts = record.parts();
+                if backwards {
+                    if let Some(anchor) = anchor.filter(|anchor| anchor.selection == at) {
+                        let item = usize::try_from(anchor.item)
+                            .ok()
+                            .and_then(|ordinal| parts.get(ordinal));
+                        if !matches!(item, Some(ReadPart::Item(_))) {
+                            return Err(error(
+                                "stale_cursor",
+                                "the backward item is no longer selected",
+                            ));
+                        }
+                    }
+                    for (ordinal, part) in parts.iter().enumerate().rev() {
+                        if anchor.is_some_and(|anchor| {
+                            anchor.selection == at && ordinal as u64 > anchor.item
+                        }) {
+                            continue;
+                        }
                         if let ReadPart::Item(item) = part {
                             if pager
                                 .push_at(at, ordinal as u64, item.clone())
@@ -583,18 +594,64 @@ pub(super) fn page(
                             }
                         }
                     }
-                    Ok(true)
-                },
-            )?;
+                } else {
+                    for (ordinal, part) in parts.iter().enumerate() {
+                        if let ReadPart::Item(item) = part {
+                            if pager
+                                .push_at(at, ordinal as u64, item.clone())
+                                .map_err(page_error)?
+                                == Push::Full
+                            {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                }
+                Ok(true)
+            };
+            if backwards {
+                before::visit(
+                    reader,
+                    selection,
+                    &execution.options,
+                    anchor.expect("Before has an anchor"),
+                    near,
+                    &mut footer,
+                    &mut emit,
+                )?;
+            } else {
+                visit(
+                    reader,
+                    selection,
+                    &execution.options,
+                    anchor,
+                    near,
+                    selection.direct_reference().is_none(),
+                    &mut footer,
+                    &mut emit,
+                )?;
+            }
             scope.check().map_err(|e| store_error(&e))?;
+            let upper = pager.upper_position().copied();
             let document = pager
                 .finish_with(|position| {
                     let mut footer = footer.clone();
-                    if let Some(position) = position {
-                        footer.next = Some(
-                            next_call(reader, d, execution, *position)
-                                .map_err(|e| PageError::Serialization(format!("{e:?}")))?,
-                        );
+                    let ready = |direction, anchor| {
+                        next_call(reader, d, execution, ReadSeek { direction, anchor })
+                            .map_err(|e| PageError::Serialization(format!("{e:?}")))
+                    };
+                    if let Some(upper) = upper {
+                        footer.next = Some(ready(ReadDirection::After, upper)?);
+                        footer.previous = position
+                            .map(|position| ready(ReadDirection::Before, *position))
+                            .transpose()?;
+                    } else {
+                        footer.next = position
+                            .map(|position| ready(ReadDirection::After, *position))
+                            .transpose()?;
+                        footer.previous = anchor
+                            .map(|anchor| ready(ReadDirection::Before, anchor))
+                            .transpose()?;
                     }
                     Ok(footer)
                 })
@@ -664,7 +721,7 @@ pub(crate) fn produce(
                     &reader,
                     selection,
                     &execution.options,
-                    start,
+                    start.map(|seek| seek.anchor),
                     near,
                     selection.direct_reference().is_none(),
                     &mut footer,
