@@ -207,6 +207,9 @@ impl Reader<'_> {
             polylogue_query::plan::prepare(&identity_text, &options.bindings(), |condition| {
                 self.resolve_question_reference(condition, &options)
             })?;
+        if direct.is_none() {
+            program = crate::query::lower(&plan, &options)?;
+        }
         program.query = target.to_owned();
         let position = self.change_position()?;
         let index_file = self.index_identity()?;
@@ -532,20 +535,14 @@ impl Reader<'_> {
     pub fn selection_kept_results(
         &self,
     ) -> Result<BTreeMap<String, polylogue_query::Kept>, SelectionError> {
-        self.query("SELECT id,rows_json FROM source_kept_result", &[])?
-            .into_iter()
-            .map(|row| {
-                let id = row["id"]
-                    .as_str()
-                    .ok_or_else(|| invalid("store", "kept result has no ID"))?
-                    .to_owned();
-                let text = row["rows_json"]
-                    .as_str()
-                    .ok_or_else(|| invalid("store", "kept result has no rows"))?;
-                let kept = serde_json::from_str(text).map_err(StoreError::from)?;
-                Ok((id, kept))
-            })
-            .collect()
+        self.query("SELECT id,json_extract(rows_json,'$.unit') AS unit,json_extract(rows_json,'$.columns') AS columns,json_extract(rows_json,'$.match_columns') AS match_columns FROM source_kept_result",&[])?.into_iter().map(|row| {
+            let id=row["id"].as_str().ok_or_else(||invalid("store","kept result has no ID"))?.to_owned();
+            let unit=row["unit"].as_str().ok_or_else(||invalid("store","kept result has no row unit"))?.to_owned();
+            let columns=row["columns"].as_str().ok_or_else(||invalid("store","kept result has no column declaration"))?;
+            let columns=serde_json::from_str(columns).map_err(StoreError::from)?;
+            let match_columns=row["match_columns"].as_str().map(serde_json::from_str).transpose().map_err(StoreError::from)?.unwrap_or_default();
+            Ok((id,polylogue_query::Kept {unit,columns,match_columns}))
+        }).collect()
     }
 }
 struct VisitGuard<'a> {
