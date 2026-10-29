@@ -308,6 +308,11 @@ fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
 }
 
 fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) -> Response {
+    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+        && let Err(error) = limit.check()
+    {
+        return store_error(&error);
+    }
     let writes = match writer(d) {
         Ok(writes) => writes,
         Err(response) => return response,

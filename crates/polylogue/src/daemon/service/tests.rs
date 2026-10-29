@@ -373,3 +373,41 @@ mod judgments;
 mod saved;
 
 mod deliveries;
+
+#[test]
+fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
+    let daemon = crate::test_daemon::start("native write admission scope");
+    let invocation = daemon
+        .daemon
+        .invocation(&crate::operation::Context::worker_authorship(
+            "scope-write-fixture",
+        ));
+    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
+    let response = limit.scope(|| {
+        drop(daemon.daemon.reads.reader().unwrap());
+        daemon.daemon.archive.advance_generation_for_test().unwrap();
+        write(
+            &daemon.daemon,
+            &invocation,
+            "stale-read-write".into(),
+            UserWrite::SetSetting {
+                key: "browser.actions".into(),
+                value: "on".into(),
+                machine: None,
+            },
+        )
+    });
+    assert!(
+        matches!(response,Response::Error{ref kind,..} if kind=="scope_changed"),
+        "{response:?}"
+    );
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let current = reader
+        .setting_current("browser.actions", &invocation.machine)
+        .unwrap();
+    assert!(current.authored.is_none());
+    assert_eq!(
+        current.value,
+        Some(polylogue_model::settings::Value::Boolean(false))
+    );
+}
