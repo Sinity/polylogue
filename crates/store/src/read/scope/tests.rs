@@ -29,12 +29,20 @@ fn scope_reset_interrupts_a_statement_without_a_deadline() {
     let limit = ReadLimit::without_deadline(Default::default());
     std::thread::scope(|threads| {
         let (ready, waiting) = std::sync::mpsc::channel();
-        let work = threads.spawn(|| limit.scope(|| {
+        let worker_limit = &limit;
+        let pool = &pool;
+        let work = threads.spawn(move || worker_limit.scope(|| {
             let reader = pool.reader().unwrap();
-            ready.send(()).unwrap();
+            reader.query("SELECT 1", &[]).unwrap();
+            ready.send(worker_limit.sqlite_steps()).unwrap();
             reader.query("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n", &[])
         }));
-        waiting.recv().unwrap();
+        let baseline = waiting.recv().unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while limit.sqlite_steps() <= baseline {
+            assert!(Instant::now() < until, "statement never reached SQLite");
+            std::thread::yield_now();
+        }
         fixture.archive.read_scope.begin_reset().unwrap();
         assert!(matches!(
             work.join().unwrap(),

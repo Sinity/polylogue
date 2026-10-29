@@ -4,6 +4,7 @@ use crate::primary::{Confirmed, ConfirmedChange, Product, projection};
 fn cache(archive: &Archive) -> Connection {
     let index = Connection::open(archive.index_db()).unwrap();
     index.pragma_update(None, "journal_mode", "wal").unwrap();
+    index.pragma_update(None, "foreign_keys", true).unwrap();
     index.execute_batch(crate::schema::INDEX).unwrap();
     index.execute_batch(crate::variants::SCHEMA).unwrap();
     index
