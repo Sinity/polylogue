@@ -136,6 +136,8 @@ pub struct Status {
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer.
     pub search_pending: u64,
+    /// The latest confirmed full discovery walk from each source machine.
+    pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
 }
 
 impl ReadPool {
@@ -936,6 +938,7 @@ impl Reader<'_> {
             parse_states,
             unused,
             search_pending: count("SELECT COUNT(*) FROM search_pending")?,
+            capture_coverage: self.all_capture_coverage()?,
         })
     }
 
