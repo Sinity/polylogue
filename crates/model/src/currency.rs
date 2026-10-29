@@ -21,7 +21,6 @@ pub enum CurrencyError<E> {
 pub struct Currency<'a, G: RevisionLinks> {
     graph: &'a mut G,
     withdrawn: HashMap<Reference, bool>,
-    visiting: HashSet<Reference>,
 }
 fn root(reference: &Reference) -> Option<Reference> {
     match reference {
@@ -62,45 +61,62 @@ impl<'a, G: RevisionLinks> Currency<'a, G> {
         Self {
             graph,
             withdrawn: HashMap::new(),
-            visiting: HashSet::new(),
         }
     }
     pub fn withdrawn(&mut self, reference: &Reference) -> Result<bool, CurrencyError<G::Error>> {
         if let Some(value) = self.withdrawn.get(reference) {
             return Ok(*value);
         }
-        let root = root(reference).ok_or_else(|| CurrencyError::NotRevision(reference.clone()))?;
-        if !self.visiting.insert(reference.clone()) {
-            return Err(CurrencyError::Cycle(reference.clone()));
+        enum Step {
+            Enter(Reference),
+            Finish(Reference, Vec<Reference>),
         }
-        let result = (|| {
-            let mut withdrawers = self
-                .graph
-                .withdrawers(reference)
-                .map_err(CurrencyError::Source)?;
-            if root != *reference {
-                withdrawers.extend(
-                    self.graph
-                        .withdrawers(&root)
-                        .map_err(CurrencyError::Source)?,
-                );
-            }
-            withdrawers.sort();
-            withdrawers.dedup();
-            let mut any_active = false;
-            for withdrawal in withdrawers {
-                if !exact(&withdrawal) {
-                    return Err(CurrencyError::NotRevision(withdrawal));
+        let mut visiting = HashSet::new();
+        let mut steps = vec![Step::Enter(reference.clone())];
+        while let Some(step) = steps.pop() {
+            match step {
+                Step::Enter(reference) => {
+                    if self.withdrawn.contains_key(&reference) {
+                        continue;
+                    }
+                    let root = root(&reference)
+                        .ok_or_else(|| CurrencyError::NotRevision(reference.clone()))?;
+                    if !visiting.insert(reference.clone()) {
+                        return Err(CurrencyError::Cycle(reference));
+                    }
+                    let mut withdrawers = self
+                        .graph
+                        .withdrawers(&reference)
+                        .map_err(CurrencyError::Source)?;
+                    if root != reference {
+                        withdrawers.extend(
+                            self.graph
+                                .withdrawers(&root)
+                                .map_err(CurrencyError::Source)?,
+                        );
+                    }
+                    withdrawers.sort();
+                    withdrawers.dedup();
+                    for withdrawal in &withdrawers {
+                        if !exact(withdrawal) {
+                            return Err(CurrencyError::NotRevision(withdrawal.clone()));
+                        }
+                    }
+                    // Finish only after every edge has been checked, including
+                    // inactive branches whose cycles must not depend on order.
+                    steps.push(Step::Finish(reference, withdrawers.clone()));
+                    steps.extend(withdrawers.into_iter().rev().map(Step::Enter));
                 }
-                any_active |= !self.withdrawn(&withdrawal)?;
+                Step::Finish(reference, withdrawers) => {
+                    let any_active = withdrawers
+                        .iter()
+                        .any(|withdrawal| !self.withdrawn[withdrawal]);
+                    visiting.remove(&reference);
+                    self.withdrawn.insert(reference, any_active);
+                }
             }
-            Ok(any_active)
-        })();
-        self.visiting.remove(reference);
-        if let Ok(value) = &result {
-            self.withdrawn.insert(reference.clone(), *value);
         }
-        result
+        Ok(self.withdrawn[reference])
     }
     pub fn current(&mut self, reference: &Reference) -> Result<bool, CurrencyError<G::Error>> {
         if !exact(reference) {

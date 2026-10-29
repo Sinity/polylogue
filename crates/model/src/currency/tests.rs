@@ -146,3 +146,33 @@ fn cyclic_withdrawal_has_a_typed_error_instead_of_an_order_winner() {
         Err(CurrencyError::Cycle(_))
     ));
 }
+
+#[test]
+fn withdrawal_chains_have_no_call_stack_depth_limit() {
+    struct IndexedGraph(HashMap<Reference, Reference>);
+    impl RevisionLinks for IndexedGraph {
+        type Error = Infallible;
+        fn revisions(&mut self, _: &Reference) -> Result<Vec<Reference>, Self::Error> {
+            Ok(Vec::new())
+        }
+        fn revisers(&mut self, _: &Reference) -> Result<Vec<Reference>, Self::Error> {
+            Ok(Vec::new())
+        }
+        fn withdrawers(&mut self, target: &Reference) -> Result<Vec<Reference>, Self::Error> {
+            Ok(self.0.get(target).cloned().into_iter().collect())
+        }
+    }
+    let revisions: Vec<_> = (0..20_000)
+        .map(|n| r(&format!("assertion:root{n}@revision{n}")))
+        .collect();
+    let mut graph = IndexedGraph(
+        revisions
+            .windows(2)
+            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .collect(),
+    );
+    let mut currency = Currency::new(&mut graph);
+    assert!(currency.withdrawn(&revisions[0]).unwrap());
+    assert!(!currency.withdrawn(&revisions[1]).unwrap());
+    assert!(!currency.withdrawn(revisions.last().unwrap()).unwrap());
+}
