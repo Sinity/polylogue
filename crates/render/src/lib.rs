@@ -13,7 +13,10 @@ pub use encode::{ARCHIVE_NOTICE, EncodeOptions, Encoder, encode_document};
 pub use layout::{layout_record, visit_record};
 pub use polylogue_model::read;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Format {
     Terminal,
     Markdown,

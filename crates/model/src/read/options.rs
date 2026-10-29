@@ -94,6 +94,7 @@ impl std::str::FromStr for View {
 #[serde(rename_all = "snake_case")]
 pub enum Expansion {
     None,
+    #[serde(rename = "headers")]
     Collapsed,
     Full,
 }
