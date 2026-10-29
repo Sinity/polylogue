@@ -131,12 +131,12 @@ fn changed_turn_context_keeps_each_context_and_returns_to_prior_settings() {
         message("prompt", "user", "supplied prompt"),
         record("turn_context", second.clone()),
         record("turn_context", third.clone()),
-        record("turn_context", fourth),
+        record("turn_context", fourth.clone()),
     ];
     let parsed = run(&records);
     let contexts = events(&parsed, "turn_context");
-    assert_eq!(contexts.len(), 3);
-    for (event, (index, payload)) in contexts.iter().zip([(1, first), (3, second), (4, third)]) {
+    assert_eq!(contexts.len(), 4);
+    for (event, (index, payload)) in contexts.iter().zip([(1, first), (3, second), (4, third), (5, fourth)]) {
         assert_eq!(event["data"], payload);
         assert_eq!(event["session"], format!("codex:{SID}"));
         let start = jsonl(&records[..index]).len();
@@ -151,6 +151,7 @@ fn changed_turn_context_keeps_each_context_and_returns_to_prior_settings() {
     assert!(contexts[0].get("after").is_none());
     assert_eq!(contexts[1]["after"], "codex:prompt");
     assert_eq!(contexts[2]["after"], "codex:prompt");
-    assert_eq!(parsed["output"]["events"].as_array().unwrap().len(), 4);
+    assert_eq!(contexts[3]["after"], "codex:prompt");
+    assert_eq!(parsed["output"]["events"].as_array().unwrap().len(), 6);
     assert_eq!(messages(&parsed).len(), 1);
 }

@@ -58,7 +58,18 @@
           "id": "ai-studio:17:branching_session#id:18:chunk-model-edit-1",
           "parent": "ai-studio:17:branching_session#id:12:chunk-user-1",
           "role": "assistant",
-          "session": "ai-studio:branching_session"
+          "session": "ai-studio:branching_session",
+          "attrs": {
+            "isEdited": true,
+            "branchChildren": [
+              {
+                "id": "chunk-model-edit-2"
+              }
+            ],
+            "branchParent": {
+              "id": "chunk-user-1"
+            }
+          }
         },
         "offset": 170
       },
@@ -75,7 +86,22 @@
           "id": "ai-studio:17:branching_session#id:18:chunk-model-edit-2",
           "parent": "ai-studio:17:branching_session#id:18:chunk-model-edit-1",
           "role": "assistant",
-          "session": "ai-studio:branching_session"
+          "session": "ai-studio:branching_session",
+          "attrs": {
+            "grounding": {
+              "groundingChunks": [
+                {
+                  "web": {
+                    "uri": "https://example.com/source",
+                    "title": "Example"
+                  }
+                }
+              ]
+            },
+            "branchParent": {
+              "id": "chunk-user-1"
+            }
+          }
         },
         "offset": 468
       },

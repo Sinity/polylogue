@@ -61,7 +61,10 @@
           "model": "gemini-fixture-pro",
           "parent": "ai-studio:21:text_and_parts_prompt#position:1:0",
           "role": "assistant",
-          "session": "ai-studio:text_and_parts_prompt"
+          "session": "ai-studio:text_and_parts_prompt",
+          "attrs": {
+            "thinkingBudget": 128
+          }
         },
         "offset": 252
       },

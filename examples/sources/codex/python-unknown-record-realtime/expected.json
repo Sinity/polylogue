@@ -12,7 +12,25 @@
       "realtime_item: unrecognized record type": 2,
       "unknown_context: unrecognized record type": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "realtime_item.ordinal": 2,
+      "realtime_item.payload.id": 2,
+      "realtime_item.payload.outcome": 1,
+      "realtime_item.payload.realtime_session_id": 2,
+      "realtime_item.payload.type": 2,
+      "realtime_item.timestamp": 2,
+      "realtime_item.type": 2,
+      "session_meta.ordinal": 1,
+      "unknown_context.ordinal": 1,
+      "unknown_context.payload.acceptance_order": 1,
+      "unknown_context.payload.call_id": 1,
+      "unknown_context.payload.questions[].answer": 1,
+      "unknown_context.payload.questions[].question": 1,
+      "unknown_context.payload.turn_id": 1,
+      "unknown_context.payload.type": 1,
+      "unknown_context.timestamp": 1,
+      "unknown_context.type": 1
+    }
   },
   "output": {
     "background": [],
@@ -22,6 +40,20 @@
         "data": {},
         "kind": "response_boundaries_unknown",
         "session": "codex:unknown-context-session"
+      },
+      {
+        "session": "codex:unknown-context-session",
+        "kind": "session_meta",
+        "at": "2026-09-01T10:00:00Z",
+        "range": [
+          0,
+          182
+        ],
+        "data": {
+          "id": "unknown-context-session",
+          "timestamp": "2026-09-01T10:00:00.000Z",
+          "cwd": "/workspace/sample"
+        }
       }
     ],
     "links": [],

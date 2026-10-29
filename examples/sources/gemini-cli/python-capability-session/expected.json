@@ -8,7 +8,9 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "user.content[]": 1
+    }
   },
   "output": {
     "background": [],

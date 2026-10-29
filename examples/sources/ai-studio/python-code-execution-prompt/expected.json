@@ -56,7 +56,10 @@
           "id": "ai-studio:21:code_execution_prompt#position:1:1",
           "parent": "ai-studio:21:code_execution_prompt#position:1:0",
           "role": "assistant",
-          "session": "ai-studio:code_execution_prompt"
+          "session": "ai-studio:code_execution_prompt",
+          "attrs": {
+            "thinkingBudget": 256
+          }
         },
         "offset": 149
       },

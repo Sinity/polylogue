@@ -17,6 +17,25 @@
     "blobs": [],
     "events": [
       {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:tool-call-session-1"
+      },
+      {
+        "session": "codex:tool-call-session-1",
+        "kind": "session_meta",
+        "at": "2025-01-15T11:00:00Z",
+        "range": [
+          0,
+          125
+        ],
+        "data": {
+          "id": "tool-call-session-1",
+          "timestamp": "2025-01-15T11:00:00Z",
+          "instructions": "Use tools."
+        }
+      },
+      {
         "data": {
           "input_tokens": 42,
           "output_tokens": 18,
@@ -27,11 +46,6 @@
           802,
           896
         ],
-        "session": "codex:tool-call-session-1"
-      },
-      {
-        "data": {},
-        "kind": "response_boundaries_unknown",
         "session": "codex:tool-call-session-1"
       }
     ],
@@ -123,7 +137,8 @@
       {
         "id": "codex:tool-call-session-1",
         "kind": "main",
-        "started": "2025-01-15T11:00:00Z"
+        "started": "2025-01-15T11:00:00Z",
+        "instructions": "Use tools."
       }
     ]
   }

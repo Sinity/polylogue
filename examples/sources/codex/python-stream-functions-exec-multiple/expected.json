@@ -18,6 +18,20 @@
         "data": {},
         "kind": "response_boundaries_unknown",
         "session": "codex:codex-functions-exec-multiple"
+      },
+      {
+        "session": "codex:codex-functions-exec-multiple",
+        "kind": "session_meta",
+        "at": "2026-07-15T11:00:00Z",
+        "range": [
+          0,
+          121
+        ],
+        "data": {
+          "id": "codex-functions-exec-multiple",
+          "timestamp": "2026-07-15T11:00:00Z",
+          "cwd": "/repo"
+        }
       }
     ],
     "links": [],
@@ -55,7 +69,53 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.3 seconds\nOutput:\n\n{\"exit_code\":2,\"output\":\"command failed\"}\n{\"path\":\"src/renamed.py\",\"bytes_written\":42}\n{\"bytes\":4}\n{}\n{\"status\":\"completed\"}\n{\"url\":\"https://example.test/polylogue\"}\n{\"file_path\":\"artifacts/preview.png\",\"size_bytes\":100}\n{\"result\":{\"path\":\"docs/delegation.md\",\"exit_code\":0}}\n{\"status\":\"opaque\",\"message\":\"exit_code=7 is prose only\"}\n{\"status\":\"malformed\",\"message\":\"exit_code=9 is prose only\"}",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.3 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"exit_code\":2,\"output\":\"command failed\"}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"path\":\"src/renamed.py\",\"bytes_written\":42}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"bytes\":4}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"status\":\"completed\"}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"url\":\"https://example.test/polylogue\"}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"file_path\":\"artifacts/preview.png\",\"size_bytes\":100}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"result\":{\"path\":\"docs/delegation.md\",\"exit_code\":0}}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"status\":\"opaque\",\"message\":\"exit_code=7 is prose only\"}"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"status\":\"malformed\",\"message\":\"exit_code=9 is prose only\"}"
+                }
+              ]
             }
           ],
           "id": "codex:fco-multiple",

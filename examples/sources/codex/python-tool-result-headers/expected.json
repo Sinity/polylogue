@@ -21,6 +21,20 @@
         "data": {},
         "kind": "response_boundaries_unknown",
         "session": "codex:tool-result-headers"
+      },
+      {
+        "session": "codex:tool-result-headers",
+        "kind": "session_meta",
+        "at": "2026-09-02T10:00:00Z",
+        "range": [
+          0,
+          166
+        ],
+        "data": {
+          "id": "tool-result-headers",
+          "timestamp": "2026-09-02T10:00:00.000Z",
+          "cwd": "/workspace/sample"
+        }
       }
     ],
     "links": [],
@@ -78,7 +92,8 @@
                 "kind": "ok"
               },
               "output": "Command: /bin/sh -lc 'ls sample'\nChunk ID: 1a2b3c\nWall time: 0.1000 seconds\nProcess exited with code 0\nOriginal token count: 4\nOutput:\nalpha.txt\nbeta.txt\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 100
             }
           ],
           "id": "codex:tool-result-headers@532",
@@ -128,7 +143,8 @@
                 }
               },
               "output": "Command: /bin/sh -lc 'cat sample/missing.txt'\nWall time: 0.0500 seconds\nProcess exited with code 2\nOutput:\ncat: sample/missing.txt: No such file or directory\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 50
             }
           ],
           "id": "codex:tool-result-headers@1042",
@@ -174,7 +190,8 @@
                 "kind": "ok"
               },
               "output": "Command: /bin/sh -lc 'printf 'a\nb''\nChunk ID: 4d5e6f\nWall time: 0.0200 seconds\nProcess exited with code 0\nOutput:\na\nb\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 20
             }
           ],
           "id": "codex:tool-result-headers@1552",
@@ -221,7 +238,8 @@
                 "reason": "running_in_background"
               },
               "output": "Command: /bin/sh -lc 'sleep 30'\nChunk ID: 7a8b9c\nWall time: 5.0000 seconds\nProcess running with session ID 7\nOriginal token count: 0\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 5000
             }
           ],
           "id": "codex:tool-result-headers@2030",
@@ -268,7 +286,8 @@
                 }
               },
               "output": "Exit code: 1\nWall time: 0 seconds\nOutput:\nerror: patch did not apply\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 0
             }
           ],
           "id": "codex:tool-result-headers@2518",
@@ -314,7 +333,8 @@
                 "kind": "ok"
               },
               "output": "Exit code: 0\nWall time: 0.2 seconds\nTotal output lines: 1\nOutput:\n3 sample/alpha.txt\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 200
             }
           ],
           "id": "codex:tool-result-headers@2943",
@@ -358,7 +378,17 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.3 seconds\nOutput:\n\ndone",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.3 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "done"
+                }
+              ]
             }
           ],
           "id": "codex:tool-result-headers@3343",
@@ -402,7 +432,17 @@
                 "kind": "error"
               },
               "output": "Script failed\nWall time 0.1 seconds\nOutput:\n\nError: sample",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script failed\nWall time 0.1 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "Error: sample"
+                }
+              ]
             }
           ],
           "id": "codex:tool-result-headers@3789",
@@ -452,7 +492,8 @@
                 }
               },
               "output": "notes follow\nExit code: 1\nWall time: 0 seconds\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 0
             }
           ],
           "id": "codex:tool-result-headers@4266",
@@ -496,7 +537,13 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.3 seconds\nOutput:\nextra text in the header item",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.3 seconds\nOutput:\nextra text in the header item"
+                }
+              ]
             }
           ],
           "id": "codex:tool-result-headers@4642",

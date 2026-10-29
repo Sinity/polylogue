@@ -11,7 +11,10 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "node.children": 1,
+      "node.children[]": 5
+    }
   },
   "output": {
     "background": [],
@@ -19,9 +22,9 @@
     "events": [
       {
         "data": {
-          "current_node": "files",
           "id": "native-rich-chatgpt",
-          "title": "Synthetic rich blocks"
+          "title": "Synthetic rich blocks",
+          "current_node": "files"
         },
         "kind": "conversation_settings",
         "range": [
@@ -56,7 +59,10 @@
           "id": "chatgpt:user",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "chatgpt:native-rich-chatgpt"
+          "session": "chatgpt:native-rich-chatgpt",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       },
@@ -77,7 +83,10 @@
           "id": "chatgpt:call",
           "parent": "chatgpt:user",
           "role": "assistant",
-          "session": "chatgpt:native-rich-chatgpt"
+          "session": "chatgpt:native-rich-chatgpt",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       },
@@ -99,7 +108,10 @@
           "parent": "chatgpt:call",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "chatgpt:native-rich-chatgpt"
+          "session": "chatgpt:native-rich-chatgpt",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       },
@@ -116,7 +128,10 @@
           "id": "chatgpt:reasoning",
           "parent": "chatgpt:result",
           "role": "assistant",
-          "session": "chatgpt:native-rich-chatgpt"
+          "session": "chatgpt:native-rich-chatgpt",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       },
@@ -138,7 +153,10 @@
           "id": "chatgpt:search",
           "parent": "chatgpt:reasoning",
           "role": "assistant",
-          "session": "chatgpt:native-rich-chatgpt"
+          "session": "chatgpt:native-rich-chatgpt",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       },
@@ -169,7 +187,10 @@
           "id": "chatgpt:files",
           "parent": "chatgpt:search",
           "role": "assistant",
-          "session": "chatgpt:native-rich-chatgpt"
+          "session": "chatgpt:native-rich-chatgpt",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       }

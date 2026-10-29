@@ -13,7 +13,28 @@
       "response_item/message: copied from the parent thread, which stores it": 1,
       "turn_context: copied from the parent thread, which stores it": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "compacted.ordinal": 1,
+      "compacted.payload.message": 1,
+      "compacted.payload.replacement_history[].content[].text": 1,
+      "compacted.payload.replacement_history[].content[].type": 1,
+      "compacted.payload.replacement_history[].id": 1,
+      "compacted.payload.replacement_history[].role": 1,
+      "compacted.payload.replacement_history[].type": 1,
+      "compacted.timestamp": 1,
+      "compacted.type": 1,
+      "inter_agent_communication_metadata.ordinal": 1,
+      "session_meta.ordinal": 1,
+      "turn_context.ordinal": 1,
+      "turn_context.payload.approval_policy": 1,
+      "turn_context.payload.cwd": 1,
+      "turn_context.payload.model": 1,
+      "turn_context.payload.sandbox_policy.type": 1,
+      "turn_context.payload.summary": 1,
+      "turn_context.payload.turn_id": 1,
+      "turn_context.timestamp": 1,
+      "turn_context.type": 1
+    }
   },
   "output": {
     "background": [],
@@ -25,6 +46,51 @@
         "session": "codex:019a0000-0000-7000-8000-0000000000aa"
       },
       {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "kind": "session_meta",
+        "at": "2026-03-01T10:00:01Z",
+        "range": [
+          0,
+          754
+        ],
+        "data": {
+          "id": "019a0000-0000-7000-8000-000000000001",
+          "timestamp": "2026-03-01T10:00:00.000Z",
+          "cwd": "/work/repo",
+          "originator": "codex_cli_rs",
+          "cli_version": "0.160.0",
+          "source": {
+            "subagent": {
+              "thread_spawn": {
+                "parent_thread_id": "019a0000-0000-7000-8000-0000000000aa",
+                "depth": 1,
+                "agent_path": "/root/check",
+                "agent_nickname": "Volta"
+              }
+            }
+          },
+          "model_provider": "openai",
+          "base_instructions": {
+            "text": "You are a coding agent."
+          },
+          "git": {
+            "branch": "main",
+            "commit_hash": "abc"
+          },
+          "thread_source": "subagent",
+          "parent_thread_id": "019a0000-0000-7000-8000-0000000000aa",
+          "forked_from_id": "019a0000-0000-7000-8000-0000000000aa",
+          "agent_nickname": "Volta",
+          "agent_path": "/root/check",
+          "subagent_history_start_ordinal": 6
+        }
+      },
+      {
         "at": "2026-03-01T10:00:06Z",
         "data": {
           "trigger_turn": true
@@ -34,11 +100,6 @@
           1615,
           1743
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
-      },
-      {
-        "data": {},
-        "kind": "response_boundaries_unknown",
         "session": "codex:019a0000-0000-7000-8000-000000000001"
       }
     ],
@@ -129,7 +190,10 @@
           "source": "agent_name",
           "text": "Volta"
         },
-        "tool_version": "0.160.0"
+        "tool_version": "0.160.0",
+        "git_commit": "abc",
+        "model_provider": "openai",
+        "instructions": "You are a coding agent."
       }
     ]
   }
