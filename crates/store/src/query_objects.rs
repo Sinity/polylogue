@@ -351,6 +351,13 @@ impl Reader<'_> {
         Ok(edges)
     }
 
+    /// Sinex owns this durable grant identity; standalone reads have no grant scope.
+    pub fn query_scope_fingerprint(&self) -> Result<Option<String>> {
+        let scope = crate::primary::scope::current(self.conn()?)?;
+        self.conn()?;
+        Ok(scope)
+    }
+
     pub fn query_first_run(&self, question: QuestionId) -> Result<Option<String>> {
         Ok(self
             .conn()?
