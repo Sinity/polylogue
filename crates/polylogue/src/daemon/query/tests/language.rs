@@ -353,3 +353,51 @@ fn no_sort_key_holds_bytes() {
     }
     assert!(checked > 100, "{checked}");
 }
+
+#[test]
+fn shared_prefix_text_mode_selects_prefixes_while_a_word_stays_exact() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "claude-code:prefix",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, text) in [
+        ("exact", "parse"),
+        ("prefix", "parser"),
+        ("other", "paring"),
+    ] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    text: Some(text),
+                    role: "user",
+                    written_by: "human",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.commit_search().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (text, expected) in [
+        ("messages where parse | sort by id", vec!["exact"]),
+        (
+            "messages where parse* | sort by id",
+            vec!["exact", "prefix"],
+        ),
+    ] {
+        let answer = q(&reader, text);
+        let actual: Vec<&str> = rows(&answer)
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(actual, expected, "{text}");
+    }
+}
