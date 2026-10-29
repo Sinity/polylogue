@@ -1,6 +1,6 @@
 //! Shared independent cases through the product compiler, fixture store and pager.
 use super::super::*;
-use super::fixture_clock;
+use super::{fixture_clock, fixture_context};
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use query_language::cursor::{PageRequest, SealedCursor};
 use query_language::{
