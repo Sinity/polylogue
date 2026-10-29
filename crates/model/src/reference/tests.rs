@@ -29,6 +29,7 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "url:https://example.test/a?q=1#part",
         "sx:material:opaque",
         "span:message:codex:message#b=0-4",
+        "span:document:claude-ai:document#u16=1-5",
         "span:block:codex:message#2#c=0-3",
         "span:assertion:root@revision#u16=0-5",
         "span:variant:root@revision#3#b=0-4",
@@ -61,4 +62,27 @@ fn malformed_references_are_typed_errors() {
     ] {
         assert!(Reference::parse(text).is_err(), "{text}");
     }
+}
+
+#[test]
+fn containers_preserve_exact_identity_without_guessing_message_sessions() {
+    let parse = |text| Reference::parse(text).unwrap();
+    let mut reference = parse("span:block:codex:message#9#u16=0-2");
+    for expected in ["block:codex:message#9", "message:codex:message"] {
+        reference = reference.container().unwrap();
+        assert_eq!(reference, parse(expected));
+    }
+    assert_eq!(reference.container(), None);
+    for (child, parent) in [
+        (
+            "span:document:claude-ai:document#b=1-2",
+            "document:claude-ai:document",
+        ),
+        ("variant:root@revision#3", "variant:root@revision"),
+        ("result:kept#0", "result:kept"),
+        ("tool:codex:session#call", "session:codex:session"),
+    ] {
+        assert_eq!(parse(child).container(), Some(parse(parent)));
+    }
+    assert_eq!(parse("assertion:root@revision").container(), None);
 }
