@@ -22,10 +22,10 @@ impl Sinex {
                 .drain_requests()
                 .and_then(|()| self.drain_observations())
                 .and_then(|()| self.drain_readings());
-            if let Err(error) = result {
-                if let Ok(mut health) = self.health.lock() {
-                    health.error = Some(error.to_string());
-                }
+            if let Err(error) = result
+                && let Ok(mut health) = self.health.lock()
+            {
+                health.error = Some(error.to_string());
             }
         }
     }
@@ -387,7 +387,7 @@ impl Sinex {
             source: Some(crate::source_reference()),
             coverage: None,
             frame: identity.into(),
-            events: crate::products::events(&writes)?,
+            events: crate::products::events(writes)?,
             failures: Vec::new(),
         })?;
         Ok(PreparedWrite {
@@ -482,15 +482,13 @@ impl Sinex {
                 && !entry.refused
                 && entry.capture.is_none()
                 && queue.capture_group(&entry.identity)?.is_none()
+                && let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)?
+                && matches!(
+                    material.parser.as_str(),
+                    "polylogue-products" | "polylogue-request-restore"
+                )
             {
-                if let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)? {
-                    if matches!(
-                        material.parser.as_str(),
-                        "polylogue-products" | "polylogue-request-restore"
-                    ) {
-                        ready.push(entry.identity);
-                    }
-                }
+                ready.push(entry.identity);
             }
             Ok(())
         })?;

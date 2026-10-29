@@ -718,20 +718,20 @@ impl Spool {
         self.ensure_indexes()?;
         let captures = canonical(captures)?;
         let group_hash = captures_hash(&captures)?;
-        if let Some(existing) = self.group_for_sorted(&group_hash)? {
-            if existing.identity != frame.frame() {
-                return invalid("capture group already has another immutable frame identity");
-            }
+        if let Some(existing) = self.group_for_sorted(&group_hash)?
+            && existing.identity != frame.frame()
+        {
+            return invalid("capture group already has another immutable frame identity");
         }
         for identity in &captures {
             let raw = self.required(identity)?;
             if raw.kind != Kind::Material || raw.body.is_none() {
                 return invalid("capture group member is not a durable material");
             }
-            if let Some(existing) = self.capture_group(identity)? {
-                if existing.group.as_ref().map(|group| &group.captures_hash) != Some(&group_hash) {
-                    return invalid("capture already belongs to another canonical product group");
-                }
+            if let Some(existing) = self.capture_group(identity)?
+                && existing.group.as_ref().map(|group| &group.captures_hash) != Some(&group_hash)
+            {
+                return invalid("capture already belongs to another canonical product group");
             }
         }
         self.prepare_operation(
@@ -1076,20 +1076,20 @@ impl Spool {
         self.ensure_indexes()?;
         let identities = canonical(identities)?;
         for identity in &identities {
-            if let Some(group) = self.capture_group(identity)? {
-                if identities.binary_search(&group.identity.as_str()).is_err() {
-                    return invalid("tombstone cleanup omits the canonical capture group");
-                }
+            if let Some(group) = self.capture_group(identity)?
+                && identities.binary_search(&group.identity.as_str()).is_err()
+            {
+                return invalid("tombstone cleanup omits the canonical capture group");
             }
-            if let Some(prepared) = self.get(identity)? {
-                if prepared.group.is_some() {
-                    self.visit_captures(identity, |member| {
-                        if identities.binary_search(&member).is_err() {
-                            return invalid("tombstone cleanup omits a capture group member");
-                        }
-                        Ok(())
-                    })?;
-                }
+            if let Some(prepared) = self.get(identity)?
+                && prepared.group.is_some()
+            {
+                self.visit_captures(identity, |member| {
+                    if identities.binary_search(&member).is_err() {
+                        return invalid("tombstone cleanup omits a capture group member");
+                    }
+                    Ok(())
+                })?;
             }
         }
         let authorized: std::collections::BTreeSet<_> = identities
@@ -1120,11 +1120,11 @@ impl Spool {
         // request copies are gone. The owner's outbox retries after a crash.
         for groups in [false, true] {
             for identity in &identities {
-                if let Some(prepared) = self.get(identity)? {
-                    if prepared.group.is_some() == groups {
-                        self.remove(identity)?;
-                        boundary("discard_member_retired");
-                    }
+                if let Some(prepared) = self.get(identity)?
+                    && prepared.group.is_some() == groups
+                {
+                    self.remove(identity)?;
+                    boundary("discard_member_retired");
                 }
             }
         }
@@ -1418,26 +1418,26 @@ impl Spool {
         });
         let batch =
             acquisition.map(|batch| self.root.join("operations").join(hash(batch.as_bytes())));
-        if let Some(batch) = &batch {
-            if let Some(metadata) = read_checked::<Acquisition>(&batch.join("acquisition.json"))? {
-                if Some(metadata.identity.as_str()) != acquisition {
-                    return invalid("retiring acquisition has another identity");
-                }
-                // A crash may have retired this member before its acquisition
-                // header. The confirmed canonical group still owns the cleanup.
-                path = batch.join("operations").join(hash(identity.as_bytes()));
+        if let Some(batch) = &batch
+            && let Some(metadata) = read_checked::<Acquisition>(&batch.join("acquisition.json"))?
+        {
+            if Some(metadata.identity.as_str()) != acquisition {
+                return invalid("retiring acquisition has another identity");
             }
+            // A crash may have retired this member before its acquisition
+            // header. The confirmed canonical group still owns the cleanup.
+            path = batch.join("operations").join(hash(identity.as_bytes()));
         }
         self.retire_path(&path)?;
-        if let Some(batch) = batch.filter(|batch| batch.exists()) {
-            if fs::read_dir(batch.join("operations"))?.try_fold(
+        if let Some(batch) = batch.filter(|batch| batch.exists())
+            && fs::read_dir(batch.join("operations"))?.try_fold(
                 true,
                 |empty, entry| -> Result<bool> {
                     Ok(empty && !entry?.file_name().to_str().is_some_and(hex_name))
                 },
-            )? {
-                self.retire_path(&batch)?;
-            }
+            )?
+        {
+            self.retire_path(&batch)?;
         }
         Ok(())
     }
@@ -1695,14 +1695,14 @@ pub(crate) fn capture_header(capture: &Capture) -> Capture {
 }
 
 fn describe(frame: &Ingress) -> Result<(Kind, Option<Material>, Option<Capture>, bool)> {
-    if let Ingress::Material { material, .. } = frame {
-        if let Some(value) = material.manifest.details.get("polylogue_capture") {
-            let capture: Capture = serde_json::from_value(value.clone())?;
-            if capture != capture_header(&capture) {
-                return invalid(
-                    "raw material manifest must keep parser facts in the private capture sidecar",
-                );
-            }
+    if let Ingress::Material { material, .. } = frame
+        && let Some(value) = material.manifest.details.get("polylogue_capture")
+    {
+        let capture: Capture = serde_json::from_value(value.clone())?;
+        if capture != capture_header(&capture) {
+            return invalid(
+                "raw material manifest must keep parser facts in the private capture sidecar",
+            );
         }
     }
     Ok(match frame {
@@ -1776,10 +1776,10 @@ fn validate_ack_header(
         if matches!(prepared.kind, Kind::Events | Kind::ReplaySequence) && position.is_none() {
             return invalid("canonical frame acknowledgment has no confirmed position");
         }
-        if let Some(expected) = &prepared.material {
-            if material != Some(expected.id.as_str()) {
-                return invalid("material acknowledgment has another material identity");
-            }
+        if let Some(expected) = &prepared.material
+            && material != Some(expected.id.as_str())
+        {
+            return invalid("material acknowledgment has another material identity");
         }
     }
     Ok(())

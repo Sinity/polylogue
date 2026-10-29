@@ -14,9 +14,7 @@ impl Sinex {
         &self,
         root: &str,
         version: &str,
-        visit: &mut dyn FnMut(
-            &mut dyn FnMut(ProductWrite) -> polylogue_store::Result<()>,
-        ) -> polylogue_store::Result<()>,
+        visit: &mut polylogue_store::primary::ReadingProducts<'_>,
     ) -> polylogue_store::Result<PreparedWrite> {
         Ok((|| -> Result<_> {
             let scratch = self.config.store.join("polylogue-staging");
@@ -112,17 +110,13 @@ impl Sinex {
                 && entry.capture.is_none()
                 && !entry.request
                 && queue.capture_group(&entry.identity)?.is_none()
+                && let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)?
+                && let Some(replacement) = material.manifest.details.get("polylogue_replacement")
             {
-                if let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)? {
-                    if let Some(replacement) =
-                        material.manifest.details.get("polylogue_replacement")
-                    {
-                        ready.push((
-                            entry.identity,
-                            serde_json::from_value::<ReadingReplacement>(replacement.clone())?,
-                        ));
-                    }
-                }
+                ready.push((
+                    entry.identity,
+                    serde_json::from_value::<ReadingReplacement>(replacement.clone())?,
+                ));
             }
             Ok(())
         })?;
