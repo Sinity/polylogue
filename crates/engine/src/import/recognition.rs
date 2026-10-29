@@ -140,13 +140,16 @@ pub(super) fn declared(
     if path.file_name().is_some_and(|name| name == "codex.json") {
         let mut recognized = true;
         let mut count = 0;
-        let scanned = polylogue_sources::export::scan_array_or_object(&mut *file, |_, raw| {
-            count += 1;
-            let task: polylogue_model::Json =
-                serde_json::from_slice(raw.get().as_bytes()).map_err(|error| error.to_string())?;
-            recognized &= polylogue_sources::codex_cloud::task_shape(&task);
-            Ok(())
-        });
+        let scanned = polylogue_sources::export::scan_array_or_object(
+            &mut std::io::BufReader::new(&mut *file),
+            |_, raw| {
+                count += 1;
+                let task: polylogue_model::Json = serde_json::from_slice(raw.get().as_bytes())
+                    .map_err(|error| error.to_string())?;
+                recognized &= polylogue_sources::codex_cloud::task_shape(&task);
+                Ok(())
+            },
+        );
         file.rewind()?;
         if scanned.is_ok() && recognized && count > 0 {
             return Ok(polylogue_sources::origin::by_name("codex-cloud"));

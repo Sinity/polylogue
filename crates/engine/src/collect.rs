@@ -78,7 +78,15 @@ pub fn scan_paths(
             let segs: Vec<_> = pattern.split('/').filter(|s| !s.is_empty()).collect();
             let mut matched = Vec::new();
             walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
-            found.extend(matched.into_iter().map(|path| Found { path, origin }));
+            found.extend(
+                matched
+                    .into_iter()
+                    .filter(|path| {
+                        path.strip_prefix(&root)
+                            .is_ok_and(|relative| matches_location(relative, pattern))
+                    })
+                    .map(|path| Found { path, origin }),
+            );
         }
     }
     for tool in polylogue_sources::locations::TOOLS {
@@ -98,6 +106,9 @@ pub fn scan_paths(
                 walk_paths(&root, &segs, paths, &mut matched, &mut unreadable);
                 for path in matched {
                     let relative = path.strip_prefix(&root).expect("location under root");
+                    if !matches_location(relative, pattern) {
+                        continue;
+                    }
                     if git_metadata(relative, Some(tool))
                         || tool
                             .ignored
@@ -114,6 +125,8 @@ pub fn scan_paths(
             }
         }
     }
+    let claude_root = config.root(polylogue_sources::claude_code::ROOT);
+    found.retain(|file| !user_project(&claude_root, &file.path));
     found.sort_by(|a, b| a.path.cmp(&b.path));
     found.dedup_by(|a, b| a.path == b.path);
     (found, unreadable)
@@ -278,16 +291,18 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
         all_files(&root, &root, &roots, &mut files, &mut scan.unreadable);
         for path in files {
             let relative = path.strip_prefix(&root).unwrap_or(&path);
-            let ignored = git_metadata(relative, tool)
-                .then_some("git metadata")
-                .or_else(|| {
-                    tool.and_then(|tool| {
-                        tool.ignored
-                            .iter()
-                            .find(|(p, _)| matches_path(relative, p))
-                            .map(|(_, reason)| *reason)
-                    })
-                });
+            let ignored = (tool.is_some_and(|tool| tool.name == "claude-code")
+                && user_project(&root, &path))
+            .then_some("user project under tool home")
+            .or_else(|| git_metadata(relative, tool).then_some("git metadata"))
+            .or_else(|| {
+                tool.and_then(|tool| {
+                    tool.ignored
+                        .iter()
+                        .find(|(p, _)| matches_path(relative, p))
+                        .map(|(_, reason)| *reason)
+                })
+            });
             let matched = if ignored.is_none() {
                 collected()
                     .find_map(|origin| {
@@ -295,14 +310,14 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                         origin
                             .locations
                             .iter()
-                            .find(|p| matches_path(relative, p))
+                            .find(|p| matches_location(relative, p))
                             .map(|pattern| (origin, *pattern))
                     })
                     .or_else(|| {
                         tool.and_then(|tool| {
                             tool.locations
                                 .iter()
-                                .find(|p| matches_path(relative, p))
+                                .find(|p| matches_location(relative, p))
                                 .map(|pattern| (context_origin(tool, &path), *pattern))
                         })
                     })
@@ -358,6 +373,13 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
     scan.unreadable.dedup();
     scan.coverage = rows.into_values().collect();
     scan
+}
+
+fn user_project(root: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .take_while(|ancestor| ancestor.starts_with(root) && *ancestor != root)
+        .any(|ancestor| std::fs::symlink_metadata(ancestor.join(".git")).is_ok())
 }
 
 fn git_metadata(relative: &Path, tool: Option<&polylogue_sources::locations::Tool>) -> bool {
@@ -418,21 +440,40 @@ fn all_files(
 /// A location matches the complete relative path, never a suffix guessed
 /// from another tool's directory.
 pub fn matches_path(path: &Path, pattern: &str) -> bool {
-    fn matches(names: &[&str], segs: &[&str]) -> bool {
+    match_path(path, pattern, false)
+}
+fn matches_location(path: &Path, pattern: &str) -> bool {
+    match_path(path, pattern, true)
+}
+fn match_path(path: &Path, pattern: &str, explicit_hidden: bool) -> bool {
+    fn matches(names: &[&str], segs: &[&str], explicit_hidden: bool) -> bool {
         match segs.split_first() {
             None => names.is_empty(),
-            Some((&"**", rest)) => (0..=names.len()).any(|n| matches(&names[n..], rest)),
-            Some((seg, rest)) => names
-                .split_first()
-                .is_some_and(|(name, names)| wildcard(seg, name) && matches(names, rest)),
+            Some((&"**", rest)) => (0..=names.len())
+                .take_while(|count| {
+                    !explicit_hidden
+                        || !names[..*count]
+                            .iter()
+                            .enumerate()
+                            .any(|(index, name)| index + 1 < names.len() && name.starts_with('.'))
+                })
+                .any(|count| matches(&names[count..], rest, explicit_hidden)),
+            Some((seg, rest)) => names.split_first().is_some_and(|(name, tail)| {
+                (!explicit_hidden
+                    || names.len() == 1
+                    || !name.starts_with('.')
+                    || seg.starts_with('.'))
+                    && wildcard(seg, name)
+                    && matches(tail, rest, explicit_hidden)
+            }),
         }
     }
     let names: Vec<_> = path
         .components()
-        .filter_map(|p| p.as_os_str().to_str())
+        .filter_map(|part| part.as_os_str().to_str())
         .collect();
-    let segs: Vec<_> = pattern.split('/').filter(|p| !p.is_empty()).collect();
-    matches(&names, &segs)
+    let segs: Vec<_> = pattern.split('/').filter(|part| !part.is_empty()).collect();
+    matches(&names, &segs, explicit_hidden)
 }
 
 /// Whether `found.origin` claims the file, from its path and first bytes.
@@ -538,7 +579,15 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
 
 fn entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     match fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Ok(rd) => rd
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(entry.path()),
+                Err(_) => {
+                    unreadable.push(dir.to_path_buf());
+                    None
+                }
+            })
+            .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(_) => {
             unreadable.push(dir.to_path_buf());

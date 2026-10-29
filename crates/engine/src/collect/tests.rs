@@ -247,3 +247,32 @@ fn known_locations_fully_recognized() {
         .collect();
     assert!(unknown.is_empty(), "{unknown:?}");
 }
+
+#[test]
+fn a_user_project_inside_claude_home_is_ignored_with_its_reason() {
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join(".claude/projects/user-project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    fs::write(project.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+    fs::write(project.join("code.jsonl"), "{}\n").unwrap();
+    let c = config(home.path());
+    let scan = scan_with_coverage(&c);
+    assert!(scan.found.is_empty());
+    assert_eq!(scan.coverage.iter().map(|row| row.files).sum::<u64>(), 2);
+    assert!(scan.coverage.iter().all(|row|row.class==Class::Ignored && row.pattern=="user project under tool home"));
+    let changed = std::collections::BTreeSet::from([project]);
+    assert!(scan_paths(&c, &changed).0.is_empty());
+}
+
+#[test]
+fn hidden_directories_need_a_named_location() {
+    assert!(!matches_location(
+        Path::new("brain/one/.private/entry.jsonl"),
+        "brain/**"
+    ));
+    assert!(matches_location(
+        Path::new("brain/one/.system_generated/logs/entry.jsonl"),
+        "brain/*/.system_generated/logs/*.jsonl"
+    ));
+    assert!(matches_path(Path::new("cache/.nested/file"), "cache/**"));
+}
