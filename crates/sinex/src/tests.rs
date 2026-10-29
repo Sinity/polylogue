@@ -19,7 +19,7 @@ fn client(root: &std::path::Path) -> Sinex {
 fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInput {
     serde_json::from_value(json!({
         "input":{"origin":"codex","path":"/home/op/session.jsonl","host":"fixture-host"},
-        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes)}},
+        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}},
         "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"group":null,"arrival_rank":0,"parsed":parsed
     })).unwrap()
 }
@@ -45,12 +45,13 @@ fn offline_capture_keeps_complete_parser_facts_through_restart() {
     let bytes = b"synthetic source";
     let mut output = Output::default();
     output.messages.push(serde_json::from_value(json!({"offset":0,"end":bytes.len(),"message":{"id":"codex:message","session":"codex:session","role":"assistant","attrs":{"native":{"answer":false}},"blocks":[{"type":"text","text":"Synthetic answer"}]}})).unwrap());
-    let step = polylogue_store::ParseStep::new(
+    let mut step = polylogue_store::ParseStep::new(
         output,
         RecordCounts::default(),
         0..bytes.len() as u64,
         true,
     );
+    step.prepare();
     let captured = capture(bytes, vec![CapturedReading::from_step(&step).unwrap()]);
     let sinex = client(root.path());
     let prepared = sinex

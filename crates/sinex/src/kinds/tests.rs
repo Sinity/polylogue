@@ -49,13 +49,11 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
     declaration
         .evaluate(&payload, sinex_model::Class::Open)
         .unwrap();
+    let validator = jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap()).unwrap();
+    validator.validate(&payload).unwrap();
     let mut malformed = payload;
     malformed["record"]["facts"]["message"]["usage"] = json!("invalid usage");
-    assert!(
-        declaration
-            .evaluate(&malformed, sinex_model::Class::Open)
-            .is_err()
-    );
+    assert!(validator.validate(&malformed).is_err());
 }
 
 #[test]
