@@ -167,7 +167,8 @@ impl Session {
     /// facts twice changes nothing, because a parser resends a session's
     /// facts in full after every step. The kind first recorded stays; the
     /// title goes by precedence; working directories keep their order;
-    /// branch and tool version take the newer value; the earliest start wins.
+    /// branch and tool version take the newer value; the earliest start wins
+    /// with its complete time evidence. Equal starts keep the first evidence.
     pub fn merge(&mut self, other: &Session) {
         if let Some(t) = &other.title {
             self.offer_title(&t.text, t.source);
@@ -199,8 +200,13 @@ impl Session {
         if other.tool_version.is_some() {
             self.tool_version.clone_from(&other.tool_version);
         }
-        if let Some(at) = other.started {
-            self.offer_start(at);
+        if let Some(at) = other.started
+            && self.started.is_none_or(|current| at < current)
+        {
+            self.started = Some(at);
+            self.started_quality = other.started_quality;
+            self.started_precision = other.started_precision;
+            self.started_until = other.started_until;
         }
         if other.mode.is_some() {
             self.mode.clone_from(&other.mode);

@@ -79,3 +79,23 @@ fn cwd_keeps_order_without_repeats_in_a_row() {
     }
     assert_eq!(s.cwd, ["/a", "/b", "/a"]);
 }
+
+#[test]
+fn merging_session_start_preserves_selected_time_evidence_and_first_equal_claim() {
+    let at = crate::Timestamp::from_unix_ms(10).unwrap();
+    let until = crate::Timestamp::from_unix_ms(20).unwrap();
+    let mut earlier = session();
+    earlier.set_time(Some(at), crate::TimeEvidence { quality: crate::TimeQuality::Operator, precision: Some(crate::Precision::Bounded), until: Some(until) }).unwrap();
+    let mut later = session();
+    later.offer_start(crate::Timestamp::from_unix_ms(30).unwrap());
+    later.merge(&earlier);
+    assert_eq!(later.started, Some(at));
+    assert_eq!(later.time_evidence(), earlier.time_evidence());
+    let selected = later.clone();
+    let mut equal = earlier;
+    equal.set_time(Some(at), crate::TimeEvidence::intrinsic(crate::Precision::Instant)).unwrap();
+    later.merge(&equal);
+    assert_eq!(later.time_evidence(), selected.time_evidence());
+    later.merge(&selected);
+    assert_eq!(later.time_evidence(), selected.time_evidence());
+}
