@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Missing states carry no value; zero is an ordinary measured value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub enum ValueState<T> {
     Value {
         value: T,
