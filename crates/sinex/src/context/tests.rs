@@ -1,5 +1,11 @@
 use super::*;
 
+#[test]
+fn private_context_token_is_not_in_the_public_schema() {
+    let schema = serde_json::to_value(schemars::schema_for!(ResolvedContext)).unwrap();
+    assert!(schema["properties"].get("context_token").is_none());
+}
+
 fn available() -> PublicContext {
     PublicContext::Available {
         settings_identity: "settings-1".into(),
