@@ -192,3 +192,7 @@ Its figures and verdicts use the shared status format of [command-surface](https
 - **tool-database-keeps-deleted-rows**: a row deleted by the tool after one capture stays in the archive, and no database image or side file is written.
 
 A completed full discovery walk publishes one capture-coverage snapshot per machine. Every declared root is present, including accessible empty roots, absent roots, unavailable roots and roots with unreadable descendants. Entries aggregate file counts, byte counts and newest source mtime by collection class and declared pattern; ignored entries retain their reason. Status reads the last confirmed full-walk snapshot and its observation time. Incremental file events update inputs without replacing that snapshot.
+
+Coverage uses one unrecognized aggregate per root, independent of how many unknown subdirectories exist. Child symbolic links and special filesystem entries are ignored with explicit reasons; discovery does not follow them during either full walks or incremental events.
+
+Python predecessor archives containing `source.db`, `raw_sessions` and their declared blob files are supported external captured-data packages. Import reads their metadata without opening the archive for writing, validates exact source bytes and explicit append lineage, and preserves the original source facts. This is distinct from retired Rust archive storage layouts, whose codecs belong only to the private, explicit storage converter. Neither form authorizes a live archive conversion or reset.
