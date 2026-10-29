@@ -1,6 +1,6 @@
 //! Fields compiled by a rule of their own rather than from the field
 //! table's SQL: each needs a subquery, a parameter shape, or a check
-//! against other conditions. A special field in [`crate::fields::FIELDS`]
+//! against other conditions. A special field in [`crate::query::fields::FIELDS`]
 //! names its rule here, so a field without one cannot be declared.
 
 use super::*;

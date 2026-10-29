@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-query"
-description = "The query language: parse, check against the field table, compile to SQL"
+description = "Typed query catalog, shared syntax binding and validated plans"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

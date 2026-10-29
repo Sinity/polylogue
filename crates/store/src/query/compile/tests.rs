@@ -4,7 +4,7 @@ use super::*;
 
 fn opts(saved: &[(&str, &str)]) -> Options {
     Options {
-        clock: crate::time::clock(
+        clock: crate::query::time::clock(
             1_790_000_000_000,
             polylogue_model::LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         )
@@ -222,8 +222,11 @@ fn every_stored_value_can_be_queried() {
             c(&format!("{query}{name}"));
         }
         let (unit, field) = query.trim_end_matches(':').split_once(" where ").unwrap();
-        let unit = crate::ast::Unit::from_name(unit).unwrap();
-        let offered = crate::fields::lookup(unit, field).unwrap().values.unwrap();
+        let unit = crate::query::ast::Unit::from_name(unit).unwrap();
+        let offered = crate::query::fields::lookup(unit, field)
+            .unwrap()
+            .values
+            .unwrap();
         assert_eq!(offered, *names, "{query}");
     }
     for k in LinkKind::ALL {
@@ -541,7 +544,19 @@ fn source_schema_exposes_native_relations_and_only_shaped_output_columns() {
 fn definition_metadata_uses_binding_visitor_and_preserves_quoted_dollars() {
     let text = "tool_calls where tool:$tool AND session.repo:$repo AND command:\"$literal\" | where outcome:$status";
     let options = opts(&[("activity", text)]);
-    assert_eq!(options.definition_parameters(text).unwrap(), ["tool", "repo", "status"]);
-    let program = compile("query:activity(tool=Bash,repo=morrow,status=error)", &options).unwrap();
-    assert!(program.params.iter().any(|parameter| matches!(parameter, Param::Text(value) if value.contains("$literal"))));
+    assert_eq!(
+        options.definition_parameters(text).unwrap(),
+        ["tool", "repo", "status"]
+    );
+    let program = compile(
+        "query:activity(tool=Bash,repo=morrow,status=error)",
+        &options,
+    )
+    .unwrap();
+    assert!(
+        program
+            .params
+            .iter()
+            .any(|parameter| matches!(parameter, Param::Text(value) if value.contains("$literal")))
+    );
 }

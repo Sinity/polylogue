@@ -488,8 +488,8 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
         &format!(
             "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'tag' AND n.key IS NOT NULL \
              AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
+            polylogue_store::note_sql::current_note("n"),
+            polylogue_store::note_sql::withdrawn_note("n"),
         ),
         "tag",
         &mut values,
@@ -498,8 +498,8 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
         &format!(
             "SELECT DISTINCT n.key AS v FROM source_note n WHERE n.kind = 'saved_query' AND n.key IS NOT NULL \
              AND {} AND NOT {} ORDER BY n.key",
-            polylogue_query::fields::current_note("n"),
-            polylogue_query::fields::withdrawn_note("n"),
+            polylogue_store::note_sql::current_note("n"),
+            polylogue_store::note_sql::withdrawn_note("n"),
         ),
         "query",
         &mut values,

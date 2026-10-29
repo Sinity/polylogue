@@ -65,18 +65,8 @@ pub const MESSAGE_COUNTS: &[(&str, &str)] = &[
     ),
 ];
 
-pub const COUNT_FIELDS: &[(&str, &str)] = &[
-    ("messages", "message_count"),
-    ("human_prompts", "human_prompt_count"),
-    ("human_commands", "human_command_count"),
-    ("words", "word_count"),
-    ("human_words", "human_word_count"),
-    ("model_words", "model_word_count"),
-    ("thinking_messages", "thinking_count"),
-    ("compactions", "compaction_count"),
-    ("tool_calls", "tool_call_count"),
-    ("errors", "error_count"),
-];
+pub use polylogue_model::derived::COUNT_FIELDS;
+
 
 /// The same aggregate as the stored column, computed for a behind session.
 pub fn compute_count(s: &str, column: &str) -> String {

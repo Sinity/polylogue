@@ -234,3 +234,17 @@ pub fn all() -> Vec<Construct> {
         COMPARE,
     ]
 }
+
+/// Query names and stored columns of the session count construct.
+pub const COUNT_FIELDS: &[(&str, &str)] = &[
+    ("messages", "message_count"),
+    ("human_prompts", "human_prompt_count"),
+    ("human_commands", "human_command_count"),
+    ("words", "word_count"),
+    ("human_words", "human_word_count"),
+    ("model_words", "model_word_count"),
+    ("thinking_messages", "thinking_count"),
+    ("compactions", "compaction_count"),
+    ("tool_calls", "tool_call_count"),
+    ("errors", "error_count"),
+];

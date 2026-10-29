@@ -1,7 +1,8 @@
 //! Recorded clocks and interval calculations. No notes, settings or clock reads.
 use super::Selection;
+use crate::session_sql;
 use crate::{Reader, Result};
-use polylogue_model::{derived::CLUSTER_GAP_MS, session_sql};
+use polylogue_model::derived::CLUSTER_GAP_MS;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

@@ -3,7 +3,7 @@
 
 use crate::daemon::query::*;
 use polylogue_model::{Event, Json, Output, Session, SessionId, SessionKind, Timestamp};
-use polylogue_query::fields::{live_state, live_until};
+use polylogue_store::query::fields::{live_state, live_until};
 use polylogue_store::ReadPool;
 use polylogue_store::fixture::writer::WriterArchive;
 use serde_json::json;

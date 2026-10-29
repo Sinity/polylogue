@@ -220,7 +220,7 @@ impl<'a> Compiler<'a> {
             _ => return Err(not_built("this aggregate")),
         };
         if scope.unit == Unit::Sessions {
-            let derivation = if polylogue_model::session_sql::COUNT_FIELDS
+            let derivation = if crate::session_sql::COUNT_FIELDS
                 .iter()
                 .any(|(name, _)| *name == field)
             {
@@ -246,7 +246,7 @@ impl<'a> Compiler<'a> {
                     format!("pending_{flat_field}"),
                     format!(
                         "coalesce(sum(NOT ({})),0)",
-                        polylogue_model::session_sql::current(&scope.a.s, name)
+                        crate::session_sql::current(&scope.a.s, name)
                     ),
                     ColKind::Number,
                 ));
@@ -257,7 +257,7 @@ impl<'a> Compiler<'a> {
                 format!("unmeasured_calls_{flat_field}"),
                 format!(
                     "CASE WHEN count(*)=0 THEN 0 ELSE sum({}) END",
-                    polylogue_model::session_sql::span(&scope.a.s, "tool_untimed")
+                    crate::session_sql::span(&scope.a.s, "tool_untimed")
                 ),
                 ColKind::Number,
             ));

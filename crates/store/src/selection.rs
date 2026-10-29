@@ -1,13 +1,11 @@
 //! Prepared questions and streaming rows bound to one Reader and access scope.
+pub use crate::query::{Param, Program};
 use crate::{ReadScopeToken, Reader, SqlValue, StoreError};
 use polylogue_model::{DocumentId, MessageId, Reference, SessionId};
+pub use polylogue_query::plan::{Plan, ResolvedDefinition};
 use polylogue_query::{
-    Options, Param, QueryError, Shape,
+    Options, QueryError, Shape,
     ast::{ConditionKind, TextMode, Unit},
-};
-pub use polylogue_query::{
-    Program,
-    plan::{Plan, ResolvedDefinition},
 };
 use query_language::{
     bind::BoundQuery,
@@ -151,16 +149,17 @@ impl Reader<'_> {
             .map(reference_query)
             .transpose()?
             .unwrap_or_else(|| target.to_owned());
-        let mut program = polylogue_query::compile(&text, &options)?;
+        let mut program = crate::query::compile(&text, &options)?;
         self.validate_selection(&program)?;
         let identity_text = if direct.is_some() {
             format!("{} where {}", program.unit.name(), target)
         } else {
             target.to_owned()
         };
-        let plan = polylogue_query::plan::prepare(&identity_text, &options, |condition| {
-            self.resolve_question_reference(condition, &options)
-        })?;
+        let plan =
+            polylogue_query::plan::prepare(&identity_text, &options.bindings(), |condition| {
+                self.resolve_question_reference(condition, &options)
+            })?;
         program.query = target.to_owned();
         let position = self.change_position()?;
         let index_file = self.index_identity()?;
@@ -370,7 +369,7 @@ impl Reader<'_> {
     ) -> Result<BTreeMap<String, Vec<polylogue_query::SavedQuery>>, SelectionError> {
         let sql = format!(
             "SELECT n.key AS name,n.value AS text,n.id,n.first_note FROM source_note n WHERE n.kind='saved_query' AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} ORDER BY n.first_note",
-            polylogue_model::note_sql::live_note("n")
+            crate::note_sql::live_note("n")
         );
         let mut saved = BTreeMap::<String, Vec<_>>::new();
         for row in self.query(&sql, &[])? {

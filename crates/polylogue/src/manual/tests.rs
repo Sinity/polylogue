@@ -11,7 +11,7 @@ fn the_manual_gives_working_example_queries() {
         .collect();
     assert!(!examples.is_empty());
     let options = polylogue_query::Options {
-        clock: polylogue_query::time::clock(
+        clock: polylogue_store::query::time::clock(
             1_790_000_000_000,
             polylogue_model::LogicalDay::named("UTC", 240).unwrap(),
         )
@@ -28,7 +28,7 @@ fn the_manual_gives_working_example_queries() {
         chat_pages: Vec::new(),
     };
     for query in examples {
-        let answer = polylogue_query::compile(query, &options);
+        let answer = polylogue_store::query::compile(query, &options);
         assert!(answer.is_ok(), "{query}: {answer:?}");
     }
     let manual = text();

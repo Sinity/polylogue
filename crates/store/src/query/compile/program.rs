@@ -387,7 +387,8 @@ impl<'a> Compiler<'a> {
             if pending.is_empty() {
                 Some((from, wh))
             } else {
-                let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
+                let (pk, _) =
+                    row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
                 let mut members = vec![format!("SELECT {pk} AS _pk FROM {from} WHERE {wh}")];
                 for other in &pending.unions {
                     let relation = other.row_membership_sql.as_ref().unwrap_or(&other.sql);
