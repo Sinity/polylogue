@@ -379,12 +379,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
     assert_eq!(captured.parsed[0].output.events[0].data, payload);
     assert_eq!(captured.parsed[0].reading_version, "synthetic:1");
     assert_eq!(captured.parsed[0].parsed_upto, bytes.len() as u64);
-    assert_eq!(
-        std::fs::read_dir(archive.parts_dir().unwrap())
-            .unwrap()
-            .count(),
-        0
-    );
+    assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
 }
 
 #[test]
