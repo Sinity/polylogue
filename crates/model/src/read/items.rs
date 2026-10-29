@@ -311,6 +311,8 @@ pub enum IndicatorKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CallItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
     pub tool: ValueState<String>,
     pub target: ValueState<String>,
     pub action: crate::ToolAction,
@@ -465,6 +467,8 @@ pub struct ReferencedBy {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadFooter {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimator: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub coverage: Vec<Coverage>,
     #[serde(default)]

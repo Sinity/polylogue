@@ -224,10 +224,44 @@ pub fn visit_record(
                 });
                 return Ok(());
             }
+            let mut absent: Option<(Source, u64)> = None;
             for (ordinal, block) in row.block_ordinals.iter().zip(&message.blocks) {
                 let source =
                     Source::block(&message.id, &message.session, *ordinal, evidence.inherited);
+                let empty = matches!(
+                    block,
+                    Block::Thinking {
+                        text: None,
+                        signature: None,
+                        redacted: false
+                    }
+                ) || matches!(block,Block::Thinking {text:Some(text),signature:None,redacted:false} if text.is_empty());
+                if empty && options.thinking() != Expansion::None {
+                    if let Some((first, count)) = &mut absent {
+                        if first.block.is_some_and(|first| first + *count == *ordinal) {
+                            *count += 1;
+                            continue;
+                        }
+                    }
+                    if let Some((source, blocks)) = absent.take() {
+                        if !visit(absent_thinking(source, blocks)) {
+                            return Ok(());
+                        }
+                    }
+                    absent = Some((source, 1));
+                    continue;
+                }
+                if let Some((source, blocks)) = absent.take() {
+                    if !visit(absent_thinking(source, blocks)) {
+                        return Ok(());
+                    }
+                }
                 if !block_items(block, source, *ordinal, options, evidence, &mut visit)? {
+                    return Ok(());
+                }
+            }
+            if let Some((source, blocks)) = absent {
+                if !visit(absent_thinking(source, blocks)) {
                     return Ok(());
                 }
             }
@@ -506,6 +540,7 @@ fn result_extras(
 }
 fn call_item(call: &Block, result: Option<&Block>, full: bool, running: bool) -> CallItem {
     let Block::ToolCall {
+        call_id,
         tool,
         action,
         input,
@@ -573,6 +608,10 @@ fn call_item(call: &Block, result: Option<&Block>, full: bool, running: bool) ->
         ),
     };
     CallItem {
+        call_id: call_id.clone().or_else(|| match result {
+            Some(Block::ToolResult { call_id, .. }) => call_id.clone(),
+            _ => None,
+        }),
         tool: tool.clone().map(ValueState::known).unwrap_or_default(),
         target: target.map(ValueState::known).unwrap_or_default(),
         action: *action,
@@ -697,5 +736,15 @@ fn append_output_text(parts: &mut Vec<OutputPart>, text: &str, from: u64, until:
             from,
             until,
         });
+    }
+}
+
+fn absent_thinking(source: Source, blocks: u64) -> ReadItem {
+    ReadItem {
+        source,
+        kind: ItemKind::Thinking {
+            words: ValueState::NotRecorded,
+            content: ThinkingContent::Absent { blocks },
+        },
     }
 }

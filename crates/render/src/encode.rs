@@ -265,7 +265,7 @@ impl<'a> Encoder<'a> {
             ItemKind::Call { call } => {
                 self.line(&format!(
                     "▸ {}  {}  {}{} · {} ms",
-                    value_text(&call.tool),
+                    call_label(call),
                     value_text(&call.target),
                     value_text(&call.outcome),
                     call.exit
@@ -629,4 +629,14 @@ pub(crate) fn session_lines(session: &polylogue_model::Session) -> Vec<String> {
             session.tool_version.as_deref().unwrap_or("not recorded")
         ),
     ]
+}
+
+pub(crate) fn call_label(call: &CallItem) -> String {
+    if call.tool.value().is_none()
+        && let Some(id) = &call.call_id
+    {
+        format!("result for unknown call {id}")
+    } else {
+        value_text(&call.tool)
+    }
 }

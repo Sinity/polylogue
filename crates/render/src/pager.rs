@@ -199,6 +199,7 @@ impl PageBuilder {
     /// size in `Budget::bytes`. A limit violation is explicit, never truncation.
     pub fn finish(self, mut footer: ReadFooter) -> Result<ReadDocument, PageError> {
         footer.shown = self.items.len() as u64;
+        footer.estimator = Some(TOKEN_ESTIMATOR.into());
         footer.position = self.next;
         let document = ReadDocument {
             header: self.header,

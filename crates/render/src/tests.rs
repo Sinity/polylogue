@@ -997,3 +997,55 @@ fn each_retained_long_tool_line_has_its_own_explicit_omission() {
             .any(|part| matches!(part,OutputPart::Text {text,..} if text.contains("short middle")))
     );
 }
+
+#[test]
+fn empty_thinking_runs_compact_without_reindexing_later_text() {
+    let record = message(vec![
+        Block::Thinking {
+            text: None,
+            signature: None,
+            redacted: false,
+        },
+        Block::Thinking {
+            text: Some(String::new()),
+            signature: None,
+            redacted: false,
+        },
+        Block::Text {
+            text: "after".into(),
+        },
+    ]);
+    let items = layout(
+        record,
+        &ReadOptions::default(),
+        &ProjectionEvidence::default(),
+    );
+    assert_eq!(items.len(), 3);
+    assert!(matches!(
+        &items[1].kind,
+        ItemKind::Thinking {
+            content: ThinkingContent::Absent { blocks: 2 },
+            ..
+        }
+    ));
+    assert_eq!(items[2].source.block, Some(2));
+}
+#[test]
+fn orphan_result_names_its_recorded_call_id_in_every_prose_format() {
+    let (_, call) = result_output("result".into(), ReadOptions::default());
+    assert_eq!(call.call_id.as_deref(), Some("orphan"));
+    let doc = document(vec![ReadItem {
+        source: Source::record("block:test#0"),
+        kind: ItemKind::Call { call },
+    }]);
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        assert!(encode(&doc, format).contains("result for unknown call orphan"));
+    }
+}
+#[test]
+fn budgeted_pages_name_the_canonical_token_estimator() {
+    let mut builder = pager::PageBuilder::new(header(), budget(), None).unwrap();
+    builder.push_at("message:test", 0, text("item")).unwrap();
+    let doc = builder.finish(ReadFooter::default()).unwrap();
+    assert_eq!(doc.footer.estimator.as_deref(), Some(TOKEN_ESTIMATOR));
+}
