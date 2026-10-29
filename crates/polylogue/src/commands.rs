@@ -783,11 +783,6 @@ const WRITTEN: &[Command] = &[
                 Kind::Text,
                 "Replace an earlier note: the new one joins its revisions",
             ),
-            opt(
-                "agent",
-                Kind::FlagOrText,
-                "Written by an agent (by its session when given)",
-            ),
         ],
         action: Action::Request(requests::note_add),
         mcp: true,
