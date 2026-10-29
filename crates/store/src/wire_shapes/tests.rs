@@ -18,6 +18,7 @@ fn source(input_pk: i64, chain: i64, length: u64, receipt: i64) -> Source<'stati
         chain,
         length,
         receipt,
+        receipt_id: Some("reading-receipt"),
         observation: Some(match receipt {
             1 => "observation-first",
             2 => "observation-second",
@@ -48,7 +49,11 @@ fn step(
     };
     for shape in shapes {
         counts.wire_shapes.insert(
-            serde_json::to_string(&(&shape.record_kind, &shape.path)).unwrap(),
+            if let Some(table) = &shape.table {
+                serde_json::to_string(&(&shape.record_kind, table, &shape.path)).unwrap()
+            } else {
+                serde_json::to_string(&(&shape.record_kind, &shape.path)).unwrap()
+            },
             shape,
         );
     }
@@ -64,11 +69,11 @@ fn store(conn: &mut Connection, source: Source<'_>, step: &ParseStep) {
     apply(&tx, source, step).unwrap();
     tx.commit().unwrap();
 }
-fn at<'a>(report: &'a Report, input: &str, path: &str) -> &'a Observation {
+fn at<'a>(report: &'a Report, path: &str) -> &'a Observation {
     report
         .shapes
         .iter()
-        .find(|shape| shape.input == input && shape.path == path && shape.active)
+        .find(|shape| shape.format == "fixture" && shape.path == path)
         .unwrap()
 }
 #[test]
@@ -81,9 +86,9 @@ fn wire_shape_partial_retry_is_idempotent_and_receipt_order_owns_first_last() {
         vec![root(), shape("/body", "string", &["string"])],
     );
     store(&mut conn, source(1, 1, 20, 1), &first);
-    let before = read(&conn, None).unwrap();
+    let before = read(&conn, Scope::current(None)).unwrap();
     store(&mut conn, source(1, 1, 20, 99), &first);
-    assert_eq!(read(&conn, None).unwrap(), before);
+    assert_eq!(read(&conn, Scope::current(None)).unwrap(), before);
     store(
         &mut conn,
         source(1, 1, 20, 2),
@@ -94,14 +99,14 @@ fn wire_shape_partial_retry_is_idempotent_and_receipt_order_owns_first_last() {
             vec![root(), shape("/body", "number", &["string"])],
         ),
     );
-    let report = read(&conn, None).unwrap();
-    let body = at(&report, "first", "/body");
+    let report = read(&conn, Scope::current(None)).unwrap();
+    let body = at(&report, "/body");
     assert_eq!(body.types["string"].count, 1);
     assert_eq!(body.types["number"].count, 1);
     assert_eq!(body.first.sequence, 1);
     assert_eq!(body.last.sequence, 2);
     assert!(body.first.observed_at_ms > body.last.observed_at_ms);
-    assert_eq!(report.coverage[0].status, CoverageStatus::Complete);
+    assert_eq!(report.coverage[0].status(), CoverageStatus::Complete);
     assert!(
         report
             .drift
@@ -132,7 +137,7 @@ fn wire_shape_completed_chain_includes_earlier_chunks_in_presence() {
             vec![root(), shape("/later", "number", &["number"])],
         ),
     );
-    let report = read(&conn, None).unwrap();
+    let report = read(&conn, Scope::current(None)).unwrap();
     assert!(
         !report
             .drift
@@ -140,7 +145,7 @@ fn wire_shape_completed_chain_includes_earlier_chunks_in_presence() {
             .any(|row| row.kind == Kind::StoppedField)
     );
     assert_eq!(
-        at(&report, "first", "/earlier")
+        at(&report, "/earlier")
             .complete_presence
             .as_ref()
             .unwrap()
@@ -179,7 +184,7 @@ fn drift_reported_new_path_changed_type_and_stopped_optional_field() {
             ],
         ),
     );
-    let report = read(&conn, Some("fixture")).unwrap();
+    let report = read(&conn, Scope::current(Some("fixture"))).unwrap();
     assert!(
         report
             .drift
@@ -199,7 +204,10 @@ fn drift_reported_new_path_changed_type_and_stopped_optional_field() {
         .unwrap();
     assert_eq!(stopped.certainty, Certainty::OptionalPresence);
     assert_eq!(stopped.compared_with.len(), 1);
-    assert_eq!(stopped.compared_with[0].input, "second");
+    assert_eq!(
+        stopped.compared_with[0].last.as_ref().unwrap().input,
+        "second"
+    );
     assert_eq!(stopped.coverage, CoverageStatus::Complete);
 }
 #[test]
@@ -217,7 +225,7 @@ fn wire_shape_incomplete_or_unreadable_population_never_establishes_absence() {
     );
     let mut later = step("v1", 0..10, false, vec![root()]);
     store(&mut conn, source(2, 1, 20, 2), &later);
-    let report = read(&conn, None).unwrap();
+    let report = read(&conn, Scope::current(None)).unwrap();
     assert!(
         !report
             .drift
@@ -228,7 +236,7 @@ fn wire_shape_incomplete_or_unreadable_population_never_establishes_absence() {
         report
             .coverage
             .iter()
-            .any(|row| row.status == CoverageStatus::Partial)
+            .any(|row| row.states.contains_key(&CoverageStatus::Partial))
     );
     later = step("v1", 10..20, true, vec![root()]);
     later.counts.used.clear();
@@ -237,12 +245,12 @@ fn wire_shape_incomplete_or_unreadable_population_never_establishes_absence() {
         .unreadable
         .insert("message: invalid record".into(), 1);
     store(&mut conn, source(2, 1, 20, 3), &later);
-    let report = read(&conn, None).unwrap();
+    let report = read(&conn, Scope::current(None)).unwrap();
     assert!(
         report
             .coverage
             .iter()
-            .any(|row| row.status == CoverageStatus::Unreadable)
+            .any(|row| row.states.contains_key(&CoverageStatus::Unreadable))
     );
     assert!(
         !report
@@ -284,21 +292,34 @@ fn wire_shape_reading_versions_and_input_chains_keep_their_history() {
             vec![root(), shape("/old", "number", &["number"])],
         ),
     );
-    let report = read(&conn, None).unwrap();
-    assert!(report.shapes.iter().any(|row| row.reading_version == "v1"
-        && row.chain == 1
-        && !row.active
-        && row.path == "/old"));
-    assert!(report.shapes.iter().any(|row| row.reading_version == "v1"
-        && row.chain == 2
-        && row.active
-        && row.path == "/chain-two"));
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert!(
+        !report
+            .shapes
+            .iter()
+            .any(|row| row.reading_version == "v1" && row.path == "/old")
+    );
+    assert!(
+        report
+            .shapes
+            .iter()
+            .any(|row| row.reading_version == "v1" && row.path == "/chain-two")
+    );
     assert!(
         !report
             .drift
             .iter()
             .any(|row| row.kind == Kind::TypeChanged && row.shape.path == "/old")
     );
+    let history = read(&conn, Scope::history(Some("fixture"), Some("v1"))).unwrap();
+    assert!(
+        history
+            .shapes
+            .iter()
+            .any(|row| row.path == "/old" && row.types["number"].count == 1)
+    );
+    assert_eq!(history.coverage[0].readings, 2);
+    assert_eq!(history.coverage[0].current_readings, 1);
 }
 #[test]
 fn wire_shape_reset_replaces_counts_retaining_prior_complete_presence() {
@@ -321,9 +342,9 @@ fn wire_shape_reset_replaces_counts_retaining_prior_complete_presence() {
     );
     later.reset = true;
     store(&mut conn, source(1, 1, 20, 2), &later);
-    let report = read(&conn, None).unwrap();
-    assert_eq!(at(&report, "first", "").types["object"].count, 1);
-    let gone = at(&report, "first", "/gone");
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(at(&report, "").types["object"].count, 1);
+    let gone = at(&report, "/gone");
     assert_eq!(gone.types["string"].count, 0);
     assert_eq!(gone.last.sequence, 1);
     assert_eq!(gone.complete_presence.as_ref().unwrap().sequence, 1);
@@ -334,7 +355,7 @@ fn wire_shape_reset_replaces_counts_retaining_prior_complete_presence() {
             .any(|row| row.kind == Kind::StoppedField && row.shape.path == "/gone")
     );
     store(&mut conn, source(1, 1, 20, 3), &later);
-    assert_eq!(read(&conn, None).unwrap(), report);
+    assert_eq!(read(&conn, Scope::current(None)).unwrap(), report);
 }
 #[test]
 fn wire_shape_empty_eof_finishes_coverage_without_recounting() {
@@ -347,9 +368,9 @@ fn wire_shape_empty_eof_finishes_coverage_without_recounting() {
     let mut eof = step("v1", 10..10, true, vec![]);
     eof.counts = RecordCounts::default();
     store(&mut conn, source(1, 1, 10, 2), &eof);
-    let report = read(&conn, None).unwrap();
-    assert_eq!(report.coverage[0].status, CoverageStatus::Complete);
-    assert_eq!(at(&report, "first", "").types["object"].count, 1);
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(report.coverage[0].status(), CoverageStatus::Complete);
+    assert_eq!(at(&report, "").types["object"].count, 1);
 }
 #[test]
 fn wire_shape_missing_prefix_remains_incomplete_after_later_eof() {
@@ -365,7 +386,7 @@ fn wire_shape_missing_prefix_remains_incomplete_after_later_eof() {
         &step("v1", 20..30, true, vec![root()]),
     );
     assert_eq!(
-        read(&conn, None).unwrap().coverage[0].status,
+        read(&conn, Scope::current(None)).unwrap().coverage[0].status(),
         CoverageStatus::Partial
     );
 }
@@ -388,7 +409,7 @@ fn wire_shape_unknown_discriminators_and_tables_use_explicit_metadata_without_va
         data: serde_json::json!({"secret":"distinctive-source-value-123"}),
     });
     store(&mut conn, source(1, 1, 10, 1), &parsed);
-    let report = read(&conn, None).unwrap();
+    let report = read(&conn, Scope::current(None)).unwrap();
     assert!(
         report
             .drift
@@ -417,24 +438,24 @@ fn wire_shape_no_parser_and_failed_refused_coverage_are_visible() {
         "INSERT INTO parse_state VALUES(2,1,'v1','failed',0),(3,1,'v1','refused',0);",
     )
     .unwrap();
-    let report = read(&conn, None).unwrap();
+    let report = read(&conn, Scope::current(None)).unwrap();
     assert!(
         report
             .coverage
             .iter()
-            .any(|row| row.status == CoverageStatus::NoParserYet)
+            .any(|row| row.states.contains_key(&CoverageStatus::NoParserYet))
     );
     assert!(
         report
             .coverage
             .iter()
-            .any(|row| row.status == CoverageStatus::Failed)
+            .any(|row| row.states.contains_key(&CoverageStatus::Failed))
     );
     assert!(
         report
             .coverage
             .iter()
-            .any(|row| row.status == CoverageStatus::Refused)
+            .any(|row| row.states.contains_key(&CoverageStatus::Refused))
     );
     assert!(report.drift.is_empty());
 }
@@ -455,9 +476,9 @@ fn wire_shape_tuple_paths_remain_distinct_and_transaction_rollback_is_atomic() {
         let tx = conn.transaction().unwrap();
         apply(&tx, source(1, 1, 10, 1), &parsed).unwrap();
     }
-    assert!(read(&conn, None).unwrap().shapes.is_empty());
+    assert!(read(&conn, Scope::current(None)).unwrap().shapes.is_empty());
     store(&mut conn, source(1, 1, 10, 1), &parsed);
-    let report = read(&conn, None).unwrap();
+    let report = read(&conn, Scope::current(None)).unwrap();
     assert!(report.shapes.iter().any(|row| row.path == "/a~1b/~2/~3/~0"));
     assert!(report.shapes.iter().any(|row| row.path == "/a/b"));
     let mut conflict = parsed;
@@ -471,7 +492,7 @@ fn wire_shape_tuple_paths_remain_distinct_and_transaction_rollback_is_atomic() {
     let tx = conn.transaction().unwrap();
     assert!(apply(&tx, source(1, 1, 10, 2), &conflict).is_err());
     drop(tx);
-    assert_eq!(read(&conn, None).unwrap(), report);
+    assert_eq!(read(&conn, Scope::current(None)).unwrap(), report);
 }
 
 #[test]
@@ -500,9 +521,9 @@ fn wire_shape_unknown_observation_times_remain_unknown_and_formats_stay_distinct
             vec![root(), shape("/new", "boolean", &[])],
         ),
     );
-    let report = read(&conn, None).unwrap();
-    assert_eq!(at(&report, "first", "/old").first.observed_at_ms, None);
-    assert_eq!(at(&report, "first", "/old").first.observation, None);
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(at(&report, "/old").first.observed_at_ms, None);
+    assert_eq!(at(&report, "/old").first.observation, None);
     assert!(
         !report
             .drift
@@ -510,5 +531,108 @@ fn wire_shape_unknown_observation_times_remain_unknown_and_formats_stay_distinct
             .any(|row| row.kind == Kind::StoppedField)
     );
     assert_eq!(report.drift[0].shape.format, "other");
-    assert!(read(&conn, Some("fixture")).unwrap().drift.is_empty());
+    assert!(
+        read(&conn, Scope::current(Some("fixture")))
+            .unwrap()
+            .drift
+            .is_empty()
+    );
+}
+
+#[test]
+fn wire_shape_sql_aggregation_returns_schema_rows_and_exact_counts() {
+    let mut conn = database();
+    for index in 10..210 {
+        let input = format!("input-{index}");
+        conn.execute(
+            "INSERT INTO input_ref VALUES(?1,?2,'fixture')",
+            params![index, input],
+        )
+        .unwrap();
+        let identity = Source {
+            input_pk: index,
+            input: &input,
+            format: "fixture",
+            chain: 1,
+            length: 10,
+            receipt: index,
+            receipt_id: None,
+            observation: None,
+            observed_at_ms: None,
+        };
+        store(
+            &mut conn,
+            identity,
+            &step(
+                "v1",
+                0..10,
+                true,
+                vec![root(), shape("/unrecognized", "string", &[])],
+            ),
+        );
+    }
+    let report = read(&conn, Scope::current(Some("fixture"))).unwrap();
+    assert_eq!(report.shapes.len(), 2);
+    assert_eq!(report.coverage[0].readings, 200);
+    assert_eq!(report.coverage[0].inputs, 200);
+    assert_eq!(report.coverage[0].parsed_bytes, 2000);
+    assert_eq!(report.drift.len(), 1);
+    let row = &report.drift[0];
+    assert_eq!(row.shape.types["string"].count, 200);
+    assert_eq!(row.shape.first.sequence, 10);
+    assert_eq!(row.shape.last.sequence, 209);
+}
+#[test]
+fn wire_shape_sql_count_aggregation_keeps_unsigned_precision() {
+    let mut conn = database();
+    let mut observed = shape("/large", "string", &["string"]);
+    observed.types.insert("string".into(), u64::MAX);
+    store(
+        &mut conn,
+        source(1, 1, 10, 1),
+        &step("v1", 0..10, true, vec![root(), observed]),
+    );
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(at(&report, "/large").types["string"].count, u64::MAX);
+}
+
+#[test]
+fn wire_shape_native_tables_stay_distinct_and_unused_counts_are_explicit() {
+    let mut conn = database();
+    let mut shapes = Vec::new();
+    for table in ["table_a", "table_b"] {
+        let mut header = root();
+        header.record_kind = "row".into();
+        header.table = Some(table.into());
+        header.unknown_table_count = 1;
+        shapes.push(header);
+        let mut column = shape("/value", "string", &[]);
+        column.record_kind = "row".into();
+        column.table = Some(table.into());
+        column.unused_count = 1;
+        shapes.push(column);
+    }
+    store(
+        &mut conn,
+        source(1, 1, 10, 1),
+        &step("v1", 0..10, true, shapes),
+    );
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(report.shapes.len(), 4);
+    assert_eq!(
+        report
+            .drift
+            .iter()
+            .filter(|row| row.kind == Kind::UnknownTable)
+            .count(),
+        2
+    );
+    assert_eq!(
+        report
+            .shapes
+            .iter()
+            .filter(|row| row.unused_count == 1)
+            .count(),
+        2
+    );
 }
