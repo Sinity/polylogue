@@ -201,6 +201,7 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
     let context = operation(&fixture.daemon).unwrap();
     let reader = fixture.daemon.reads.reader().unwrap();
     let attention = local_attention(&reader, &context).unwrap();
+    drop(reader);
     let mut checkpoint = load(&fixture.daemon)
         .unwrap()
         .unwrap_or_else(|| initial(&context, Some(&attention)).unwrap());
@@ -208,7 +209,6 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
         .unwrap()
         .map(|c| c.identity().unwrap());
     checkpoint.notifications = Some(state);
-    drop(reader);
     assert!(
         persist(
             &fixture.daemon,
