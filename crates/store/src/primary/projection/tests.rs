@@ -605,5 +605,6 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
 
 mod checkpoints;
 mod receipts;
+mod source_memberships;
 
 mod replay;
