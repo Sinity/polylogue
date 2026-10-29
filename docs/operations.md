@@ -2,7 +2,7 @@
 
 Running Polylogue: the daemon's lifetime, its idle and steady-state work, the halt state, orientation and `status`, the operation commands, notices, verification on demand, several archives and machines, configuration, deployment, installing into harnesses, upgrades, and backup and restore.
 
-Neighbouring facts live elsewhere: the durability order and pipeline are [architecture.md#durability](architecture.md#durability) and [architecture.md#pipeline](architecture.md#pipeline); the CLI's grammar, latency classes, completion and exit codes are [interfaces.md](interfaces.md); the schema tools are [archive.md#format-drift](archive.md#format-drift); primary mode and the cutover are [primary-mode.md](primary-mode.md); the signal rule schema and its evaluator are common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md); the web views of status, notices and settings are [web.md](web.md); setting keys will be generated into `reference/settings.md`.
+Neighbouring facts live elsewhere: the durability order and pipeline are [architecture.md#durability](architecture.md#durability) and [architecture.md#pipeline](architecture.md#pipeline); the CLI's grammar, latency classes, completion and exit codes are [interfaces.md](interfaces.md); the schema tools are [archive.md#format-drift](archive.md#format-drift); primary mode and the cutover are [primary-mode.md](primary-mode.md); the signal rule schema and its evaluator are common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md); the web views of status, notices and settings are [web.md](web.md); setting keys will be generated into `reference/settings.md`.
 
 ## The daemon
 
@@ -103,7 +103,7 @@ There is no repair, reconcile, reindex or reset command and no scheduled check: 
 
 ## Notices
 
-Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) rule schema, evaluator, interrupt budget and desktop notifications. Ruling, 2026-10-28, on desktop notifications: "just needs to be designed elegantly to not be a kludgy mess. most/all of things you listed should be notifications" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
+Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) rule schema, evaluator, interrupt budget and desktop notifications. Ruling, 2026-10-28, on desktop notifications: "just needs to be designed elegantly to not be a kludgy mess. most/all of things you listed should be notifications" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
 
 What is Polylogue's:
 - **Storage.** A rule is a `signal` assertion ([assertions.md#kinds](assertions.md#kinds)); each firing is a delivery naming the rule and revision, the triggering occurrences with their observation, the time, the channel and the reason for any downgrade ([agents.md#deliveries](agents.md#deliveries)). Deliveries survive an index rebuild and reach Sinex in primary mode.

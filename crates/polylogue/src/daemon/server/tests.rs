@@ -25,7 +25,7 @@ fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
         done.send(server.shutdown()).unwrap();
     });
     stopped
-        .recv()
+        .recv_timeout(Duration::from_secs(2))
         .expect("socket readers did not stop")
         .unwrap();
     thread.join().unwrap();
@@ -229,4 +229,61 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
         ),
         "{line}"
     );
+}
+
+#[test]
+fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = crate::test_daemon::engine_config(dir.path().join("home"));
+    config.tool_dirs.clear();
+    config.workers = 1;
+    let runtime = crate::test_daemon::start_runtime(
+        &dir.path().join("archive"),
+        config,
+        service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let mut server =
+        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut responses = BufReader::new(stream.try_clone().unwrap());
+    let request = |id: &str| command_surface::Request {
+        operation: "sql".into(),
+        arguments: serde_json::json!({"statement":"SELECT 1 AS n"}),
+        request_id: id.into(),
+        deadline: command_surface::Deadline::None,
+    };
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&request("admitted-peer")).unwrap()
+    )
+    .unwrap();
+    let mut line = String::new();
+    responses.read_line(&mut line).unwrap();
+    assert!(
+        serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&line)
+            .unwrap()
+            .value()
+            .is_some()
+    );
+    runtime.stop_accepting();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&request("queued-at-stop")).unwrap()
+    )
+    .unwrap();
+    server.shutdown().unwrap();
+    line.clear();
+    responses.read_line(&mut line).unwrap();
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let command_surface::Answer::Error { error, .. } = answer else {
+        panic!("queued request must be refused");
+    };
+    assert_eq!(error.code.as_deref(), Some("shutting_down"));
+    assert_eq!(error.kind, command_surface::FailureKind::NotRunning);
 }

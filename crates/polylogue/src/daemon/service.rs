@@ -84,19 +84,6 @@ impl Daemon {
         Ok(Arc::new(context))
     }
 
-    pub(crate) fn query_clock(&self) -> Result<query_language::time::Clock, Response> {
-        let day = self.config.standalone_day().map_err(|_| {
-            error(
-                "not_yet_available",
-                "the primary owner day context has not been obtained",
-            )
-        })?;
-        Ok(query_language::time::Clock::new(
-            self.config.requests.now().into(),
-            day.clone(),
-        ))
-    }
-
     pub(crate) fn ready_call(
         &self,
         request: &command_surface::RunnableRequest,
@@ -371,7 +358,7 @@ fn repeated_request(
 pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
     if d.stopping.load(Ordering::Acquire) {
         return Err(error(
-            "daemon_stopping",
+            "shutting_down",
             "the daemon has stopped accepting requests",
         ));
     }
@@ -485,7 +472,7 @@ fn handle_inner(
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
-            return error("daemon_stopping", StoreError::ReadPoolClosed);
+            return error("shutting_down", StoreError::ReadPoolClosed);
         }
         Err(e) => return store_error(&e),
     };
@@ -1244,6 +1231,19 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn pause_signals(&mut self) -> std::io::Result<()> {
+        if let Some(stop) = self.signals_stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(worker) = self.signals.take() {
+            worker
+                .join()
+                .map_err(|_| std::io::Error::other("signal worker panicked"))?;
+        }
+        Ok(())
+    }
+
     /// Refuses new requests and wakes readers waiting for a reader slot,
     /// before transports and workers are joined. Readers and writes already
     /// running finish as usual.
@@ -1274,6 +1274,12 @@ impl Runtime {
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        let mut failure = None;
+        if let Some(completion) = self.completion.as_mut()
+            && let Err(error) = completion.shutdown()
+        {
+            failure = Some(error);
+        }
         self.completion.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
@@ -1285,13 +1291,12 @@ impl Runtime {
         if let Some(counts) = self.counts.take()
             && counts.join().is_err()
         {
-            eprintln!("polylogue: the count worker panicked");
+            failure.get_or_insert_with(|| std::io::Error::other("count worker panicked"));
         }
-        let mut failure = None;
         if let Some(signals) = self.signals.take()
             && signals.join().is_err()
         {
-            failure = Some(std::io::Error::other("signal worker panicked"));
+            failure.get_or_insert_with(|| std::io::Error::other("signal worker panicked"));
         }
         if let Ok(tx) = self.daemon.loop_tx.lock() {
             let _ = tx.send(LoopMsg::Stop);
@@ -1547,7 +1552,7 @@ pub fn start(
     runtime.signals = Some(
         std::thread::Builder::new()
             .name("polylogue-signals".into())
-            .spawn(move || crate::signals::run(&daemon, &stopped))?,
+            .spawn(move || crate::signals::run(daemon, &stopped))?,
     );
     let (stop, stopped) = channel();
     runtime.counts_stop = Some(stop);
