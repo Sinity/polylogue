@@ -235,7 +235,7 @@ fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Op
         None => logical_day(reader)?,
     };
     Ok(Options {
-        clock: polylogue_query::Clock::new(now, day),
+        clock: polylogue_query::time::clock(now, day)?,
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|o| o.name.to_owned())
@@ -326,7 +326,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .as_ref()
         .map(|cursor| cursor.check(&program, &question).map(<[Value]>::to_vec))
         .transpose()?;
-    let day = opts.clock.day.clone();
+    let day = polylogue_query::time::product_day(&opts.clock);
     with_similarity(reader, &program, ask.near, || {
         answer(reader, &program, &day, after, seed, question, ask.why)
     })

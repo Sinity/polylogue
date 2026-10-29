@@ -150,10 +150,9 @@ fn narrower(query: &str) -> Option<String> {
     use polylogue_query::ast::Source;
     let parsed = polylogue_query::parse(query).ok()?;
     let suggestion = match parsed.source {
-        Source::Empty => "since:1d".to_owned(),
-        Source::Sessions { cond }
-        | Source::Unit {
-            cond: Some(cond), ..
+
+        Source::Unit {
+            condition: Some(cond), ..
         } => {
             let span = cond.span;
             let condition = &query[span.start..span.end];
@@ -165,7 +164,7 @@ fn narrower(query: &str) -> Option<String> {
                 &query[span.end..]
             )
         }
-        Source::Unit { cond: None, .. } => {
+        Source::Unit { condition: None, .. } => {
             let start = query.len() - query.trim_start().len();
             let end = query[start..]
                 .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')

@@ -69,7 +69,7 @@ fn the_grammar_names_every_unit() {
     for s in UNITS {
         let q = crate::parse(s.name).unwrap_or_else(|e| panic!("{}: {e}", s.name));
         assert!(
-            matches!(q.source, crate::ast::Source::Unit { unit, .. } if unit == s.unit),
+            matches!(q.source, crate::ast::Source::Unit { unit, .. } if unit == s.unit.name()),
             "{} parses as {:?}",
             s.name,
             q.source

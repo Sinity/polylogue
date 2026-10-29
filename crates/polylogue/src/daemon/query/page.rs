@@ -101,8 +101,8 @@ pub(super) fn question(program: &Program, options: &Options, why: bool) -> Resul
         fields: &options.fields,
         embeddings: options.embeddings,
         why,
-        zone: &options.clock.day.zone,
-        day_start_minutes: options.clock.day.start_minutes,
+        zone: options.clock.day.zone(),
+        day_start_minutes: polylogue_query::time::product_day(&options.clock).start_minutes,
         vector_writes: program
             .near
             .is_some()
