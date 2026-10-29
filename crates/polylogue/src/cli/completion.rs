@@ -3,35 +3,24 @@ use clap_complete::CompletionCandidate;
 use std::{
     ffi::{OsStr, OsString},
     sync::OnceLock,
+    path::PathBuf,
 };
 
+/// The callback argv follows `--` and includes the invoked wrapper name.
 #[derive(Default)]
-struct Invocation {
-    arguments: Vec<OsString>,
-    index: usize,
-    prefix: Option<String>,
+pub struct Context {
+    pub arguments: Vec<OsString>,
+    pub index: usize,
+    pub prefix: Option<String>,
+    pub catalog: Option<Catalog>,
 }
-static INVOCATION: OnceLock<Invocation> = OnceLock::new();
-
-/// Capture before clap's completion entry point consumes its environment.
-pub fn capture() {
-    if std::env::var_os("COMPLETE").is_none() {
-        return;
-    }
-    let arguments = std::env::args_os()
-        .skip_while(|arg| arg != "--")
-        .skip(1)
-        .collect::<Vec<_>>();
-    let index = std::env::var("_CLAP_COMPLETE_INDEX")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or_else(|| arguments.len().saturating_sub(1));
-    let _ = INVOCATION.set(Invocation {
-        arguments,
-        index,
-        prefix: std::env::var("_POLYLOGUE_COMPLETE_PREFIX").ok(),
-    });
+pub struct Catalog {
+    pub path:PathBuf,
+    pub archive_key:String,
 }
+static INVOCATION: OnceLock<Context> = OnceLock::new();
+/// Main supplies its one captured process/configuration boundary.
+pub fn capture(context:Context) {let _=INVOCATION.set(context);}
 
 pub struct Query;
 impl clap_complete::engine::ValueCompleter for Query {
@@ -54,11 +43,11 @@ impl clap_complete::engine::ValueCompleter for Query {
                 )
             })
             .unwrap_or_else(|| (current.to_owned(), current.len(), 0, current.len()));
-        crate::completion_catalog::complete(
-            &polylogue_store::Archive::default_root(),
-            &text,
-            position,
-        )
+        let candidates=match invocation.and_then(|call|call.catalog.as_ref()) {
+            Some(catalog)=>crate::completion_catalog::complete_file(&catalog.path,&catalog.archive_key,&text,position),
+            None=>crate::completion_catalog::grammar(&text,position),
+        };
+        candidates
         .into_iter()
         .filter_map(|completion| {
             if completion.replace.start < start || completion.replace.end > end {
@@ -126,7 +115,7 @@ impl clap_complete::engine::ValueCompleter for Setting {
         let Some(prefix) = current.to_str() else {
             return vec![];
         };
-        let root = polylogue_store::Archive::default_root();
+        let Some(catalog)=INVOCATION.get().and_then(|call|call.catalog.as_ref())else{return vec![];};
         let key = if self.key {
             None
         } else {
@@ -147,7 +136,7 @@ impl clap_complete::engine::ValueCompleter for Setting {
                 .and_then(|setting| setting.get_one::<String>("key"))
                 .cloned()
         };
-        crate::completion_catalog::settings(&root, key.as_deref(), prefix)
+        crate::completion_catalog::settings_file(&catalog.path,&catalog.archive_key,key.as_deref(),prefix)
             .into_iter()
             .filter_map(|(value, help)| candidate(value, help))
             .collect()

@@ -107,14 +107,10 @@ pub(super) struct State {
 }
 impl State {
     pub(super) fn new(clock: Option<polylogue_query::Clock>, requires_confirmed: bool) -> Self {
-        let origins = polylogue_sources::origin::ORIGINS
-            .iter()
-            .map(|origin| origin.name.to_owned())
-            .collect::<Vec<_>>();
         Self {
             writer: None,
             position: None,
-            catalog: polylogue_query::catalog::catalog(&origins, &crate::commands::command_words()),
+            catalog:super::base_catalog(),
             definitions: BTreeMap::new(),
             kept: BTreeMap::new(),
             clock,

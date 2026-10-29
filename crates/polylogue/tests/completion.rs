@@ -106,12 +106,12 @@ fn callback(
     let at = Instant::now();
     let output = Command::new(BIN)
         .env("COMPLETE", shell)
-        .env("POLYLOGUE_ARCHIVE", root)
-        .env("XDG_CACHE_HOME", cache)
-        .env("_CLAP_COMPLETE_INDEX", words.len().to_string())
+                .env("XDG_CACHE_HOME", cache)
+        .env("_CLAP_COMPLETE_INDEX", (words.len()+2).to_string())
         .env("_CLAP_IFS", "\n")
         .arg("--")
         .arg(program)
+        .arg("--archive").arg(root)
         .args(words)
         .output()
         .unwrap();

@@ -21,16 +21,15 @@ pub fn path(root: &Path) -> PathBuf {
         .join(crate::runtime_dir::archive_key(root))
         .join("catalog")
 }
-/// Completion opens only this derived file. Missing, obsolete or corrupt
-/// snapshots leave the static grammar available.
-pub fn complete(root: &Path, text: &str, position: usize) -> Vec<Completion> {
-    complete_file(
-        &path(root),
-        &crate::runtime_dir::archive_key(root),
-        text,
-        position,
-    )
+pub(super) fn base_catalog()->Catalog {
+    let origins=polylogue_sources::origin::ORIGINS.iter().map(|origin|origin.name.to_owned()).collect::<Vec<_>>();
+    polylogue_query::catalog::catalog(&origins,&crate::commands::command_words())
 }
+pub(crate) fn grammar(text:&str,position:usize)->Vec<Completion> {
+    if position>text.len()||!text.is_char_boundary(position){return vec![];}
+    query_language::complete::complete(text,position,&base_catalog())
+}
+/// Completion opens only the supplied derived catalog, never the archive.
 pub(crate) fn complete_file(
     path: &Path,
     archive: &str,
@@ -42,11 +41,7 @@ pub(crate) fn complete_file(
     }
     let reader = CatalogReader::open(path, archive).ok().flatten();
     complete_snapshot(reader.as_ref(), text, position).unwrap_or_else(|_| {
-        query_language::complete::complete(
-            text,
-            position,
-            &crate::daemon::warm::Completion::default().catalog,
-        )
+        grammar(text,position)
     })
 }
 fn complete_snapshot(
@@ -55,11 +50,7 @@ fn complete_snapshot(
     position: usize,
 ) -> polylogue_store::Result<Vec<Completion>> {
     let Some(reader) = reader else {
-        return Ok(query_language::complete::complete(
-            text,
-            position,
-            &crate::daemon::warm::Completion::default().catalog,
-        ));
+        return Ok(grammar(text,position));
     };
     let mut catalog = reader.catalog()?;
     for source in query_language::complete::requirements(text, position, &catalog).sources {
@@ -285,15 +276,7 @@ fn session_help(session: &polylogue_store::completion::Session) -> String {
     )
 }
 /// Setting consumers use their command table position, outside the query grammar.
-pub fn settings(root: &Path, key: Option<&str>, prefix: &str) -> Vec<(String, String)> {
-    settings_file(
-        &path(root),
-        &crate::runtime_dir::archive_key(root),
-        key,
-        prefix,
-    )
-}
-fn settings_file(
+pub(crate) fn settings_file(
     path: &Path,
     archive: &str,
     key: Option<&str>,

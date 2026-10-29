@@ -40,39 +40,6 @@ fn a_first_page_is_reused_only_briefly() {
 }
 
 #[test]
-fn completions_cover_fields_values_and_sessions() {
-    let data = Completion {
-        values: BTreeMap::from([("repo".into(), vec!["polylogue".into(), "sinex".into()])]),
-        sessions: vec![("claude-code:abc".into(), "a title".into())],
-        ..Completion::default()
-    };
-    let values = |word: &str| -> Vec<String> {
-        completions(&data, word)
-            .into_iter()
-            .map(|(v, _)| v)
-            .collect()
-    };
-    assert!(values("re").contains(&"repo:".into()));
-    assert_eq!(values("repo:p"), vec!["repo:polylogue"]);
-    assert!(values("ses").contains(&"sessions".into()));
-    assert!(values("claude").contains(&"claude-code:abc".into()));
-    assert_eq!(values("claude-code:a"), vec!["claude-code:abc"]);
-}
-
-#[test]
-fn values_with_spaces_are_quoted() {
-    let data = Completion {
-        values: BTreeMap::from([("repo".into(), vec!["two words".into()])]),
-        ..Default::default()
-    };
-    assert!(
-        completions(&data, "repo:two")
-            .iter()
-            .any(|(value, _)| value == "repo:\"two words\"")
-    );
-}
-
-#[test]
 fn count_failures_are_visible_and_a_success_clears_them() {
     let daemon = crate::test_daemon::start("count worker failure");
     let warm = Warm::default();
@@ -97,71 +64,6 @@ fn count_failures_are_visible_and_a_success_clears_them() {
     drop(reader);
     warm.refresh_counts(&daemon.daemon.reads);
     assert!(warm.count_error().is_none());
-}
-
-#[test]
-fn completions_escape_help_and_omit_values_with_controls() {
-    let hostile = "\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
-    let mut tags = vec!["ordinary".into()];
-    for code in 0..=159 {
-        let c = char::from_u32(code).unwrap();
-        if c.is_control() {
-            tags.push(c.to_string());
-        }
-    }
-    let data = Completion {
-        values: BTreeMap::from([("tag".into(), tags), ("query".into(), vec![hostile.into()])]),
-        sessions: vec![("claude-code:abc".into(), hostile.into())],
-        ..Completion::default()
-    };
-    let tags = completions(&data, "tag:");
-    assert!(tags.iter().any(|(value, _)| value == "tag:ordinary"));
-    assert!(
-        tags.iter()
-            .all(|(value, _)| ["tag:ordinary", "tag:unknown", "tag:*"].contains(&value.as_str()))
-    );
-    assert!(
-        completions(&data, "query:")
-            .iter()
-            .all(|(value, _)| !value.contains(hostile))
-    );
-    assert_eq!(
-        completions(&data, "claude-code:"),
-        vec![(
-            "claude-code:abc".into(),
-            polylogue_render::terminal::escape(hostile)
-        )]
-    );
-}
-
-#[test]
-fn completion_finds_quoted_literal_prefixes_and_preserves_backslashes() {
-    let data = Completion {
-        values: BTreeMap::from([(
-            "repo".into(),
-            vec!["two words".into(), "path\\part \"λ\"".into()],
-        )]),
-        ..Completion::default()
-    };
-    assert_eq!(completions(&data, "repo:two")[0].0, "repo:\"two words\"");
-    assert_eq!(completions(&data, "repo:\"two")[0].0, "repo:\"two words\"");
-    let value = &completions(&data, "repo:path")[0].0;
-    let parsed = polylogue_query::parse(value).unwrap();
-    let polylogue_query::ast::Source::Unit {
-        condition: Some(cond),
-        ..
-    } = parsed.source
-    else {
-        panic!()
-    };
-    let polylogue_query::ast::ConditionKind::Match {
-        value: polylogue_query::ast::Value::Scalar { text, .. },
-        ..
-    } = cond.kind
-    else {
-        panic!()
-    };
-    assert_eq!(text, "path\\part \"λ\"");
 }
 
 #[test]

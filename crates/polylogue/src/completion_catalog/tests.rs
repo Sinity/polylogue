@@ -353,3 +353,26 @@ fn primary_unknown_checkpoint_does_not_activate_an_empty_catalog() {
         .unwrap();
     assert!(!path.exists());
 }
+
+#[test]
+fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates() {
+    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("catalog");
+    let hostile="\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\u{202e}";
+    let metadata=Metadata{archive:"synthetic".into(),position:ChangePosition{generation:"g".into(),index:1,archive:1},written_at:100};
+    CatalogWriter::build(&path,&metadata,|writer|{
+        writer.put_catalog(&base_catalog())?;
+        writer.put_values("observed",&BTreeMap::from([("repo".into(),BTreeMap::from([("path\\part \"λ\"".into(),1)])),("tag".into(),BTreeMap::from([("ordinary".into(),1),(hostile.into(),1)]))]))?;
+        writer.put_session(&Session{id:"claude-code:abc".into(),native_id:"abc".into(),prefix:String::new(),title:hostile.into(),origin:"claude-code".into(),repo:None,last_activity:Some(100),first_prompt:None,values:BTreeMap::new()})
+    }).unwrap();
+    let text=rendered(&path,"repo:path").into_iter().next().unwrap();
+    let parsed=polylogue_query::parse(&text).unwrap();
+    let polylogue_query::ast::Source::Unit{condition:Some(condition),..}=parsed.source else{panic!()};
+    let polylogue_query::ast::ConditionKind::Match{value:polylogue_query::ast::Value::Scalar{text,..},..}=condition.kind else{panic!()};
+    assert_eq!(text,"path\\part \"λ\"");
+    let candidates=complete_file(&path,"synthetic","tag:",4);
+    assert!(candidates.iter().any(|candidate|candidate.value=="ordinary"));
+    assert!(candidates.iter().all(|candidate|!candidate.value.chars().any(char::is_control)));
+    let candidates=complete_file(&path,"synthetic","claude-code:",12);
+    assert!(candidates.iter().any(|candidate|candidate.value=="a"));
+    assert!(candidates.iter().all(|candidate|!candidate.help.contains('\x1b')&&!candidate.help.contains('\u{202e}')));
+}
