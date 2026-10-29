@@ -995,7 +995,30 @@ impl Spool {
     }
 
     fn remove(&self, identity: &str) -> Result<()> {
-        self.retire_path(&self.operation(identity)?)
+        let mut path = self.operation(identity)?;
+        let acquisition = identity.rsplit_once(':').and_then(|(batch, ordinal)| {
+            (batch.starts_with("acquisition:") && ordinal.parse::<u64>().is_ok()).then_some(batch)
+        });
+        let batch = acquisition.map(|batch| self.root.join("operations").join(hash(batch.as_bytes())));
+        if let Some(batch) = &batch {
+            if let Some(metadata) = read_checked::<Acquisition>(&batch.join("acquisition.json"))? {
+                if Some(metadata.identity.as_str()) != acquisition {
+                    return invalid("retiring acquisition has another identity");
+                }
+                // A crash may have retired this member before its acquisition
+                // header. The confirmed canonical group still owns the cleanup.
+                path = batch.join("operations").join(hash(identity.as_bytes()));
+            }
+        }
+        self.retire_path(&path)?;
+        if let Some(batch) = batch.filter(|batch| batch.exists()) {
+            if fs::read_dir(batch.join("operations"))?.try_fold(true, |empty, entry| -> Result<bool> {
+                Ok(empty && !entry?.file_name().to_str().is_some_and(hex_name))
+            })? {
+                self.retire_path(&batch)?;
+            }
+        }
+        Ok(())
     }
 
     fn retire_path(&self, directory: &Path) -> Result<()> {
