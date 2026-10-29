@@ -77,6 +77,8 @@ pub enum Product {
         counts: RecordCounts,
         reset: bool,
         comparison: Option<crate::tool_databases::Comparison>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     },
     Request(PreparedRequest),
     RestoredRequest {
@@ -129,6 +131,7 @@ pub enum ConfirmedChange {
     Tombstoned,
     Ignored,
     PositionComplete,
+    ScopeReset { scope: String },
 }
 
 /// A source capture waiting in the producer spool, before cache application.
@@ -159,6 +162,8 @@ pub struct CapturedReading {
     pub no_parser_yet: bool,
     pub reset: bool,
     pub comparison: Option<crate::tool_databases::Comparison>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
 }
 impl CapturedReading {
     pub fn from_step(step: &crate::ParseStep) -> crate::Result<Self> {
@@ -181,6 +186,7 @@ impl CapturedReading {
             no_parser_yet: step.no_parser_yet,
             reset: step.reset,
             comparison: step.comparison.clone(),
+            checkpoint: step.checkpoint.clone(),
         })
     }
     pub fn into_step(self) -> crate::ParseStep {
@@ -196,6 +202,7 @@ impl CapturedReading {
         step.no_parser_yet = self.no_parser_yet;
         step.reset = self.reset;
         step.comparison = self.comparison;
+        step.checkpoint = self.checkpoint;
         step
     }
 }
@@ -323,6 +330,7 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
         counts: step.counts.clone(),
         reset: step.reset,
         comparison: step.comparison.clone(),
+        checkpoint: step.checkpoint.clone(),
     });
     Ok(products)
 }

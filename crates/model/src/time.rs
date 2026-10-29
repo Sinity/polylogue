@@ -14,6 +14,12 @@ pub struct TimeEvidence {
     pub until: Option<Timestamp>,
 }
 
+impl Default for TimeEvidence {
+    fn default() -> Self {
+        Self::UNKNOWN
+    }
+}
+
 impl TimeEvidence {
     pub const UNKNOWN: Self = Self {
         quality: TimeQuality::Unknown,

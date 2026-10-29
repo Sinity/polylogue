@@ -5,7 +5,7 @@ use base64::Engine as _;
 use std::io::Write;
 
 pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
-    if !values.flag("reveal") {
+    if values.text("out").is_none() {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
         } else {
@@ -25,13 +25,8 @@ pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
 }
 
 fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
-    crate::daemon::attachment::check_cli()?;
     let path = PathBuf::from(values.text("out").ok_or("--out is required")?);
-    let directory = path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
+    let mut temporary = super::staged_file::StagedFile::new(&path).map_err(|e| e.to_string())?;
     let command = crate::commands::command("attachment").ok_or("attachment command missing")?;
     let Action::Request(build) = command.action else {
         return Err("attachment request missing".into());
@@ -100,9 +95,7 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
                 if offset != page.size || hasher.finalize().as_bytes() != &page.blob.0 {
                     return Err("complete attachment length or hash differs".into());
                 }
-                temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-                temporary.persist(&path).map_err(|e| e.to_string())?;
-                return Ok(path);
+                return temporary.commit().map_err(|e| e.to_string());
             }
         }
     }

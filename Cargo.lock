@@ -528,15 +528,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "credential-masking"
-version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#aadab2c13ca70638c8e433274d2d01298e1f0069"
-dependencies = [
- "hmac",
- "sha2",
-]
-
-[[package]]
 name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1698,6 +1689,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustix",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -1743,7 +1735,6 @@ name = "polylogue-model"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "credential-masking",
  "jiff",
  "schemars",
  "serde",

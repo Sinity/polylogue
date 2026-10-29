@@ -19,7 +19,7 @@ fn commit(origin: &str, messages: Vec<Message>) -> TestArchive {
     let mut b = batch("authorship", 0, 0, rows, &["s"]);
     b.input.format = origin.into();
     b.parse[0].output.sessions = vec![Session::new(session, SessionKind::Main)];
-    w.writer.send(b).unwrap();
+    w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     w

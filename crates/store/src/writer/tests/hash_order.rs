@@ -50,11 +50,16 @@ pub(super) fn structured_message(reverse: bool) -> Message {
 fn version_hash_ignores_nested_json_member_order() {
     let first = structured_message(false);
     let second = structured_message(true);
+    // Handwritten canonical JSON fixes the source facts independently of Message's serializer.
+    let canonical = r#"{"at":"1970-01-01T00:00:01Z","at_precision":"instant","at_quality":"intrinsic","blocks":[{"text":"Synthetic body","type":"text"},{"action":"other","call_id":"call","input":{"array":[{"a":7,"z":"λ🙂"},null,false,"exact\ntext"]},"tool":"synthetic","type":"tool_call"},{"call_id":"call","data":{"array":[{"a":7,"z":"λ🙂"},null,false,"exact\ntext"]},"outcome":{"kind":"ok"},"output":"Synthetic output","type":"tool_result"},{"data":{"array":[{"a":7,"z":"λ🙂"},null,false,"exact\ntext"]},"type":"other","type_name":"synthetic"}],"id":"claude-code:hash-order","role":"assistant","session":"claude-code:hash-order","stop_reason":"end_turn"}"#;
+    let mut value = serde_json::to_value(&first).unwrap();
+    value.sort_all_objects();
+    assert_eq!(serde_json::to_vec(&value).unwrap(), canonical.as_bytes());
     assert_eq!(
         blake3::Hash::from_bytes(crate::encoding::PreparedMessage::new(&first).unwrap().hash)
             .to_hex()
             .as_str(),
-        "6522639c8fb221f38200c544778f220c0b2f739f9961f65cd06218cd2d93652e",
+        "d94d0f12773c570a79ff4e9bd940775ec4c36efac5e63da9c3d9dfbb00e1e9ac",
         "the archive fixture stays stable across JSON map features"
     );
     assert_eq!(first, second, "member order does not change JSON values");
@@ -71,7 +76,7 @@ fn version_hash_ignores_nested_json_member_order() {
             if prepared {
                 b.parse[0].prepare();
             }
-            w.writer.send(b).unwrap();
+            w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
         }
         let report = w.writer.flush().unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -128,7 +133,7 @@ fn distinct_structured_values_remain_inspectable_versions() {
             if prepared {
                 b.parse[0].prepare();
             }
-            w.writer.send(b).unwrap();
+            w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
         }
         assert!(w.writer.flush().unwrap().errors.is_empty());
         let pool = ReadPool::open(&w.archive).unwrap();

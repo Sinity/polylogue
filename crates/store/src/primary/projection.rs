@@ -60,6 +60,11 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let applied = position(&tx)?;
     for event in events {
+        if matches!(event.change, ConfirmedChange::ScopeReset { .. }) {
+            return Err(StoreError::Invalid(
+                "scope reset must precede confirmed data application".into(),
+            ));
+        }
         if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
             tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
             continue;
@@ -248,7 +253,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
                     Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
                     Product::Background { facts, .. } => Some(facts.session.to_string()),
-                    Product::WorkSnapshot { snapshot } => Some(snapshot.session.id.to_string()),
+                    Product::WorkSnapshot { snapshot } => Some(snapshot.session_id.to_string()),
                     _ => None,
                 };
                 let reading = product.reading();
@@ -310,7 +315,9 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 fact.changed = position;
                 fact
             }),
-            ConfirmedChange::Ignored | ConfirmedChange::PositionComplete => None,
+            ConfirmedChange::Ignored
+            | ConfirmedChange::PositionComplete
+            | ConfirmedChange::ScopeReset { .. } => None,
         };
         if let Some(next) = next {
             next.insert(index, "primary_candidate")?;
@@ -404,6 +411,7 @@ struct ReadingStep {
     receipt: Option<crate::wire_shapes::ReadingReceipt>,
     reset: bool,
     comparison: Option<crate::tool_databases::Comparison>,
+    checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
 }
 #[derive(Default)]
 struct SourceSpans {
@@ -416,6 +424,13 @@ fn finish_step(
     facts: ReadingStep,
     spans: &mut SourceSpans,
 ) -> Result<()> {
+    if let Some(checkpoint) = &facts.checkpoint
+        && !checkpoint.matches(&reading.reading_version, reading.parsed_upto)
+    {
+        return Err(StoreError::Invalid(
+            "parser continuation differs from its confirmed reading cursor".into(),
+        ));
+    }
     if facts.reset {
         spans.missing = false;
     } else if reading.start > spans.through {
@@ -425,6 +440,7 @@ fn finish_step(
     step.receipt = facts.receipt;
     step.reset = facts.reset;
     step.comparison = facts.comparison;
+    step.checkpoint = facts.checkpoint;
     step.source_prefix_missing = spans.missing || step.receipt.is_none();
     spans.through = spans.through.max(reading.parsed_upto);
     file.push_confirmed(&mut step)
@@ -603,11 +619,13 @@ fn plan(index: &Connection) -> Result<Plan> {
                     counts: record_counts,
                     reset,
                     comparison: source_comparison,
+                    checkpoint,
                     ..
                 } => {
                     pending.counts = record_counts;
                     pending.reset = reset;
                     pending.comparison = source_comparison;
+                    pending.checkpoint = checkpoint;
                     pending.receipt = Some(crate::wire_shapes::ReadingReceipt {
                         sequence: row.get(2)?,
                         id: Some(row.get(1)?),
