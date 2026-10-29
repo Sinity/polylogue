@@ -1190,7 +1190,9 @@ impl RowWriter<'_, '_> {
         let used: u64 = a.used.values().sum();
         let skipped: u64 = a.skipped.values().sum();
         let unreadable: u64 = a.unreadable.values().sum();
-        let status = if p.parsed_upto >= b.length {
+        let status = if p.no_parser_yet {
+            "no_parser_yet"
+        } else if p.parsed_upto >= b.length {
             "done"
         } else if p.at_end {
             "waiting"
@@ -1227,7 +1229,11 @@ impl RowWriter<'_, '_> {
             skipped as i64,
             unreadable as i64,
             detail,
-            p.reading_version,
+            if p.no_parser_yet {
+                ""
+            } else {
+                p.reading_version.as_str()
+            },
         ])?;
         let groups = [
             ("skipped:", &a.skipped, 1),

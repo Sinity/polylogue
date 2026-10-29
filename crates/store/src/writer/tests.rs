@@ -6,6 +6,7 @@ use polylogue_model::{
 
 mod extent_checkpoint;
 mod input_events;
+mod resolution;
 
 struct TestArchive {
     _dir: tempfile::TempDir,
@@ -45,6 +46,7 @@ fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&s
         reported_cost_usd: None,
         duration_ms: None,
         production: Default::default(),
+        attrs: Default::default(),
     }
 }
 

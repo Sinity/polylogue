@@ -6,9 +6,79 @@ pub(super) fn normalize(
     archive: &Connection,
     pending: &HashMap<BlobHash, u64>,
 ) -> Result<()> {
-    for step in &mut batch.parse {
+    normalize_using(&mut batch.parse, |hash| match pending.get(&hash) {
+        Some(size) => Ok(Some(*size)),
+        None => size(archive, hash),
+    })
+}
+pub(super) fn normalize_known(
+    step: &mut ParseStep,
+    known: &HashMap<BlobHash, Option<u64>>,
+) -> Result<()> {
+    normalize_using(std::slice::from_mut(step), |hash| {
+        known.get(&hash).copied().ok_or_else(|| {
+            StoreError::Invalid("a chain attachment has no snapshot identity".into())
+        })
+    })
+}
+pub(super) fn remember(
+    step: &ParseStep,
+    archive: &Connection,
+    pending: &HashMap<BlobHash, u64>,
+    known: &mut HashMap<BlobHash, Option<u64>>,
+) -> Result<()> {
+    for block in step
+        .output
+        .messages
+        .iter()
+        .flat_map(|row| &row.message.blocks)
+        .chain(
+            step.output
+                .documents
+                .iter()
+                .flat_map(|row| &row.document.blocks),
+        )
+    {
+        for attachment in attachments(block) {
+            if let Some(hash) = attachment.blob {
+                if let std::collections::hash_map::Entry::Vacant(slot) = known.entry(hash) {
+                    slot.insert(match pending.get(&hash) {
+                        Some(size) => Some(*size),
+                        None => size(archive, hash)?,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn size(archive: &Connection, hash: BlobHash) -> Result<Option<u64>> {
+    archive
+        .query_row(
+            "SELECT size FROM blob WHERE hash=?1",
+            [hash.0.as_slice()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|size| {
+            u64::try_from(size).map_err(|_| StoreError::Invalid("negative blob size".into()))
+        })
+        .transpose()
+}
+fn attachments(block: &Block) -> &[polylogue_model::Attachment] {
+    match block {
+        Block::File(attachment) | Block::Image(attachment) => std::slice::from_ref(attachment),
+        Block::ToolResult { attachments, .. } => attachments,
+        _ => &[],
+    }
+}
+fn normalize_using(
+    steps: &mut [ParseStep],
+    mut available: impl FnMut(BlobHash) -> Result<Option<u64>>,
+) -> Result<()> {
+    for step in steps {
         for (message_index, row) in step.output.messages.iter_mut().enumerate() {
-            let Some(mut blocks) = stored_blocks(&row.message.blocks, archive, pending)? else {
+            let Some(mut blocks) = stored_blocks(&row.message.blocks, &mut available)? else {
                 continue;
             };
             if let Some(prepared) = step.prepared.messages.get(message_index) {
@@ -20,7 +90,7 @@ pub(super) fn normalize(
             }
         }
         for (document_index, row) in step.output.documents.iter_mut().enumerate() {
-            let Some(mut blocks) = stored_blocks(&row.document.blocks, archive, pending)? else {
+            let Some(mut blocks) = stored_blocks(&row.document.blocks, &mut available)? else {
                 continue;
             };
             if let Some(prepared) = step.prepared.documents.get(document_index) {
@@ -40,36 +110,17 @@ pub(super) fn normalize(
 
 fn stored_blocks(
     blocks: &[Block],
-    archive: &Connection,
-    pending: &HashMap<BlobHash, u64>,
+    available: &mut impl FnMut(BlobHash) -> Result<Option<u64>>,
 ) -> Result<Option<Vec<Block>>> {
     let mut changed = false;
     let mut normalized = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
-        let attachments = match block {
-            Block::File(a) | Block::Image(a) => std::slice::from_ref(a),
-            Block::ToolResult { attachments, .. } => attachments.as_slice(),
-            _ => continue,
-        };
+        let attachments = attachments(block);
         for (attachment_index, attachment) in attachments.iter().enumerate() {
             let Some(hash) = attachment.blob else {
                 continue;
             };
-            let size: Option<u64> = match pending.get(&hash) {
-                Some(size) => Some(*size),
-                None => archive
-                    .query_row(
-                        "SELECT size FROM blob WHERE hash = ?1",
-                        [&hash.0[..]],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?
-                    .map(|size| {
-                        u64::try_from(size)
-                            .map_err(|_| StoreError::Invalid("negative blob size".into()))
-                    })
-                    .transpose()?,
-            };
+            let size = available(hash)?;
             if size.is_some() && attachment.size == size {
                 continue;
             }

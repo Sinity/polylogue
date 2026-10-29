@@ -97,6 +97,7 @@ impl Source {
 }
 
 pub(in crate::writer) trait ValueSource {
+    fn assertion(&self, kind: Kind, pk: i64) -> Result<Option<Vec<u8>>>;
     fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>>;
     fn document(
         &self,
@@ -134,6 +135,14 @@ impl<'a> Projection<'a> {
                 continue;
             }
             let message = key.kind == Kind::Message;
+            if !row.existing {
+                if message {
+                    messages.insert(row.pk, Vec::new());
+                } else {
+                    documents.insert(row.pk, Vec::new());
+                }
+                continue;
+            }
             let sql = if message {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,NULL FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE message_pk=?1"
             } else {
@@ -474,7 +483,16 @@ impl<'a> Projection<'a> {
             };
             choices.documents.insert(pk, choice);
         }
-        assertions.step(resolver, index, keys, &input_key, chain, step, &mut choices)?;
+        assertions.step(
+            resolver,
+            index,
+            keys,
+            &input_key,
+            chain,
+            step,
+            &mut choices,
+            values.as_deref(),
+        )?;
         step.prepared.choices = Some(choices);
         if values.is_some() {
             message_values.clear();
@@ -525,6 +543,7 @@ struct Assertion {
     id: String,
     chain: i64,
     rank: i64,
+    value_pk: i64,
     body: Vec<u8>,
     event: Option<EventChoice>,
 }
@@ -540,13 +559,16 @@ impl Assertions {
             links: BTreeMap::new(),
         };
         for (key, row) in &keys.rows {
+            if !row.existing {
+                continue;
+            }
             match key.kind {
                 Kind::Event => {
-                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,body:body.clone(),event:Some(EventChoice {value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:body.clone(),event:Some(EventChoice {value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
                     assertions.events.insert(row.pk, values);
                 }
                 Kind::Link => {
-                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,v.body FROM link_source s JOIN input_ref i ON i.pk=s.input_pk JOIN link_value v ON v.pk=s.value_pk WHERE s.link_pk=?1")?.query_map([row.pk],|r|Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,body:r.get(4)?,event:None}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk FROM link_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.link_pk=?1")?.query_map([row.pk],|r|Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:Vec::new(),event:None}))?.collect::<rusqlite::Result<Vec<_>>>()?;
                     assertions.links.insert(row.pk, values);
                 }
                 _ => {}
@@ -563,6 +585,7 @@ impl Assertions {
         chain: i64,
         step: &ParseStep,
         choices: &mut Choices,
+        values: Option<&dyn ValueSource>,
     ) -> Result<()> {
         let input_pk = keys.get(Kind::Input, input.id.as_bytes())?.pk;
         let rank = i64::from(input.arrival_rank);
@@ -644,6 +667,7 @@ impl Assertions {
                 id: input.id.clone(),
                 chain,
                 rank,
+                value_pk: value.key.pk,
                 body: value.body.clone(),
                 event: Some(choice),
             });
@@ -662,7 +686,11 @@ impl Assertions {
                 .iter()
                 .find(|s| s.input == input_pk && s.chain == chain)
             {
-                let previous: Link = crate::encoding::unpack_json(&previous.body)?;
+                let previous: Link = crate::encoding::unpack_json(&previous.body(
+                    index,
+                    Kind::LinkValue,
+                    values,
+                )?)?;
                 merged.at = merged.at.into_iter().chain(previous.at).min();
                 merged.call_id = merged.call_id.into_iter().chain(previous.call_id).min();
                 merged.evidence = merged.evidence.min(previous.evidence);
@@ -674,6 +702,7 @@ impl Assertions {
                 id: input.id.clone(),
                 chain,
                 rank,
+                value_pk: value.key.pk,
                 body: value.body.clone(),
                 event: None,
             });
@@ -690,11 +719,10 @@ impl Assertions {
             let mut choice = winner.and_then(|s| s.event.clone());
             if let Some(choice) = &mut choice {
                 if choice.body.is_empty() {
-                    choice.body = index.query_row(
-                        "SELECT body FROM event_value WHERE pk=?1",
-                        [choice.value_pk],
-                        |r| r.get(0),
-                    )?;
+                    choice.body =
+                        winner
+                            .expect("event winner")
+                            .body(index, Kind::EventValue, values)?;
                 }
             }
             choices.events.insert(pk, choice);
@@ -708,9 +736,14 @@ impl Assertions {
                 .iter()
                 .min_by_key(|s| (s.rank, &s.id, std::cmp::Reverse(s.chain)))
             {
-                let mut link: Link = crate::encoding::unpack_json(&winner.body)?;
+                let mut link: Link =
+                    crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?;
                 for source in sources {
-                    let other: Link = crate::encoding::unpack_json(&source.body)?;
+                    let other: Link = crate::encoding::unpack_json(&source.body(
+                        index,
+                        Kind::LinkValue,
+                        values,
+                    )?)?;
                     link.at = link.at.into_iter().chain(other.at).min();
                     link.call_id = link.call_id.into_iter().chain(other.call_id).min();
                 }
@@ -724,6 +757,44 @@ impl Assertions {
             };
             choices.links.insert(pk, choice);
         }
+        if values.is_some() {
+            for source in self
+                .events
+                .values_mut()
+                .chain(self.links.values_mut())
+                .flatten()
+            {
+                source.body.clear();
+                if let Some(event) = &mut source.event {
+                    event.body.clear();
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+impl Assertion {
+    fn body(
+        &self,
+        index: &Connection,
+        kind: Kind,
+        values: Option<&dyn ValueSource>,
+    ) -> Result<Vec<u8>> {
+        if !self.body.is_empty() {
+            return Ok(self.body.clone());
+        }
+        if let Some(body) = values
+            .map(|values| values.assertion(kind, self.value_pk))
+            .transpose()?
+            .flatten()
+        {
+            return Ok(body);
+        }
+        Ok(index.query_row(
+            &format!("SELECT body FROM {} WHERE pk=?1", kind.table()),
+            [self.value_pk],
+            |r| r.get(0),
+        )?)
     }
 }

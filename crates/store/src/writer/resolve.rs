@@ -79,6 +79,8 @@ pub(super) struct Resolver {
     active: Mutex<Active>,
     available: Condvar,
     first: Option<Arc<crate::first_build::FirstBuild>>,
+    #[cfg(test)]
+    waiting: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 pub(super) struct Lease {
     resolver: Arc<Resolver>,
@@ -99,6 +101,10 @@ impl Drop for Lease {
 }
 
 impl Resolver {
+    #[cfg(test)]
+    pub(super) fn observe_wait(&self, observer: std::sync::mpsc::Sender<()>) {
+        *self.waiting.lock().expect("wait observer") = Some(observer);
+    }
     pub(super) fn location(&self) -> &Archive {
         &self.archive
     }
@@ -143,12 +149,18 @@ impl Resolver {
             }),
             available: Condvar::new(),
             first,
+            #[cfg(test)]
+            waiting: Mutex::new(None),
         }))
     }
 
     pub(super) fn lease(self: &Arc<Self>, keys: BTreeSet<Key>) -> Lease {
         let mut active = self.active.lock().expect("resolver lock");
         while keys.iter().any(|key| active.keys.contains(key)) {
+            #[cfg(test)]
+            if let Some(waiting) = self.waiting.lock().expect("wait observer").as_ref() {
+                let _ = waiting.send(());
+            }
             active = self.available.wait(active).expect("resolver lock");
         }
         active.keys.extend(keys.iter().cloned());
