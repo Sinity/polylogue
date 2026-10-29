@@ -43,6 +43,42 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    pub(crate) fn invocation(
+        &self,
+        authorship: &polylogue_model::authorship::Authorship,
+    ) -> crate::operation::Invocation {
+        crate::operation::Invocation::capture(&self.config.requests, authorship)
+    }
+    pub(crate) fn operation_context(
+        &self,
+        authorship: &polylogue_model::authorship::Authorship,
+    ) -> Result<Arc<crate::operation::Context>, Response> {
+        let invocation = self.invocation(authorship);
+        let context = match &self.mode {
+            ModeState::Standalone => crate::operation::Context::standalone(
+                invocation,
+                self.config
+                    .standalone_day()
+                    .map_err(|problem| error("not_yet_available", problem))?
+                    .clone(),
+            ),
+            #[cfg(feature = "sinex")]
+            ModeState::Primary { connection } => {
+                let policy = connection
+                    .context(|name| {
+                        jiff::tz::TimeZone::get(name).map_err(|error| error.to_string())
+                    })
+                    .map_err(crate::protocol::context_failure)?;
+                crate::operation::Context::primary(invocation, policy)?
+            }
+            #[cfg(feature = "sinex")]
+            ModeState::Blocked { error: reason, .. } => {
+                return Err(error("sinex_unavailable", reason));
+            }
+        };
+        Ok(Arc::new(context))
+    }
+
     pub(crate) fn query_clock(&self) -> Result<query_language::time::Clock, Response> {
         let day = self.config.standalone_day().map_err(|_| {
             error(
