@@ -141,3 +141,59 @@ fn structure_checks_field_types_and_reads_past_long_values() {
         "claude-ai"
     );
 }
+
+#[test]
+fn sibling_packages_route_only_their_declared_origin() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("mixed.zip");
+    zip(
+        &source,
+        &[
+            ("chatgpt/conversations.json", CHAT.as_bytes()),
+            (
+                "chatgpt/foreign.json",
+                br#"{"uuid":"foreign","chat_messages":[]}"#,
+            ),
+            (
+                "claude/conversations.json",
+                br#"[{"uuid":"claude","chat_messages":[]}]"#,
+            ),
+        ],
+    );
+    let members = stage(&source, scratch.path(), None).unwrap();
+    assert_eq!(members[1].origin.unwrap().name, "chatgpt");
+    assert_eq!(members[2].origin.unwrap().name, "export-file");
+    assert_eq!(members[3].origin.unwrap().name, "claude-ai");
+}
+
+#[test]
+fn aider_requires_its_declared_pair_and_codex_cloud_keeps_its_namespace() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("pair.zip");
+    zip(
+        &source,
+        &[(
+            ".aider.chat.history.md",
+            b"# aider chat started at 2026-01-01 10:00:00\n",
+        )],
+    );
+    assert!(
+        stage(&source, scratch.path(), None)
+            .unwrap()
+            .iter()
+            .all(|member| member.origin.is_none())
+    );
+    zip(&source,&[(".aider.llm.history",b"TO LLM 2026-01-01T10:00:00\n-------\nUSER hello\nLLM RESPONSE 2026-01-01T10:00:01\nASSISTANT hi\n"),(".aider.chat.history.md",b"# aider chat started at 2026-01-01 10:00:00\n")]);
+    let members = stage(&source, scratch.path(), None).unwrap();
+    assert_eq!(members[1].origin.unwrap().name, "aider");
+    assert_eq!(members[2].origin.unwrap().name, "aider");
+    let cloud = scratch.path().join("codex.json");
+    std::fs::write(&cloud,br#"[{"id":"task_e_one","turns":[{"id":"task_e_one~usertrn_e_one","role":"user","input_items":[]}]}]"#).unwrap();
+    assert_eq!(
+        stage(&cloud, scratch.path(), None).unwrap()[0]
+            .origin
+            .unwrap()
+            .name,
+        "codex-cloud"
+    );
+}

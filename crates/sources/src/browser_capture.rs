@@ -157,6 +157,22 @@ impl DocumentParser for Capture {
             .filter(|r| r.as_object().is_some_and(|o| !o.is_empty()));
         let first_message = sink.out.messages.len();
         match (origin, raw) {
+            ("codex-cloud", Some(raw)) if crate::codex_cloud::task_shape(raw) => {
+                let result = serde_json::to_vec(raw)
+                    .map_err(|error| error.to_string())
+                    .and_then(|bytes| {
+                        crate::export::ExportParser::item(
+                            &mut crate::codex_cloud::Cloud,
+                            &bytes,
+                            &mut sink,
+                            &mut crate::export::MemoryState::default(),
+                        )
+                    });
+                if let Err(error) = result {
+                    sink.records
+                        .record("task", &RecordOutcome::unreadable(error));
+                }
+            }
             ("chatgpt", Some(raw)) if raw.get("mapping").is_some() => {
                 crate::chatgpt::conversation(raw, &mut sink, &mut Default::default());
             }

@@ -24,6 +24,7 @@ pub(crate) mod first_build;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod input_rows;
+pub mod legacy_import;
 mod live;
 pub mod measure;
 pub mod notes;

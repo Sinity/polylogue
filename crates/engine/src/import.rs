@@ -7,6 +7,7 @@ use polylogue_sources::origin::Arrival;
 
 mod assets;
 pub(crate) mod exports;
+mod legacy;
 mod package;
 mod recognition;
 mod user_state;
