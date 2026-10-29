@@ -189,14 +189,14 @@ impl Inner {
                 parsed.push(item.batch);
             }
         }
-        if !parsed.is_empty() {
-            if let Err(error) = self.write(parsed.iter()) {
-                let reason = error.to_string();
-                return stored
-                    .into_iter()
-                    .map(|_| Err(StoreError::Invalid(reason.clone())))
-                    .collect();
-            }
+        if !parsed.is_empty()
+            && let Err(error) = self.write(parsed.iter())
+        {
+            let reason = error.to_string();
+            return stored
+                .into_iter()
+                .map(|_| Err(StoreError::Invalid(reason.clone())))
+                .collect();
         }
         stored.into_iter().map(Ok).collect()
     }

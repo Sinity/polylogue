@@ -56,7 +56,7 @@ pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> R
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (pk, id) in sessions {
-        crate::session_row::remove_with_references(tx, pk, &id, |_| Ok(()))?;
+        crate::session_row::remove(tx, pk, &id)?;
     }
     tx.execute("DELETE FROM temp.reparse_session WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2", params![input,chain])?;
     Ok(())

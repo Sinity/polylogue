@@ -52,9 +52,11 @@ pub(crate) fn write(
         &prepared.body,
         &doc.blocks,
         &prepared.texts,
-        source.packed,
-        source.first_build,
-        keys,
+        crate::versions::TextRows {
+            packed: source.packed,
+            first_build: source.first_build,
+            keys,
+        },
     )?;
     let pk = match existing {
         Some(pk) => pk,

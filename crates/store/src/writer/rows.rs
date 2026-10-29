@@ -18,6 +18,61 @@ pub(super) fn write_rows(
     counter: i64,
     first_build: Option<&FirstBuild>,
 ) -> Result<u64> {
+    apply_rows(
+        tx,
+        b,
+        p,
+        ReadingWrite {
+            chain,
+            counter,
+            first_build,
+            confirmed: false,
+        },
+    )
+}
+
+/// Apply confirmed canonical facts to the derived cache; source byte admission
+/// was already proved by the producer and lifecycle may hide earlier facts.
+pub(super) fn write_confirmed_rows(
+    tx: &Transaction<'_>,
+    b: &Batch,
+    p: &ParseStep,
+    chain: i64,
+    counter: i64,
+    first_build: Option<&FirstBuild>,
+) -> Result<u64> {
+    apply_rows(
+        tx,
+        b,
+        p,
+        ReadingWrite {
+            chain,
+            counter,
+            first_build,
+            confirmed: true,
+        },
+    )
+}
+
+struct ReadingWrite<'a> {
+    chain: i64,
+    counter: i64,
+    first_build: Option<&'a FirstBuild>,
+    confirmed: bool,
+}
+
+fn apply_rows(
+    tx: &Transaction<'_>,
+    b: &Batch,
+    p: &ParseStep,
+    context: ReadingWrite<'_>,
+) -> Result<u64> {
+    let ReadingWrite {
+        chain,
+        counter,
+        first_build,
+        confirmed,
+    } = context;
     p.counts.check()?;
     p.prepared.validate(&p.output)?;
     let keys = p.prepared.keys.as_deref().ok_or_else(|| {
@@ -33,7 +88,8 @@ pub(super) fn write_rows(
         ));
     }
     let input_pk = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk;
-    if !admit_step(tx, input_pk, chain, b, p)? {
+    validate_range(b, p)?;
+    if !confirmed && !admit_step(tx, input_pk, chain, p)? {
         return Ok(0);
     }
     tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
@@ -193,15 +249,7 @@ pub(super) fn write_rows(
     Ok(written)
 }
 
-/// A continuing reading can only extend its committed prefix. Explicit resets
-/// replace a complete reading, including row dumps whose accounting starts later.
-fn admit_step(
-    tx: &Transaction<'_>,
-    input: i64,
-    chain: i64,
-    batch: &Batch,
-    step: &ParseStep,
-) -> Result<bool> {
+fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
     if step.start > step.parsed_upto
         || step.parsed_upto > batch.length
         || i64::try_from(batch.length).is_err()
@@ -210,6 +258,12 @@ fn admit_step(
             "reading range is outside its stored input".into(),
         ));
     }
+    Ok(())
+}
+
+/// A continuing reading can only extend its committed prefix. Explicit resets
+/// replace a complete reading, including row dumps whose accounting starts later.
+fn admit_step(tx: &Transaction<'_>, input: i64, chain: i64, step: &ParseStep) -> Result<bool> {
     if step.reset {
         return Ok(true);
     }
@@ -388,9 +442,11 @@ impl RowWriter<'_, '_> {
             &prepared.body,
             &m.blocks,
             &prepared.texts,
-            self.packed,
-            self.first_build,
-            self.keys,
+            crate::versions::TextRows {
+                packed: self.packed,
+                first_build: self.first_build,
+                keys: self.keys,
+            },
         )?;
         let v = Version {
             input_pk: self.input_pk,
