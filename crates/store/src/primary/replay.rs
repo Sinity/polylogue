@@ -207,3 +207,13 @@ impl ReplayState {
         .then_some(applied)
     }
 }
+
+impl RawInputProof {
+    /// Identity comparison for already authenticated proof envelopes. It does
+    /// not validate a stamp or establish its purpose or admission authority.
+    pub fn same_basis(&self, other: &Self) -> bool {
+        self.position == other.position
+            && self.policy_epoch == other.policy_epoch
+            && self.scope == other.scope
+    }
+}

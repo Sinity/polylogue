@@ -255,17 +255,26 @@ pub(super) fn stage_control(
                     if evidence
                         .publication
                         .as_ref()
-                        .is_some_and(|old| old != proof)
+                        .is_some_and(|old| !old.same_basis(proof))
                     {
                         return Err(invalid("a staged completion changed its publication proof"));
                     }
-                    evidence.publication = Some(proof.clone());
+                    evidence.publication.get_or_insert_with(|| proof.clone());
                     conn.execute(
                         "UPDATE primary_complete SET evidence=?2 WHERE position=?1",
                         params![proof.position, packed(&evidence)?],
                     )?;
                 } else if state.certified_position() == Some(proof.position) {
-                    state.publication = Some(proof.clone());
+                    if state
+                        .publication
+                        .as_ref()
+                        .is_some_and(|old| !old.same_basis(proof))
+                    {
+                        return Err(invalid(
+                            "publication proof differs from its retained applied basis",
+                        ));
+                    }
+                    state.publication.get_or_insert_with(|| proof.clone());
                 } else {
                     return Err(invalid(
                         "publication proof has no matching staged or applied full completion",
