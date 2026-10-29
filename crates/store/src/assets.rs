@@ -164,7 +164,7 @@ impl Reader<'_> {
         let mut originals =
             std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
         let mut roots=conn.prepare("SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id') FROM a.observation o
-            JOIN a.observation_container c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
+            JOIN a.observation_container c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2 AND json_type(o.details_json,'$.import.import_id')='text'")?;
         for row in roots.query_map([after, through], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {
