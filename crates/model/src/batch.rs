@@ -51,6 +51,9 @@ pub struct Output {
     /// their source before promoting them to observed injection evidence.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native_hook_fields: BTreeMap<usize, Vec<crate::HookFieldClaim>>,
+    /// Imported hook evidence remains declared, independent of local acquisition.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub declared_injections: BTreeMap<usize, Vec<crate::InjectionEvidence>>,
     /// Textual provider records without conversation roles or usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentRow>,

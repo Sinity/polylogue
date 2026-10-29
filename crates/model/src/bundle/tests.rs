@@ -131,6 +131,7 @@ fn message_record() -> MessageRecord {
         source_version: message.content_hash().unwrap(),
         block_count: 2,
         block_ordinals: vec![0, 1],
+        injections: Vec::new(),
         message,
     }
 }
@@ -254,4 +255,45 @@ fn published_bundle_schema_matches_the_canonical_wire_types() {
     .unwrap();
     let current = serde_json::to_value(schemars::schema_for!(Record)).unwrap();
     assert_eq!(published, current);
+}
+
+#[test]
+fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() {
+    let mut record = message_record();
+    let hash = record.message.content_hash().unwrap();
+    let evidence = crate::InjectionEvidence {
+        message: record.message.id.clone(),
+        source_version: record.source_version,
+        block: 1,
+        observed: Some(crate::NativeHookField {
+            input: "native-input".into(),
+            chain: 1,
+            start: 3,
+            end: 30,
+            pointer: "/hookAdditionalContext/0".into(),
+        }),
+        declared: Vec::new(),
+    };
+    record.injections.push(evidence.clone());
+    record.validate().unwrap();
+    assert_eq!(record.message.content_hash().unwrap(), hash);
+    let decoded: MessageRecord =
+        serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
+    assert_eq!(decoded, record);
+    let declared = evidence.clone().into_declared();
+    assert_eq!(declared.observed, None);
+    assert_eq!(declared.declared, vec![evidence.observed.clone().unwrap()]);
+    assert_eq!(declared.clone().into_declared(), declared);
+    for case in 0..5 {
+        let mut invalid = record.clone();
+        let evidence = &mut invalid.injections[0];
+        match case {
+            0 => evidence.message = crate::MessageId::parse("codex:other").unwrap(),
+            1 => evidence.source_version = crate::BlobHash([7; 32]),
+            2 => evidence.block = 2,
+            3 => evidence.observed.as_mut().unwrap().pointer = "/bad~2escape".into(),
+            _ => evidence.observed.as_mut().unwrap().end = 3,
+        }
+        assert!(invalid.validate().is_err(), "case {case}");
+    }
 }
