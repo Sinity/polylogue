@@ -1,7 +1,8 @@
 //! Range delivery reads the current chain, including bytes in several new blobs.
 use super::*;
-use crate::{Archive, Batch, Change, InputKey, ReadPool, Writer};
+use crate::{Archive, Batch, Change, InputKey, Observation, ReadPool, Writer};
 use polylogue_model::BlobHash;
+use std::sync::Arc;
 
 #[test]
 fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrites() {
@@ -13,24 +14,42 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         format: "export-file".into(),
         arrival_rank: 0,
     };
+    let sender = writer.sender().unwrap();
+    let store = Arc::new(archive.blobs().unwrap());
+    let observation = Observation {
+        machine: "synthetic".into(),
+        host: "synthetic".into(),
+        path: "/synthetic/asset.bin".into(),
+        path_bytes: b"/synthetic/asset.bin".to_vec(),
+        facts: None,
+        seen_at_ms: 1,
+        import: None,
+        container: None,
+    };
     let original = "prefix λ🙂 suffix".as_bytes();
     let split = 8; // Inside the UTF-8 sequence; this API delivers bytes.
     for (start, end, continues) in [(0, split, false), (split, original.len(), true)] {
         let (new_blob, file) = archive.prepare_blob(&original[start..end]).unwrap();
-        assert!(file.is_none());
-        writer
-            .send(Batch {
-                input: input.clone(),
-                change: Change::First,
-                observation: None,
-                continues,
-                new_blob: Some(new_blob),
-                blobs: vec![],
-                length: end as u64,
-                parse: vec![],
-                release: Default::default(),
-            })
+        let mut stored = sender
+            .store_group(
+                vec![crate::staging::PreparedBatch {
+                    batch: Batch {
+                        input: input.clone(),
+                        change: Change::First,
+                        observation: Some(observation.clone()),
+                        continues,
+                        new_blob: Some(new_blob),
+                        blobs: vec![],
+                        length: end as u64,
+                        parse: vec![],
+                        release: Default::default(),
+                    },
+                    files: file.into_iter().collect(),
+                }],
+                Arc::clone(&store),
+            )
             .unwrap();
+        stored.pop().expect("one captured source chunk").unwrap();
     }
     assert!(writer.flush().unwrap().errors.is_empty());
     let pool = ReadPool::open(&archive).unwrap();
@@ -73,20 +92,29 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     };
     let replacement = b"replacement body";
     let (new_blob, file) = archive.prepare_blob(replacement).unwrap();
-    assert!(file.is_none());
-    writer
-        .send(Batch {
-            input: input.clone(),
-            change: Change::Rewritten,
-            observation: None,
-            continues: false,
-            new_blob: Some(new_blob),
-            blobs: vec![],
-            length: replacement.len() as u64,
-            parse: vec![],
-            release: Default::default(),
-        })
+    let mut stored = sender
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch: Batch {
+                    input: input.clone(),
+                    change: Change::Rewritten,
+                    observation: Some(Observation {
+                        seen_at_ms: 2,
+                        ..observation
+                    }),
+                    continues: false,
+                    new_blob: Some(new_blob),
+                    blobs: vec![],
+                    length: replacement.len() as u64,
+                    parse: vec![],
+                    release: Default::default(),
+                },
+                files: file.into_iter().collect(),
+            }],
+            Arc::clone(&store),
+        )
         .unwrap();
+    stored.pop().expect("one captured rewrite").unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
     assert!(reader.attachment_hash(&asset).is_err());

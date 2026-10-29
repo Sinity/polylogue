@@ -49,6 +49,9 @@ pub struct ObservationRow {
     pub machine: String,
     pub host: String,
     pub path: String,
+    /// Historical observations may not have retained the original path bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<Vec<u8>>,
     pub class: String,
     pub revision: Option<i64>,
     /// A byte-proven chain prefix that is not a recorded revision endpoint.

@@ -126,6 +126,8 @@ fn index_identity(archive: &Archive) -> Result<IndexIdentity> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownInput {
     pub path: String,
+    /// None is historical missing identity evidence, never a UTF-8 fallback.
+    pub path_bytes: Option<Vec<u8>>,
     pub input_id: String,
     pub format: String,
     /// The file's facts at the last observation; `None` once it was seen
@@ -1322,6 +1324,7 @@ impl Reader<'_> {
             };
             out.push(KnownInput {
                 path,
+                path_bytes: None,
                 input_id,
                 format,
                 facts,

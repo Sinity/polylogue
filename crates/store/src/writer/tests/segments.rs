@@ -18,6 +18,7 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
             machine: "test-machine".into(),
             host: "test-host".into(),
             path: format!("/home/op/{input}"),
+            path_bytes: format!("/home/op/{input}").into_bytes(),
             facts: None,
             seen_at_ms: 1,
             import: None,
