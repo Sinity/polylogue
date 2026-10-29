@@ -233,7 +233,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
                 .unwrap(),
             0
         );
-        assert!(!archive.archive_db().exists());
+        assert!(!archive.root.join("archive.db").exists());
     }
     // The ordinary reopen has neither the source preparation nor a provider
     // file available. The producer's immutable capture contains both facts.
