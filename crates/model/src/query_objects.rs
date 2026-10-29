@@ -42,6 +42,18 @@ pub struct FrozenDefinition {
     pub ast: Query,
 }
 
+/// Execution choices that remain after semantic references have been bound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryExecutionOptions {
+    pub fields: Vec<String>,
+    pub self_session: Option<crate::SessionId>,
+    pub embeddings: bool,
+    pub why: bool,
+    /// The actual provider, model and vector basis required by this execution.
+    pub ranking_identity: Option<String>,
+}
+
 /// Rebinding uses these captured inputs, never current names or the wall clock.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
