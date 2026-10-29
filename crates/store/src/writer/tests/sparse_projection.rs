@@ -1,6 +1,7 @@
 use super::*;
 use polylogue_model::bundle::{BundleError, MessageProjection};
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+mod order;
 
 fn original() -> Message {
     let mut message = text_message("sparse", "s", Role::Assistant, "source", Some("end_turn"));
