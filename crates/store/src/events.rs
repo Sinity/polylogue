@@ -12,19 +12,53 @@ pub(crate) fn canonical_event(fields: &[u8], data: &[u8]) -> Result<Event> {
     Ok(event)
 }
 
+struct StoredEvent {
+    pk: i64,
+    fields: Vec<u8>,
+    data: Vec<u8>,
+    input: String,
+    chain: i64,
+    end: Option<i64>,
+    admitted: Option<i64>,
+}
+
 impl Reader<'_> {
     /// The canonical selected event, with all retained claims and its actual local source.
     pub fn event_record(&self, id: &str) -> Result<Option<InputEventRecord>> {
-        let stored: Option<(i64, Vec<u8>, Vec<u8>)> = self
+        let stored: Option<StoredEvent> = self
             .conn()?
-            .query_row("SELECT pk,fields,data FROM event WHERE id=?1", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            .query_row("SELECT e.pk,e.fields,e.data,i.id,e.source_chain,e.source_end,selected.admitted FROM event e JOIN input_ref i ON i.pk=e.input_pk
+                LEFT JOIN event_source selected ON selected.event_pk=e.pk AND selected.input_pk=e.input_pk AND selected.chain=e.source_chain WHERE e.id=?1", [id], |r| {
+                Ok(StoredEvent{pk:r.get(0)?,fields:r.get(1)?,data:r.get(2)?,input:r.get(3)?,chain:r.get(4)?,end:r.get(5)?,admitted:r.get(6)?})
             })
             .optional()?;
-        let Some((pk, fields, data)) = stored else {
+        let Some(StoredEvent {
+            pk,
+            fields,
+            data,
+            input,
+            chain,
+            end,
+            admitted,
+        }) = stored
+        else {
             return Ok(None);
         };
         let event = canonical_event(&fields, &data)?;
+        let through = end
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| StoreError::Invalid("negative event source coordinate".into()))?;
+        let canonical = admitted
+            .and_then(|n| u64::try_from(n).ok())
+            .filter(|n| *n > 0);
+        let admitted = match canonical {
+            Some(receipt) => Some(receipt),
+            None => self.source_commit(&input, chain, through)?,
+        };
+        let commit = admitted.ok_or_else(|| {
+            StoreError::Invalid("selected event has no retained admission evidence".into())
+        })?;
         let mut sources = Vec::new();
         let mut statement = self.conn()?.prepare_cached(
             "SELECT i.id,i.format,s.chain,s.source_start,s.source_end,s.imported_provenance
@@ -72,8 +106,7 @@ impl Reader<'_> {
             .map_err(|error| StoreError::Invalid(error.to_string()))?;
         Ok(Some(InputEventRecord {
             reference: format!("event:{id}"),
-            commit: u64::try_from(self.change_position()?.index)
-                .map_err(|_| StoreError::Invalid("negative event commit".into()))?,
+            commit,
             identity,
             event,
         }))

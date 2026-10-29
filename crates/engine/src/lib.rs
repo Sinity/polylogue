@@ -184,6 +184,8 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
+    /// Historical effects accepted during ordinary stored-input replay.
+    pub authored: UserStateReport,
     /// Whole-location scans, excluding changed paths and live-file checks.
     pub full_scans: u64,
     /// Input visits, summed across turns by run_pass.
@@ -226,6 +228,9 @@ pub struct LoopStatus {
 pub struct ImportOptions {
     pub format: Option<String>,
     pub explain: bool,
+    /// Computed by the accepting channel; imported bytes never supply it.
+    #[serde(skip)]
+    pub authorship: Option<polylogue_model::authorship::Authorship>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,6 +272,8 @@ pub struct ImportReport {
 /// Requests replayed from Polylogue exports.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct UserStateReport {
+    /// Durably accepted and awaiting the confirmed primary stream.
+    pub pending: u64,
     /// Written into this archive.
     pub applied: u64,
     /// Already here, from an earlier import or the archive's own history.
@@ -279,6 +286,7 @@ pub enum LoopMsg {
     Changed,
     Import {
         paths: Vec<PathBuf>,
+        authorship: polylogue_model::authorship::Authorship,
         reply: SyncSender<Result<ImportReport, String>>,
     },
 
@@ -308,9 +316,6 @@ pub struct Engine {
     lookups: repo_lookup::Cache,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
-    /// In primary mode, the Sinex that holds the archive: sessions go to it
-    /// as events once derived.
-    sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
 }
 
 fn now_ms() -> i64 {
@@ -329,7 +334,7 @@ impl Engine {
     /// Starts the writer on an archive the caller has locked.
     pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
         let writer = Writer::start(&archive)?;
-        Self::with_writer(config, archive, writer, None)
+        Self::with_writer(config, archive, writer)
     }
 
     /// Starts the writer on an archive Sinex holds (primary mode), opened
@@ -339,16 +344,11 @@ impl Engine {
         archive: Archive,
         sinex: Arc<dyn polylogue_store::primary::Sinex>,
     ) -> Result<Self, EngineError> {
-        let writer = Writer::start_on_sinex(&archive, Arc::clone(&sinex))?;
-        Self::with_writer(config, archive, writer, Some(sinex))
+        let writer = Writer::start_on_sinex(&archive, sinex)?;
+        Self::with_writer(config, archive, writer)
     }
 
-    fn with_writer(
-        config: Config,
-        archive: Archive,
-        writer: Writer,
-        sinex: Option<Arc<dyn polylogue_store::primary::Sinex>>,
-    ) -> Result<Self, EngineError> {
+    fn with_writer(config: Config, archive: Archive, writer: Writer) -> Result<Self, EngineError> {
         let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(archive.blobs()?);
@@ -372,7 +372,6 @@ impl Engine {
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
-            sinex,
         })
     }
 

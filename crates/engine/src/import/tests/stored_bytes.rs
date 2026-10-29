@@ -38,6 +38,7 @@ fn a_refused_import_commits_no_blob_extent_or_source_rows() {
                     &ImportOptions {
                         format: Some("claude-code".into()),
                         explain: false,
+                        ..Default::default()
                     },
                 )
                 .unwrap();
@@ -71,6 +72,7 @@ fn a_refused_import_commits_no_blob_extent_or_source_rows() {
                 &ImportOptions {
                     format: Some("claude-code".into()),
                     explain: false,
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -98,6 +100,7 @@ fn equal_small_bytes_share_one_segment_extent_across_inputs() {
             &ImportOptions {
                 format: Some("claude-code".into()),
                 explain: false,
+                ..Default::default()
             },
         )
         .unwrap();

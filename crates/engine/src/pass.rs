@@ -114,6 +114,9 @@ impl Engine {
             total.blobs_appended += next.blobs_appended;
             total.blobs_deduplicated += next.blobs_deduplicated;
             total.messages_written += next.messages_written;
+            total.authored.applied += next.authored.applied;
+            total.authored.present += next.authored.present;
+            total.authored.pending += next.authored.pending;
             total.sessions_derived += next.sessions_derived;
             total.seconds += next.seconds;
             total.unreadable_roots = next.unreadable_roots;
@@ -838,6 +841,15 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
+            if let Err(error) = self.restore_captured_authored(&plan, pass) {
+                pass.errors.push(format!(
+                    "authored restoration {}: {error}",
+                    plan.path.display()
+                ));
+                plan.failed = true;
+                self.finish_plan(plan);
+                continue;
+            }
             if let Err(error) = self.observe_local_references(&plan, pass) {
                 pass.errors
                     .push(format!("local references {}: {error}", plan.path.display()));
@@ -1168,9 +1180,21 @@ impl Engine {
                         self.pass_open = false;
                         return Ok(());
                     }
-                    Ok(LoopMsg::Import { paths, reply }) => {
+                    Ok(LoopMsg::Import {
+                        paths,
+                        authorship,
+                        reply,
+                    }) => {
                         busy(true);
-                        let report = self.import(&paths).map_err(|e| e.to_string());
+                        let report = self
+                            .import_with_options(
+                                &paths,
+                                &ImportOptions {
+                                    authorship: Some(authorship),
+                                    ..Default::default()
+                                },
+                            )
+                            .map_err(|e| e.to_string());
                         busy(pending);
                         let _ = reply.send(report);
                     }

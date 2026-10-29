@@ -16,6 +16,13 @@ pub(crate) struct PreparedRows {
 
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
+        for (&index, &receipt) in &output.message_receipts {
+            if index >= output.messages.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid message admission receipt".into(),
+                ));
+            }
+        }
         for (&index, projection) in &output.message_projections {
             let row = output
                 .messages
@@ -55,6 +62,26 @@ impl PreparedRows {
             {
                 return Err(StoreError::Invalid(
                     "event identity does not match its canonical fact".into(),
+                ));
+            }
+        }
+        for (receipts, length) in [
+            (&output.session_receipts, output.sessions.len()),
+            (&output.document_receipts, output.documents.len()),
+            (&output.link_receipts, output.links.len()),
+        ] {
+            for (&index, &receipt) in receipts {
+                if index >= length || receipt == 0 || i64::try_from(receipt).is_err() {
+                    return Err(StoreError::Invalid(
+                        "invalid canonical admission receipt".into(),
+                    ));
+                }
+            }
+        }
+        for (&index, &receipt) in &output.event_receipts {
+            if index >= output.events.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid canonical event admission receipt".into(),
                 ));
             }
         }

@@ -92,6 +92,12 @@ fn sparse_original_positions_survive_reopen_and_streaming_reads() {
         reader.message_with_projection(&message.id).unwrap(),
         Some(expected.clone())
     );
+    assert!(
+        reader
+            .message_admission(&message.id)
+            .unwrap()
+            .is_some_and(|receipt| receipt > 0)
+    );
     let mut streamed = Vec::new();
     reader
         .select_messages(&sid("s"), false)
@@ -234,9 +240,8 @@ fn sparse_parts_at_later_records_of_one_input_still_union() {
 #[test]
 fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
     let dir = tempfile::tempdir().unwrap();
-    let archive = Archive::at(dir.path());
+    let (archive, _lock) = Archive::open_primary_cache(dir.path()).unwrap();
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    crate::schema::create_index(&index).unwrap();
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
     let message = original();
     let mut readings = Vec::new();
@@ -250,6 +255,10 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
             &["s"],
         );
         input.parse[0].output.message_projections.insert(0, part.1);
+        input.parse[0]
+            .output
+            .message_receipts
+            .insert(0, [7, 13, 11][n]);
         let mut reading = ChainReading::new().unwrap();
         reading.push(&mut input.parse.remove(0)).unwrap();
         readings.push((input, reading));
@@ -293,9 +302,133 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
         3
     );
     assert!(
-        !archive.archive_db().exists(),
+        !dir.path().join("archive.db").exists(),
         "confirmed materialization does not consult standalone source state"
     );
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.message_admission(&message.id).unwrap(), Some(13));
+    let mut streamed = Vec::new();
+    reader
+        .select_messages(&sid("s"), false)
+        .unwrap()
+        .visit_with_evidence(|value, projection, admitted| {
+            streamed.push((value, projection, admitted));
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(
+        streamed,
+        vec![(
+            message.clone(),
+            selected(&message, &[0, 1, 2, 3]).1,
+            Some(13)
+        )]
+    );
+    drop(reader);
+    drop(pool);
+    drop(index);
+    let pool = ReadPool::open(&archive).unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .message_admission(&message.id)
+            .unwrap(),
+        Some(13)
+    );
+}
+
+#[test]
+fn sparse_native_union_keeps_the_later_required_byte_admission() {
+    let w = test_archive();
+    let message = original();
+    for (input, ordinals) in [("a-first", &[0][..]), ("z-second", &[1, 2, 3][..])] {
+        let part = selected(&message, ordinals);
+        write(&w, projected_batch(input, part.0, part.1));
+    }
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let first = crate::source::Source::admitted_through(reader.conn().unwrap(), "a-first", 1, 100)
+        .unwrap()
+        .unwrap();
+    let second =
+        crate::source::Source::admitted_through(reader.conn().unwrap(), "z-second", 1, 100)
+            .unwrap()
+            .unwrap();
+    assert!(second > first);
+    let shown: String = reader
+        .conn()
+        .unwrap()
+        .query_row(
+            "SELECT i.id FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.shown=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(shown, "a-first");
+    assert_eq!(reader.message_admission(&message.id).unwrap(), Some(second));
+    assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
+}
+
+#[test]
+fn sparse_message_admission_requires_a_valid_fact_position() {
+    let w = test_archive();
+    let message = original();
+    write(
+        &w,
+        batch("proof", 0, 0, vec![row(0, message.clone())], &["s"]),
+    );
+    for (index, receipt) in [(0, 0), (0, u64::MAX), (1, 1)] {
+        let mut invalid = batch("proof", 0, 0, vec![row(0, message.clone())], &["s"]);
+        invalid.change = Change::Reparse { chain: 1 };
+        invalid.parse[0]
+            .output
+            .message_receipts
+            .insert(index, receipt);
+        assert!(matches!(
+            w.writer.send(invalid),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
+}
+
+#[test]
+fn sparse_fact_admission_precedes_raw_bytes_and_unions_without_regression() {
+    let w = test_archive();
+    let message = original();
+    for (input, ordinals, admission) in [
+        ("later-fact", &[0][..], 130),
+        ("earlier-fact", &[1, 2, 3][..], 120),
+    ] {
+        let part = selected(&message, ordinals);
+        let mut batch = projected_batch(input, part.0, part.1);
+        batch.parse[0].output.message_receipts.insert(0, admission);
+        write(&w, batch);
+    }
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let bytes: i64 = reader
+        .conn()
+        .unwrap()
+        .query_row("SELECT max(commit_seq) FROM a.extent", [], |row| row.get(0))
+        .unwrap();
+    assert!(
+        bytes < 120,
+        "the synthetic byte admissions precede both facts"
+    );
+    assert_eq!(reader.message_admission(&message.id).unwrap(), Some(130));
+    assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
+    let mut admissions = Vec::new();
+    reader
+        .select_messages(&sid("s"), false)
+        .unwrap()
+        .visit_with_evidence(|_, _, admitted| {
+            admissions.push(admitted);
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(admissions, vec![Some(130)]);
 }
 
 #[test]
@@ -372,9 +505,16 @@ fn sparse_index_migration_keeps_native_versions_and_infers_dense_positions() {
     let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     // These are the only differences from the prior index format. The
     // existing writer supplied the opaque payloads and shared text rows.
-    index.execute_batch("DROP TABLE message_projection; ALTER TABLE block DROP COLUMN ordinal; PRAGMA user_version=1;").unwrap();
+    index.execute_batch("DROP TABLE message_projection; ALTER TABLE block DROP COLUMN ordinal;
+        ALTER TABLE session_record DROP COLUMN admitted; ALTER TABLE document_source DROP COLUMN admitted;
+        ALTER TABLE event_source DROP COLUMN admitted; ALTER TABLE link_source DROP COLUMN admitted;
+        ALTER TABLE parse_state DROP COLUMN commit_seq;
+        PRAGMA user_version=1;").unwrap();
     crate::schema::ensure_index(&index).unwrap();
-    assert_eq!(crate::schema::version(&index).unwrap(), 2);
+    assert_eq!(
+        crate::schema::version(&index).unwrap(),
+        crate::schema::INDEX_VERSION
+    );
     assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
     assert_eq!(
         index

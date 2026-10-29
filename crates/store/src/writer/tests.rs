@@ -65,8 +65,8 @@ fn sid(n: &str) -> SessionId {
 
 fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&str>) -> Message {
     Message {
-        at_quality: polylogue_model::TimeQuality::Unknown,
-        at_precision: None,
+        at_quality: polylogue_model::TimeQuality::Intrinsic,
+        at_precision: Some(polylogue_model::Precision::Instant),
         at_until: None,
         id: MessageId::parse(&format!("claude-code:{id}")).unwrap(),
         session: sid(session),
@@ -381,6 +381,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
         ))
         .unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let r = pool.reader().unwrap();
         let hits = r
@@ -393,6 +394,14 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
         if hits == 1 {
             assert_eq!(r.status().unwrap().search_pending, 0);
             break;
+        }
+        if std::time::Instant::now() >= deadline {
+            drop(r);
+            let report = w
+                .writer
+                .flush()
+                .expect("collect writer error after search failed to progress");
+            panic!("background search did not index the committed live write: {report:?}");
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -1241,8 +1250,16 @@ fn a_completed_empty_index_does_not_begin_another_first_build() {
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     assert!(!crate::schema::building(&index).unwrap());
     assert!(
-        crate::schema::same_schema(&index, &[crate::schema::INDEX, crate::schema::READ_INDEXES])
-            .unwrap()
+        crate::schema::same_schema(
+            &index,
+            &[
+                crate::schema::INDEX,
+                crate::coverage::SCHEMA,
+                crate::variants::SCHEMA,
+                crate::schema::READ_INDEXES
+            ]
+        )
+        .unwrap()
     );
     drop(writer);
 }

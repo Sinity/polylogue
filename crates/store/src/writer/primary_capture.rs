@@ -133,7 +133,10 @@ fn capture_group_identity(group: &[PreparedBatch]) -> Result<String> {
                 o.facts
                     .as_ref()
                     .map(|f| (f.device, f.inode, f.size, f.mtime_ns, f.ctime_ns)),
-                &o.import,
+                o.import.clone().map(|mut member| {
+                    member.import_id.clear();
+                    member
+                }),
                 &o.container,
             )
         });
