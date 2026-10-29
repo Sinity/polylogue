@@ -19,6 +19,7 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `assertion:<root>@<rev>` | one exact revision of an assertion |
 | `variant:<root>[@<rev>][#<n>]` | a variant, one revision of it, or one of its parts |
 | `page:<name>`, `page:<root>[@<rev>]` | a page by name (resolved to its root), or by root, optionally at an exact revision |
+| `role:<name>`, `role:<root>[@<rev>]` | a role by name (resolved to its root), or by root, optionally at an exact revision ([pages.md](pages.md#members-and-roles)) |
 | `query:<hash>`, `query:<name>[(p=v,…)]` | a query object, or a saved query by name with parameters ([query.md](query.md#query-objects)) |
 | `result:<id>`, `result:<id>#<row>` | a kept result, or one of its rows |
 | `delivery:<id>` | one delivery to an agent ([agents.md](agents.md#deliveries)) |
@@ -34,7 +35,7 @@ Surfaces also accept shorter forms that resolve to one of the above before anyth
 - **Natural keys only.** No reference contains a row number, so a reference means the same thing in every archive that holds the same data and survives re-parse and rebuild.
 - **One parser resolves pasted provider URLs** through each origin's declaration: `chatgpt.com/c/<id>` becomes `session:chatgpt:<id>`.
 - **Ambiguity is an error.** A name that two current roots carry (`page:<name>`, `query:<name>`) is refused as `ambiguous`, listing both roots. Time never picks one, because a guess would silently change what an older reference meant.
-- **Stored references name an exact revision where meaning requires it.** Links to assertions in the roles `revises`, `withdraws`, `answers`, `challenges`, `supports`, `qualifies`, `corrects` and `derived_from`, and every judgment, store `assertion:<root>@<rev>`. A revision-less `assertion:<root>` is stored only as what a page slot set to `follow` shows ([pages.md](pages.md)). A judgment of one revision therefore never moves to the next.
+- **Stored references name an exact revision where meaning requires it.** Links to assertions in the roles `revises`, `answers`, `challenges`, `supports`, `qualifies` and `corrects`, and every judgment, store `assertion:<root>@<rev>`. A `derived_from` link names its exact source: an assertion revision, an identified query or result, or another source reference. A `withdraws` link may name a revision or a whole root. A page slot set to `follow` stores a revision-less assertion root ([pages.md](pages.md)). A judgment of one revision therefore never moves to the next.
 - **A reference may name something not stored yet.** It is kept as written and attaches, with no rewrite, when the thing arrives; until then it is shown as waiting ([assertions.md](assertions.md#currency)).
 - **A reference names a physical thing exactly**, even where listings group physical sessions into logical ones ([sessions.md](sessions.md#logical-sessions)).
 

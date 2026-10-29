@@ -65,6 +65,7 @@ pub enum Reference {
         part: Option<u64>,
     },
     Page(RevisionReference),
+    Role(RevisionReference),
     Query {
         key: String,
         parameters: Vec<(String, String)>,
@@ -176,6 +177,7 @@ impl Reference {
                 }
             }
             "page" => Self::Page(revision(rest)?),
+            "role" => Self::Role(revision(rest)?),
             "query" => {
                 let mut parameters = Vec::new();
                 let key = if let Some((key, args)) = rest.split_once('(') {
@@ -316,6 +318,7 @@ impl fmt::Display for Reference {
                 Ok(())
             }
             Self::Page(revision) => write!(f, "page:{revision}"),
+            Self::Role(revision) => write!(f, "role:{revision}"),
             Self::Query { key, parameters } => {
                 write!(f, "query:{key}")?;
                 if !parameters.is_empty() {
