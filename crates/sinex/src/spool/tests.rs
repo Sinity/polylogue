@@ -252,7 +252,20 @@ fn crash_worker() {
     };
     let spool = Spool::open(Path::new(&root), "host").unwrap();
     let stage = std::env::var("POLYLOGUE_SPOOL_CRASH").unwrap();
-    if stage.starts_with("group_") {
+    if stage == "discard_member_retired" {
+        spool
+            .prepare_material(
+                material("private", b"private bytes"),
+                b"private bytes".as_slice(),
+            )
+            .unwrap();
+        spool
+            .prepare_group(events("doomed", "private projection"), &["private".into()])
+            .unwrap();
+        spool
+            .discard_confirmed(&["private".into(), "doomed".into()], 12, 12)
+            .unwrap();
+    } else if stage.starts_with("group_") {
         for identity in ["zip", "member"] {
             spool
                 .prepare_material(material(identity, b"bytes"), b"bytes".as_slice())
@@ -403,4 +416,127 @@ fn request_and_blob_visitors_can_use_small_metadata_until_application() {
         .read_to_string(&mut body)
         .unwrap();
     assert_eq!(body, std::str::from_utf8(request_body).unwrap());
+}
+
+#[test]
+fn confirmed_tombstones_discard_only_complete_authorized_groups() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    for identity in ["root", "part"] {
+        spool
+            .prepare_material(material(identity, b"private"), b"private".as_slice())
+            .unwrap();
+    }
+    spool
+        .prepare_group(
+            events("canonical", "private products"),
+            &["root".into(), "part".into()],
+        )
+        .unwrap();
+    spool
+        .prepare(events(
+            "independent-note",
+            "authored target reference survives",
+        ))
+        .unwrap();
+    let complete = vec!["root".into(), "part".into(), "canonical".into()];
+    assert!(spool.discard_confirmed(&complete, 18, 17).is_err());
+    assert!(spool.discard_confirmed(&["root".into()], 18, 18).is_err());
+    assert!(
+        spool
+            .discard_confirmed(&["root".into(), "canonical".into()], 18, 18)
+            .is_err()
+    );
+    assert_eq!(all(&spool, 2).len(), 4);
+    spool.discard_confirmed(&complete, 18, 18).unwrap();
+    spool.discard_confirmed(&complete, 18, 18).unwrap();
+    assert_eq!(
+        all(&spool, 1)
+            .iter()
+            .map(|entry| entry.identity.as_str())
+            .collect::<Vec<_>>(),
+        ["independent-note"]
+    );
+}
+
+#[test]
+fn confirmed_tombstone_outbox_can_retry_after_process_death() {
+    let directory = tempfile::tempdir().unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
+        .env("POLYLOGUE_SPOOL_CRASH_ROOT", directory.path())
+        .env("POLYLOGUE_SPOOL_CRASH", "discard_member_retired")
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(77));
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .discard_confirmed(&["private".into(), "doomed".into()], 12, 12)
+        .unwrap();
+    assert!(all(&spool, 1).is_empty());
+}
+
+#[test]
+fn confirmed_tombstones_remove_unpublished_copies_left_after_body_sync() {
+    let directory = tempfile::tempdir().unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
+        .env("POLYLOGUE_SPOOL_CRASH_ROOT", directory.path())
+        .env("POLYLOGUE_SPOOL_CRASH", "body_synced")
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(77));
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    assert!(spool.get("raw").unwrap().is_none());
+    assert!(
+        fs::read_dir(spool.root.join("operations"))
+            .unwrap()
+            .next()
+            .is_some()
+    );
+    assert!(spool.discard_confirmed(&["raw".into()], 14, 13).is_err());
+    spool.discard_confirmed(&["raw".into()], 14, 14).unwrap();
+    assert!(
+        fs::read_dir(spool.root.join("operations"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn replay_capture_group_retains_its_material_until_applied() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .prepare_material(material("raw", b"bytes"), b"bytes".as_slice())
+        .unwrap();
+    let replay = Ingress::ReplaySequence {
+        frame: "replacement".into(),
+        sequence: Box::new(sinex_protocol::ProducerReplay {
+            operation: sinex_model::OperationId(uuid::Uuid::nil()),
+            root: crate::material_id("raw"),
+            materials: vec![],
+            event_types: None,
+            from: None,
+            until: None,
+            declarations: vec![],
+            parser_build: "fixture".into(),
+            parser_version: "fixture".into(),
+            expected_live_hash: "fixture".into(),
+            batches: vec![],
+        }),
+    };
+    let prepared = spool
+        .prepare_group(replay.clone(), &["raw".into()])
+        .unwrap();
+    assert_eq!(prepared.kind, Kind::ReplaySequence);
+    assert_eq!(spool.decode_frame("replacement").unwrap(), replay);
+    spool
+        .acknowledge(ack("replacement", false, Some(21)))
+        .unwrap();
+    spool.retire(20).unwrap();
+    assert!(spool.get("raw").unwrap().is_some());
+    spool.retire(21).unwrap();
+    assert!(all(&spool, 1).is_empty());
 }

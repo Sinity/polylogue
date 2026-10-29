@@ -162,8 +162,7 @@ impl Spool {
             prepared.commit_seq = receipt.commit_seq;
             prepared.refused = receipt.refused;
         } else if directory.join("ack.json").try_exists()? {
-            let acknowledgment: AckHeader =
-                serde_json::from_reader(regular(&directory.join("ack.json"))?)?;
+            let acknowledgment: AckHeader = decode_json(regular(&directory.join("ack.json"))?)?;
             validate_ack_header(
                 &prepared,
                 &acknowledgment.frame,
@@ -195,7 +194,7 @@ impl Spool {
     }
 
     pub fn decode_frame(&self, identity: &str) -> Result<Ingress> {
-        Ok(serde_json::from_reader(self.frame(identity)?)?)
+        decode_json(self.frame(identity)?)
     }
 
     pub fn body(&self, identity: &str) -> Result<File> {
@@ -217,7 +216,7 @@ impl Spool {
             return Ok(None);
         }
         let file = regular(&path)?;
-        let acknowledgment: Acknowledgment = serde_json::from_reader(file)?;
+        let acknowledgment: Acknowledgment = decode_json(file)?;
         let prepared = read_checked::<Prepared>(&directory.join("metadata.json"))?
             .ok_or_else(|| Error::Invalid("acknowledgment has no operation".into()))?;
         validate_ack(&prepared, &acknowledgment)?;
@@ -259,8 +258,11 @@ impl Spool {
     /// One publication owns the complete immutable capture set. Per-capture
     /// indexes merely accelerate lookups and can be rebuilt after a crash.
     pub fn prepare_group(&self, frame: Ingress, captures: &[String]) -> Result<Prepared> {
-        if !matches!(&frame, Ingress::Events { .. }) {
-            return invalid("capture products need one Events frame");
+        if !matches!(
+            &frame,
+            Ingress::Events { .. } | Ingress::ReplaySequence { .. }
+        ) {
+            return invalid("capture products need one Events or ReplaySequence frame");
         }
         if captures.is_empty() {
             return invalid("capture group is empty");
@@ -436,6 +438,82 @@ impl Spool {
         self.ensure_indexes()
     }
 
+    /// Exact identities come from the confirmed tombstone transaction's
+    /// existing outbox. Target references of authored records are not causal
+    /// parents and must never be selected merely because their target died.
+    pub fn discard_confirmed(
+        &self,
+        identities: &[String],
+        tombstone_position: i64,
+        applied: i64,
+    ) -> Result<()> {
+        if tombstone_position < 0 || tombstone_position > applied {
+            return invalid(
+                "tombstone cleanup is not authorized by the applied confirmed position",
+            );
+        }
+        self.ensure_indexes()?;
+        let identities = canonical(identities)?;
+        for identity in &identities {
+            if let Some(group) = self.capture_group(identity)? {
+                if identities.binary_search(&group.identity.as_str()).is_err() {
+                    return invalid("tombstone cleanup omits the canonical capture group");
+                }
+            }
+            if let Some(prepared) = self.get(identity)? {
+                if prepared.group.is_some() {
+                    self.visit_captures(identity, |member| {
+                        if identities.binary_search(&member).is_err() {
+                            return invalid("tombstone cleanup omits a capture group member");
+                        }
+                        Ok(())
+                    })?;
+                }
+            }
+        }
+        let authorized: std::collections::BTreeSet<_> = identities
+            .iter()
+            .map(|identity| hash(identity.as_bytes()))
+            .collect();
+        let mut staged = Vec::new();
+        for entry in fs::read_dir(self.root.join("operations"))? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(suffix) = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(".preparing-"))
+            else {
+                continue;
+            };
+            if suffix.len() > 65
+                && suffix.as_bytes().get(64) == Some(&b'-')
+                && suffix.get(..64).is_some_and(|id| authorized.contains(id))
+            {
+                if !entry.file_type()?.is_dir() {
+                    return invalid("prepared payload staging is not a directory");
+                }
+                staged.push(entry.path());
+            }
+        }
+        // Keep the authoritative group until all of its authorized raw and
+        // request copies are gone. The owner's outbox retries after a crash.
+        for groups in [false, true] {
+            for identity in &identities {
+                if let Some(prepared) = self.get(identity)? {
+                    if prepared.group.is_some() == groups {
+                        self.remove(identity)?;
+                        boundary("discard_member_retired");
+                    }
+                }
+            }
+        }
+        for path in staged {
+            self.retire_path(&path)?;
+        }
+        self.index_dirty.set(true);
+        self.ensure_indexes()
+    }
+
     pub fn counts(&self) -> Result<(u64, u64, u64)> {
         let (mut materials, mut writes, mut bytes) = (0, 0, 0u64);
         let mut after = None;
@@ -528,8 +606,9 @@ impl Spool {
             }
             return Ok(previous);
         }
+        let prefix = format!(".preparing-{}-", hash(identity.as_bytes()));
         let temporary = tempfile::Builder::new()
-            .prefix(".preparing-")
+            .prefix(&prefix)
             .tempdir_in(self.root.join("operations"))?;
         let (frame_hash, frame_length) = write_json(&temporary.path().join("frame.json"), &frame)?;
         let (kind, material, capture, request) = describe(&frame)?;
@@ -612,15 +691,25 @@ impl Spool {
     }
 
     fn remove(&self, identity: &str) -> Result<()> {
-        let directory = self.operation(identity);
+        self.retire_path(&self.operation(identity))
+    }
+
+    fn retire_path(&self, directory: &Path) -> Result<()> {
         if !directory.try_exists()? {
             return Ok(());
         }
-        let retired = self.root.join("retired").join(hash(identity.as_bytes()));
-        fs::rename(&directory, &retired)?;
+        let retired = self
+            .root
+            .join("retired")
+            .join(directory.file_name().expect("owned spool directory"));
+        self.index_dirty.set(true);
+        if retired.try_exists()? {
+            fs::remove_dir_all(&retired)?;
+            sync(&self.root.join("retired"))?;
+        }
+        fs::rename(directory, &retired)?;
         sync(&self.root.join("operations"))?;
         sync(&self.root.join("retired"))?;
-        self.index_dirty.set(true);
         boundary("operation_retired");
         fs::remove_dir_all(retired)?;
         Ok(())
@@ -811,7 +900,7 @@ fn check_length(path: &Path, length: u64) -> Result<()> {
 }
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     match regular(path) {
-        Ok(file) => Ok(Some(serde_json::from_reader(file)?)),
+        Ok(file) => Ok(Some(decode_json(file)?)),
         Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -855,6 +944,14 @@ fn write_index(path: &Path, identity: &str) -> Result<()> {
         .open(path)?;
     serde_json::to_writer(file, identity)?;
     Ok(())
+}
+
+fn decode_json<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> {
+    let mut decoder = serde_json::Deserializer::from_reader(reader);
+    decoder.disable_recursion_limit();
+    let value = T::deserialize(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
 }
 
 fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
