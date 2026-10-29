@@ -368,6 +368,9 @@ impl Inner {
                         (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64)
                     });
                 let captured = CapturedInput {
+                    generation: None,
+                    raw_total: None,
+                    raw_predecessor: None,
                     raw_range: batch
                         .acquisition
                         .as_ref()

@@ -9,6 +9,11 @@ pub use acquisition::{
     SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
 };
 pub mod products;
+pub mod raw_acquisition;
+pub use raw_acquisition::{
+    DatabaseSnapshotToken, FileSnapshot, FileTime, RawAcquisitionCursor, RawAcquisitionProof,
+    RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
+};
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
