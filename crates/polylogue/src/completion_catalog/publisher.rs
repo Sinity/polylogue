@@ -209,21 +209,55 @@ impl State {
         })?;
         reader.visit_completion_kept(after.map(|position| position.archive), |kept| {
             changed = true;
-            let columns:Option<Vec<polylogue_query::Column>>=kept.columns.and_then(|columns|serde_json::from_value(columns).ok());
-            let matches:Option<Vec<polylogue_query::Column>>=kept.match_columns.and_then(|columns|serde_json::from_value(columns).ok());
-            let schema=kept.unit.as_ref().zip(columns.as_ref()).map(|(unit,columns)|{
-                let mut schema=polylogue_query::compile::columns_schema(&self.catalog,unit,columns);
-                if self.catalog.unit(unit).is_none(){schema.unit=None;}
-                schema
-            });
-            let match_schema=kept.unit.as_ref().zip(matches.as_ref()).map(|(unit,columns)|{
-                let mut schema=polylogue_query::compile::columns_schema(&self.catalog,unit,columns);
-                if self.catalog.unit(unit).is_none(){schema.unit=None;}
-                schema
-            });
-            writer.put_kept(&completion::Kept{id:kept.id.clone(),name:kept.name,unit:kept.unit.clone(),row_count:kept.row_count,rows:schema,matches:match_schema})?;
+            let columns: Option<Vec<polylogue_query::Column>> = kept
+                .columns
+                .and_then(|columns| serde_json::from_value(columns).ok());
+            let matches: Option<Vec<polylogue_query::Column>> = kept
+                .match_columns
+                .and_then(|columns| serde_json::from_value(columns).ok());
+            let schema = kept
+                .unit
+                .as_ref()
+                .zip(columns.as_ref())
+                .map(|(unit, columns)| {
+                    let mut schema =
+                        polylogue_query::compile::columns_schema(&self.catalog, unit, columns);
+                    if self.catalog.unit(unit).is_none() {
+                        schema.unit = None;
+                    }
+                    schema
+                });
+            let match_schema = kept
+                .unit
+                .as_ref()
+                .zip(matches.as_ref())
+                .map(|(unit, columns)| {
+                    let mut schema =
+                        polylogue_query::compile::columns_schema(&self.catalog, unit, columns);
+                    if self.catalog.unit(unit).is_none() {
+                        schema.unit = None;
+                    }
+                    schema
+                });
+            writer.put_kept(&completion::Kept {
+                id: kept.id.clone(),
+                name: kept.name,
+                unit: kept.unit.clone(),
+                row_count: kept.row_count,
+                rows: schema,
+                matches: match_schema,
+            })?;
             self.kept.remove(&kept.id);
-            if let (Some(unit),Some(columns))=(kept.unit,columns){self.kept.insert(kept.id,polylogue_query::Kept{unit,columns,match_columns:matches.unwrap_or_default()});}
+            if let (Some(unit), Some(columns)) = (kept.unit, columns) {
+                self.kept.insert(
+                    kept.id,
+                    polylogue_query::Kept {
+                        unit,
+                        columns,
+                        match_columns: matches.unwrap_or_default(),
+                    },
+                );
+            }
             Ok(())
         })?;
         if changed {

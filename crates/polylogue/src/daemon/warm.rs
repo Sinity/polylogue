@@ -98,7 +98,10 @@ impl Default for Completion {
     fn default() -> Self {
         Self {
             catalog: polylogue_query::catalog::catalog(
-                &polylogue_sources::origin::ORIGINS.iter().map(|origin|origin.name.to_owned()).collect::<Vec<_>>(),
+                &polylogue_sources::origin::ORIGINS
+                    .iter()
+                    .map(|origin| origin.name.to_owned())
+                    .collect::<Vec<_>>(),
                 &crate::commands::command_words(),
             ),
             values: BTreeMap::new(),

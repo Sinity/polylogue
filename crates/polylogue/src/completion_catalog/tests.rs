@@ -255,44 +255,78 @@ fn completion_handler_uses_the_catalog_when_archive_reader_slots_are_closed() {
 
 #[test]
 fn acknowledged_commits_refresh_catalog_values_while_keystrokes_continue() {
-    let daemon=crate::test_daemon::start("A neutral completion prompt");
-    let archive=crate::runtime_dir::archive_key(&daemon.daemon.archive.root);
-    let path=&daemon.daemon.completion_path;
-    daemon.set("briefing.budget","2000");
-    let read=||settings_file(path,&archive,Some("briefing.budget"),"");
-    let wait=|expected:&str,require_nonempty:bool|{
-        let start=std::time::Instant::now();
+    let daemon = crate::test_daemon::start("A neutral completion prompt");
+    let archive = crate::runtime_dir::archive_key(&daemon.daemon.archive.root);
+    let path = &daemon.daemon.completion_path;
+    daemon.set("briefing.budget", "2000");
+    let read = || settings_file(path, &archive, Some("briefing.budget"), "");
+    let wait = |expected: &str, require_nonempty: bool| {
+        let start = std::time::Instant::now();
         loop {
-            let values=read();
-            if require_nonempty {assert!(!values.is_empty(),"a committed catalog lost its values during publication");}
-            if values.iter().any(|(value,_)|value==expected) {break;}
-            assert!(start.elapsed()<std::time::Duration::from_secs(10),"committed catalog did not refresh");
+            let values = read();
+            if require_nonempty {
+                assert!(
+                    !values.is_empty(),
+                    "a committed catalog lost its values during publication"
+                );
+            }
+            if values.iter().any(|(value, _)| value == expected) {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "committed catalog did not refresh"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         start.elapsed()
     };
-    wait("2000",false);
-    let mut visibility=vec![];
+    wait("2000", false);
+    let mut visibility = vec![];
     for number in 1..=5 {
-        let value=(2000+number).to_string();
-        daemon.set("briefing.budget",&value);
-        visibility.push(wait(&value,true));
-        if number<5 {std::thread::sleep(std::time::Duration::from_secs(1));}
+        let value = (2000 + number).to_string();
+        daemon.set("briefing.budget", &value);
+        visibility.push(wait(&value, true));
+        if number < 5 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
     }
-    eprintln!("acknowledged committed setting to catalog visibility, five one-second batches: {visibility:?}");
+    eprintln!(
+        "acknowledged committed setting to catalog visibility, five one-second batches: {visibility:?}"
+    );
 }
 
 #[test]
 fn unavailable_kept_schema_does_not_prevent_other_vocabulary_publication() {
-    use polylogue_store::fixture::{Fixture,SessionFacts};
-    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("catalog");
-    let mut fixture=Fixture::new(&directory.path().join("archive")).unwrap();
-    fixture.session(SessionFacts{id:"codex:example",repo:Some("neutral-repository"),..Default::default()}).unwrap();
-    fixture.kept_result("invalid-json","sessions","not JSON").unwrap();
-    fixture.kept_result("missing-shape","sessions","{}").unwrap();
-    let reads=fixture.reads().unwrap();let mut publisher=publisher::State::new(None);
-    publisher.refresh(&reads.reader().unwrap(),&path,"synthetic").unwrap();
-    let reader=CatalogReader::open(&path,"synthetic").unwrap().unwrap();
-    assert_eq!(reader.values("repo","neutral").unwrap()[0].value,"neutral-repository");
-    for id in ["invalid-json","missing-shape"] {let kept=reader.kept(id).unwrap().unwrap();assert!(kept.rows.is_none()&&kept.unit.is_none()&&kept.row_count.is_none());}
+    use polylogue_store::fixture::{Fixture, SessionFacts};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut fixture = Fixture::new(&directory.path().join("archive")).unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "codex:example",
+            repo: Some("neutral-repository"),
+            ..Default::default()
+        })
+        .unwrap();
+    fixture
+        .kept_result("invalid-json", "sessions", "not JSON")
+        .unwrap();
+    fixture
+        .kept_result("missing-shape", "sessions", "{}")
+        .unwrap();
+    let reads = fixture.reads().unwrap();
+    let mut publisher = publisher::State::new(None);
+    publisher
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    let reader = CatalogReader::open(&path, "synthetic").unwrap().unwrap();
+    assert_eq!(
+        reader.values("repo", "neutral").unwrap()[0].value,
+        "neutral-repository"
+    );
+    for id in ["invalid-json", "missing-shape"] {
+        let kept = reader.kept(id).unwrap().unwrap();
+        assert!(kept.rows.is_none() && kept.unit.is_none() && kept.row_count.is_none());
+    }
 }

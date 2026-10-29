@@ -183,11 +183,15 @@ impl Reader<'_> {
         mut visit: impl FnMut(NativeKept) -> Result<()>,
     ) -> Result<()> {
         let conn = self.conn()?;
-        let fields="k.id,k.name,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.unit')='text' THEN json_extract(k.rows_json,'$.unit') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.columns')='array' THEN json_extract(k.rows_json,'$.columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.match_columns')='array' THEN json_extract(k.rows_json,'$.match_columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.rows')='array' THEN json_array_length(k.rows_json,'$.rows') END END";
-        let sql=if after.is_some() {
-            format!("SELECT {fields} FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id")
-        } else {format!("SELECT {fields} FROM source_kept_result k ORDER BY k.id")};
-        let mut statement=conn.prepare(&sql)?;
+        let fields = "k.id,k.name,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.unit')='text' THEN json_extract(k.rows_json,'$.unit') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.columns')='array' THEN json_extract(k.rows_json,'$.columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.match_columns')='array' THEN json_extract(k.rows_json,'$.match_columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.rows')='array' THEN json_array_length(k.rows_json,'$.rows') END END";
+        let sql = if after.is_some() {
+            format!(
+                "SELECT {fields} FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id"
+            )
+        } else {
+            format!("SELECT {fields} FROM source_kept_result k ORDER BY k.id")
+        };
+        let mut statement = conn.prepare(&sql)?;
         let mut rows = if let Some(after) = after {
             statement.query([after])?
         } else {
@@ -199,12 +203,15 @@ impl Reader<'_> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 unit: row.get(2)?,
-                columns: row.get::<_,Option<String>>(3)?.map(|value|serde_json::from_str(&value)).transpose()?,
+                columns: row
+                    .get::<_, Option<String>>(3)?
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?,
                 match_columns: row
                     .get::<_, Option<String>>(4)?
                     .map(|value| serde_json::from_str(&value))
                     .transpose()?,
-                row_count: row.get::<_,Option<i64>>(5)?.map(|count|count as u64),
+                row_count: row.get::<_, Option<i64>>(5)?.map(|count| count as u64),
             })?;
         }
         Ok(())

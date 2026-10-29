@@ -137,8 +137,18 @@ fn complete_snapshot(
                 .sessions(&prefix)?
                 .into_iter()
                 .map(|session| {
-                    let prefix=if origin.is_some() {session.prefix.split_once(':').unwrap().1} else {&session.prefix};
-                    let value=if prefix.starts_with(&value.prefix) {prefix.to_owned()} else if origin.is_some() {session.native_id.clone()} else {session.id.clone()};
+                    let prefix = if origin.is_some() {
+                        session.prefix.split_once(':').unwrap().1
+                    } else {
+                        &session.prefix
+                    };
+                    let value = if prefix.starts_with(&value.prefix) {
+                        prefix.to_owned()
+                    } else if origin.is_some() {
+                        session.native_id.clone()
+                    } else {
+                        session.id.clone()
+                    };
                     descriptions.insert(value.clone(), session_help(&session));
                     polylogue_store::completion::ValueCount { value, count: 1 }
                 })
@@ -231,19 +241,52 @@ fn session_help(session: &polylogue_store::completion::Session) -> String {
     )
 }
 /// Setting consumers use their command table position, outside the query grammar.
-pub fn settings(root:&Path,key:Option<&str>,prefix:&str)->Vec<(String,String)> {
-    settings_file(&path(root),&crate::runtime_dir::archive_key(root),key,prefix)
+pub fn settings(root: &Path, key: Option<&str>, prefix: &str) -> Vec<(String, String)> {
+    settings_file(
+        &path(root),
+        &crate::runtime_dir::archive_key(root),
+        key,
+        prefix,
+    )
 }
-fn settings_file(path:&Path,archive:&str,key:Option<&str>,prefix:&str)->Vec<(String,String)> {
-    let Ok(Some(reader))=CatalogReader::open(path,archive)else{return vec![];};
-    let Ok(settings)=reader.settings(key.unwrap_or(prefix))else{return vec![];};
+fn settings_file(
+    path: &Path,
+    archive: &str,
+    key: Option<&str>,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let Ok(Some(reader)) = CatalogReader::open(path, archive) else {
+        return vec![];
+    };
+    let Ok(settings) = reader.settings(key.unwrap_or(prefix)) else {
+        return vec![];
+    };
     match key {
-        None=>settings.into_iter().map(|setting|(setting.key,format!("current: {}",setting.value.as_str().unwrap_or("unset")))).collect(),
-        Some(key)=>settings.into_iter().filter(|setting|setting.key==key).flat_map(|setting|{
-            let mut choices=setting.choices;
-            if let Some(value)=setting.value.as_str() {if !choices.iter().any(|choice|choice==value) {choices.insert(0,value.into());}}
-            choices.into_iter().filter(move |value|value.starts_with(prefix)).map(|value|(value,String::new()))
-        }).collect(),
+        None => settings
+            .into_iter()
+            .map(|setting| {
+                (
+                    setting.key,
+                    format!("current: {}", setting.value.as_str().unwrap_or("unset")),
+                )
+            })
+            .collect(),
+        Some(key) => settings
+            .into_iter()
+            .filter(|setting| setting.key == key)
+            .flat_map(|setting| {
+                let mut choices = setting.choices;
+                if let Some(value) = setting.value.as_str() {
+                    if !choices.iter().any(|choice| choice == value) {
+                        choices.insert(0, value.into());
+                    }
+                }
+                choices
+                    .into_iter()
+                    .filter(move |value| value.starts_with(prefix))
+                    .map(|value| (value, String::new()))
+            })
+            .collect(),
     }
 }
 

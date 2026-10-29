@@ -298,8 +298,9 @@ impl CatalogWriter {
         self.conn.execute("INSERT INTO item VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET name=excluded.name,payload=excluded.payload", params![kind,id,name,serde_json::to_string(item)?])?;
         Ok(())
     }
-    pub fn remove_saved(&mut self, family:&str)->Result<()> {
-        self.conn.execute("DELETE FROM item WHERE kind='saved' AND id=?1",[family])?;
+    pub fn remove_saved(&mut self, family: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM item WHERE kind='saved' AND id=?1", [family])?;
         Ok(())
     }
 }
