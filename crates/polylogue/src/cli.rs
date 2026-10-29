@@ -236,6 +236,7 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         }
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
+    let outcome_code = response.answer().exit_code();
     match response {
         Response::Ok { data, .. } => {
             if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
@@ -245,11 +246,18 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
                 Some(output) => output(&values, &data, json),
                 None => {
                     if json {
-                        println!("{}", polylogue_render::terminal::json(&data, false));
+                        println!(
+                            "{}",
+                            polylogue_render::terminal::json(
+                                &serde_json::to_value(crate::protocol::answer(data.clone()))
+                                    .expect("answer serializes"),
+                                false
+                            )
+                        );
                     } else {
                         print!("{}", (cmd.print)(&data));
                     }
-                    ExitCode::SUCCESS
+                    ExitCode::from(outcome_code)
                 }
             }
         }
@@ -444,12 +452,12 @@ fn completion_candidates(data: &Value) -> Vec<clap_complete::CompletionCandidate
         .collect()
 }
 
-pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
+pub(crate) fn fail(json: bool, kind: &str, message: &str, _code: u8) -> ExitCode {
     if json {
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message } }),
+                &serde_json::json!({ "error": crate::protocol::failure(kind, message.to_owned(), None) }),
                 false
             )
         );
@@ -459,7 +467,7 @@ pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode 
             polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
         );
     }
-    ExitCode::from(code)
+    ExitCode::from(crate::protocol::kind(kind).exit_code())
 }
 
 /// An error with structured detail: printed whole for programs; for a
@@ -469,13 +477,13 @@ fn fail_detail(
     kind: &str,
     message: &str,
     detail: Option<serde_json::Value>,
-    code: u8,
+    _code: u8,
 ) -> ExitCode {
     if json {
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message, "detail": detail } }),
+                &serde_json::json!({ "error": crate::protocol::failure(kind, message.to_owned(), detail.as_ref()) }),
                 false
             )
         );
@@ -491,7 +499,7 @@ fn fail_detail(
             );
         }
     }
-    ExitCode::from(code)
+    ExitCode::from(crate::protocol::kind(kind).exit_code())
 }
 
 #[cfg(test)]

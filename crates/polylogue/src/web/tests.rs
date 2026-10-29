@@ -57,7 +57,22 @@ async fn send(r: &Reader, req: Http<Body>) -> (StatusCode, HeaderMap, String) {
     let status = resp.status();
     let headers = resp.headers().clone();
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    (status, headers, String::from_utf8_lossy(&body).into_owned())
+    let body = String::from_utf8_lossy(&body).into_owned();
+    (status, headers, application_body(body))
+}
+
+/// Domain assertions use the payload; protocol tests inspect the wire envelope.
+pub(super) fn application_body(body: String) -> String {
+    let Ok(answer) = serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&body) else {
+        return body;
+    };
+    match answer {
+        command_surface::Answer::Error { error, .. } => serde_json::json!({
+            "error": error.code, "message": error.message,
+            "detail": {"position": error.position, "suggestion": error.suggestion, "hint": error.hint, "retryable": error.retryable},
+        }).to_string(),
+        answer => answer.value().unwrap().to_string(),
+    }
 }
 
 fn rt() -> tokio::runtime::Runtime {

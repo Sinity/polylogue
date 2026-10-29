@@ -181,13 +181,9 @@ fn narrower(query: &str) -> Option<String> {
     polylogue_query::parse(&suggestion).ok().map(|_| suggestion)
 }
 
-/// Timeout follows the operations exit table; cancellation is a refusal.
+/// Product codes use the shared exit and HTTP table.
 pub fn exit_code(kind: &str) -> u8 {
-    match kind {
-        "deadline_exceeded" => 7,
-        "cancelled" => 3,
-        _ => 1,
-    }
+    crate::protocol::kind(kind).exit_code()
 }
 
 #[cfg(test)]

@@ -108,9 +108,9 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(lines.first().unwrap()["data"]["type"], "begin");
-        assert_eq!(lines.last().unwrap()["data"]["type"], "complete");
-        let position = lines.last().unwrap()["data"]["position"].as_str().unwrap();
+        assert_eq!(lines.first().unwrap()["value"]["type"], "begin");
+        assert_eq!(lines.last().unwrap()["value"]["type"], "complete");
+        let position = lines.last().unwrap()["value"]["position"].as_str().unwrap();
         let path = format!(
             "/api/v1/changes?since={}",
             polylogue_render::html::encode_path_segment(position)
@@ -157,7 +157,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         )
         .await;
         let last: serde_json::Value = serde_json::from_str(body.lines().last().unwrap()).unwrap();
-        let position = last["data"]["position"].as_str().unwrap();
+        let position = last["value"]["position"].as_str().unwrap();
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
             "UPDATE meta SET value=?1 WHERE key='generation'",
@@ -183,8 +183,8 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let begin: serde_json::Value = serde_json::from_str(body.lines().next().unwrap()).unwrap();
-        assert_eq!(begin["data"]["generation_changed"], true);
-        assert_eq!(begin["data"]["replacement"], true);
+        assert_eq!(begin["value"]["generation_changed"], true);
+        assert_eq!(begin["value"]["replacement"], true);
     });
 }
 

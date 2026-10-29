@@ -412,7 +412,10 @@ fn attachment_chunk() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "result", rename_all = "snake_case")]
+#[serde(
+    into = "command_surface::Answer<serde_json::Value>",
+    from = "command_surface::Answer<serde_json::Value>"
+)]
 pub enum Response {
     Ok {
         data: serde_json::Value,
@@ -431,6 +434,21 @@ pub enum Response {
 }
 
 impl Response {
+    pub fn answer(&self) -> command_surface::Answer<serde_json::Value> {
+        match self {
+            Self::Ok { data, .. } => crate::protocol::answer(data.clone()),
+            Self::Error {
+                kind,
+                message,
+                detail,
+            } => command_surface::Answer::error(crate::protocol::failure(
+                kind,
+                message.clone(),
+                detail.as_ref(),
+            )),
+        }
+    }
+
     /// The application response boundary shared by socket and HTTP consumers.
     /// Mask decoded strings before JSON escaping, keeping every structured field.
     pub(crate) fn masked(mut self) -> Self {
@@ -449,6 +467,45 @@ impl Response {
             }
         }
         self
+    }
+}
+
+impl From<Response> for command_surface::Answer<serde_json::Value> {
+    fn from(response: Response) -> Self {
+        response.answer()
+    }
+}
+
+impl From<command_surface::Answer<serde_json::Value>> for Response {
+    fn from(answer: command_surface::Answer<serde_json::Value>) -> Self {
+        use command_surface::Answer;
+        match answer {
+            Answer::Ok { value, .. }
+            | Answer::Empty { value, .. }
+            | Answer::Degraded { value, .. } => Self::Ok {
+                data: value,
+                references: References::default(),
+            },
+            Answer::Error { error, .. } => {
+                let detail = serde_json::json!({
+                    "position": error.position,
+                    "suggestion": error.suggestion,
+                    "hint": error.hint,
+                    "retryable": error.retryable,
+                });
+                Self::Error {
+                    kind: error.code.unwrap_or_else(|| {
+                        serde_json::to_value(error.kind)
+                            .expect("failure kind serializes")
+                            .as_str()
+                            .expect("kind is text")
+                            .to_owned()
+                    }),
+                    message: error.message,
+                    detail: Some(detail),
+                }
+            }
+        }
     }
 }
 

@@ -532,44 +532,20 @@ async fn live_js() -> HttpResponse {
 }
 
 fn error_status(kind: &str) -> StatusCode {
-    match kind {
-        "deadline_exceeded" => StatusCode::GATEWAY_TIMEOUT,
-        "cancelled" => StatusCode::REQUEST_TIMEOUT,
-        "not_found" => StatusCode::NOT_FOUND,
-        "bad_request" | "query" | "sql" | "invalid_query" | "unknown_field" | "bad_value"
-        | "not_a_query" => StatusCode::BAD_REQUEST,
-        "conflict" | "resync_required" | "stale_cursor" => StatusCode::CONFLICT,
-        "not_built" => StatusCode::NOT_IMPLEMENTED,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+    crate::protocol::kind(kind)
+        .http_status()
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// The data as the socket gives it, or a typed error with its HTTP status.
 pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
-    match browser_response(response, &web.daemon.archive.root) {
-        Response::Ok { data, .. } => axum::Json(data).into_response(),
-        Response::Error {
-            kind,
-            message,
-            detail,
-        } => {
-            // A browser request's refusal names its own status.
-            let named = detail
-                .as_ref()
-                .and_then(|d| d["http_status"].as_u64())
-                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok());
-            let status = named.unwrap_or_else(|| error_status(&kind));
-            let message = access::scrub(&message, &web.daemon.archive.root);
-            (
-                status,
-                axum::Json(scrubbed(
-                    web,
-                    serde_json::json!({ "error": kind, "message": message, "detail": detail }),
-                )),
-            )
-                .into_response()
-        }
-    }
+    let answer = browser_response(response, &web.daemon.archive.root).answer();
+    let status = answer
+        .http_status()
+        .and_then(|s| StatusCode::from_u16(s).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (status, axum::Json(answer)).into_response()
 }
 
 #[cfg(test)]

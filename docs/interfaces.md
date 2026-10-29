@@ -275,7 +275,7 @@ The exit and HTTP table is the common `command-surface`'s, shared with Sinex; ea
 | 2 | `invalid_query`, `unknown_field`, `bad_value`, `not_a_query`, `bad_request`, `ambiguous`, `stale_cursor`, `not_built` |
 | 3 | `refused`, with the operation's stated reason |
 | 4 | `not_found`, `conflict`, `io` |
-| 5 | `degraded`: an `incomplete` answer, rows printed, part of what was needed missing |
+| 5 | `degraded`: an `incomplete` answer or an authored write accepted into the local primary spool but awaiting Sinex confirmation; `stopped_early`: an operation that did not finish |
 | 6 | `not_running`: the daemon is down |
 | 7 | `timeout`, `cancelled` |
 

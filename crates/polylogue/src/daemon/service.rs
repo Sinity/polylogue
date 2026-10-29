@@ -47,6 +47,9 @@ pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
 
 pub(crate) fn store_error(e: &StoreError) -> Response {
     match e {
+        StoreError::PrimaryPending { identity } => ok(serde_json::json!({
+            "identity": identity, "pending": true,
+        })),
         StoreError::Conflict(_) => error("conflict", e),
         StoreError::ReadDeadlineExceeded => error("deadline_exceeded", e),
         StoreError::ReadCancelled => error("cancelled", e),
@@ -109,6 +112,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         return store_error(&error);
     }
     let mut delivery = None;
+    let mut pending = false;
     if let Some(sender) = sender
         && !prepared.empty
         && !matches!(ask, Ask::ToolUse { .. })
@@ -138,12 +142,15 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         let _invalidation = d.page_ends.mutation();
         let result = writes.user(polylogue_store::user_writes::request_now(request_id, write));
         match result {
-            Ok(out) => delivery = Some(out.id),
+            Ok(out) => {
+                pending = out.pending;
+                delivery = Some(out.id);
+            }
             Err(e) => return store_error(&e),
         }
     }
     let delivery = prepared.advice_id.as_ref().or(delivery.as_ref());
-    ok(serde_json::json!({ "delivery": delivery, "prepared": prepared }))
+    ok(serde_json::json!({ "delivery": delivery, "prepared": prepared, "pending": pending }))
 }
 
 fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
@@ -163,11 +170,7 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
 }
 
 pub(crate) fn browser_refusal(refused: crate::browser::actions::Refused) -> Response {
-    Response::Error {
-        kind: refused.1.into(),
-        message: refused.1.into(),
-        detail: Some(serde_json::json!({ "http_status": refused.0 })),
-    }
+    error(refused.0, refused.0)
 }
 
 pub(crate) fn now_ms() -> i64 {

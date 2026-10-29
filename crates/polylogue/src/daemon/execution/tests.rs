@@ -40,7 +40,7 @@ fn slow_read_returns_a_typed_deadline_with_unknown_count() {
     assert!(detail["rows_scanned"].is_null());
     assert!(detail["sqlite_steps"].as_u64().unwrap() > 0);
     assert_eq!(exit_code(&kind), 7);
-    assert_eq!(exit_code("cancelled"), 3);
+    assert_eq!(exit_code("cancelled"), 7);
 }
 
 #[test]

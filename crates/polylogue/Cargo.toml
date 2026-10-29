@@ -12,6 +12,8 @@ publish.workspace = true
 sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
+command-surface.workspace = true
+schemars = "1"
 rustix = { workspace = true, features = ["event"] }
 mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }

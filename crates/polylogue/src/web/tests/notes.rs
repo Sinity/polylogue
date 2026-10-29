@@ -54,7 +54,7 @@ async fn send(f: &Fixture, path: &str, body: Option<Value>) -> (StatusCode, Stri
         .unwrap();
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (status, String::from_utf8(body.to_vec()).unwrap())
+    (status, super::application_body(String::from_utf8(body.to_vec()).unwrap()))
 }
 
 async fn command(f: &Fixture, path: &str, body: Value) -> Value {

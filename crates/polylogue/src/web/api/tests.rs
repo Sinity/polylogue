@@ -39,7 +39,7 @@ fn finite_batches_are_scrubbed_once_and_reopened_with_independent_positions() {
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(lines.last().unwrap()["data"]["type"], "complete");
+    assert_eq!(lines.last().unwrap()["value"]["type"], "complete");
     let root = web.daemon.archive.root.to_string_lossy().into_owned();
     let value = super::super::scrubbed(
         &web,

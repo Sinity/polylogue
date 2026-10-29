@@ -42,8 +42,8 @@ async function batch() {
           const raw = pending.slice(0, newline);
           pending = pending.slice(newline + 1);
           const response = JSON.parse(raw);
-          if (response.result !== "ok") throw new Error("Change batch failed");
-          const line = response.data;
+          if (response.outcome !== "ok") throw new Error("Change batch failed");
+          const line = response.value;
           if (complete) throw new Error("Records after change completion");
           if (line.type === "begin" && !began) {
             began = true;
@@ -111,7 +111,9 @@ async function readCurrent(subscriber, signal) {
     const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin", signal });
     if (response.status === 401) { stopped = true; throw new Error("Sign-in expired. Reopen with polylogue web."); }
     if (!response.ok) throw new Error("Current references unavailable (" + response.status + ")");
-    const page = await response.json();
+    const answer = await response.json();
+    if (answer.outcome === "error") throw new Error(answer.error.message);
+    const page = answer.value;
     if (!subscribers.has(subscriber)) return;
     if (!initial) {
       initial = page.read_at.cursor;
