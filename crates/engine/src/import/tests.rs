@@ -62,6 +62,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
             &ImportOptions {
                 format: Some("claude-code".into()),
                 explain: false,
+                ..Default::default()
             },
         )
         .unwrap();

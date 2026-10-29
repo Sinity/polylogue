@@ -226,6 +226,9 @@ pub struct LoopStatus {
 pub struct ImportOptions {
     pub format: Option<String>,
     pub explain: bool,
+    /// Computed by the accepting channel; imported bytes never supply it.
+    #[serde(skip)]
+    pub authorship: Option<polylogue_model::authorship::Authorship>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,6 +282,7 @@ pub enum LoopMsg {
     Changed,
     Import {
         paths: Vec<PathBuf>,
+        authorship: polylogue_model::authorship::Authorship,
         reply: SyncSender<Result<ImportReport, String>>,
     },
 

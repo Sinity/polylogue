@@ -1168,9 +1168,21 @@ impl Engine {
                         self.pass_open = false;
                         return Ok(());
                     }
-                    Ok(LoopMsg::Import { paths, reply }) => {
+                    Ok(LoopMsg::Import {
+                        paths,
+                        authorship,
+                        reply,
+                    }) => {
                         busy(true);
-                        let report = self.import(&paths).map_err(|e| e.to_string());
+                        let report = self
+                            .import_with_options(
+                                &paths,
+                                &ImportOptions {
+                                    authorship: Some(authorship),
+                                    ..Default::default()
+                                },
+                            )
+                            .map_err(|e| e.to_string());
                         busy(pending);
                         let _ = reply.send(report);
                     }
