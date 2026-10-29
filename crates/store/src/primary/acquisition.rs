@@ -34,6 +34,35 @@ pub struct AcquisitionReceipt {
 }
 impl AcquisitionReceipt {
     pub const VERSION: u32 = 1;
+
+    pub fn validate_for(&self, input: &crate::InputKey) -> Result<()> {
+        let invalid = || StoreError::Invalid("acquisition evidence does not match its generation or input".into());
+        if self.version != Self::VERSION || self.source.origin != input.format {
+            return Err(invalid());
+        }
+        self.range.length()?;
+        let Some(generation) = &self.generation else {
+            return if self.raw_total.is_none() && self.raw_predecessor.is_none() {
+                Ok(())
+            } else {
+                Err(invalid())
+            };
+        };
+        generation.validate()?;
+        let stream = generation.stream();
+        let window = generation.window();
+        if stream.source != self.source || stream.input != *input
+            || self.range.start < window.start || self.range.end > window.end
+            || self.raw_total.is_some_and(|end| end != window.end || end != self.range.end)
+            || self.raw_predecessor.as_ref().is_some_and(|body| body.is_empty() || self.range.start == window.start)
+            || matches!(generation,
+                super::SourceGeneration::File { stream: super::RawStream { role: super::RawStreamRole::ProviderBytes, .. }, observed, .. }
+                if self.raw_total.is_some_and(|end| end != observed.size))
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
 }
 
 /// The declared input format and exact native location. Display paths and
@@ -115,6 +144,10 @@ pub struct CapturePlan {
     pub bases: Vec<SourceBasis>,
     pub count: u64,
     pub mode: CaptureMode,
+    /// Receiver constraint on new custody only. Exact retained retries keep
+    /// their original disposition; this cannot promote unresolved work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_disposition: Option<CaptureDisposition>,
 }
 impl CapturePlan {
     pub fn validate(&self) -> Result<()> {
@@ -122,6 +155,9 @@ impl CapturePlan {
             return Err(StoreError::Invalid(
                 "an acquisition group needs its content intent and members".into(),
             ));
+        }
+        if self.required_disposition == Some(CaptureDisposition::Prepared) {
+            return Err(StoreError::Invalid("an acquisition constraint cannot require acceptance".into()));
         }
         let mut seen = std::collections::BTreeSet::new();
         for basis in &self.bases {

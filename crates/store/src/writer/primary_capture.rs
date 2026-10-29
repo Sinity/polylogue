@@ -235,6 +235,7 @@ impl Inner {
         let intent = capture_group_identity(group, immutable)?;
         let pending = sinex.pending_captures()?;
         let mut bases = BTreeMap::new();
+        let mut required_disposition = None;
         for item in group {
             let source = self.capture_source_selector(&item.batch, &pending)?;
             if let Some(existing) = bases.get(&source) {
@@ -244,9 +245,7 @@ impl Inner {
                     .as_ref()
                     .is_some_and(|basis| basis != existing)
                 {
-                    return Err(StoreError::Conflict(
-                        "one acquisition group has different source preconditions".into(),
-                    ));
+                    required_disposition = Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
                 }
             } else {
                 let version = item
@@ -260,9 +259,7 @@ impl Inner {
                         || sampled.confirmed != snapshot.basis.confirmed
                         || sampled.status != snapshot.basis.status
                     {
-                        return Err(StoreError::Conflict(
-                            "source basis changed while acquiring input bytes".into(),
-                        ));
+                        required_disposition = Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
                     }
                     // Pending predecessor is compared under the SDK custody
                     // lock, after the serialized writer checks confirmed state.
@@ -277,6 +274,7 @@ impl Inner {
             intent: intent.clone(),
             bases: bases.values().cloned().collect(),
             count: group.len() as u64,
+            required_disposition,
             mode: if immutable {
                 crate::primary::CaptureMode::Immutable
             } else {
