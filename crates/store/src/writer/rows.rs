@@ -6,6 +6,7 @@ use crate::first_build::FirstBuild;
 use crate::versions::VersionKind;
 
 mod assertions;
+mod checkpoint;
 mod retract;
 pub(super) use retract::prune_sessions;
 
@@ -95,7 +96,8 @@ fn apply_rows(
     }
     let input_pk = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk;
     validate_range(b, p)?;
-    if !confirmed && !admit_step(tx, input_pk, chain, p)? {
+    let previous_checkpoint = checkpoint::read(tx, input_pk, chain)?;
+    if !confirmed && !admit_step(previous_checkpoint.as_ref(), p)? {
         return Ok(0);
     }
     tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
@@ -104,6 +106,14 @@ fn apply_rows(
     }
     let rows = RowWriter {
         tx,
+        checkpoint: checkpoint::Update::new(
+            b,
+            p,
+            previous_checkpoint.as_ref(),
+            counter,
+            confirmed,
+            receipt,
+        )?,
         source_admitted: if confirmed {
             None
         } else {
@@ -327,23 +337,14 @@ fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
 
 /// A continuing reading can only extend its committed prefix. Explicit resets
 /// replace a complete reading, including row dumps whose accounting starts later.
-fn admit_step(tx: &Transaction<'_>, input: i64, chain: i64, step: &ParseStep) -> Result<bool> {
+fn admit_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Result<bool> {
     if step.reset {
         return Ok(true);
     }
-    let previous: Option<(u64, String)> = tx
-        .query_row(
-            "SELECT parsed_upto, reading_version FROM parse_state WHERE input_pk=?1 AND chain=?2",
-            params![input, chain],
-            |row| Ok((row.get::<_, i64>(0)? as u64, row.get(1)?)),
-        )
-        .optional()?;
-    let cursor = previous.as_ref().map_or(0, |(cursor, _)| *cursor);
+    let cursor = previous.map_or(0, checkpoint::Stored::cursor);
     if step.start < cursor
         && step.parsed_upto <= cursor
-        && previous
-            .as_ref()
-            .is_some_and(|(_, version)| version == &step.reading_version)
+        && previous.is_some_and(|prior| prior.version() == step.reading_version)
     {
         return Ok(false);
     }
@@ -365,6 +366,7 @@ struct StoredBlock<'a> {
 }
 
 pub(super) struct RowWriter<'a, 't> {
+    checkpoint: checkpoint::Update,
     source_admitted: Option<i64>,
     tx: &'a Transaction<'t>,
     input_pk: i64,
@@ -1092,55 +1094,8 @@ impl RowWriter<'_, '_> {
     /// they cover. A step from offset 0 replaces the chain's counts; a
     /// continuing step adds to them.
     fn write_parse_state(&self, b: &Batch, p: &ParseStep) -> Result<()> {
+        self.checkpoint.write(self.tx, self.input_pk, self.chain)?;
         let a = &p.counts;
-        let used: u64 = a.used.values().sum();
-        let skipped: u64 = a.skipped.values().sum();
-        let unreadable: u64 = a.unreadable.values().sum();
-        let status = if p.source_prefix_missing {
-            "partial"
-        } else if p.at_end && p.parsed_upto < b.length {
-            "waiting"
-        } else if p.no_parser_yet {
-            "no_parser_yet"
-        } else if p.parsed_upto >= b.length {
-            "done"
-        } else if p.at_end {
-            "waiting"
-        } else {
-            "parsing"
-        };
-        let detail = (status == "waiting").then(|| b.length.to_string());
-        let whole = p.reset;
-        let sql = if whole {
-            "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail, reading_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(input_pk, chain) DO UPDATE SET
-                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail, reading_version=excluded.reading_version,
-                 records = excluded.records, used = excluded.used,
-                 skipped = excluded.skipped, unreadable = excluded.unreadable"
-        } else {
-            "INSERT INTO parse_state(input_pk, chain, status, parsed_upto, records,
-                 used, skipped, unreadable, detail, reading_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(input_pk, chain) DO UPDATE SET
-                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail, reading_version=excluded.reading_version,
-                 records = records + excluded.records, used = used + excluded.used,
-                 skipped = skipped + excluded.skipped,
-                 unreadable = unreadable + excluded.unreadable"
-        };
-        self.tx.prepare_cached(sql)?.execute(params![
-            self.input_pk,
-            self.chain,
-            status,
-            p.parsed_upto as i64,
-            a.records as i64,
-            used as i64,
-            skipped as i64,
-            unreadable as i64,
-            detail,
-            p.reading_version.as_str(),
-        ])?;
         let groups = [
             ("skipped:", &a.skipped, 1),
             ("unreadable:", &a.unreadable, 0),

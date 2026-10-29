@@ -1278,3 +1278,57 @@ fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_ma
     );
     assert_eq!(reader.event_record(&id).unwrap().unwrap().commit, 41);
 }
+
+#[test]
+fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
+    let w = test_archive();
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let first = batch("checkpoint", 0, 0, Vec::new(), &[]);
+    let tx = conn.transaction().unwrap();
+    write_test_rows(&tx, &first, &first.parse[0], 1, 10, None).unwrap();
+    write_test_rows(&tx, &first, &first.parse[0], 1, 20, None).unwrap();
+    assert_eq!(
+        tx.query_row("SELECT commit_seq FROM parse_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        10
+    );
+    tx.commit().unwrap();
+    let continuation = batch("checkpoint", 0, 100, Vec::new(), &[]);
+    let tx = conn.transaction().unwrap();
+    write_test_rows(&tx, &continuation, &continuation.parse[0], 1, 25, None).unwrap();
+    assert_eq!(
+        tx.query_row("SELECT commit_seq FROM parse_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        25
+    );
+    tx.rollback().unwrap();
+    assert_eq!(
+        conn.query_row("SELECT commit_seq FROM parse_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        10
+    );
+    let mut waiting = batch("checkpoint", 0, 100, Vec::new(), &[]);
+    waiting.parse[0].parsed_upto = 100;
+    let tx = conn.transaction().unwrap();
+    write_test_rows(&tx, &waiting, &waiting.parse[0], 1, 30, None).unwrap();
+    write_test_rows(&tx, &waiting, &waiting.parse[0], 1, 40, None).unwrap();
+    let state: (i64, String) = tx
+        .query_row("SELECT commit_seq,status FROM parse_state", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(state, (30, "waiting".into()));
+    let mut upgraded = first;
+    upgraded.parse[0].reading_version = "synthetic=2".into();
+    write_test_rows(&tx, &upgraded, &upgraded.parse[0], 1, 50, None).unwrap();
+    assert_eq!(
+        tx.query_row("SELECT commit_seq FROM parse_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        50
+    );
+    tx.commit().unwrap();
+}
