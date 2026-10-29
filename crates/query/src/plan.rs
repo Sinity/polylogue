@@ -8,6 +8,19 @@ use query_language::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+fn native_catalog() -> Catalog {
+    crate::catalog::catalog(&[], &[])
+}
+
+/// A supported native declaration version, independent of transport vocabulary.
+/// This belongs in execution bindings, never in semantic question identity.
+pub fn catalog_fingerprint() -> String {
+    // Catalog has no arbitrary JSON maps; derived struct serialization has stable
+    // field order even when serde_json's preserve_order feature is enabled.
+    let bytes = serde_json::to_vec(&native_catalog()).expect("native catalog is serializable");
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedDefinition {
     pub name: String,
