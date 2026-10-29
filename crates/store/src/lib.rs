@@ -128,6 +128,11 @@ pub enum StoreError {
     ReadIndexReplaced,
     #[error("request {0} was already used for different content")]
     Conflict(String),
+    #[error("{reference} is stale; current revisions: {current:?}")]
+    Stale {
+        reference: String,
+        current: Vec<String>,
+    },
     #[error("{reference} is ambiguous: {candidates:?}")]
     Ambiguous {
         reference: String,

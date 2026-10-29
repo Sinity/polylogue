@@ -106,7 +106,6 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Response {
         value: Some(
             json!({"body":input.body,"quote":input.quote,"source":input.source}).to_string(),
         ),
-        author: Author::Operator,
         targets: vec![Reference::Session(session), Reference::Message(message)],
         relations: vec![],
         revises: None,

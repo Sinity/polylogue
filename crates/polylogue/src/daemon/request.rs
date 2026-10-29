@@ -4,7 +4,7 @@
 
 use crate::briefing::Ask;
 use polylogue_model::DeliveryOutcome;
-use polylogue_model::{Author, NewNote, SessionId};
+use polylogue_model::{NewNote, SessionId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -215,7 +215,6 @@ pub enum Request {
         request_id: String,
         name: String,
         text: String,
-        author: Author,
     },
     /// Watches a query: each row that starts matching becomes a notice
     /// (a signal rule delivering notices).
@@ -230,7 +229,6 @@ pub enum Request {
         /// Also show each notice as a desktop notification.
         #[serde(default)]
         notify: bool,
-        author: Author,
     },
     /// Runs a query and keeps the rows it returned, as `result:<id>`.
     Keep {
@@ -242,7 +240,6 @@ pub enum Request {
     Withdraw {
         request_id: String,
         note: String,
-        author: Author,
         #[serde(default)]
         reason: Option<String>,
     },

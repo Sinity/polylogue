@@ -2,18 +2,30 @@ use super::*;
 use polylogue_model::{Author, NewNote, NoteKind, Reference};
 
 fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
-    match handle(request, &d.daemon) {
+    ok_as(d, request, Author::Operator)
+}
+
+fn ok_as(d: &test_daemon::TestDaemon, request: Request, author: Author) -> serde_json::Value {
+    let limit = crate::daemon::execution::limit(None, Default::default());
+    match handle_with_caller(
+        request,
+        &d.daemon,
+        &limit,
+        &polylogue_model::authorship::Authorship {
+            author,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
+    ) {
         Response::Ok { data, .. } => data,
         other => panic!("{other:?}"),
     }
 }
 
-fn note(author: Author, targets: Vec<Reference>, body: &str) -> NewNote {
+fn note(targets: Vec<Reference>, body: &str) -> NewNote {
     NewNote {
         kind: NoteKind::Lesson,
         key: None,
         value: Some(body.into()),
-        author,
         targets,
         relations: vec![],
         revises: None,
@@ -39,23 +51,20 @@ fn query(d: &test_daemon::TestDaemon, text: &str) -> serde_json::Value {
 fn the_operator_accepts_or_rejects_an_agents_note() {
     let d = test_daemon::start("first prompt");
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
-    let agent = ok(
+    let agent = ok_as(
         &d,
         Request::AddNote {
             request_id: "r1".into(),
-            note: note(
-                Author::Agent(None),
-                vec![session.clone()],
-                "use the fast path",
-            ),
+            note: note(vec![session.clone()], "use the fast path"),
         },
+        Author::Agent(None),
     );
     let agent_id = agent["id"].as_str().unwrap().to_owned();
     let own = ok(
         &d,
         Request::AddNote {
             request_id: "r2".into(),
-            note: note(Author::Operator, vec![session.clone()], "mine"),
+            note: note(vec![session.clone()], "mine"),
         },
     );
     assert_eq!(
@@ -100,8 +109,9 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
             source: crate::briefing::StartSource::Startup,
         },
         "d1",
-        polylogue_store::user_writes::now(),
+        d.daemon.config.requests.now(),
         None,
+        &d.daemon.config.paths.check_history,
     )
     .unwrap();
     assert!(brief.text.contains("use the fast path"), "{}", brief.text);
@@ -132,7 +142,7 @@ fn a_note_applies_to_every_row_of_a_query() {
             note: NewNote {
                 kind: NoteKind::Tag,
                 key: Some("reviewed".into()),
-                ..note(Author::Operator, vec![], "")
+                ..note(vec![], "")
             },
         },
     );
@@ -142,7 +152,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         Request::AnnotateQuery {
             request_id: "r2".into(),
             query: "sessions where origin:codex".into(),
-            note: note(Author::Operator, vec![], "x"),
+            note: note(vec![], "x"),
         },
         &d.daemon,
     );
@@ -154,7 +164,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         Request::AnnotateQuery {
             request_id: "r3".into(),
             query: "tool_calls".into(),
-            note: note(Author::Operator, vec![], "x"),
+            note: note(vec![], "x"),
         },
         &d.daemon,
     );
@@ -164,18 +174,18 @@ fn a_note_applies_to_every_row_of_a_query() {
     );
 }
 
-/// `export user-state` carries the agent's note and the operator's judgment
-/// of it, as the requests that wrote them; only as json.
+/// Frozen history keeps the original authors of the claim and its judgment.
 #[test]
-fn user_state_exports_notes_and_judgments_as_their_requests() {
+fn frozen_history_preserves_the_note_and_judgment_authors() {
     let d = test_daemon::start("first prompt");
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
-    let agent = ok(
+    let agent = ok_as(
         &d,
         Request::AddNote {
             request_id: "r1".into(),
-            note: note(Author::Agent(None), vec![session], "use the fast path"),
+            note: note(vec![session], "use the fast path"),
         },
+        Author::Agent(None),
     );
     ok(
         &d,
@@ -186,25 +196,21 @@ fn user_state_exports_notes_and_judgments_as_their_requests() {
             reason: None,
         },
     );
-    let export = |format: &str| {
-        handle(
-            Request::Export {
-                targets: vec![],
-                format: format.into(),
-                user_state: true,
-            },
-            &d.daemon,
-        )
-    };
-    let Response::Ok { data, .. } = export("json") else {
-        panic!("export failed");
-    };
-    let document = polylogue_model::export::Document::from_json(&data.to_string()).unwrap();
-    let requests: Vec<&str> = document
-        .user_state
-        .iter()
-        .map(|entry| entry["request"]["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(requests, ["r1", "r2"]);
-    assert!(matches!(export("markdown"), Response::Error { .. }));
+    let reader = d.daemon.reads.reader().unwrap();
+    let mut requests = Vec::new();
+    reader
+        .visit_authored(&mut |prepared, _imports| {
+            requests.push(prepared.request.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.id.as_str())
+            .collect::<Vec<_>>(),
+        ["r1", "r2"]
+    );
+    assert_eq!(requests[0].authorship.author, Author::Agent(None));
+    assert_eq!(requests[1].authorship.author, Author::Operator);
 }

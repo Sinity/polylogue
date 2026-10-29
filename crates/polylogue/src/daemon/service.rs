@@ -5,10 +5,11 @@ mod status;
 
 use super::{Request, Response};
 use crate::briefing::{self, Ask};
+use crate::operation::{Context, Invocation};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
 use polylogue_model::user::{Delivery, UserWrite};
-use polylogue_model::{Author, NewNote, NoteKind};
-use polylogue_store::user_writes::{self as user_writes, machine_id};
+use polylogue_model::{NewNote, NoteKind};
+use polylogue_store::user_writes;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -225,13 +226,19 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
 /// Prepares context and, when a sender is named, records it as a delivery
 /// before handing it out: prepared is recorded first, delivered is a
 /// separate event the client reports.
-fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) -> Response {
+fn context(
+    d: &Daemon,
+    request_id: String,
+    ask: &Ask,
+    sender: Option<String>,
+    operation: &Arc<Context>,
+) -> Response {
     let prepared = {
         let reader = match d.reads.reader() {
             Ok(r) => r,
             Err(e) => return store_error(&e),
         };
-        let settings = match reader.settings_snapshot(d.config.requests.machine()) {
+        let settings = match reader.settings_snapshot(&operation.machine) {
             Ok(settings) => settings,
             Err(error) => return store_error(&error),
         };
@@ -244,15 +251,11 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        let clock = match d.query_clock() {
-            Ok(clock) => clock,
-            Err(response) => return response,
-        };
         let result = briefing::prepare(
             &reader,
             ask,
             &request_id,
-            &clock,
+            operation,
             near,
             &d.config.paths.check_history,
         );
@@ -301,7 +304,7 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         {
             return store_error(&error);
         }
-        let result = writes.user(polylogue_store::user_writes::request_now(request_id, write));
+        let result = writes.user(operation.request(request_id, write));
         match result {
             Ok(out) => {
                 pending = out.pending;
@@ -318,12 +321,12 @@ fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
     d.writes.as_ref().ok_or_else(|| d.mode.write_refusal())
 }
 
-fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
+fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) -> Response {
     let writes = match writer(d) {
         Ok(writes) => writes,
         Err(response) => return response,
     };
-    match writes.user(polylogue_store::user_writes::request_now(request_id, w)) {
+    match writes.user(invocation.request(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
     }
@@ -350,9 +353,16 @@ fn repeated_request(
     reader: &polylogue_store::Reader<'_>,
     id: &str,
     intended: &UserWrite,
+    invocation: &Invocation,
 ) -> Result<Option<UserWrite>, Response> {
     match reader.user_request(id).map_err(|e| store_error(&e))? {
-        Some(previous) if intended.intent() == previous.write.intent() => Ok(Some(previous.write)),
+        Some(previous)
+            if previous.machine == invocation.machine
+                && previous.authorship == invocation.authorship
+                && intended.intent() == previous.write.intent() =>
+        {
+            Ok(Some(previous.write))
+        }
         Some(_) => Err(store_error(&StoreError::Conflict(id.into()))),
         None => Ok(None),
     }
@@ -503,7 +513,7 @@ fn handle_inner(
         | Request::BackfillClaim { .. }
         | Request::BackfillReport { .. }
         | Request::Conversations { .. }
-        | Request::StoredFiles { .. } => browser::handle(request, d, reader),
+        | Request::StoredFiles { .. } => browser::handle(request, d, reader, authorship),
         Request::Changes { .. } => error(
             "stream_required",
             "the change feed uses the finite socket stream",
@@ -759,10 +769,16 @@ fn handle_inner(
                 rows_json: String::new(),
                 read_at: String::new(),
             };
-            match repeated_request(&reader, &request_id, &intended) {
+            match repeated_request(
+                &reader,
+                &request_id,
+                &intended,
+                d.config.requests.machine(),
+                authorship,
+            ) {
                 Ok(Some(previous)) => {
                     drop(reader);
-                    return write(d, request_id, previous);
+                    return write(d, authorship, request_id, previous);
                 }
                 Err(response) => return response,
                 Ok(None) => {}
@@ -799,6 +815,7 @@ fn handle_inner(
             let read_at = serde_json::json!({ "now": kept["now"] }).to_string();
             write(
                 d,
+                authorship,
                 request_id,
                 UserWrite::KeepResult {
                     name,
@@ -812,13 +829,11 @@ fn handle_inner(
             request_id,
             name,
             text,
-            author,
         } => {
             let mut note = NewNote {
                 kind: NoteKind::SavedQuery,
                 key: Some(name.clone()),
                 value: Some(text.clone()),
-                author,
                 targets: vec![],
                 relations: vec![],
                 revises: None,
@@ -828,10 +843,12 @@ fn handle_inner(
                 &reader,
                 &request_id,
                 &UserWrite::SaveQuery { note: note.clone() },
+                d.config.requests.machine(),
+                authorship,
             ) {
                 Ok(Some(previous)) => {
                     drop(reader);
-                    return write(d, request_id, previous);
+                    return write(d, authorship, request_id, previous);
                 }
                 Err(response) => return response,
                 Ok(None) => {}
@@ -842,7 +859,7 @@ fn handle_inner(
             };
             drop(reader);
             note.revises = revises;
-            write(d, request_id, UserWrite::SaveQuery { note })
+            write(d, authorship, request_id, UserWrite::SaveQuery { note })
         }
         Request::Watch {
             request_id,
@@ -850,7 +867,6 @@ fn handle_inner(
             name,
             hold,
             notify,
-            author,
         } => {
             if let Some(hold) = &hold
                 && crate::signals::duration(hold).is_none()
@@ -897,17 +913,16 @@ fn handle_inner(
                 kind: NoteKind::Signal,
                 key: name,
                 value: Some(rule.to_string()),
-                author,
                 targets: vec![],
                 relations: vec![],
                 revises: None,
                 valid_until: None,
             };
-            write(d, request_id, UserWrite::AddNote { note })
+            write(d, authorship, request_id, UserWrite::AddNote { note })
         }
         Request::AddNote { request_id, note } => {
             drop(reader);
-            write(d, request_id, UserWrite::AddNote { note })
+            write(d, authorship, request_id, UserWrite::AddNote { note })
         }
         Request::AnnotateQuery {
             request_id,
@@ -918,7 +933,13 @@ fn handle_inner(
                 query: query.clone(),
                 note: note.clone(),
             };
-            let resolved = match repeated_request(&reader, &request_id, &intended) {
+            let resolved = match repeated_request(
+                &reader,
+                &request_id,
+                &intended,
+                d.config.requests.machine(),
+                authorship,
+            ) {
                 Ok(Some(previous)) => previous,
                 Ok(None) => {
                     note.targets = match query_targets(d, &reader, &query) {
@@ -930,7 +951,7 @@ fn handle_inner(
                 Err(response) => return response,
             };
             drop(reader);
-            match write(d, request_id, resolved) {
+            match write(d, authorship, request_id, resolved) {
                 Response::Ok { mut data } => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
@@ -968,7 +989,6 @@ fn handle_inner(
                 kind: polylogue_model::NoteKind::Judgment,
                 key: Some(if accepted { "accepted" } else { "rejected" }.into()),
                 value: reason,
-                author: Author::Operator,
                 targets: vec![polylogue_model::Reference::Assertion(
                     polylogue_model::RevisionReference {
                         root: found.first_note,
@@ -979,23 +999,24 @@ fn handle_inner(
                 revises: None,
                 valid_until: None,
             };
-            write(d, request_id, UserWrite::AddNote { note: judgment })
+            write(
+                d,
+                authorship,
+                request_id,
+                UserWrite::AddNote { note: judgment },
+            )
         }
         Request::Withdraw {
             request_id,
             note,
-            author,
             reason,
         } => {
             drop(reader);
             write(
                 d,
+                authorship,
                 request_id,
-                UserWrite::Withdraw {
-                    note,
-                    author,
-                    reason,
-                },
+                UserWrite::Withdraw { note, reason },
             )
         }
         Request::Context {
@@ -1004,7 +1025,7 @@ fn handle_inner(
             sender,
         } => {
             drop(reader);
-            context(d, request_id, &ask, sender)
+            context(d, authorship, request_id, &ask, sender)
         }
         Request::AdviceDelivered {
             request_id,
@@ -1015,6 +1036,7 @@ fn handle_inner(
             drop(reader);
             write(
                 d,
+                authorship,
                 request_id,
                 UserWrite::DeliveredAdvice(Delivery {
                     recipient_kind: if session.is_some() {
@@ -1041,6 +1063,7 @@ fn handle_inner(
             drop(reader);
             write(
                 d,
+                authorship,
                 user_writes::new_request_id(),
                 UserWrite::DeliveryEvent {
                     delivery,
@@ -1069,7 +1092,7 @@ fn handle_inner(
             machine: _,
         } => {
             let _ = request_id;
-            match reader.setting(&key, &machine_id()) {
+            match reader.setting(&key, d.config.requests.machine()) {
                 Ok(v) => ok(serde_json::json!({ "key": key, "value": v })),
                 Err(e) => store_error(&e),
             }
@@ -1083,12 +1106,12 @@ fn handle_inner(
             drop(reader);
             write(
                 d,
+                authorship,
                 request_id.unwrap_or_else(user_writes::new_request_id),
                 UserWrite::SetSetting {
                     key,
                     value,
-                    author: Author::Operator,
-                    machine: machine.then(machine_id),
+                    machine: machine.then(|| d.config.requests.machine().to_owned()),
                 },
             )
         }

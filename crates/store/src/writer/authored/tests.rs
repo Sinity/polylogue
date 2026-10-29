@@ -20,6 +20,10 @@ fn current(input: &str, at: i64) -> ImportAttribution {
 fn prepared(write: UserWrite) -> PreparedRequest {
     let archive = crate::fixture::writer::WriterArchive::new();
     let request = UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Agent(None),
+            via: polylogue_model::authorship::Channel::Mcp,
+        },
         id: "original-request".into(),
         machine: "source-machine".into(),
         at: Timestamp::from_unix_ms(1).unwrap(),
@@ -46,8 +50,6 @@ fn rendition() -> PreparedRequest {
             kind: VariantKind::Translation,
             from_lang: Some("en".into()),
             to_lang: Some("pl".into()),
-            author: Author::Agent(None),
-            via: "mcp".into(),
             method: None,
             parts: vec![NewVariantPart {
                 of: "block:codex:source#0".into(),
@@ -376,13 +378,16 @@ fn commit_subscribers_wake_for_new_visible_facts_and_skip_exact_or_failed_user_r
     let archive = crate::fixture::writer::WriterArchive::new();
     let commits = archive.writer.sender().unwrap().completion_commits();
     let request = UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
         id: "setting".into(),
         machine: "machine".into(),
         at: Timestamp::from_unix_ms(1).unwrap(),
         write: UserWrite::SetSetting {
             key: "key".into(),
             value: "first".into(),
-            author: Author::Operator,
             machine: None,
         },
     };

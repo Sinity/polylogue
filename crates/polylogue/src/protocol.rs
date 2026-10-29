@@ -156,6 +156,7 @@ pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
         StoreError::ScopeChanged => "scope_changed",
         StoreError::Conflict(_) | StoreError::ReadIndexReplaced => "conflict",
         StoreError::Ambiguous { .. } => "ambiguous",
+        StoreError::Stale { .. } => "stale",
         StoreError::Projection(issue) => match issue {
             polylogue_model::bundle::BundleError::ProjectionConflict
             | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",

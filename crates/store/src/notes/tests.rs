@@ -3,12 +3,11 @@ use crate::{Archive, ReadPool, Writer};
 use polylogue_model::NewNote;
 use polylogue_model::user::UserWrite;
 
-fn note(kind: NoteKind, author: Author, target: &str, value: &str) -> NewNote {
+fn note(kind: NoteKind, target: &str, value: &str) -> NewNote {
     NewNote {
         kind,
         key: None,
         value: Some(value.into()),
-        author,
         targets: vec![Reference::parse(target).unwrap()],
         relations: vec![],
         revises: None,
@@ -34,10 +33,10 @@ fn setup() -> (
 fn notes_are_written_once_per_request_and_revised_in_families() {
     let (_dir, _a, _lock, writer, reads) = setup();
     let s = "session:claude-code:abc";
-    let first = crate::user_writes::request_now(
+    let first = crate::fixture::authored::operator_request(
         "018f0000-0000-7000-8000-000000000001".into(),
         UserWrite::AddNote {
-            note: note(NoteKind::Lesson, Author::Operator, s, "run nextest"),
+            note: note(NoteKind::Lesson, s, "run nextest"),
         },
     );
     let out = writer.user(first.clone()).unwrap();
@@ -47,17 +46,17 @@ fn notes_are_written_once_per_request_and_revised_in_families() {
     // The same ID with other content is a conflict.
     let mut other = first.clone();
     other.write = UserWrite::AddNote {
-        note: note(NoteKind::Lesson, Author::Operator, s, "something else"),
+        note: note(NoteKind::Lesson, s, "something else"),
     };
     assert!(matches!(
         writer.user(other),
         Err(crate::StoreError::Conflict(_))
     ));
 
-    let mut revised = note(NoteKind::Lesson, Author::Operator, s, "run cargo nextest");
+    let mut revised = note(NoteKind::Lesson, s, "run cargo nextest");
     revised.revises = Some(out.id.clone());
     let second = writer
-        .user(crate::user_writes::request_now(
+        .user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-000000000002".into(),
             UserWrite::AddNote { note: revised },
         ))
@@ -74,24 +73,18 @@ fn notes_are_written_once_per_request_and_revised_in_families() {
 fn a_withdrawal_names_the_family_it_withdraws() {
     let (_dir, _a, _lock, writer, reads) = setup();
     let lesson = writer
-        .user(crate::user_writes::request_now(
+        .user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-00000000000a".into(),
             UserWrite::AddNote {
-                note: note(
-                    NoteKind::Lesson,
-                    Author::Operator,
-                    "repo:polylogue",
-                    "keep it plain",
-                ),
+                note: note(NoteKind::Lesson, "repo:polylogue", "keep it plain"),
             },
         ))
         .unwrap();
     let withdrawal = writer
-        .user(crate::user_writes::request_now(
+        .user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-00000000000c".into(),
             UserWrite::Withdraw {
                 note: lesson.id.clone(),
-                author: Author::Operator,
                 reason: Some("superseded".into()),
             },
         ))
@@ -114,19 +107,19 @@ fn a_withdrawal_names_the_family_it_withdraws() {
 #[test]
 fn a_note_needs_a_target_and_a_revision_needs_its_family() {
     let (_dir, _a, _lock, writer, _reads) = setup();
-    let mut n = note(NoteKind::Note, Author::Operator, "repo:synthetic", "x");
+    let mut n = note(NoteKind::Note, "repo:synthetic", "x");
     n.targets.clear();
     assert!(matches!(
-        writer.user(crate::user_writes::request_now(
+        writer.user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-000000000010".into(),
             UserWrite::AddNote { note: n }
         )),
         Err(crate::StoreError::Invalid(_))
     ));
-    let mut n = note(NoteKind::Note, Author::Operator, "repo:synthetic", "x");
+    let mut n = note(NoteKind::Note, "repo:synthetic", "x");
     n.revises = Some("missing".into());
     assert!(matches!(
-        writer.user(crate::user_writes::request_now(
+        writer.user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-000000000011".into(),
             UserWrite::AddNote { note: n }
         )),
@@ -138,15 +131,10 @@ fn a_note_needs_a_target_and_a_revision_needs_its_family() {
 fn unsupported_note_metadata_returns_an_error_instead_of_an_empty_or_invented_note() {
     let (_dir, archive, _lock, writer, reads) = setup();
     let created = writer
-        .user(crate::user_writes::request_now(
+        .user(crate::fixture::authored::operator_request(
             "unsupported-note".into(),
             UserWrite::AddNote {
-                note: note(
-                    NoteKind::Note,
-                    Author::Operator,
-                    "repo:morrow",
-                    "synthetic body",
-                ),
+                note: note(NoteKind::Note, "repo:morrow", "synthetic body"),
             },
         ))
         .unwrap();
@@ -172,8 +160,8 @@ fn unsupported_note_metadata_returns_an_error_instead_of_an_empty_or_invented_no
 #[test]
 fn annotation_retries_and_replay_keep_the_original_targets() {
     let (_dir, _archive, _lock, writer, reads) = setup();
-    let original = note(NoteKind::Note, Author::Operator, "repo:morrow", "reviewed");
-    let request = crate::user_writes::request_now(
+    let original = note(NoteKind::Note, "repo:morrow", "reviewed");
+    let request = crate::fixture::authored::operator_request(
         "annotated".into(),
         UserWrite::AnnotateQuery {
             query: "sessions".into(),
@@ -189,7 +177,7 @@ fn annotation_retries_and_replay_keep_the_original_targets() {
     changed.targets = vec![Reference::parse("repo:other").unwrap()];
     assert!(
         writer
-            .user(crate::user_writes::request_now(
+            .user(crate::fixture::authored::operator_request(
                 "annotated".into(),
                 UserWrite::AnnotateQuery {
                     query: "sessions".into(),
@@ -228,7 +216,7 @@ fn annotation_retries_and_replay_keep_the_original_targets() {
 #[test]
 fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
     let (_dir, _archive, _lock, writer, reads) = setup();
-    let request = crate::user_writes::request_now(
+    let request = crate::fixture::authored::operator_request(
         "kept".into(),
         UserWrite::KeepResult {
             name: Some("before".into()),
@@ -260,16 +248,11 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
 #[test]
 fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     let (_dir, _archive, _lock, writer, reads) = setup();
-    let mut saved = note(
-        NoteKind::SavedQuery,
-        Author::Operator,
-        "repo:morrow",
-        "sessions",
-    );
+    let mut saved = note(NoteKind::SavedQuery, "repo:morrow", "sessions");
     saved.key = Some("everything".into());
     saved.targets.clear();
     writer
-        .user(crate::user_writes::request_now(
+        .user(crate::fixture::authored::operator_request(
             "first".into(),
             UserWrite::SaveQuery {
                 note: saved.clone(),
@@ -277,14 +260,14 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         ))
         .unwrap();
     saved.revises = Some("first".into());
-    let resolved = crate::user_writes::request_now(
+    let resolved = crate::fixture::authored::operator_request(
         "resolved".into(),
         UserWrite::SaveQuery {
             note: saved.clone(),
         },
     );
     writer.user(resolved.clone()).unwrap();
-    let explicit = crate::user_writes::request_now(
+    let explicit = crate::fixture::authored::operator_request(
         "explicit".into(),
         UserWrite::AddNote {
             note: saved.clone(),
@@ -294,7 +277,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     saved.revises = Some("resolved".into());
     assert!(
         writer
-            .user(crate::user_writes::request_now(
+            .user(crate::fixture::authored::operator_request(
                 "resolved".into(),
                 UserWrite::SaveQuery {
                     note: saved.clone()
@@ -304,7 +287,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
             .repeat
     );
     assert!(matches!(
-        writer.user(crate::user_writes::request_now(
+        writer.user(crate::fixture::authored::operator_request(
             "explicit".into(),
             UserWrite::AddNote { note: saved }
         )),
@@ -351,10 +334,10 @@ fn a_missing_request_is_absent_and_removed_request_content_refuses_retries() {
         None
     );
     writer
-        .user(crate::user_writes::request_now(
+        .user(crate::fixture::authored::operator_request(
             "removed".into(),
             UserWrite::AddNote {
-                note: note(NoteKind::Note, Author::Operator, "repo:morrow", "body"),
+                note: note(NoteKind::Note, "repo:morrow", "body"),
             },
         ))
         .unwrap();
