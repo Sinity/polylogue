@@ -1,7 +1,7 @@
 //! Authored request payloads and their portable values. Storage and the
 //! clock that creates a request belong to the caller.
 
-use crate::{Author, BlobHash, DeliveryOutcome, NewNote, Timestamp};
+use crate::{BlobHash, DeliveryOutcome, NewNote, Timestamp, authorship::Authorship};
 use serde::{Deserialize, Serialize};
 
 /// Trusted host and wall-clock inputs captured by the binary. Authored writes
@@ -15,10 +15,11 @@ impl RequestMetadata {
     pub fn new(machine: String, clock: crate::WallClock) -> Self {
         Self { machine, clock }
     }
-    pub fn request(&self, id: String, write: UserWrite) -> UserRequest {
+    pub fn request(&self, id: String, write: UserWrite, authorship: Authorship) -> UserRequest {
         UserRequest {
             id,
             machine: self.machine.clone(),
+            authorship,
             at: self.clock.now().into(),
             write,
         }
@@ -32,7 +33,7 @@ impl RequestMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "write", rename_all = "snake_case")]
+#[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
     Variant {
         variant: crate::NewVariant,
@@ -52,7 +53,6 @@ pub enum UserWrite {
     /// Withdraws a note family: the newest revision and every older one.
     Withdraw {
         note: String,
-        author: Author,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
@@ -81,7 +81,6 @@ pub enum UserWrite {
     SetSetting {
         key: String,
         value: String,
-        author: Author,
         /// `None` for an archive-wide key, otherwise this machine.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<String>,
@@ -200,6 +199,7 @@ pub struct UserOutcome {
 pub struct UserRequest {
     pub id: String,
     pub machine: String,
+    pub authorship: Authorship,
     pub at: Timestamp,
     pub write: UserWrite,
 }
@@ -469,29 +469,4 @@ impl BackfillJob {
 }
 
 #[cfg(test)]
-mod metadata_tests {
-    use super::*;
-    #[test]
-    fn request_uses_the_supplied_clock_and_machine() {
-        let metadata = RequestMetadata::new(
-            "synthetic-machine".into(),
-            crate::WallClock::fixed("2026-03-08T12:34:56.123456789Z".parse().unwrap()),
-        );
-        let request = metadata.request(
-            "synthetic-request".into(),
-            UserWrite::SetSetting {
-                key: "browser.actions".into(),
-                value: "on".into(),
-                author: Author::Operator,
-                machine: None,
-            },
-        );
-        assert_eq!(request.machine, "synthetic-machine");
-        assert_eq!(
-            jiff::Timestamp::from(request.at),
-            "2026-03-08T12:34:56.123456789Z"
-                .parse::<jiff::Timestamp>()
-                .unwrap()
-        );
-    }
-}
+mod tests;
