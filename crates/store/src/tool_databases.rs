@@ -283,9 +283,8 @@ fn read_rows(
     // additive header even when its SQL declaration has not changed.
     let signature = json!({"schema":schema,"table_metadata":table_metadata});
     let changed_schema = catalog.schema.as_ref() != Some(&signature);
-    let at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
+    // The accepting engine supplied this observation from its injected clock.
+    let at_ms = observation.seen_at_ms;
     let mut bytes = Vec::new();
     if changed_schema {
         serde_json::to_writer(&mut bytes, &json!({"db":db.file_name().map(|n| n.to_string_lossy()), "at_ms":at_ms, "schema":schema, "table_metadata":table_metadata, "source":{"machine":observation.machine,"path":observation.path}})).map_err(std::io::Error::from)?;

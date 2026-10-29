@@ -47,6 +47,12 @@ pub(crate) struct FailedChain {
     pub(crate) length: u64,
 }
 
+/// Physical custody has its own continuation and cannot update source state.
+pub(crate) struct RawState {
+    pub(crate) cursor: Option<polylogue_store::primary::RawAcquisitionCursor>,
+    pub(crate) custody: Option<polylogue_store::primary::RawCustodyReceipt>,
+}
+
 /// One input's work in this pass, advanced job by job.
 pub(crate) struct Plan {
     pub(crate) path: PathBuf,
@@ -79,6 +85,7 @@ pub(crate) struct Plan {
     /// The latest step has durable private custody but no confirmed visibility.
     pub(crate) pending: Option<String>,
     pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    pub(crate) raw: Option<RawState>,
 }
 
 impl Plan {
@@ -102,6 +109,7 @@ impl Plan {
             basis: None,
             pending: None,
             checkpoint: None,
+            raw: None,
             span: span(origin, &path, chunk),
             path,
             origin,
@@ -128,21 +136,40 @@ impl Plan {
     }
 
     pub(crate) fn finished(&self) -> bool {
+        if let Some(raw) = &self.raw {
+            // Missing proof stops this attempt with unknown completeness.
+            return raw
+                .cursor
+                .as_ref()
+                .is_none_or(|cursor| cursor.range().end >= self.size);
+        }
         self.failed
-            || (self.parser_deferred && self.stored_upto >= self.size)
+            || (self.parser_deferred && self.observation.is_none() && self.stored_upto >= self.size)
             || (self.observation.is_none()
                 && self.stored_upto >= self.size
                 && (self.waiting || self.parse_pos >= self.size))
     }
 
     pub(crate) fn next_job(&mut self) -> Job {
-        let start = if self.parser_deferred {
+        let start = if let Some(raw) = &self.raw {
+            raw.cursor
+                .as_ref()
+                .expect("a continuing physical acquisition has a verified cursor")
+                .range()
+                .end
+        } else if self.parser_deferred {
             self.stored_upto
         } else {
             self.parse_pos
         };
         let end = self.size.min(start + self.span);
-        let store_from = (end > self.stored_upto).then_some(self.stored_upto);
+        let store_from = if self.raw.is_some() {
+            (end > start).then_some(start)
+        } else {
+            (end > self.stored_upto
+                || self.size == 0 && self.observation.is_some() && !self.storing_started)
+                .then_some(self.stored_upto)
+        };
         let (change, observation, continues, length) = match store_from {
             None if self.size == 0 && self.observation.is_some() => {
                 // An empty file still commits its revision and file facts.
