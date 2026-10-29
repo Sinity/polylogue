@@ -36,6 +36,11 @@ pub enum Expr {
     Reference(&'static str, ColumnReference),
     Fn(fn(&Aliases) -> String),
     Clock(fn(&Aliases, i64) -> String),
+    NativeTime {
+        unit: Unit,
+        field: &'static str,
+        attribute: NativeTimeAttribute,
+    },
 }
 
 impl Expr {
@@ -51,6 +56,12 @@ impl Expr {
             Expr::Template(t) | Expr::Reference(t, _) => a.expand(t),
             Expr::Fn(f) => f(a),
             Expr::Clock(f) => f(a, now),
+            Expr::NativeTime {
+                unit,
+                field,
+                attribute,
+            } => native_time(*unit, field, a)
+                .map_or_else(|| "NULL".into(), |native| native.attribute(*attribute)),
         }
     }
 }
@@ -76,10 +87,107 @@ impl Field {
         self.compile = Some(f);
         self
     }
+    const fn time_attribute(mut self, field: &'static str, attribute: NativeTimeAttribute) -> Self {
+        self.sql = Some(Expr::NativeTime {
+            unit: self.unit,
+            field,
+            attribute,
+        });
+        self
+    }
     pub fn expr(&self, a: &Aliases, now: i64) -> Option<String> {
         self.sql.map(|e| e.render(a, now))
     }
 }
+/// Canonical native evidence behind a temporal field. The integer cache is
+/// used only for broad candidates; the blob decides the exact predicate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeTimeStorage {
+    Tuple,
+    Event,
+}
+impl NativeTimeStorage {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Tuple => "tuple",
+            Self::Event => "event",
+        }
+    }
+    pub(crate) fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "tuple" => Some(Self::Tuple),
+            "event" => Some(Self::Event),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub enum NativeTimeAttribute {
+    Quality,
+    Precision,
+}
+impl NativeTimeAttribute {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Quality => "quality",
+            Self::Precision => "precision",
+        }
+    }
+    pub(crate) fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "quality" => Some(Self::Quality),
+            "precision" => Some(Self::Precision),
+            _ => None,
+        }
+    }
+}
+pub(crate) struct NativeTime {
+    pub cache: String,
+    pub bytes: String,
+    pub storage: NativeTimeStorage,
+}
+impl NativeTime {
+    fn attribute(&self, attribute: NativeTimeAttribute) -> String {
+        format!(
+            "pl_time_attribute({}, '{}', '{}')",
+            self.bytes,
+            self.storage.code(),
+            attribute.code()
+        )
+    }
+}
+pub(crate) fn native_time(unit: Unit, field: &str, a: &Aliases) -> Option<NativeTime> {
+    let (cache, bytes, storage) = match (unit, field) {
+        (Messages | Blocks, "at") => ("{m}.at", "{m}.at_time", NativeTimeStorage::Tuple),
+        (ToolCalls, "at") => ("{t}.at", "{m}.at_time", NativeTimeStorage::Tuple),
+        (Sessions, "started") => (
+            "{s}.started_at",
+            "{s}.started_time",
+            NativeTimeStorage::Tuple,
+        ),
+        (Events, "at") => ("{r}.at", "{r}.fields", NativeTimeStorage::Event),
+        (Documents, "source_time") => (
+            "{r}.source_time",
+            "(SELECT {r}_time.time FROM document_source {r}_time WHERE {r}_time.document_pk={r}.pk AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain AND {r}_time.shown=1)",
+            NativeTimeStorage::Tuple,
+        ),
+        _ => return None,
+    };
+    Some(NativeTime {
+        cache: a.expand(cache),
+        bytes: a.expand(bytes),
+        storage,
+    })
+}
+pub(crate) fn native_window(unit: Unit, since: bool, a: &Aliases) -> Option<NativeTime> {
+    let field = if unit == Sessions && !since {
+        "started"
+    } else {
+        polylogue_query::units::spec(unit).main_time?
+    };
+    native_time(unit, field, a)
+}
+
 /// One value of a `has:` field and the condition it stands for, over the
 /// row's alias (`s` for sessions, `m` for messages).
 pub struct Has {
@@ -200,6 +308,36 @@ pub const MESSAGE_HAS: [Has; 4] = [
 ];
 
 pub static FIELDS:&[Field]=&[
+f(Messages,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Messages,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(Blocks,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Blocks,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(ToolCalls,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(ToolCalls,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(Events,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Events,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(Deliveries,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Deliveries,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(Work,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Work,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(Sessions,"started_at.time_quality").time_attribute("started",NativeTimeAttribute::Quality),
+f(Sessions,"started_at.precision").time_attribute("started",NativeTimeAttribute::Precision),
+f(Documents,"source_time.time_quality").time_attribute("source_time",NativeTimeAttribute::Quality),
+f(Documents,"source_time.precision").time_attribute("source_time",NativeTimeAttribute::Precision),
+f(Sessions,"last_active.time_quality").time_attribute("last_active",NativeTimeAttribute::Quality),
+f(Sessions,"last_active.precision").time_attribute("last_active",NativeTimeAttribute::Precision),
+f(ToolCalls,"result_at.time_quality").time_attribute("result_at",NativeTimeAttribute::Quality),
+f(ToolCalls,"result_at.precision").time_attribute("result_at",NativeTimeAttribute::Precision),
+f(Documents,"time_quality").time_attribute("source_time",NativeTimeAttribute::Quality),
+f(Documents,"precision").time_attribute("source_time",NativeTimeAttribute::Precision),
+f(Messages,"time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Messages,"precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(Blocks,"time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Blocks,"precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(ToolCalls,"time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(ToolCalls,"precision").time_attribute("at",NativeTimeAttribute::Precision),
+f(Events,"time_quality").time_attribute("at",NativeTimeAttribute::Quality),
+f(Events,"precision").time_attribute("at",NativeTimeAttribute::Precision),
 f(Documents,"id").sql_ref("{r}.id", ColumnReference::Document),
 f(Documents,"origin").sql("{r}.origin"),
 f(Documents,"purpose").sql("{r}.purpose"),

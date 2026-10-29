@@ -18,6 +18,7 @@ fn ask(text: &str, now: i64) -> Ask<'_> {
         session: None,
         context: fixture_context(now, "UTC", 0),
         embeddings: false,
+        ranking_identity: None,
         near: None,
         fields: &[],
     }

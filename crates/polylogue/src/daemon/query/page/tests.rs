@@ -58,7 +58,12 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
     let opened = open(&token, &seal, question, &position(), (1, 2), &options).unwrap();
     assert_eq!(opened.context.clock, options.clock);
     assert_eq!(opened.context.random_seed, 9);
-    assert_eq!(opened.context.resolved_times, program.resolved_times);
+    assert!(opened.context.resolved_times.is_empty());
+    polylogue_store::query::continuation::check_resolved_times(
+        &opened.context,
+        &program.resolved_times,
+    )
+    .unwrap();
     assert_eq!(
         check(&opened, &program, &options, false).unwrap().len(),
         program.order.len()
@@ -160,4 +165,32 @@ fn definition_order_does_not_retire_the_same_semantic_question() {
     };
     program.definitions.reverse();
     check(&continuation, &program, &options, false).unwrap();
+}
+
+#[test]
+fn resolution_vector_size_does_not_grow_the_authenticated_continuation() {
+    let options = options();
+    let mut program = polylogue_store::query::compile("since:7d | sort by id", &options).unwrap();
+    let time = program.resolved_times[0].clone();
+    program.resolved_times = vec![time; 2000];
+    let question = identity("since:7d | sort by id", &options).unwrap();
+    let context = context(question, &position(), (1, 2), &options, &program, 9, false).unwrap();
+    let continuation = Continuation {
+        context,
+        after: OrderPosition {
+            values: vec![Value::Null; program.order.len()],
+            row_identity: "synthetic-row".into(),
+        },
+    };
+    let seal = CursorSeal::new([7; 32]);
+    let token = seal.seal(&continuation).unwrap();
+    assert!(token.as_str().len() < 4096);
+    check(&continuation, &program, &options, false).unwrap();
+    program.resolved_times[1].expression = "another expression".into();
+    assert_eq!(
+        check(&continuation, &program, &options, false)
+            .unwrap_err()
+            .kind,
+        "stale_cursor"
+    );
 }

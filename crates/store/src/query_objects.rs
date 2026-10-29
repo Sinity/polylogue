@@ -90,10 +90,7 @@ pub(crate) fn validate_result_bindings(
     if result_outputs.is_empty() {
         return Ok(());
     }
-    let kept = crate::selection::kept_results(conn, source).map_err(|error| match error {
-        crate::selection::SelectionError::Store(error) => error,
-        error => invalid(error.to_string()),
-    })?;
+    let kept = crate::selection::kept_results(conn, source)?;
     let actual = polylogue_query::Bindings {
         kept,
         ..Default::default()
@@ -251,7 +248,20 @@ pub(crate) fn known_object(conn: &Connection, object: &QueryObject) -> Result<bo
 }
 
 pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
-    let Some(existing) = lookup_run(conn, Source::of(conn)?, &run.id, None)? else {
+    let source = Source::of(conn)?;
+    let integrity: Option<(String, String)> = conn
+        .query_row(
+            &source.sql("SELECT binding_hash,run_hash FROM @source.query_run WHERE id=?1"),
+            [run.id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((action, intent)) = integrity
+        && (run.binding_hash()?.to_string() != action || run.record_hash()?.to_string() != intent)
+    {
+        return Err(StoreError::Conflict(format!("run:{}", run.id)));
+    }
+    let Some(existing) = lookup_run(conn, source, &run.id, None)? else {
         return Ok(false);
     };
     if existing.value != *run {
@@ -471,7 +481,8 @@ pub(crate) fn lookup_run(
     let mut found = stored
         .map(|(body, action, intent)| -> Result<QueryLookup<QueryRun>> {
             let value: QueryRun = crate::encoding::unpack_json(&body)?;
-            if value.binding_hash()?.to_string() != action
+            if &value.id != id
+                || value.binding_hash()?.to_string() != action
                 || value.record_hash()?.to_string() != intent
             {
                 return Err(invalid(

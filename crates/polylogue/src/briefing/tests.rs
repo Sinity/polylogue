@@ -79,6 +79,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
         "d1",
         &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
         None,
+        None,
         &dir.path().join("check-history.sqlite"),
     )
     .unwrap();
@@ -293,6 +294,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         "d1",
         &fixture_context(now),
         None,
+        None,
         &dir.path().join("history.db"),
     )
     .unwrap();
@@ -400,6 +402,7 @@ fn recall_pages_continue_by_cursor() {
             "d",
             &fixture_context(now),
             None,
+            None,
             &dir.path().join("check-history.sqlite"),
         )
         .unwrap();
@@ -430,6 +433,7 @@ fn recall_pages_continue_by_cursor() {
             &ask,
             "d",
             &fixture_context(now),
+            None,
             None,
             &dir.path().join("check-history.sqlite")
         )

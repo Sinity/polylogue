@@ -205,6 +205,25 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<PreparedWrite> {
         Self::unavailable()
     }
+    fn visit_named_products(
+        &self,
+        selector: &crate::primary::NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> Result<()>,
+    ) -> Result<()> {
+        if let Some((name, writes)) = self.original() {
+            let selected = match selector {
+                crate::primary::NamedProductSelector::Exact(expected) => name == *expected,
+                crate::primary::NamedProductSelector::Prefix(prefix) => name.starts_with(prefix),
+            };
+            if !selected {
+                return Ok(());
+            }
+            for write in writes {
+                visit(&write.product)?;
+            }
+        }
+        Ok(())
+    }
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&PendingAuthored) -> Result<()>,

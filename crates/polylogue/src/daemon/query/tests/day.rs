@@ -8,7 +8,7 @@ fn executions_keep_their_explicit_day_in_the_resolved_context() {
         fixture_clock(0, "Pacific/Kiritimati", 0).day;
     let result = run_q(&archive, request).unwrap();
     assert_eq!(
-        result["resolved"]["clock"]["day"],
+        result["resolved"]["context"]["clock"]["day"],
         json!({"zone":"Pacific/Kiritimati","start":"00:00:00"})
     );
 }

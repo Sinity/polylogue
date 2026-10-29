@@ -383,7 +383,7 @@ pub static UNITS: &[UnitSpec] = &[
         name: "notes",
         singular: "note",
         in_session: false,
-        identity: &["id"],
+        identity: &["id", "first_note"],
         main_time: Some("created_at"),
         columns: &[
             ColumnSpec {

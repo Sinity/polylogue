@@ -151,7 +151,207 @@ const SESSION_HAS_NAMES: [&str; 8] = [
 const MESSAGE_HAS_NAMES: [&str; 4] = ["thinking", "tool_calls", "attachments", "code"];
 pub const LIVE_STATES: &[&str] = &["working", "waiting", "idle", "unknown", "stale", "ended"];
 pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"];
+// The shared enums own the vocabulary; the catalog borrows their spellings.
+const TIME_QUALITIES: [&str; query_language::time::TimeQuality::ALL.len()] = {
+    let mut names = [""; query_language::time::TimeQuality::ALL.len()];
+    let mut index = 0;
+    while index < names.len() {
+        names[index] = query_language::time::TimeQuality::ALL[index].as_str();
+        index += 1;
+    }
+    names
+};
+const TIME_PRECISIONS: [&str; query_language::time::Precision::ALL.len()] = {
+    let mut names = [""; query_language::time::Precision::ALL.len()];
+    let mut index = 0;
+    while index < names.len() {
+        names[index] = query_language::time::Precision::ALL[index].as_str();
+        index += 1;
+    }
+    names
+};
+
 pub static FIELDS: &[Field] = &[
+    v(
+        Messages,
+        "at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Messages,
+        "at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Blocks,
+        "at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Blocks,
+        "at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        ToolCalls,
+        "at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        ToolCalls,
+        "at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Events,
+        "at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Events,
+        "at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Deliveries,
+        "at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Deliveries,
+        "at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Work,
+        "at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Work,
+        "at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Sessions,
+        "started_at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Sessions,
+        "started_at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Documents,
+        "source_time.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Documents,
+        "source_time.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Sessions,
+        "last_active.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Sessions,
+        "last_active.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        ToolCalls,
+        "result_at.time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        ToolCalls,
+        "result_at.precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Documents,
+        "time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Documents,
+        "precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Messages,
+        "time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Messages,
+        "precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Blocks,
+        "time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Blocks,
+        "precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        ToolCalls,
+        "time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        ToolCalls,
+        "precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
+    v(
+        Events,
+        "time_quality",
+        &TIME_QUALITIES,
+        "native time quality; absent evidence stays unknown",
+    ),
+    v(
+        Events,
+        "precision",
+        &TIME_PRECISIONS,
+        "native time precision; absent evidence stays unknown",
+    ),
     f(Documents, "id", Prefix, "document ID or a unique prefix"),
     f(Documents, "origin", Match, "the provider export family"),
     v(

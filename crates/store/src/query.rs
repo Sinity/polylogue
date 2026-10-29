@@ -1,8 +1,11 @@
 //! The one product SQL lowering backend and execution vocabulary.
 pub mod compile;
+pub mod continuation;
+pub mod execute;
 pub mod explain;
 pub mod facets;
 pub mod fields;
+pub(crate) mod references;
 pub mod time;
 pub mod units;
 pub mod ast {

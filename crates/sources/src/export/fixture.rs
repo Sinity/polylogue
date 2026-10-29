@@ -44,19 +44,9 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
             &mut owners,
         )?);
     }
-    for mut step in steps {
+    for step in steps {
         counts.merge(&step.counts);
-        macro_rules! append { ($($field:ident),*) => { $(output.$field.append(&mut step.output.$field);)* } }
-        append!(
-            sessions,
-            messages,
-            documents,
-            events,
-            links,
-            background,
-            blobs,
-            repo_lookups
-        );
+        append_output(&mut output, step.output);
     }
     Ok(Step {
         output,
@@ -65,6 +55,77 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
         start: 0,
         repeats_whole_conversations: false,
     })
+}
+
+// Exhaustive destructuring keeps new Output fields visible at this aggregation
+// boundary. Sparse keys belong to their vector, never the global record count.
+fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources::Output) {
+    let message_base = output.messages.len();
+    let session_base = output.sessions.len();
+    let document_base = output.documents.len();
+    let fragment_base = output.fragments.len();
+    let event_base = output.events.len();
+    let link_base = output.links.len();
+    let polylogue_sources::Output {
+        mut sessions,
+        mut messages,
+        native_hook_fields,
+        declared_injections,
+        declared_attachment_bindings,
+        mut documents,
+        mut fragments,
+        fragment_receipts,
+        mut events,
+        imported_events,
+        event_ids,
+        event_receipts,
+        session_receipts,
+        document_receipts,
+        link_receipts,
+        message_order,
+        message_projections,
+        message_receipts,
+        mut links,
+        mut background,
+        mut blobs,
+        mut repo_lookups,
+    } = next;
+    macro_rules! append {
+        ($($field:ident),*) => { $(output.$field.append(&mut $field);)* };
+    }
+    macro_rules! shift {
+        ($field:ident, $base:ident) => {
+            output.$field.extend(
+                $field
+                    .into_iter()
+                    .map(|(index, value)| (index + $base, value)),
+            );
+        };
+    }
+    append!(
+        sessions,
+        messages,
+        documents,
+        fragments,
+        events,
+        links,
+        background,
+        blobs,
+        repo_lookups
+    );
+    shift!(native_hook_fields, message_base);
+    shift!(declared_injections, message_base);
+    shift!(declared_attachment_bindings, message_base);
+    shift!(message_order, message_base);
+    shift!(message_projections, message_base);
+    shift!(message_receipts, message_base);
+    shift!(session_receipts, session_base);
+    shift!(document_receipts, document_base);
+    shift!(fragment_receipts, fragment_base);
+    shift!(imported_events, event_base);
+    shift!(event_ids, event_base);
+    shift!(event_receipts, event_base);
+    shift!(link_receipts, link_base);
 }
 
 type Row = (std::ops::Range<u64>, Vec<u8>, Vec<u8>);
@@ -107,5 +168,36 @@ impl polylogue_sources::export::ItemSink for Items {
         self.rows = rows;
         self.keys = keys;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_output_preserves_sparse_native_message_admission_indices() {
+        let parser =
+            polylogue_sources::claude_code::open(std::path::Path::new("projects/p/s1.jsonl"))
+                .unwrap();
+        let mut combined = polylogue_sources::Output::default();
+        for (index, id) in ["first", "second"].into_iter().enumerate() {
+            let record = serde_json::json!({"type":"system","subtype":"stop_hook_summary",
+                "sessionId":"s1","uuid":id,"hookAdditionalContext":["context"]});
+            let mut bytes = serde_json::to_vec(&record).unwrap();
+            bytes.push(b'\n');
+            let (step, _) = parser.step(None, &bytes, index as u64 * 1000).unwrap();
+            let mut output = step.output;
+            output.message_receipts.insert(0, index as u64 + 10);
+            append_output(&mut combined, output);
+        }
+        assert_eq!(combined.messages.len(), 2);
+        assert_eq!(combined.native_hook_fields[&1][0].start, 1000);
+        assert_eq!(
+            combined.messages[1].message.id.to_string(),
+            "claude-code:second"
+        );
+        assert_eq!(combined.message_receipts[&0], 10);
+        assert_eq!(combined.message_receipts[&1], 11);
     }
 }

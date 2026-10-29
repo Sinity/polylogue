@@ -6,6 +6,13 @@
 //! Hidden sessions stay in every figure: hiding changes what is listed, not
 //! what was used.
 
+/// The row grain transferred by a paged measure.
+#[derive(Clone, Copy)]
+pub enum Paging {
+    Sessions,
+    Facets,
+}
+
 pub mod comparison;
 pub mod daily;
 pub mod drift;

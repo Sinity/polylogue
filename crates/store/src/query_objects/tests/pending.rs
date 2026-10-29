@@ -29,7 +29,7 @@ impl Sinex for PendingProducer {
         &self,
         _: &crate::primary::CapturePlan,
         _: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<crate::primary::CaptureReceipt> {
+    ) -> Result<PreparedWrite> {
         Self::unavailable()
     }
     fn pending_source(
@@ -362,4 +362,39 @@ fn queued_page_root_lookup_survives_restart_without_copying_or_chaining_bindings
         );
         assert_eq!(producer.writes().unwrap().len(), 2);
     }
+}
+
+#[test]
+fn confirmed_outcome_first_rejects_another_begin_intent_before_primary_spooling() {
+    let dir = tempfile::tempdir().unwrap();
+    let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
+    let (archive, _lock) =
+        crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes")).unwrap();
+    let object = question("sessions");
+    let original = run(
+        &object,
+        "outcome-first-pending",
+        7,
+        ChangePosition {
+            generation: "synthetic-generation".into(),
+            index: 5,
+            archive: 4,
+        },
+    );
+    let conn = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
+    apply_run_outcome(&conn, &outcome(&original, 1)).unwrap();
+    drop(conn);
+    let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+    let mut changed = original.clone();
+    changed.machine = "another-actual-accepting-machine".into();
+    assert!(matches!(
+        writer.begin_query_run(changed),
+        Err(StoreError::Conflict(_))
+    ));
+    assert!(producer.writes().unwrap().is_empty());
+    assert_eq!(
+        writer.begin_query_run(original).unwrap(),
+        QueryCustody::Queued
+    );
+    assert_eq!(producer.writes().unwrap().len(), 1);
 }

@@ -4,12 +4,36 @@ use super::*;
 
 #[test]
 fn a_block_reference_names_its_block_message_and_session() {
-    let w = morrow();
-    let blocks = q(&w, "blocks where block:m2p0:0");
+    let dir = tempfile::tempdir().unwrap();
+    let mut fx = polylogue_store::fixture::Fixture::new(dir.path()).unwrap();
+    let session = fx
+        .session(SessionFacts {
+            id: "test:session",
+            ..Default::default()
+        })
+        .unwrap();
+    fx.message(
+        session,
+        MessageFacts {
+            id: "test:message",
+            role: "user",
+            written_by: "human",
+            prompt_kind: Some("prose"),
+            text: Some("synthetic"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let w = TestArchive { _dir: dir, fx };
+    let blocks = q(&w, "blocks where block:test:message#0");
     assert_eq!(blocks["count"], 1, "{blocks}");
-    assert_eq!(ids(&q(&w, "messages where block:m2p0:0")).len(), 1);
-    assert_eq!(ids(&q(&w, "block:m2p0:0")), ["#2"]);
-    let bad = run_q(&w, ask("block:m2p0")).unwrap_err();
+    assert_eq!(
+        q(&w, "messages where block:test:message#0")["rows"][0]["id"],
+        "test:message"
+    );
+    assert_eq!(ids(&q(&w, "block:test:message#0")), ["test:session"]);
+    assert_eq!(q(&w, "messages where block:test:message#999")["count"], 0);
+    let bad = run_q(&w, ask("block:test:message:0")).unwrap_err();
     assert_eq!(bad.kind, "invalid_query");
 }
 

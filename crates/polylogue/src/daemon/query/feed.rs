@@ -1,5 +1,5 @@
 //! One SSE batch of change references, prepared before delivery.
-use super::{Failure, present, validate, values};
+use super::Failure;
 use polylogue_model::ChangePosition;
 use polylogue_query::Options;
 use polylogue_store::Reader;
@@ -162,12 +162,10 @@ pub(crate) fn prepare_with(
             chat_pages: Vec::new(),
         };
         let program = polylogue_store::query::compile(&text, &opts)?;
-        validate(reader, &program)?;
-        reader.query_each(
-            &program.sql,
-            &values(&program.params),
-            |mut change| -> Result<(), Failure> {
-                present(&program, &mut change)?;
+        reader.visit_query_values(
+            &program,
+            None,
+            |change| -> Result<std::ops::ControlFlow<()>, Failure> {
                 check_change(&change, component, &target)?;
                 count = count
                     .checked_add(1)
@@ -179,7 +177,8 @@ pub(crate) fn prepare_with(
                         component,
                         change,
                     },
-                )
+                )?;
+                Ok(std::ops::ControlFlow::Continue(()))
             },
         )?;
     }

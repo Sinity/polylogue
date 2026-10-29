@@ -24,6 +24,7 @@ fn reported_duration_and_result_time_preserve_their_native_meaning() {
             session: None,
             context: fixture_context(0, "UTC", 240),
             embeddings: false,
+            ranking_identity: None,
             near: None,
             fields: &fields,
         },

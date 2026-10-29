@@ -407,3 +407,5 @@ fn native_background_notification_keeps_reported_clock_precision_or_unknown() {
         );
     }
 }
+
+mod hook_provenance;

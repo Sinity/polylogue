@@ -37,6 +37,7 @@ pub use reference::{
     Reference, ReferenceError, RevisionReference, SpanBounds, SpanError, SpanUnit,
     TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece, span_bodies, text_body,
 };
+pub mod query_objects;
 pub mod read;
 mod session;
 pub mod settings;
