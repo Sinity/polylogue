@@ -130,7 +130,7 @@ fn main() -> ExitCode {
         Ok(startup) => startup,
         Err(error) => return startup_error(error),
     };
-    protocol::caller::initialize(&process.environment);
+    protocol::caller::initialize(&process.environment, startup.config.requests.machine());
     if native {
         return browser::native::run(
             &startup.engine,
