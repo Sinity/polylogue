@@ -153,13 +153,19 @@ impl Session {
         }
     }
 
-    pub fn offer_start(&mut self, at: Timestamp) {
-        if self.started.is_none_or(|s| at < s) {
-            self.started = Some(at);
-            self.started_quality = crate::TimeQuality::Intrinsic;
-            self.started_precision = Some(crate::Precision::Instant);
-            self.started_until = None;
+    /// Keeps the earliest stated start together with its original evidence.
+    /// Equal starts retain the first claim.
+    pub fn offer_start(
+        &mut self,
+        at: Timestamp,
+        evidence: crate::TimeEvidence,
+    ) -> Result<bool, crate::TimeEvidenceError> {
+        evidence.validate(Some(at))?;
+        if self.started.is_none_or(|current| at < current) {
+            self.set_time(Some(at), evidence)?;
+            return Ok(true);
         }
+        Ok(false)
     }
 
     /// Merges facts another input (or a later step of the same input) holds
