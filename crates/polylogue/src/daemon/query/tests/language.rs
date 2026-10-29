@@ -11,7 +11,8 @@ fn options() -> Options {
         clock: polylogue_query::time::clock(
             1_791_453_600_000,
             LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        ).unwrap(),
+        )
+        .unwrap(),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|origin| origin.name.to_owned())

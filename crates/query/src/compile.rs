@@ -4,11 +4,11 @@
 //! [`Program::count_sql`]. There is no row cap: a page is how much travels
 //! now, never how much is answered.
 
+use crate::QueryError;
 use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};
-use crate::time::{self, Clock, Time, Milliseconds};
+use crate::time::{self, Clock, Milliseconds, Time};
 use crate::units::{self, Index, Search, Via};
-use crate::QueryError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -557,7 +557,9 @@ fn match_agg(
         AggregateFunction::Percentile(p) => {
             vec![(col, format!("pl_percentile({name}, {p})"), kind), unknown]
         }
-        AggregateFunction::CountDistinct => { vec![(col, format!("count(DISTINCT {name})"), ColKind::Number)] }
+        AggregateFunction::CountDistinct => {
+            vec![(col, format!("count(DISTINCT {name})"), ColKind::Number)]
+        }
         _ => return Err(not_built("this aggregate")),
     })
 }
@@ -592,7 +594,12 @@ fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
     for c in top {
         let f = match &c.kind {
             ConditionKind::Match { field, .. } => field.as_str(),
-            ConditionKind::Compare { operand, .. } | ConditionKind::Between { operand, .. } => match operand { Operand::Field { name } => name, _ => continue },
+            ConditionKind::Compare { operand, .. } | ConditionKind::Between { operand, .. } => {
+                match operand {
+                    Operand::Field { name } => name,
+                    _ => continue,
+                }
+            }
             _ => continue,
         };
         let f = f.to_ascii_lowercase();
@@ -828,33 +835,71 @@ fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
 }
 
 fn parse_query(text: &str, opts: &Options) -> Result<Query, QueryError> {
-    crate::parse::with_catalog(text, &crate::catalog::catalog(&opts.origins, &opts.command_words))
+    crate::parse::with_catalog(
+        text,
+        &crate::catalog::catalog(&opts.origins, &opts.command_words),
+    )
 }
 fn bind_unit(name: &str) -> Result<Unit, QueryError> {
-    Unit::from_name(name.strip_prefix("pl.").unwrap_or(name)).ok_or_else(|| not_built(&format!("unit {name}")))
+    Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
+        .ok_or_else(|| not_built(&format!("unit {name}")))
 }
 fn field_operand(operand: &Operand) -> Result<&str, QueryError> {
-    match operand { Operand::Field { name } => Ok(name), _ => Err(not_built("this computed field")) }
+    match operand {
+        Operand::Field { name } => Ok(name),
+        _ => Err(not_built("this computed field")),
+    }
 }
 fn value_text(value: &Value) -> Result<&str, QueryError> {
-    match value { Value::Scalar { text, .. } => Ok(text), Value::Unknown => Ok("unknown"), Value::Parameter { name } => Ok(name), _ => Err(not_built("a set in this scalar position")) }
+    match value {
+        Value::Scalar { text, .. } => Ok(text),
+        Value::Unknown => Ok("unknown"),
+        Value::Parameter { name } => Ok(name),
+        _ => Err(not_built("a set in this scalar position")),
+    }
 }
-trait AggregateField { fn field(&self) -> Option<&str>; }
-impl AggregateField for Aggregate { fn field(&self) -> Option<&str> { self.fields.first().map(String::as_str) } }
+trait AggregateField {
+    fn field(&self) -> Option<&str>;
+}
+impl AggregateField for Aggregate {
+    fn field(&self) -> Option<&str> {
+        self.fields.first().map(String::as_str)
+    }
+}
 #[derive(Clone, Copy)]
-enum Bucket { Day, Week, Month }
+enum Bucket {
+    Day,
+    Week,
+    Month,
+}
 fn group_operand(operand: &Operand) -> Result<(&str, Option<Bucket>), QueryError> {
     match operand {
         Operand::Field { name } => Ok((name, None)),
         Operand::Function { name, arguments } if arguments.len() == 1 => {
-            let bucket = match name.as_str() { "day" => Bucket::Day, "week" => Bucket::Week, "month" => Bucket::Month, _ => return Err(not_built(&format!("group key {name}"))) };
+            let bucket = match name.as_str() {
+                "day" => Bucket::Day,
+                "week" => Bucket::Week,
+                "month" => Bucket::Month,
+                _ => return Err(not_built(&format!("group key {name}"))),
+            };
             Ok((field_operand(&arguments[0])?, Some(bucket)))
         }
         _ => Err(not_built("this group key")),
     }
 }
 fn parse_random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
-    let Operand::Function { name, arguments } = operand else { return Ok(None) };
-    if name != "random" { return Err(not_built(&format!("sort key {name}"))); }
-    arguments.first().map(|v| field_operand(v)?.parse().map_err(|_| not_built("this random seed"))).transpose()
+    let Operand::Function { name, arguments } = operand else {
+        return Ok(None);
+    };
+    if name != "random" {
+        return Err(not_built(&format!("sort key {name}")));
+    }
+    arguments
+        .first()
+        .map(|v| {
+            field_operand(v)?
+                .parse()
+                .map_err(|_| not_built("this random seed"))
+        })
+        .transpose()
 }

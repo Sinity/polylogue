@@ -4,11 +4,11 @@
 //! `index.db` (with `archive.db` attached as `a`) in one consistent read.
 
 pub mod ast;
+pub mod catalog;
 pub mod compile;
 pub mod explain;
 pub mod fields;
 pub mod parse;
-pub mod catalog;
 pub mod time;
 pub mod units;
 
@@ -21,12 +21,14 @@ pub use time::Clock;
 
 use serde::Serialize;
 
-
 #[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueryError {
     #[error("{diagnostic}")]
-    Language { error: query_language::Error, diagnostic: String },
+    Language {
+        error: query_language::Error,
+        diagnostic: String,
+    },
     /// With a caret under the position and, when a simple repair parses,
     /// a corrected query.
     #[error("{message} at position {position}\n  {line}\n  {caret}")]

@@ -2,7 +2,7 @@
 use super::{Failure, present, validate, values};
 use crate::daemon::Response;
 use polylogue_model::ChangePosition;
-use polylogue_query::{Options};
+use polylogue_query::Options;
 use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -164,7 +164,8 @@ pub(crate) fn prepare_with(
         // This fixed internal query has neither saved sources nor kept
         // results, so compilation need not load either archive-wide catalog.
         let opts = Options {
-            clock: polylogue_query::time::clock(now, super::logical_day(reader)?).map_err(|error| StoreError::Invalid(error.to_string()))?,
+            clock: polylogue_query::time::clock(now, super::logical_day(reader)?)
+                .map_err(|error| StoreError::Invalid(error.to_string()))?,
             origins: Vec::new(),
             command_words: Vec::new(),
             page_size: None,

@@ -32,7 +32,10 @@ impl<'a> Compiler<'a> {
         at: usize,
     ) -> Result<Program, QueryError> {
         let mut query = query.clone();
-        if let Source::Unit { unit: name, condition: Some(cond) } = &query.source
+        if let Source::Unit {
+            unit: name,
+            condition: Some(cond),
+        } = &query.source
             && name == "sessions"
             && !self.text[cond.span.start..].starts_with("sessions")
         {
@@ -52,7 +55,9 @@ impl<'a> Compiler<'a> {
         inner.saved_stack = self.saved_stack.clone();
         let mut program = inner.program(&query)?;
         self.params = std::mem::take(&mut program.params);
-        self.resolved_times.borrow_mut().extend(program.resolved_times.iter().cloned());
+        self.resolved_times
+            .borrow_mut()
+            .extend(program.resolved_times.iter().cloned());
         // A condition is compiled again for `--why`: what it adds is kept once.
         join(&mut self.notes, &mut program.notes);
         join(&mut self.incomplete, &mut program.incomplete);

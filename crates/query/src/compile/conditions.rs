@@ -55,45 +55,93 @@ impl<'a> Compiler<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 format!("({})", parts.join(" OR "))
             }
-            ConditionKind::Not { condition: cond } => format!("NOT ({})", self.cond(cond, scope, false)?),
+            ConditionKind::Not { condition: cond } => {
+                format!("NOT ({})", self.cond(cond, scope, false)?)
+            }
             ConditionKind::Text { text, mode } => {
                 if self.is_reference(c) {
                     self.reference_word(text, scope, c.span)?
                 } else {
-                    self.text(&[(text.clone(), *mode == TextMode::Phrase, c.span)], scope, Index::Prose, top)?
+                    self.text(
+                        &[(text.clone(), *mode == TextMode::Phrase, c.span)],
+                        scope,
+                        Index::Prose,
+                        top,
+                    )?
                 }
             }
             ConditionKind::Reference { reference } => {
-                if reference.starts_with("http") { self.url(reference, scope, c.span)? }
-                else if reference.starts_with('@') { return Err(QueryError::Invalid { message: "@N requires an interactive listing context".into(), position: c.span.start }); }
-                else if let Some((field, text)) = reference.split_once(':') {
+                if reference.starts_with("http") {
+                    self.url(reference, scope, c.span)?
+                } else if reference.starts_with('@') {
+                    return Err(QueryError::Invalid {
+                        message: "@N requires an interactive listing context".into(),
+                        position: c.span.start,
+                    });
+                } else if let Some((field, text)) = reference.split_once(':') {
                     let value = Value::scalar(text);
                     self.field_cond(field, FieldOp::Match(&value), scope, c.span, top)?
-                } else { self.reference_word(reference, scope, c.span)? }
+                } else {
+                    self.reference_word(reference, scope, c.span)?
+                }
             }
             ConditionKind::Exists { unit, condition } => {
-                let condition = condition.as_deref().cloned().unwrap_or_else(|| Condition { span: c.span, kind: ConditionKind::And { conditions: vec![] } });
+                let condition = condition.as_deref().cloned().unwrap_or_else(|| Condition {
+                    span: c.span,
+                    kind: ConditionKind::And { conditions: vec![] },
+                });
                 self.exists(bind_unit(unit)?, &condition, scope, c.span)?
             }
-            ConditionKind::Count { unit, condition, op, count } => {
-                self.counted(bind_unit(unit)?, condition.as_deref(), *op, *count, scope, c.span)?
+            ConditionKind::Count {
+                unit,
+                condition,
+                op,
+                count,
+            } => self.counted(
+                bind_unit(unit)?,
+                condition.as_deref(),
+                *op,
+                *count,
+                scope,
+                c.span,
+            )?,
+            ConditionKind::In { operand, query } => {
+                self.member_of(field_operand(operand)?, query, scope, c.span)?
             }
-            ConditionKind::In { operand, query } => self.member_of(field_operand(operand)?, query, scope, c.span)?,
             ConditionKind::Saved { name, arguments } => {
                 self.saved_cond(name, arguments, scope, c.span)?
             }
-            ConditionKind::Sequence { steps, gaps, all: false, unit } if bind_unit(unit)? == Unit::ToolCalls => self.seq(steps, gaps, scope, c.span)?,
+            ConditionKind::Sequence {
+                steps,
+                gaps,
+                all: false,
+                unit,
+            } if bind_unit(unit)? == Unit::ToolCalls => self.seq(steps, gaps, scope, c.span)?,
             ConditionKind::Match { field, value } => {
                 self.field_cond(field, FieldOp::Match(value), scope, c.span, top)?
             }
             ConditionKind::Compare { operand, op, value } => {
-                if matches!(op, Op::Contains | Op::Prefix) { return Err(not_built("this string comparison operator")); }
-                self.field_cond(field_operand(operand)?, FieldOp::Compare(*op, value_text(value)?), scope, c.span, top)?
+                if matches!(op, Op::Contains | Op::Prefix) {
+                    return Err(not_built("this string comparison operator"));
+                }
+                self.field_cond(
+                    field_operand(operand)?,
+                    FieldOp::Compare(*op, value_text(value)?),
+                    scope,
+                    c.span,
+                    top,
+                )?
             }
-            ConditionKind::Between { operand, from, to } => {
-                self.field_cond(field_operand(operand)?, FieldOp::Between(value_text(from)?, value_text(to)?), scope, c.span, top)?
+            ConditionKind::Between { operand, from, to } => self.field_cond(
+                field_operand(operand)?,
+                FieldOp::Between(value_text(from)?, value_text(to)?),
+                scope,
+                c.span,
+                top,
+            )?,
+            ConditionKind::Similar { value } => {
+                self.field_cond("near", FieldOp::Match(value), scope, c.span, top)?
             }
-            ConditionKind::Similar { value } => self.field_cond("near", FieldOp::Match(value), scope, c.span, top)?,
             _ => return Err(not_built("this shared condition")),
         })
     }
@@ -700,9 +748,19 @@ impl<'a> Compiler<'a> {
                     Op::Ge => format!("({expr}) >= {}", t.start_ms()),
                     Op::Lt => format!("({expr}) < {}", t.start_ms()),
                     Op::Le => format!("({expr}) < {}", t.end_ms()?),
-                    Op::Eq => format!("(({expr}) >= {} AND ({expr}) < {})", t.start_ms(), t.end_ms()?),
-                    Op::Ne => format!("(({expr}) < {} OR ({expr}) >= {})", t.start_ms(), t.end_ms()?),
-                    Op::Contains | Op::Prefix => return Err(not_built("this time comparison operator")),
+                    Op::Eq => format!(
+                        "(({expr}) >= {} AND ({expr}) < {})",
+                        t.start_ms(),
+                        t.end_ms()?
+                    ),
+                    Op::Ne => format!(
+                        "(({expr}) < {} OR ({expr}) >= {})",
+                        t.start_ms(),
+                        t.end_ms()?
+                    ),
+                    Op::Contains | Op::Prefix => {
+                        return Err(not_built("this time comparison operator"));
+                    }
                 })
             }
             (Kind::Time, FieldOp::Between(from, to)) => {
@@ -763,12 +821,19 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn time(&self, field: &str, text: &str, span: Span) -> Result<Time, QueryError> {
         let _ = field;
-        time::resolve(text, &self.opts.clock).map(|resolved| {
-            let value = resolved.value;
-            let mut resolutions = self.resolved_times.borrow_mut();
-            if !resolutions.contains(&resolved) { resolutions.push(resolved); }
-            value
-        }).map_err(|mut error| { error.position = span.start; QueryError::language(error, self.text) })
+        time::resolve(text, &self.opts.clock)
+            .map(|resolved| {
+                let value = resolved.value;
+                let mut resolutions = self.resolved_times.borrow_mut();
+                if !resolutions.contains(&resolved) {
+                    resolutions.push(resolved);
+                }
+                value
+            })
+            .map_err(|mut error| {
+                error.position = span.start;
+                QueryError::language(error, self.text)
+            })
     }
 
     /// `path` and the directories below it, by whole components, exactly.

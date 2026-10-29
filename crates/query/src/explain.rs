@@ -12,7 +12,10 @@ pub struct Explanation {
 
 /// Uses the same validation and compilation as execution.
 pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryError> {
-    let parsed = crate::parse::with_catalog(expression, &crate::catalog::catalog(&options.origins, &options.command_words))?;
+    let parsed = crate::parse::with_catalog(
+        expression,
+        &crate::catalog::catalog(&options.origins, &options.command_words),
+    )?;
     let program = compile(expression, options)?;
     Ok(Explanation {
         units: selected_units(&parsed, ast::Unit::Sessions),
@@ -25,7 +28,10 @@ fn selected_units(query: &ast::Query, _implicit_unit: ast::Unit) -> Vec<ast::Uni
     let mut units = Vec::new();
     query.visit_units(&mut |name| {
         if let Some(unit) = ast::Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
-            && !units.contains(&unit) { units.push(unit); }
+            && !units.contains(&unit)
+        {
+            units.push(unit);
+        }
     });
     units
 }

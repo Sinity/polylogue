@@ -145,9 +145,29 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     }
     let mut query = parse_query(text, opts)?;
     let (value, quoted) = match &query.source {
-        Source::Result { reference } if query.attach.is_empty() => (reference.trim_start_matches("result:").to_owned(), false),
-        Source::Unit { condition: Some(Condition { kind: ConditionKind::Match { field, value: Value::Scalar { text, quoted } }, .. }), .. } if field.eq_ignore_ascii_case("result") && query.attach.is_empty() => (text.clone(), *quoted),
-        _ => return Err(QueryError::Invalid { message: "A kept result takes stages, not conditions or attached rows".into(), position: lead }),
+        Source::Result { reference } if query.attach.is_empty() => {
+            (reference.trim_start_matches("result:").to_owned(), false)
+        }
+        Source::Unit {
+            condition:
+                Some(Condition {
+                    kind:
+                        ConditionKind::Match {
+                            field,
+                            value: Value::Scalar { text, quoted },
+                        },
+                    ..
+                }),
+            ..
+        } if field.eq_ignore_ascii_case("result") && query.attach.is_empty() => {
+            (text.clone(), *quoted)
+        }
+        _ => {
+            return Err(QueryError::Invalid {
+                message: "A kept result takes stages, not conditions or attached rows".into(),
+                position: lead,
+            });
+        }
     };
     let (id, part) = if quoted {
         (value.as_str(), "rows")
@@ -247,13 +267,25 @@ pub(super) fn bind_saved_source(
     let query = parse_query(text, opts)?;
     let (name, arguments, first_end) = match &query.source {
         Source::Saved { name, arguments } => {
-            let end = query.stages.first().map_or(text.len(), |s| text[..s.span.start].rfind('|').unwrap_or(s.span.start));
+            let end = query.stages.first().map_or(text.len(), |s| {
+                text[..s.span.start].rfind('|').unwrap_or(s.span.start)
+            });
             (name, arguments, end)
         }
-        Source::Unit { condition: Some(cond), .. } => {
-            let first = match &cond.kind { ConditionKind::And { conditions } => &conditions[0], _ => cond };
-            let ConditionKind::Saved { name, arguments } = &first.kind else { return Ok(None) };
-            if first.span.start != lead { return Ok(None); }
+        Source::Unit {
+            condition: Some(cond),
+            ..
+        } => {
+            let first = match &cond.kind {
+                ConditionKind::And { conditions } => &conditions[0],
+                _ => cond,
+            };
+            let ConditionKind::Saved { name, arguments } = &first.kind else {
+                return Ok(None);
+            };
+            if first.span.start != lead {
+                return Ok(None);
+            }
             (name, arguments, first.span.end)
         }
         _ => return Ok(None),
@@ -401,9 +433,9 @@ impl Parameters {
         position: usize,
     ) -> Result<(), QueryError> {
         match &mut query.source {
-            Source::Unit { condition: Some(c), .. } => {
-                self.cond(c, used, position)?
-            }
+            Source::Unit {
+                condition: Some(c), ..
+            } => self.cond(c, used, position)?,
             _ => {}
         }
         for child in &mut query.attach {
@@ -417,7 +449,8 @@ impl Parameters {
             match &mut stage.kind {
                 StageKind::Where { condition: cond }
                 | StageKind::Scope {
-                    condition: Some(cond), ..
+                    condition: Some(cond),
+                    ..
                 } => self.cond(cond, used, position)?,
                 StageKind::Combine { query, .. } => self.query(query, used, position)?,
                 _ => {}
@@ -437,36 +470,79 @@ impl Parameters {
             .as_ref()
             .is_none_or(|r| r.start <= c.span.start && c.span.end <= r.end);
         match &mut c.kind {
-            ConditionKind::And { conditions } | ConditionKind::Or { conditions } | ConditionKind::Sequence { steps: conditions, .. } => {
-                for condition in conditions { self.cond(condition, used, position)?; }
+            ConditionKind::And { conditions }
+            | ConditionKind::Or { conditions }
+            | ConditionKind::Sequence {
+                steps: conditions, ..
+            } => {
+                for condition in conditions {
+                    self.cond(condition, used, position)?;
+                }
             }
-            ConditionKind::Not { condition } | ConditionKind::Exists { condition: Some(condition), .. } | ConditionKind::Count { condition: Some(condition), .. } => self.cond(condition, used, position)?,
+            ConditionKind::Not { condition }
+            | ConditionKind::Exists {
+                condition: Some(condition),
+                ..
+            }
+            | ConditionKind::Count {
+                condition: Some(condition),
+                ..
+            } => self.cond(condition, used, position)?,
             ConditionKind::In { query, .. } => self.query(query, used, position)?,
-            ConditionKind::Match { value, .. } | ConditionKind::Compare { value, .. } | ConditionKind::Similar { value } | ConditionKind::TimeRange { value, .. } if inside => self.value(value, used, position)?,
-            ConditionKind::Between { from, to, .. } if inside => { self.value(from, used, position)?; self.value(to, used, position)?; }
+            ConditionKind::Match { value, .. }
+            | ConditionKind::Compare { value, .. }
+            | ConditionKind::Similar { value }
+            | ConditionKind::TimeRange { value, .. }
+                if inside =>
+            {
+                self.value(value, used, position)?
+            }
+            ConditionKind::Between { from, to, .. } if inside => {
+                self.value(from, used, position)?;
+                self.value(to, used, position)?;
+            }
             ConditionKind::Text { text, mode } if inside => {
                 if let Some(argument) = self.argument(text, used, position)? {
                     *text = value_text(&argument.value)?.into();
-                    *mode = if matches!(argument.value, Value::Scalar { quoted: true, .. }) { TextMode::Phrase } else { TextMode::Word };
+                    *mode = if matches!(argument.value, Value::Scalar { quoted: true, .. }) {
+                        TextMode::Phrase
+                    } else {
+                        TextMode::Word
+                    };
                 }
             }
             ConditionKind::Saved { arguments, .. } if inside => {
-                for argument in arguments { self.value(&mut argument.value, used, position)?; }
+                for argument in arguments {
+                    self.value(&mut argument.value, used, position)?;
+                }
             }
             _ => {}
         }
         Ok(())
     }
-    fn value(&self, value: &mut Value, used: &mut Vec<String>, position: usize) -> Result<(), QueryError> {
+    fn value(
+        &self,
+        value: &mut Value,
+        used: &mut Vec<String>,
+        position: usize,
+    ) -> Result<(), QueryError> {
         match value {
             Value::Parameter { name } => {
                 let marker = format!("${name}");
-                if let Some(argument) = self.argument(&marker, used, position)? { *value = argument.value.clone(); }
+                if let Some(argument) = self.argument(&marker, used, position)? {
+                    *value = argument.value.clone();
+                }
             }
             Value::Scalar { text, .. } => {
-                if let Some(argument) = self.argument(text, used, position)? { *value = argument.value.clone(); }
+                if let Some(argument) = self.argument(text, used, position)? {
+                    *value = argument.value.clone();
+                }
             }
-            Value::Set { values } => for value in values { self.value(value, used, position)?; },
+            Value::Set { values } => {
+                for value in values {
+                    self.value(value, used, position)?;
+                }
+            }
             _ => {}
         }
         Ok(())

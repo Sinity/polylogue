@@ -13,7 +13,11 @@ impl<'a> Compiler<'a> {
         let (mut scope, wheres, top) = match &q.source {
             Source::Unit { unit, condition } => {
                 let top = condition.as_ref().map(top_level).unwrap_or_default();
-                (RowContext::plain(bind_unit(unit)?), condition.iter().cloned().collect::<Vec<_>>(), top)
+                (
+                    RowContext::plain(bind_unit(unit)?),
+                    condition.iter().cloned().collect::<Vec<_>>(),
+                    top,
+                )
             }
             _ => return Err(not_built("this shared query source")),
         };
@@ -111,7 +115,9 @@ impl<'a> Compiler<'a> {
                         let dir = if key.descending { " DESC" } else { "" };
                         let mut sorted = vec![format!("{name} IS NULL"), format!("{name}{dir}")];
                         for identity in ["parent_id", "session", "match"] {
-                            if rel.columns.iter().any(|(name, _)| name == identity) { sorted.push(format!("\"{identity}\"{dir}")); }
+                            if rel.columns.iter().any(|(name, _)| name == identity) {
+                                sorted.push(format!("\"{identity}\"{dir}"));
+                            }
                         }
                         order = Some(sorted);
                     }
@@ -124,7 +130,10 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             match &stage.kind {
-                StageKind::Scope { unit, condition: cond } => {
+                StageKind::Scope {
+                    unit,
+                    condition: cond,
+                } => {
                     if grouped || scope.unit != Unit::Sessions {
                         return Err(QueryError::Invalid {
                             message: "a `| UNIT where …` stage follows a session query".into(),
@@ -207,22 +216,42 @@ impl<'a> Compiler<'a> {
                     having.push(self.group_cond(cond, group.as_deref(), aggs.as_deref())?);
                 }
                 StageKind::Sort { keys } if !grouped => {
-                    if selection.is_some() { self.apply_selection(&scope, &mut where_sql, &order, selection.take()); }
+                    if selection.is_some() {
+                        self.apply_selection(&scope, &mut where_sql, &order, selection.take());
+                    }
                     let mut sorted = vec![];
                     for key in keys {
-                        let mut terms = self.sort(&key.operand, key.descending, &scope, stage.span.start)?;
+                        let mut terms =
+                            self.sort(&key.operand, key.descending, &scope, stage.span.start)?;
                         // Identity is appended once, after every explicit sort operand.
                         let identity = units::spec(scope.unit).identity.len();
-                        if keys.len() > 1 && terms.len() >= identity { terms.truncate(terms.len() - identity); }
+                        if keys.len() > 1 && terms.len() >= identity {
+                            terms.truncate(terms.len() - identity);
+                        }
                         sorted.extend(terms);
                     }
-                    if keys.len() > 1 { sorted.extend(units::spec(scope.unit).identity.iter().map(|term| scope.a.expand(term))); }
+                    if keys.len() > 1 {
+                        sorted.extend(
+                            units::spec(scope.unit)
+                                .identity
+                                .iter()
+                                .map(|term| scope.a.expand(term)),
+                        );
+                    }
                     order = Some(sorted);
                 }
-                StageKind::Sort { keys } if keys.len() != 1 => return Err(not_built("multiple grouped sort operands")),
+                StageKind::Sort { keys } if keys.len() != 1 => {
+                    return Err(not_built("multiple grouped sort operands"));
+                }
                 StageKind::Sort { keys } => {
                     let key = &keys[0];
-                    group_order = Some(group_sort(&key.operand, key.descending, group.as_deref(), aggs.as_deref(), self.opts.random_seed)?);
+                    group_order = Some(group_sort(
+                        &key.operand,
+                        key.descending,
+                        group.as_deref(),
+                        aggs.as_deref(),
+                        self.opts.random_seed,
+                    )?);
                 }
                 StageKind::Group { keys } => {
                     if grouped {
@@ -266,7 +295,9 @@ impl<'a> Compiler<'a> {
                 }
                 StageKind::Distinct => distinct = true,
                 StageKind::Measure { name: what, by } => {
-                    if !by.is_empty() { return Err(not_built("measure by")); }
+                    if !by.is_empty() {
+                        return Err(not_built("measure by"));
+                    }
                     if grouped || scope.unit != Unit::Sessions || measure.is_some() {
                         return Err(QueryError::Invalid {
                             message: "`| measure WHAT` follows a session query and ends it".into(),
@@ -295,7 +326,10 @@ impl<'a> Compiler<'a> {
                     let found: Vec<&Condition> = top
                         .iter()
                         .filter(|c| {
-                            matches!(c.kind, ConditionKind::Exists { .. } | ConditionKind::Sequence { .. })
+                            matches!(
+                                c.kind,
+                                ConditionKind::Exists { .. } | ConditionKind::Sequence { .. }
+                            )
                         })
                         .collect();
                     let [c] = found.as_slice() else {
@@ -309,12 +343,22 @@ impl<'a> Compiler<'a> {
                     };
                     let parent_rows = and_all(&where_sql);
                     matched = Some(match &c.kind {
-                        ConditionKind::Exists { unit, condition: Some(cond) } => {
-                            self.exists_matches(bind_unit(unit)?, cond, &scope, &parent_rows, c.span)?
-                        }
-                        ConditionKind::Sequence { steps, gaps, all: false, .. } => {
-                            self.seq_matches(steps, gaps, &scope, &parent_rows, c.span)?
-                        }
+                        ConditionKind::Exists {
+                            unit,
+                            condition: Some(cond),
+                        } => self.exists_matches(
+                            bind_unit(unit)?,
+                            cond,
+                            &scope,
+                            &parent_rows,
+                            c.span,
+                        )?,
+                        ConditionKind::Sequence {
+                            steps,
+                            gaps,
+                            all: false,
+                            ..
+                        } => self.seq_matches(steps, gaps, &scope, &parent_rows, c.span)?,
                         _ => unreachable!("filtered above"),
                     });
                     order = None;
