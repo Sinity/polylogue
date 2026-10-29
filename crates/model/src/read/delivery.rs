@@ -44,3 +44,14 @@ pub struct ReadComplete {
     pub footer: ReadFooter,
     pub counts: Counts,
 }
+
+/// A bounded slice of a declared content-addressed blob. The receiver validates
+/// contiguous offsets, declared size and the whole content hash before use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadBlobChunk {
+    pub hash: crate::BlobHash,
+    pub offset: u64,
+    /// Standard padded base64, independent of the transport framing.
+    pub base64: String,
+}
