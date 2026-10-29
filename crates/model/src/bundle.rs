@@ -4,6 +4,8 @@
 use crate::{Author, BlobHash, ChangePosition, Document, Event, Link, Message, Session, Timestamp};
 use serde::{Deserialize, Serialize};
 
+pub mod fragments;
+
 pub const FORMAT: &str = "polylogue-bundle";
 pub const VERSION: u32 = 1;
 

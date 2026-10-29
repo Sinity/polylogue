@@ -7,6 +7,7 @@ impl RowWriter<'_, '_> {
             "CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID",
         )?;
         self.tx.execute("INSERT OR IGNORE INTO temp.reparse_session SELECT input_pk,chain,session_pk FROM parsed WHERE input_pk=?1 AND chain=?2",params![self.input_pk,self.chain])?;
+        crate::fragment::retract(self.tx, self.input_pk, self.chain)?;
         let mut touched = Vec::new();
         for kind in VersionKind::ALL {
             touched.push((kind, kind.retract(self.tx, self.input_pk, self.chain)?));

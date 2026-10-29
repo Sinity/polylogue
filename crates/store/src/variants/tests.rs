@@ -382,3 +382,32 @@ fn variant_ingress_keeps_original_author_and_first_admitted_time_separate_from_c
         history
     );
 }
+
+#[test]
+fn rendition_early_stop_precedes_later_body_decode() {
+    let mut conn = archive();
+    let mut request = request("early-stop", None, "first");
+    let UserWrite::Variant { variant } = &mut request.write else {
+        unreachable!()
+    };
+    variant.parts.push(NewVariantPart {
+        of: "block:codex:source#1".into(),
+        of_hash: BlobHash([3; 32]),
+        relation: VariantRelation::Translates,
+        body: "later".into(),
+    });
+    write_request(&mut conn, &request, 10);
+    conn.execute(
+        "UPDATE variant_part SET body=?1 WHERE variant='early-stop' AND n=1",
+        [vec![255u8]],
+    )
+    .unwrap();
+    let mut numbers = Vec::new();
+    rows::parts_while(&conn, "early-stop", |part| {
+        numbers.push(part.n);
+        Ok(false)
+    })
+    .unwrap();
+    assert_eq!(numbers, vec![0]);
+    assert!(rows::parts(&conn, "early-stop", |_| Ok(())).is_err());
+}

@@ -57,6 +57,13 @@ pub struct Output {
     /// Textual provider records without conversation roles or usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentRow>,
+    /// Partial text observations. Their source coordinates name this input's
+    /// record bytes; the payload retains foreign span and admission claims.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fragments: Vec<FragmentRow>,
+    /// Actual immutable receiver admissions, populated by confirmed projection.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fragment_receipts: BTreeMap<usize, u64>,
     pub events: Vec<Event>,
     /// Stable exported identities and their original source claims, indexed by event.
     /// The containing input still owns the local bytes.
@@ -127,6 +134,15 @@ pub struct DocumentRow {
     pub offset: u64,
     pub end: u64,
     pub document: Document,
+}
+
+/// A selected-text record in the actual receiving input. Sender commit and
+/// original text coordinates remain claims inside `record`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FragmentRow {
+    pub offset: u64,
+    pub end: u64,
+    pub record: crate::bundle::fragments::TextFragmentRecord,
 }
 
 /// A message as one input holds it. `offset` is where its first record

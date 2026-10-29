@@ -6,6 +6,7 @@ use super::*;
 pub(crate) struct PreparedRows {
     pub(in crate::writer) messages: Vec<PreparedMessage>,
     pub(in crate::writer) documents: Vec<PreparedDocument>,
+    pub(in crate::writer) fragments: crate::fragment::PreparedFragments,
     pub(in crate::writer) texts: HashMap<[u8; 32], Vec<u8>>,
     pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
     pub(in crate::writer) released: bool,
@@ -16,6 +17,7 @@ pub(crate) struct PreparedRows {
 
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
+        self.fragments.validate(output)?;
         for (&index, &receipt) in &output.message_receipts {
             if index >= output.messages.len() || receipt == 0 || i64::try_from(receipt).is_err() {
                 return Err(StoreError::Invalid(
@@ -178,6 +180,9 @@ impl ParseStep {
         else {
             return;
         };
+        let Ok(fragments) = crate::fragment::PreparedFragments::prepare(&self.output) else {
+            return;
+        };
         let mut texts = HashMap::new();
         for blocks in self
             .output
@@ -206,6 +211,7 @@ impl ParseStep {
         self.prepared = PreparedRows {
             messages,
             documents,
+            fragments,
             texts,
             events,
             released: true,
