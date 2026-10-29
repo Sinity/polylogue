@@ -5,6 +5,7 @@
 
 use super::*;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+use query_language::time::Clock;
 
 const DAY: i64 = 86_400_000;
 /// 2026-10-01T12:00Z.
@@ -376,7 +377,7 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: None,
         why: false,
         session: None,
-        clock: fixture_clock(OCT1 + 7 * DAY, "UTC", 0),
+        context: fixture_context(OCT1 + 7 * DAY, "UTC", 0),
         embeddings: false,
         near: None,
         fields: &[],
@@ -978,7 +979,12 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
         a.page_size = Some(3);
         a.cursor = Some(&c);
         // A later request still answers the first one's question.
-        a.now += DAY;
+        std::sync::Arc::make_mut(&mut a.context).clock.now = a
+            .context
+            .clock
+            .now
+            .checked_add(jiff::SignedDuration::from_millis(DAY))
+            .unwrap();
         let page = run_q(&w, a).unwrap();
         seen.extend(ids(&page));
         cursor = page["next"].as_str().map(str::to_owned);
@@ -1300,4 +1306,20 @@ fn fixture_clock(now: i64, zone: &str, start_minutes: u16) -> Clock {
         )
         .unwrap(),
     )
+}
+
+fn fixture_context(
+    now: i64,
+    zone: &str,
+    start_minutes: u16,
+) -> std::sync::Arc<crate::operation::Context> {
+    let clock = fixture_clock(now, zone, start_minutes);
+    std::sync::Arc::new(crate::operation::Context::standalone(
+        crate::operation::Invocation {
+            at: clock.now.into(),
+            machine: "synthetic-query-machine".into(),
+            authorship: crate::operation::Context::worker_authorship("query-fixture"),
+        },
+        clock.day,
+    ))
 }

@@ -236,7 +236,7 @@ impl laws::Executor<Plan> for Execution {
                 page_size: Some(request.page_size.get() as u64),
                 why: false,
                 session: None,
-                clock: fixture_clock(0, "UTC", 240),
+                context: fixture_context(0, "UTC", 240),
                 embeddings: false,
                 near: None,
                 fields: &["id".into(), "cost".into(), "repo".into()],

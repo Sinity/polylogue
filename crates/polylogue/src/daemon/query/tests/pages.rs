@@ -178,7 +178,8 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
             request.cursor = Some(&next);
             request.page_size = Some(size);
             size += 1;
-            request.clock.now = request
+            std::sync::Arc::make_mut(&mut request.context).clock.now = request
+                .context
                 .clock
                 .now
                 .checked_add(jiff::SignedDuration::from_millis(DAY))
@@ -220,10 +221,13 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
         match changed {
             "fields" => request.fields = &fields,
             "caller" => request.session = Some("claude-code:different-caller".into()),
-            "zone" => request.clock.day = fixture_clock(0, "Europe/Warsaw", 0).day,
+            "zone" => {
+                std::sync::Arc::make_mut(&mut request.context).clock.day =
+                    fixture_clock(0, "Europe/Warsaw", 0).day
+            }
             "day-start" => {
-                request.clock.day = DaySetting::new(
-                    request.clock.day.zone().clone(),
+                std::sync::Arc::make_mut(&mut request.context).clock.day = DaySetting::new(
+                    request.context.clock.day.zone().clone(),
                     jiff::civil::Time::constant(4, 0, 0, 0),
                 )
                 .unwrap();
@@ -235,7 +239,7 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
         }
         assert_eq!(
             run_q(&w, request).unwrap_err().kind,
-            if changed == "zone" {
+            if matches!(changed, "zone" | "day-start") {
                 "stale_cursor"
             } else {
                 "invalid_query"
@@ -695,7 +699,8 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         "tool_calls where since:7d",
     ] {
         let mut whole = ask(text);
-        whole.clock.now = jiff::Timestamp::from_millisecond(first_now).unwrap();
+        std::sync::Arc::make_mut(&mut whole.context).clock.now =
+            jiff::Timestamp::from_millisecond(first_now).unwrap();
         whole.page_size = Some(1000);
         let whole = run_q(&w, whole).unwrap();
         let mut rows = vec![];
@@ -703,7 +708,8 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         let mut now = first_now;
         loop {
             let mut request = ask(text);
-            request.clock.now = jiff::Timestamp::from_millisecond(now).unwrap();
+            std::sync::Arc::make_mut(&mut request.context).clock.now =
+                jiff::Timestamp::from_millisecond(now).unwrap();
             request.page_size = Some(1);
             request.cursor = cursor.as_deref();
             let page = run_q(&w, request).unwrap();
