@@ -28,7 +28,10 @@ mod note;
 pub mod price;
 mod quota;
 mod reference;
-pub use reference::{Reference, ReferenceError, RevisionReference, SpanUnit};
+pub use reference::{
+    Reference, ReferenceError, RevisionReference, SpanBounds, SpanError, SpanUnit,
+    TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece, span_bodies, text_body,
+};
 pub mod read;
 mod session;
 pub mod settings;
@@ -55,11 +58,11 @@ pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
 pub mod reports;
+pub use authorship::Author;
 pub use message::{
     ApiError, Attribution, Message, Production, PromptKind, Role, ServerToolUse, WrittenBy,
     is_prompt,
 };
-pub use authorship::Author;
 pub use note::{NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};

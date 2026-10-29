@@ -253,3 +253,70 @@ fn sparse_source_blocks_keep_original_addresses_and_never_hash_as_complete_text(
         Some(BlobHash::of(b"first\n\nmiddle\n\nlast"))
     );
 }
+
+#[test]
+fn document_spans_share_original_body_offsets_without_loading_structured_results() {
+    use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow, Output};
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let mut archive = WriterArchive::new();
+    let mut document = Document::new(
+        DocumentId::parse("claude-ai:document").unwrap(),
+        DocumentPurpose::Context,
+    );
+    document.blocks = [
+        serde_json::json!({"type":"text","text":"a💡"}),
+        serde_json::json!({"type":"thinking","text":"ż"}),
+        serde_json::json!({"type":"tool_result","output":"尾","outcome":{"kind":"ok"},"data":{"structured":"not source text"}}),
+    ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
+    archive.write_output(
+        "document-source",
+        "synthetic",
+        "/synthetic/document",
+        Output {
+            documents: vec![DocumentRow {
+                offset: 0,
+                end: 1,
+                document,
+            }],
+            ..Default::default()
+        },
+        1,
+    );
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    reader
+        .conn()
+        .unwrap()
+        .authorizer(Some(|context: AuthContext<'_>| {
+            if matches!(
+                context.action,
+                AuthAction::Read {
+                    table_name: "document_block",
+                    column_name: "data"
+                }
+            ) {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }));
+    assert_eq!(
+        text(&reader, "document:claude-ai:document").as_deref(),
+        Some("a💡\n\nż\n\n尾")
+    );
+    for reference in [
+        "span:document:claude-ai:document#u16=1-6",
+        "span:document:claude-ai:document#b=1-9",
+    ] {
+        assert_eq!(text(&reader, reference).as_deref(), Some("💡\n\nż"));
+    }
+    let mut emitted = false;
+    assert!(matches!(
+        reader.visit_reference_text(&r("span:document:claude-ai:document#u16=2-3"), |_| {
+            emitted = true;
+            Ok(())
+        }),
+        Err(StoreError::Invalid(_))
+    ));
+    assert!(!emitted);
+}

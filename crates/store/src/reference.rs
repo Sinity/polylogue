@@ -1,38 +1,34 @@
 //! Original recorded text, before view filtering, masking or rendition. Source
 //! hashes stream these same chunks and never materialize a whole session.
 use crate::{Reader, Result, StoreError};
-use polylogue_model::{BlobHash, Block, Reference, SpanUnit};
+use polylogue_model::{
+    BlobHash, Block, Reference, SpanBounds, SpanError, SpanUnit, TEXT_BODY_SEPARATOR,
+    TextBodyOffsets, text_body,
+};
 use rusqlite::{OptionalExtension, params};
 use std::ops::ControlFlow;
 
 type Visit<'a> = dyn FnMut(&str) -> Result<()> + 'a;
 struct Text<'a, 'v> {
     visit: &'a mut Visit<'v>,
-    separated: bool,
+    offsets: TextBodyOffsets,
     reference: String,
 }
 impl Text<'_, '_> {
     fn body(&mut self, text: &str) -> Result<()> {
-        if self.separated {
-            (self.visit)("\n\n")?;
+        let range = self.offsets.push(text.len() as u64).map_err(span_error)?;
+        if range.start != 0 {
+            (self.visit)(TEXT_BODY_SEPARATOR)?;
         }
-        self.separated = true;
         (self.visit)(text)
     }
     fn block(&mut self, block: &Block) -> Result<()> {
-        match block {
-            Block::Text { text }
-            | Block::Thinking {
-                text: Some(text), ..
-            } => self.body(text),
-            Block::Thinking { text: None, .. } => Err(StoreError::ReferenceUnavailable {
-                reference: self.reference.clone(),
-                reason: "the thinking text was not recorded".into(),
-            }),
-            Block::ToolResult {
-                output: Some(text), ..
-            } => self.body(text),
-            _ => Ok(()),
+        match text_body(block).map_err(|error| StoreError::ReferenceUnavailable {
+            reference: self.reference.clone(),
+            reason: error.to_string(),
+        })? {
+            Some(text) => self.body(text),
+            None => Ok(()),
         }
     }
 }
@@ -42,12 +38,8 @@ fn unavailable(reference: &Reference, reason: &str) -> StoreError {
         reason: reason.into(),
     }
 }
-fn width(character: char, unit: SpanUnit) -> u64 {
-    match unit {
-        SpanUnit::Bytes => character.len_utf8() as u64,
-        SpanUnit::CodePoints => 1,
-        SpanUnit::Utf16 => character.len_utf16() as u64,
-    }
+fn span_error(error: SpanError) -> StoreError {
+    StoreError::Invalid(error.to_string())
 }
 
 impl Reader<'_> {
@@ -127,7 +119,7 @@ impl Reader<'_> {
                 }
                 let mut text = Text {
                     visit,
-                    separated: false,
+                    offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),
                 };
                 crate::ordered_blocks::visit_text(conn, pk, |block| {
@@ -148,7 +140,7 @@ impl Reader<'_> {
                 self.require_complete_message(pk, reference)?;
                 let mut text = Text {
                     visit,
-                    separated: false,
+                    offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),
                 };
                 let mut statement =
@@ -202,7 +194,7 @@ impl Reader<'_> {
                 }
                 Text {
                     visit,
-                    separated: false,
+                    offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),
                 }
                 .block(&block)?;
@@ -214,11 +206,11 @@ impl Reader<'_> {
                 };
                 let mut text = Text {
                     visit,
-                    separated: false,
+                    offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),
                 };
                 let mut error = None;
-                document.visit_blocks(|block| {
+                document.visit_text_blocks(|block| {
                     if let Err(failed) = text.block(&block) {
                         error = Some(failed);
                         ControlFlow::Break(())
@@ -254,7 +246,7 @@ impl Reader<'_> {
                 };
                 let mut text = Text {
                     visit,
-                    separated: false,
+                    offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),
                 };
                 let mut present = part.is_none();
@@ -348,7 +340,7 @@ impl Reader<'_> {
         ])?;
         let mut text = Text {
             visit,
-            separated: false,
+            offsets: TextBodyOffsets::default(),
             reference: reference.to_string(),
         };
         while let Some(row) = rows.next()? {
@@ -364,43 +356,25 @@ impl Reader<'_> {
         end: u64,
         visit: &mut Visit<'_>,
     ) -> Result<bool> {
-        if start > end {
-            return Err(StoreError::Invalid("span end precedes its start".into()));
-        }
-        let mut position = 0;
-        let mut start_valid = start == 0;
-        let mut end_valid = end == 0;
-        let found = self.reference_text(container, &mut |text| {
-            for character in text.chars() {
-                position += width(character, unit);
-                start_valid |= position == start;
-                end_valid |= position == end;
-            }
-            Ok(())
-        })?;
+        let mut bounds = SpanBounds::new(unit, start, end).map_err(span_error)?;
+        let found =
+            self.reference_text(container, &mut |text| bounds.push(text).map_err(span_error))?;
         if !found {
             return Ok(false);
         }
-        if end > position || !start_valid || !end_valid {
-            return Err(StoreError::Invalid(
-                "span bounds exceed the source text or split a character".into(),
-            ));
-        }
-        let mut position = 0;
+        let range = bounds.finish().map_err(span_error)?;
+        let mut position = 0u64;
         self.reference_text(container, &mut |text| {
-            let mut begin = None;
-            let mut finish = 0;
-            for (byte, character) in text.char_indices() {
-                let next = position + width(character, unit);
-                if position >= start && next <= end {
-                    begin.get_or_insert(byte);
-                    finish = byte + character.len_utf8();
-                }
-                position = next;
+            let next = position
+                .checked_add(text.len() as u64)
+                .ok_or(SpanError::Overflow)
+                .map_err(span_error)?;
+            let begin = range.start.max(position);
+            let end = range.end.min(next);
+            if begin < end {
+                visit(&text[(begin - position) as usize..(end - position) as usize])?;
             }
-            if let Some(begin) = begin {
-                visit(&text[begin..finish])?;
-            }
+            position = next;
             Ok(())
         })
     }

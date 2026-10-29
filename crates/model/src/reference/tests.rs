@@ -31,6 +31,7 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "url:https://example.test/a?q=1#part",
         "sx:material:opaque",
         "span:message:codex:message#b=0-4",
+        "span:document:claude-ai:document#u16=1-5",
         "span:block:codex:message#2#c=0-3",
         "span:assertion:root@revision#u16=0-5",
         "span:variant:root@revision#3#b=0-4",

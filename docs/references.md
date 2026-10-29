@@ -11,7 +11,7 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `message:<id>..<id>` | a range of messages in one session, both ends included, in reading order |
 | `block:<message>#<n>` | the n-th stored block of a message |
 | `tool:<session>#<call id>` | a tool call, by the harness's call ID |
-| `span:<container>#<unit>=<a>-<b>` | a span of text. The container is a message, a block, `assertion:<root>@<rev>` or `variant:<root>@<rev>#<n>`; the unit is `b` (UTF-8 bytes), `c` (code points) or `u16` (UTF-16 code units, as browser selections report them) |
+| `span:<container>#<unit>=<a>-<b>` | a span of text. The container is a message, a document, a block, `assertion:<root>@<rev>` or `variant:<root>@<rev>#<n>`; the unit is `b` (UTF-8 bytes), `c` (code points) or `u16` (UTF-16 code units, as browser selections report them) |
 | `document:<id>` | an imported document, such as a captured harness memory file |
 | `event:<id>` | a Polylogue event |
 | `attachment:<id>` | an attachment |
