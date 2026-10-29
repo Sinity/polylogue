@@ -22,6 +22,8 @@ mod document;
 mod event;
 pub mod export;
 mod id;
+pub mod injection;
+pub use injection::HookFieldClaim;
 mod message;
 mod note;
 pub mod price;
