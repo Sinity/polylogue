@@ -249,3 +249,53 @@ fn acquisition_evidence_keeps_original_body_when_an_extent_is_trimmed_or_absent(
         assert_eq!(count, 1);
     }
 }
+
+#[test]
+fn queued_source_snapshot_and_reader_keep_the_same_exact_observation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = crate::Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let conn = Connection::open(archive.archive_db()).unwrap();
+    let path = b"/home/op/\xff";
+    rows("native", Some(path.to_vec()))
+        .insert(&conn, 1)
+        .unwrap();
+    drop(conn);
+    let writer = crate::Writer::start(&archive).unwrap();
+    let snapshot = writer
+        .source_snapshot(selector(path), "synthetic:1")
+        .unwrap();
+    assert_eq!(snapshot.basis.status, SourceStatus::Ready);
+    assert_eq!(snapshot.basis.confirmed.as_deref(), Some("native"));
+    assert_eq!(snapshot.basis.pending, None);
+    assert_eq!(
+        snapshot
+            .confirmed
+            .as_ref()
+            .unwrap()
+            .observation
+            .path_bytes
+            .as_deref(),
+        Some(path.as_slice())
+    );
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader.source_observation(&selector(path)).unwrap().1,
+        snapshot.confirmed
+    );
+    assert_eq!(
+        reader
+            .known_input_at("machine", path)
+            .unwrap()
+            .unwrap()
+            .path_bytes
+            .as_deref(),
+        Some(path.as_slice())
+    );
+    assert!(
+        reader
+            .known_input_at("machine", b"/home/op/\xfe")
+            .unwrap()
+            .is_none()
+    );
+}
