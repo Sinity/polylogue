@@ -62,7 +62,6 @@ fn read_request() -> Request {
         format: "json".into(),
         delivery: polylogue_model::read::ReadDelivery::Page,
         budget: None,
-        cursor: None,
         with_blobs: false,
     }
 }

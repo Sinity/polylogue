@@ -6,7 +6,7 @@ fn read(
     view: &str,
     format: &str,
     budget: Option<usize>,
-    cursor: Option<&str>,
+    cursor: Option<&crate::protocol::read::ResumeArguments>,
 ) -> Response {
     let Some(view) = polylogue_model::read::View::parse(view) else {
         return error("bad_request", "unknown reading view");
@@ -14,7 +14,13 @@ fn read(
     if polylogue_render::Format::parse(format).is_none() {
         return error("bad_request", "unknown reading format");
     }
-    handle(
+    let request = if let Some(resume) = cursor {
+        Request::ReadResume {
+            root_run: resume.root_run.clone(),
+            cursor: resume.cursor.clone(),
+            budget: budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap()),
+        }
+    } else {
         Request::Read {
             target: "session:claude-code:s1".into(),
             options: polylogue_model::read::ReadOptions {
@@ -24,11 +30,10 @@ fn read(
             delivery: polylogue_model::read::ReadDelivery::Page,
             format: format.into(),
             budget,
-            cursor: cursor.map(Into::into),
             with_blobs: false,
-        },
-        d,
-    )
+        }
+    };
+    handle(request, d)
 }
 
 fn typed(response: Response) -> polylogue_model::read::ReadPage {
@@ -70,13 +75,22 @@ fn a_read_honours_its_view_format_and_budget() {
     let call = first.document.footer.next.as_ref().expect("a second page");
     let envelope: command_surface::RunnableRequest =
         serde_json::from_value(call.http.arguments.clone()).unwrap();
-    let cursor = envelope.arguments["cursor"].as_str().unwrap();
-    let second = typed(read(&w.daemon, "transcript", "json", Some(1), Some(cursor)));
+    let cursor: crate::protocol::read::ResumeArguments =
+        serde_json::from_value(envelope.arguments).unwrap();
+    let second = typed(read(
+        &w.daemon,
+        "transcript",
+        "json",
+        Some(1),
+        Some(&cursor),
+    ));
     assert_ne!(first.document.items, second.document.items);
+    let mut malformed = cursor.clone();
+    malformed.cursor = query_language::cursor::SealedCursor::from_wire("m0.b0.c0");
     for (view, format, cursor, expected) in [
         ("nope", "json", None, "bad_request"),
         ("transcript", "pdf", None, "bad_request"),
-        ("transcript", "json", Some("m0.b0.c0"), "invalid_query"),
+        ("transcript", "json", Some(&malformed), "invalid_query"),
     ] {
         assert!(
             matches!(
@@ -274,7 +288,6 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
             delivery: polylogue_model::read::ReadDelivery::Stream,
             format: "jsonl".into(),
             budget: None,
-            cursor: None,
             with_blobs: false,
         };
         let envelope = command_surface::Request {

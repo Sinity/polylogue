@@ -54,7 +54,6 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
                 delivery: ReadDelivery::Page,
                 format: "json".into(),
                 budget: None,
-                cursor: None,
                 with_blobs: false,
             },
             &r.web.daemon,

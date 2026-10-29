@@ -517,7 +517,6 @@ fn grok_file_blobs(
             delivery: polylogue_model::read::ReadDelivery::Page,
             format: "markdown".into(),
             budget: None,
-            cursor: None,
             with_blobs: false,
         }) {
             Some(crate::daemon::Response::Ok { data, .. }) => {
