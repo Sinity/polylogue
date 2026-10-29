@@ -10,7 +10,6 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Duration,
 };
 
 #[derive(Debug)]
@@ -33,9 +32,9 @@ pub(crate) fn run(
     values: &Values,
     request: &Request,
     startup: &crate::config::Startup,
-    timeout: Option<Duration>,
+    accepted: &command_surface::RunnableRequest,
 ) -> ExitCode {
-    match deliver(values, request, startup, timeout) {
+    match deliver(values, request, startup, accepted) {
         Ok(code) => ExitCode::from(code),
         Err(DeliveryError::Text(error)) => fail(values.flag("json"), "read_output", &error, 1),
         Err(DeliveryError::Answer(answer)) => {
@@ -70,38 +69,18 @@ fn invalid(message: impl ToString) -> io::Error {
 
 fn call(
     request: &Request,
-    timeout: Option<Duration>,
+    accepted: &command_surface::RunnableRequest,
 ) -> Result<command_surface::RunnableRequest, DeliveryError> {
     let arguments = crate::protocol::read::Arguments::from_request(request)?;
-    let deadline = match timeout {
-        Some(duration) => command_surface::Deadline::Milliseconds(
-            u64::try_from(duration.as_millis())
-                .map_err(|_| "timeout cannot be represented in milliseconds")?,
-        ),
-        None if matches!(
-            request,
-            Request::Read {
-                delivery: ReadDelivery::Stream,
-                ..
-            }
-        ) =>
-        {
-            command_surface::Deadline::None
-        }
-        None => command_surface::Deadline::Default,
-    };
-    Ok(command_surface::Request {
-        operation: "read".into(),
-        arguments: serde_json::to_value(arguments).map_err(|e| e.to_string())?,
-        request_id: uuid::Uuid::now_v7().to_string(),
-        deadline,
-    })
+    let mut call = accepted.clone();
+    call.arguments = serde_json::to_value(arguments).map_err(|e| e.to_string())?;
+    Ok(call)
 }
 fn deliver(
     values: &Values,
     request: &Request,
     startup: &crate::config::Startup,
-    timeout: Option<Duration>,
+    accepted: &command_surface::RunnableRequest,
 ) -> Result<u8, DeliveryError> {
     let archive = Archive::at(&startup.config.archive);
     let mut request = request.clone();
@@ -110,7 +89,7 @@ fn deliver(
     };
     let destination = values.text("to").map(PathBuf::from);
     if destination.is_none() && *delivery == ReadDelivery::Page {
-        let answer = crate::client::call_ready(&archive, &call(&request, timeout)?)
+        let answer = crate::client::call_ready(&archive, &call(&request, accepted)?)
             .map_err(|e| e.to_string())?;
         let code = answer.exit_code();
         if values.flag("json") {
@@ -166,7 +145,7 @@ fn deliver(
         return Err("directory delivery requires json, jsonl, markdown or html".into());
     }
     let with_blobs = *with_blobs;
-    let call = call(&request, timeout)?;
+    let call = call(&request, accepted)?;
     consume(
         destination.as_deref(),
         directory,
