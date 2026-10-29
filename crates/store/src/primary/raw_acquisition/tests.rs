@@ -23,6 +23,7 @@ fn body(generation: &SourceGeneration, start: u64, end: u64) -> RawBodyRange {
     RawBodyRange {
         generation: generation.clone(), body: format!("body:{start}:{end}"),
         predecessor: (start > 0).then(|| format!("body:0:{start}")),
+        disposition: Some(CaptureDisposition::Prepared),
         range: RawRange { start, end }, hash: BlobHash([start as u8; 32]),
         decoded_length: end - start, known_total: (end == 10).then_some(10),
     }
@@ -134,4 +135,19 @@ fn scheduling_rank_does_not_rename_a_raw_stream_or_its_durable_wire_key() {
     assert_eq!(serde_json::to_vec(&original).unwrap(), serde_json::to_vec(&imported).unwrap());
     let restored: SourceGeneration = serde_json::from_slice(&serde_json::to_vec(&imported).unwrap()).unwrap();
     assert_eq!(restored, imported);
+}
+
+#[test]
+fn custody_continuation_preserves_unresolved_or_unknown_disposition() {
+    let generation = generation();
+    for disposition in [None, Some(CaptureDisposition::UnresolvedBasisConflict)] {
+        let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
+        let mut first = body(&generation, 0, 5);
+        first.disposition = disposition;
+        proof.push(first).unwrap();
+        proof.push(body(&generation, 5, 10)).unwrap();
+        let cursor = proof.finish().unwrap();
+        assert!(cursor.is_complete_stream());
+        assert_eq!(cursor.disposition(), disposition);
+    }
 }

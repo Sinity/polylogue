@@ -1,5 +1,5 @@
 //! Physical acquisition progress is independent of source acceptance and parsing.
-use super::{RawRange, SourceSelector};
+use super::{CaptureDisposition, RawRange, SourceSelector};
 use crate::{InputKey, Result, StoreError};
 use polylogue_model::BlobHash;
 use serde::{Deserialize, Serialize};
@@ -116,6 +116,7 @@ pub struct RawBodyRange {
     pub generation: SourceGeneration,
     pub body: String,
     pub predecessor: Option<String>,
+    pub disposition: Option<CaptureDisposition>,
     pub range: RawRange,
     pub hash: BlobHash,
     pub decoded_length: u64,
@@ -129,6 +130,8 @@ pub struct RawAcquisitionCursor {
     range: RawRange,
     known_total: Option<u64>,
     last_body: String,
+    #[serde(default)]
+    disposition: Option<CaptureDisposition>,
 }
 
 impl RawAcquisitionCursor {
@@ -136,6 +139,8 @@ impl RawAcquisitionCursor {
     pub fn range(&self) -> RawRange { self.range }
     pub fn known_total(&self) -> Option<u64> { self.known_total }
     pub fn last_body(&self) -> &str { &self.last_body }
+    /// Prepared describes private custody only, never logical source acceptance.
+    pub fn disposition(&self) -> Option<CaptureDisposition> { self.disposition }
     pub fn is_complete_stream(&self) -> bool {
         self.range.start == 0 && self.known_total == Some(self.range.end)
     }
@@ -148,6 +153,7 @@ pub struct RawAcquisitionProof {
     generation: SourceGeneration,
     range: RawRange,
     total: Option<u64>,
+    disposition: Option<CaptureDisposition>,
     last: Option<(RawRange, BlobHash, String, Option<String>)>,
     valid: bool,
 }
@@ -156,12 +162,18 @@ impl RawAcquisitionProof {
     pub fn new(generation: SourceGeneration) -> Result<Self> {
         generation.validate()?;
         let start = generation.window().start;
-        Ok(Self { generation, range: RawRange { start, end: start }, total: None, last: None, valid: true })
+        Ok(Self { generation, range: RawRange { start, end: start }, total: None, disposition: Some(CaptureDisposition::Prepared), last: None, valid: true })
     }
     pub fn push(&mut self, body: RawBodyRange) -> Result<()> {
         if body.body.is_empty() || body.range.length()? != body.decoded_length {
             return Err(StoreError::Invalid("raw custody body reference or decoded range is invalid".into()));
         }
+        self.disposition = match (self.disposition, body.disposition) {
+            (Some(CaptureDisposition::UnresolvedBasisConflict), _)
+            | (_, Some(CaptureDisposition::UnresolvedBasisConflict)) => Some(CaptureDisposition::UnresolvedBasisConflict),
+            (None, _) | (_, None) => None,
+            _ => Some(CaptureDisposition::Prepared),
+        };
         if body.generation != self.generation || body.range.start < self.generation.window().start
             || body.range.end > self.generation.window().end
             || body.known_total.is_some_and(|end| end != self.generation.window().end)
@@ -197,7 +209,7 @@ impl RawAcquisitionProof {
     pub fn finish(self) -> Option<RawAcquisitionCursor> {
         let (_, _, last_body, _) = self.last?;
         self.valid.then_some(RawAcquisitionCursor {
-            generation:self.generation,range:self.range,known_total:self.total,last_body,
+            generation:self.generation,range:self.range,known_total:self.total,last_body,disposition:self.disposition,
         })
     }
 }
