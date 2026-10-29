@@ -38,6 +38,7 @@ mod parents;
 mod revisions;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
+mod work_status;
 pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
 mod order;

@@ -53,35 +53,37 @@ fn phases() -> Vec<(String, Product)> {
             },
             None,
         ),
-        binding: RunBinding::Original { execution: Box::new(ExecutionBinding {
-            replay: ReplayBinding {
-                bound_ast: object.identity_ast.clone(),
-                source_outputs: vec![],
-                definitions: vec![],
-                context: CursorContext {
-                    question: id,
-                    clock: clock.wire(),
-                    resolved_times: vec![],
-                    random_seed: 7,
-                    read_positions: BTreeMap::from([("index".into(), "7".into())]),
-                    versions: BTreeMap::from([("scope".into(), "original-scope".into())]),
+        binding: RunBinding::Original {
+            execution: Box::new(ExecutionBinding {
+                replay: ReplayBinding {
+                    bound_ast: object.identity_ast.clone(),
+                    source_outputs: vec![],
+                    definitions: vec![],
+                    context: CursorContext {
+                        question: id,
+                        clock: clock.wire(),
+                        resolved_times: vec![],
+                        random_seed: 7,
+                        read_positions: BTreeMap::from([("index".into(), "7".into())]),
+                        versions: BTreeMap::from([("scope".into(), "original-scope".into())]),
+                    },
+                    scope_fingerprint: Some("original-scope".into()),
+                    original_text: "sessions".into(),
                 },
-                scope_fingerprint: Some("original-scope".into()),
-                original_text: "sessions".into(),
-            },
-            query_options: QueryExecutionOptions {
-                direct_reference: None,
-                fields: vec![],
-                self_session: None,
-                embeddings: false,
-                why: false,
-                ranking_identity: None,
-            },
-            presentation: ExecutionPresentation::Query,
-            accepted_request: Some(
-                json!({"operation":"query","id":"synthetic-caller".repeat(5000)}),
-            ),
-        }), },
+                query_options: QueryExecutionOptions {
+                    direct_reference: None,
+                    fields: vec![],
+                    self_session: None,
+                    embeddings: false,
+                    why: false,
+                    ranking_identity: None,
+                },
+                presentation: ExecutionPresentation::Query,
+                accepted_request: Some(
+                    json!({"operation":"query","id":"synthetic-caller".repeat(5000)}),
+                ),
+            }),
+        },
     };
     let outcome = QueryRunOutcome {
         run: run.id.clone(),

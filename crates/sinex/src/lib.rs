@@ -374,6 +374,14 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
         Ok(self.prepare_named_products(identity, products)?)
     }
+    fn prepare_canonical_products(
+        &self,
+        identity: &str,
+        products: &[polylogue_store::primary::ProductWrite],
+        proof: &polylogue_store::primary::RawInputProof,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+        Ok(self.prepare_canonical_products(identity, products, proof)?)
+    }
     fn discard_confirmed(
         &self,
         identities: &[String],
