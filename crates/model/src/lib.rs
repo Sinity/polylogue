@@ -87,3 +87,5 @@ string_schema!(
 );
 
 pub mod work_products;
+
+pub mod currency;

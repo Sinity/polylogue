@@ -33,6 +33,24 @@ pub struct Status {
 }
 
 impl Sinex {
+    pub fn currency(
+        &self,
+        applied_position: Option<i64>,
+    ) -> Result<polylogue_model::currency::IndexCurrency> {
+        let health = self
+            .health
+            .lock()
+            .map_err(|_| crate::Error::Invalid("producer health panicked".into()))?;
+        Ok(polylogue_model::currency::IndexCurrency::primary(
+            applied_position,
+            health.owner_position,
+            health
+                .position_observed
+                .map(|at| at.elapsed().as_secs_f64()),
+            health.reachable,
+            health.error.clone(),
+        ))
+    }
     pub fn status(&self) -> Result<Status> {
         let (
             reachable,
