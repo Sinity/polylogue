@@ -11,6 +11,9 @@ query-language.workspace = true
 schemars = "1"
 libc.workspace = true
 polylogue-model.workspace = true
+polylogue-query.workspace = true
+query-language.workspace = true
+strsim.workspace = true
 hashed-blobs.workspace = true
 rusqlite = { workspace = true, features = ["blob", "hooks"] }
 blake3.workspace = true

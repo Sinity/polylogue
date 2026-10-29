@@ -1,7 +1,7 @@
 //! Counts over the same shown path the query language reads.
 use super::{Derivation, Version};
 use crate::Result;
-use polylogue_model::session_sql::{counts_as_action, own_messages};
+use crate::session_sql::{counts_as_action, own_messages};
 use rusqlite::{Connection, Transaction, params};
 use serde::Serialize;
 
@@ -31,7 +31,7 @@ pub(crate) struct Counts {
 
 pub(crate) fn compute(conn: &Connection, pk: i64) -> Result<Counts> {
     let own = own_messages("m", Some("=?1"));
-    let aggregates = polylogue_model::session_sql::MESSAGE_COUNTS
+    let aggregates = crate::session_sql::MESSAGE_COUNTS
         .iter()
         .map(|(_, expr)| *expr)
         .collect::<Vec<_>>()

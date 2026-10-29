@@ -1,7 +1,7 @@
 //! Read-time grouped session counts. No separate facet rows are stored.
 use super::Selection;
 use crate::{Reader, Result, StoreError};
-use polylogue_model::session_sql;
+use crate::session_sql;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -18,7 +18,7 @@ pub const DEEP: &[&str] = &["roles", "written_by", "block_kinds", "actions", "fl
 pub(super) fn tags_sql() -> String {
     format!("SELECT DISTINCT s.pk,lower(CASE WHEN n.key IS NULL THEN n.value WHEN n.value IS NULL THEN n.key ELSE n.key||':'||n.value END) AS value
         FROM session s JOIN source_note_target nt ON nt.ref='session:'||s.id JOIN source_note n ON n.id=nt.note_id
-        WHERE n.kind='tag' AND {}",polylogue_model::note_sql::live_note("n"))
+        WHERE n.kind='tag' AND {}",crate::note_sql::live_note("n"))
 }
 
 pub fn families(options: &str) -> Result<Vec<&'static str>> {

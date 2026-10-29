@@ -232,7 +232,7 @@ pub(super) fn question(program: &Program, options: &Options, why: bool) -> Resul
         embeddings: options.embeddings,
         why,
         zone: options.clock.day.zone_name(),
-        day_start_minutes: polylogue_query::time::product_day(&options.clock).start_minutes,
+        day_start_minutes: polylogue_store::query::time::product_day(&options.clock).start_minutes,
         vector_writes: program
             .near
             .is_some()

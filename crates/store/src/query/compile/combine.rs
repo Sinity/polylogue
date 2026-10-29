@@ -35,7 +35,7 @@ impl<'a> Compiler<'a> {
         if let Source::Unit { implicit, .. } = &mut query.source {
             *implicit = false;
         }
-        let catalog = source::catalog(self.opts);
+        let catalog = self.opts.catalog();
         let bound = query_language::bind::bind(&query, &catalog)
             .map_err(|error| QueryError::language(error, self.text))?;
         let text = query_language::format::format_query(bound.query(), &catalog)

@@ -1,6 +1,6 @@
 //! Query-language behavior over the archive built through the real loop.
 use polylogue_model::LogicalDay;
-use polylogue_query::{Options, Param, QueryError, compile};
+use polylogue_store::query::{Options,Param,QueryError,compile};
 use polylogue_store::{Reader, SqlValue};
 use polylogue_testkit::{Morrow, Set, short};
 use serde_json::{Value, json};
@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 fn options() -> Options {
     Options {
-        clock: polylogue_query::time::clock(
+        clock: polylogue_store::query::time::clock(
             1_791_453_600_000,
             LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         )
@@ -323,7 +323,7 @@ fn no_sort_key_holds_bytes() {
                 .map(|f| format!("{} | sort by {}", unit.name, f.name)),
         );
         for question in questions {
-            let Ok(program) = polylogue_query::compile(&question, &opts) else {
+            let Ok(program) = polylogue_store::query::compile(&question, &opts) else {
                 continue;
             };
             if program.order.is_empty() {

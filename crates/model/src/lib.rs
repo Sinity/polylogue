@@ -5,7 +5,6 @@
 mod stored_names;
 
 pub mod atomic_write;
-pub mod authorship;
 pub mod authored;
 pub mod batch;
 mod block;
@@ -58,8 +57,6 @@ pub use note::{Author, NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
-pub mod note_sql;
-pub mod session_sql;
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};

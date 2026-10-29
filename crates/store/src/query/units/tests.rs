@@ -1,5 +1,5 @@
 use super::*;
-use crate::fields::FIELDS;
+use crate::query::fields::FIELDS;
 
 #[test]
 fn every_unit_is_declared_once() {
@@ -67,9 +67,9 @@ fn templates_name_only_known_aliases() {
 #[test]
 fn the_grammar_names_every_unit() {
     for s in UNITS {
-        let q = crate::parse(s.name).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+        let q = crate::query::parse(s.name).unwrap_or_else(|e| panic!("{}: {e}", s.name));
         assert!(
-            matches!(q.source, crate::ast::Source::Unit { ref unit, .. } if unit == s.unit.name()),
+            matches!(q.source, crate::query::ast::Source::Unit { ref unit, .. } if unit == s.unit.name()),
             "{} parses as {:?}",
             s.name,
             q.source
@@ -77,7 +77,7 @@ fn the_grammar_names_every_unit() {
         // `exists UNIT(…)` names the row units by their singular.
         if !matches!(s.unit, Unit::Sessions | Unit::Changes) {
             let text = format!("exists {}(x)", s.singular);
-            crate::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            crate::query::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
         }
     }
 }

@@ -21,6 +21,21 @@ fn forbidden_internal_dependency_is_rejected() {
     assert!(boundaries(&metadata(root.path()).unwrap()).is_ok());
     fs::OpenOptions::new()
         .append(true)
+        .open(root.path().join("store/Cargo.toml"))
+        .unwrap()
+        .write_all(b"[dependencies]\npolylogue-query={path=\"../query\"}\n")
+        .unwrap();
+    assert!(boundaries(&metadata(root.path()).unwrap()).is_ok());
+    // Remove the forward edge before asking Cargo to inspect the deliberate
+    // reverse edge; Cargo rejects a cycle before the boundary checker runs.
+    fs::write(
+        root.path().join("store/Cargo.toml"),
+        "[package]\nname=\"polylogue-store\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+    )
+    .unwrap();
+
+    fs::OpenOptions::new()
+        .append(true)
         .open(root.path().join("query/Cargo.toml"))
         .unwrap()
         .write_all(b"[dependencies]\npolylogue-store={path=\"../store\"}\n")
