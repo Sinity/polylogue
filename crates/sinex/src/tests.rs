@@ -36,7 +36,7 @@ pub(crate) fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInp
     serde_json::from_value(json!({
         "input":{"origin":"codex","path":"/home/op/session.jsonl","host":"fixture-host"},
         "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extent":{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}},
-        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"group":null,"arrival_rank":0,"parsed":parsed
+        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"arrival_rank":0,"parsed":parsed
     })).unwrap()
 }
 fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {

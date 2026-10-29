@@ -100,6 +100,8 @@ pub(crate) struct Prepared {
     pub request: bool,
     pub group: Option<Group>,
     #[serde(skip)]
+    pub unresolved: bool,
+    #[serde(skip)]
     pub acknowledged: bool,
     #[serde(skip)]
     pub commit_seq: Option<i64>,
@@ -133,6 +135,7 @@ struct Acquisition {
     intent: String,
     count: u64,
     order_base: Option<u64>,
+    disposition: polylogue_store::primary::CaptureDisposition,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -302,6 +305,8 @@ impl Spool {
             if prepared.order == 0 || prepared.order > acquisition.count {
                 return invalid("acquisition member has an invalid relative order");
             }
+            prepared.unresolved = acquisition.disposition
+                == polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict;
             prepared.order = base
                 .checked_add(prepared.order)
                 .ok_or_else(|| Error::Invalid("acquisition queue order exhausted".into()))?;
@@ -498,56 +503,91 @@ impl Spool {
         })
     }
 
-    /// The caller has checked its frozen source basis under the queue lock.
+    pub fn acquisition_disposition(
+        &self,
+        identity: &str,
+    ) -> Result<Option<polylogue_store::primary::CaptureDisposition>> {
+        let path = self
+            .root
+            .join("operations")
+            .join(hash(identity.as_bytes()))
+            .join("acquisition.json");
+        let header = read_checked::<Acquisition>(&path)?;
+        if header
+            .as_ref()
+            .is_some_and(|header| header.identity != identity)
+        {
+            return invalid("acquisition receipt has another identity");
+        }
+        Ok(header.map(|header| header.disposition))
+    }
+
+    /// Exact frozen retries return their existing disposition without a fresh
+    /// source comparison or any mutation of accepted ordering.
+    pub fn matching_acquisition(
+        &self,
+        staged: &StagedAcquisition,
+    ) -> Result<Option<polylogue_store::primary::CaptureDisposition>> {
+        let Some(disposition) = self.acquisition_disposition(&staged.identity)? else {
+            return Ok(None);
+        };
+        let path = self
+            .root
+            .join("operations")
+            .join(hash(staged.identity.as_bytes()))
+            .join("acquisition.json");
+        let acquisition =
+            read_checked::<Acquisition>(&path)?.expect("read above under custody lock");
+        if acquisition.intent != staged.intent || acquisition.count != staged.count {
+            return Ok(None);
+        }
+        for member in fs::read_dir(staged.temporary.path().join("operations"))? {
+            let desired = read_checked::<Prepared>(&member?.path().join("metadata.json"))?
+                .ok_or_else(|| {
+                    Error::Invalid("staged acquisition member has no metadata".into())
+                })?;
+            let Some(original) = self.get(&desired.identity)? else {
+                return Ok(None);
+            };
+            if original.frame_hash != desired.frame_hash
+                || original.frame_length != desired.frame_length
+                || original
+                    .body
+                    .as_ref()
+                    .map(|bytes| (&bytes.blob, bytes.length))
+                    != desired
+                        .body
+                        .as_ref()
+                        .map(|bytes| (&bytes.blob, bytes.length))
+                || original
+                    .captured
+                    .as_ref()
+                    .map(|bytes| (&bytes.blob, bytes.length))
+                    != desired
+                        .captured
+                        .as_ref()
+                        .map(|bytes| (&bytes.blob, bytes.length))
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(disposition))
+    }
+
     /// Only small metadata and the atomic directory publication enter this step.
-    pub fn publish_acquisition(&self, staged: StagedAcquisition) -> Result<()> {
+    pub fn publish_acquisition(
+        &self,
+        staged: StagedAcquisition,
+        disposition: polylogue_store::primary::CaptureDisposition,
+    ) -> Result<()> {
         self.ensure_indexes()?;
         let destination = self
             .root
             .join("operations")
             .join(hash(staged.identity.as_bytes()));
         if destination.try_exists()? {
-            let acquisition = read_checked::<Acquisition>(&destination.join("acquisition.json"))?
-                .ok_or_else(|| {
-                Error::Invalid("acquisition identity belongs to another operation".into())
-            })?;
-            if acquisition.identity != staged.identity
-                || acquisition.intent != staged.intent
-                || acquisition.count != staged.count
-            {
-                return invalid("acquisition identity changed its immutable membership");
-            }
-            for member in fs::read_dir(staged.temporary.path().join("operations"))? {
-                let desired = read_checked::<Prepared>(&member?.path().join("metadata.json"))?
-                    .ok_or_else(|| {
-                        Error::Invalid("staged acquisition member has no metadata".into())
-                    })?;
-                let original = self.get(&desired.identity)?.ok_or_else(|| {
-                    polylogue_store::StoreError::Conflict(
-                        "acquisition members were already applied; refresh the source basis".into(),
-                    )
-                })?;
-                if original.frame_hash != desired.frame_hash
-                    || original.frame_length != desired.frame_length
-                    || original
-                        .body
-                        .as_ref()
-                        .map(|bytes| (&bytes.blob, bytes.length))
-                        != desired
-                            .body
-                            .as_ref()
-                            .map(|bytes| (&bytes.blob, bytes.length))
-                    || original
-                        .captured
-                        .as_ref()
-                        .map(|bytes| (&bytes.blob, bytes.length))
-                        != desired
-                            .captured
-                            .as_ref()
-                            .map(|bytes| (&bytes.blob, bytes.length))
-                {
-                    return invalid("acquisition retry changed immutable custody");
-                }
+            if self.matching_acquisition(&staged)? != Some(disposition) {
+                return invalid("acquisition identity changed its frozen custody or disposition");
             }
             return Ok(());
         }
@@ -571,6 +611,7 @@ impl Spool {
                 intent: staged.intent.clone(),
                 count: staged.count,
                 order_base: Some(base),
+                disposition,
             },
         )?;
         sync(staged.temporary.path())?;
@@ -613,7 +654,10 @@ impl Spool {
         let staged = self.stage_acquisition(identity, intent, count)?;
         stage(staged.queue())?;
         staged.finish()?;
-        self.publish_acquisition(staged)
+        self.publish_acquisition(
+            staged,
+            polylogue_store::primary::CaptureDisposition::Prepared,
+        )
     }
 
     pub fn pin_capture(&self, identity: &str) -> Result<PinnedCapture> {
@@ -769,7 +813,11 @@ impl Spool {
         group: &str,
         after: Option<u64>,
         limit: usize,
-    ) -> Result<(Vec<Prepared>, Option<u64>)> {
+    ) -> Result<(
+        Option<polylogue_store::primary::CaptureDisposition>,
+        Vec<Prepared>,
+        Option<u64>,
+    )> {
         if limit == 0 {
             return invalid("acquisition page limit is zero");
         }
@@ -777,7 +825,7 @@ impl Spool {
         let directory = self.root.join("operations").join(hash(group.as_bytes()));
         let Some(acquisition) = read_checked::<Acquisition>(&directory.join("acquisition.json"))?
         else {
-            return Ok((Vec::new(), None));
+            return Ok((None, Vec::new(), None));
         };
         if acquisition.identity != group || acquisition.order_base.is_none() {
             return invalid("acquisition page has another or unpublished group identity");
@@ -803,14 +851,14 @@ impl Spool {
                     return invalid("acquisition index differs from its immutable member header");
                 }
                 if headers.len() == limit {
-                    return Ok((headers, last));
+                    return Ok((Some(acquisition.disposition), headers, last));
                 }
                 headers.push(prepared);
                 last = Some(ordinal);
             }
             ordinal += 1;
         }
-        Ok((headers, None))
+        Ok((Some(acquisition.disposition), headers, None))
     }
 
     pub fn source_heads(
@@ -1214,6 +1262,7 @@ impl Spool {
             },
             request,
             group,
+            unresolved: false,
             acknowledged: false,
             commit_seq: None,
             refused: false,

@@ -3,8 +3,8 @@
 //! this path and no tentative input coordinate becomes source authority.
 use super::*;
 use polylogue_store::primary::{
-    CaptureGroup, CaptureMembers, CaptureMode, CapturePlan, PendingCheckpoint, PendingSource,
-    SourceSelector, SourceStatus,
+    CaptureDisposition, CaptureGroup, CaptureMembers, CaptureMode, CapturePlan, CaptureReceipt,
+    PendingCheckpoint, PendingSource, RawCustodyReceipt, SourceSelector, SourceStatus,
 };
 use std::collections::BTreeMap;
 
@@ -35,14 +35,14 @@ fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result
     })
 }
 
-fn semantic(input: &CapturedInput) -> Result<serde_json::Value> {
+fn semantic(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Value> {
     // Finalized cache coordinates and observer clocks are frozen by the first
     // acceptance. Byte identity and complete parser facts still match exactly.
     Ok(serde_json::json!({
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
         "index":input.index, "arrival_rank":input.arrival_rank, "parsed":input.parsed,
         "origin":input.input.origin,
-        "source":input.basis.as_ref().map(|basis| &basis.source),
+        "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|basis| &basis.source)),
     }))
 }
 
@@ -51,7 +51,7 @@ impl Sinex {
         &self,
         plan: &CapturePlan,
         members: &mut CaptureMembers<'_>,
-    ) -> Result<PreparedWrite> {
+    ) -> Result<CaptureReceipt> {
         plan.validate()?;
         let queue = self.queue()?;
         let mut heads = BTreeMap::new();
@@ -83,16 +83,6 @@ impl Sinex {
         let identity = if let Some(identity) = retry_group {
             identity
         } else {
-            if plan.mode == CaptureMode::Mutable {
-                for basis in &plan.bases {
-                    if heads.get(&basis.source).map(|(id, _)| id) != basis.pending.as_ref() {
-                        return Err(polylogue_store::StoreError::Conflict(
-                            "source observation changed during acquisition".into(),
-                        )
-                        .into());
-                    }
-                }
-            }
             let bases = (plan.mode == CaptureMode::Mutable).then_some(&plan.bases);
             format!(
                 "acquisition:{}",
@@ -110,11 +100,13 @@ impl Sinex {
             )
         };
         let staged = queue.stage_acquisition(&identity, &plan.intent, plan.count)?;
-        let expected_heads: BTreeMap<_, _> = heads
-            .into_iter()
-            .map(|(source, (head, _))| (source, head))
-            .collect();
         drop(queue);
+        let mut frozen = blake3::Hasher::new();
+        frozen.update(b"polylogue-unresolved-custody-1\0");
+        serde_json::to_writer(
+            &mut frozen,
+            &(&self.config.producer, &identity, &plan.intent, plan.mode),
+        )?;
         let staging = staged.queue();
         let mut ordinal = 0u64;
         {
@@ -169,12 +161,32 @@ impl Sinex {
                     };
                     // The original observation and predecessor were frozen by
                     // the accepted acquisition, rather than this retry's clock.
-                    input.basis = original.basis.clone();
-                    if semantic(&input)? != semantic(&original)? {
-                        return Err(polylogue_store::StoreError::Conflict(member).into());
+                    let same_basis = input.basis == original.basis;
+                    let retry_self = input
+                        .basis
+                        .as_ref()
+                        .and_then(|basis| basis.pending.as_ref())
+                        .is_some_and(|pending| {
+                            heads.values().any(|(head, group)| {
+                                head == pending
+                                    && group
+                                        .as_ref()
+                                        .is_some_and(|group| group.identity == identity)
+                            })
+                        });
+                    if semantic(&input, plan.mode)? == semantic(&original, plan.mode)?
+                        && (same_basis || retry_self || plan.mode == CaptureMode::Immutable)
+                    {
+                        input = *original;
                     }
-                    input = *original;
                 }
+                serde_json::to_writer(
+                    &mut frozen,
+                    &(
+                        semantic(&input, plan.mode)?,
+                        (plan.mode == CaptureMode::Mutable).then_some(&input.basis),
+                    ),
+                )?;
                 let captured = Capture::Input(Box::new(input));
                 let frame = self.capture_frame(&captured, &member)?;
                 staging.prepare_encoded_capture(frame, body, &captured)?;
@@ -188,27 +200,120 @@ impl Sinex {
             }
         }
         staged.finish()?;
+        let custody_identity = format!("raw-custody:{}", frozen.finalize().to_hex());
         let queue = self.queue()?;
+        // Existing immutable acceptance is returned before looking at today's
+        // head. Retrying it cannot create or advance another observation.
+        if let Some(disposition) = queue.matching_acquisition(&staged)? {
+            return Ok(match disposition {
+                CaptureDisposition::Prepared => CaptureReceipt::Accepted {
+                    write: PreparedWrite {
+                        identity,
+                        pending: true,
+                    },
+                },
+                CaptureDisposition::UnresolvedBasisConflict => {
+                    CaptureReceipt::UnresolvedBasisConflict {
+                        custody: RawCustodyReceipt {
+                            identity,
+                            count: plan.count,
+                        },
+                    }
+                }
+            });
+        }
+        let offered_exists = queue.acquisition_disposition(&identity)?.is_some();
+        let unresolved_exists = queue.acquisition_disposition(&custody_identity)?.is_some();
+        let mut moved = false;
         if plan.mode == CaptureMode::Mutable {
             for basis in &plan.bases {
-                let current = queue.source_heads(&basis.source, "")?.head;
-                let expected = expected_heads.get(&basis.source);
-                let same_head = current.as_ref().map(|entry| &entry.identity) == expected;
-                let same_group = current.as_ref().is_some_and(|entry| matches!(
-                    &entry.capture, Some(Capture::Input(input)) if input.group.as_ref().is_some_and(|group| group.identity == identity)
-                ));
-                if !same_head && !same_group {
-                    return Err(polylogue_store::StoreError::Conflict(
-                        "source observation changed while acquisition was staged".into(),
-                    )
-                    .into());
+                if queue
+                    .source_heads(&basis.source, "")?
+                    .head
+                    .as_ref()
+                    .map(|head| &head.identity)
+                    != basis.pending.as_ref()
+                {
+                    moved = true;
                 }
             }
         }
-        queue.publish_acquisition(staged)?;
-        Ok(PreparedWrite {
-            identity,
-            pending: true,
+        if !offered_exists && !unresolved_exists && !moved {
+            queue.publish_acquisition(staged, CaptureDisposition::Prepared)?;
+            return Ok(CaptureReceipt::Accepted {
+                write: PreparedWrite {
+                    identity,
+                    pending: true,
+                },
+            });
+        }
+        // The body remains durably owned even when it cannot establish source
+        // progress. This namespace is bound to the frozen observation, never
+        // a subsequently changing head or a random revision.
+        let retained = queue.stage_acquisition(&custody_identity, &plan.intent, plan.count)?;
+        drop(queue);
+        let mut after = None;
+        loop {
+            let page = staging.pending_after(after, 64)?;
+            if page.is_empty() {
+                break;
+            }
+            for entry in page {
+                after = Some(entry.order);
+                let Capture::Input(mut input) = staging.capture(&entry.identity)? else {
+                    return Err(Error::Invalid(
+                        "acquisition contains a non-input member".into(),
+                    ));
+                };
+                let group = input
+                    .group
+                    .as_mut()
+                    .ok_or_else(|| Error::Invalid("acquisition member has no ordinal".into()))?;
+                let member = format!("{custody_identity}:{}", group.ordinal);
+                group.identity = custody_identity.clone();
+                let original = {
+                    let queue = self.queue()?;
+                    queue
+                        .get(&member)?
+                        .map(|_| queue.pin_capture(&member))
+                        .transpose()?
+                };
+                if let Some(original) = original {
+                    let Capture::Input(original) = original.decode()? else {
+                        return Err(Error::Invalid("raw custody has a non-input member".into()));
+                    };
+                    if semantic(&input, plan.mode)? != semantic(&original, plan.mode)?
+                        || (plan.mode == CaptureMode::Mutable && input.basis != original.basis)
+                    {
+                        return Err(Error::Invalid(
+                            "raw custody identity changed its frozen observation".into(),
+                        ));
+                    }
+                    input = original;
+                }
+                let (path, descriptor) = staging.encoded_body(&entry.identity)?;
+                let file = std::fs::File::open(&path)?;
+                let captured = Capture::Input(input);
+                let frame = self.capture_frame(&captured, &member)?;
+                retained.queue().prepare_encoded_capture(
+                    frame,
+                    PreparedBody {
+                        file,
+                        descriptor,
+                        path: Some(path),
+                    },
+                    &captured,
+                )?;
+            }
+        }
+        retained.finish()?;
+        self.queue()?
+            .publish_acquisition(retained, CaptureDisposition::UnresolvedBasisConflict)?;
+        Ok(CaptureReceipt::UnresolvedBasisConflict {
+            custody: RawCustodyReceipt {
+                identity: custody_identity,
+                count: plan.count,
+            },
         })
     }
 
@@ -219,12 +324,16 @@ impl Sinex {
         limit: usize,
     ) -> Result<polylogue_store::primary::PendingGroupPage> {
         let queue = self.queue()?;
-        let (entries, next) = queue.acquisition_headers(group, after, limit)?;
+        let (disposition, entries, next) = queue.acquisition_headers(group, after, limit)?;
         let headers = entries
             .into_iter()
             .map(|entry| pending(&queue, entry))
             .collect::<Result<_>>()?;
-        Ok(polylogue_store::primary::PendingGroupPage { headers, next })
+        Ok(polylogue_store::primary::PendingGroupPage {
+            disposition,
+            headers,
+            next,
+        })
     }
 
     pub(crate) fn pending_source(

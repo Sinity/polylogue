@@ -141,7 +141,13 @@ impl Sinex {
             ),
         };
         let header = crate::spool::capture_header(captured);
-        let observation = matches!(captured,Capture::Input(input) if input.rows.extent.is_none());
+        let observation = matches!(captured,Capture::Input(input) if input.raw_range.is_none());
+        if matches!(captured, Capture::Input(input) if input.raw_range.is_none() && input.rows.extent.is_some())
+        {
+            return Err(Error::Invalid(
+                "provider acquisition has no original raw range".into(),
+            ));
+        }
         Ok(Ingress::Material {
             frame: identity.into(),
             material: Box::new(MaterialFrame {
@@ -226,6 +232,7 @@ impl Sinex {
     pub(crate) fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         let mut pending = Vec::new();
         self.visit_prepared(|queue,entry|{
+            if entry.unresolved { return Ok(()); }
             let Some(captured)=entry.capture.clone() else {return Ok(());};
             let acknowledged=if entry.refused {None} else {Self::capture_material(queue,&entry)?};
             let anchor=acknowledged.as_ref().map(|material|SourceLocation{material:material.id.clone(),anchor:0});

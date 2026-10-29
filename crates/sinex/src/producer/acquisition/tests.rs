@@ -32,7 +32,7 @@ fn acquire(
         count: 1,
         mode,
     };
-    sinex.prepare_input_group(&plan, &mut |emit| {
+    let receipt = sinex.prepare_input_group(&plan, &mut |emit| {
         let mut input = capture(bytes, Vec::new());
         input.raw_range = Some(RawRange {
             start: 0,
@@ -40,7 +40,23 @@ fn acquire(
         });
         input.basis = Some(basis.clone());
         emit(input, body(root, bytes))
-    })
+    })?;
+    match receipt {
+        CaptureReceipt::Accepted { write } => Ok(write),
+        CaptureReceipt::UnresolvedBasisConflict { .. } => {
+            Err(polylogue_store::StoreError::Conflict(
+                "raw bytes retained without source acceptance".into(),
+            )
+            .into())
+        }
+    }
+}
+
+fn accepted(receipt: CaptureReceipt) -> PreparedWrite {
+    let CaptureReceipt::Accepted { write } = receipt else {
+        panic!("accepted preparation required")
+    };
+    write
 }
 
 #[test]
@@ -250,6 +266,7 @@ fn older_control_capture_is_explicit_when_newer_raw_has_no_parser_state() {
             &mut |emit| {
                 let mut input = capture(b"{}", vec![reading.clone()]);
                 input.rows.extent = None;
+                input.raw_range = None;
                 input.basis = Some(control_basis.clone());
                 emit(input, body(root.path(), b"{}"))
             },
@@ -319,10 +336,34 @@ fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_public
         )?;
         Ok(())
     });
-    assert!(matches!(
-        result,
-        Err(Error::Store(polylogue_store::StoreError::Conflict(_)))
-    ));
+    let CaptureReceipt::UnresolvedBasisConflict { custody } = result.unwrap() else {
+        panic!("stale acquisition must retain raw custody without source acceptance");
+    };
+    let retained = sinex
+        .pending_group_headers(&custody.identity, None, 1)
+        .unwrap();
+    assert_eq!(
+        retained.disposition,
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
+    assert_eq!(retained.headers.len(), 1);
+    let raw = sinex.capture_body(&retained.headers[0].identity).unwrap();
+    let prepared = hashed_blobs::Prepared::from_encoded(
+        raw.file,
+        raw.descriptor,
+        None,
+        hashed_blobs::ReadLimits::default(),
+    )
+    .unwrap();
+    let mut restored = Vec::new();
+    std::io::Read::read_to_end(
+        &mut prepared
+            .reader(None, hashed_blobs::ReadLimits::default())
+            .unwrap(),
+        &mut restored,
+    )
+    .unwrap();
+    assert_eq!(restored, b"A");
     let pending = sinex.pending_captures().unwrap();
     assert_eq!(pending.len(), 1);
     let Capture::Input(input) = &pending[0].captured else {
@@ -369,6 +410,7 @@ fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restar
             Ok(())
         })
         .unwrap();
+    let first = accepted(first);
     assert!(
         sinex
             .pending_group_headers(&first.identity, None, 0)
@@ -443,6 +485,7 @@ fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change(
             emit(input, body(root.path(), b"A"))
         })
         .unwrap();
+    let first = accepted(first);
     sinex
         .prepare_input_group(&plan, &mut |emit| {
             let mut input = first_header.clone().unwrap();
@@ -457,4 +500,127 @@ fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change(
         panic!("input capture expected")
     };
     assert_eq!(original.rows.input, first_header.unwrap().rows.input);
+}
+
+#[test]
+fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_without_logical_extent()
+{
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let selector = source(b"/home/op/provider.bin");
+    let frozen_basis = basis(&selector, None);
+    let plan = CapturePlan {
+        intent: "one-offered-identity".into(),
+        bases: vec![frozen_basis.clone()],
+        count: 1,
+        mode: CaptureMode::Mutable,
+    };
+    let stage = |bytes: &[u8], no_extent: bool| {
+        sinex
+            .prepare_input_group(&plan, &mut |emit| {
+                let mut input = capture(bytes, vec![]);
+                input.basis = Some(frozen_basis.clone());
+                if no_extent {
+                    input.rows.extent = None;
+                }
+                emit(input, body(root.path(), bytes))
+            })
+            .unwrap()
+    };
+    let accepted_a = accepted(stage(b"A", false));
+    let raw_b = b"provider\x00\xff";
+    let CaptureReceipt::UnresolvedBasisConflict { custody: rejected } = stage(raw_b, true) else {
+        panic!("different offered body needs raw custody")
+    };
+    let retained = sinex
+        .pending_group_headers(&rejected.identity, None, 1)
+        .unwrap();
+    assert_eq!(
+        retained.disposition,
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
+    let raw_id = retained.headers[0].identity.clone();
+    let Capture::Input(header) = &retained.headers[0].captured else {
+        panic!("input header expected")
+    };
+    assert!(header.raw_range.is_some());
+    assert!(header.rows.extent.is_none());
+    {
+        let queue = sinex.queue().unwrap();
+        assert!(queue.get(&raw_id).unwrap().unwrap().unresolved);
+        let Ingress::Material { material, .. } = queue.decode_frame(&raw_id).unwrap() else {
+            panic!("material expected")
+        };
+        assert_ne!(material.parser, "polylogue-observation");
+    }
+    let a_head = sinex
+        .pending_source(&selector, "")
+        .unwrap()
+        .head
+        .unwrap()
+        .identity;
+    acquire(
+        &sinex,
+        root.path(),
+        b"C",
+        basis(&selector, Some(a_head)),
+        CaptureMode::Mutable,
+    )
+    .unwrap();
+    let current = sinex
+        .pending_source(&selector, "")
+        .unwrap()
+        .head
+        .unwrap()
+        .identity;
+    let CaptureReceipt::UnresolvedBasisConflict { custody: retry } = stage(raw_b, true) else {
+        panic!("unresolved retry must not be promoted")
+    };
+    assert_eq!(rejected, retry);
+    assert_eq!(accepted(stage(b"A", false)).identity, accepted_a.identity);
+    assert_eq!(
+        sinex
+            .pending_source(&selector, "")
+            .unwrap()
+            .head
+            .unwrap()
+            .identity,
+        current
+    );
+    assert_eq!(sinex.pending_captures().unwrap().len(), 2);
+    drop(sinex);
+    let sinex = client(root.path());
+    assert_eq!(
+        sinex
+            .pending_source(&selector, "")
+            .unwrap()
+            .head
+            .unwrap()
+            .identity,
+        current
+    );
+    let retained = sinex
+        .pending_group_headers(&rejected.identity, None, 1)
+        .unwrap();
+    assert_eq!(
+        retained.disposition,
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
+    let body = sinex.capture_body(&raw_id).unwrap();
+    let prepared = hashed_blobs::Prepared::from_encoded(
+        body.file,
+        body.descriptor,
+        None,
+        hashed_blobs::ReadLimits::default(),
+    )
+    .unwrap();
+    let mut restored = vec![];
+    std::io::Read::read_to_end(
+        &mut prepared
+            .reader(None, hashed_blobs::ReadLimits::default())
+            .unwrap(),
+        &mut restored,
+    )
+    .unwrap();
+    assert_eq!(restored, raw_b);
 }

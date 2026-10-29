@@ -240,7 +240,7 @@ impl Client {
             }
             for prepared in page {
                 after = Some(prepared.order);
-                if prepared.acknowledged {
+                if prepared.acknowledged || prepared.unresolved {
                     continue;
                 }
                 if !self.publication_allowed(&prepared) {
@@ -319,11 +319,12 @@ impl Client {
     }
 
     fn publication_allowed(&self, prepared: &crate::spool::Prepared) -> bool {
-        !prepared.canonical
-            || prepared
-                .canonical_scope
-                .as_ref()
-                .is_some_and(|scope| self.publication_scope.as_ref() == Some(scope))
+        !prepared.unresolved
+            && (!prepared.canonical
+                || prepared
+                    .canonical_scope
+                    .as_ref()
+                    .is_some_and(|scope| self.publication_scope.as_ref() == Some(scope)))
     }
 
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted

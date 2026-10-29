@@ -140,6 +140,19 @@ an unchanged retry reuses the original capture, while A → B → A records the
 second A as a later observation. Sampling and preparation validate this basis
 under the source's custody owner; observer timestamps do not assign revisions.
 
+A source basis that changes during acquisition leaves the actual bytes and
+private parser facts in durable raw custody with an unresolved-basis receipt.
+That receipt grants no source revision, byte cursor or parser progress. Its
+members remain outside accepted source heads and automatic publication; a
+later observation needs its own actual basis. Exact retries preserve the first
+accepted or unresolved receipt. Conflict custody identity binds the receiving
+producer and frozen observation, so subsequent head changes do not rename it.
+
+An original `raw_range` retains the actual encoded provider body even when
+there is no new logical extent. A metadata-only capture has no raw range and
+keeps its observation JSON as metadata. Neither case may substitute observation
+JSON for provider bytes or invent a whole-blob address for a retained range.
+
 ## Shared temporal and policy context
 
 Each operation uses one typed Sinex public context snapshot: the logical day,

@@ -266,7 +266,7 @@ impl polylogue_store::primary::Sinex for Sinex {
         &self,
         plan: &polylogue_store::primary::CapturePlan,
         members: &mut polylogue_store::primary::CaptureMembers<'_>,
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+    ) -> polylogue_store::Result<polylogue_store::primary::CaptureReceipt> {
         Ok(self.prepare_input_group(plan, members)?)
     }
     fn pending_source(

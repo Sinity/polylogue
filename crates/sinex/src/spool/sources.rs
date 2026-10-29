@@ -40,6 +40,9 @@ fn latest(path: &Path, prepared: &Prepared) -> Result<()> {
 }
 
 pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
+    if prepared.unresolved {
+        return Ok(());
+    }
     let Some(Capture::Input(input)) = &prepared.capture else {
         return Ok(());
     };
