@@ -275,7 +275,10 @@ pub enum ItemKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum FragmentEncoding { Text, ReadItemJson }
+pub enum FragmentEncoding {
+    Text,
+    ReadItemJson,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
