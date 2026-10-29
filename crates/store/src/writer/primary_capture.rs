@@ -189,7 +189,11 @@ impl Inner {
         let sinex = Arc::clone(self.sinex.as_ref().ok_or_else(|| {
             StoreError::Invalid("primary acquisition requires a producer".into())
         })?);
-        let pending = sinex.pending_captures()?;
+        let group_id = capture_group_identity(group)?;
+        let mut pending = sinex.pending_captures()?;
+        // A retry reuses its original snapshot coordinates; its own durable
+        // members are not predecessors of themselves.
+        pending.retain(|capture| !matches!(&capture.captured, Capture::Input(input) if input.group.as_ref().is_some_and(|group| group.identity == group_id)));
         let mut revisions = BTreeMap::new();
         let mut known: BTreeSet<String> = group
             .iter()
@@ -203,7 +207,6 @@ impl Inner {
                 }
             }
         }
-        let group_id = capture_group_identity(group)?;
         let mut accepted = Vec::new();
         for (ordinal, item) in group.iter().enumerate() {
             let batch = &item.batch;
@@ -285,6 +288,18 @@ impl Inner {
             } else {
                 sinex.prepare_input(&captured, &mut metadata_bytes.as_slice())?
             };
+            pending.push(PendingCapture {
+                identity: match &prepared {
+                    PreparedInput::Confirmed { material, .. } => material.id.clone(),
+                    PreparedInput::Pending { identity } => identity.clone(),
+                },
+                captured: Capture::Input(captured.clone()),
+                material: match &prepared {
+                    PreparedInput::Confirmed { material, .. } => Some(material.clone()),
+                    _ => None,
+                },
+                anchor: None,
+            });
             accepted.push((
                 batch.input.id.clone(),
                 batch.length,
@@ -293,8 +308,10 @@ impl Inner {
                 prepared,
             ));
         }
-        self.drain_primary_captures()?;
-        self.poll_primary()?;
+        match self.drain_primary_captures() {
+            Ok(()) | Err(StoreError::Sinex(_)) => {}
+            Err(error) => return Err(error),
+        }
         let mut outcomes = Vec::new();
         for (input, length, rows, already_stored, prepared) in accepted {
             let pending = match prepared {
@@ -417,6 +434,8 @@ impl Inner {
             return Ok(());
         }
         let mut writes = Vec::new();
+        let mut ready_revisions = BTreeMap::<String, Revision>::new();
+        let mut ready_extents = Vec::<(String, crate::input_rows::Extent, Material)>::new();
         for member in &members {
             let captured = sinex.capture(&member.identity)?;
             match &captured {
@@ -436,7 +455,12 @@ impl Inner {
                     });
                 }
                 Capture::Input(input) => {
-                    let Some(rows) = self.ready_capture_rows(input, member.material.as_ref())?
+                    let Some(rows) = self.ready_capture_rows(
+                        input,
+                        member.material.as_ref(),
+                        &ready_revisions,
+                        &ready_extents,
+                    )?
                     else {
                         return Ok(());
                     };
@@ -450,11 +474,24 @@ impl Inner {
                     } else if let Some(revision) =
                         rows.observation.as_ref().and_then(|o| o.revision)
                     {
-                        self.index.query_row(
-                            "SELECT chain FROM source_revision WHERE input=?1 AND number=?2",
-                            params![rows.input, revision],
-                            |row| row.get(0),
-                        )?
+                        self.index
+                            .query_row(
+                                "SELECT chain FROM source_revision WHERE input=?1 AND number=?2",
+                                params![rows.input, revision],
+                                |row| row.get(0),
+                            )
+                            .optional()?
+                            .or_else(|| {
+                                ready_revisions
+                                    .get(&rows.input)
+                                    .filter(|r| r.number == revision)
+                                    .map(|r| r.chain)
+                            })
+                            .ok_or_else(|| {
+                                StoreError::Invalid(
+                                    "capture observation references an unavailable revision".into(),
+                                )
+                            })?
                     } else {
                         latest(&self.index, &rows.input)?.map_or(1, |revision| revision.chain)
                     };
@@ -464,6 +501,12 @@ impl Inner {
                         arrival_rank: input.arrival_rank,
                     };
                     let machine = rows.observation.as_ref().map(|o| o.machine.clone());
+                    if let Some(revision) = &rows.revision {
+                        ready_revisions.insert(rows.input.clone(), revision.clone());
+                    }
+                    if let (Some(extent), Some(material)) = (&rows.extent, &member.material) {
+                        ready_extents.push((rows.input.clone(), extent.clone(), material.clone()));
+                    }
                     let material = if rows.extent.is_some() {
                         member.material.clone()
                     } else {
@@ -504,7 +547,8 @@ impl Inner {
                                 (Some(original), Some(material))
                                     if start >= original.offset as u64
                                         && start
-                                            < (original.offset as u64 + original.length as u64)
+                                            <= (original.offset as u64
+                                                + original.length as u64)
                                         || original.length == 0
                                             && start == original.offset as u64 =>
                                 {
@@ -514,12 +558,26 @@ impl Inner {
                                             + original.blob_offset as u64,
                                     })
                                 }
-                                _ => crate::primary::projection::material_at(
-                                    &self.index,
-                                    &key.id,
-                                    chain,
-                                    start,
-                                )?,
+                                _ => match ready_extents.iter().rev().find(|(id, extent, _)| {
+                                    id == &key.id
+                                        && extent.chain == chain
+                                        && start >= extent.offset as u64
+                                        && start <= (extent.offset + extent.length) as u64
+                                }) {
+                                    Some((_, extent, material)) => {
+                                        Some(crate::primary::SourceLocation {
+                                            material: material.id.clone(),
+                                            anchor: start - extent.offset as u64
+                                                + extent.blob_offset as u64,
+                                        })
+                                    }
+                                    None => crate::primary::projection::material_at(
+                                        &self.index,
+                                        &key.id,
+                                        chain,
+                                        start,
+                                    )?,
+                                },
                             };
                             if location.is_none() {
                                 return Err(StoreError::Invalid(
@@ -551,6 +609,8 @@ impl Inner {
         &self,
         input: &CapturedInput,
         material: Option<&Material>,
+        ready_revisions: &BTreeMap<String, Revision>,
+        ready_extents: &[(String, crate::input_rows::Extent, Material)],
     ) -> Result<Option<InputRows>> {
         let mut rows = input.rows.clone();
         let Some(original) = &input.rows.extent else {
@@ -569,7 +629,10 @@ impl Inner {
                 "source extent differs from ready capture material".into(),
             ));
         }
-        let current = latest(&self.index, &rows.input)?;
+        let current = match ready_revisions.get(&rows.input) {
+            Some(revision) => Some(revision.clone()),
+            None => latest(&self.index, &rows.input)?,
+        };
         let Some(current) = current else {
             if original.offset != 0 {
                 return Ok(None);
@@ -589,28 +652,63 @@ impl Inner {
         let overlap = stored.min(end) - start;
         let mut captured = material_reader(&self.location, material)?;
         captured.seek(SeekFrom::Start(original.blob_offset as u64))?;
-        let chain = crate::blobs::StoredChain::load_range(
-            &self.index,
-            "source_",
-            &rows.input,
-            current.chain,
-            start,
-            start + overlap,
-        )?;
-        let mut prefix = chain.reader(Arc::new(self.location.blob_reader()?));
-        let mut left = [0; 65536];
-        let mut right = [0; 65536];
-        let mut remaining = overlap;
+        let mut cursor = start;
         let mut equal = true;
-        while remaining > 0 {
-            let n = remaining.min(left.len() as u64) as usize;
-            prefix.read_exact(&mut left[..n])?;
-            captured.read_exact(&mut right[..n])?;
-            if left[..n] != right[..n] {
-                equal = false;
+        while cursor < start + overlap {
+            let pending = ready_extents.iter().rev().find(|(id, extent, _)| {
+                id == &rows.input
+                    && extent.chain == current.chain
+                    && cursor >= extent.offset as u64
+                    && cursor < (extent.offset + extent.length) as u64
+            });
+            let (mut prefix, end): (Box<dyn Read>, u64) =
+                if let Some((_, extent, material)) = pending {
+                    let end = (start + overlap).min((extent.offset + extent.length) as u64);
+                    let mut reader = material_reader(&self.location, material)?;
+                    reader.seek(SeekFrom::Start(
+                        cursor - extent.offset as u64 + extent.blob_offset as u64,
+                    ))?;
+                    (Box::new(reader), end)
+                } else {
+                    let end = ready_extents
+                        .iter()
+                        .filter(|(id, extent, _)| {
+                            id == &rows.input
+                                && extent.chain == current.chain
+                                && extent.offset as u64 > cursor
+                        })
+                        .map(|(_, extent, _)| extent.offset as u64)
+                        .min()
+                        .unwrap_or(start + overlap)
+                        .min(start + overlap);
+                    let chain = crate::blobs::StoredChain::load_range(
+                        &self.index,
+                        "source_",
+                        &rows.input,
+                        current.chain,
+                        cursor,
+                        end,
+                    )?;
+                    (
+                        Box::new(chain.reader(Arc::new(self.location.blob_reader()?))),
+                        end,
+                    )
+                };
+            let mut left = [0; 65536];
+            let mut right = [0; 65536];
+            while cursor < end {
+                let n = (end - cursor).min(left.len() as u64) as usize;
+                prefix.read_exact(&mut left[..n])?;
+                captured.read_exact(&mut right[..n])?;
+                if left[..n] != right[..n] {
+                    equal = false;
+                    break;
+                }
+                cursor += n as u64;
+            }
+            if !equal {
                 break;
             }
-            remaining -= n as u64;
         }
         if !equal {
             if start != 0 {
