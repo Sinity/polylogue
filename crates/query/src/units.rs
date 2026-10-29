@@ -813,7 +813,9 @@ pub static UNITS: &[UnitSpec] = &[
         unit: Unit::Deliveries,
         name: "deliveries",
         singular: "delivery",
-        from: Expr::Template("source_delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id"),
+        from: Expr::Template(
+            "source_delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id",
+        ),
         key: "{r}.rowid",
         identity: &["{r}.id"],
         columns: &[

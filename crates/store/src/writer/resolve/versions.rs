@@ -842,7 +842,10 @@ impl Assertions {
             if let Some(choice) = &mut choice
                 && choice.body.is_empty()
             {
-                choice.body = winner.expect("event winner").body(index, Kind::EventValue, values)?;
+                choice.body =
+                    winner
+                        .expect("event winner")
+                        .body(index, Kind::EventValue, values)?;
             }
             choices.events.insert(pk, choice);
         }

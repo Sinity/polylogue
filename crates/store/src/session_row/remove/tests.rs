@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use super::*;
+use rusqlite::Connection;
 
 fn database() -> Connection {
     let db = Connection::open_in_memory().unwrap();

@@ -29,7 +29,9 @@ mod time;
 mod usage;
 pub mod user;
 mod variant;
-pub use variant::{NewVariant, NewVariantPart, Variant, VariantEffect, VariantKind, VariantPart, VariantRelation};
+pub use variant::{
+    NewVariant, NewVariantPart, Variant, VariantEffect, VariantKind, VariantPart, VariantRelation,
+};
 mod work;
 
 pub use batch::{

@@ -629,7 +629,6 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     tx.commit().unwrap();
 }
 
-
 fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
     [
         ("source-a", 1, 0u8, "partial", None, "/first"),
