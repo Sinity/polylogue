@@ -37,11 +37,7 @@ fn run(term: &str, expected_session: &str, expected_message: &str) {
     let archive = dir.path().join("archive");
     let config = dir.path().join("config");
     std::fs::create_dir_all(&home).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let seed: Document = serde_json::from_value(json!({"format":"polylogue-export", "version":1, "sessions":[
         {"session":{"id":"claude-code:snippet-whole", "kind":"main", "title":{"text":"Synthetic snippet", "source":"custom"}}, "messages":[

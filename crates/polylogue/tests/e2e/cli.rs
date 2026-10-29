@@ -17,12 +17,9 @@ impl Drop for Daemon {
     }
 }
 
-pub(super) fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
+pub(super) fn start_daemon(env: &crate::Fixture) -> Daemon {
     let mut command = command(env);
     command.arg("daemon").stderr(Stdio::piped());
-    for (key, value) in env {
-        command.env(key, value);
-    }
     let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
     let mut first = String::new();
     BufReader::new(daemon.0.stderr.as_mut().unwrap())
@@ -36,7 +33,7 @@ pub(super) fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
 /// made `ready` true has also derived from its rows. A state that never comes
 /// is ended by the test runner's timeout.
 pub(super) fn wait_status(
-    env: &[(&str, &Path)],
+    env: &crate::Fixture,
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
     loop {
@@ -58,7 +55,7 @@ fn killing_the_test_parent_stops_its_real_daemon() {
     let dir = tempfile::tempdir().unwrap();
     let mut owner = Daemon(
         polylogue_testkit::spawn_daemon(
-            Command::new(std::env::current_exe().unwrap())
+            crate::test_process(dir.path())
                 .args([
                     "--exact",
                     "cli::daemon_parent_fixture",
@@ -102,8 +99,6 @@ fn killing_the_test_parent_stops_its_real_daemon() {
     }
     let running = crate::command(dir.path())
         .args(["--json", "status"])
-        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
-        .env("POLYLOGUE_HOME", dir.path().join("home"))
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .output()
         .unwrap();
@@ -137,8 +132,6 @@ fn daemon_parent_fixture() {
         polylogue_testkit::spawn_daemon(
             crate::command(&dir)
                 .arg("daemon")
-                .env("POLYLOGUE_ARCHIVE", dir.join("archive"))
-                .env("POLYLOGUE_HOME", dir.join("home"))
                 .env("XDG_CONFIG_HOME", dir.join("config"))
                 .stderr(Stdio::inherit()),
         )
@@ -185,11 +178,7 @@ fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
         format!("{complete}{}", &partial[..20]),
     )
     .unwrap();
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let first = start_daemon(&env);
     wait_status(&env, |s| s["last_pass"]["inputs_seen"].as_u64() == Some(2));
     drop(first);
@@ -235,20 +224,12 @@ fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
     assert_eq!(status["store"]["parse_states"]["done"], 2);
 }
 
-fn command(env: &[(&str, &Path)]) -> Command {
-    let archive = env
-        .iter()
-        .find(|(key, _)| *key == "POLYLOGUE_ARCHIVE")
-        .expect("test commands name their archive")
-        .1;
-    crate::command(archive.parent().expect("fixture archive has a parent"))
+fn command(env: &crate::Fixture) -> Command {
+    env.command()
 }
 
-pub(super) fn cli(env: &[(&str, &Path)], args: &[&str]) -> Output {
+pub(super) fn cli(env: &crate::Fixture, args: &[&str]) -> Output {
     let mut c = command(env);
-    for (k, v) in env {
-        c.env(k, v);
-    }
     c.args(args).output().unwrap()
 }
 
@@ -283,11 +264,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     .unwrap();
     let export = dir.path().join("export.jsonl");
     std::fs::write(&export, line("x1", "exported", "from an import")).unwrap();
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
 
     let daemon = start_daemon(&env);
 
@@ -338,11 +315,7 @@ fn ai_studio_import_and_drive_title_read_identically_after_a_rebuild_from_stored
         "chunkedPrompt":{"chunks":[{"role":"user","text":"What is an electron?"},{"role":"model","text":"A lepton.","tokenCount":3}]},
         "runSettings":{"model":"models/example"},"systemInstruction":{"text":"Be brief."}
     })).unwrap()).unwrap();
-    let env = [
-        ("POLYLOGUE_ARCHIVE", w.root.as_path()),
-        ("POLYLOGUE_HOME", w.home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(w.root.as_path(), w.home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["sessions"].as_u64() == Some(1));
     let imported = cli(&env, &["--json", "import", prompt.to_str().unwrap()]);
@@ -392,9 +365,7 @@ fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
     let elsewhere = dir.path().join("xdg");
     let mut child = crate::command(dir.path())
         .args(["hook", "Stop"])
-        .env("POLYLOGUE_HOME", &home)
         .env("XDG_STATE_HOME", &elsewhere)
-        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
@@ -456,8 +427,6 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
     let mut command = crate::command(dir.path());
     command
         .arg("daemon")
-        .env("POLYLOGUE_ARCHIVE", &archive)
-        .env("POLYLOGUE_HOME", &home)
         .env("XDG_CONFIG_HOME", &config)
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -488,11 +457,7 @@ fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
     let archive = dir.path().join("archive");
     let home = dir.path().join("home");
     let config = dir.path().join("config");
-    let env = [
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     wait_status(&env, |_| true);
     let runtime = dir.path().join("runtime/polylogue");

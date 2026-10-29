@@ -68,14 +68,17 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
 #[test]
 fn started_as_chrome_starts_it_the_binary_is_the_host() {
     let dir = tempfile::tempdir().unwrap();
-    let mut child = crate::command(dir.path())
-        .arg("chrome-extension://abcdefghijklmnop/")
-        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
-        .env("POLYLOGUE_HOME", dir.path().join("home"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &dir.path().join("home"),
+        &dir.path().join("config"),
+    )
+    .native_command()
+    .arg("chrome-extension://abcdefghijklmnop/")
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .unwrap();
     let mut input = Vec::new();
     input.extend(frame(&serde_json::json!({
         "type": "request", "version": 1, "method": "GET", "path": "/v1/status", "headers": {}
@@ -123,10 +126,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     let state = dir.path().join("state");
     let command = || {
         let mut command = crate::command(dir.path());
-        command
-            .env("POLYLOGUE_HOME", &home)
-            .env("POLYLOGUE_ARCHIVE", &archive)
-            .env("XDG_STATE_HOME", &state);
+        command.env("XDG_STATE_HOME", &state);
         command
     };
     let start = || {

@@ -29,8 +29,6 @@ fn the_daemon_refuses_an_incompatible_index_without_deleting_its_rows() {
         let mut command = crate::command(dir.path());
         command
             .arg("daemon")
-            .env("POLYLOGUE_ARCHIVE", &archive.root)
-            .env("POLYLOGUE_HOME", &home)
             .env("XDG_CONFIG_HOME", dir.path().join("config"))
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
