@@ -1170,10 +1170,10 @@ impl Parser for Rollout {
                 if let (Some(cwd), Some(s)) = (str_field(p, "cwd"), parser_state.session.as_mut()) {
                     s.offer_cwd(cwd);
                 }
-                if let Some(s) = parser_state.session.as_mut() {
-                    if s.instructions.is_none() {
-                        s.instructions = str_field(p, "user_instructions").map(str::to_owned);
-                    }
+                if let Some(s) = parser_state.session.as_mut()
+                    && s.instructions.is_none()
+                {
+                    s.instructions = str_field(p, "user_instructions").map(str::to_owned);
                 }
                 self.event(parser_state, p, "turn_context", rec.at, out)
             }

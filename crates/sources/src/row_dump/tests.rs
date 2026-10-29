@@ -52,3 +52,31 @@ fn malformed_row_records_are_counted_with_fixed_reasons() {
     assert_eq!(step.counts.records, 3);
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 3);
 }
+
+#[test]
+fn envelope_and_declared_column_metadata_are_counted_without_repeating_row_leaves() {
+    let bytes = br#"{"schema":{"empty_table":"CREATE TABLE empty_table(x TEXT)"},"table_metadata":{"empty_table":{"columns":[{"cid":0,"name":"distinctive_column_name","declared_type":"distinctive_type_name","not_null":false,"primary_key":0,"hidden":1,"future":{"leaf":true}}],"without_rowid":false}}}
+{"t":"facts","k":1,"h":"distinctive_hash","r":{"body":"distinctive_body"},"future":{"leaf":true}}
+"#;
+    let step = run(&RowDump, &mut NoState::default(), bytes, 0).unwrap();
+    assert_eq!(step.counts.records, 2);
+    assert_eq!(step.counts.counted(), 2);
+    let observed = |kind: &str, table: &str, path: &str| {
+        &step.counts.wire_shapes[&serde_json::to_string(&(kind, table, path)).unwrap()]
+    };
+    assert_eq!(observed("row", "facts", "/body").unused_count, 1);
+    let envelope = observed("row_envelope", "facts", "/future/leaf");
+    assert_eq!(envelope.types["boolean"], 1);
+    assert_eq!(envelope.unused_count, 1);
+    assert_eq!(observed("row_envelope", "facts", "/k").unused_count, 0);
+    assert_eq!(observed("row_envelope", "facts", "").unknown_table_count, 0);
+    assert_eq!(observed("row", "facts", "").unknown_table_count, 1);
+    assert!(observed("table_metadata", "empty_table", "/columns/[]/name")
+        .expected.contains(&"string".into()));
+    assert_eq!(observed("table_metadata", "empty_table", "/columns/[]/future/leaf").unused_count, 1);
+    assert_eq!(step.counts.wire_shapes.values().map(|shape| shape.unused_count).sum::<u64>(), 3);
+    let encoded = serde_json::to_string(&step.counts.wire_shapes).unwrap();
+    for scalar in ["distinctive_column_name", "distinctive_type_name", "distinctive_hash", "distinctive_body"] {
+        assert!(!encoded.contains(scalar));
+    }
+}
