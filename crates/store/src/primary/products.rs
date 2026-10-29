@@ -46,7 +46,7 @@ pub enum Product {
     },
     Message {
         reading: Reading,
-        facts: MessageRow,
+        facts: Box<MessageRow>,
         order: Option<u64>,
         projection: Option<polylogue_model::bundle::MessageProjection>,
     },
@@ -79,6 +79,11 @@ pub enum Product {
         comparison: Option<crate::tool_databases::Comparison>,
     },
     Request(PreparedRequest),
+    RestoredRequest {
+        prepared: PreparedRequest,
+        claims: Vec<polylogue_model::authored::ImportAttribution>,
+        current: polylogue_model::authored::ImportAttribution,
+    },
     WorkSnapshot {
         snapshot: polylogue_model::work_products::WorkSnapshot,
     },
@@ -99,6 +104,7 @@ impl Product {
             Self::Input { .. }
             | Self::Blob(_)
             | Self::Request(_)
+            | Self::RestoredRequest { .. }
             | Self::Coverage(_)
             | Self::WorkSnapshot { .. } => None,
         }
@@ -117,7 +123,7 @@ pub struct Confirmed {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", content = "facts", rename_all = "snake_case")]
 pub enum ConfirmedChange {
-    Live(Product),
+    Live(Box<Product>),
     Archived,
     Restored,
     Tombstoned,
@@ -268,7 +274,7 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
             .enumerate()
             .map(|(index, facts)| Product::Message {
                 reading: reading.clone(),
-                facts,
+                facts: Box::new(facts),
                 order: message_order.remove(&index),
                 projection: message_projections.remove(&index),
             }),
@@ -324,7 +330,7 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "capture", rename_all = "snake_case")]
 pub enum Capture {
-    Input(CapturedInput),
+    Input(Box<CapturedInput>),
     Blob { hash: BlobHash, length: u64 },
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

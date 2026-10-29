@@ -59,6 +59,7 @@ fn add_primary(conn: &Connection) -> Result<()> {
 fn base_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
+    conn.execute_batch(crate::variants::SCHEMA)?;
     Ok(())
 }
 

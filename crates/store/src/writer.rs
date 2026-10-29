@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod attachments;
+mod authored;
 mod batch;
 mod bytes;
 mod chain;
@@ -76,6 +77,10 @@ enum Msg {
     ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
     SynchronizePrimary(SyncSender<Result<i64>>),
+    RestoreAuthored(
+        Box<authored::Restoration>,
+        SyncSender<Result<polylogue_model::user::UserOutcome>>,
+    ),
     Stop,
     /// A user write is waiting in its own queue.
     Wake,
@@ -397,8 +402,25 @@ impl Writer {
         Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
     }
 
-    /// Writes one user request (a note, delivery or setting) and waits for
-    /// it to commit. It goes ahead of batches still queued.
+    /// Restores an original authored effect without resolving its intent again.
+    pub fn restore_authored(
+        &self,
+        prepared: polylogue_model::authored::PreparedRequest,
+        claims: Vec<polylogue_model::authored::ImportAttribution>,
+        current: polylogue_model::authored::ImportAttribution,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        authored::restore_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            authored::Restoration {
+                prepared,
+                claims,
+                current,
+            },
+        )
+    }
+
+    /// Writes one user request and waits for its source commit.
+    /// It goes ahead of batches still queued.
     pub fn user(
         &self,
         request: polylogue_model::user::UserRequest,
@@ -576,6 +598,23 @@ impl WriterSender {
         Ok(wait)
     }
 
+    /// As [`Writer::restore_authored`].
+    pub fn restore_authored(
+        &self,
+        prepared: polylogue_model::authored::PreparedRequest,
+        claims: Vec<polylogue_model::authored::ImportAttribution>,
+        current: polylogue_model::authored::ImportAttribution,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        authored::restore_via(
+            &self.0,
+            authored::Restoration {
+                prepared,
+                claims,
+                current,
+            },
+        )
+    }
+
     /// As [`Writer::user`].
     pub fn user(
         &self,
@@ -675,6 +714,7 @@ impl Inner {
         let mut coverage = Vec::new();
         let mut confirmations = Vec::new();
         let mut synchronizations = Vec::new();
+        let mut restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
@@ -725,6 +765,10 @@ impl Inner {
                     }
                     Msg::Confirmed(events, reply) => {
                         confirmations.push((events, reply));
+                        false
+                    }
+                    Msg::RestoreAuthored(restoration, reply) => {
+                        restorations.push((restoration, reply));
                         false
                     }
                     Msg::SynchronizePrimary(reply) => {
@@ -791,6 +835,9 @@ impl Inner {
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
                 let _ = reply.send(self.store_blob(new_blob, file));
+            }
+            for (restoration, reply) in restorations.drain(..) {
+                let _ = reply.send(self.restore_authored(*restoration));
             }
             self.serve_users(users);
 
@@ -860,6 +907,7 @@ impl Inner {
     /// stale, so the scan for stale sessions, which reads every session for
     /// every derivation, is skipped.
     fn derive(&mut self) -> Result<u64> {
+        self.project_variant_text()?;
         // Changes only when another connection commits.
         let version = |index: &Connection| -> Result<i64> {
             Ok(index.pragma_query_value(None, "data_version", |r| r.get(0))?)
@@ -1063,6 +1111,7 @@ impl Inner {
         } else {
             crate::write_lock::commit(tx)?;
         }
+        self.project_variant_text()?;
         Ok(outcome)
     }
 

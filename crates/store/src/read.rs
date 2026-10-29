@@ -30,6 +30,7 @@ mod tool_outcomes;
 pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
 mod rows;
+mod source_commit;
 
 pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
 

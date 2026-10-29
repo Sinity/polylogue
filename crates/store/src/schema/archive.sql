@@ -87,8 +87,9 @@ CREATE TABLE observation (
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   or 'capture:<id>'
   class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported
-  revision      INTEGER,                 -- the revision produced or confirmed (none for deleted)
-  length        INTEGER,                 -- that revision's length
+  revision      INTEGER,                 -- exact revision endpoint produced or confirmed
+  chain         INTEGER,                 -- proven prefix only: revision NULL, length is observed bytes
+  length        INTEGER,                 -- actual observed byte length
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER,
   details_json  TEXT,                    -- imported: the import member it was read as, and its format
@@ -241,6 +242,7 @@ CREATE TABLE chat_action (
   stage_only        INTEGER NOT NULL,       -- 1: fill the composer and stop; a submit is refused
   needs_approval    INTEGER NOT NULL,       -- 1: a submit into an existing conversation waits for the operator
   created_at        INTEGER NOT NULL,
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
@@ -249,7 +251,7 @@ CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
 CREATE TABLE chat_action_attachment (
   action            TEXT NOT NULL REFERENCES chat_action(id),
   id                TEXT NOT NULL,          -- UUIDv7, for the extension to fetch it by
-  blob              BLOB NOT NULL REFERENCES blob(hash),
+  blob              BLOB NOT NULL,
   name              TEXT NOT NULL,          -- a file name, never a path
   media_type        TEXT NOT NULL,
   size              INTEGER NOT NULL,
@@ -295,6 +297,7 @@ CREATE TABLE backfill_job (
   provider          TEXT NOT NULL,          -- the web chat, by the extension's name for it (chatgpt, claude-ai, grok)
   since             INTEGER,                -- only conversations the provider changed at or after this time; NULL: all
   created_at        INTEGER NOT NULL,
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX backfill_job_commit_seq ON backfill_job(commit_seq);

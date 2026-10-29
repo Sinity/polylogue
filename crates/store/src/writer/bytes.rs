@@ -248,6 +248,7 @@ pub(super) fn check_import_format(
 
 /// The observation a step records, checked against what the archive
 /// already holds for the input.
+#[cfg(test)]
 pub(super) fn observation(
     tx: &Connection,
     b: &Batch,
@@ -299,6 +300,7 @@ fn observation_known(
         path: o.path.clone(),
         class: class.to_owned(),
         revision,
+        chain: None,
         length: revision.map(|_| b.length as i64),
         device: f.map(|f| f.device as i64),
         inode: f.map(|f| f.inode as i64),
