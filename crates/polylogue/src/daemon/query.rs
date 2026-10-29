@@ -67,14 +67,15 @@ pub type NearFn<'a> =
 pub(crate) fn with_ranking<T>(
     reader: &Reader<'_>,
     warm: &super::warm::Warm,
+    config: &crate::config::Config,
     run: impl FnOnce(bool, &NearFn<'_>) -> T,
 ) -> T {
-    let provider = crate::embeddings::Provider::from_settings(
-        reader,
-        &polylogue_store::user_writes::machine_id(),
-    )
-    .ok()
-    .flatten();
+    let settings = reader.settings_snapshot(config.requests.machine()).ok();
+    let provider = settings.as_ref().and_then(|settings| {
+        crate::embeddings::Provider::from_settings(settings, &config.embedding_credentials)
+            .ok()
+            .flatten()
+    });
     let available = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
     let near = |text: &str| match &provider {
         Some(provider) => warm.similarity(reader, provider, text),

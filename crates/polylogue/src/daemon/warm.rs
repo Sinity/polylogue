@@ -374,18 +374,21 @@ impl Warm {
     }
 
     /// What `status` shows.
-    pub fn summary(&self) -> Value {
-        let vectors = self.vectors.lock().ok().and_then(|v| {
-            v.as_ref()
-                .map(|l| serde_json::json!({"key": l.key, "vectors": l.vectors()}))
+    pub fn summary(&self) -> crate::protocol::status::Warm {
+        use crate::protocol::status::{Vectors, Warm};
+        let vectors = self.vectors.lock().ok().and_then(|vectors| {
+            vectors.as_ref().map(|loaded| Vectors {
+                key: loaded.key.clone(),
+                vectors: loaded.vectors(),
+            })
         });
-        serde_json::json!({
-            "vectors": vectors,
-            "vector_loads": self.counts.vector_loads.load(Ordering::Relaxed),
-            "query_vectors_reused": self.counts.query_vectors_reused.load(Ordering::Relaxed),
-            "answers_reused": self.counts.answers_reused.load(Ordering::Relaxed),
-            "answers_computed": self.counts.answers_computed.load(Ordering::Relaxed),
-        })
+        Warm {
+            vectors,
+            vector_loads: self.counts.vector_loads.load(Ordering::Relaxed),
+            query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),
+            answers_reused: self.counts.answers_reused.load(Ordering::Relaxed),
+            answers_computed: self.counts.answers_computed.load(Ordering::Relaxed),
+        }
     }
 }
 
