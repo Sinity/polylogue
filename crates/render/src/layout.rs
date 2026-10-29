@@ -237,33 +237,33 @@ pub fn visit_record(
                     }
                 ) || matches!(block,Block::Thinking {text:Some(text),signature:None,redacted:false} if text.is_empty());
                 if empty && options.thinking() != Expansion::None {
-                    if let Some((first, count)) = &mut absent {
-                        if first.block.is_some_and(|first| first + *count == *ordinal) {
-                            *count += 1;
-                            continue;
-                        }
+                    if let Some((first, count)) = &mut absent
+                        && first.block.is_some_and(|first| first + *count == *ordinal)
+                    {
+                        *count += 1;
+                        continue;
                     }
-                    if let Some((source, blocks)) = absent.take() {
-                        if !visit(absent_thinking(source, blocks)) {
-                            return Ok(());
-                        }
+                    if let Some((source, blocks)) = absent.take()
+                        && !visit(absent_thinking(source, blocks))
+                    {
+                        return Ok(());
                     }
                     absent = Some((source, 1));
                     continue;
                 }
-                if let Some((source, blocks)) = absent.take() {
-                    if !visit(absent_thinking(source, blocks)) {
-                        return Ok(());
-                    }
+                if let Some((source, blocks)) = absent.take()
+                    && !visit(absent_thinking(source, blocks))
+                {
+                    return Ok(());
                 }
                 if !block_items(block, source, *ordinal, options, evidence, &mut visit)? {
                     return Ok(());
                 }
             }
-            if let Some((source, blocks)) = absent {
-                if !visit(absent_thinking(source, blocks)) {
-                    return Ok(());
-                }
+            if let Some((source, blocks)) = absent
+                && !visit(absent_thinking(source, blocks))
+            {
+                return Ok(());
             }
         }
         Record::Document(row) => {
@@ -451,6 +451,7 @@ fn block_items(
                     false,
                 ),
             };
+            call.orphan = matches!(block, Block::ToolResult { .. });
             excerpt_output(
                 &mut call,
                 options.output_lines,
@@ -608,6 +609,7 @@ fn call_item(call: &Block, result: Option<&Block>, full: bool, running: bool) ->
         ),
     };
     CallItem {
+        orphan: false,
         call_id: call_id.clone().or_else(|| match result {
             Some(Block::ToolResult { call_id, .. }) => call_id.clone(),
             _ => None,

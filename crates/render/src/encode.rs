@@ -632,7 +632,7 @@ pub(crate) fn session_lines(session: &polylogue_model::Session) -> Vec<String> {
 }
 
 pub(crate) fn call_label(call: &CallItem) -> String {
-    if call.tool.value().is_none()
+    if call.orphan
         && let Some(id) = &call.call_id
     {
         format!("result for unknown call {id}")

@@ -311,6 +311,9 @@ pub enum IndicatorKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CallItem {
+    /// A result with no prepared call, distinct from a call whose tool name is unknown.
+    #[serde(default)]
+    pub orphan: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
     pub tool: ValueState<String>,
@@ -479,7 +482,9 @@ pub struct ReadFooter {
     pub previous: Option<ReadyCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<ReadPosition>,
+    /// Layout items emitted on this page. Selection counts belong in header figures.
     pub shown: u64,
+    /// Total layout items, only when known without scanning the selection.
     pub count: ValueState<u64>,
 }
 

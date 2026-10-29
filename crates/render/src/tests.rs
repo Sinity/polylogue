@@ -953,9 +953,15 @@ fn document_items_keep_a_runnable_document_reference_and_separate_original_posit
     assert_eq!(items[1].source.reference, "document:test:document");
     assert_eq!(items[1].source.block, Some(1));
 }
-struct BrokenPipe;
+struct BrokenPipe {
+    writes: usize,
+}
 impl Write for BrokenPipe {
-    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.writes += 1;
+        if self.writes == 1 {
+            return Ok(bytes.len());
+        }
         Err(io::ErrorKind::BrokenPipe.into())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -964,7 +970,7 @@ impl Write for BrokenPipe {
 }
 #[test]
 fn json_encoding_preserves_the_output_error_kind() {
-    let mut sink = BrokenPipe;
+    let mut sink = BrokenPipe { writes: 0 };
     let error = Encoder::new(&header(), Format::Json, EncodeOptions::default(), &mut sink)
         .err()
         .unwrap();
@@ -1048,4 +1054,28 @@ fn budgeted_pages_name_the_canonical_token_estimator() {
     builder.push_at("message:test", 0, text("item")).unwrap();
     let doc = builder.finish(ReadFooter::default()).unwrap();
     assert_eq!(doc.footer.estimator.as_deref(), Some(TOKEN_ESTIMATOR));
+}
+
+#[test]
+fn a_recorded_call_with_unknown_tool_name_is_not_an_orphan_result() {
+    let call = Block::ToolCall {
+        call_id: Some("known-call".into()),
+        tool: None,
+        action: Default::default(),
+        input: json!({}),
+        command: None,
+        path: None,
+        run_by_script: false,
+    };
+    let items = layout(
+        message(vec![call]),
+        &ReadOptions::default(),
+        &ProjectionEvidence::default(),
+    );
+    let ItemKind::Call { call } = &items[1].kind else {
+        panic!()
+    };
+    assert!(!call.orphan);
+    assert_eq!(call.call_id.as_deref(), Some("known-call"));
+    assert!(!crate::encode::call_label(call).contains("unknown call"));
 }
