@@ -5,6 +5,10 @@ use crate::{Author, BlobHash, ChangePosition, Document, Event, Link, Message, Se
 use serde::{Deserialize, Serialize};
 
 pub mod fragments;
+pub use fragments::{
+    TextCoverage, TextFragment, TextFragmentError, TextFragmentProvenance, TextFragmentRecord,
+    TextSourceVersion, TextSpanOrigin,
+};
 
 pub const FORMAT: &str = "polylogue-bundle";
 pub const VERSION: u32 = 1;
