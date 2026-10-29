@@ -60,6 +60,11 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let applied = position(&tx)?;
     for event in events {
+        if matches!(event.change, ConfirmedChange::ScopeReset { .. }) {
+            return Err(StoreError::Invalid(
+                "scope reset must precede confirmed data application".into(),
+            ));
+        }
         if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
             tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
             continue;
@@ -310,7 +315,9 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 fact.changed = position;
                 fact
             }),
-            ConfirmedChange::Ignored | ConfirmedChange::PositionComplete => None,
+            ConfirmedChange::Ignored
+            | ConfirmedChange::PositionComplete
+            | ConfirmedChange::ScopeReset { .. } => None,
         };
         if let Some(next) = next {
             next.insert(index, "primary_candidate")?;
