@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 
 pub(crate) fn canonical(product: &Product) -> bool {
     match product {
-        Product::AttachmentBinding { .. } | Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => true,
+        Product::AttachmentBinding { .. }
+        | Product::WorkSnapshot { .. }
+        | Product::WorkComponentStatus { .. } => true,
         Product::Request(prepared) | Product::RestoredRequest { prepared, .. } => {
             signal_content(prepared)
         }
@@ -253,7 +255,9 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         Product::QueryRunOutcome { outcome } => json!({
             "run": outcome.run, "binding_hash": outcome.binding_hash, "run_hash": outcome.run_hash, "at": outcome.at,
         }),
-        Product::AttachmentBinding { record } => json!({"message":record.context().message,"binding":record.selection()}),
+        Product::AttachmentBinding { record } => {
+            json!({"message":record.context().message,"binding":record.selection()})
+        }
         Product::Coverage(_) => json!({}),
         Product::WorkComponentStatus { status } => json!({
             "component_kind":status.component_kind,"component_sessions":status.sessions().collect::<Vec<_>>(),
@@ -525,7 +529,10 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     },
                 ),
                 time_rule: Some(
-                    if matches!(*product, "attachment_binding" | "work_snapshot" | "work_component_status") {
+                    if matches!(
+                        *product,
+                        "attachment_binding" | "work_snapshot" | "work_component_status"
+                    ) {
                         TimeRule::Unknown
                     } else {
                         TimeRule::FirstPresent {
