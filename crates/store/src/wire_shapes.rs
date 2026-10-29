@@ -503,9 +503,6 @@ mod tests;
 
 impl crate::Reader<'_> {
     pub fn wire_shapes(&self, scope: Scope<'_>) -> Result<Report> {
-        {
-            let conn = self.conn()?;
-            read(&conn, scope)
-        }
+        read(self.conn()?, scope)
     }
 }
