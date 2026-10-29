@@ -7,7 +7,7 @@ fn server() -> devkit::nats::Server {
     let config = Subjects::new("auth").authorization(
         ("daemon", "synthetic-daemon-password"),
         &[("polylogue", PASSWORD)],
-        &[],
+        &[("polylogue", "test-scope".into())],
     );
     devkit::nats::Server::start_with(&devkit::nats::Options { config }).unwrap()
 }
@@ -42,6 +42,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let mut hello=client.subscribe("auth.connect.polylogue").await.unwrap();
             let mut ingress=client.subscribe("auth.ingress.polylogue").await.unwrap();
             let mut recorded=client.subscribe("auth.recorded.polylogue").await.unwrap();
+            let mut consumers=client.subscribe("auth.confirmed_consumer.polylogue").await.unwrap();
             client.flush().await.unwrap();ready.send(()).unwrap();
             let request=hello.next().await.unwrap();let inbox=request.reply.unwrap();
             assert!(inbox.starts_with("_INBOX.polylogue."));
@@ -54,12 +55,49 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),sinex_protocol::RecordedPage{acknowledgments:vec![receipt],next:None},Duration::from_secs(5)).await.unwrap();
+            let subjects=Subjects::new("auth");
+            let response=sinex_protocol::ConfirmedConsumerReply{stream:subjects.confirmed_stream(),consumer:subjects.consumer_name("test-scope"),scope:"test-scope".into(),position:Some(42),refusal:None,gap:None};
+            let request=consumers.next().await.unwrap();
+            let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
+            assert_eq!(query.after,42);
+            assert!(!query.status_only);
+            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),response.clone(),Duration::from_secs(5)).await.unwrap();
+            let request=consumers.next().await.unwrap();
+            let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
+            assert_eq!(query.after,0,"a new scope must replay from the cleared checkpoint");
+            let js=async_nats::jetstream::new(client.clone());
+            let stream=js.get_or_create_stream(async_nats::jetstream::stream::Config{name:subjects.confirmed_stream(),subjects:vec![subjects.confirmed_all()],..Default::default()}).await.unwrap();
+            stream.get_or_create_consumer(&response.consumer,async_nats::jetstream::consumer::pull::Config{durable_name:Some(response.consumer.clone()),..Default::default()}).await.unwrap();
+            js.publish(subjects.confirmed_control(),serde_json::to_vec(&sinex_protocol::Confirmed::PositionComplete{commit_seq:0}).unwrap().into()).await.unwrap().await.unwrap();
+            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),response,Duration::from_secs(5)).await.unwrap();
         });
     });
     wait.recv().unwrap();
     let sinex = Sinex::connect(&config(&server, root.path(), Some(&file))).unwrap();
     assert_eq!(sinex.status().unwrap().family.as_deref(), Some("polylogue"));
     assert!(sinex.status().unwrap().canonical_publisher);
+    let control =
+        polylogue_store::primary::Sinex::confirmed(&sinex, 42, "cache-test", Some("old-scope"))
+            .unwrap();
+    assert!(
+        matches!(control.as_slice(),[polylogue_store::primary::Confirmed{position:0,change:polylogue_store::primary::ConfirmedChange::ScopeReset{scope},..}] if scope=="test-scope")
+    );
+    let currency = sinex.currency(Some(42), Some("old-scope".into())).unwrap();
+    assert_eq!(currency.scope(), Some("old-scope"));
+    assert!(currency.degraded());
+    polylogue_store::primary::Sinex::acknowledge(&sinex, 0).unwrap();
+    let page =
+        polylogue_store::primary::Sinex::confirmed(&sinex, 0, "cache-test", Some("test-scope"))
+            .unwrap();
+    assert!(matches!(
+        page.as_slice(),
+        [polylogue_store::primary::Confirmed {
+            position: 0,
+            change: polylogue_store::primary::ConfirmedChange::PositionComplete,
+            ..
+        }]
+    ));
+    polylogue_store::primary::Sinex::acknowledge(&sinex, 0).unwrap();
     drop(sinex);
     owner.join().unwrap();
 }

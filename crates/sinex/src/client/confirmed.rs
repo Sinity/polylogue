@@ -203,6 +203,13 @@ impl Client {
                 health.position_observed = Some(std::time::Instant::now());
                 health.owner_scope = Some(reply.scope.clone());
             }
+            if scope != Some(reply.scope.as_str()) {
+                self.consumer = None;
+                self.consumer_cache = None;
+                self.consumer_scope = Some(reply.scope.clone());
+                self.publication_scope = None;
+                return Ok(scope_reset(reply.scope));
+            }
             self.consumer = Some(
                 jetstream::new(self.client.clone())
                     .get_consumer_from_stream(reply.consumer, reply.stream)
@@ -216,6 +223,11 @@ impl Client {
         }
         if self.consumer_scope.as_deref() != scope {
             self.publication_scope = None;
+            // The first request carried the old cache's position. Reprovision
+            // from the cleared checkpoint before pulling, even if this grant
+            // scope had a consumer during an earlier configuration.
+            self.consumer = None;
+            self.consumer_cache = None;
             return Ok(scope_reset(
                 self.consumer_scope.clone().expect("provisioned scope"),
             ));
