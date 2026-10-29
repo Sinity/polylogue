@@ -2,7 +2,7 @@ use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
 #[test]
-fn chosen_hit_batches_share_source_context_and_ignore_later_unselected_corruption() {
+fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let session = fixture
@@ -77,8 +77,8 @@ fn chosen_hit_batches_share_source_context_and_ignore_later_unselected_corruptio
     let snippets = reader.snippets("needleprivate", &scopes, &terms).unwrap();
     assert_eq!(snippets.len(), 3);
     let first = snippets[0].as_ref().unwrap();
-    assert!(!first.text.contains("needleprivate"));
-    assert!(first.marks.is_empty());
+    assert!(first.text.contains("needleprivate"));
+    assert!(!first.marks.is_empty());
     assert_eq!(first.session, "claude-code:snippets");
     assert_eq!(first.message, "claude-code:snippets/hit");
     assert!(
@@ -87,8 +87,8 @@ fn chosen_hit_batches_share_source_context_and_ignore_later_unselected_corruptio
             .all(|snippet| snippet.as_ref() == Some(first))
     );
 
-    // The stored reader keeps its selected hit and masking prefix while a
-    // fresh reader sees a different prefix in the same synthetic archive.
+    // Unselected earlier rows do not affect a snippet; the original reader
+    // also retains its consistent selected source snapshot.
     let ordinary = crate::encoding::pack_text("ordinary header").unwrap();
     write.execute("UPDATE text SET body=?1 WHERE id=(SELECT text_id FROM block WHERE message_pk=?2 LIMIT 1)", params![ordinary, header]).unwrap();
     let fresh = pool.reader().unwrap();
@@ -103,9 +103,18 @@ fn chosen_hit_batches_share_source_context_and_ignore_later_unselected_corruptio
         .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [header])
         .unwrap();
     let fresh = pool.reader().unwrap();
+    assert_eq!(
+        fresh.snippets("needleprivate", &scopes, &terms).unwrap(),
+        snippets
+    );
+    drop(fresh);
+    write
+        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [message])
+        .unwrap();
+    let fresh = pool.reader().unwrap();
     assert!(
         fresh.snippets("needleprivate", &scopes, &terms).is_err(),
-        "corruption in the required prefix must refuse, not silently drop a selected hit"
+        "corruption in the selected hit must refuse the read"
     );
     assert_eq!(
         reader.snippets("needleprivate", &scopes, &terms).unwrap(),
@@ -114,7 +123,7 @@ fn chosen_hit_batches_share_source_context_and_ignore_later_unselected_corruptio
 }
 
 #[test]
-fn a_hit_with_no_pem_before_it_is_masked_alone_and_one_after_a_pem_is_not() {
+fn credential_shaped_hits_keep_their_text_even_after_an_open_key_header() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let session = fixture
@@ -164,13 +173,7 @@ fn a_hit_with_no_pem_before_it_is_masked_alone_and_one_after_a_pem_is_not() {
         )
         .unwrap();
     let first = snippets[0].as_ref().unwrap();
-    assert!(first.text.contains("wombat"), "{}", first.text);
-    assert!(
-        !first.text.contains("AKIAIOSFODNN7EXAMPLE"),
-        "{}",
-        first.text
-    );
-    // The open PEM block masks everything after it, across blocks.
+    assert_eq!(first.text, "wombat token AKIAIOSFODNN7EXAMPLE here");
     let after = snippets[1].as_ref().unwrap();
-    assert!(!after.text.contains("keybody"), "{}", after.text);
+    assert_eq!(after.text, "wombat keybody continues");
 }

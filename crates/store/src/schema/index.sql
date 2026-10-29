@@ -119,10 +119,6 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  pem               INTEGER NOT NULL DEFAULT 0, -- 1: a block holds a PEM header or END line; 2: masked from a
-                                            --   fresh start, one of its blocks leaves a private key block open.
-                                            --   An open key is the only masking state that crosses a block
-                                            --   boundary, and only these messages change it
   UNIQUE (pk, session_pk)                   -- lets children state their owner once
 ) STRICT;
 -- A first build drops the three unique indexes on natural keys and builds
@@ -131,7 +127,6 @@ CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, order_input_id, seq, record_position, id);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
-CREATE INDEX message_pem     ON message(session_pk) WHERE pem <> 0;   -- the masking state a read starts with
 
 -- Every stored version that contributed to a message: one row per input chain
 -- whose records hold a version of it (the shown version's row repeats the

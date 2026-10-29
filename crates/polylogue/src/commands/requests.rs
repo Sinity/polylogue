@@ -61,16 +61,7 @@ pub fn complete(_: &Command, v: &Values, _: &Caller) -> Built {
     })
 }
 
-pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let reveal = v.flag("reveal");
-    if reveal {
-        if caller.surface != super::Surface::Cli || v.text("out").is_none() {
-            return Err("exact attachment output requires the CLI with --reveal --out FILE".into());
-        }
-        crate::daemon::attachment::check_cli()?;
-    } else if v.text("out").is_some() || v.text("input").is_some() {
-        return Err("--out and --input require --reveal".into());
-    }
+pub fn attachment(_: &Command, v: &Values, _: &Caller) -> Built {
     let index = |key: &str, default: u64| {
         usize::try_from(v.integer(key).unwrap_or(default))
             .map_err(|_| format!("{key} exceeds address space"))
@@ -84,9 +75,8 @@ pub fn attachment(_: &Command, v: &Values, caller: &Caller) -> Built {
         block: index("block", 0)?,
         attachment: index("attachment", 0)?,
         input: v.text("input"),
-        reveal,
         length: index("length", 65536)?,
-        cursor: None,
+        cursor: v.text("cursor"),
     })
 }
 

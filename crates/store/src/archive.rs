@@ -1,7 +1,6 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
-mod scanner_key;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};

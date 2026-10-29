@@ -293,10 +293,20 @@ impl Engine {
         if plan.origin.name != "polylogue-bundle" {
             return Ok(());
         }
-        let Change::Reparse { chain } = plan.change else {
-            return Ok(());
-        };
         let reader = self.reads.reader()?;
+        let chain = match plan.change {
+            Change::Reparse { chain } => chain,
+            _ => {
+                reader
+                    .input_progress(&plan.input.id)?
+                    .ok_or_else(|| {
+                        polylogue_store::StoreError::Invalid(
+                            "a stored bundle has no committed source revision".into(),
+                        )
+                    })?
+                    .chain
+            }
+        };
         let current = reader.import_attribution(&plan.input.id, chain)?;
         let stored = reader.stored_chain(&plan.input.id, chain, plan.size)?;
         drop(reader);

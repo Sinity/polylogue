@@ -54,9 +54,9 @@ fn promoted_chatgpt_import_resolves_assets_and_pages_after_provider_free_rebuild
 fn check(env: &[(&str, &Path)]) {
     let descriptor = cli(env, &["--json", "attachment", MESSAGE, "0"]);
     assert!(descriptor.status.success(), "{descriptor:?}");
-    assert_eq!(json(&descriptor)["state"], "available");
+    assert_eq!(json(&descriptor)["descriptor"]["state"], "available");
     assert_eq!(
-        json(&descriptor)["matches"][0]["names"],
+        json(&descriptor)["descriptor"]["matches"][0]["names"],
         json!(["promoted.png"])
     );
     let page = cli(env, &["--json", "read", SESSION, "--budget", "100000"]);

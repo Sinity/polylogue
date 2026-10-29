@@ -255,28 +255,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         Err(e) => return store_error(&e),
     };
     match request {
-        Request::Attachment {
-            message,
-            block,
-            attachment,
-            reveal,
-            cursor,
-            ..
-        } => {
-            if reveal {
-                return error(
-                    "operator_required",
-                    "exact attachment bytes require the interactive CLI operator path",
-                );
-            }
-            if cursor.is_some() {
-                return error("bad_request", "a cursor continues an exact attachment read");
-            }
-            match reader.masked_attachment(&message, block, attachment) {
-                Ok(resolution) => ok(resolution),
-                Err(e) => store_error(&e),
-            }
-        }
+        request @ Request::Attachment { .. } => super::attachment::read(request, d),
         Request::ChatSend { .. }
         | Request::ChatActions
         | Request::ChatAction { .. }
