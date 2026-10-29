@@ -43,7 +43,7 @@ fn holes_and_conflicting_overlaps_do_not_become_maximum_end_cursors() {
     proof.push(body(&generation, 5, 10)).unwrap();
     let cursor = proof.finish().unwrap();
     assert!(cursor.is_complete_stream());
-    assert_eq!(cursor.first_body(), "body:0:5");
+    assert_eq!(cursor.root_body(), "body:0:5");
     assert_eq!(cursor.last_body(), "body:5:10");
 }
 
