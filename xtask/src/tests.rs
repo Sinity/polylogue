@@ -187,10 +187,14 @@ fn package_selection_reaches_the_real_runner_before_unrelated_compilation() {
         ),
         (
             "polylogue-sinex",
-            "",
+            "[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
             "#[test] fn primary_mode_selected() {}\n",
         ),
-        ("polylogue", "[features]\nsinex=[]\n", ""),
+        (
+            "polylogue",
+            "[features]\nsinex=[]\n[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
+            "",
+        ),
         (
             "helper",
             "",
