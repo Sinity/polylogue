@@ -18,6 +18,40 @@ fn message_count(count: i64) -> Result<usize> {
 }
 
 impl MessageSelection<'_, '_> {
+    /// Seek this selection's metadata order without hydrating skipped bodies.
+    /// Physical selections share the canonical order used by message bundles.
+    pub fn locate_ordinal(&self, ordinal: u64) -> Result<Option<VisitStart>> {
+        self.reader.check()?;
+        let Ok(message) = usize::try_from(ordinal) else {
+            return Ok(None);
+        };
+        if let Some(keys) = &self.with_parents {
+            return Ok(keys.get(message).map(|key| VisitStart {
+                message,
+                key: Some(key.message_pk),
+            }));
+        }
+        let Some((session, _)) = &self.own else {
+            return Ok(None);
+        };
+        let Ok(ordinal) = i64::try_from(ordinal) else {
+            return Ok(None);
+        };
+        let sql = format!(
+            "WITH ordered AS ({}) SELECT pk FROM ordered WHERE record_order=?2",
+            super::super::order::canonical_rows("?1")
+        );
+        let key = self
+            .reader
+            .conn()?
+            .query_row(&sql, params![session, ordinal], |row| row.get::<_, i64>(0))
+            .optional()?;
+        Ok(key.map(|key| VisitStart {
+            message,
+            key: Some(key),
+        }))
+    }
+
     pub fn len(&self) -> Result<usize> {
         if let Some(keys) = &self.with_parents {
             return Ok(keys.len());
