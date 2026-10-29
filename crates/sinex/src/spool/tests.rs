@@ -167,17 +167,19 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     assert!(spool.acknowledge(ack("group", false, None)).is_err());
     assert!(spool.acknowledge(ack("group", false, Some(-1))).is_err());
     spool.acknowledge(ack("group", false, Some(12))).unwrap();
-    let receipt = spool.operation("group").join("receipt.json");
-    let mut damaged: serde_json::Value =
-        serde_json::from_reader(File::open(&receipt).unwrap()).unwrap();
+    let receipt = spool.operation("group").join("ack/receipt.json");
+    let original = fs::read(&receipt).unwrap();
+    let mut damaged: serde_json::Value = serde_json::from_slice(&original).unwrap();
     damaged["value"]["commit_seq"] = 0.into();
     fs::write(&receipt, serde_json::to_vec(&damaged).unwrap()).unwrap();
     assert!(spool.retire(1).is_err());
     assert!(spool.get("raw").unwrap().is_some());
     fs::remove_file(&receipt).unwrap();
+    assert!(spool.get("group").is_err());
+    fs::write(&receipt, original).unwrap();
     assert_eq!(spool.get("group").unwrap().unwrap().commit_seq, Some(12));
     fs::write(
-        spool.operation("group").join("captures.jsonl"),
+        spool.operation("group").join("captures.zst"),
         b"\"other\"\n",
     )
     .unwrap();
@@ -193,14 +195,21 @@ fn material_bodies_are_verified_including_empty_files_and_fifo_rejection() {
     spool
         .prepare_material(material("empty", b""), std::io::empty())
         .unwrap();
-    assert_eq!(spool.body("empty").unwrap().metadata().unwrap().len(), 0);
+    assert_eq!(
+        spool
+            .body("empty")
+            .unwrap()
+            .seek(std::io::SeekFrom::End(0))
+            .unwrap(),
+        0
+    );
     assert!(
         spool
             .prepare_material(material("wrong", b"right"), b"wrong".as_slice())
             .is_err()
     );
     assert!(spool.get("wrong").unwrap().is_none());
-    let path = spool.operation("empty").join("body");
+    let path = spool.operation("empty").join("body.zst");
     fs::remove_file(&path).unwrap();
     let status = Command::new("mkfifo").arg(&path).status().unwrap();
     assert!(status.success());
@@ -238,9 +247,16 @@ fn pending_metadata_stays_small_with_large_immutable_frames_and_streamed_bodies(
             .len()
             < 4096
     );
-    assert!(spool.counts().unwrap().2 > (28 << 20));
+    let physical = spool.counts().unwrap().2;
+    let (body_path, descriptor) = spool.encoded_body("large-body").unwrap();
+    assert_eq!(body_path.metadata().unwrap().len(), descriptor.stored_len);
+    assert!(physical > descriptor.stored_len && physical < (28 << 20));
     assert_eq!(
-        spool.body("large-body").unwrap().metadata().unwrap().len(),
+        spool
+            .body("large-body")
+            .unwrap()
+            .seek(std::io::SeekFrom::End(0))
+            .unwrap(),
         length as u64
     );
 }
@@ -289,7 +305,7 @@ fn crash_worker() {
             .unwrap();
         spool.acknowledge(ack("canonical", false, Some(9))).unwrap();
         spool.retire(9).unwrap();
-    } else if stage == "ack_published" || stage == "operation_retired" {
+    } else if stage == "ack_synced" || stage == "ack_published" || stage == "operation_retired" {
         spool.prepare(events("write", "original")).unwrap();
         spool.acknowledge(ack("write", false, Some(9))).unwrap();
         spool.retire(9).unwrap();
@@ -307,6 +323,7 @@ fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
         "body_synced",
         "operation_synced",
         "operation_published",
+        "ack_synced",
         "ack_published",
         "operation_retired",
     ] {
@@ -324,7 +341,20 @@ fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
             "operation_published" => {
                 let prepared = spool.get("raw").unwrap().unwrap();
                 assert!(prepared.body.is_some());
-                assert_eq!(spool.body("raw").unwrap().metadata().unwrap().len(), 12);
+                assert_eq!(
+                    spool
+                        .body("raw")
+                        .unwrap()
+                        .seek(std::io::SeekFrom::End(0))
+                        .unwrap(),
+                    12
+                );
+            }
+            "ack_synced" => {
+                assert!(!spool.get("write").unwrap().unwrap().acknowledged);
+                assert!(spool.acknowledgment("write").unwrap().is_none());
+                spool.acknowledge(ack("write", false, Some(9))).unwrap();
+                assert!(spool.get("write").unwrap().unwrap().acknowledged);
             }
             "ack_published" => {
                 assert!(spool.get("write").unwrap().unwrap().acknowledged);
@@ -627,7 +657,7 @@ fn complete_parser_facts_are_immutable_sidecars_and_queue_headers_stay_small() {
     spool.acknowledge(ack("captured", true, None)).unwrap();
     assert_eq!(spool.pending_after(None, 1).unwrap().len(), 1);
     assert_eq!(spool.capture("captured").unwrap(), capture);
-    let path = spool.operation("captured").join("captured.json");
+    let path = spool.operation("captured").join("captured.zst");
     let mut content = fs::read(&path).unwrap();
     content[0] ^= 1;
     fs::write(path, content).unwrap();
@@ -689,4 +719,133 @@ fn request_restore_metadata_remains_discoverable_after_acknowledgment_and_restar
         .map(|entry| entry.identity)
         .collect();
     assert_eq!(requests, ["live", "restore"]);
+}
+
+#[test]
+fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let bytes = b"synthetic encoded acquisition ".repeat(300);
+    let capture = parsed_capture(&bytes, "synthetic parser output");
+    let frame = capture_frame("encoded", &bytes, &capture);
+    let preparation = Preparation::new(source.path())
+        .unwrap()
+        .with_frame_size(113)
+        .unwrap();
+    let encoded = preparation.plain(bytes.as_slice(), 1).unwrap();
+    let expected = encoded.descriptor();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .prepare_encoded_capture(frame.clone(), encoded, &capture)
+        .unwrap();
+    let (path, actual) = spool.encoded_body("encoded").unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        hashed_blobs::Hash::of(&fs::read(&path).unwrap()),
+        expected.encoded_hash
+    );
+    assert_eq!(
+        spool.prepared_body("encoded").unwrap().descriptor(),
+        expected
+    );
+    let retry = Preparation::new(source.path())
+        .unwrap()
+        .plain(bytes.as_slice(), 3)
+        .unwrap();
+    assert_ne!(
+        retry.descriptor(),
+        expected,
+        "fixture distinguishes recompression"
+    );
+    spool
+        .prepare_encoded_capture(frame, retry, &capture)
+        .unwrap();
+    assert_eq!(spool.encoded_body("encoded").unwrap().1, expected);
+    assert_eq!(spool.capture("encoded").unwrap(), capture);
+    drop(spool);
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    assert_eq!(spool.encoded_body("encoded").unwrap().1, expected);
+    let mut decoded = Vec::new();
+    spool
+        .body("encoded")
+        .unwrap()
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, bytes);
+}
+
+#[test]
+fn corrupted_encoded_custody_is_rejected_before_publication() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let bytes = b"synthetic source";
+    let encoded = Preparation::new(source.path())
+        .unwrap()
+        .plain(bytes.as_slice(), 3)
+        .unwrap();
+    let descriptor = encoded.descriptor();
+    let file = encoded.into_file();
+    let mut corrupt = file.try_clone().unwrap();
+    let encoded =
+        hashed_blobs::Prepared::from_encoded(file, descriptor, None, ReadLimits::default())
+            .unwrap();
+    corrupt.rewind().unwrap();
+    corrupt.write_all(&[0]).unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    assert!(
+        spool
+            .prepare_encoded_material(material("invalid", bytes), encoded)
+            .is_err()
+    );
+    assert!(spool.get("invalid").unwrap().is_none());
+    assert!(spool.pending_after(None, 1).unwrap().is_empty());
+}
+
+#[test]
+fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let bytes = b"synthetic capture";
+    let capture = parsed_capture(bytes, "synthetic parser output");
+    spool
+        .prepare_capture(
+            capture_frame("raw", bytes, &capture),
+            bytes.as_slice(),
+            &capture,
+        )
+        .unwrap();
+    spool
+        .prepare_group(events("group", "canonical facts"), &["raw".into()])
+        .unwrap();
+    spool.acknowledge(ack("group", false, Some(19))).unwrap();
+    for (identity, relative) in [
+        ("raw", "frame.zst"),
+        ("raw", "body.zst"),
+        ("raw", "captured.zst"),
+        ("group", "frame.zst"),
+        ("group", "captures.zst"),
+        ("group", "ack/payload.zst"),
+    ] {
+        let data = fs::read(spool.operation(identity).join(relative)).unwrap();
+        assert_eq!(&data[..4], &[0x28, 0xb5, 0x2f, 0xfd], "{relative}");
+    }
+    let before = spool.counts().unwrap();
+    let path = spool.operation("raw").join("frame.zst");
+    let mut data = fs::read(&path).unwrap();
+    data[0] ^= 1;
+    fs::write(path, data).unwrap();
+    assert_eq!(spool.counts().unwrap(), before);
+    assert!(spool.decode_frame("raw").is_err());
+}
+
+#[test]
+fn plaintext_predecessor_operations_require_an_explicit_preserved_transition() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let path = spool.operation("old");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("frame.json"), b"{synthetic old pending bytes}").unwrap();
+    drop(spool);
+    assert!(Spool::open(directory.path(), "host").is_err());
+    assert!(path.join("frame.json").exists());
 }

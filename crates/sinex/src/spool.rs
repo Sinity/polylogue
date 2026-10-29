@@ -1,6 +1,8 @@
 //! Pending producer operations. Immutable frame and body files become visible
 //! together; small queue metadata never contains event or request payloads.
 use crate::{Error, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use hashed_blobs::{BlobReader, EncodedBlob, Preparation, ReadLimits};
 use polylogue_store::primary::Capture;
 use serde::{Deserialize, Serialize};
 use sinex_protocol::{Acknowledgment, Ingress};
@@ -24,6 +26,38 @@ pub(crate) enum Kind {
 pub(crate) struct Bytes {
     pub blob: String,
     pub length: u64,
+    encoding: Encoding,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Encoding(String);
+impl Encoding {
+    fn new(descriptor: &EncodedBlob) -> Self {
+        Self(BASE64.encode(descriptor.encode()))
+    }
+    fn descriptor(&self) -> Result<EncodedBlob> {
+        let bytes = BASE64
+            .decode(&self.0)
+            .map_err(|error| Error::Invalid(format!("invalid encoded descriptor: {error}")))?;
+        Ok(EncodedBlob::decode(&bytes)?)
+    }
+}
+impl Bytes {
+    fn new(descriptor: &EncodedBlob) -> Self {
+        Self {
+            blob: descriptor.hash.to_string(),
+            length: descriptor.decoded_len,
+            encoding: Encoding::new(descriptor),
+        }
+    }
+    fn descriptor(&self) -> Result<EncodedBlob> {
+        let descriptor = self.encoding.descriptor()?;
+        if descriptor.hash.to_string() != self.blob || descriptor.decoded_len != self.length {
+            return invalid("encoded descriptor differs from its decoded identity");
+        }
+        Ok(descriptor)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,6 +71,7 @@ pub(crate) struct Material {
 pub(crate) struct Group {
     pub captures_hash: String,
     pub captures_count: u64,
+    encoding: Encoding,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,6 +81,7 @@ pub(crate) struct Prepared {
     pub kind: Kind,
     pub frame_hash: String,
     pub frame_length: u64,
+    frame_encoding: Encoding,
     pub body: Option<Bytes>,
     pub material: Option<Material>,
     pub capture: Option<Capture>,
@@ -67,18 +103,9 @@ struct Checked<T> {
     digest: String,
 }
 
-#[derive(Deserialize)]
-struct AckHeader {
-    frame: String,
-    material: Option<String>,
-    commit_seq: Option<i64>,
-    refusal: Option<serde::de::IgnoredAny>,
-}
-
 #[derive(Serialize, Deserialize)]
 struct Receipt {
-    blob: String,
-    length: u64,
+    payload: Bytes,
     commit_seq: Option<i64>,
     refused: bool,
 }
@@ -154,84 +181,111 @@ impl Spool {
             return invalid("spool operation identity differs from its directory");
         }
         let directory = self.operation(identity);
-        check_length(&directory.join("frame.json"), prepared.frame_length)?;
+        let frame = prepared.frame_encoding.descriptor()?;
+        if frame.hash.to_string() != prepared.frame_hash
+            || frame.decoded_len != prepared.frame_length
+        {
+            return invalid("frame encoding differs from its immutable identity");
+        }
+        check_length(&directory.join("frame.zst"), frame.stored_len)?;
         if let Some(body) = &prepared.body {
-            check_length(&directory.join("body"), body.length)?;
+            check_length(&directory.join("body.zst"), body.descriptor()?.stored_len)?;
         }
         if let Some(captured) = &prepared.captured {
-            check_length(&directory.join("captured.json"), captured.length)?;
+            check_length(
+                &directory.join("captured.zst"),
+                captured.descriptor()?.stored_len,
+            )?;
         }
-        if let Some(receipt) = read_checked::<Receipt>(&directory.join("receipt.json"))? {
-            check_length(&directory.join("ack.json"), receipt.length)?;
+        if let Some(receipt) = self.receipt(identity)? {
             prepared.acknowledged = true;
             prepared.commit_seq = receipt.commit_seq;
             prepared.refused = receipt.refused;
-        } else if directory.join("ack.json").try_exists()? {
-            let acknowledgment: AckHeader = decode_json(regular(&directory.join("ack.json"))?)?;
-            validate_ack_header(
-                &prepared,
-                &acknowledgment.frame,
-                acknowledgment.material.as_deref(),
-                acknowledgment.commit_seq,
-                acknowledgment.refusal.is_some(),
-            )?;
-            self.write_receipt(
-                &prepared,
-                acknowledgment.commit_seq,
-                acknowledgment.refusal.is_some(),
-            )?;
-            prepared.acknowledged = true;
-            prepared.commit_seq = acknowledgment.commit_seq;
-            prepared.refused = acknowledgment.refusal.is_some();
         }
         Ok(Some(prepared))
     }
 
-    /// The immutable serialization used on every send. Large frames can be
-    /// copied from this file without decoding their event vectors.
-    pub fn frame(&self, identity: &str) -> Result<File> {
+    /// Decode the original immutable common encoding without collecting the frame.
+    pub fn frame(&self, identity: &str) -> Result<BlobReader> {
+        Ok(self
+            .prepared_frame(identity)?
+            .reader(None, ReadLimits::default())?)
+    }
+
+    pub fn prepared_frame(&self, identity: &str) -> Result<hashed_blobs::Prepared> {
         let prepared = self.required(identity)?;
-        verified(
-            &self.operation(identity).join("frame.json"),
-            &prepared.frame_hash,
-            prepared.frame_length,
-        )
+        Ok(hashed_blobs::Prepared::from_encoded(
+            regular(&self.operation(identity).join("frame.zst"))?,
+            prepared.frame_encoding.descriptor()?,
+            None,
+            ReadLimits::default(),
+        )?)
     }
 
     pub fn decode_frame(&self, identity: &str) -> Result<Ingress> {
         decode_json(self.frame(identity)?)
     }
 
-    pub fn body(&self, identity: &str) -> Result<File> {
+    pub fn body(&self, identity: &str) -> Result<BlobReader> {
+        self.prepared_body(identity)?
+            .reader(None, ReadLimits::default())
+            .map_err(Into::into)
+    }
+
+    /// The caller keeps the named spool inode immutable until the applied barrier.
+    pub fn encoded_body(&self, identity: &str) -> Result<(PathBuf, EncodedBlob)> {
         let prepared = self.required(identity)?;
         let body = prepared
             .body
             .ok_or_else(|| Error::Invalid("operation has no material body".into()))?;
-        verified(
-            &self.operation(identity).join("body"),
-            &body.blob,
-            body.length,
-        )
+        let descriptor = body.descriptor()?;
+        let path = self.operation(identity).join("body.zst");
+        check_length(&path, descriptor.stored_len)?;
+        Ok((path, descriptor))
+    }
+
+    /// A pinned handle survives publication retries without a decoded copy.
+    pub fn prepared_body(&self, identity: &str) -> Result<hashed_blobs::Prepared> {
+        let (path, descriptor) = self.encoded_body(identity)?;
+        Ok(hashed_blobs::Prepared::from_encoded(
+            regular(&path)?,
+            descriptor,
+            None,
+            ReadLimits::default(),
+        )?)
+    }
+
+    fn receipt(&self, identity: &str) -> Result<Option<Receipt>> {
+        let directory = self.operation(identity).join("ack");
+        if directory.try_exists()? && !fs::symlink_metadata(&directory)?.file_type().is_dir() {
+            return invalid("published acknowledgment is not a directory");
+        }
+        let receipt = read_checked::<Receipt>(&directory.join("receipt.json"))?;
+        if let Some(receipt) = &receipt {
+            check_length(
+                &directory.join("payload.zst"),
+                receipt.payload.descriptor()?.stored_len,
+            )?;
+        } else if directory.try_exists()? {
+            return invalid("published acknowledgment has no receipt");
+        }
+        Ok(receipt)
     }
 
     pub fn acknowledgment(&self, identity: &str) -> Result<Option<Acknowledgment>> {
-        let directory = self.operation(identity);
-        let path = directory.join("ack.json");
-        if !path.try_exists()? {
+        let Some(receipt) = self.receipt(identity)? else {
             return Ok(None);
-        }
-        let file = regular(&path)?;
-        let acknowledgment: Acknowledgment = decode_json(file)?;
-        let prepared = read_checked::<Prepared>(&directory.join("metadata.json"))?
-            .ok_or_else(|| Error::Invalid("acknowledgment has no operation".into()))?;
+        };
+        let acknowledgment: Acknowledgment = decode_json(verified_encoded(
+            &self.operation(identity).join("ack/payload.zst"),
+            receipt.payload.descriptor()?,
+        )?)?;
+        let prepared = self.required(identity)?;
         validate_ack(&prepared, &acknowledgment)?;
-        if let Some(receipt) = read_checked::<Receipt>(&directory.join("receipt.json"))? {
-            verified(&path, &receipt.blob, receipt.length)?;
-            if receipt.commit_seq != acknowledgment.commit_seq
-                || receipt.refused != acknowledgment.refusal.is_some()
-            {
-                return invalid("acknowledgment summary differs from its immutable receipt");
-            }
+        if receipt.commit_seq != acknowledgment.commit_seq
+            || receipt.refused != acknowledgment.refusal.is_some()
+        {
+            return invalid("acknowledgment summary differs from its immutable receipt");
         }
         Ok(Some(acknowledgment))
     }
@@ -250,14 +304,14 @@ impl Spool {
         if matches!(&frame, Ingress::Material { .. }) {
             return invalid("material must have its immutable body prepared before sending");
         }
-        self.prepare_operation(frame, None::<std::io::Empty>, None, None)
+        self.prepare_operation(frame, None::<std::io::Empty>, None, None, None)
     }
 
     pub fn prepare_material(&self, frame: Ingress, bytes: impl Read) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame has captured bytes");
         }
-        self.prepare_operation(frame, Some(bytes), None, None)
+        self.prepare_operation(frame, Some(bytes), None, None, None)
     }
 
     /// Complete parser facts share the material's atomic publication, but
@@ -271,16 +325,44 @@ impl Spool {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame can own a capture");
         }
-        self.prepare_operation(frame, Some(bytes), None, Some(capture))
+        self.prepare_operation(frame, Some(bytes), None, Some(capture), None)
+    }
+
+    pub fn prepare_encoded_material(
+        &self,
+        frame: Ingress,
+        bytes: hashed_blobs::Prepared,
+    ) -> Result<Prepared> {
+        if !matches!(&frame, Ingress::Material { .. }) {
+            return invalid("only a material frame can own encoded bytes");
+        }
+        self.prepare_operation(frame, None::<std::io::Empty>, None, None, Some(bytes))
+    }
+
+    pub fn prepare_encoded_capture(
+        &self,
+        frame: Ingress,
+        bytes: hashed_blobs::Prepared,
+        capture: &Capture,
+    ) -> Result<Prepared> {
+        if !matches!(&frame, Ingress::Material { .. }) {
+            return invalid("only a material frame can own an encoded capture");
+        }
+        self.prepare_operation(
+            frame,
+            None::<std::io::Empty>,
+            None,
+            Some(capture),
+            Some(bytes),
+        )
     }
 
     pub fn capture(&self, identity: &str) -> Result<Capture> {
         let prepared = self.required(identity)?;
         if let Some(captured) = prepared.captured {
-            let capture: Capture = decode_json(verified(
-                &self.operation(identity).join("captured.json"),
-                &captured.blob,
-                captured.length,
+            let capture: Capture = decode_json(verified_encoded(
+                &self.operation(identity).join("captured.zst"),
+                captured.descriptor()?,
             )?)?;
             if prepared.capture.as_ref() != Some(&capture_header(&capture)) {
                 return invalid("capture sidecar differs from its queue header");
@@ -328,6 +410,7 @@ impl Spool {
             frame,
             None::<std::io::Empty>,
             Some((&captures, group_hash)),
+            None,
             None,
         )
     }
@@ -398,44 +481,31 @@ impl Spool {
     pub fn acknowledge(&self, acknowledgment: Acknowledgment) -> Result<()> {
         let prepared = self.required(&acknowledgment.frame)?;
         validate_ack(&prepared, &acknowledgment)?;
-        let directory = self.operation(&prepared.identity);
-        let encoded = encoded_hash(&acknowledgment)?;
         if let Some(previous) = self.acknowledgment(&prepared.identity)? {
-            if encoded_hash(&previous)? != encoded {
+            if encoded_hash(&previous)? != encoded_hash(&acknowledgment)? {
                 return invalid("acknowledgment changed for an immutable operation");
             }
             return Ok(());
         }
-        atomic_json(&directory.join("ack.json"), &acknowledgment)?;
-        boundary("ack_published");
-        self.store_receipt(&prepared, &acknowledgment)
-    }
-
-    fn store_receipt(&self, prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
-        validate_ack(prepared, acknowledgment)?;
-        self.write_receipt(
-            prepared,
-            acknowledgment.commit_seq,
-            acknowledgment.refusal.is_some(),
-        )
-    }
-
-    fn write_receipt(
-        &self,
-        prepared: &Prepared,
-        commit_seq: Option<i64>,
-        refused: bool,
-    ) -> Result<()> {
-        let (blob, length) = file_hash(&self.operation(&prepared.identity).join("ack.json"))?;
-        atomic_checked(
-            &self.operation(&prepared.identity).join("receipt.json"),
+        let directory = self.operation(&prepared.identity);
+        let temporary = tempfile::Builder::new()
+            .prefix(".ack-preparing-")
+            .tempdir_in(&directory)?;
+        let payload = write_encoded_json(&temporary.path().join("payload.zst"), &acknowledgment)?;
+        write_checked(
+            &temporary.path().join("receipt.json"),
             &Receipt {
-                blob,
-                length,
-                commit_seq,
-                refused,
+                payload,
+                commit_seq: acknowledgment.commit_seq,
+                refused: acknowledgment.refusal.is_some(),
             },
-        )
+        )?;
+        sync(temporary.path())?;
+        boundary("ack_synced");
+        fs::rename(temporary.path(), directory.join("ack"))?;
+        sync(&directory)?;
+        boundary("ack_published");
+        Ok(())
     }
 
     pub fn retire(&self, applied: i64) -> Result<()> {
@@ -576,6 +646,13 @@ impl Spool {
                     let file = file?;
                     if file.file_type()?.is_file() {
                         bytes = bytes.saturating_add(file.metadata()?.len());
+                    } else if file.file_name() == "ack" && file.file_type()?.is_dir() {
+                        for receipt_file in fs::read_dir(file.path())? {
+                            let receipt_file = receipt_file?;
+                            if receipt_file.file_type()?.is_file() {
+                                bytes = bytes.saturating_add(receipt_file.metadata()?.len());
+                            }
+                        }
                     }
                 }
             }
@@ -592,12 +669,12 @@ impl Spool {
         let group = prepared
             .group
             .ok_or_else(|| Error::Invalid("operation is not a capture group".into()))?;
-        let path = self.operation(identity).join("captures.jsonl");
-        let mut file = verified(
-            &path,
-            &group.captures_hash,
-            fs::symlink_metadata(&path)?.len(),
-        )?;
+        let descriptor = group.encoding.descriptor()?;
+        if descriptor.hash.to_string() != group.captures_hash {
+            return invalid("capture group encoding differs from its immutable set");
+        }
+        let mut file =
+            verified_encoded(&self.operation(identity).join("captures.zst"), descriptor)?;
         let mut count = 0u64;
         for line in BufReader::new(&mut file).lines() {
             let _: String = serde_json::from_str(&line?)?;
@@ -627,6 +704,7 @@ impl Spool {
         mut body: Option<R>,
         captures: Option<(&[&str], String)>,
         full_capture: Option<&Capture>,
+        encoded_body: Option<hashed_blobs::Prepared>,
     ) -> Result<Prepared> {
         self.ensure_indexes()?;
         let identity = frame.frame().to_owned();
@@ -637,7 +715,7 @@ impl Spool {
             {
                 return invalid("prepared identity changed immutable frame contents");
             }
-            if previous.body.is_some() != body.is_some() {
+            if previous.body.is_some() != (body.is_some() || encoded_body.is_some()) {
                 return invalid("prepared identity changed its body contract");
             }
             if previous
@@ -652,8 +730,31 @@ impl Spool {
                 let mut output = HashWriter::new(std::io::sink());
                 std::io::copy(input, &mut output)?;
                 let (blob, length) = output.finish();
-                if previous.body.as_ref() != Some(&Bytes { blob, length }) {
+                if previous
+                    .body
+                    .as_ref()
+                    .map(|bytes| (bytes.blob.as_str(), bytes.length))
+                    != Some((blob.as_str(), length))
+                {
                     return invalid("prepared identity changed immutable body contents");
+                }
+            }
+            if let Some(encoded) = encoded_body {
+                let descriptor = encoded.descriptor();
+                let _validated = hashed_blobs::Prepared::from_encoded(
+                    encoded.into_file(),
+                    descriptor.clone(),
+                    None,
+                    ReadLimits::default(),
+                )?;
+                let blob = descriptor.hash.to_string();
+                if previous
+                    .body
+                    .as_ref()
+                    .map(|bytes| (bytes.blob.as_str(), bytes.length))
+                    != Some((blob.as_str(), descriptor.decoded_len))
+                {
+                    return invalid("prepared identity changed immutable encoded body contents");
                 }
             }
             let desired_capture = full_capture.map(encoded_hash).transpose()?;
@@ -673,7 +774,10 @@ impl Spool {
         let temporary = tempfile::Builder::new()
             .prefix(&prefix)
             .tempdir_in(self.root.join("operations"))?;
-        let (frame_hash, frame_length) = write_json(&temporary.path().join("frame.json"), &frame)?;
+        let frame_bytes = write_encoded_json(&temporary.path().join("frame.zst"), &frame)?;
+        let frame_hash = frame_bytes.blob;
+        let frame_length = frame_bytes.length;
+        let frame_encoding = frame_bytes.encoding;
         let (kind, material, mut capture, request) = describe(&frame)?;
         let captured = full_capture
             .map(|full| -> Result<Bytes> {
@@ -682,47 +786,56 @@ impl Spool {
                     return invalid("capture header differs from its material manifest");
                 }
                 capture = Some(header);
-                let (blob, length) = write_json(&temporary.path().join("captured.json"), full)?;
+                let bytes = write_encoded_json(&temporary.path().join("captured.zst"), full)?;
                 boundary("capture_synced");
-                Ok(Bytes { blob, length })
+                Ok(bytes)
             })
             .transpose()?;
-        let body = if let Some(mut input) = body {
+        let body = if body.is_some() || encoded_body.is_some() {
             let descriptor = material
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("body has no material descriptor".into()))?;
-            let path = temporary.path().join("body");
-            let mut output = HashWriter::new(
-                OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&path)?,
-            );
-            std::io::copy(&mut input, &mut output)?;
-            output.inner.sync_all()?;
-            let (blob, length) = output.finish();
-            if blob != descriptor.blob || length != descriptor.length {
+            let path = temporary.path().join("body.zst");
+            let bytes = if let Some(encoded) = encoded_body {
+                write_prepared(&path, encoded)?
+            } else {
+                let preparation = Preparation::new(temporary.path())?;
+                let encoded = preparation.plain_into(
+                    create_payload(&path)?,
+                    body.take().expect("decoded body"),
+                    3,
+                )?;
+                let descriptor = encoded.descriptor();
+                encoded.into_file().sync_all()?;
+                Bytes::new(&descriptor)
+            };
+            if bytes.blob != descriptor.blob || bytes.length != descriptor.length {
                 return invalid("captured bytes differ from their prepared material");
             }
             boundary("body_synced");
-            Some(Bytes { blob, length })
+            Some(bytes)
         } else {
             None
         };
         let group = captures
             .map(|(captures, captures_hash)| -> Result<Group> {
-                let mut file = OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(temporary.path().join("captures.jsonl"))?;
+                let path = temporary.path().join("captures.zst");
+                let mut writer =
+                    Preparation::new(temporary.path())?.plain_writer(create_payload(&path)?, 3)?;
                 for capture in captures {
-                    serde_json::to_writer(&mut file, capture)?;
-                    file.write_all(b"\n")?;
+                    serde_json::to_writer(&mut writer, capture)?;
+                    writer.write_all(b"\n")?;
                 }
-                file.sync_all()?;
+                let encoded = writer.finish()?;
+                let descriptor = encoded.descriptor();
+                encoded.into_file().sync_all()?;
+                if descriptor.hash.to_string() != captures_hash {
+                    return invalid("capture group serialization changed");
+                }
                 Ok(Group {
                     captures_hash,
                     captures_count: captures.len() as u64,
+                    encoding: Encoding::new(&descriptor),
                 })
             })
             .transpose()?;
@@ -733,6 +846,7 @@ impl Spool {
             kind,
             frame_hash,
             frame_length,
+            frame_encoding,
             body,
             material,
             capture,
@@ -817,6 +931,11 @@ impl Spool {
             };
             if !entry.file_type()?.is_dir() {
                 return invalid("spool operation is not a directory");
+            }
+            if entry.path().join("frame.json").try_exists()? {
+                return invalid(
+                    "producer spool contains plaintext pending payloads; preserve them before an explicit transition",
+                );
             }
             let metadata = read_checked::<Prepared>(&entry.path().join("metadata.json"))?
                 .ok_or_else(|| Error::Invalid("published operation has no metadata".into()))?;
@@ -1025,15 +1144,6 @@ fn read_checked<T: serde::de::DeserializeOwned + Serialize>(path: &Path) -> Resu
     }
     Ok(Some(checked.value))
 }
-fn atomic_checked(path: &Path, value: &impl Serialize) -> Result<()> {
-    atomic_json(
-        path,
-        &Checked {
-            value,
-            digest: encoded_hash(value)?.0,
-        },
-    )
-}
 fn write_checked(path: &Path, value: &impl Serialize) -> Result<()> {
     write_json(
         path,
@@ -1065,15 +1175,6 @@ fn decode_json<T: serde::de::DeserializeOwned>(reader: impl Read) -> Result<T> {
     Ok(value)
 }
 
-fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    let parent = path.parent().expect("spool path parent");
-    let temporary = tempfile::NamedTempFile::new_in(parent)?;
-    write_json_file(temporary.as_file(), value)?;
-    temporary
-        .persist(path)
-        .map_err(|error| Error::Io(error.error))?;
-    sync(parent)
-}
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(String, u64)> {
     let file = OpenOptions::new().create_new(true).write(true).open(path)?;
     write_json_file(&file, value)
@@ -1089,21 +1190,40 @@ fn encoded_hash(value: &impl Serialize) -> Result<(String, u64)> {
     serde_json::to_writer(&mut writer, value)?;
     Ok(writer.finish())
 }
-fn file_hash(path: &Path) -> Result<(String, u64)> {
-    let mut input = regular(path)?;
-    let mut writer = HashWriter::new(std::io::sink());
-    std::io::copy(&mut input, &mut writer)?;
-    Ok(writer.finish())
+fn create_payload(path: &Path) -> Result<File> {
+    Ok(OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(path)?)
 }
-fn verified(path: &Path, blob: &str, length: u64) -> Result<File> {
-    let mut file = regular(path)?;
-    let mut writer = HashWriter::new(std::io::sink());
-    std::io::copy(&mut file, &mut writer)?;
-    if writer.finish() != (blob.to_owned(), length) {
-        return invalid("spool payload differs from its immutable digest");
-    }
-    file.rewind()?;
-    Ok(file)
+fn write_encoded_json(path: &Path, value: &impl Serialize) -> Result<Bytes> {
+    let mut writer = Preparation::new(path.parent().expect("payload parent"))?
+        .plain_writer(create_payload(path)?, 3)?;
+    serde_json::to_writer(&mut writer, value)?;
+    let encoded = writer.finish()?;
+    let descriptor = encoded.descriptor();
+    encoded.into_file().sync_all()?;
+    Ok(Bytes::new(&descriptor))
+}
+fn write_prepared(path: &Path, prepared: hashed_blobs::Prepared) -> Result<Bytes> {
+    let descriptor = prepared.descriptor();
+    let mut input = prepared.into_file();
+    input.rewind()?;
+    let mut output = create_payload(path)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.sync_all()?;
+    hashed_blobs::Prepared::from_encoded(output, descriptor.clone(), None, ReadLimits::default())?;
+    Ok(Bytes::new(&descriptor))
+}
+fn verified_encoded(path: &Path, descriptor: EncodedBlob) -> Result<BlobReader> {
+    let prepared = hashed_blobs::Prepared::from_encoded(
+        regular(path)?,
+        descriptor,
+        None,
+        ReadLimits::default(),
+    )?;
+    Ok(prepared.reader(None, ReadLimits::default())?)
 }
 struct HashWriter<W> {
     inner: W,
