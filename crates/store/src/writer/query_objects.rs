@@ -94,7 +94,6 @@ impl Inner {
     pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<QueryCustody> {
         crate::query_objects::validate_run(run)?;
         if let Some(sinex) = &self.sinex {
-            self.primary_cache_ready()?;
             sinex.prepare_named_products(
                 &format!("query-run:{}", run.id),
                 &[crate::primary::ProductWrite {
