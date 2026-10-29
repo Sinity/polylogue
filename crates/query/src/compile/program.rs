@@ -642,6 +642,7 @@ impl<'a> Compiler<'a> {
             now: self.opts.clock.now.as_millisecond(),
             zone: self.opts.clock.day.zone_name().to_owned(),
             day_start_minutes: time::product_day(&self.opts.clock).start_minutes,
+            resolved_times: self.resolved_times.into_inner(),
             measure,
             order,
         })

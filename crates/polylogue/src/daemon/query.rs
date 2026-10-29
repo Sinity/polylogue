@@ -46,7 +46,7 @@ impl From<QueryError> for Failure {
 pub(crate) mod feed;
 pub(crate) mod notes;
 mod page;
-use page::Cursor;
+use query_language::cursor::CursorSeal;
 
 /// What a request asks besides the text.
 pub struct Ask<'a> {
@@ -308,27 +308,23 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
 
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
-    let cursor = ask.cursor.map(Cursor::decode).transpose()?;
-    let seed = cursor
-        .as_ref()
-        .map_or_else(|| uuid::Uuid::now_v7().as_u128() as u64, |c| c.seed);
-    let opts = options(
-        reader,
-        &ask,
-        cursor.as_ref().map_or(ask.now, |c| c.now),
-        seed,
-    )?;
+    let seal = CursorSeal::new(reader.cursor_key()?);
+    let position = reader.change_position()?;
+    let mut opts = options(reader, &ask, ask.now, 0)?;
+    let question = page::identity(ask.text, &opts)?;
+    let cursor = ask.cursor.map(|text| page::open(text, &seal, question, &position, &opts)).transpose()?;
+    let seed = cursor.as_ref().map_or_else(|| uuid::Uuid::now_v7().as_u128() as u64, |cursor| cursor.context.random_seed);
+    if let Some(cursor) = &cursor { opts.clock = cursor.context.clock.clone(); }
+    opts.random_seed = Some(seed);
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    let question = page::question(&program, &opts, ask.why)?;
-    let after = cursor
-        .as_ref()
-        .map(|cursor| cursor.check(&program, &question).map(<[Value]>::to_vec))
-        .transpose()?;
+    let after = cursor.as_ref().map(|cursor| page::check(cursor, &program, &opts, ask.why)).transpose()?;
+    let context = match cursor { Some(cursor) => cursor.context, None => page::context(question, &position, &opts, &program, seed, ask.why)? };
+    let paging = page::Paging { seal: &seal, context };
     let day = polylogue_query::time::product_day(&opts.clock);
     with_similarity(reader, &program, ask.near, || {
-        answer(reader, &program, &day, after, seed, question, ask.why)
+        answer(reader, &program, &day, after, &paging, ask.why)
     })
 }
 
@@ -339,8 +335,7 @@ fn answer(
     program: &Program,
     day: &LogicalDay,
     after: Option<Vec<Value>>,
-    seed: u64,
-    question: String,
+    paging: &page::Paging<'_>,
     why_asked: bool,
 ) -> Result<Value, Failure> {
     let params = values(&program.params);
@@ -349,7 +344,7 @@ fn answer(
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let (definition, _) = super::measure::find_checked(&m.what)?;
         if let Some(paging) = definition.paging {
-            let (rows, count, next, _) = read_page(reader, program, &after, seed, question)?;
+            let (rows, count, next, _) = read_page(reader, program, &after, paging)?;
             let session_order: std::collections::BTreeMap<_, _> = rows
                 .iter()
                 .enumerate()
@@ -448,7 +443,7 @@ fn answer(
             json!({ "outcome": "measure", "measure": m.what, "data": data, "read_at": read_at }),
         );
     }
-    let (mut rows, count, next, without) = read_page(reader, program, &after, seed, question)?;
+    let (mut rows, count, next, without) = read_page(reader, program, &after, paging)?;
 
     polylogue_store::read::limit::ReadLimit::set_stage("attached rows");
     if program.shape == Shape::Rows {
@@ -546,8 +541,7 @@ fn read_page(
     reader: &Reader<'_>,
     program: &Program,
     after: &Option<Vec<Value>>,
-    seed: u64,
-    question: String,
+    paging: &page::Paging<'_>,
 ) -> Result<(Vec<Value>, u64, Option<String>, u64), Failure> {
     let params = values(&program.params);
     polylogue_store::read::limit::ReadLimit::set_stage("count");
@@ -566,7 +560,7 @@ fn read_page(
     let more = rows.len() as u64 > page_size;
     rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
     let next = match rows.last() {
-        Some(last) if more => Some(Cursor::after_row(program, last, seed, question).encode()?),
+        Some(last) if more => Some(page::after_row(program, last, paging)?),
         _ => None,
     };
 
