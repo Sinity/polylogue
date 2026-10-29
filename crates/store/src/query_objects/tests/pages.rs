@@ -2,7 +2,8 @@ use super::*;
 use polylogue_model::{
     BlobHash,
     read::{
-        HttpCall, ReadPosition, ReadRecordKind, ReadRecordLocator, ReadyCall, SelectionLocator,
+        HttpCall, ReadDirection, ReadPosition, ReadRecordKind, ReadRecordLocator, ReadSeek,
+        ReadyCall, SelectionLocator,
     },
 };
 
@@ -31,7 +32,10 @@ pub(super) fn child(root: &QueryRun, id: &str, read_at: ChangePosition) -> Query
         binding: RunBinding::Continuation {
             root: root.id.clone(),
             binding_hash: root.binding_hash().unwrap(),
-            position: position(),
+            seek: ReadSeek {
+                direction: ReadDirection::After,
+                anchor: position(),
+            },
             accepted_request: Some(
                 serde_json::json!({"id":"actual-current-page","operation":"read","arguments":{"root_run":root.id,"cursor":"opaque-authenticated-cursor-artifact"}}),
             ),
@@ -186,14 +190,24 @@ fn child_intent_integrity_survives_outcome_first_order_and_rejects_position_enve
         .unwrap()
         .unwrap();
     let mut moved = page.clone();
-    let RunBinding::Continuation { position, .. } = &mut moved.binding else {
+    let RunBinding::Continuation { seek, .. } = &mut moved.binding else {
         unreachable!()
     };
-    position.character += 1;
+    seek.anchor.character += 1;
     assert_eq!(moved.binding_hash().unwrap(), page.binding_hash().unwrap());
     assert_ne!(moved.record_hash().unwrap(), page.record_hash().unwrap());
     assert!(archive.writer.begin_query_run(moved).is_err());
     archive.writer.begin_query_run(page.clone()).unwrap();
+    let mut reversed = page.clone();
+    let RunBinding::Continuation { seek, .. } = &mut reversed.binding else {
+        unreachable!()
+    };
+    seek.direction = ReadDirection::Before;
+    assert_eq!(
+        reversed.binding_hash().unwrap(),
+        page.binding_hash().unwrap()
+    );
+    assert!(archive.writer.begin_query_run(reversed).is_err());
     let mut changed = page.clone();
     let RunBinding::Continuation {
         accepted_request, ..
