@@ -1,7 +1,7 @@
 //! One pinned selection, projected and laid out identically for every delivery.
 use super::{Daemon, Response, error, ok, store_error};
 use crate::daemon::Request;
-use polylogue_model::{Timestamp, authorship::Authorship, bundle::*, read::*};
+use polylogue_model::{bundle::*, read::*};
 use polylogue_render::pager::{Budget, PageBuilder, Push};
 use polylogue_store::{
     Reader,
@@ -57,8 +57,10 @@ pub(super) fn outline(
 fn context(
     selection: &PreparedSelection,
     options: &ReadOptions,
+    operation: &crate::operation::Context,
 ) -> Result<CursorContext, Response> {
     let mut context = selection.cursor_context().clone();
+    context.versions.extend(operation.cursor_versions());
     let bytes = serde_json::to_vec(options).map_err(|e| error("internal", e))?;
     context.versions.insert(
         "read_options".into(),
@@ -71,9 +73,10 @@ fn open(
     selection: &PreparedSelection,
     options: &ReadOptions,
     token: &str,
+    operation: &crate::operation::Context,
 ) -> Result<(Continuation, Resume), Response> {
     let seal = CursorSeal::new(reader.cursor_key().map_err(|e| store_error(&e))?);
-    let current = context(selection, options)?;
+    let current = context(selection, options, operation)?;
     let continuation = seal
         .open(
             &SealedCursor::from_wire(token),
@@ -122,18 +125,18 @@ fn prepared<T>(
     target: &str,
     options: &ReadOptions,
     cursor: Option<&str>,
-    author: &Authorship,
+    operation: &std::sync::Arc<crate::operation::Context>,
     run: impl FnOnce(
         &PreparedSelection,
         Option<Resume>,
         ReadSnapshot,
         ReadHeader,
         Option<&polylogue_store::selection::NearFn<'_>>,
+        &std::sync::Arc<crate::operation::Context>,
     ) -> Result<T, Response>,
 ) -> Result<T, Response> {
     options.validate().map_err(|e| error("bad_request", e))?;
-    let clock = d.query_clock()?;
-    let ran_at: Timestamp = clock.now.into();
+    let ran_at = operation.ran_at;
     crate::daemon::query::with_ranking(reader, &d.warm, &d.config, |embeddings, near| {
         let ask = crate::daemon::query::Ask {
             text: target,
@@ -141,7 +144,7 @@ fn prepared<T>(
             page_size: None,
             why: false,
             session: None,
-            clock: clock.clone(),
+            context: std::sync::Arc::clone(operation),
             embeddings,
             near: Some(near),
             fields: &[],
@@ -153,12 +156,14 @@ fn prepared<T>(
                     message: e.message,
                     detail: e.detail,
                 })?;
+        let mut evaluation = std::sync::Arc::clone(operation);
         let mut selection = reader
             .prepare_selection(target, &compile)
             .map_err(failure)?;
         let resume = if let Some(token) = cursor {
-            let (continuation, resume) = open(reader, &selection, options, token)?;
-            compile.clock = continuation.context.clock;
+            let (continuation, resume) = open(reader, &selection, options, token, operation)?;
+            evaluation = std::sync::Arc::new(operation.replay_clock(continuation.context.clock)?);
+            compile.clock = evaluation.clock.clone();
             compile.random_seed = Some(continuation.context.random_seed);
             selection = reader
                 .prepare_selection(target, &compile)
@@ -176,7 +181,7 @@ fn prepared<T>(
             read_at: position,
             currency: d.currency(reader).map_err(|e| store_error(&e))?,
             enabled_variants: options.variants.clone(),
-            author: author.author.clone(),
+            author: operation.authorship.author.clone(),
             notes: selection.program().notes.clone(),
             incomplete: selection.program().incomplete.clone(),
         };
@@ -189,7 +194,7 @@ fn prepared<T>(
             },
             figures: vec![],
         };
-        run(&selection, resume, snapshot, header, Some(near))
+        run(&selection, resume, snapshot, header, Some(near), &evaluation)
     })
 }
 
@@ -286,7 +291,7 @@ pub(super) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
     request: &Request,
-    author: &Authorship,
+    operation: &std::sync::Arc<crate::operation::Context>,
 ) -> Response {
     let Request::Read {
         target,
@@ -308,8 +313,8 @@ pub(super) fn page(
         target,
         options,
         cursor.as_deref(),
-        author,
-        |selection, resume, snapshot, header, near| {
+        operation,
+        |selection, resume, snapshot, header, near, evaluation| {
             let scope = selection.scope_token();
             let mut limit = Budget::default();
             if let Some(tokens) = budget {
@@ -368,7 +373,7 @@ pub(super) fn page(
                         let next_call = (|| -> Result<ReadyCall, Response> {
                             let token = seal(
                                 reader,
-                                context(selection, options)?,
+                                context(selection, options, evaluation)?,
                                 Resume {
                                     before: anchors.get(&position.reference).cloned().ok_or_else(
                                         || {
@@ -434,7 +439,7 @@ pub(super) fn page(
 pub(crate) fn produce(
     request: &Request,
     d: &Daemon,
-    author: &Authorship,
+    operation: &std::sync::Arc<crate::operation::Context>,
     output: &mut dyn Write,
 ) -> Option<Result<(), Response>> {
     let Request::Read {
@@ -456,8 +461,8 @@ pub(crate) fn produce(
             target,
             options,
             cursor.as_deref(),
-            author,
-            |selection, resume, snapshot, header, near| {
+            operation,
+            |selection, resume, snapshot, header, near, _evaluation| {
                 let scope = selection.scope_token();
                 let check = || {
                     scope.check().map_err(|e| store_error(&e))?;

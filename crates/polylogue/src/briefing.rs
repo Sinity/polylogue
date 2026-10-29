@@ -217,11 +217,11 @@ pub fn prepare(
     reader: &Reader<'_>,
     ask: &Ask,
     delivery_id: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
     near: Option<&NearFn<'_>>,
     check_history: &Path,
 ) -> Result<Prepared, StoreError> {
-    let now: Timestamp = clock.now.into();
+    let now: Timestamp = context.clock.now.into();
     match ask {
         Ask::SessionStart {
             cwd,
@@ -233,10 +233,10 @@ pub fn prepare(
             session.as_ref(),
             *source,
             delivery_id,
-            clock,
+            context,
             check_history,
         ),
-        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, clock),
+        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, context),
         Ask::Recall {
             text, cwd, cursor, ..
         } => recall(
@@ -245,7 +245,7 @@ pub fn prepare(
             cwd.as_deref(),
             cursor.as_deref(),
             delivery_id,
-            clock,
+            context,
             near,
         ),
         Ask::ToolUse {
@@ -263,9 +263,9 @@ fn operator_notes(
     reader: &Reader<'_>,
     targets: Vec<Reference>,
     after_seq: Option<i64>,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<Note>, StoreError> {
-    let now: Timestamp = clock.now.into();
+    let now: Timestamp = context.clock.now.into();
     let kinds = [
         NoteKind::Lesson,
         NoteKind::Handoff,
@@ -282,7 +282,7 @@ fn operator_notes(
     if let Some(after) = after_seq {
         conditions.push_str(&format!(" write_counter:>{after}"));
     }
-    let notes = notes::list(reader, &conditions, clock)?;
+    let notes = notes::list(reader, &conditions, context)?;
     Ok(notes.into_iter().filter(|n| !n.expired_at(now)).collect())
 }
 
@@ -290,12 +290,12 @@ fn operator_notes(
 fn unjudged_agent_notes(
     reader: &Reader<'_>,
     targets: &[Reference],
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<u64, StoreError> {
     notes::count(
         reader,
         &format!("{} agent:true judged:unknown", notes::about(targets)),
-        clock,
+        context,
     )
 }
 
@@ -437,7 +437,7 @@ fn live_here(
     reader: &Reader<'_>,
     dirs: &[String],
     me: Option<&SessionId>,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<Item>, StoreError> {
     let places: Vec<String> = dirs
         .iter()
@@ -465,7 +465,7 @@ fn live_here(
                 page_size: None,
                 why: false,
                 session: None,
-                clock: clock.clone(),
+                context: std::sync::Arc::clone(context),
                 embeddings: false,
                 near: None,
                 fields: &fields,
@@ -617,10 +617,10 @@ fn session_start(
     session: Option<&SessionId>,
     source: StartSource,
     delivery_id: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
     check_history: &Path,
 ) -> Result<Prepared, StoreError> {
-    let now: Timestamp = clock.now.into();
+    let now: Timestamp = context.clock.now.into();
     let dirs = scope_dirs(cwd);
     let here = cwd.display().to_string();
     let mut targets: Vec<Reference> = dirs.iter().map(|d| Reference::Cwd(d.clone())).collect();
@@ -655,7 +655,7 @@ fn session_start(
         reader,
         targets.clone(),
         previous.as_ref().map(|p| p.seq),
-        clock,
+        context,
     )?;
 
     let mut header = format!("Polylogue brief for {here} (delivery {delivery_id})\n");
@@ -700,7 +700,7 @@ fn session_start(
     );
     fit.section(
         "Other agents working here now:",
-        live_here(reader, &dirs, session, clock)?,
+        live_here(reader, &dirs, session, context)?,
         "live sessions",
         "polylogue live",
     );
@@ -818,7 +818,7 @@ fn session_start(
         .collect();
     fit.section("Signal notices:", notices, "notices", "polylogue notices");
 
-    let agent_notes = unjudged_agent_notes(reader, &targets, clock)?;
+    let agent_notes = unjudged_agent_notes(reader, &targets, context)?;
     if agent_notes > 0 {
         fit.left_out.push(LeftOut {
             what: format!("{agent_notes} agent-written notes"),
@@ -856,7 +856,7 @@ fn takeover(
     reader: &Reader<'_>,
     session: &SessionId,
     delivery_id: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Prepared, StoreError> {
     let id = session.to_string();
     let Some(s) = reader.session(session)? else {
@@ -887,7 +887,7 @@ fn takeover(
             "{} agent:false",
             notes::about(&[Reference::Session(session.clone())])
         ),
-        clock,
+        context,
     )?;
     let open_items = reader.open_items(&id)?.unwrap_or_default();
 
@@ -1020,7 +1020,7 @@ fn recall(
     cwd: Option<&Path>,
     cursor: Option<&str>,
     delivery_id: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
     near: Option<&NearFn<'_>>,
 ) -> Result<Prepared, StoreError> {
     let words = search::words(text_in);
@@ -1041,7 +1041,7 @@ fn recall(
                 page_size: Some(RECALL_PAGE),
                 why: false,
                 session: None,
-                clock: clock.clone(),
+                context: std::sync::Arc::clone(context),
                 embeddings: similarity,
                 near: if similarity { near } else { None },
                 fields: &[],
@@ -1164,7 +1164,7 @@ fn recall(
         let notes = notes::list(
             reader,
             &notes::about(&[Reference::Session(id.clone())]),
-            clock,
+            context,
         )?;
         for n in notes {
             let body = n.value.as_deref().unwrap_or("").trim();

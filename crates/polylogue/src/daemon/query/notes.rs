@@ -10,10 +10,10 @@ use polylogue_store::{Reader, StoreError};
 pub fn list(
     reader: &Reader<'_>,
     conditions: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<Note>, StoreError> {
     let mut notes = Vec::new();
-    for id in ids(reader, conditions, clock)? {
+    for id in ids(reader, conditions, context)? {
         if let Some(note) = reader.note(&id)? {
             notes.push(note);
         }
@@ -25,9 +25,9 @@ pub fn list(
 pub fn count(
     reader: &Reader<'_>,
     conditions: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<u64, StoreError> {
-    let page = page(reader, &text(conditions), None, clock)?;
+    let page = page(reader, &text(conditions), None, context)?;
     Ok(page["count"].as_u64().unwrap_or(0))
 }
 
@@ -54,13 +54,13 @@ fn text(conditions: &str) -> String {
 fn ids(
     reader: &Reader<'_>,
     conditions: &str,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<String>, StoreError> {
     let text = text(conditions);
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let page = page(reader, &text, cursor.as_deref(), clock)?;
+        let page = page(reader, &text, cursor.as_deref(), context)?;
         ids.extend(
             page["rows"]
                 .as_array()
@@ -79,7 +79,7 @@ fn page(
     reader: &Reader<'_>,
     text: &str,
     cursor: Option<&str>,
-    clock: &query_language::time::Clock,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<serde_json::Value, StoreError> {
     run(
         reader,
@@ -89,7 +89,7 @@ fn page(
             page_size: None,
             why: false,
             session: None,
-            clock: clock.clone(),
+            context: std::sync::Arc::clone(context),
             embeddings: false,
             near: None,
             fields: &[],
