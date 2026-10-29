@@ -11,8 +11,10 @@ fn source(path: &[u8]) -> SourceSelector {
 }
 fn basis(source: &SourceSelector, pending: Option<String>) -> SourceBasis {
     SourceBasis {
+        boundary: None,
+        resolved: None,
         source: source.clone(),
-        status: SourceStatus::Ready,
+        status: SourceStatus::MissingEvidence,
         confirmed: None,
         pending,
     }
@@ -116,7 +118,7 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
     let sinex = client(root.path());
     let state = sinex.pending_source(&selector, "reading").unwrap();
     let head = state.head.unwrap();
-    assert_eq!(state.status, SourceStatus::Ready);
+    assert_eq!(state.status, SourceStatus::MissingEvidence);
     assert_eq!(
         acquire(
             &sinex,

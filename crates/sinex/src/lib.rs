@@ -387,7 +387,7 @@ impl polylogue_store::primary::Sinex for Sinex {
                     spool::Kind::Events | spool::Kind::ReplaySequence
                 ) && receipt.refusal.is_none()
                     && receipt.commit_seq.is_some();
-                queue.acknowledge(receipt)?;
+                queue.acknowledge(client::verified_receipt(&entry, receipt)?)?;
             }
         }
         if admitted {

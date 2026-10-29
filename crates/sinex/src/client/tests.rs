@@ -51,7 +51,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let frame=ingress.next().await.unwrap();
             let sinex_protocol::Ingress::RegisterKinds{frame,declarations}=serde_json::from_slice(&frame.payload).unwrap() else {panic!("kind registration expected")};
             let hashes:Vec<_>=declarations.iter().map(|declaration|(declaration.kind.clone(),declaration.definition_hash())).collect();
-            let receipt:sinex_protocol::Acknowledgment=serde_json::from_value(serde_json::json!({"number":1,"frame":frame,"material":null,"admitted":[],"outcome":{"registered_kinds":hashes},"refusal":null,"commit_seq":null})).unwrap();
+            let receipt:sinex_protocol::Acknowledgment=serde_json::from_value(serde_json::json!({"number":1,"frame":frame,"material":null,"admitted":[],"outcome":{"registered_kinds":hashes,"frame_content_hash":sinex_transport::producer::content_hash(&sinex_protocol::Ingress::RegisterKinds{frame:frame.clone(),declarations:declarations.clone()}).unwrap()},"refusal":null,"commit_seq":null})).unwrap();
             client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::ReceiptHint{number:1,frame_hash:blake3::hash(frame.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
@@ -62,7 +62,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
             let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","context_token":"synthetic-context-token","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z","coverage":{"state":"not_requested"}})).unwrap();
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
             let subjects=Subjects::new("auth");
-            let response=sinex_protocol::ConfirmedConsumerReply{stream:subjects.confirmed_stream(),consumer:subjects.consumer_name("test-scope"),scope:"test-scope".into(),position:Some(42),refusal:None,gap:None};
+            let response=sinex_protocol::ConfirmedConsumerReply{stream_instance:None,stream:subjects.confirmed_stream(),consumer:subjects.consumer_name("test-scope"),scope:"test-scope".into(),position:Some(42),refusal:None,gap:None};
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
             assert_eq!(query.after,42);

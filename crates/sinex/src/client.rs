@@ -271,7 +271,7 @@ impl Client {
             )
         };
         if let Some(receipt) = receipt {
-            return checked(receipt);
+            return checked(verified_receipt(&prepared, receipt)?);
         }
         if !self.publication_allowed(&prepared.identity) {
             return Err(Error::Refused {
@@ -361,6 +361,28 @@ impl Client {
         .await
         .map_err(|error| Error::Unreachable(error.to_string()))
     }
+}
+
+/// A LargeFrame envelope names the original logical frame hash. Receipt
+/// adoption needs that identity, independently of the encoded custody layout.
+pub(crate) fn verified_receipt(
+    prepared: &crate::spool::Prepared,
+    receipt: Acknowledgment,
+) -> Result<Acknowledgment> {
+    let frame = Ingress::LargeFrame {
+        frame: prepared.identity.clone(),
+        blob: prepared.frame_hash.clone(),
+        length: prepared.frame_length,
+    };
+    if receipt.frame != prepared.identity {
+        return Err(Error::Invalid(
+            "recorded receipt changed its operation identity".into(),
+        ));
+    }
+    sinex_transport::producer::check_receipt(&frame, receipt).map_err(|error| Error::Refused {
+        name: prepared.identity.clone(),
+        reason: error.to_string(),
+    })
 }
 
 pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> {
