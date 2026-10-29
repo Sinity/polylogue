@@ -45,6 +45,7 @@ pub struct ToolCallProduct {
 pub struct TurnProduct {
     pub turn: MessageId,
     pub session: SessionId,
+    pub physical_session: SessionId,
     pub start: Option<Timestamp>,
     pub start_evidence: crate::TimeEvidence,
     pub end: Option<Timestamp>,
@@ -67,6 +68,7 @@ pub struct TurnProduct {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkMessage {
     pub message: MessageId,
+    pub physical_session: SessionId,
     pub role: Role,
     pub written_by: WrittenBy,
     pub prompt_kind: Option<PromptKind>,
@@ -312,6 +314,7 @@ impl Turn {
             product: TurnProduct {
                 turn: message.id.clone(),
                 session: logical_session.clone(),
+                physical_session: message.session.clone(),
                 start: None,
                 start_evidence: crate::TimeEvidence::UNKNOWN,
                 end: None,
@@ -405,13 +408,14 @@ pub fn derive_with_background(
     let mut by_call = BTreeMap::<(SessionId, SessionId, String), Vec<usize>>::new();
     let mut observations = BTreeMap::<(SessionId, SessionId, String), Vec<Observation>>::new();
     let mut turns = Vec::<Turn>::new();
-    let mut active = BTreeMap::<SessionId, (usize, bool)>::new();
+    let mut active = BTreeMap::<(SessionId, SessionId), (usize, bool)>::new();
     let mut call_turns = Vec::new();
     let mut call_boundaries = Vec::new();
     let mut last_response = BTreeMap::new();
     for (ordinal, selected) in messages.into_iter().enumerate() {
         let message = &selected.message;
         let session = &selected.logical_session;
+        let physical_scope = (session.clone(), message.session.clone());
         let written_by = WrittenBy::of(message.role, message.prompt_kind);
         if message.role == Role::Assistant
             && written_by == WrittenBy::Model
@@ -421,7 +425,7 @@ pub fn derive_with_background(
         }
         if matches!(written_by, WrittenBy::Human | WrittenBy::Model) {
             let human = written_by == WrittenBy::Human;
-            let current = active.get(session).copied();
+            let current = active.get(&physical_scope).copied();
             let begins = match current {
                 None => true,
                 Some((_, previous_human)) => {
@@ -436,7 +440,7 @@ pub fn derive_with_background(
                 current.expect("active turn").0
             };
             turns[turn].push(&selected);
-            active.insert(session.clone(), (turn, human));
+            active.insert(physical_scope.clone(), (turn, human));
         }
         let mapping_valid = selected
             .projection
@@ -527,7 +531,7 @@ pub fn derive_with_background(
                             .or_default()
                             .push(calls.len());
                     }
-                    call_turns.push(active.get(session).map(|(turn, _)| *turn));
+                    call_turns.push(active.get(&physical_scope).map(|(turn, _)| *turn));
                     call_boundaries.push((
                         ordinal,
                         message.production.response_boundary_unknown == Some(true),

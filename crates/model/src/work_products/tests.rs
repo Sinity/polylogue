@@ -46,6 +46,26 @@ fn model_authored_prompt_is_not_an_answer_and_unknown_usage_stays_unknown() {
 }
 
 #[test]
+fn sibling_agent_answers_do_not_complete_the_parent_physical_turn() {
+    let parent = message("parent-prompt", "user", "prose", json!([]));
+    let mut child = message("child-task", "user", "model", json!([]));
+    child.message.session = SessionId::parse("codex:child").unwrap();
+    let mut answer = message("child-answer", "assistant", "model", json!([]));
+    answer.message.session = child.message.session.clone();
+    let (_, turns) = derive([parent, child, answer]);
+    assert_eq!(turns.len(), 2);
+    assert!(turns[0].facts.abandoned);
+    assert!(turns[0].facts.answer.is_none());
+    assert_eq!(turns[0].facts.physical_session.to_string(), "codex:morrow");
+    assert_eq!(turns[1].facts.physical_session.to_string(), "codex:child");
+    assert_eq!(
+        turns[1].facts.answer.as_ref().unwrap().to_string(),
+        "codex:child-answer"
+    );
+    assert_eq!(turns[0].facts.session, turns[1].facts.session);
+}
+
+#[test]
 fn exact_call_pairing_survives_result_before_call_and_preserves_false_native_checks() {
     let mut invocation = message("call", "assistant", "model", call());
     invocation.message.attrs = serde_json::from_value(
