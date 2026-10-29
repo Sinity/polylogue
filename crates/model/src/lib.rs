@@ -50,7 +50,7 @@ pub use change_position::ChangePosition;
 pub use delivery::{DELIVERY_STATES, DeliveryEvent, DeliveryOutcome, DeliverySender};
 pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
-pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
+pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, RunId, SessionId};
 pub mod reports;
 pub use message::{
     ApiError, Attribution, Message, Production, PromptKind, Role, ServerToolUse, WrittenBy,
@@ -85,7 +85,7 @@ macro_rules! string_schema {
     )* };
 }
 string_schema!(
-    Origin, SessionId, MessageId, DocumentId, BlobHash, Reference, Author
+    Origin, SessionId, MessageId, DocumentId, BlobHash, RunId, Reference, Author
 );
 
 pub mod work_products;
