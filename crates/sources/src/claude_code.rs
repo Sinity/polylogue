@@ -527,7 +527,7 @@ impl ClaudeCode {
         let cost = v.get("costUSD").and_then(Json::as_number).cloned();
         let duration = v.get("durationMs").and_then(Json::as_u64);
         let production = production(v, msg);
-        let attrs = message_attrs(v, msg);
+        let attrs = message_attrs(v, msg, &blocks);
         let end = range(record).1;
         if let Some(fork) = v.get("forkedFrom")
             && let (Some(parent), Some(at)) = (
@@ -900,7 +900,7 @@ fn production(v: &Json, msg: &Json) -> Production {
     }
 }
 
-fn message_attrs(record: &Json, message: &Json) -> serde_json::Map<String, Json> {
+fn message_attrs(record: &Json, message: &Json, blocks: &[Block]) -> serde_json::Map<String, Json> {
     let mut attrs = crate::fields::attributes(record, &fields::MESSAGE_FIELDS);
     if let Some(usage) = message.get("usage").and_then(Json::as_object) {
         let details: serde_json::Map<String, Json> = usage
@@ -922,7 +922,12 @@ fn message_attrs(record: &Json, message: &Json) -> serde_json::Map<String, Json>
         }
     }
     if let Some(result) = record.get("toolUseResult") {
-        attrs.insert("toolUseResult".into(), result.clone());
+        let in_result = blocks.iter().any(|block| matches!(block, Block::ToolResult { data: Some(data), .. } if data == result || data.get("toolUseResult") == Some(result)));
+        if in_result {
+            attrs.remove("toolUseResult");
+        } else {
+            attrs.insert("toolUseResult".into(), result.clone());
+        }
     }
     let details: Vec<Json> = message
         .get("content")

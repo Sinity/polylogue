@@ -134,6 +134,41 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
 ]);
 
 static CHUNK_FIELDS: Fields = Fields::new(&[
+    ("inlineData.mimeType", Rule::Read(T::String)),
+    ("inlineData.data", Rule::Read(T::String)),
+    ("fileData.mimeType", Rule::Read(T::String)),
+    ("fileData.fileUri", Rule::Read(T::String)),
+    ("parts[].inlineData.mimeType", Rule::Read(T::String)),
+    ("parts[].inlineData.data", Rule::Read(T::String)),
+    ("parts[].fileData.mimeType", Rule::Read(T::String)),
+    ("parts[].fileData.fileUri", Rule::Read(T::String)),
+    ("driveDocument.id", Rule::Read(T::String)),
+    ("driveDocument.fileId", Rule::Read(T::String)),
+    ("driveDocument.name", Rule::Read(T::String)),
+    ("driveDocument.title", Rule::Read(T::String)),
+    ("driveDocument.mimeType", Rule::Read(T::String)),
+    ("driveImage.id", Rule::Read(T::String)),
+    ("driveImage.fileId", Rule::Read(T::String)),
+    ("driveImage.name", Rule::Read(T::String)),
+    ("driveImage.title", Rule::Read(T::String)),
+    ("driveImage.mimeType", Rule::Read(T::String)),
+    ("driveAudio.id", Rule::Read(T::String)),
+    ("driveAudio.fileId", Rule::Read(T::String)),
+    ("driveAudio.name", Rule::Read(T::String)),
+    ("driveAudio.title", Rule::Read(T::String)),
+    ("driveAudio.mimeType", Rule::Read(T::String)),
+    ("driveVideo.id", Rule::Read(T::String)),
+    ("driveVideo.fileId", Rule::Read(T::String)),
+    ("driveVideo.name", Rule::Read(T::String)),
+    ("driveVideo.title", Rule::Read(T::String)),
+    ("driveVideo.mimeType", Rule::Read(T::String)),
+    ("inlineImage.data", Rule::Read(T::String)),
+    ("inlineImage.mimeType", Rule::Read(T::String)),
+    ("inlineImage.name", Rule::Read(T::String)),
+    ("inlineFile.data", Rule::Read(T::String)),
+    ("inlineFile.mimeType", Rule::Read(T::String)),
+    ("inlineFile.name", Rule::Read(T::String)),
+    ("youtubeVideo.id", Rule::Read(T::String)),
     ("role", Rule::Read(T::String)),
     ("author", Rule::Read(T::String)),
     ("id", Rule::Read(T::String)),
@@ -142,8 +177,14 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
     ("parts[].text", Rule::Read(T::String)),
     ("parts[].thought", Rule::Read(T::Boolean)),
     ("parts[].thoughtSignature", Rule::Read(T::String)),
-    ("parts[].executableCode", Rule::Read(T::Object)),
-    ("parts[].codeExecutionResult", Rule::Read(T::Object)),
+    (
+        "parts[].executableCode",
+        Rule::Kept("complete code input in tool block"),
+    ),
+    (
+        "parts[].codeExecutionResult",
+        Rule::Kept("complete code result in tool block"),
+    ),
     ("parts[].inlineData", Rule::Read(T::Object)),
     ("parts[].fileData", Rule::Read(T::Object)),
     (
@@ -178,11 +219,21 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
     ("inlineImage", Rule::Read(T::Object)),
     ("inlineFile", Rule::Read(T::Object)),
     ("youtubeVideo", Rule::Read(T::Object)),
-    ("executableCode", Rule::Read(T::Object)),
-    ("codeExecutionResult", Rule::Read(T::Object)),
+    (
+        "executableCode",
+        Rule::Kept("complete code input in tool block"),
+    ),
+    (
+        "codeExecutionResult",
+        Rule::Kept("complete code result in tool block"),
+    ),
     ("errorMessage", Rule::Read(T::String)),
     ("grounding", Rule::Kept("search grounding sources")),
-    ("branchParent", Rule::Read(T::String)),
+    (
+        "branchParent",
+        Rule::Kept("native branch marker in message attributes"),
+    ),
+    ("branchParent.promptId", Rule::Read(T::String)),
     (
         "branchChildren",
         Rule::Kept("other prompts branched from here"),
@@ -507,6 +558,9 @@ impl AiStudio {
 
         let mut message = plain(id, sid.clone(), role, blocks);
         message.attrs = crate::fields::attributes(chunk, &CHUNK_FIELDS);
+        for field in ["executableCode", "codeExecutionResult"] {
+            message.attrs.remove(field);
+        }
         message.parent = self.state.previous.clone();
         message.at = chunk.get("createTime").and_then(time_of);
         if role == Role::Assistant {

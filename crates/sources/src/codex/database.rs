@@ -97,7 +97,7 @@ impl Parser for Database {
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
-        _: &mut Records,
+        records: &mut Records,
     ) -> RecordOutcome {
         if v.get("schema").is_some() {
             return RecordOutcome::Used;
@@ -205,7 +205,10 @@ impl Parser for Database {
             | "thread_history_projection_state" => RecordOutcome::skipped(
                 "derived from the rollout, which is parsed; kept in the stored export",
             ),
-            _ => RecordOutcome::skipped("kept in the stored export; not indexed"),
+            _ => {
+                records.unknown_table(table, table, row);
+                RecordOutcome::skipped("kept in the stored export; not indexed")
+            }
         }
     }
 

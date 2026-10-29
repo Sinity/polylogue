@@ -134,3 +134,39 @@ fn literal_keys_do_not_impersonate_declared_nested_or_array_paths() {
     assert!(observed.shapes["/a.b"].expected.is_empty());
     assert_eq!(observed.shapes["/a/b"].expected, ["null", "number"]);
 }
+
+#[test]
+fn declared_open_values_and_dynamic_members_differ_from_new_kept_object_fields() {
+    static FIELDS: Fields = Fields::new(&[
+        ("saved", Rule::Kept("raw attributes")),
+        ("ignored", Rule::Excluded("not indexed")),
+        ("map", Rule::Kept("dynamic attributes")),
+    ])
+    .shape(&["map"], &[]);
+    let got = inspect(
+        &json!({"saved":{"new_field":1},"ignored":true,"map":{"id":{"n":2}}}),
+        &FIELDS,
+    );
+    assert_eq!(got.shapes["/saved"].expected, ExpectedType::Any.types());
+    assert!(got.shapes["/saved/new_field"].expected.is_empty());
+    assert_eq!(got.shapes["/ignored"].expected, ExpectedType::Any.types());
+    assert_eq!(got.shapes["/map/*/n"].expected, ExpectedType::Any.types());
+}
+
+#[test]
+fn new_kind_is_counted_without_retaining_its_scalar_value() {
+    static FIELDS: Fields = Fields::new(&[("type", Rule::Read(T::String))]).shape(
+        &[],
+        &[KnownKinds {
+            path: "type",
+            values: &["message"],
+        }],
+    );
+    let got = inspect(&json!({"type":"distinctive-new-kind"}), &FIELDS);
+    assert_eq!(got.shapes["/type"].unknown_kind_count, 1);
+    assert!(
+        !serde_json::to_string(&got.shapes)
+            .unwrap()
+            .contains("distinctive-new-kind")
+    );
+}

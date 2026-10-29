@@ -683,10 +683,13 @@ impl ExportParser for Database {
                 }
             }
             "schema_version" => sink.records.record(table, &RecordOutcome::Used),
-            _ => sink.records.record(
-                table,
-                &RecordOutcome::skipped("Hermes auxiliary row stays in the stored input"),
-            ),
+            _ => {
+                sink.records.unknown_table(table, table, row);
+                sink.records.record(
+                    table,
+                    &RecordOutcome::skipped("Hermes auxiliary row stays in the stored input"),
+                );
+            }
         }
         Ok(())
     }

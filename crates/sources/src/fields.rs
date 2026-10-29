@@ -91,8 +91,8 @@ pub fn unaccounted(value: &Json, fields: &Fields) -> Vec<String> {
 pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
     let mut unused = Vec::new();
     let mut shapes: BTreeMap<String, polylogue_model::WireShape> = BTreeMap::new();
-    let mut pending = vec![(value, String::new(), String::new(), false)];
-    while let Some((value, path, shape_path, inherited)) = pending.pop() {
+    let mut pending = vec![(value, String::new(), String::new(), false, false)];
+    while let Some((value, path, shape_path, inherited, open_map)) = pending.pop() {
         let rule = fields.compiled().get(&shape_path);
         let kept = inherited || matches!(rule, Some(Rule::Kept(_)));
         let shape = shapes.entry(shape_path.clone()).or_default();
@@ -100,6 +100,12 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
         *shape.types.entry(type_name(value).into()).or_default() += 1;
         if let Some(Rule::Read(expected)) = rule {
             shape.expected = expected
+                .types()
+                .iter()
+                .map(|kind| (*kind).to_owned())
+                .collect();
+        } else if rule.is_some() || open_map {
+            shape.expected = ExpectedType::Any
                 .types()
                 .iter()
                 .map(|kind| (*kind).to_owned())
@@ -116,6 +122,12 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
             .find(|known| declared_path(known.path) == shape_path)
         {
             shape.known_kinds = known.values.iter().map(|kind| (*kind).to_owned()).collect();
+            if value
+                .as_str()
+                .is_some_and(|value| !known.values.contains(&value))
+            {
+                shape.unknown_kind_count += 1;
+            }
         }
         match value {
             Json::Object(map) if !map.is_empty() => {
@@ -132,12 +144,18 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
                         escape(name)
                     };
                     let child_shape = format!("{shape_path}/{name}");
-                    pending.push((child, child_path, child_shape, kept));
+                    pending.push((child, child_path, child_shape, kept, open_map || dynamic));
                 }
             }
             Json::Array(items) if !items.is_empty() => {
                 for child in items.iter().rev() {
-                    pending.push((child, format!("{path}[]"), format!("{shape_path}/[]"), kept));
+                    pending.push((
+                        child,
+                        format!("{path}[]"),
+                        format!("{shape_path}/[]"),
+                        kept,
+                        open_map || dynamic,
+                    ));
                 }
             }
             _ if !kept && !matches!(rule, Some(Rule::Read(_))) => unused.push(path),

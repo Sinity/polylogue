@@ -55,6 +55,24 @@ impl Records {
         }
     }
 
+    /// Native database table names are schema identifiers. Row scalar bodies
+    /// remain absent from these derived observations.
+    pub fn unknown_table(&mut self, kind: &str, table: &str, row: &Json) {
+        static ROW: Fields = Fields::new(&[(
+            "",
+            crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
+        )]);
+        self.fields(kind, row, &ROW);
+        let key = serde_json::to_string(&(kind, "")).expect("string tuple");
+        let root = self
+            .counts
+            .wire_shapes
+            .get_mut(&key)
+            .expect("row root observed");
+        root.table = Some(table.to_owned());
+        root.unknown_table_count += 1;
+    }
+
     pub(crate) fn field_checks(&self) -> u64 {
         self.field_checks
     }
