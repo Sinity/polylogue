@@ -118,9 +118,15 @@ impl Replay<'_> {
     }
 }
 
-fn build_id() -> Result<String> {
+pub(crate) fn build_id() -> Result<String> {
+    static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(build) = BUILD.get() {
+        return Ok(build.clone());
+    }
     let mut file = std::fs::File::open("/proc/self/exe")?;
     let mut hash = blake3::Hasher::new();
     std::io::copy(&mut file, &mut hash)?;
-    Ok(hash.finalize().to_hex().to_string())
+    let build = hash.finalize().to_hex().to_string();
+    let _ = BUILD.set(build.clone());
+    Ok(build)
 }

@@ -20,6 +20,7 @@ CREATE TABLE primary_derived_parent (
  event TEXT NOT NULL, PRIMARY KEY(identity,event)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX primary_derived_source ON primary_derived(session,source_position);
+CREATE TABLE primary_work_dirty (session TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;
 ";
 
 fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
@@ -47,10 +48,8 @@ pub(crate) fn stage(
     publisher: bool,
 ) -> Result<()> {
     tx.execute_batch("DROP TABLE IF EXISTS temp.primary_work_changed; CREATE TEMP TABLE primary_work_changed(session TEXT PRIMARY KEY) STRICT;")?;
-    if publisher {
-        tx.execute("INSERT OR IGNORE INTO primary_work_changed SELECT session FROM primary_candidate WHERE kind='parsed' AND session IS NOT NULL UNION SELECT f.session FROM primary_fact f JOIN primary_candidate c ON c.event=f.event WHERE f.kind='parsed' AND f.session IS NOT NULL UNION SELECT f.session FROM primary_fact f JOIN primary_candidate c ON c.input=f.input WHERE c.kind='input' AND f.kind='parsed' AND f.session IS NOT NULL",[])?;
-        tx.execute("INSERT OR IGNORE INTO primary_work_changed SELECT id FROM session WHERE changed=?1 AND EXISTS(SELECT 1 FROM primary_candidate WHERE kind IN ('parsed','input','blob'))",[counter])?;
-    }
+    tx.execute("INSERT OR IGNORE INTO primary_work_dirty SELECT session FROM primary_candidate WHERE kind='parsed' AND session IS NOT NULL UNION SELECT f.session FROM primary_fact f JOIN primary_candidate c ON c.event=f.event WHERE f.kind='parsed' AND f.session IS NOT NULL UNION SELECT f.session FROM primary_fact f JOIN primary_candidate c ON c.input=f.input WHERE c.kind='input' AND f.kind='parsed' AND f.session IS NOT NULL",[])?;
+    tx.execute("INSERT OR IGNORE INTO primary_work_dirty SELECT id FROM session WHERE changed=?1 AND EXISTS(SELECT 1 FROM primary_candidate WHERE kind IN ('parsed','input','blob'))",[counter])?;
     let mut query=tx.prepare("SELECT product FROM primary_candidate WHERE kind='derived' AND state='live' AND product IS NOT NULL")?;
     let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
@@ -70,6 +69,7 @@ pub(crate) fn stage(
     if !publisher {
         return Ok(());
     }
+    tx.execute("INSERT INTO primary_work_changed SELECT session FROM primary_work_dirty", [])?;
     let mut changed = tx.prepare("SELECT session FROM primary_work_changed ORDER BY session")?;
     let mut rows = changed.query([])?;
     while let Some(row) = rows.next()? {
@@ -113,6 +113,7 @@ pub(crate) fn stage(
         );
         tx.execute("INSERT OR IGNORE INTO primary_derived(identity,session,source_position,body) VALUES (?1,?2,?3,?4)",params![identity,id.to_string(),position,body])?;
         tx.execute("INSERT OR IGNORE INTO primary_derived_parent(identity,event) SELECT ?1,event FROM primary_work_parent",[identity])?;
+        tx.execute("DELETE FROM primary_work_dirty WHERE session=?1", [id.to_string()])?;
     }
     Ok(())
 }

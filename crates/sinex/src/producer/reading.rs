@@ -1,7 +1,7 @@
 //! A completed replacement is prepared as streamed domain facts, then admitted
 //! through Sinex's one atomic replay operation after its scope is confirmed.
 use super::*;
-use std::io::{BufRead, Seek, Write};
+use std::io::{BufRead, Write};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ReadingReplacement {
@@ -19,7 +19,9 @@ impl Sinex {
         ) -> polylogue_store::Result<()>,
     ) -> polylogue_store::Result<PreparedWrite> {
         Ok((|| -> Result<_> {
-            let mut body = tempfile::tempfile()?;
+            let scratch = self.config.store.join("polylogue-staging");
+            let preparation = hashed_blobs::Preparation::new(&scratch)?;
+            let mut body = preparation.plain_writer(tempfile::tempfile_in(scratch)?, 3)?;
             {
                 let mut out = std::io::BufWriter::new(&mut body);
                 visit(&mut |product| {
@@ -30,13 +32,11 @@ impl Sinex {
                 })?;
                 out.flush()?;
             }
-            body.rewind()?;
-            let mut digest = blake3::Hasher::new();
-            let length = std::io::copy(&mut body, &mut digest)?;
-            let hash = digest.finalize();
-            body.rewind()?;
+            let body = body.finish()?;
+            let length = body.decoded_len();
+            let hash = body.hash();
             let scope = blake3::hash(root.as_bytes()).to_hex().to_string();
-            let content = blake3::hash(&serde_json::to_vec(&(version, hash.to_hex().as_str()))?)
+            let content = blake3::hash(&serde_json::to_vec(&(version, hash.to_string()))?)
                 .to_hex()
                 .to_string();
             let prefix = format!("reading:{scope}:");
@@ -59,7 +59,7 @@ impl Sinex {
                 root: root.into(),
                 reading_version: version.into(),
             };
-            self.queue()?.prepare_material(
+            self.queue()?.prepare_encoded_material(
                 Ingress::Material {
                     frame: identity.clone(),
                     material: Box::new(MaterialFrame {
@@ -69,7 +69,7 @@ impl Sinex {
                             locator: root.into(),
                             host: self.host.clone(),
                         },
-                        blob: format!("blake3:{}", hash.to_hex()),
+                        blob: format!("blake3:{hash}"),
                         length,
                         parser: "polylogue-reading".into(),
                         parser_version: 3,
@@ -200,7 +200,7 @@ impl Sinex {
                 from: None,
                 until: None,
                 declarations,
-                parser_build: replacement.reading_version.clone(),
+                parser_build: crate::replay::build_id()?,
                 parser_version: replacement.reading_version,
                 expected_live_hash: selection.expected_live_hash,
                 batches: vec![sinex_protocol::ReplayBatch {
