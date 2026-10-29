@@ -278,7 +278,11 @@ fn rule_notes_are_read_or_refused_by_name() {
     let script = rule(&note(plain, Author::Script("example-unit".into()))).unwrap();
     assert!(!script.operator);
     assert!(!script.interrupt);
-    let explicit_script=rule(&note(r#"{"query":"q","interrupt":true}"#,Author::Script("example-unit".into()))).unwrap();
+    let explicit_script = rule(&note(
+        r#"{"query":"q","interrupt":true}"#,
+        Author::Script("example-unit".into()),
+    ))
+    .unwrap();
     assert!(!explicit_script.operator);
     assert!(explicit_script.interrupt);
     let quiet = r#"{"query":"q","interrupt":false}"#;

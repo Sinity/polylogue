@@ -693,3 +693,66 @@ fn historical_claim_cannot_supply_current_import_observation() {
     assert_eq!(history.observed, vec![current]);
     assert_eq!(history.declared, vec![claimed]);
 }
+
+#[test]
+fn pending_historical_restore_keeps_execution_disabled_after_restart() {
+    let mut source = cache();
+    enqueue(&mut source, "historical", 10);
+    let prepared = known_request(
+        &source,
+        &request(
+            "enqueue-historical",
+            10,
+            UserWrite::ChatEnqueue(chat("historical")),
+        ),
+    )
+    .unwrap()
+    .unwrap();
+    let pending = polylogue_model::authored::PendingAuthored::Restore {
+        prepared: prepared.clone(),
+        claims: vec![],
+        current: ImportAttribution {
+            machine: "import-host".into(),
+            input: "bundle".into(),
+            chain: 1,
+            actor: Author::Operator,
+            at: Timestamp::from_unix_ms(20).unwrap(),
+        },
+    };
+    let restarted: polylogue_model::authored::PendingAuthored =
+        serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+    let destination = cache();
+    let claim = request(
+        "claim",
+        30,
+        UserWrite::ChatClaim {
+            by: "extension".into(),
+        },
+    );
+    assert!(matches!(
+        prepare(&destination, &claim, |visit| visit(&restarted), |_| Ok(())),
+        Err(StoreError::NotFound(_))
+    ));
+    assert_eq!(count(&destination, "chat_action"), 0);
+    assert_eq!(
+        prepare(
+            &destination,
+            &prepared.request,
+            |visit| visit(&restarted),
+            |_| Ok(())
+        )
+        .unwrap(),
+        prepared
+    );
+    let mut conflicting = prepared.request.clone();
+    conflicting.machine = "another-machine".into();
+    assert!(matches!(
+        prepare(
+            &destination,
+            &conflicting,
+            |visit| visit(&restarted),
+            |_| Ok(())
+        ),
+        Err(StoreError::Conflict(_))
+    ));
+}
