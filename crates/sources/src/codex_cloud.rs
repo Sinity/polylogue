@@ -202,6 +202,9 @@ impl ExportParser for Cloud {
                     }
                 }
             }
+            if let Some(instructions) = str_of(turn, "custom_instructions") {
+                session.instructions = Some(instructions.into());
+            }
             if let Some(branch) = clean(turn, "branch").or_else(|| clean(turn, "branch_name")) {
                 session.git_branch = Some(branch.into());
             }
@@ -255,14 +258,20 @@ impl ExportParser for Cloud {
                 },
             });
         }
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "codex_cloud_task".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: serde_json::json!({"archived":task.get("archived")}),
-        });
+        let mut metadata = task.as_object().cloned().unwrap_or_default();
+        for field in ["id", "title", "turns"] {
+            metadata.remove(field);
+        }
+        if !metadata.is_empty() {
+            sink.out.events.push(Event {
+                session: Some(sid.clone()),
+                kind: "codex_cloud_task".into(),
+                at: None,
+                after: None,
+                range: None,
+                data: Json::Object(metadata),
+            });
+        }
         sink.out.sessions.push(session);
         sink.records.record("task", &RecordOutcome::Used);
         Ok(())

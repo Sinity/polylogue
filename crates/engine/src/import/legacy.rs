@@ -6,8 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek};
 
 pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<package::Member>>> {
-    let Some(inputs) =
-        polylogue_store::legacy_import::inputs(root).map_err(std::io::Error::other)?
+    let mut catalog = tempfile::NamedTempFile::new_in(scratch)?;
+    let Some(inputs) = polylogue_store::legacy_import::inputs(root, |row| {
+        serde_json::to_writer(&mut catalog, row)?;
+        std::io::Write::write_all(&mut catalog, b"\n")?;
+        Ok(())
+    })
+    .map_err(std::io::Error::other)?
     else {
         return Ok(None);
     };
@@ -25,6 +30,11 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
         let path = root.join("blob").join(&hash[..2]).join(&hash[2..]);
+        if !std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+            return Err(std::io::Error::other(format!(
+                "missing or non-regular predecessor blob {hash}"
+            )));
+        }
         let mut source = std::fs::File::open(&path).map_err(|error| {
             std::io::Error::other(format!("missing predecessor blob {hash}: {error}"))
         })?;
@@ -41,7 +51,8 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
             std::io::Write::write_all(&mut copy, &buffer[..n])?;
             length += n as u64;
         }
-        if length != input.blob_size || actual.finalize().as_slice() != input.blob_hash {
+        let actual: [u8; 32] = actual.finalize().into();
+        if length != input.blob_size || actual != input.blob_hash {
             return Err(std::io::Error::other(format!(
                 "predecessor blob {hash} differs from its catalog hash or size"
             )));
@@ -49,11 +60,6 @@ pub(super) fn stage(root: &Path, scratch: &Path) -> std::io::Result<Option<Vec<p
         blobs.insert(input.raw_id.clone(), copy.into_temp_path());
     }
     let mut members = Vec::new();
-    let mut catalog = tempfile::NamedTempFile::new_in(scratch)?;
-    for input in &inputs {
-        serde_json::to_writer(&mut catalog, input).map_err(std::io::Error::other)?;
-        std::io::Write::write_all(&mut catalog, b"\n")?;
-    }
     members.push(package::Member {
         path: PathBuf::from(format!("{}!/raw_sessions/catalog.jsonl", root.display())),
         bytes: catalog.into_temp_path(),

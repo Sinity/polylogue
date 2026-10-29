@@ -18,7 +18,10 @@ pub struct Input {
     pub append_end: Option<u64>,
 }
 
-pub fn inputs(root: &Path) -> Result<Option<Vec<Input>>> {
+pub fn inputs(
+    root: &Path,
+    mut capture: impl FnMut(&polylogue_model::Json) -> Result<()>,
+) -> Result<Option<Vec<Input>>> {
     let catalog = root.join("source.db");
     if !catalog.is_file() || !root.join("blob").is_dir() {
         return Ok(None);
@@ -39,6 +42,41 @@ pub fn inputs(root: &Path) -> Result<Option<Vec<Input>>> {
         return Err(StoreError::Invalid(
             "predecessor source.db has no declared raw_sessions catalog".into(),
         ));
+    }
+    let schema: String = conn.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='table' AND name='raw_sessions'",
+        [],
+        |row| row.get(0),
+    )?;
+    capture(&serde_json::json!({"table":"raw_sessions","schema":schema}))?;
+    let mut original = conn.prepare("SELECT * FROM raw_sessions ORDER BY raw_id")?;
+    let names: Vec<_> = original
+        .column_names()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let mut original_rows = original.query([])?;
+    while let Some(row) = original_rows.next()? {
+        let mut values = serde_json::Map::new();
+        for (index, name) in names.iter().enumerate() {
+            use rusqlite::types::ValueRef;
+            let value = match row.get_ref(index)? {
+                ValueRef::Null => serde_json::Value::Null,
+                ValueRef::Integer(n) => n.into(),
+                ValueRef::Real(n) => serde_json::Number::from_f64(n)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or_else(
+                        || serde_json::json!({"sqlite_real_bits":format!("{:016x}",n.to_bits())}),
+                    ),
+                ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
+                    Ok(text) => text.into(),
+                    Err(_) => serde_json::json!({"sqlite_text_hex":hex(bytes)}),
+                },
+                ValueRef::Blob(bytes) => serde_json::json!({"sqlite_blob_hex":hex(bytes)}),
+            };
+            values.insert(name.clone(), value);
+        }
+        capture(&serde_json::Value::Object(values))?;
     }
     let optional = |name: &str, default: &str| {
         if columns.contains(name) {
@@ -87,4 +125,8 @@ pub fn inputs(root: &Path) -> Result<Option<Vec<Input>>> {
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(Some(inputs))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

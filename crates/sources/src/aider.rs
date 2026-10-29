@@ -8,7 +8,6 @@ use polylogue_model::{
     Block, Document, DocumentId, DocumentPurpose, DocumentRow, Event, Json, Message, NativeId,
     Origin, Role, Session, SessionKind, Usage,
 };
-use std::io::BufRead;
 use std::path::Path;
 
 pub const VERSION: u32 = 1;
@@ -26,10 +25,18 @@ pub fn open(path: &Path) -> Option<Parse> {
         _ => None,
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
 #[derive(Default)]
 pub struct History {
     native: Option<String>,
-    context: Vec<(Role, String)>,
+    context: Vec<(LogRole, String)>,
     next: u64,
     last: Option<polylogue_model::MessageId>,
 }
@@ -139,7 +146,7 @@ impl History {
     fn emit(
         &mut self,
         sid: &polylogue_model::SessionId,
-        role: Role,
+        role: LogRole,
         text: String,
         logged_at: &str,
         sink: &mut Sink<'_>,
@@ -147,6 +154,31 @@ impl History {
         let id = message_id(ORIGIN, &format!("{}#{}", sid.native(), self.next))
             .ok_or("unusable Aider message identity")?;
         self.next += 1;
+        let (role, prompt_kind, blocks) = match role {
+            LogRole::Tool => (
+                Role::User,
+                Some(polylogue_model::PromptKind::Harness),
+                vec![Block::ToolResult {
+                    reported_duration_ms: None,
+                    call_id: None,
+                    outcome: polylogue_model::ToolOutcome::Unknown {
+                        reason: polylogue_model::UnknownReason::StatusFieldUnreadable,
+                    },
+                    output: Some(text),
+                    data: None,
+                    attachments: Vec::new(),
+                }],
+            ),
+            role => (
+                match role {
+                    LogRole::System => Role::System,
+                    LogRole::User => Role::User,
+                    _ => Role::Assistant,
+                },
+                None,
+                vec![Block::Text { text }],
+            ),
+        };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
             offset,
@@ -158,8 +190,8 @@ impl History {
                 role,
                 at: None,
                 model: None,
-                prompt_kind: None,
-                blocks: vec![Block::Text { text }],
+                prompt_kind,
+                blocks,
                 usage: Usage::default(),
                 stop_reason: None,
                 reported_cost_usd: None,
@@ -176,9 +208,9 @@ impl History {
     }
 }
 
-fn parse_messages(text: &str) -> Result<Vec<(Role, String)>, String> {
+fn parse_messages(text: &str) -> Result<Vec<(LogRole, String)>, String> {
     let mut messages = Vec::new();
-    let mut current: Option<(Role, Vec<&str>)> = None;
+    let mut current: Option<(LogRole, Vec<&str>)> = None;
     for line in text.lines() {
         if line == "-------" {
             if let Some((role, lines)) = current.take() {
@@ -193,10 +225,10 @@ fn parse_messages(text: &str) -> Result<Vec<(Role, String)>, String> {
             .split_once(' ')
             .ok_or("Aider content has no role prefix")?;
         let role = match name {
-            "SYSTEM" => Role::System,
-            "USER" => Role::User,
-            "ASSISTANT" => Role::Assistant,
-            "TOOL" | "FUNCTION" => Role::Tool,
+            "SYSTEM" => LogRole::System,
+            "USER" => LogRole::User,
+            "ASSISTANT" => LogRole::Assistant,
+            "TOOL" | "FUNCTION" => LogRole::Tool,
             _ => return Err(format!("unrecognized Aider role {name}")),
         };
         if current
