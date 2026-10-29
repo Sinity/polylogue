@@ -1,5 +1,7 @@
 //! Selected text is a partial source observation, never a shortened canonical
 //! Message or Block. Complete-source attestation belongs to the Store reader.
+pub mod seek;
+
 use super::SourceClaim;
 use crate::{BlobHash, Reference, SpanBounds, SpanUnit, authored::ImportAttribution};
 use serde::{Deserialize, Serialize};
