@@ -35,53 +35,34 @@ fn a_context_request_carries_its_ask() {
 }
 
 #[test]
-fn response_boundary_masks_errors_and_nested_details_without_erasing_empty_data() {
-    let secret = format!("sk-ant-api03-{}-AAAAAAAA", "A".repeat(94));
+fn response_serialization_keeps_source_values_keys_and_empty_fields() {
+    let token = format!("sk-ant-api03-{}-AAAAAAAA", "A".repeat(94));
+    let data = serde_json::json!({
+        "nested": [token.clone(), ""], (token.clone()): {"code": 0, "known": false},
+        "cursor": token.clone(), "authored": {"cursor": token.clone()}
+    });
+    let response = Response::Ok { data: data.clone() };
+    let encoded = serde_json::to_vec(&response).unwrap();
+    let decoded: Response = serde_json::from_slice(&encoded).unwrap();
+    let Response::Ok { data: actual } = decoded else {
+        panic!("expected success");
+    };
+    assert_eq!(actual, data);
+    assert_eq!(
+        actual["nested"][0].as_str().unwrap().as_bytes(),
+        token.as_bytes()
+    );
+}
+
+#[test]
+fn response_errors_keep_credential_shaped_messages_and_details() {
+    let token = format!("ghp_{}", "q".repeat(36));
     let response = Response::Error {
         kind: "synthetic".into(),
-        message: secret.clone(),
-        detail: Some(
-            serde_json::json!({"nested": [secret.clone(), ""], "code": 0, "known": false}),
-        ),
-    }
-    .masked();
-    let value = serde_json::to_value(response).unwrap();
-    assert!(!value.to_string().contains(&secret));
-    assert_eq!(value["kind"], "synthetic");
-    assert_eq!(value["detail"]["nested"][1], "");
-    assert_eq!(value["detail"]["code"], 0);
-    assert_eq!(value["detail"]["known"], false);
-}
-
-#[test]
-fn only_declared_references_survive_cleaning() {
-    let token = "AKIAIOSFODNN7EXAMPLE";
-    let id = polylogue_model::MessageId::parse(&format!("claude-code:{token}")).unwrap();
-    let data = serde_json::json!({"declared":id,"session":{"id":id},"authored":token});
-    let mut references = References::default();
-    references.add("/declared", &id);
-    let Response::Ok { data, .. } = (Response::Ok { data, references }).masked() else {
-        panic!()
+        message: token.clone(),
+        detail: Some(serde_json::json!({"source":token.clone()})),
     };
-    assert_eq!(data["declared"], id.to_string());
-    assert_ne!(data["session"]["id"], id.to_string());
-    assert_ne!(data["authored"], token);
-}
-
-#[test]
-fn command_continuations_keep_bytes_while_authored_nested_fields_are_masked() {
-    let token = "AKIAIOSFODNN7EXAMPLE";
-    let response = References::default()
-        .response(serde_json::json!({
-            "cursor":token,"next":token,"previous":token,
-            "authored":{"cursor":token,"next":token,"previous":token}
-        }))
-        .masked();
-    let Response::Ok { data, .. } = response else {
-        panic!()
-    };
-    for field in ["cursor", "next", "previous"] {
-        assert_eq!(data[field], token);
-        assert_ne!(data["authored"][field], token);
-    }
+    let encoded = serde_json::to_value(response).unwrap();
+    assert_eq!(encoded["message"], token);
+    assert_eq!(encoded["detail"]["source"], token);
 }

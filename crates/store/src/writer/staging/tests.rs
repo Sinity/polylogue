@@ -115,3 +115,64 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
         0
     );
 }
+
+#[test]
+fn preparation_encodes_once_and_hands_off_the_same_inode_after_seekable_inspection() {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let bytes = vec![b'x'; 2 * 1024 * 1024];
+    let (prepared, tail) = archive
+        .prepare_stream(bytes.as_slice(), |reader| {
+            reader.seek(SeekFrom::End(-7))?;
+            let mut tail = Vec::new();
+            reader.read_to_end(&mut tail)?;
+            Ok(tail)
+        })
+        .unwrap();
+    assert_eq!(tail, b"xxxxxxx");
+    let body = prepared.body().unwrap();
+    let path = body.path.as_ref().unwrap();
+    assert_eq!(
+        body.file.metadata().unwrap().ino(),
+        std::fs::metadata(path).unwrap().ino()
+    );
+    assert!(body.descriptor.stored_len < bytes.len() as u64 / 10);
+    assert_eq!(
+        std::fs::read_dir(archive.parts_dir().unwrap())
+            .unwrap()
+            .count(),
+        1
+    );
+    let descriptor = body.descriptor;
+    drop(prepared);
+    assert!(!path.exists());
+    // The pinned FD remains sufficient after the producer loses the optional path.
+    let received =
+        hashed_blobs::Prepared::from_encoded(body.file, descriptor, None, Default::default())
+            .unwrap();
+    let mut restored = Vec::new();
+    received
+        .reader(None, Default::default())
+        .unwrap()
+        .read_to_end(&mut restored)
+        .unwrap();
+    assert_eq!(restored, bytes);
+}
+
+#[test]
+fn failed_stream_inspection_releases_the_encoded_preparation() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let result: Result<_> = archive.prepare_stream(b"encoded synthetic source".as_slice(), |_| {
+        Err::<(), _>(StoreError::Invalid("synthetic inspection refusal".into()))
+    });
+    assert!(matches!(result, Err(StoreError::Invalid(_))));
+    assert_eq!(
+        std::fs::read_dir(archive.parts_dir().unwrap())
+            .unwrap()
+            .count(),
+        0
+    );
+}

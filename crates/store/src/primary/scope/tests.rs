@@ -203,3 +203,54 @@ fn failure_to_persist_owner_control_blocks_current_reads_without_claiming_durabi
     assert!(reset(&mut index, &archive, &resolver, "changed").unwrap());
     assert!(archive.read_scope.token().is_ok());
 }
+
+#[test]
+fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let root = tempfile::tempdir().unwrap();
+    let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
+    let mut index = cache(&archive);
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
+    let pointer = root.path().join("catalog-current");
+    let invalidate_path = pointer.clone();
+    let fail = Arc::new(AtomicBool::new(false));
+    let failed = Arc::clone(&fail);
+    let _registration = Archive::register_scope_invalidator(root.path(), move || {
+        if failed.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("catalog pointer unavailable".into()));
+        }
+        std::fs::write(&invalidate_path, b"unavailable")?;
+        Ok(())
+    })
+    .unwrap();
+    let old = archive.scope_token().unwrap();
+    old.with_current(|| {
+        std::fs::write(&pointer, b"old scope")?;
+        Ok(())
+    })
+    .unwrap();
+    fail.store(true, Ordering::SeqCst);
+    assert!(reset(&mut index, &archive, &resolver, "new").is_err());
+    assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
+    assert!(matches!(
+        require_readable(&index),
+        Err(StoreError::ScopeChanged)
+    ));
+    fail.store(false, Ordering::SeqCst);
+    assert!(reset(&mut index, &archive, &resolver, "new").unwrap());
+    assert_eq!(std::fs::read(&pointer).unwrap(), b"unavailable");
+    assert!(matches!(
+        old.with_current(|| {
+            std::fs::write(&pointer, b"stale publisher")?;
+            Ok(())
+        }),
+        Err(StoreError::ScopeChanged)
+    ));
+    // A newly started CLI reads the canonical pointer, not the retired cache.
+    assert_eq!(std::fs::read(&pointer).unwrap(), b"unavailable");
+    assert_eq!(projection::checkpoint(&index).unwrap(), None);
+}

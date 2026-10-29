@@ -125,14 +125,18 @@ impl Producer {
     }
 }
 impl crate::primary::Sinex for Producer {
-    fn prepare_input(&self, _: &CapturedInput, _: &mut dyn std::io::Read) -> Result<PreparedInput> {
+    fn prepare_input(
+        &self,
+        _: &CapturedInput,
+        _: crate::primary::PreparedBody,
+    ) -> Result<PreparedInput> {
         Self::unavailable()
     }
     fn prepare_blob(
         &self,
         _: BlobHash,
         _: u64,
-        _: &mut dyn std::io::Read,
+        _: crate::primary::PreparedBody,
     ) -> Result<PreparedWrite> {
         Self::unavailable()
     }

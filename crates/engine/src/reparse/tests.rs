@@ -47,7 +47,6 @@ const fn origin(open: fn(&Path) -> Option<Parse>) -> OriginSpec {
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,

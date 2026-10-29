@@ -139,9 +139,6 @@ pub struct OriginSpec {
     /// has, whether or not a response reported them (others come with the
     /// readings its parser stores).
     pub quota: Option<&'static [QuotaLimit]>,
-    /// Environment variables the tool sets in the commands its agent runs.
-    /// Any of them in a process's environment means an agent started it.
-    pub agent_env: &'static [&'static str],
     /// The web chat whose conversation pages hold this origin's sessions.
     pub web: Option<WebChat>,
     /// How files beside this origin's export name the assets its messages
@@ -302,7 +299,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: Some(crate::claude_code::resume),
         bare_uuid_ids: true,
         quota: Some(crate::claude_code::QUOTA_LIMITS),
-        agent_env: &["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"],
         web: None,
         assets: None,
         collector: None,
@@ -325,7 +321,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -348,7 +343,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -379,7 +373,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: Some(crate::codex::resume),
         bare_uuid_ids: true,
         quota: Some(&[]),
-        agent_env: &["CODEX_THREAD_ID", "CODEX_SESSION_ID"],
         web: None,
         assets: None,
         collector: None,
@@ -401,7 +394,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -425,7 +417,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: Some(crate::gemini_cli::resume),
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &["GEMINI_CLI"],
         web: None,
         assets: None,
         collector: None,
@@ -445,7 +436,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -465,7 +455,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: Some(crate::antigravity::server::COLLECTOR),
@@ -487,7 +476,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -507,7 +495,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -527,7 +514,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -547,7 +533,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -573,7 +558,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -596,7 +580,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -619,7 +602,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -639,7 +621,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -659,7 +640,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -679,7 +659,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -699,7 +678,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -719,7 +697,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -739,7 +716,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -759,7 +735,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -783,7 +758,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -803,7 +777,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: Some(WebChat {
             extension_names: &["chatgpt"],
             hosts: &["chatgpt.com", "chat.openai.com"],
@@ -833,7 +806,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: Some(WebChat {
             extension_names: &["claude-ai", "claude"],
             hosts: &["claude.ai"],
@@ -860,7 +832,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -884,7 +855,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: Some(WebChat {
             extension_names: &[],
             hosts: &["aistudio.google.com"],
@@ -914,7 +884,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: Some(WebChat {
             extension_names: &["gemini"],
             hosts: &["gemini.google.com"],
@@ -944,7 +913,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: Some(WebChat {
             extension_names: &["grok"],
             hosts: &["grok.com"],
@@ -975,7 +943,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -999,7 +966,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
@@ -1025,21 +991,11 @@ pub static ORIGINS: &[OriginSpec] = &[
         resume: None,
         bare_uuid_ids: false,
         quota: None,
-        agent_env: &[],
         web: None,
         assets: None,
         collector: None,
     },
 ];
-
-/// Environment variables that mean an agent started this process: every
-/// origin's `agent_env`, and the job runners agents use.
-pub fn agent_env() -> impl Iterator<Item = &'static str> {
-    ORIGINS
-        .iter()
-        .flat_map(|origin| origin.agent_env.iter().copied())
-        .chain(["AGENTCTL_JOB_ID", "AGENTCTL_RUN_ID", "POLYLOGUE_JOB_ID"])
-}
 
 pub fn by_name(name: &str) -> Option<&'static OriginSpec> {
     ORIGINS.iter().find(|o| o.name == name)

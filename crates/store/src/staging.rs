@@ -1,58 +1,52 @@
-//! Bytes hashed off the writer thread into a private file, waiting for the
-//! writer to give them their rows: in standalone mode compressed, then moved
-//! into the blob store; in primary mode as they are, then sent to Sinex.
+//! Input bytes use one encoded preparation in both modes. The standalone
+//! writer appends it to its segment; the primary producer adopts its custody.
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension};
 
-/// One pool batch and the private files its new blobs were written to. Inline
-/// new blobs stay in the batch.
+/// One pool batch and the private encodings its new blobs were written to.
 pub struct PreparedBatch {
     pub batch: crate::Batch,
     pub files: Vec<PreparedBytes>,
 }
 
-/// A private file for one archive, stored only by the writer, after the
-/// rows that place it exist.
+/// Encoded bytes whose inode stays pinned until the writer transfers custody.
 pub struct PreparedBytes {
     pub(crate) owner: std::path::PathBuf,
-    pub(crate) file: Prepared,
-}
-
-pub(crate) enum Prepared {
-    /// Compressed, to be moved under its content name in `blobs/`.
-    Local {
-        prepared: Box<hashed_blobs::Prepared>,
-    },
-    /// The bytes as they are, in `parts/`, to be sent to Sinex.
-    Part {
-        file: tempfile::NamedTempFile,
-        hash: BlobHash,
-        length: u64,
-    },
+    pub(crate) file: Box<hashed_blobs::Prepared>,
+    temporary: tempfile::NamedTempFile,
 }
 
 impl PreparedBytes {
     pub fn hash(&self) -> BlobHash {
-        match &self.file {
-            Prepared::Local { prepared, .. } => BlobHash(prepared.hash().0),
-            Prepared::Part { hash, .. } => *hash,
-        }
+        BlobHash(self.file.hash().0)
     }
     pub fn len(&self) -> u64 {
-        match &self.file {
-            Prepared::Local { prepared, .. } => prepared.decoded_len(),
-            Prepared::Part { length, .. } => *length,
-        }
+        self.file.decoded_len()
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    pub fn reader(&self) -> Result<hashed_blobs::BlobReader> {
+        Ok(self
+            .file
+            .reader(None, hashed_blobs::ReadLimits::default())?)
+    }
+    pub(crate) fn body(&self) -> Result<crate::primary::PreparedBody> {
+        Ok(crate::primary::PreparedBody {
+            file: self.temporary.as_file().try_clone()?,
+            descriptor: self.file.descriptor(),
+            path: Some(self.temporary.path().to_owned()),
+        })
+    }
+    pub(crate) fn into_prepared(self) -> hashed_blobs::Prepared {
+        *self.file
+    }
 }
 
 impl crate::Archive {
-    /// Prepare frames off the writer thread. Their bytes become durable
-    /// together when the writer appends and syncs a group.
+    /// Prepare frames off the writer thread. Durability belongs to the group
+    /// append or to the producer's accepted private custody.
     pub fn prepare_blob(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
         let prepared = self.prepare_bytes(bytes)?;
         Ok((
@@ -68,64 +62,34 @@ impl crate::Archive {
         self.prepare_blob(bytes)
     }
 
-    /// Prepares bytes that can be read only once (a ZIP member), after
-    /// `inspect` has read them from a scratch file. A file on disk is
-    /// inspected in place and prepared with [`Self::prepare_bytes`] instead.
+    /// Encode a one-shot stream once, then inspect it through the seekable
+    /// decoder. No plaintext scratch file is created.
     pub fn prepare_stream<T>(
         &self,
-        mut reader: impl std::io::Read,
-        inspect: impl FnOnce(&mut std::fs::File) -> Result<T>,
+        reader: impl std::io::Read,
+        inspect: impl FnOnce(&mut hashed_blobs::BlobReader) -> Result<T>,
     ) -> Result<(PreparedBytes, T)> {
-        use std::io::Seek;
-        let mut scratch = if self.is_primary() {
-            let directory = self.parts_dir()?;
-            std::fs::create_dir_all(&directory)?;
-            tempfile::tempfile_in(directory)?
-        } else {
-            tempfile::tempfile()?
-        };
-        std::io::copy(&mut reader, &mut scratch)?;
-        scratch.rewind()?;
-        let facts = inspect(&mut scratch)?;
-        scratch.rewind()?;
-        Ok((self.prepare_bytes(&mut scratch)?, facts))
+        let prepared = self.prepare_bytes(reader)?;
+        let facts = inspect(&mut prepared.reader()?)?;
+        Ok((prepared, facts))
     }
 
-    /// Hashes (and in standalone mode compresses) into a private file.
-    /// Dropping the returned handle deletes the file.
-    pub fn prepare_bytes(&self, mut reader: impl std::io::Read) -> Result<PreparedBytes> {
-        if self.is_primary() {
-            std::fs::create_dir_all(self.parts_dir()?)?;
-            let mut file = tempfile::NamedTempFile::new_in(self.parts_dir()?)?;
-            let mut hasher = blake3::Hasher::new();
-            let mut buffer = vec![0; 1 << 16];
-            let mut length = 0u64;
-            loop {
-                let n = reader.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..n]);
-                std::io::Write::write_all(&mut file, &buffer[..n])?;
-                length += n as u64;
-            }
-            crate::timing::time(crate::timing::Stage::Sync, || file.as_file().sync_all())?;
-            return Ok(PreparedBytes {
-                owner: self.root.clone(),
-                file: Prepared::Part {
-                    file,
-                    hash: BlobHash(*hasher.finalize().as_bytes()),
-                    length,
-                },
-            });
-        }
-        let prepared = hashed_blobs::Preparation::new(self.parts_dir()?)?
-            .plain_checked::<StoreError>(reader, crate::blobs::LEVEL, || Ok(()))?;
+    /// The same prepared encoding serves standalone storage and primary custody.
+    pub fn prepare_bytes(&self, reader: impl std::io::Read) -> Result<PreparedBytes> {
+        let directory = self.parts_dir()?;
+        std::fs::create_dir_all(&directory)?;
+        let temporary = tempfile::NamedTempFile::new_in(&directory)?;
+        let prepared = hashed_blobs::Preparation::new(&directory)?
+            .plain_into_checked::<StoreError>(
+                temporary.as_file().try_clone()?,
+                reader,
+                crate::blobs::LEVEL,
+                || Ok(()),
+            )?;
         Ok(PreparedBytes {
             owner: self.root.clone(),
-            file: Prepared::Local {
-                prepared: Box::new(prepared),
-            },
+            file: Box::new(prepared),
+            temporary,
         })
     }
 }

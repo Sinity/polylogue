@@ -8,7 +8,9 @@ fn a_parse_from_the_first_byte_restates_event_positions() {
         end: 200,
         message: text_message("a", "s", Role::User, "A", None),
     };
-    let mut seed = batch("array", 2, 0, vec![row], &["s"]);
+    let mut seed = batch("array", 0, 0, vec![row], &["s"]);
+    seed.length = 200;
+    seed.parse[0].parsed_upto = 200;
     seed.parse[0].output.events.push(Event {
         at_quality: polylogue_model::TimeQuality::Unknown,
         at_precision: None,
@@ -21,11 +23,11 @@ fn a_parse_from_the_first_byte_restates_event_positions() {
         data: Json::Null,
     });
     seed.parse[0].order_from = Some(9);
-    w.writer.send(seed.clone()).unwrap();
+    w.store_reading(seed.clone(), Some(&[b'r'; 200])).unwrap();
     w.writer.flush().unwrap();
     seed.change = Change::Reparse { chain: 1 };
     seed.parse[0].order_from = Some(1);
-    w.writer.send(seed).unwrap();
+    w.store_reading(seed, None).unwrap();
     let result = w.writer.flush().unwrap();
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     let pool = ReadPool::open(&w.archive).unwrap();

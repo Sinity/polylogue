@@ -291,13 +291,8 @@ impl Inner {
                 "primary blob bytes differ from their declaration".into(),
             ));
         }
-        let crate::staging::Prepared::Part { file, .. } = prepared.file else {
-            return Err(StoreError::Invalid(
-                "local segment preparation reached the primary producer".into(),
-            ));
-        };
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
-        let prepared = sinex.prepare_blob(new_blob.hash, new_blob.size, &mut file.reopen()?)?;
+        let prepared = sinex.prepare_blob(new_blob.hash, new_blob.size, prepared.body()?)?;
         // Captured bytes are durable before their temporary preparation is released.
         if let Err(error) = self
             .drain_primary_captures()

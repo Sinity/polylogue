@@ -370,5 +370,5 @@ is not committed in that state. `cargo xtask unlink-common` restores the lock an
 keeps the shell from linking again. Merge the common pull request first;
 its workflow then opens a pull request here that moves Cargo.lock to the new
 commit. Convert the callers on that branch, or run `cargo update -p devkit
--p hashed-blobs -p credential-masking` on the branch that converts them, so
+-p hashed-blobs` on the branch that converts them, so
 the lock change and the callers land together.

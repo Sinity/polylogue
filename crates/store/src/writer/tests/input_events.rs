@@ -2,8 +2,8 @@ use super::*;
 
 fn event(range: (u64, u64), name: &str) -> Event {
     Event {
-        at_quality: polylogue_model::TimeQuality::Unknown,
-        at_precision: None,
+        at_quality: polylogue_model::TimeQuality::Intrinsic,
+        at_precision: Some(polylogue_model::Precision::Instant),
         at_until: None,
         session: None,
         kind: "hermes_observer".into(),
@@ -24,8 +24,23 @@ fn unbound(input: &str, from: u64, events: Vec<Event>, prepared: bool) -> Batch 
     b
 }
 
-fn send(writer: &Writer, b: Batch) {
-    writer.send(b).unwrap();
+fn send(archive: &Archive, writer: &Writer, mut b: Batch) {
+    let files = if matches!(b.change, Change::Reparse { .. }) {
+        Vec::new()
+    } else {
+        let (blob, file) = archive.prepare_blob(&SOURCE_RECORD).unwrap();
+        b.new_blob = Some(blob);
+        file.into_iter().collect()
+    };
+    let mut stored = writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![crate::staging::PreparedBatch { batch: b, files }],
+            std::sync::Arc::new(archive.blobs().unwrap()),
+        )
+        .unwrap();
+    stored.pop().expect("one source reading").unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());
 }
 
@@ -54,6 +69,7 @@ fn input_event_occurrences_survive_preparation_replay_restart_and_input_separati
         } = test_archive();
         let observed = event((0, 100), "same observation");
         send(
+            &archive,
             &writer,
             unbound("a", 0, vec![observed.clone(), observed.clone()], prepared),
         );
@@ -67,15 +83,16 @@ fn input_event_occurrences_survive_preparation_replay_restart_and_input_separati
         assert!(first.iter().all(|r| r["session"].is_null()));
         let mut replay = unbound("a", 0, vec![observed.clone(), observed.clone()], prepared);
         replay.change = Change::Reparse { chain: 1 };
-        send(&writer, replay);
+        send(&archive, &writer, replay);
         assert_eq!(rows(&archive), first);
         drop(writer);
         let writer = Writer::start(&archive).unwrap();
         let mut replay = unbound("a", 0, vec![observed.clone(), observed.clone()], prepared);
         replay.change = Change::Reparse { chain: 1 };
-        send(&writer, replay);
+        send(&archive, &writer, replay);
         assert_eq!(rows(&archive), first);
         send(
+            &archive,
             &writer,
             unbound("b", 0, vec![observed.clone(), observed], prepared),
         );
@@ -85,6 +102,7 @@ fn input_event_occurrences_survive_preparation_replay_restart_and_input_separati
             "unrelated inputs cannot coalesce observer facts"
         );
         send(
+            &archive,
             &writer,
             unbound(
                 "a",
@@ -152,13 +170,14 @@ fn input_event_identity_includes_the_stored_revision_chain() {
     let w = test_archive();
     let observed = event((0, 100), "same recorded bytes");
     send(
+        &w.archive,
         &w.writer,
         unbound("rewritten", 0, vec![observed.clone()], true),
     );
     let original = rows(&w.archive);
     let mut rewritten = unbound("rewritten", 0, vec![observed], true);
     rewritten.change = Change::Rewritten;
-    send(&w.writer, rewritten);
+    send(&w.archive, &w.writer, rewritten);
     let after = rows(&w.archive);
     assert_eq!(
         after.len(),

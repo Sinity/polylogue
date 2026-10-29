@@ -2,7 +2,6 @@
 use super::*;
 mod navigation;
 pub use navigation::OutlineEntry;
-use polylogue_model::masking::MessageMasker;
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
 
@@ -34,6 +33,7 @@ struct Key {
     session: SessionId,
     message_pk: i64,
     id: String,
+    order: i64,
 }
 
 struct Link {
@@ -173,18 +173,20 @@ impl<'a> Reader<'a> {
                 if link.how == "resume" {
                     let copied = self
                         .conn()?
-                        .prepare_cached(
-                            "SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq, m.record_position FROM message m
+                        .prepare_cached(&format!(
+                            "WITH canonical_order AS ({}) SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq, m.record_position,c.record_order FROM message m
+                             JOIN canonical_order c ON c.pk=m.pk
                              JOIN message_source s ON s.message_pk = m.pk
                              JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
                              WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL ORDER BY m.order_input_id, m.seq, m.record_position, m.id",
-                        )?
+                             order::canonical_rows("?1")))?
                         .query_map(params![parent_pk, frame.pk], |r| {
                             Ok(Key {
                                 session_pk: parent_pk,
                                 session: parent.clone(),
                                 message_pk: r.get(0)?,
                                 id: r.get(1)?,
+                                order: r.get(5)?,
                             })
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -207,12 +209,13 @@ impl<'a> Reader<'a> {
                 continue;
             }
             let mut done = frames.pop().expect("the current frame exists");
-            for (message_pk, id) in self.own_keys(done.pk)? {
+            for (message_pk, id, order) in self.own_keys(done.pk)? {
                 done.keys.push(Key {
                     session_pk: done.pk,
                     session: done.session.clone(),
                     message_pk,
                     id,
+                    order,
                 });
             }
             active.remove(&done.pk);
@@ -259,8 +262,7 @@ impl MessageSelection<'_, '_> {
         self
     }
 
-    /// Hidden messages without PEM markers cannot change ordered masking
-    /// state. Keep their metadata positions while leaving their bodies unread.
+    /// Keep hidden messages' metadata positions while leaving their bodies unread.
     pub fn for_blocks(mut self, kinds: &[polylogue_model::BlockKind], prompts: bool) -> Self {
         self.structured = false;
         self.visibility = Some(Visibility {
@@ -307,16 +309,46 @@ impl MessageSelection<'_, '_> {
             .map(drop)
     }
 
-    /// Skip source messages before hydrating their blocks. Rendering callers must
-    /// restore masking state checked against this exact selection. With the
-    /// start message's key, a session's own messages before it are not read
+    /// Canonical facts with the full own-session snapshot ordinal, before
+    /// inherited prefixes or caller subsets change the visited sequence.
+    pub fn visit_with_record_evidence(
+        &self,
+        visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_from_with_record_evidence(VisitStart::default(), visit)
+            .map(drop)
+    }
+
+    pub fn visit_from_with_record_evidence(
+        &self,
+        start: VisitStart,
+        mut visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        let mut error = None;
+        let last = self.visit_from_projected(start, true, |message, projection, evidence| {
+            match self.reader.conn().and_then(|conn| evidence.record(conn)) {
+                Ok((admitted, order)) => visit(message, projection, admitted, order),
+                Err(err) => {
+                    error = Some(err);
+                    ControlFlow::Break(())
+                }
+            }
+        })?;
+        match error {
+            Some(error) => Err(error),
+            None => Ok(last),
+        }
+    }
+
+    /// Skip source messages before hydrating their blocks. With the start
+    /// message's key, a session's own messages before it are not read
     /// at all. Returns the key of the last message visited.
     pub fn visit_from(
         &self,
         start: VisitStart,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
-        self.visit_from_rows(start, |message, _, _| visit(message))
+        self.visit_from_rows(start, false, |message, _, _| visit(message))
     }
 
     pub fn visit_from_with_projection(
@@ -324,7 +356,9 @@ impl MessageSelection<'_, '_> {
         start: VisitStart,
         mut visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
-        self.visit_from_projected(start, |message, projection, _| visit(message, projection))
+        self.visit_from_projected(start, false, |message, projection, _| {
+            visit(message, projection)
+        })
     }
 
     pub fn visit_from_with_evidence(
@@ -333,16 +367,15 @@ impl MessageSelection<'_, '_> {
         mut visit: impl FnMut(Message, MessageProjection, Option<u64>) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut error = None;
-        let last =
-            self.visit_from_projected(start, |message, projection, admission| {
-                match self.reader.conn().and_then(|conn| admission.resolve(conn)) {
-                    Ok(admitted) => visit(message, projection, admitted),
-                    Err(err) => {
-                        error = Some(err);
-                        ControlFlow::Break(())
-                    }
+        let last = self.visit_from_projected(start, false, |message, projection, admission| {
+            match self.reader.conn().and_then(|conn| admission.resolve(conn)) {
+                Ok(admitted) => visit(message, projection, admitted),
+                Err(err) => {
+                    error = Some(err);
+                    ControlFlow::Break(())
                 }
-            })?;
+            }
+        })?;
         match error {
             Some(error) => Err(error),
             None => Ok(last),
@@ -352,17 +385,22 @@ impl MessageSelection<'_, '_> {
     fn visit_from_projected(
         &self,
         start: VisitStart,
-        mut visit: impl FnMut(Message, MessageProjection, MessageAdmission) -> ControlFlow<()>,
+        ordered: bool,
+        mut visit: impl FnMut(Message, MessageProjection, MessageEvidence) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut missing = false;
         let last =
-            self.visit_from_rows(start, |message, projection, admitted| match projection {
-                Some(projection) => visit(message, projection, admitted),
-                None => {
-                    missing = true;
-                    ControlFlow::Break(())
-                }
-            })?;
+            self.visit_from_rows(
+                start,
+                ordered,
+                |message, projection, admitted| match projection {
+                    Some(projection) => visit(message, projection, admitted),
+                    None => {
+                        missing = true;
+                        ControlFlow::Break(())
+                    }
+                },
+            )?;
         if missing {
             return Err(StoreError::Invalid(
                 "the message has no canonical source reading".into(),
@@ -374,7 +412,8 @@ impl MessageSelection<'_, '_> {
     fn visit_from_rows(
         &self,
         start: VisitStart,
-        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageAdmission) -> ControlFlow<()>,
+        ordered: bool,
+        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageEvidence) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         if let Some(keys) = &self.with_parents {
             let mut last = None;
@@ -385,6 +424,11 @@ impl MessageSelection<'_, '_> {
                     &key.session,
                     Some(key.message_pk),
                     MessageContent {
+                        order: if ordered {
+                            RecordOrder::Known(key.order)
+                        } else {
+                            RecordOrder::Skip
+                        },
                         structured: self.structured,
                         visibility: self.visibility.as_ref(),
                     },
@@ -411,30 +455,21 @@ impl MessageSelection<'_, '_> {
             }
         };
         match (start.key, &self.with_parents) {
-            (Some(key), None) => self.visit_kept_projection(Some(key), 0, |_| true, visit),
-            _ => self.visit_kept_projection(None, 0, after_prefix, visit),
+            (Some(key), None) => self.visit_kept_projection(Some(key), 0, ordered, |_| true, visit),
+            _ => self.visit_kept_projection(None, 0, ordered, after_prefix, visit),
         }
     }
 
     /// Visits the selected messages `keep` takes, in order, from the own
     /// session's message `from` when given; `keep` sees each key before its
     /// blocks are read.
-    fn visit_kept(
-        &self,
-        from: Option<i64>,
-        skip: usize,
-        keep: impl FnMut(i64) -> bool,
-        mut visit: impl FnMut(Message) -> ControlFlow<()>,
-    ) -> Result<Option<i64>> {
-        self.visit_kept_projection(from, skip, keep, |message, _, _| visit(message))
-    }
-
     fn visit_kept_projection(
         &self,
         from: Option<i64>,
         skip: usize,
+        ordered: bool,
         mut keep: impl FnMut(i64) -> bool,
-        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageAdmission) -> ControlFlow<()>,
+        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageEvidence) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut last = None;
         let mut visit = |pk, message, projection, admitted| {
@@ -458,6 +493,11 @@ impl MessageSelection<'_, '_> {
                         &key.session,
                         Some(key.message_pk),
                         MessageContent {
+                            order: if ordered {
+                                RecordOrder::OwnSession
+                            } else {
+                                RecordOrder::Skip
+                            },
                             structured: self.structured,
                             visibility: self.visibility.as_ref(),
                         },
@@ -476,6 +516,11 @@ impl MessageSelection<'_, '_> {
                 id,
                 from,
                 MessageContent {
+                    order: if ordered {
+                        RecordOrder::OwnSession
+                    } else {
+                        RecordOrder::Skip
+                    },
                     structured: self.structured,
                     visibility: self.visibility.as_ref(),
                 },
@@ -507,62 +552,6 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    /// The masking state before the selection's message `message` when a
-    /// private key block may be open there; `None` when masking starts
-    /// afresh. An open key is the only masking state that crosses a block
-    /// boundary, and only messages holding a PEM header or END line
-    /// (`message.pem`) open or close one. So the state is the masker after
-    /// those messages alone, in order from the first that leaves a key open.
-    pub fn masking_before(&self, message: usize) -> Result<Option<MessageMasker>> {
-        Ok(self.masking_states()?.before(message))
-    }
-
-    /// Recover the ordered states at PEM markers once for a backward page.
-    pub fn masking_states(&self) -> Result<MaskingStates> {
-        let conn = self.reader.conn()?;
-        let mut marked = HashMap::new();
-        let mut statement =
-            conn.prepare_cached("SELECT pk,pem FROM message WHERE session_pk=?1 AND pem<>0")?;
-        for (session, _) in self.sessions() {
-            for row in statement.query_map([session], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })? {
-                let (key, pem) = row?;
-                marked.insert(key, pem);
-            }
-        }
-        if !marked.values().any(|pem| *pem == 2) {
-            return Ok(MaskingStates(Vec::new()));
-        }
-        let positions: HashMap<_, _> = self
-            .keys()?
-            .into_iter()
-            .enumerate()
-            .map(|(index, key)| (key, index))
-            .collect();
-        let mut states = Vec::new();
-        let mut masker = MessageMasker::default();
-        let mut started = false;
-        let current = std::cell::Cell::new(0);
-        self.visit_kept(
-            None,
-            0,
-            |pk| {
-                current.set(pk);
-                marked.contains_key(&pk)
-            },
-            |mut message| {
-                masker.message_text(&mut message);
-                started |= marked[&current.get()] == 2;
-                if started {
-                    states.push((positions[&current.get()] + 1, masker.clone()));
-                }
-                ControlFlow::Continue(())
-            },
-        )?;
-        Ok(MaskingStates(states))
-    }
-
     pub(super) fn keys(&self) -> Result<Vec<i64>> {
         match &self.with_parents {
             Some(keys) => Ok(keys.iter().map(|key| key.message_pk).collect()),
@@ -571,7 +560,7 @@ impl MessageSelection<'_, '_> {
                     .reader
                     .own_keys(*pk)?
                     .into_iter()
-                    .map(|(pk, _)| pk)
+                    .map(|(pk, _, _)| pk)
                     .collect()),
                 None => Ok(Vec::new()),
             },
@@ -682,13 +671,4 @@ fn hash_row(hash: &mut blake3::Hasher, row: &rusqlite::Row<'_>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Private masking states indexed by the next source message.
-pub struct MaskingStates(Vec<(usize, MessageMasker)>);
-impl MaskingStates {
-    pub fn before(&self, message: usize) -> Option<MessageMasker> {
-        let end = self.0.partition_point(|(at, _)| *at <= message);
-        end.checked_sub(1).map(|index| self.0[index].1.clone())
-    }
 }

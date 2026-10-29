@@ -1,9 +1,6 @@
-//! Export attachments: what the descriptor says about stored files, and the
-//! byte path that only the operator's terminal may use.
+//! Stored attachment metadata and checked byte pages through the real CLI.
 use super::*;
 use serde_json::{Value, json};
-
-mod terminal;
 
 const MESSAGE: &str = "chatgpt:asset-message";
 const SESSION: &str = "chatgpt:asset-session";
@@ -93,12 +90,12 @@ impl TestArchive {
     fn descriptor(&self) -> Value {
         let output = cli(&self.env(), &["--json", "attachment", MESSAGE, "0"]);
         assert!(output.status.success(), "{output:?}");
-        json(&output)
+        json(&output)["descriptor"].clone()
     }
 }
 
 #[test]
-fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
+fn directory_and_zip_imports_describe_exact_stored_attachment_bytes() {
     for zip in [false, true] {
         let fixture = TestArchive::new(zip);
         let descriptor = fixture.descriptor();
@@ -108,7 +105,6 @@ fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
             descriptor["matches"][0]["names"],
             json!(["supplied λ🙂.png"])
         );
-        assert!(descriptor.get("content_base64").is_none());
         assert!(
             !descriptor
                 .to_string()
@@ -132,37 +128,32 @@ fn directory_and_zip_imports_describe_stored_bytes_without_exposing_them() {
 }
 
 #[test]
-fn exact_attachment_output_requires_observed_terminal_and_no_harness() {
+fn exact_attachment_output_is_available_to_agents_without_terminal_stdout() {
     let fixture = TestArchive::new(true);
     let target = fixture._dir.path().join("exact.bin");
-    std::fs::write(&target, b"existing output stays until complete").unwrap();
     let args = [
         "--json",
         "attachment",
         MESSAGE,
         "0",
-        "--reveal",
         "--out",
         target.to_str().unwrap(),
         "--length",
         "7",
     ];
-    let no_terminal = cli(&fixture.env(), &args);
-    assert!(!no_terminal.status.success());
-    assert_eq!(
-        std::fs::read(&target).unwrap(),
-        b"existing output stays until complete"
-    );
-    let harness = terminal::cli(&fixture.env(), &args, true);
-    assert!(!harness.0.success(), "{harness:?}");
-    assert_eq!(
-        std::fs::read(&target).unwrap(),
-        b"existing output stays until complete"
-    );
-    let operator = terminal::cli(&fixture.env(), &args, false);
-    assert!(operator.0.success(), "{operator:?}");
-    assert_eq!(std::fs::read(&target).unwrap(), SECRET);
-    assert!(!String::from_utf8_lossy(&operator.1).contains("synthetic-private-file-value"));
+    for agent in [false, true] {
+        std::fs::write(&target, b"previous complete output").unwrap();
+        let mut child = command(&fixture.env());
+        for (key, value) in fixture.env() {
+            child.env(key, value);
+        }
+        if agent {
+            child.env("CODEX_SESSION_ID", "synthetic-harness");
+        }
+        let output = child.args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), SECRET);
+    }
 }
 
 #[test]
@@ -178,14 +169,13 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
         "attachment",
         MESSAGE,
         "0",
-        "--reveal",
         "--out",
         destination.to_str().unwrap(),
         "--length",
         "1",
     ];
     let operator = std::thread::scope(|scope| {
-        let operator = scope.spawn(|| terminal::cli(&fixture.env(), &args, false));
+        let operator = scope.spawn(|| cli(&fixture.env(), &args));
         loop {
             let partial = std::fs::read_dir(&directory)
                 .unwrap()
@@ -217,9 +207,10 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
         assert_eq!(json(&imported)["pass"]["errors"], json!([]));
         operator.join().unwrap()
     });
-    assert!(!operator.0.success(), "{operator:?}");
+    assert!(!operator.status.success(), "{operator:?}");
     assert!(
-        String::from_utf8_lossy(&operator.1).contains("stale_cursor"),
+        String::from_utf8_lossy(&[operator.stdout.clone(), operator.stderr.clone()].concat())
+            .contains("stale_cursor"),
         "{operator:?}"
     );
     assert_eq!(
@@ -234,21 +225,30 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
 }
 
 #[test]
-fn an_arbitrary_socket_reveal_flag_does_not_grant_exact_byte_output() {
+fn ordinary_attachment_pages_reconstruct_credential_shaped_binary_bytes() {
+    use base64::Engine as _;
     let fixture = TestArchive::new(false);
-    let mut socket =
-        std::os::unix::net::UnixStream::connect(fixture.archive.join("daemon.sock")).unwrap();
-    serde_json::to_writer(
-        &mut socket,
-        &json!({"op":"attachment","message":MESSAGE,"block":0,"reveal":true,"length":1}),
-    )
-    .unwrap();
-    socket.write_all(b"\n").unwrap();
-    let mut response = String::new();
-    BufReader::new(socket).read_line(&mut response).unwrap();
-    let response: Value = serde_json::from_str(&response).unwrap();
-    assert_eq!(response["kind"], "operator_required", "{response}");
-    assert!(!response.to_string().contains("content_base64"));
+    let mut bytes = Vec::new();
+    let mut cursor = None::<String>;
+    loop {
+        let mut args = vec!["--json", "attachment", MESSAGE, "0", "--length", "7"];
+        if let Some(cursor) = &cursor {
+            args.extend(["--cursor", cursor]);
+        }
+        let output = cli(&fixture.env(), &args);
+        assert!(output.status.success(), "{output:?}");
+        let page = json(&output);
+        assert_eq!(page["offset"], bytes.len());
+        let part = base64::engine::general_purpose::STANDARD
+            .decode(page["content_base64"].as_str().unwrap())
+            .unwrap();
+        bytes.extend(part);
+        cursor = page["next"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(bytes, SECRET);
 }
 
 #[test]
@@ -331,20 +331,18 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
     let fixture = TestArchive::with_bytes(false, b"");
     assert_eq!(fixture.descriptor()["state"], "available");
     let destination = fixture._dir.path().join("empty.bin");
-    let result = terminal::cli(
+    let result = cli(
         &fixture.env(),
         &[
             "--json",
             "attachment",
             MESSAGE,
             "0",
-            "--reveal",
             "--out",
             destination.to_str().unwrap(),
         ],
-        false,
     );
-    assert!(result.0.success(), "{result:?}");
+    assert!(result.status.success(), "{result:?}");
     assert!(std::fs::read(destination).unwrap().is_empty());
 }
 

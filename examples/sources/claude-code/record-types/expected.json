@@ -51,7 +51,10 @@
           "kind": "ok"
         },
         "session": "claude-code:s1",
-        "task_id": "bg1"
+        "task_id": "bg1",
+        "result_at_evidence": {
+          "quality": "unknown"
+        }
       }
     ],
     "blobs": [],

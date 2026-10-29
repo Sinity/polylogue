@@ -36,4 +36,4 @@ fn folding_and_prefixes_mark_like_the_index_matches() {
     assert_eq!(&t[marks[0].0..marks[0].1], "weekday");
 }
 
-mod masking;
+mod source_text;

@@ -89,9 +89,6 @@ pub(crate) struct PreparedContent {
     pub(crate) texts: Vec<Option<[u8; 32]>>,
     /// Each block's structured value, packed for `block.data` ([`block_data`]).
     pub(crate) data: Vec<Option<Vec<u8>>>,
-    /// What each block holds of PEM private key blocks
-    /// ([`crate::ordered_blocks::pem`]).
-    pub(crate) pem: Vec<i64>,
 }
 
 impl std::ops::Deref for PreparedMessage {
@@ -280,10 +277,8 @@ impl RowPacker {
     fn pack_content(&mut self, blocks: &[Block], hash: [u8; 32]) -> Result<PreparedContent> {
         let mut packed = Vec::with_capacity(blocks.len());
         let mut data = Vec::with_capacity(blocks.len());
-        let mut pem = Vec::with_capacity(blocks.len());
         for block in blocks {
             let bytes = block_bytes(block)?;
-            pem.push(crate::ordered_blocks::pem(&bytes, block_text(block)));
             packed.push(self.pack_row(&bytes)?);
             data.push(
                 block_data(block)
@@ -301,7 +296,6 @@ impl RowPacker {
                 .collect(),
             blocks: packed,
             data,
-            pem,
         })
     }
 }

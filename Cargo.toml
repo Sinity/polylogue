@@ -18,7 +18,6 @@ polylogue-render = { path = "crates/render" }
 polylogue-sinex = { path = "crates/sinex" }
 polylogue-testkit = { path = "crates/testkit" }
 query-language = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
-credential-masking = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master", default-features = false }
 serde = { version = "1", features = ["derive"] }
@@ -58,7 +57,7 @@ unsafe_code = "deny"
 todo = "warn"
 unimplemented = "deny"
 
-# Tests spend most of their CPU in SQLite, JSON and the credential masker.
+# Tests spend most of their CPU in SQLite and JSON.
 # Optimizing them cuts suite CPU by about three quarters; level 1 for the
 # workspace keeps rebuilds about as cheap as unoptimized ones.
 # Line tables keep backtraces readable. Full debug info made each worktree's

@@ -52,6 +52,20 @@ impl Reader<'_> {
     /// by their content: the order inputs arrived in never changes the view
     ///.
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
+        let mut links = Vec::new();
+        self.visit_links(id, |link| {
+            links.push(link);
+            std::ops::ControlFlow::Continue(())
+        })?;
+        Ok(links)
+    }
+
+    /// Visit links in content order, stopping before later payloads are decoded.
+    pub fn visit_links(
+        &self,
+        id: &SessionId,
+        mut visit: impl FnMut(Link) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence
              FROM link WHERE parent_id = ?1 OR child_id = ?1
@@ -67,7 +81,6 @@ impl Reader<'_> {
                 r.get::<_, String>(6)?,
             ))
         })?;
-        let mut out = Vec::new();
         for row in rows {
             let ((kind, how), parent, child, at, call_id, evidence) = row?;
             let (Some(kind), Ok(parent), Ok(child)) = (
@@ -77,15 +90,18 @@ impl Reader<'_> {
             ) else {
                 continue;
             };
-            out.push(Link {
+            let link = Link {
                 kind,
                 parent,
                 child,
                 at: at.and_then(|a| MessageId::parse(&a).ok()),
                 call_id,
                 evidence,
-            });
+            };
+            if visit(link).is_break() {
+                break;
+            }
         }
-        Ok(out)
+        Ok(())
     }
 }
