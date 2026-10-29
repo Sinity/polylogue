@@ -113,6 +113,16 @@ impl Link {
         (self.kind, &self.parent, &self.child)
     }
 
+    /// Internal selection tag for locating all canonical copies of this link.
+    pub fn selection_tag(&self) -> String {
+        blake3::hash(
+            &serde_json::to_vec(&("polylogue.link.selection.v1", self.key()))
+                .expect("typed link identity"),
+        )
+        .to_hex()
+        .to_string()
+    }
+
     /// Fills the parts this statement of the link lacks from another
     /// statement of the same link: a subagent's own file
     /// names its parent, the parent's progress record names the tool call.

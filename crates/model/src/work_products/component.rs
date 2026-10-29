@@ -55,7 +55,7 @@ pub struct RootRef {
 #[serde(deny_unknown_fields)]
 pub struct MembershipBasis {
     pub membership_version: u32,
-    pub selection_version: String,
+    pub selection_version: super::SelectionVersion,
     pub completed_position: i64,
     pub scope: String,
     pub membership_hash: String,
@@ -98,26 +98,7 @@ impl ComponentStatus {
         if self.position < 0 || self.physical.is_empty() {
             return Err("component needs physical evidence at a completed position");
         }
-        let mut previous = None;
-        for physical in &self.physical {
-            let session = physical.session.to_string();
-            if previous
-                .as_ref()
-                .is_some_and(|previous| previous >= &session)
-            {
-                return Err("component sessions are repeated or not in canonical order");
-            }
-            previous = Some(session);
-            if physical.evidence.is_empty()
-                || physical
-                    .evidence
-                    .iter()
-                    .any(|evidence| evidence.event.is_empty())
-                || physical.evidence.windows(2).any(|pair| pair[0] >= pair[1])
-            {
-                return Err("component evidence is absent, repeated or not in canonical order");
-            }
-        }
+        super::snapshot::validate_physical(&self.physical)?;
         match &self.status {
             ComponentState::Unavailable { reasons } => {
                 if reasons.is_empty() || reasons.iter().any(String::is_empty) {
@@ -138,14 +119,7 @@ impl ComponentStatus {
                 {
                     return Err("resolved component needs distinct supported root references");
                 }
-                if basis.membership_version != membership::VERSION
-                    || basis.completed_position != self.position
-                    || basis.selection_version.is_empty()
-                    || basis.scope.is_empty()
-                    || basis.membership_hash.is_empty()
-                {
-                    return Err("resolved component has an incomplete membership basis");
-                }
+                basis.validate(self.position)?;
             }
         }
         Ok(())

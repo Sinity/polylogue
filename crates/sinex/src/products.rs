@@ -231,7 +231,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         }),
         Product::WorkSnapshot { snapshot } => json!({
             "session":snapshot.session_id,"reducer_version":snapshot.reducer_version,"source_position":snapshot.position,
-            "complete":true,"repo":snapshot.session.as_ref().and_then(|session|session.repo.as_ref()),"branch":snapshot.session.as_ref().and_then(|session|session.git_branch.as_ref()),"kind":snapshot.session.as_ref().map(|session|session.kind),"mode":snapshot.session.as_ref().and_then(|session|session.mode.as_ref()),
+            "complete":snapshot.complete(),"repo":snapshot.session.as_ref().and_then(|session|session.repo.as_ref()),"branch":snapshot.session.as_ref().and_then(|session|session.git_branch.as_ref()),"kind":snapshot.session.as_ref().map(|session|session.kind),"mode":snapshot.session.as_ref().and_then(|session|session.mode.as_ref()),
             "machine":Value::Null,"objectives":[],"git_identity":Value::Null,"terminal":Value::Null,"boot_id":Value::Null,
             "native_sources":[],"native_unavailable":[],
         }),
@@ -257,7 +257,7 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
             || payload.get("reducer_version").and_then(Value::as_u64)
                 != Some(snapshot.reducer_version as u64)
             || payload.get("source_position").and_then(Value::as_i64) != Some(snapshot.position)
-            || payload.get("complete").and_then(Value::as_bool) != Some(true)
+            || payload.get("complete").and_then(Value::as_bool) != Some(snapshot.complete())
         {
             return Err(Error::Invalid(
                 "work snapshot wrapper differs from its complete facts".into(),
@@ -453,7 +453,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 kind: KindRef {
                     name: (*name).into(),
                     version: match *product {
-                        "work_snapshot" => 4,
+                        "work_snapshot" => 5,
                         "query" | "query_run" | "query_run_outcome" | "work_component_status" => 1,
                         _ => 3,
                     },

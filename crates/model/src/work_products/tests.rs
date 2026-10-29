@@ -1,6 +1,33 @@
 use super::*;
 use serde_json::json;
 
+fn membership_basis(position: i64, hash: String) -> component::MembershipBasis {
+    component::MembershipBasis {
+        membership_version: membership::VERSION,
+        selection_version: SelectionVersion::Confirmed1,
+        completed_position: position,
+        scope: "scope".into(),
+        membership_hash: hash,
+    }
+}
+
+fn established(session: &str, position: i64) -> SnapshotMembership {
+    let id = SessionId::parse(session).unwrap();
+    let work = membership::derive([id.clone()], []).remove(0);
+    let basis = membership_basis(position, work.identity());
+    SnapshotMembership::Established {
+        work,
+        physical_refs: vec![component::PhysicalRef {
+            session: id,
+            evidence: vec![component::PhysicalEvidence {
+                event: "event-first".into(),
+                field: component::PhysicalField::MessageSession,
+            }],
+        }],
+        basis,
+    }
+}
+
 fn message(id: &str, role: &str, kind: &str, blocks: serde_json::Value) -> SelectedMessage {
     SelectedMessage {
         logical_session: SessionId::parse("codex:morrow").unwrap(),
@@ -144,6 +171,9 @@ fn retired_snapshot_keeps_only_session_identity_and_rejects_erased_metadata() {
         reducer_version: VERSION,
         position: 9,
         session_id: id.clone(),
+        membership: SnapshotMembership::Retired {
+            basis: membership_basis(9, "retired-known-root".into()),
+        },
         session: None,
         retired: true,
         unavailable: Vec::new(),
@@ -515,7 +545,7 @@ fn structural_scope_does_not_alias_delimiter_display_refs_or_logical_roots() {
 }
 
 #[test]
-fn snapshot_validation_requires_reducer_two_unique_entries_and_unavailable_reasons() {
+fn snapshot_validation_requires_current_reducer_unique_entries_and_unavailable_reasons() {
     let (calls, _) = derive([
         message("first", "assistant", "model", call()),
         message("second", "assistant", "model", call()),
@@ -524,6 +554,7 @@ fn snapshot_validation_requires_reducer_two_unique_entries_and_unavailable_reaso
         reducer_version: VERSION,
         position: 4,
         session_id: SessionId::parse("codex:morrow").unwrap(),
+        membership: established("codex:morrow", 4),
         session: None,
         retired: false,
         unavailable: Vec::new(),

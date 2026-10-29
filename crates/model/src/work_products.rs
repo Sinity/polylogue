@@ -7,10 +7,12 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub mod component;
 pub mod membership;
+pub mod snapshot;
 pub use component::ComponentStatus;
+pub use snapshot::{SelectionVersion, SnapshotMembership};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolCallProduct {
@@ -108,6 +110,7 @@ pub struct WorkSnapshot {
     pub reducer_version: u32,
     pub position: i64,
     pub session_id: SessionId,
+    pub membership: SnapshotMembership,
     pub session: Option<crate::Session>,
     pub retired: bool,
     pub unavailable: Vec<String>,
@@ -125,6 +128,21 @@ impl WorkSnapshot {
         }
         if self.position < 0 {
             return Err("snapshot position is negative");
+        }
+        self.membership.validate(&self.session_id, self.position)?;
+        if self.retired != matches!(self.membership, SnapshotMembership::Retired { .. }) {
+            return Err("snapshot retirement differs from its membership state");
+        }
+        if matches!(self.membership, SnapshotMembership::Unavailable { .. })
+            && (self.unavailable.is_empty()
+                || self.session.is_some()
+                || !self.messages.is_empty()
+                || !self.calls.is_empty()
+                || !self.turns.is_empty()
+                || !self.native.is_empty()
+                || !self.sources.is_empty())
+        {
+            return Err("unavailable membership contains computed facts or lacks a reason");
         }
         if self
             .session
@@ -154,6 +172,22 @@ impl WorkSnapshot {
         {
             return Err("snapshot member belongs to another session");
         }
+        if let SnapshotMembership::Established { work, .. } = &self.membership
+            && (self
+                .messages
+                .iter()
+                .any(|entry| !work.physical.contains(&entry.physical_session))
+                || self
+                    .calls
+                    .iter()
+                    .any(|entry| !work.physical.contains(&entry.physical_session))
+                || self
+                    .turns
+                    .iter()
+                    .any(|entry| !work.physical.contains(&entry.physical_session)))
+        {
+            return Err("snapshot entry has no physical membership evidence");
+        }
         let mut entries = BTreeSet::new();
         for call in &self.calls {
             if call.entry_id.is_empty() || !entries.insert(&call.entry_id) {
@@ -178,6 +212,10 @@ impl WorkSnapshot {
             }
         }
         Ok(())
+    }
+
+    pub fn complete(&self) -> bool {
+        !matches!(self.membership, SnapshotMembership::Unavailable { .. })
     }
 }
 

@@ -42,6 +42,20 @@ It is derived from full confirmed reading facts using the selection from the
 same confirmed transaction. Its output intent and input position commit
 together. There is no later scan of the read index to send these products.
 
+Snapshot kind version 5 uses reducer version 3 and requires typed membership
+provenance. Explicit Fork, Spawn, Continuation and Copy facts determine its
+logical root and physical members; every physical member retains its native
+event evidence. The selection version is a closed supported value. The
+membership hash records Polylogue's derivation provenance and grants no owner
+authority. Earlier snapshot versions remain unsupported historical evidence.
+
+An ambiguous or cyclic component has an unavailable routing status keyed by
+its sorted typed physical session IDs. It cannot invent a logical root. A
+previously established root can carry an unavailable snapshot with no computed
+entries and `complete: false`. Resolving a component replaces its routing status
+under the same key, in the same owner batch as the established root snapshots
+and old-root retirements.
+
 A replacement omits retired members atomically. An empty retirement snapshot
 carries the session ID and no copied erased session metadata. Historical
 snapshots remain immutable. Snapshot kinds cannot become reducer inputs.

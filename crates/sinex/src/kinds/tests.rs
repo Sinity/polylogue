@@ -63,6 +63,15 @@ fn complete_snapshot_schema_keys_session_and_reducer_and_carries_honest_unknown_
         reducer_version: polylogue_model::work_products::VERSION,
         position: 42,
         session_id: polylogue_model::SessionId::parse("codex:s").unwrap(),
+        membership: polylogue_model::work_products::SnapshotMembership::Retired {
+            basis: polylogue_model::work_products::component::MembershipBasis {
+                membership_version: polylogue_model::work_products::membership::VERSION,
+                selection_version: polylogue_model::work_products::SelectionVersion::Confirmed1,
+                completed_position: 42,
+                scope: "scope".into(),
+                membership_hash: "retired-known-root".into(),
+            },
+        },
         session: None,
         retired: true,
         unavailable: Vec::new(),
@@ -111,7 +120,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.work_snapshot" => 4,
+                "polylogue.work_snapshot" => 5,
                 "polylogue.query"
                 | "polylogue.query_run"
                 | "polylogue.query_run_outcome"
@@ -165,7 +174,7 @@ fn component_replacement_keeps_its_physical_key_across_copy_arrival_and_resoluti
         }],
         basis: MembershipBasis {
             membership_version: polylogue_model::work_products::membership::VERSION,
-            selection_version: "confirmed-selection-1".into(),
+            selection_version: polylogue_model::work_products::SelectionVersion::Confirmed1,
             completed_position: 43,
             scope: "owner-scope".into(),
             membership_hash: "confirmed-membership".into(),

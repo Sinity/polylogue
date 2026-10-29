@@ -45,7 +45,7 @@ fn resolution_requires_a_same_position_membership_basis_and_supported_root_refer
         }],
         basis: MembershipBasis {
             membership_version: membership::VERSION,
-            selection_version: "confirmed-selection-1".into(),
+            selection_version: super::super::SelectionVersion::Confirmed1,
             completed_position: 42,
             scope: "owner-scope".into(),
             membership_hash: "confirmed-membership".into(),
