@@ -422,6 +422,7 @@ fn keep_decoded(
     if !blobs.is_empty() {
         reading.decoded(polylogue_store::staging::PreparedBatch {
             batch: polylogue_store::Batch {
+                required_disposition: None,
                 input: plan.input.clone(),
                 change: plan.change.clone(),
                 observation: None,

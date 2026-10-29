@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 fn batch(id: &str, length: u64) -> Batch {
     Batch {
+        required_disposition: None,
         input: InputKey {
             id: id.into(),
             format: "export-file".into(),

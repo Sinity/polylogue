@@ -205,3 +205,4 @@ fn complete_reading_custody_uses_the_encoded_plain_identity_and_survives_restart
 }
 
 mod named;
+mod signals;

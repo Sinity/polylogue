@@ -710,6 +710,7 @@ fn increment(counts: &mut Counts, record: &Record) {
         Record::Authored(_) => counts.authored += 1,
         Record::Variant(_) => counts.variants += 1,
         Record::VariantPart(_) => counts.variant_parts += 1,
+        Record::TextFragment(_) => counts.text_fragments += 1,
         Record::Blob(_) => counts.blobs += 1,
     }
 }

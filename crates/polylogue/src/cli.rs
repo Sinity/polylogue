@@ -180,7 +180,11 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
 /// A command's values from its matches.
 fn values(c: &Command, m: &ArgMatches) -> Values {
     let mut out = serde_json::Map::new();
+    let read_resume = c.name == "read" && m.get_one::<String>("root_run").is_some();
     for a in c.args_for(Surface::Cli) {
+        if read_resume && m.value_source(a.name) != Some(ValueSource::CommandLine) {
+            continue;
+        }
         let value = match a.kind {
             Kind::Bool => m.get_flag(a.name).then_some(Value::Bool(true)),
             Kind::Integer => m.get_one::<u64>(a.name).map(|n| Value::from(*n)),
@@ -280,6 +284,7 @@ pub fn run(
         .get_one::<String>("request_id")
         .cloned()
         .unwrap_or_else(|| values.request_id());
+    let mut literal_arguments = None;
     let request = if let Some(raw) = raw {
         let Some(build) = cmd.build_typed else {
             return fail(
@@ -305,11 +310,11 @@ pub fn run(
                 2,
             );
         };
-        values = match Values::from_json(cmd, Surface::Cli, object.clone()) {
-            Ok(values) => values,
-            Err(error) => return fail(json, "bad_request", &error, 2),
-        };
+        // The typed adapter validated the arguments. Output options may read
+        // them, but the accepted envelope retains exactly what the caller sent.
+        values = Values(object.clone().into_iter().collect());
         values.0.insert("json".into(), Value::Bool(json));
+        literal_arguments = Some(arguments);
         request
     } else {
         let build = match cmd.action {
@@ -322,7 +327,15 @@ pub fn run(
             Err(message) => return fail(json, "bad_request", &message, 2),
         }
     };
-    let call = crate::protocol::operations::request(cmd, values.clone(), request_id, deadline);
+    let call = match literal_arguments {
+        Some(arguments) => command_surface::Request {
+            operation: cmd.name.into(),
+            arguments,
+            request_id,
+            deadline,
+        },
+        None => crate::protocol::operations::request(cmd, values.clone(), request_id, deadline),
+    };
     if let Action::Stream { cli, .. } = cmd.action {
         return cli(&values, &request, startup, &call);
     }

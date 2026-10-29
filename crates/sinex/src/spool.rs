@@ -1364,6 +1364,8 @@ impl Spool {
             "pending-source",
             "acquisition-members",
             "raw-generations",
+            "raw-roots",
+            "raw-children",
         ] {
             fs::create_dir_all(index.join(name))?;
         }

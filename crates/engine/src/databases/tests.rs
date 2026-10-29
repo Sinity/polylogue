@@ -111,6 +111,7 @@ fn native_capture_continues_the_input_named_by_its_source_header() {
             .store_bytes(
                 archive.prepare_bytes(bytes.as_slice()).unwrap(),
                 Batch {
+                    required_disposition: None,
                     input: InputKey {
                         id: "stored-database".into(),
                         format: "codex-database".into(),

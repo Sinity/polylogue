@@ -143,6 +143,7 @@ impl Engine {
                     None,
                 );
                 let batch = polylogue_store::Batch {
+                    required_disposition: None,
                     input: InputKey {
                         id,
                         format: origin.name.into(),
@@ -222,6 +223,7 @@ impl Engine {
             prepared.hash(),
         );
         let batch = polylogue_store::Batch {
+            required_disposition: None,
             input: InputKey {
                 id: id.clone(),
                 format: "codex-local-file".into(),

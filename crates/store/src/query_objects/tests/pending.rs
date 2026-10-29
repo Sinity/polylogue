@@ -39,6 +39,20 @@ impl Sinex for PendingProducer {
     ) -> Result<crate::primary::PendingSource> {
         Self::unavailable()
     }
+    fn pending_group_headers(
+        &self,
+        _: &str,
+        _: Option<u64>,
+        _: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        Self::unavailable()
+    }
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::RawAcquisitionQuery,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
     fn capture_body(&self, _: &str) -> Result<PreparedBody> {
         Self::unavailable()
     }

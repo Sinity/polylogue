@@ -48,27 +48,6 @@ fn semantic(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Valu
 }
 
 impl Sinex {
-    pub fn raw_acquisition_cursor(
-        &self,
-        generation: &polylogue_store::primary::SourceGeneration,
-    ) -> Result<Option<polylogue_store::primary::RawAcquisitionCursor>> {
-        let mut proof = polylogue_store::primary::RawAcquisitionProof::new(generation.clone())?;
-        let through = self.queue()?.raw_cut()?;
-        let mut after = None;
-        loop {
-            let page = self.queue()?.raw_ranges(generation, after, through, 32)?;
-            if page.is_empty() {
-                break;
-            }
-            for entry in page {
-                after = Some(entry.order);
-                let body = entry.verify()?;
-                proof.push(body)?;
-            }
-        }
-        Ok(proof.finish())
-    }
-
     pub(crate) fn prepare_input_group(
         &self,
         plan: &CapturePlan,
@@ -454,6 +433,8 @@ impl Sinex {
         })
     }
 }
+
+mod continuation;
 
 #[cfg(test)]
 mod raw_tests;

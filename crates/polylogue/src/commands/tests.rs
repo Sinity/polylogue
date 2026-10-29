@@ -171,13 +171,13 @@ fn one_operation_makes_one_request_on_every_surface() {
         "dialogue",
         "--budget",
         "100",
-        "--with-parents",
+        "--inherited",
     ])
     .unwrap();
     let mcp = Values::from_json(
         read,
         Surface::Mcp,
-        json!({"session": "claude-code:s1", "view": "dialogue", "budget": 100, "with_parents": true})
+        json!({"target": "claude-code:s1", "view": "dialogue", "budget": 100, "inherited": true})
             .as_object()
             .unwrap()
             .clone(),
@@ -187,17 +187,17 @@ fn one_operation_makes_one_request_on_every_surface() {
         read,
         Surface::Http,
         vec![
-            ("session".into(), "claude-code:s1".into()),
+            ("target".into(), "claude-code:s1".into()),
             ("view".into(), "dialogue".into()),
             ("budget".into(), "100".into()),
-            ("with_parents".into(), "true".into()),
+            ("inherited".into(), "true".into()),
         ],
     )
     .unwrap();
     let a = request_json(read, &cli, &cli_caller());
     assert_eq!(a, request_json(read, &mcp, &mcp_caller()));
     assert_eq!(a, request_json(read, &http, &cli_caller()));
-    assert_eq!(a["view"], "dialogue");
+    assert_eq!(a["options"]["view"], "dialogue");
     assert_eq!(a["budget"], 100);
 }
 
@@ -261,34 +261,25 @@ fn note_write_payloads_never_supply_the_actor() {
 }
 
 #[test]
-fn values_are_checked_against_the_table() {
+fn typed_read_validation_owns_defaults_and_conditional_requirements() {
     let read = command("read").unwrap();
-    let check = |v: serde_json::Value| {
-        Values::from_json(read, Surface::Mcp, v.as_object().unwrap().clone())
+    let build = read.build_typed.unwrap();
+    let caller = mcp_caller();
+    for invalid in [
+        json!({"target":"claude-code:s1","pages":2}),
+        json!({"target":"claude-code:s1","budget":"many"}),
+        json!({"target":"claude-code:s1","view":"sideways"}),
+        json!({}),
+        json!({"target":"claude-code:s1","to":"synthetic-output"}),
+    ] {
+        assert!(build(invalid, &caller, "read-invalid").is_err());
+    }
+    let request = build(json!({"target":"claude-code:s1"}), &caller, "read-default").unwrap();
+    let Request::Read { options, .. } = request else {
+        panic!("full read");
     };
-    let e = check(json!({"session": "claude-code:s1", "pages": 2})).unwrap_err();
-    assert!(e.contains("no argument `pages`"), "{e}");
-    let e = check(json!({"session": "claude-code:s1", "budget": "many"})).unwrap_err();
-    assert!(e.contains("whole number"), "{e}");
-    let e = check(json!({"session": "claude-code:s1", "view": "sideways"})).unwrap_err();
-    assert!(e.contains("one of full"), "{e}");
-    let e = check(json!({})).unwrap_err();
-    assert!(e.contains("needs `session`"), "{e}");
-    // Arguments that act on the calling machine are not offered.
-    let export = command("export").unwrap();
-    let e = Values::from_json(
-        export,
-        Surface::Http,
-        json!({"sessions": ["claude-code:s1"], "out": "/tmp/x"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    )
-    .unwrap_err();
-    assert!(e.contains("no argument `out`"), "{e}");
-    // Defaults fill what is left out.
-    let v = check(json!({"session": "claude-code:s1"})).unwrap();
-    assert_eq!(v.text("view").as_deref(), Some("full"));
+    assert_eq!(options.view, polylogue_model::read::View::Transcript);
+    assert_eq!(options.output_lines, 100);
 }
 
 #[test]
@@ -298,7 +289,7 @@ fn a_write_may_carry_its_request_id() {
     let v = Values::from_json(add, Surface::Http, args.as_object().unwrap().clone()).unwrap();
     assert_eq!(v.request_id(), "r1");
     let read = command("read").unwrap();
-    let args = json!({"session": "claude-code:s1", "request_id": "r1"});
+    let args = json!({"target": "claude-code:s1", "request_id": "r1"});
     assert!(Values::from_json(read, Surface::Http, args.as_object().unwrap().clone()).is_err());
 }
 
@@ -322,9 +313,9 @@ fn http_callers_name_their_directory() {
 #[test]
 fn mcp_schemas_follow_the_arguments() {
     let s = schema(command("read").unwrap());
-    assert_eq!(s["required"], json!(["session"]));
-    assert_eq!(s["properties"]["budget"]["type"], "integer");
-    assert_eq!(s["properties"]["view"]["default"], "full");
+    assert!(s["properties"]["arguments"].is_object());
+    assert!(s["properties"]["request_id"].is_object());
+    assert!(s.to_string().contains("ResumeArguments"));
     assert_eq!(s["additionalProperties"], false);
     let s = schema(command("note add").unwrap());
     assert!(s["properties"]["request_id"].is_object());

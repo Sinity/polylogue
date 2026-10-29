@@ -45,10 +45,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// This adapter declaration is installed by the owner, never self-registered
 /// from a producer's requested permissions.
-pub(crate) fn source_reference() -> sinex_protocol::SourceRef {
+pub fn source_reference() -> sinex_protocol::SourceRef {
     sinex_protocol::SourceRef {
         name: "polylogue".into(),
-        version: 1,
+        version: 2,
     }
 }
 
@@ -264,9 +264,9 @@ impl Drop for Sinex {
 impl polylogue_store::primary::Sinex for Sinex {
     fn raw_acquisition_cursor(
         &self,
-        generation: &polylogue_store::primary::SourceGeneration,
+        query: &polylogue_store::primary::RawAcquisitionQuery,
     ) -> polylogue_store::Result<Option<polylogue_store::primary::RawAcquisitionCursor>> {
-        Ok(self.raw_acquisition_cursor(generation)?)
+        Ok(self.raw_acquisition_cursor(query)?)
     }
     fn prepare_input_group(
         &self,

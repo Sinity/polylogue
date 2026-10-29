@@ -255,3 +255,60 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
     assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
     server.join().unwrap();
 }
+
+#[test]
+fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
+    use std::io::{BufRead, Write};
+    let daemon = crate::test_daemon::start("literal read envelope witness");
+    let root = tempfile::tempdir().unwrap();
+    let archive = Archive::at(root.path());
+    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let expected = command_surface::Request {
+        operation: "read".into(),
+        arguments: serde_json::json!({"target":"sessions"}),
+        request_id: "literal-read".into(),
+        deadline: command_surface::Deadline::None,
+    };
+    let ready = daemon.daemon.ready_call(&expected).unwrap();
+    let arguments = polylogue_model::command::effective_stages(&ready.cli)[0]
+        .args
+        .clone();
+    let peer = std::thread::spawn(move || {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < until =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("literal read did not reach the configured socket: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut line)
+            .unwrap();
+        let (actual, _) = crate::protocol::wire::incoming(&line).unwrap().unwrap();
+        assert_eq!(actual, expected);
+        let refusal =
+            command_surface::Answer::<serde_json::Value>::error(command_surface::Failure::new(
+                command_surface::FailureKind::Refused,
+                "synthetic refusal",
+            ));
+        writeln!(stream, "{}", serde_json::to_string(&refusal).unwrap()).unwrap();
+    });
+    let mut argv = vec!["polylogue".to_string()];
+    argv.extend(arguments);
+    argv.push("--json".into());
+    let matches = command().try_get_matches_from(argv).unwrap();
+    let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
+    assert_eq!(run(&matches, &startup, root.path()), ExitCode::from(3));
+    peer.join().unwrap();
+}

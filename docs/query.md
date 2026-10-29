@@ -299,3 +299,9 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **facets-equal-group-by**: facet counts equal their `group by` queries.
 - **watch-change-kinds**: a watched `similar:` query reports rows joining and the top five changing as separate changes; a reading during catch-up reports nothing; a re-parse of the same input never fires again.
 - **bulk-write-membership**: a bulk write over a query writes exactly one assertion per row of the query's membership at write time.
+
+Every bounded read page has its own immutable Begin record. A continuation
+retains the original root action's integrity hash while its record hash binds
+its current position, invocation, time and actor. Its asynchronous outcome must
+match both hashes. Root lookup resolves one retained original Begin and refuses
+missing or chained roots; it does not grant read authority by itself.

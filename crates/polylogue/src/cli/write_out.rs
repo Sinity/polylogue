@@ -84,13 +84,14 @@ fn deliver(
 ) -> Result<u8, DeliveryError> {
     let archive = Archive::at(&startup.config.archive);
     let mut request = request.clone();
-    let Request::Read { delivery, .. } = &request else {
-        return Err("a read request is required".into());
+    let delivery = match &request {
+        Request::Read { delivery, .. } => *delivery,
+        Request::ReadResume { .. } => ReadDelivery::Page,
+        _ => return Err("a read request is required".into()),
     };
     let destination = values.text("to").map(PathBuf::from);
-    if destination.is_none() && *delivery == ReadDelivery::Page {
-        let answer = crate::client::call_ready(&archive, &call(&request, accepted)?)
-            .map_err(|e| e.to_string())?;
+    if destination.is_none() && delivery == ReadDelivery::Page {
+        let answer = crate::client::call_ready(&archive, accepted).map_err(|e| e.to_string())?;
         let code = answer.exit_code();
         if values.flag("json") {
             println!(
@@ -106,13 +107,9 @@ fn deliver(
             return Err(DeliveryError::Answer(answer));
         };
         let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        let Request::Read { format, .. } = &request else {
-            unreachable!()
-        };
-        let format = polylogue_render::Format::parse(format).ok_or("unknown read format")?;
         polylogue_render::encode_document(
             &page.document,
-            format,
+            page.format,
             polylogue_render::EncodeOptions::default(),
             &mut io::stdout().lock(),
         )
@@ -127,7 +124,7 @@ fn deliver(
         ..
     } = &mut request
     else {
-        unreachable!()
+        return Err("stream delivery requires a full read request".into());
     };
     *delivery = ReadDelivery::Stream;
     let format = polylogue_render::Format::parse(format).ok_or("unknown read format")?;
@@ -417,6 +414,7 @@ fn count(counts: &mut Counts, record: &polylogue_model::bundle::Record) -> io::R
         Record::Authored(_) => &mut counts.authored,
         Record::Variant(_) => &mut counts.variants,
         Record::VariantPart(_) => &mut counts.variant_parts,
+        Record::TextFragment(_) => &mut counts.text_fragments,
         Record::Blob(_) => &mut counts.blobs,
         Record::Manifest(_) => return Err(invalid("a read cannot contain an embedded manifest")),
     };

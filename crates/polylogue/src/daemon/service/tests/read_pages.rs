@@ -1,13 +1,23 @@
 use super::*;
-use polylogue_model::read::{ItemKind, ReadDelivery, ReadItem, ReadOptions, ReadPage, View};
+use crate::protocol::read::ResumeArguments;
+use polylogue_model::read::{
+    ItemKind, ReadDelivery, ReadItem, ReadOptions, ReadPage, ReadPosition, View,
+};
 
 fn request(
     target: &str,
     inherited: bool,
     view: View,
     budget: usize,
-    cursor: Option<&str>,
+    cursor: Option<&ResumeArguments>,
 ) -> Request {
+    if let Some(resume) = cursor {
+        return Request::ReadResume {
+            root_run: resume.root_run.clone(),
+            cursor: resume.cursor.clone(),
+            budget: Some(std::num::NonZeroU64::new(budget as u64).unwrap()),
+        };
+    }
     Request::Read {
         target: target.into(),
         options: ReadOptions {
@@ -18,7 +28,6 @@ fn request(
         delivery: ReadDelivery::Page,
         format: "json".into(),
         budget: Some(budget),
-        cursor: cursor.map(str::to_owned),
         with_blobs: false,
     }
 }
@@ -28,7 +37,7 @@ fn page(
     inherited: bool,
     view: View,
     budget: usize,
-    cursor: Option<&str>,
+    cursor: Option<&ResumeArguments>,
 ) -> ReadPage {
     let response = handle(request(target, inherited, view, budget, cursor), d);
     let Response::Ok { data, .. } = response else {
@@ -42,38 +51,57 @@ fn refused(response: Response, expected: &str) {
         "{response:?}"
     );
 }
-fn call_cursor(call: &polylogue_model::read::ReadyCall) -> String {
+fn call_cursor(call: &polylogue_model::read::ReadyCall) -> ResumeArguments {
     let envelope: command_surface::RunnableRequest =
         serde_json::from_value(call.http.arguments.clone()).unwrap();
     assert_eq!(envelope.operation, "read");
-    envelope.arguments["cursor"].as_str().unwrap().into()
+    serde_json::from_value(envelope.arguments).unwrap()
 }
-fn next(page: &ReadPage) -> Option<String> {
+fn next(page: &ReadPage) -> Option<ResumeArguments> {
     page.document.footer.next.as_ref().map(call_cursor)
 }
 #[derive(Default)]
 struct Text {
     value: String,
     item: String,
+    position: Option<ReadPosition>,
 }
 impl Text {
     fn push(&mut self, item: &ReadItem) {
         match &item.kind {
-            ItemKind::Text { text } => self.value.push_str(text),
-            ItemKind::Fragment { text, .. } => {
-                let wire = serde_json::to_value(&item.kind).unwrap();
-                if wire["encoding"] == "text" {
-                    self.value.push_str(text);
+            ItemKind::Text { text } => {
+                assert!(self.item.is_empty(), "an item interrupted a JSON fragment");
+                self.value.push_str(text);
+            }
+            ItemKind::Fragment {
+                text,
+                position,
+                until,
+                total,
+            } => {
+                assert_eq!(position.character, self.item.chars().count() as u64);
+                assert!(*until > position.character && *until <= *total);
+                if let Some(first) = self.position {
+                    assert_eq!(position.selection, first.selection);
+                    assert_eq!(position.item, first.item);
+                    assert_eq!(position.item_hash, first.item_hash);
                 } else {
-                    self.item.push_str(text);
-                    if wire["until"] == wire["total"] {
-                        let original: ReadItem = serde_json::from_str(&self.item).unwrap();
-                        self.item.clear();
-                        self.push(&original);
-                    }
+                    self.position = Some(*position);
+                }
+                self.item.push_str(text);
+                assert_eq!(*until, self.item.chars().count() as u64);
+                if until == total {
+                    assert_eq!(
+                        position.item_hash.0,
+                        *blake3::hash(self.item.as_bytes()).as_bytes()
+                    );
+                    let original: ReadItem = serde_json::from_str(&self.item).unwrap();
+                    self.item.clear();
+                    self.position = None;
+                    self.push(&original);
                 }
             }
-            _ => {}
+            _ => assert!(self.item.is_empty(), "an item interrupted a JSON fragment"),
         }
     }
     fn page(&mut self, page: &ReadPage) {
@@ -86,11 +114,18 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
     let mut cursor = None;
     let mut text = Text::default();
     loop {
-        let page = page(d, target, inherited, view, 8, cursor.as_deref());
+        let page = page(d, target, inherited, view, 8, cursor.as_ref());
         assert!(serde_json::to_vec(&page).unwrap().len() <= 25_000);
         assert!(page.records.is_empty());
         text.page(&page);
-        cursor = next(&page);
+        let continued = next(&page);
+        if let (Some(previous), Some(next)) = (&cursor, &continued) {
+            assert_eq!(
+                next.root_run, previous.root_run,
+                "continuation changed its original root"
+            );
+        }
+        cursor = continued;
         if cursor.is_none() {
             break;
         }
@@ -125,6 +160,8 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
     );
     let token = next(&first).expect("real continuation");
     for malformed in ["broken", "m0.b0.c0", "m0.b0.c0.extra", "m999.b0.c0"] {
+        let mut malformed_resume = token.clone();
+        malformed_resume.cursor = query_language::cursor::SealedCursor::from_wire(malformed);
         refused(
             handle(
                 request(
@@ -132,42 +169,36 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
                     false,
                     View::Transcript,
                     1,
-                    Some(malformed),
+                    Some(&malformed_resume),
                 ),
                 &d.daemon,
             ),
             "invalid_query",
         );
     }
-    for (inherited, view, target, kind) in [
-        (
-            true,
-            View::Transcript,
-            "session:claude-code:s1",
-            "stale_cursor",
-        ),
-        (
-            false,
-            View::Dialogue,
-            "session:claude-code:s1",
-            "stale_cursor",
-        ),
-        (
-            false,
-            View::Transcript,
-            "message:claude-code:u1",
-            "invalid_query",
-        ),
+    let command = crate::commands::command("read").unwrap();
+    let caller = crate::commands::Caller {
+        surface: crate::commands::Surface::Http,
+        cwd: None,
+        json: true,
+    };
+    for (field, value) in [
+        ("inherited", serde_json::json!(true)),
+        ("view", serde_json::json!("dialogue")),
+        ("target", serde_json::json!("message:claude-code:u1")),
     ] {
-        refused(
-            handle(request(target, inherited, view, 1, Some(&token)), &d.daemon),
-            kind,
-        );
+        let mut arguments = serde_json::to_value(&token).unwrap();
+        arguments[field] = value;
+        let refused = command.build_typed.unwrap()(arguments, &caller, "closed-resume-witness");
+        assert!(refused.is_err(), "resume accepted {field} override");
     }
-    for at in [0, token.len() / 2, token.len() - 1] {
-        let mut changed = token.clone().into_bytes();
+    let wire = token.cursor.as_str();
+    for at in [0, wire.len() / 2, wire.len() - 1] {
+        let mut changed = wire.as_bytes().to_vec();
         changed[at] = if changed[at] == b'a' { b'b' } else { b'a' };
-        let changed = String::from_utf8(changed).unwrap();
+        let mut changed_resume = token.clone();
+        changed_resume.cursor =
+            query_language::cursor::SealedCursor::from_wire(String::from_utf8(changed).unwrap());
         refused(
             handle(
                 request(
@@ -175,7 +206,7 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
                     false,
                     View::Transcript,
                     1,
-                    Some(&changed),
+                    Some(&changed_resume),
                 ),
                 &d.daemon,
             ),

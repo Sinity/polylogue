@@ -3,6 +3,7 @@ use super::*;
 fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
     PreparedBatch {
         batch: Batch {
+            required_disposition: None,
             input: InputKey {
                 id: id.into(),
                 format: "codex".into(),
@@ -121,7 +122,7 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn raw_acquisition_cursor(
         &self,
-        _: &crate::primary::SourceGeneration,
+        _: &crate::primary::RawAcquisitionQuery,
     ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
         Ok(None)
     }

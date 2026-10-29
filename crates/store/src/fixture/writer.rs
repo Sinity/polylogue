@@ -265,6 +265,7 @@ pub fn step(
         counts.add("record", &RecordOutcome::Used);
     }
     Batch {
+        required_disposition: None,
         input: InputKey {
             id: input.to_owned(),
             format: format.into(),

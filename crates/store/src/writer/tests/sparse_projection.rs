@@ -274,6 +274,7 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
     let tx = index.transaction().unwrap();
     for (input, chain, length, reading) in &mut work {
         let input = Batch {
+            required_disposition: None,
             input: input.clone(),
             change: Change::Reparse { chain: *chain },
             observation: None,

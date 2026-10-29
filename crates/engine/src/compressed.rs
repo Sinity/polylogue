@@ -384,6 +384,7 @@ impl Engine {
         });
         PreparedBatch {
             batch: polylogue_store::Batch {
+                required_disposition: None,
                 input,
                 change,
                 observation: Some(observation),
