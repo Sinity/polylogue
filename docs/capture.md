@@ -142,6 +142,8 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | The predecessor's spools | hook spool NDJSON in every old layout, `browser_llm_session` v1 envelopes, `raw_sessions` blobs | the payload's origin |
 | A live-origin file outside its root | only with `--format NAME`, or when the path keeps the tool's own layout | that origin |
 
+Aider's LLM log contains snapshots of the sent context and the returned response. It has no native session or message IDs: the first recorded request fixes its content-derived session identity, and equal sent prefixes share message IDs. Its unzoned log times stay unknown, with the original strings retained. The paired Markdown is a companion document.
+
 Hand-made Markdown chat dumps are not a structure: a flattened transcript is a degraded form of a conversation that has a real source.
 
 ## AI Studio through Drive

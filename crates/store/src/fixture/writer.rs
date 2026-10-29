@@ -35,6 +35,7 @@ pub fn sid(n: &str) -> SessionId {
 
 pub fn message(id: &str, session: &str, role: Role, at: i64, blocks: Vec<Block>) -> Message {
     Message {
+        attrs: Default::default(),
         id: MessageId::parse(&format!("claude-code:{session}-{id}")).unwrap(),
         session: sid(session),
         parent: None,

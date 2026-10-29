@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 pub(super) const STRUCTURES: &[&str] = &[
     "ChatGPT export",
     "ChatGPT conversation",
+    "Codex Cloud tasks",
+    "Aider paired histories",
+    "predecessor source catalog",
     "claude.ai export",
     "claude.ai conversation",
     "Grok account export",
