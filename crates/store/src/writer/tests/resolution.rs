@@ -786,6 +786,9 @@ fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
 
 fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch {
     let (blob, file) = w.archive.prepare_blob(bytes).unwrap();
+    if input.input.arrival_rank == 2 {
+        input.input.id = blob.hash.to_string();
+    }
     input.new_blob = Some(blob);
     input.length = bytes.len() as u64;
     for step in &mut input.parse {
@@ -878,6 +881,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
         .insert(0, imported.identity);
     portable.parse[0].counts = counts(1);
     let retry = commit_event_bytes(&second, portable, &wire);
+    let local_input = retry.input.id.clone();
     second.writer.send(retry).unwrap();
     assert!(second.writer.flush().unwrap().errors.is_empty());
     let reads = ReadPool::open(&second.archive).unwrap();
@@ -896,7 +900,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .identity
             .sources
             .iter()
-            .any(|claim| claim.input == "bundle-local"
+            .any(|claim| claim.input == local_input
                 && claim.source_start == Some(0)
                 && claim.source_end == Some(wire.len() as u64))
     );
@@ -964,7 +968,7 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .identity
             .sources
             .iter()
-            .all(|claim| claim.input != "original" && claim.input != "bundle-local")
+            .all(|claim| claim.input != "original" && claim.input != local_input)
     );
     assert!(
         selected
@@ -1102,6 +1106,7 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     input.parse[0].output.events.push(event.clone());
     let bytes = serde_json::to_vec(&input.parse[0].output).unwrap();
     commit_event_bytes(&w, input, &bytes);
+    w.writer.derive().unwrap();
     let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     conn.execute_batch("UPDATE message SET at=0;UPDATE session SET started_at=0;UPDATE event SET at=0;UPDATE document_source SET source_time=0;").unwrap();
     let reads = ReadPool::open(&w.archive).unwrap();
