@@ -64,6 +64,54 @@ pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
     Ok(())
 }
 
+/// Frozen result schemas must agree with the same canonical metadata readers bind.
+pub(crate) fn validate_result_bindings(conn: &Connection, object: &QueryObject) -> Result<()> {
+    let outputs = object.source_outputs.iter().chain(
+        object
+            .definitions
+            .iter()
+            .flat_map(|definition| &definition.source_outputs),
+    );
+    let result_outputs: Vec<_> = outputs
+        .filter(|output| {
+            matches!(
+                output.source,
+                query_language::catalog::OutputSource::Result { .. }
+            )
+        })
+        .collect();
+    if result_outputs.is_empty() {
+        return Ok(());
+    }
+    let kept = crate::selection::kept_results(conn, Source::of(conn)?)
+        .map_err(|error| invalid(error.to_string()))?;
+    let actual = polylogue_query::Bindings {
+        kept,
+        ..Default::default()
+    }
+    .catalog();
+    for output in result_outputs {
+        let query_language::catalog::OutputSource::Result { reference, .. } = &output.source else {
+            unreachable!()
+        };
+        let Some(canonical) = actual
+            .source_outputs
+            .iter()
+            .find(|candidate| candidate.source == output.source)
+        else {
+            return Err(StoreError::NotFound(format!(
+                "canonical result schema {reference}"
+            )));
+        };
+        if canonical.schema != output.schema {
+            return Err(invalid(format!(
+                "frozen result schema {reference} differs from its canonical column metadata"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
     if run.id.is_empty() || run.machine.trim().is_empty() {
         return Err(invalid(
