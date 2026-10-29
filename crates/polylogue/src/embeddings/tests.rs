@@ -38,7 +38,7 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
                     .unwrap(),
                     authored: None,
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
         )
     };
     let credentials = Credentials::new(Some("synthetic-secret".into()));
