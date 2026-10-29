@@ -22,7 +22,11 @@ pub fn list(
 }
 
 /// How many notes `notes where CONDITIONS` lists.
-pub fn count(reader: &Reader<'_>, conditions: &str, clock: &query_language::time::Clock) -> Result<u64, StoreError> {
+pub fn count(
+    reader: &Reader<'_>,
+    conditions: &str,
+    clock: &query_language::time::Clock,
+) -> Result<u64, StoreError> {
     let page = page(reader, &text(conditions), None, clock)?;
     Ok(page["count"].as_u64().unwrap_or(0))
 }
@@ -47,7 +51,11 @@ fn text(conditions: &str) -> String {
     }
 }
 
-fn ids(reader: &Reader<'_>, conditions: &str, clock: &query_language::time::Clock) -> Result<Vec<String>, StoreError> {
+fn ids(
+    reader: &Reader<'_>,
+    conditions: &str,
+    clock: &query_language::time::Clock,
+) -> Result<Vec<String>, StoreError> {
     let text = text(conditions);
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
