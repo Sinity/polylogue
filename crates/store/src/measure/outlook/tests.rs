@@ -41,6 +41,52 @@ fn projection(values: &[i64], method: &str) -> Projection {
 }
 
 #[test]
+fn archive_plan_history_ignores_host_rows_and_future_terms() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    setting_at(&mut f, START, &plan("first", None));
+    setting_at(&mut f, START + 5 * DAY, &plan("host-only", None));
+    let conn = crate::archive::open_write(&f.archive.archive_db(), 64).unwrap();
+    conn.execute(
+        "UPDATE setting SET machine='other-host',value='not a plan' WHERE key='plan.example' AND set_at=?1",
+        [START + 5 * DAY],
+    )
+    .unwrap();
+    setting_at(&mut f, START + 10 * DAY, &plan("second", None));
+    setting_at(&mut f, START + 20 * DAY, &plan("future", None));
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let answer = outlook(&reader, &Selection::default(), START + 15 * DAY, "example").unwrap();
+    assert_eq!(
+        answer
+            .segments
+            .iter()
+            .map(|s| (
+                s.plan.name.as_str(),
+                s.setting_at,
+                s.from,
+                s.until,
+                s.active
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("first", START, START, START + 10 * DAY, false),
+            (
+                "second",
+                START + 10 * DAY,
+                START + 10 * DAY,
+                START + 15 * DAY,
+                true
+            ),
+        ]
+    );
+    assert_eq!(
+        answer.window.as_ref().map(|w| (w.start, w.end)),
+        Some((START, START + 31 * DAY))
+    );
+}
+
+#[test]
 fn projections_preserve_history_zero_elapsed_and_recent_spike() {
     assert_eq!(
         project(&Amounts::default(), 0, 0, 30 * DAY, "linear")
@@ -108,13 +154,13 @@ fn missing_configuration_anchor_and_unobserved_budget_stay_explicit() {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
         assert_eq!(
-            outlook(&r, &Selection::default(), START + DAY, "", "x")
+            outlook(&r, &Selection::default(), START + DAY, "")
                 .unwrap()
                 .reason,
             Some("provider_required")
         );
         assert_eq!(
-            outlook(&r, &Selection::default(), START + DAY, "example", "x")
+            outlook(&r, &Selection::default(), START + DAY, "example")
                 .unwrap()
                 .reason,
             Some("plan_not_configured")
@@ -127,7 +173,7 @@ fn missing_configuration_anchor_and_unobserved_budget_stay_explicit() {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
         assert_eq!(
-            outlook(&r, &Selection::default(), START + DAY, "example", "x")
+            outlook(&r, &Selection::default(), START + DAY, "example")
                 .unwrap()
                 .reason,
             Some("no_cycle_anchor")
@@ -143,7 +189,7 @@ fn missing_configuration_anchor_and_unobserved_budget_stay_explicit() {
     setting_at(&mut f, START, &p);
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + DAY, "example", "x").unwrap();
+    let x = outlook(&r, &Selection::default(), START + DAY, "example").unwrap();
     let pressure = x.segments[0].budget_pressure.as_ref().unwrap();
     assert_eq!(pressure.used, None);
     assert_eq!(pressure.breach_day, None);
@@ -171,7 +217,7 @@ fn grouped_billing_keeps_nano_usd_unknowns_and_future_rows_apart() {
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + DAY, "example", "x").unwrap();
+    let x = outlook(&r, &Selection::default(), START + DAY, "example").unwrap();
     let seg = &x.segments[0];
     assert_eq!(seg.responses["api_nusd"].used, Some(9_007_199_254_740_994));
     assert_eq!(seg.responses["api_nusd"].unknown_items, 1);
@@ -218,7 +264,6 @@ fn missing_days_lower_coverage_and_zero_budget_never_divides() {
             &Selection::default(),
             START + 10 * DAY,
             "example:trailing-7d-mean",
-            "x",
         )
         .unwrap();
         let seg = &x.segments[0];
@@ -244,7 +289,7 @@ fn missing_days_lower_coverage_and_zero_budget_never_divides() {
     setting_at(&mut f, START, &p);
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + 10 * DAY, "example", "x").unwrap();
+    let x = outlook(&r, &Selection::default(), START + 10 * DAY, "example").unwrap();
     let p = x.segments[0].budget_pressure.as_ref().unwrap();
     assert_eq!(p.breach_day, None);
     assert_eq!(p.used_ratio, None);
@@ -272,7 +317,7 @@ fn a_plan_change_splits_the_cycle_and_prices_only_its_own_span() {
     }
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + 15 * DAY, "example", "x").unwrap();
+    let x = outlook(&r, &Selection::default(), START + 15 * DAY, "example").unwrap();
     assert_eq!(x.segments.len(), 2);
     assert_eq!(x.segments[0].responses["api_nusd"].used, Some(1));
     assert_eq!(x.segments[1].responses["api_nusd"].used, Some(2));
@@ -284,7 +329,7 @@ fn a_plan_change_splits_the_cycle_and_prices_only_its_own_span() {
             .sum::<i64>(),
         31_000_000_000
     );
-    let earlier = outlook(&r, &Selection::default(), START + 5 * DAY, "example", "x").unwrap();
+    let earlier = outlook(&r, &Selection::default(), START + 5 * DAY, "example").unwrap();
     assert_eq!(earlier.segments.len(), 1);
     assert_eq!(earlier.segments[0].plan.name, "first");
 }
@@ -311,7 +356,7 @@ fn usage_before_a_plan_and_other_origins_never_enter_its_projection() {
     observed(&mut f, other, "other", Some(START + DAY), Some(100));
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + 2 * DAY, "example", "x").unwrap();
+    let x = outlook(&r, &Selection::default(), START + 2 * DAY, "example").unwrap();
     assert_eq!(x.segments[0].responses["api_nusd"].used, Some(1));
     assert_eq!(x.billing_before_setting, "unknown");
     let x = outlook(
@@ -322,7 +367,6 @@ fn usage_before_a_plan_and_other_origins_never_enter_its_projection() {
         },
         START + 2 * DAY,
         "example",
-        "x",
     )
     .unwrap();
     assert!(x.segments[0].responses.is_empty());
@@ -358,7 +402,7 @@ fn recorded_reports_remain_a_separate_population_with_confirmation_counts() {
     }
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let x = outlook(&r, &Selection::default(), START + DAY, "example", "x").unwrap();
+    let x = outlook(&r, &Selection::default(), START + DAY, "example").unwrap();
     assert_eq!(x.untimed_reports, 1);
     assert_eq!(x.segments[0].unconfirmed_reports, 1);
     assert_eq!(x.segments[0].responses["api_nusd"].used, Some(1));
@@ -416,7 +460,7 @@ fn known_usage_is_a_lower_bound_when_response_boundaries_are_unknown() {
     .unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let outlook = outlook(&reader, &Selection::default(), START + DAY, "example", "x").unwrap();
+    let outlook = outlook(&reader, &Selection::default(), START + DAY, "example").unwrap();
     let segment = &outlook.segments[0];
     assert_eq!(segment.unknown_boundary_items, 1);
     assert_eq!(outlook.untimed_boundary_items, 1);

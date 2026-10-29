@@ -80,19 +80,13 @@ pub struct Outlook {
 
 struct Setting {
     id: String,
-    machine: String,
     at: i64,
     value: String,
 }
 
-/// The setting's own recorded time determines when its terms start to apply.
-fn plans(
-    reader: &Reader<'_>,
-    provider: &str,
-    machine: &str,
-    now: i64,
-) -> Result<Vec<(i64, Option<Plan>)>> {
-    let rows=reader.conn()?.prepare("SELECT id,machine,set_at,value FROM source_setting WHERE key=?1 AND machine IN (?2,'*') AND set_at<=?3 ORDER BY set_at,id")?.query_map(params![format!("plan.{provider}"),machine,now],|r|Ok(Setting{id:r.get(0)?,machine:r.get(1)?,at:r.get(2)?,value:r.get(3)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+/// Archive-wide plan assertions apply from their own recorded time.
+fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, Option<Plan>)>> {
+    let rows=reader.conn()?.prepare("SELECT id,set_at,value FROM source_setting WHERE key=?1 AND machine='*' AND set_at<=?2 ORDER BY set_at,id")?.query_map(params![format!("plan.{provider}"),now],|r|Ok(Setting{id:r.get(0)?,at:r.get(1)?,value:r.get(2)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let times: BTreeSet<_> = rows.iter().map(|r| r.at).collect();
     let mut result = vec![];
     let mut previous = None;
@@ -100,7 +94,7 @@ fn plans(
         let row = rows
             .iter()
             .filter(|r| r.at <= at)
-            .max_by(|a, b| (a.machine != "*", a.at, &a.id).cmp(&(b.machine != "*", b.at, &b.id)))
+            .max_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)))
             .expect("time belongs to a setting");
         if previous.as_ref() == Some(&row.id) {
             continue;
@@ -127,7 +121,6 @@ pub fn outlook(
     selection: &Selection,
     now: i64,
     options: &str,
-    machine: &str,
 ) -> Result<Outlook> {
     selection.session_condition("s.pk")?;
     let (provider, method) = options.split_once(':').unwrap_or((options, "linear"));
@@ -150,7 +143,7 @@ pub fn outlook(
         answer.reason = Some("provider_required");
         return Ok(answer);
     }
-    let history = plans(reader, provider, machine, now)?;
+    let history = plans(reader, provider, now)?;
     let Some((_, Some(current))) = history.last() else {
         answer.reason = Some("plan_not_configured");
         return Ok(answer);
