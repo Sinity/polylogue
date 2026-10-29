@@ -6,12 +6,32 @@
 use crate::BlobHash;
 use serde::{Deserialize, Serialize};
 
+/// Original import namespace qualified by its actual source input and chain.
+/// This is portable provenance, not receiving-archive membership authority.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentNamespace {
+    pub input: String,
+    pub chain: i64,
+    pub import_id: String,
+}
+impl AttachmentNamespace {
+    fn valid(&self) -> bool {
+        !self.input.is_empty() && self.chain > 0 && !self.import_id.is_empty()
+    }
+}
+
 /// One attachment slot in the complete source message. Sparse projections keep
 /// the original block ordinal instead of renumbering the blocks they carry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttachmentBinding {
     pub source_version: BlobHash,
+    /// Retained even when candidate bytes are unknown. Several namespaces may
+    /// describe the same source slot without merging their claims.
+    pub namespace: AttachmentNamespace,
     pub block: u64,
     pub attachment: u64,
     pub source_id: String,
@@ -34,6 +54,10 @@ pub struct AttachmentCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AttachmentSourceClaim {
+    /// Unknown historical provenance stays unknown; ingress never substitutes
+    /// the receiving namespace for an original source claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<AttachmentNamespace>,
     pub input: String,
     pub chain: i64,
     pub source_version: String,
@@ -51,7 +75,8 @@ pub(crate) fn validate_record(
     for binding in &record.bindings {
         if binding.source_version != record.source_version
             || binding.source_id.is_empty()
-            || !slots.insert((binding.block, binding.attachment))
+            || !binding.namespace.valid()
+            || !slots.insert((binding.block, binding.attachment, &binding.namespace))
         {
             return Err(BundleError::InvalidAttachmentBinding);
         }
@@ -76,7 +101,13 @@ pub(crate) fn validate_record(
             // Hash and size are typed claims. Only ingress with the actual bytes
             // can establish their truth; declared source sizes stay untouched.
             for source in &candidate.sources {
-                if source.input.is_empty() || source.chain <= 0 || source.source_version.is_empty()
+                if source.input.is_empty()
+                    || source.chain <= 0
+                    || source.source_version.is_empty()
+                    || source
+                        .namespace
+                        .as_ref()
+                        .is_some_and(|namespace| !namespace.valid())
                 {
                     return Err(BundleError::InvalidAttachmentBinding);
                 }
