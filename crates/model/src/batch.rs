@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 /// Rows one parse step produced. Sessions and messages are upserts keyed by
 /// their IDs: a later step may send a longer version of the same message
 /// (one still being written), and writing it again is harmless.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Output {
     /// Facts about every session the step touched. The writer merges them
     /// into what it already holds ([`Session::merge`]).
@@ -36,7 +36,7 @@ pub struct Output {
 /// What a repository directory is, as read on this host: where its `.git`
 /// is, its `origin` remote and its first commit. Sessions whose working
 /// directory lies under `path` belong to it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RepoLookup {
     pub path: String,
     /// The remote's URL with any credentials removed.
@@ -45,7 +45,7 @@ pub struct RepoLookup {
     pub root_commit: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ExtractedBlob {
     pub hash: BlobHash,
     pub size: u64,
@@ -54,7 +54,7 @@ pub struct ExtractedBlob {
 }
 
 /// A document as one input holds it, with the record's byte range.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DocumentRow {
     pub offset: u64,
     pub end: u64,
@@ -68,14 +68,14 @@ pub struct DocumentRow {
 /// being written); the writer replaces it. At another offset or in another
 /// input it is another version; the writer keeps every version and prefers
 /// one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MessageRow {
     pub offset: u64,
     pub end: u64,
     pub message: Message,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BackgroundUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_at: Option<crate::Timestamp>,
@@ -98,14 +98,26 @@ pub struct BackgroundUpdate {
 /// message, so a response that closes after a later user message still
 /// sorts where it opened. `input` is the store's small key for the input,
 /// assigned in the order inputs were first seen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
 pub struct OrderKey {
     pub input: i64,
     pub offset: u64,
 }
 
 /// How one record ended. Every record ends in exactly one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecordOutcome {
     /// The record became rows: messages, events, links, session facts.
@@ -134,7 +146,7 @@ impl RecordOutcome {
 
 /// Derived wire observations contain shape and declared discriminator sets,
 /// never scalar bodies from the input. The writer gives these their receipt time.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WireShape {
     pub record_kind: String,
     pub path: String,
@@ -170,7 +182,7 @@ impl WireShape {
 
 /// Outcomes and derived wire observations of one parse step. Outcome counts
 /// sum to its records; the writer refuses a step whose counts do not.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RecordCounts {
     /// Derived observations travel with scratch steps through the writer boundary.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
