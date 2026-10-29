@@ -59,10 +59,26 @@ pub enum Mode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum Signals {
+    Observed {
+        rules: Vec<SignalRule>,
+        unusable: Vec<UnusableRule>,
+        #[serde(default)]
+        held: Vec<HeldSignal>,
+    },
+    Held {
+        held: Vec<HeldSignal>,
+    },
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Signals {
-    pub rules: Vec<SignalRule>,
-    pub unusable: Vec<UnusableRule>,
+pub struct HeldSignal {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<command_surface::Answer<()>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
