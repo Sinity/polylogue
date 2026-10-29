@@ -236,6 +236,20 @@ pub fn handle_with_limit(
     d: &Daemon,
     limit: &polylogue_store::read::limit::ReadLimit,
 ) -> Response {
+    let authorship = polylogue_model::authorship::compute_authorship(
+        polylogue_model::authorship::Channel::Daemon,
+        &Default::default(),
+        None,
+    );
+    handle_with_caller(request, d, limit, &authorship)
+}
+
+pub fn handle_with_caller(
+    request: Request,
+    d: &Daemon,
+    limit: &polylogue_store::read::limit::ReadLimit,
+    authorship: &polylogue_model::authorship::Authorship,
+) -> Response {
     #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(crate::test_daemon::ReadObservation {
@@ -243,10 +257,17 @@ pub fn handle_with_limit(
             owner: std::thread::current().id(),
         });
     }
-    super::execution::run(request, limit, |request| handle_inner(request, d).masked())
+    super::execution::run(request, limit, |request| {
+        handle_inner(request, d, authorship).masked()
+    })
 }
 
-fn handle_inner(request: Request, d: &Daemon) -> Response {
+fn handle_inner(
+    request: Request,
+    d: &Daemon,
+    authorship: &polylogue_model::authorship::Authorship,
+) -> Response {
+    let _ = authorship;
     if let Err(response) = accepting(d) {
         return response;
     }
