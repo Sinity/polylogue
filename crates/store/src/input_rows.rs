@@ -75,7 +75,7 @@ impl InputRows {
         if let Some(r) = &self.revision {
             tx.prepare_cached(
                 "INSERT INTO revision(input, number, produced, chain, length, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(input, number) DO UPDATE SET length = excluded.length",
             )?
             .execute(params![
