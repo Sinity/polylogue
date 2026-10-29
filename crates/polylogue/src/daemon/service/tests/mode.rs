@@ -145,21 +145,35 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
         blocked(&runtime, &w.dir.path().join("sinex.toml"));
         let shown = data(
             Request::Read {
-                slices: true,
-                selection: None,
-                target: crate::daemon::ReadTarget::Session(
-                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-                ),
-                view: "full".into(),
+                target: "claude-code:s1".into(),
+                options: polylogue_model::read::ReadOptions::default(),
                 format: "json".into(),
-                with_parents: false,
+                delivery: polylogue_model::read::ReadDelivery::Page,
                 budget: None,
                 cursor: None,
+                with_blobs: false,
             },
             &runtime,
         );
-        assert_eq!(shown["display_title"], "Stored question");
-        assert_eq!(shown["messages"].as_array().unwrap().len(), 1);
+        let shown: polylogue_model::read::ReadPage = serde_json::from_value(shown).unwrap();
+        assert_eq!(
+            shown.document.header.title,
+            polylogue_model::read::ValueState::Value {
+                value: "Stored question".into()
+            }
+        );
+        assert_eq!(
+            shown
+                .document
+                .items
+                .iter()
+                .filter(|item| matches!(
+                    item.kind,
+                    polylogue_model::read::ItemKind::MessageHeader { .. }
+                ))
+                .count(),
+            1
+        );
         assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
         assert_eq!(
             w.count("SELECT count(*) AS n FROM session WHERE id='claude-code:pending'"),
