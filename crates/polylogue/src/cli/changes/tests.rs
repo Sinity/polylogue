@@ -181,7 +181,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
             &reader,
             since,
             &query_language::time::Clock::new(
-                jiff::Timestamp::from_millisecond(0).unwrap(),
+                "2026-10-07T10:00:00Z".parse().unwrap(),
                 query_language::time::DaySetting::new(
                     jiff::tz::TimeZone::UTC,
                     jiff::civil::Time::constant(4, 0, 0, 0),

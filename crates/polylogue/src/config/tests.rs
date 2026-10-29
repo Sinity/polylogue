@@ -265,7 +265,7 @@ fn completion_and_startup_share_declared_archive_selection_without_clock_depende
     );
     assert_eq!(
         archive_location(
-            &process,
+            &inputs,
             &Overrides {
                 archive: Some("chosen".into()),
                 ..Overrides::default()
