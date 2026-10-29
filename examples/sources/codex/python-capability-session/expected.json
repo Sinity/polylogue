@@ -31,7 +31,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:origin-matrix-codex"
+        "session": "codex:origin-matrix-codex",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

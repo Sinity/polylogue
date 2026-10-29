@@ -23,7 +23,8 @@
           0,
           1177
         ],
-        "session": "ai-studio:branching_session"
+        "session": "ai-studio:branching_session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -140,7 +141,8 @@
     "sessions": [
       {
         "id": "ai-studio:branching_session",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:branching_session",

@@ -27,7 +27,8 @@
           3,
           1234
         ],
-        "session": "chatgpt:native-occurrences"
+        "session": "chatgpt:native-occurrences",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -98,7 +99,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic attachment occurrences"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

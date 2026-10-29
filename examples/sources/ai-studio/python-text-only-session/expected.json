@@ -21,7 +21,8 @@
           0,
           383
         ],
-        "session": "ai-studio:text_only_session"
+        "session": "ai-studio:text_only_session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -76,7 +77,8 @@
     "sessions": [
       {
         "id": "ai-studio:text_only_session",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:text_only_session",

@@ -63,7 +63,8 @@
           3,
           6715
         ],
-        "session": "chatgpt:chatgpt-fixture-conversation"
+        "session": "chatgpt:chatgpt-fixture-conversation",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

@@ -28,7 +28,8 @@
           0,
           983
         ],
-        "session": "ai-studio:multimodal_session"
+        "session": "ai-studio:multimodal_session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -145,7 +146,8 @@
     "sessions": [
       {
         "id": "ai-studio:multimodal_session",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:multimodal_session",

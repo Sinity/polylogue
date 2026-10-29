@@ -23,7 +23,8 @@
           0,
           392
         ],
-        "session": "claude-design:origin-matrix-claude-design"
+        "session": "claude-design:origin-matrix-claude-design",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -51,7 +52,8 @@
     "sessions": [
       {
         "id": "claude-design:origin-matrix-claude-design",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

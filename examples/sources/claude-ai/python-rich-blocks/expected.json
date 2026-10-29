@@ -29,7 +29,8 @@
           3,
           1768
         ],
-        "session": "claude-ai:native-rich-blocks"
+        "session": "claude-ai:native-rich-blocks",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -238,7 +239,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic rich blocks"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

@@ -28,7 +28,8 @@
           3,
           543
         ],
-        "session": "chatgpt:origin-matrix-chatgpt"
+        "session": "chatgpt:origin-matrix-chatgpt",
+        "at_quality": "unknown"
       },
       {
         "after": "chatgpt:matrix-message",
@@ -38,7 +39,8 @@
           3,
           543
         ],
-        "session": "chatgpt:origin-matrix-chatgpt"
+        "session": "chatgpt:origin-matrix-chatgpt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

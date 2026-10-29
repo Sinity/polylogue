@@ -45,12 +45,14 @@
           578,
           671
         ],
-        "session": "codex:text-only-session-1"
+        "session": "codex:text-only-session-1",
+        "at_quality": "unknown"
       },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:text-only-session-1"
+        "session": "codex:text-only-session-1",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

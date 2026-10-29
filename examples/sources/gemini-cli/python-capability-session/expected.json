@@ -25,7 +25,8 @@
           0,
           608
         ],
-        "session": "gemini-cli:origin-matrix-gemini-cli"
+        "session": "gemini-cli:origin-matrix-gemini-cli",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

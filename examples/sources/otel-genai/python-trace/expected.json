@@ -311,7 +311,8 @@
           "id": "otel-genai:conversation-demo-7#0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "otel-genai:conversation-demo-7"
+          "session": "otel-genai:conversation-demo-7",
+          "at_quality": "unknown"
         },
         "offset": 1571
       },

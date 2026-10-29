@@ -43,7 +43,8 @@
           3,
           2417
         ],
-        "session": "chatgpt:neutral-empty-native"
+        "session": "chatgpt:neutral-empty-native",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -122,7 +123,8 @@
               ],
               "reasoning_status": "in_progress"
             }
-          }
+          },
+          "at_quality": "unknown"
         },
         "offset": 3
       },

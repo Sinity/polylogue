@@ -38,7 +38,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:codex-item-completed"
+        "session": "codex:codex-item-completed",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -61,7 +62,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 121
       },
@@ -109,7 +111,8 @@
           "id": "codex:exec-aaaa1111",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 352
       },
@@ -139,7 +142,8 @@
           "id": "codex:ctco-a",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 8424
       },
@@ -161,7 +165,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 8689
       },
@@ -188,7 +193,8 @@
           "id": "codex:ctco-b",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 8942
       },
@@ -232,7 +238,8 @@
           "id": "codex:exec-bbbb2222",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 9164
       },
@@ -254,7 +261,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 9668
       },
@@ -298,7 +306,8 @@
           "id": "codex:exec-cccc3333",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 9879
       },
@@ -346,7 +355,8 @@
           "id": "codex:exec-dddd4444",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 10385
       },
@@ -372,7 +382,8 @@
           "id": "codex:ctco-c",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 10967
       },
@@ -394,7 +405,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 11176
       },
@@ -428,7 +440,8 @@
           "id": "codex:exec-eeee5555",
           "prompt_kind": "harness",
           "role": "assistant",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 11406
       },
@@ -454,7 +467,8 @@
           "id": "codex:ctco-d",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-item-completed"
+          "session": "codex:codex-item-completed",
+          "at_quality": "unknown"
         },
         "offset": 11745
       }

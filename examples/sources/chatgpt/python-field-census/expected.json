@@ -71,7 +71,8 @@
           3,
           3623
         ],
-        "session": "chatgpt:field-census-v1"
+        "session": "chatgpt:field-census-v1",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

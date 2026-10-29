@@ -33,7 +33,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:codex-functions-exec-single"
+        "session": "codex:codex-functions-exec-single",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -56,7 +57,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-functions-exec-single"
+          "session": "codex:codex-functions-exec-single",
+          "at_quality": "unknown"
         },
         "offset": 120
       },
@@ -86,7 +88,8 @@
           "id": "codex:ctco-single",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-functions-exec-single"
+          "session": "codex:codex-functions-exec-single",
+          "at_quality": "unknown"
         },
         "offset": 381
       }

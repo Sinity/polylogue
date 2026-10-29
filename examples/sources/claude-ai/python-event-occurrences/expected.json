@@ -26,7 +26,8 @@
           3,
           987
         ],
-        "session": "claude-ai:event-occurrences"
+        "session": "claude-ai:event-occurrences",
+        "at_quality": "unknown"
       },
       {
         "at": "2026-01-01T00:00:00Z",
@@ -139,7 +140,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic repeated occurrences"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

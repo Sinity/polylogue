@@ -24,7 +24,8 @@
           "logged_at": "2026-01-02 03:04:05",
           "copied_prefix_messages": 0,
           "companion_name": ".aider.chat.history.md"
-        }
+        },
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -44,14 +45,16 @@
           ],
           "attrs": {
             "aider_logged_at": "TO LLM 2026-01-02 03:04:05"
-          }
+          },
+          "at_quality": "unknown"
         }
       }
     ],
     "sessions": [
       {
         "id": "aider:history-e7a5dcb6a21db06af3101370655cfc8718ffa3c31071504a1821376c651f23d4",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

@@ -81,7 +81,8 @@
           0,
           10211
         ],
-        "session": "chatgpt:chatgpt-fixture-conversation"
+        "session": "chatgpt:chatgpt-fixture-conversation",
+        "at_quality": "unknown"
       },
       {
         "at": "2026-07-16T16:00:00Z",

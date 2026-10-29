@@ -36,7 +36,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:tool-result-headers"
+        "session": "codex:tool-result-headers",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

@@ -21,7 +21,8 @@
           0,
           962
         ],
-        "session": "ai-studio:multi_turn_prompt"
+        "session": "ai-studio:multi_turn_prompt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -159,7 +160,8 @@
     "sessions": [
       {
         "id": "ai-studio:multi_turn_prompt",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:multi_turn_prompt",

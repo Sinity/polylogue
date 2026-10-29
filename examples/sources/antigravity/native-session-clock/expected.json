@@ -24,7 +24,11 @@
           "workspaceName": "example"
         },
         "kind": "antigravity_session",
-        "session": "antigravity:synthetic-clock"
+        "session": "antigravity:synthetic-clock",
+        "range": [
+          0,
+          176
+        ]
       }
     ],
     "links": [],
@@ -36,7 +40,8 @@
         "title": {
           "source": "generated",
           "text": "Native clock"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

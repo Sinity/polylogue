@@ -35,7 +35,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:neutral-occurrences"
+        "session": "codex:neutral-occurrences",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

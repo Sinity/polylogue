@@ -69,7 +69,8 @@
           1698,
           1833
         ],
-        "session": "claude-code:s4"
+        "session": "claude-code:s4",
+        "at_quality": "unknown"
       },
       {
         "after": "claude-code:p4",

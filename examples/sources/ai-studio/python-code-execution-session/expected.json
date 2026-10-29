@@ -21,7 +21,8 @@
           0,
           998
         ],
-        "session": "ai-studio:code_execution_session"
+        "session": "ai-studio:code_execution_session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -140,7 +141,8 @@
     "sessions": [
       {
         "id": "ai-studio:code_execution_session",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:code_execution_session",

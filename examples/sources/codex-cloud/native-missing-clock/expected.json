@@ -27,7 +27,8 @@
               "type": "text",
               "text": "Read clocks."
             }
-          ]
+          ],
+          "at_quality": "unknown"
         }
       }
     ],
@@ -38,7 +39,8 @@
         "title": {
           "source": "generated",
           "text": "Native missing clock"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

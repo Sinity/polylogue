@@ -55,7 +55,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:unknown-context-session"
+        "session": "codex:unknown-context-session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

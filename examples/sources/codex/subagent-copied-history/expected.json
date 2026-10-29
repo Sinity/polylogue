@@ -43,7 +43,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:019a0000-0000-7000-8000-0000000000aa"
+        "session": "codex:019a0000-0000-7000-8000-0000000000aa",
+        "at_quality": "unknown"
       },
       {
         "session": "codex:019a0000-0000-7000-8000-000000000001",
@@ -104,7 +105,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "unknown"
       }
     ],
     "links": [

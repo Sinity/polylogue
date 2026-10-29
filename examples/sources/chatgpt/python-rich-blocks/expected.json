@@ -31,7 +31,8 @@
           3,
           2818
         ],
-        "session": "chatgpt:native-rich-chatgpt"
+        "session": "chatgpt:native-rich-chatgpt",
+        "at_quality": "unknown"
       },
       {
         "after": "chatgpt:files",
@@ -41,7 +42,8 @@
           3,
           2818
         ],
-        "session": "chatgpt:native-rich-chatgpt"
+        "session": "chatgpt:native-rich-chatgpt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -214,7 +216,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic rich blocks"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

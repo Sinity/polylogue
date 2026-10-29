@@ -44,7 +44,8 @@
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:019a0000-0000-7000-8000-000000000002"
+        "session": "codex:019a0000-0000-7000-8000-000000000002",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -61,7 +62,8 @@
           "id": "codex:019a0000-0000-7000-8000-000000000002@225",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000002"
+          "session": "codex:019a0000-0000-7000-8000-000000000002",
+          "at_quality": "unknown"
         },
         "offset": 225
       },
@@ -81,7 +83,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000002"
+          "session": "codex:019a0000-0000-7000-8000-000000000002",
+          "at_quality": "unknown"
         },
         "offset": 350
       },
@@ -110,7 +113,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000002"
+          "session": "codex:019a0000-0000-7000-8000-000000000002",
+          "at_quality": "unknown"
         },
         "offset": 424
       },
@@ -130,7 +134,8 @@
           "id": "codex:019a0000-0000-7000-8000-000000000002@575",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000002"
+          "session": "codex:019a0000-0000-7000-8000-000000000002",
+          "at_quality": "unknown"
         },
         "offset": 575
       },
@@ -148,7 +153,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000002"
+          "session": "codex:019a0000-0000-7000-8000-000000000002",
+          "at_quality": "unknown"
         },
         "offset": 736
       }
