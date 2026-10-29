@@ -1,6 +1,6 @@
 //! Source rows have one schema, in the standalone ledger or the primary cache.
 use crate::{Result, StoreError};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::OnceLock;
 
 pub(crate) struct SourceSchema {
@@ -82,6 +82,28 @@ impl Source {
     pub(crate) fn of(conn: &Connection) -> Result<Self> {
         Ok(if conn.query_row("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name='source_input')",[],|row|row.get::<_,bool>(0))? { Self::Cache } else { Self::Ledger })
     }
+    pub(crate) fn reading_receipt(
+        conn: &Connection,
+        input: &str,
+        chain: i64,
+        through: u64,
+    ) -> Result<crate::wire_shapes::ReadingReceipt> {
+        let source = Self::of(conn)?;
+        let through = i64::try_from(through).map_err(|_| {
+            StoreError::Invalid("source position exceeds SQLite's integer range".into())
+        })?;
+        let sequence: i64 = conn.query_row(&source.sql("SELECT commit_seq FROM @source.revision WHERE input=?1 AND chain=?2 AND length>=?3 ORDER BY number LIMIT 1"), rusqlite::params![input,chain,through], |row| row.get(0))?;
+        let observation = conn.query_row(&source.sql("SELECT o.id,o.seen_at FROM @source.observation o JOIN @source.revision r ON r.input=o.input AND r.number=o.revision WHERE o.input=?1 AND r.chain=?2 AND o.length>=?3 ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1"),rusqlite::params![input,chain,through],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let (observation, observed_at_ms) =
+            observation.map_or((None, None), |(id, time)| (Some(id), Some(time)));
+        Ok(crate::wire_shapes::ReadingReceipt {
+            sequence,
+            id: None,
+            observation,
+            observed_at_ms,
+        })
+    }
+
     pub(crate) fn prefix(self) -> &'static str {
         match self {
             Self::Ledger => "",

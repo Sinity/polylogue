@@ -251,7 +251,16 @@ fn apply_rows(
         )?
         .execute(params![input_pk, chain, pk])?;
     }
-    let receipt = receipt.or(p.receipt.as_ref()).ok_or_else(|| {
+    let receipt = receipt.or(p.receipt.as_ref());
+    if confirmed && receipt.is_none() {
+        crate::wire_shapes::unobserved(tx, input_pk, chain)?;
+        tx.execute(
+            "DELETE FROM parse_state WHERE input_pk=?1 AND chain=?2",
+            params![input_pk, chain],
+        )?;
+        return Ok(written);
+    }
+    let receipt = receipt.ok_or_else(|| {
         StoreError::Invalid("an indexed reading has no committed source receipt".into())
     })?;
     crate::wire_shapes::apply(
@@ -1059,7 +1068,9 @@ impl RowWriter<'_, '_> {
         let used: u64 = a.used.values().sum();
         let skipped: u64 = a.skipped.values().sum();
         let unreadable: u64 = a.unreadable.values().sum();
-        let status = if p.at_end && p.parsed_upto < b.length {
+        let status = if p.source_prefix_missing {
+            "partial"
+        } else if p.at_end && p.parsed_upto < b.length {
             "waiting"
         } else if p.no_parser_yet {
             "no_parser_yet"

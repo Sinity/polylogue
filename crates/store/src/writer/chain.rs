@@ -29,6 +29,14 @@ impl ChainReading {
         })
     }
     pub fn push(&mut self, step: &mut ParseStep) -> Result<()> {
+        self.push_inner(step, false)
+    }
+
+    pub(crate) fn push_confirmed(&mut self, step: &mut ParseStep) -> Result<()> {
+        self.push_inner(step, true)
+    }
+
+    fn push_inner(&mut self, step: &mut ParseStep, confirmed: bool) -> Result<()> {
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
                 "a chain reading needs complete parsed values".into(),
@@ -40,7 +48,7 @@ impl ChainReading {
             ));
         }
         step.counts.check()?;
-        step.reset = self.first;
+        step.reset = self.first || (confirmed && step.reset);
         step.prepare();
         write_step(
             self.file.as_mut().ok_or_else(|| {
@@ -565,6 +573,12 @@ impl Inner {
                 ));
             }
             first = false;
+            let receipt = crate::source::Source::reading_receipt(
+                &tx,
+                &batch.input.id,
+                chain,
+                step.parsed_upto,
+            )?;
             written += write_rows(
                 &tx,
                 &batch,
@@ -572,7 +586,7 @@ impl Inner {
                 chain,
                 counter,
                 self.first_build.as_deref(),
-                None,
+                Some(&receipt),
             )?;
         }
         if first {

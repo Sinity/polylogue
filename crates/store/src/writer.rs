@@ -1116,6 +1116,12 @@ impl Inner {
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
+                    let receipt = crate::source::Source::reading_receipt(
+                        &itx,
+                        &b.input.id,
+                        chain,
+                        p.parsed_upto,
+                    )?;
                     stats.1 += write_rows(
                         &itx,
                         b,
@@ -1123,7 +1129,7 @@ impl Inner {
                         chain,
                         counter,
                         self.first_build.as_deref(),
-                        None,
+                        Some(&receipt),
                     )?;
                 }
                 if b.parse.iter().any(|p| p.at_end) {
