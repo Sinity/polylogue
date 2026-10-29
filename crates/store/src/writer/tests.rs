@@ -23,10 +23,10 @@ fn write_test_rows(
 }
 
 struct TestArchive {
-    _dir: tempfile::TempDir,
-    archive: Archive,
-    _lock: crate::ArchiveLock,
     writer: Writer,
+    _lock: crate::ArchiveLock,
+    archive: Archive,
+    _dir: tempfile::TempDir,
 }
 
 fn test_archive() -> TestArchive {
