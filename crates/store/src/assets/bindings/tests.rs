@@ -147,6 +147,7 @@ fn stage(staged: &mut ExportItems, row: &AssetRow) {
 }
 fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, length: usize) -> Batch {
     Batch {
+        required_disposition: None,
         input: InputKey {
             id: input.into(),
             format: "export-file".into(),
@@ -174,6 +175,8 @@ fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, lengt
         blobs: Vec::new(),
         length: length as u64,
         parse: Vec::new(),
+        acquisition: None,
+        basis: None,
         release: Default::default(),
     }
 }
@@ -181,7 +184,10 @@ fn record(bytes: &[u8]) -> MessageRecord {
     let message: Message = serde_json::from_value(json!({"id":"codex:bound-message","session":"codex:bound-session","role":"assistant","blocks":[{"type":"file","source_id":"opaque:λ/#id","direction":"unknown","name":"unchanged source name"}]})).unwrap();
     let version = message.content_hash().unwrap();
     serde_json::from_value(json!({"ref":"message:codex:bound-message","commit":1,"order":0,"source_version":version,"block_count":1,"block_ordinals":[0],"message":message,
-        "bindings":[{"source_version":version,"block":0,"attachment":0,"source_id":"opaque:λ/#id","candidates":[AttachmentCandidate { hash:BlobHash::of(bytes),size:bytes.len() as u64,sources:vec![AttachmentSourceClaim { input:"historical-source".into(),chain:4,source_version:"historical-version".into(),members:vec!["old/member".into()],names:vec!["original name".into()],media_types:vec!["application/octet-stream".into()],declared_sizes:vec![999] }] }]}]})).unwrap()
+        "bindings":[{"source_version":version,
+            "namespace":{"input":"original-message-source","chain":4,"import_id":"original-scope"},
+            "exported_from":{"input":"export-message-source","chain":5,"import_id":"export-scope"},
+            "prior_exports":[{"input":"supplied-prior-source","chain":2,"import_id":"supplied-prior-scope"}],"block":0,"attachment":0,"source_id":"opaque:λ/#id","candidates":[AttachmentCandidate { hash:BlobHash::of(bytes),size:bytes.len() as u64,sources:vec![AttachmentSourceClaim { namespace:None,input:"historical-source".into(),chain:4,source_version:"historical-version".into(),members:vec!["old/member".into()],names:vec!["original name".into()],media_types:vec!["application/octet-stream".into()],declared_sizes:vec![999] }] }]}]})).unwrap()
 }
 fn source<'a>(sources: &'a [ObservedMember], input: &str) -> &'a ObservedMember {
     sources
@@ -714,4 +720,133 @@ fn exact_member_classification_fills_unknown_fields_and_refuses_conflicting_know
         ));
         assert_eq!(fixture.reads.reader().unwrap().query("SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE input='member-a'",&[]).unwrap(),before);
     }
+}
+
+#[test]
+fn distinct_declared_namespaces_and_full_claims_survive_one_receiving_context() {
+    let fixture = Fixture::new();
+    let bytes = b"received bound bytes";
+    let mut record = record(bytes);
+    for difference in ["namespace", "export", "prior", "bytes"] {
+        let mut another = record.bindings[0].clone();
+        match difference {
+            "namespace" => another.namespace.import_id = "another-original-scope".into(),
+            "export" => another.exported_from.import_id = "another-export-scope".into(),
+            "prior" => another.prior_exports[0].import_id = "another-supplied-prior".into(),
+            "bytes" => another.candidates[0].hash = BlobHash::of(b"unreceived conflicting bytes"),
+            _ => unreachable!(),
+        }
+        record.bindings.push(another);
+    }
+    let context = fixture.message("message-input", "receiving-scope", 0, &record);
+    fixture.member("member-input", "receiving-scope", bytes);
+    let observed = fixture.refresh();
+    let witness = fixture
+        .reads
+        .reader()
+        .unwrap()
+        .validate_attachment_member(
+            source(&observed, "member-input"),
+            BlobHash::of(bytes),
+            bytes.len() as u64,
+        )
+        .unwrap();
+    let mut facts = Vec::new();
+    for slot in 0..record.bindings.len() {
+        let members = if slot == record.bindings.len() - 1 {
+            Vec::new()
+        } else {
+            vec![witness.clone().for_candidate(0)]
+        };
+        let fact = AttachmentBindingRecord::new(context.clone(), &record, slot, members).unwrap();
+        fixture.install(fact.clone()).unwrap();
+        fixture.install(fact.clone()).unwrap();
+        facts.push(fact);
+    }
+    let reader = fixture.reads.reader().unwrap();
+    let contexts = reader
+        .attachment_binding_contexts(&record.message.id, 0, 0)
+        .unwrap();
+    assert_eq!(contexts.namespace_count, 5);
+    assert_eq!(contexts.state, AttachmentState::Ambiguous);
+    for (slot, fact) in facts.iter().enumerate() {
+        let resolution = reader
+            .attachment_binding(&fact.selection())
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolution.claim, record.bindings[slot]);
+        assert_eq!(resolution.selection.context, context);
+        assert_eq!(resolution.claim.namespace.input, "original-message-source");
+        assert_ne!(
+            resolution.claim.namespace.import_id,
+            resolution.selection.context.import_id
+        );
+        assert_eq!(
+            resolution.claim.prior_exports,
+            record.bindings[slot].prior_exports
+        );
+        assert_eq!(
+            resolution.state,
+            if slot == facts.len() - 1 {
+                AttachmentState::Unavailable
+            } else {
+                AttachmentState::Available
+            }
+        );
+    }
+    let mut altered = facts[0].selection();
+    altered.claim.namespace.chain += 1;
+    assert!(reader.attachment_binding(&altered).unwrap().is_none());
+}
+
+#[test]
+fn unknown_declared_namespaces_remain_distinct_and_never_borrow_foreign_membership() {
+    let fixture = Fixture::new();
+    let bytes = b"foreign bytes";
+    let mut record = record(bytes);
+    record.bindings[0].candidates.clear();
+    let mut another = record.bindings[0].clone();
+    another.namespace.import_id = "another-original-scope".into();
+    record.bindings.push(another);
+    let context = fixture.message("message-input", "receiving-scope", 0, &record);
+    fixture.member("foreign-member", "original-scope", bytes);
+    let observed = fixture.refresh();
+    let witness = fixture
+        .reads
+        .reader()
+        .unwrap()
+        .validate_attachment_member(
+            source(&observed, "foreign-member"),
+            BlobHash::of(bytes),
+            bytes.len() as u64,
+        )
+        .unwrap();
+    for slot in 0..record.bindings.len() {
+        let fact =
+            AttachmentBindingRecord::new(context.clone(), &record, slot, Vec::new()).unwrap();
+        fixture.install(fact).unwrap();
+    }
+    let reader = fixture.reads.reader().unwrap();
+    let contexts = reader
+        .attachment_binding_contexts(&record.message.id, 0, 0)
+        .unwrap();
+    assert_eq!(contexts.namespace_count, 2);
+    assert_eq!(contexts.state, AttachmentState::Ambiguous);
+    assert!(
+        contexts
+            .contexts
+            .iter()
+            .all(|context| context.claim.candidates.is_empty()
+                && context.members.is_empty()
+                && context.state == AttachmentState::Unknown)
+    );
+    let mut known = record.clone();
+    known.bindings[0].candidates = vec![AttachmentCandidate {
+        hash: BlobHash::of(bytes),
+        size: bytes.len() as u64,
+        sources: Vec::new(),
+    }];
+    assert!(
+        AttachmentBindingRecord::new(context, &known, 0, vec![witness.for_candidate(0)]).is_err()
+    );
 }
