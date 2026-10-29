@@ -261,11 +261,11 @@ fn published_bundle_schema_matches_the_canonical_wire_types() {
 fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() {
     let mut record = message_record();
     let hash = record.message.content_hash().unwrap();
-    let evidence = crate::InjectionEvidence {
+    let evidence = crate::injection::InjectionEvidence {
         message: record.message.id.clone(),
         source_version: record.source_version,
         block: 1,
-        observed: Some(crate::NativeHookField {
+        observed: Some(crate::injection::NativeHookField {
             input: "native-input".into(),
             chain: 1,
             start: 3,

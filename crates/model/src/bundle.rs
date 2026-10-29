@@ -139,7 +139,7 @@ pub struct MessageRecord {
     /// Original source positions aligned to `message.blocks`.
     pub block_ordinals: Vec<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub injections: Vec<crate::InjectionEvidence>,
+    pub injections: Vec<crate::injection::InjectionEvidence>,
     pub message: Message,
 }
 
