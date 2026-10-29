@@ -213,7 +213,7 @@ pub struct Pass {
 /// change to be read waits until the change shows and the loop is not busy:
 /// rows become visible to readers before the pass that wrote them has
 /// derived from them.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct LoopStatus {
     pub full_scans: u64,
     /// A pass or import is running, or a capture continues
