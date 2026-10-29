@@ -284,12 +284,20 @@ pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Resu
     }
     if duplicate {
         if let Some(mut old) = previous {
-            if step.parsed_upto == old.parsed_upto
-                && step.at_end
-                && !old.at_end
-                && step.parsed_upto >= source.length
+            let prefix_missing = if step.reset {
+                step.source_prefix_missing
+            } else {
+                old.prefix_missing || step.source_prefix_missing
+            };
+            let coverage_changed = prefix_missing != old.prefix_missing;
+            old.prefix_missing = prefix_missing;
+            if coverage_changed
+                || (step.parsed_upto == old.parsed_upto
+                    && step.at_end
+                    && !old.at_end
+                    && step.parsed_upto >= source.length)
             {
-                old.at_end = true;
+                old.at_end |= step.at_end && step.parsed_upto >= source.length;
                 old.length = source.length;
                 old.last = receipt.clone();
                 tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?.execute(params![source.input_pk,source.chain,step.reading_version,serde_json::to_string(&old)?])?;
@@ -305,13 +313,14 @@ pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Resu
         parsed_upto: step.parsed_upto,
         length: source.length,
         at_end: step.at_end,
-        prefix_missing: if reset {
-            false
-        } else {
-            previous
-                .as_ref()
-                .is_none_or(|old| old.prefix_missing || step.start != old.parsed_upto)
-        },
+        prefix_missing: step.source_prefix_missing
+            || if reset {
+                false
+            } else {
+                previous
+                    .as_ref()
+                    .is_none_or(|old| old.prefix_missing || step.start != old.parsed_upto)
+            },
         no_parser_yet: step.no_parser_yet,
         unreadable: step
             .counts

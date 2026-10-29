@@ -63,6 +63,9 @@ pub struct ParseStep {
     pub reading_version: String,
     #[serde(default)]
     pub(crate) receipt: Option<crate::wire_shapes::ReadingReceipt>,
+    /// Confirmed surviving facts can omit source ranges despite a scratch reset.
+    #[serde(default)]
+    pub(crate) source_prefix_missing: bool,
     /// The bytes are collected, and their origin has no parser yet.
     #[serde(default)]
     pub no_parser_yet: bool,
@@ -121,6 +124,7 @@ impl ParseStep {
             order_from: None,
             reading_version: String::new(),
             receipt: None,
+            source_prefix_missing: false,
             no_parser_yet: false,
             reset: range.start == 0,
             repeats_whole_conversations: false,
