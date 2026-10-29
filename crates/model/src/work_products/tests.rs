@@ -77,6 +77,7 @@ fn later_known_model_response_and_explicit_background_notice_complete_calls() {
         call_id: Some("call-1".into()),
         outcome: ToolOutcome::Ok,
         result_at: None,
+        result_at_evidence: crate::TimeEvidence::UNKNOWN,
         reported_duration_ms: Some(52),
         output_file: None,
     };

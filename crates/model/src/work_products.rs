@@ -445,7 +445,7 @@ pub fn derive_with_background(
             call.facts.outcome_reason = None;
             if update.result_at.is_some() {
                 call.facts.result_at = update.result_at;
-                call.facts.result_at_evidence = crate::TimeEvidence::UNKNOWN;
+                call.facts.result_at_evidence = update.result_at_evidence;
             }
             call.facts.reported_duration_ms = update
                 .reported_duration_ms
