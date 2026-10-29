@@ -232,10 +232,10 @@ impl Reader<'_> {
         }
         for preference in enabled {
             let mut matched = candidates.iter().filter(|v| key(v) == *preference);
-            if let Some(v) = matched.next() {
-                if matched.next().is_none() {
-                    return Ok(Some(v.clone()));
-                }
+            if let Some(v) = matched.next()
+                && matched.next().is_none()
+            {
+                return Ok(Some(v.clone()));
             }
         }
         Ok(None)
