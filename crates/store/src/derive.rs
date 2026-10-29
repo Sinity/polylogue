@@ -106,15 +106,23 @@ pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool>
 
 /// Runs every derivation over the sessions it has not derived at their
 /// current state; returns the number of (derivation, session) pairs done.
-pub fn run(index: &mut Connection) -> Result<u64> {
-    run_with_catalog(index, Catalog::builtin())
+pub fn run(
+    index: &mut Connection,
+    commits: Option<&crate::completion::CommitEvents>,
+) -> Result<u64> {
+    run_all(index, Catalog::builtin(), ALL, commits)
 }
 
 fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
-    run_all(index, catalog, ALL)
+    run_all(index, catalog, ALL, None)
 }
 
-fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]) -> Result<u64> {
+fn run_all(
+    index: &mut Connection,
+    catalog: &Catalog,
+    derivations: &[Derivation],
+    commits: Option<&crate::completion::CommitEvents>,
+) -> Result<u64> {
     // Resolve the whole declaration before writing any rows. Dependency rule
     // changes invalidate consumers even when their source session is unchanged.
     let versions = versions(derivations, catalog)?;
@@ -129,16 +137,23 @@ fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]
             done += derive_session(&tx, pk, derivations, &versions, catalog, counter)?;
         }
         tx.commit()?;
+        if let Some(events) = commits {
+            events.committed();
+        }
     }
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let before = tx.total_changes();
     for finish in derivations.iter().filter_map(|d| d.finish) {
         finish(&tx)?;
     }
-    if tx.total_changes() != before {
+    let changed = tx.total_changes() != before;
+    if changed {
         crate::archive::bump_counter(&tx)?;
     }
     tx.commit()?;
+    if changed && let Some(events) = commits {
+        events.committed();
+    }
     Ok(done)
 }
 
