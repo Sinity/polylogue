@@ -1,4 +1,5 @@
 use super::*;
+use crate::completion::{CatalogReader, CatalogWriter, Metadata};
 use crate::fixture::writer::{WriterArchive, prose};
 use crate::writer::{ChainReading, InputKey, ParseStep};
 use polylogue_model::{Output, RecordCounts, RecordOutcome};
@@ -109,13 +110,58 @@ fn completion_removal_delta_keeps_a_recreated_session_in_the_same_cursor_window(
     let mut archive = WriterArchive::new();
     archive.write("restored", prose("restored", 1, 100, "old prompt"));
     let reads = crate::ReadPool::open(&archive.archive).unwrap();
-    let before = reads.reader().unwrap().change_position().unwrap();
+    let initial = reads.reader().unwrap();
+    let before = initial.change_position().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let metadata = Metadata {
+        archive: "synthetic".into(),
+        position: before.clone(),
+        written_at: 1,
+    };
+    let mut catalog = CatalogWriter::build(&path, &metadata, |writer| {
+        initial.visit_completion_sessions(None, |change| {
+            if let SessionChange::Upsert(session) = change {
+                writer.put_session(&session)?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .unwrap();
+    drop(initial);
     remove_reading(&archive, "input-restored");
     archive.write("restored", prose("restored", 2, 200, "new prompt"));
     let reader = reads.reader().unwrap();
-    let (_, upserted, removed) = changes(&reader, &before);
+    let (position, upserted, removed) = changes(&reader, &before);
     assert!(upserted.iter().any(|id| id == "claude-code:restored"));
     assert!(removed.is_empty());
+    catalog
+        .update(
+            &Metadata {
+                position,
+                written_at: 2,
+                ..metadata
+            },
+            |writer| {
+                reader.visit_completion_sessions(Some(&before), |change| match change {
+                    SessionChange::Upsert(session) => writer.put_session(&session),
+                    SessionChange::Removed(id) => writer.remove_session(&id),
+                })?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    let cache = CatalogReader::open(&path, "synthetic").unwrap().unwrap();
+    assert_eq!(
+        cache
+            .session_details("claude-code:restored")
+            .unwrap()
+            .unwrap()
+            .first_prompt
+            .as_deref(),
+        Some("new prompt")
+    );
     // The reader excludes stale tombstones using the same live-session snapshot
     // that supplies upserts; the caller need not invent an event order.
     assert_eq!(
