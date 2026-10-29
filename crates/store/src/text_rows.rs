@@ -2,14 +2,20 @@
 //! in their own transaction; indexing consumes committed queue entries.
 
 use crate::Result;
-use crate::encoding::{pack_text, unpack_text};
+#[cfg(any(test, feature = "fixture"))]
+use crate::encoding::pack_text;
+use crate::encoding::unpack_text;
 use crate::first_build::FirstBuild;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+#[cfg(any(test, feature = "fixture"))]
+use rusqlite::OptionalExtension;
+use rusqlite::{Connection, TransactionBehavior, params};
+#[cfg(any(test, feature = "fixture"))]
 use std::collections::HashMap;
 
 /// The text row for `body`, stored once per distinct content, and its
 /// entry in the search index `bit` names (1 prose, 2 tool output). During a
 /// first build the text is found through `first_build`, not its hash index.
+#[cfg(any(test, feature = "fixture"))]
 pub(crate) fn intern(
     conn: &Connection,
     body: &str,
@@ -70,6 +76,21 @@ pub(crate) fn intern(
         activate(conn, id, bit, bulk)?;
     }
     Ok(id)
+}
+
+pub(crate) fn store_prepared(
+    conn: &Connection,
+    id: i64,
+    hash: &[u8; 32],
+    body: &[u8],
+    first: Option<&FirstBuild>,
+) -> Result<()> {
+    conn.prepare_cached("INSERT OR IGNORE INTO text(id,hash,body,indexed) VALUES (?1,?2,?3,0)")?
+        .execute(params![id, hash.as_slice(), body])?;
+    if let Some(first) = first {
+        first.add_text(hash, id);
+    }
+    Ok(())
 }
 
 /// Marks an already stored text for current-block search membership.

@@ -37,7 +37,7 @@ pub use chain::ChainReading;
 #[cfg(test)]
 use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
-use crate::encoding::{block_text, pack_event, unpack_block};
+use crate::encoding::{block_text, unpack_block};
 pub use batch::{
     Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
 };

@@ -14,8 +14,9 @@ pub(crate) struct MessageChoice {
     pub hash: Vec<u8>,
     pub session: i64,
     pub order: (i64, (i64, i64)),
-    pub message: Message,
-    pub prepared: PreparedMessage,
+    pub changed: bool,
+    pub message: Option<Message>,
+    pub prepared: Option<PreparedMessage>,
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DocumentChoice {
@@ -24,8 +25,10 @@ pub(crate) struct DocumentChoice {
     pub start: i64,
     pub end: i64,
     pub rank: i64,
-    pub document: polylogue_model::Document,
-    pub prepared: PreparedDocument,
+    pub changed: bool,
+    pub hash: Vec<u8>,
+    pub document: Option<polylogue_model::Document>,
+    pub prepared: Option<PreparedDocument>,
 }
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Choices {
@@ -97,6 +100,7 @@ impl Source {
 }
 
 pub(in crate::writer) trait ValueSource {
+    fn session(&self, pk: i64) -> Result<Option<Session>>;
     fn assertion(&self, kind: Kind, pk: i64) -> Result<Option<Vec<u8>>>;
     fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>>;
     fn document(
@@ -110,6 +114,8 @@ pub(in crate::writer) struct Projection<'a> {
     index: &'a Connection,
     keys: &'a ResolvedKeys,
     messages: BTreeMap<i64, Vec<Source>>,
+    shown_messages: BTreeMap<i64, Option<(Vec<u8>, i64)>>,
+    shown_documents: BTreeMap<i64, Option<Vec<u8>>>,
     documents: BTreeMap<i64, Vec<Source>>,
     message_values: BTreeMap<Vec<u8>, (Message, PreparedMessage)>,
     document_values: BTreeMap<Vec<u8>, (polylogue_model::Document, PreparedDocument)>,
@@ -126,9 +132,11 @@ impl<'a> Projection<'a> {
         values: Option<&'a dyn ValueSource>,
     ) -> Result<Self> {
         let mut messages = BTreeMap::<i64, Vec<Source>>::new();
+        let mut shown_messages = BTreeMap::new();
+        let mut shown_documents = BTreeMap::new();
         let mut documents = BTreeMap::<i64, Vec<Source>>::new();
-        let mut message_values = BTreeMap::<Vec<u8>, (Message, PreparedMessage)>::new();
-        let mut document_values =
+        let message_values = BTreeMap::<Vec<u8>, (Message, PreparedMessage)>::new();
+        let document_values =
             BTreeMap::<Vec<u8>, (polylogue_model::Document, PreparedDocument)>::new();
         for (key, row) in &keys.rows {
             if !matches!(key.kind, Kind::Message | Kind::Document) {
@@ -148,6 +156,20 @@ impl<'a> Projection<'a> {
             } else {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.source_time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
             };
+            if message {
+                shown_messages.insert(row.pk,index.query_row("SELECT s.version_hash,m.session_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.shown=1",[row.pk],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,i64>(1)?))).optional()?);
+            } else {
+                shown_documents.insert(
+                    row.pk,
+                    index
+                        .query_row(
+                            "SELECT version_hash FROM document WHERE pk=?1",
+                            [row.pk],
+                            |r| r.get::<_, Vec<u8>>(0),
+                        )
+                        .optional()?,
+                );
+            }
             let values = index
                 .prepare(sql)?
                 .query_map([row.pk], |r| {
@@ -174,12 +196,14 @@ impl<'a> Projection<'a> {
                 documents.insert(row.pk, values);
             }
         }
-        let mut assertions = Assertions::load(index, keys)?;
+        let assertions = Assertions::load(index, keys)?;
         Ok(Self {
             resolver,
             index,
             keys,
             messages,
+            shown_messages,
+            shown_documents,
             documents,
             message_values,
             document_values,
@@ -200,6 +224,8 @@ impl<'a> Projection<'a> {
             index,
             keys,
             messages,
+            shown_messages,
+            shown_documents,
             documents,
             message_values,
             document_values,
@@ -240,6 +266,15 @@ impl<'a> Projection<'a> {
                 .get(Kind::Session, session.id.to_string().as_bytes())?
                 .pk;
             let key = (pk, input, chain);
+            if !session_facts.contains_key(&key) {
+                if let Some(session) = values
+                    .map(|values| values.session(pk))
+                    .transpose()?
+                    .flatten()
+                {
+                    session_facts.insert(key, session);
+                }
+            }
             if !session_facts.contains_key(&key) && !reset_inputs.contains(&(input, chain)) {
                 let body:Option<String>=index.query_row("SELECT facts FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain],|r|r.get(0)).optional()?;
                 if let Some(body) = body {
@@ -291,6 +326,15 @@ impl<'a> Projection<'a> {
             if !keep {
                 choices.message_mains.push(false);
                 continue;
+            }
+            if !session_facts.contains_key(&(session, input, chain)) {
+                if let Some(facts) = values
+                    .map(|values| values.session(session))
+                    .transpose()?
+                    .flatten()
+                {
+                    session_facts.insert((session, input, chain), facts);
+                }
             }
             let main=match session_facts.get(&(session,input,chain)) {
                     Some(facts)=>facts.kind==polylogue_model::SessionKind::Main,
@@ -403,7 +447,9 @@ impl<'a> Projection<'a> {
                     .iter()
                     .min_by_key(|s| (&s.id, s.seq, s.position))
                     .expect("winner has order");
-                if !message_values.contains_key(&source.hash) {
+                let changed = shown_messages.get(&pk).and_then(Option::as_ref)
+                    != Some(&(source.hash.clone(), source.session));
+                if changed && !message_values.contains_key(&source.hash) {
                     let prior = match values {
                         Some(values) => values.message(&source.hash)?,
                         None => None,
@@ -422,7 +468,13 @@ impl<'a> Projection<'a> {
                     };
                     message_values.insert(source.hash.clone(), (message, prepared));
                 }
-                let (message, prepared) = message_values[&source.hash].clone();
+                let (message, prepared) = if changed {
+                    let (message, prepared) = message_values[&source.hash].clone();
+                    (Some(message), Some(prepared))
+                } else {
+                    (None, None)
+                };
+                shown_messages.insert(pk, Some((source.hash.clone(), source.session)));
                 Some(MessageChoice {
                     input: source.input,
                     chain: source.chain,
@@ -433,12 +485,16 @@ impl<'a> Projection<'a> {
                     hash: source.hash.clone(),
                     session: source.session,
                     order: (order.input, (order.seq, order.position)),
+                    changed,
                     message,
                     prepared,
                 })
             } else {
                 None
             };
+            if choice.is_none() {
+                shown_messages.insert(pk, None);
+            }
             choices.messages.insert(pk, choice);
         }
         for (&pk, sources) in documents
@@ -449,7 +505,9 @@ impl<'a> Projection<'a> {
                 .iter()
                 .min_by(|a, b| a.document_order().cmp(&b.document_order()))
             {
-                if !document_values.contains_key(&source.hash) {
+                let changed =
+                    shown_documents.get(&pk).and_then(Option::as_ref) != Some(&source.hash);
+                if changed && !document_values.contains_key(&source.hash) {
                     let prior = match values {
                         Some(values) => values.document(&source.hash)?,
                         None => None,
@@ -468,19 +526,30 @@ impl<'a> Projection<'a> {
                     };
                     document_values.insert(source.hash.clone(), (document, prepared));
                 }
-                let (document, prepared) = document_values[&source.hash].clone();
+                let (document, prepared) = if changed {
+                    let (document, prepared) = document_values[&source.hash].clone();
+                    (Some(document), Some(prepared))
+                } else {
+                    (None, None)
+                };
+                shown_documents.insert(pk, Some(source.hash.clone()));
                 Some(DocumentChoice {
                     input: source.input,
                     chain: source.chain,
                     start: source.start,
                     end: source.end,
                     rank: source.rank,
+                    changed,
+                    hash: source.hash.clone(),
                     document,
                     prepared,
                 })
             } else {
                 None
             };
+            if choice.is_none() {
+                shown_documents.insert(pk, None);
+            }
             choices.documents.insert(pk, choice);
         }
         assertions.step(
@@ -497,6 +566,7 @@ impl<'a> Projection<'a> {
         if values.is_some() {
             message_values.clear();
             document_values.clear();
+            session_facts.clear();
         }
         Ok(())
     }

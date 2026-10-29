@@ -276,7 +276,11 @@ impl Resolver {
         let mut latest = BTreeMap::<String, Option<(i64, i64)>>::new();
         for b in batches {
             keys.insert(Key::new(Kind::Input, b.input.id.as_bytes()));
-            let prior=match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?};
+            let prior = if matches!(b.change, Change::Reparse { .. }) {
+                None
+            } else {
+                match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?}
+            };
             let chain = match (&b.change, b.continues, prior) {
                 (Change::Reparse { chain }, _, _) => *chain,
                 (_, true, Some((_, chain)))
@@ -414,6 +418,21 @@ impl Resolver {
                 }
             }
         }
+        let contents: Vec<_> = keys
+            .iter()
+            .filter(|key| matches!(key.kind, Kind::Message | Kind::Document))
+            .cloned()
+            .collect();
+        for key in contents {
+            if let Some(pk) = self.find(index, &key)? {
+                let kind = key.kind.table();
+                let mut statement=index.prepare_cached(&format!("SELECT t.hash FROM {kind}_source s JOIN {kind}_version_text v ON v.version_hash=s.version_hash JOIN text t ON t.id=v.text_id WHERE s.{kind}_pk=?1"))?;
+                let mut rows = statement.query([pk])?;
+                while let Some(row) = rows.next()? {
+                    keys.insert(Key::new(Kind::Text, row.get::<_, Vec<u8>>(0)?));
+                }
+            }
+        }
         Ok((keys, chains))
     }
 
@@ -543,4 +562,43 @@ mod reservation {
             pk: serde::Deserialize::deserialize(deserializer)?,
         }))
     }
+}
+
+#[cfg(test)]
+pub(super) fn prepare_index(
+    index: &Connection,
+    batch: &mut Batch,
+    chain: i64,
+    first: bool,
+) -> Result<()> {
+    let first = first
+        .then(|| crate::first_build::FirstBuild::load(index).map(Arc::new))
+        .transpose()?;
+    let resolver = Resolver::new(
+        &Archive::at(std::path::Path::new("unused-test-location")),
+        index,
+        first,
+    )?;
+    let change = std::mem::replace(&mut batch.change, Change::Reparse { chain });
+    let (keys, chains) = resolver.gather(&mut [batch], index, index)?;
+    batch.change = change;
+    let mut resolved = ResolvedKeys::default();
+    for key in keys {
+        let existing = resolver.find(index, &key)?;
+        let row = RowKey {
+            pk: match existing {
+                Some(pk) => pk,
+                None => resolver.allocate(key.kind)?,
+            },
+            existing: existing.is_some(),
+        };
+        resolved.rows.insert(key, row);
+    }
+    versions::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;
+    let keys = Arc::new(resolved);
+    for step in &mut batch.parse {
+        step.prepared.keys = Some(Arc::clone(&keys));
+        step.prepared.chain = Some(chain);
+    }
+    Ok(())
 }

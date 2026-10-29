@@ -63,7 +63,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
         .collect();
     let batch = batch("input1", 0, 0, rows, &["session1"]);
     assert_eq!(
-        write_rows(&tx, &batch, &batch.parse[0], 1, 1, Some(&first_build)).unwrap(),
+        write_test_rows(&tx, &batch, &batch.parse[0], 1, 1, Some(&first_build)).unwrap(),
         messages as u64
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

@@ -149,6 +149,7 @@ impl ChainReading {
             documents: BTreeMap::new(),
             resolved: None,
             assertions: std::cell::RefCell::new(BTreeMap::new()),
+            sessions: std::cell::RefCell::new(BTreeMap::new()),
             available: HashMap::new(),
         };
         let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
@@ -256,11 +257,15 @@ struct History {
     documents: BTreeMap<Vec<u8>, u64>,
     resolved: Option<std::path::PathBuf>,
     assertions: std::cell::RefCell<BTreeMap<(resolve::Kind, i64), u64>>,
+    sessions: std::cell::RefCell<BTreeMap<i64, u64>>,
     available: HashMap<BlobHash, Option<u64>>,
 }
 impl History {
     fn record(&self, step: &ParseStep, offset: u64) {
         if let Some(choices) = &step.prepared.choices {
+            for pk in choices.sessions.keys() {
+                self.sessions.borrow_mut().insert(*pk, offset);
+            }
             let mut assertions = self.assertions.borrow_mut();
             for value in &choices.event_values {
                 assertions.insert((resolve::Kind::EventValue, value.key.pk), offset);
@@ -281,6 +286,22 @@ impl History {
     }
 }
 impl resolve::versions::ValueSource for History {
+    fn session(&self, pk: i64) -> Result<Option<Session>> {
+        let Some(offset) = self.sessions.borrow().get(&pk).copied() else {
+            return Ok(None);
+        };
+        let mut reader = BufReader::new(std::fs::File::open(
+            self.resolved.as_ref().expect("resolved chain scratch"),
+        )?);
+        reader.seek(SeekFrom::Start(offset))?;
+        let step = read_step(&mut reader)?
+            .ok_or_else(|| StoreError::Invalid("a session offset has no chain step".into()))?;
+        Ok(step
+            .prepared
+            .choices
+            .and_then(|mut choices| choices.sessions.remove(&pk)))
+    }
+
     fn assertion(&self, kind: resolve::Kind, pk: i64) -> Result<Option<Vec<u8>>> {
         let Some(offset) = self.assertions.borrow().get(&(kind, pk)).copied() else {
             return Ok(None);

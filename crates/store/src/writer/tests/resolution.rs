@@ -180,3 +180,22 @@ fn refused_commit_releases_reservations_for_an_ordinary_retry() {
         100
     );
 }
+
+#[test]
+fn collection_without_a_parser_commits_its_explicit_status() {
+    let w = test_archive();
+    let mut input = batch("collected", 0, 0, Vec::new(), &[]);
+    input.parse[0].no_parser_yet = true;
+    w.writer.send(input).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let progress: (String, i64, String) = index
+        .query_row(
+            "SELECT status,parsed_upto,reading_version FROM parse_state",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(progress, ("no_parser_yet".into(), 100, String::new()));
+}

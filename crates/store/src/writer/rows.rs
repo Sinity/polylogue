@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 mod assertions;
 mod retract;
 pub(super) use retract::prune_sessions;
-pub(crate) use retract::retract_input;
 
 /// Writes a parse step's rows; returns the number of message rows written.
 pub(super) fn write_rows(
@@ -21,24 +20,20 @@ pub(super) fn write_rows(
     first_build: Option<&FirstBuild>,
 ) -> Result<u64> {
     p.prepared.validate(&p.output)?;
-    if p.prepared.chain.is_some_and(|expected| expected != chain) {
+    let keys = p.prepared.keys.as_deref().ok_or_else(|| {
+        StoreError::Invalid("an indexed reading has no resolved natural keys".into())
+    })?;
+    let choices =
+        p.prepared.choices.as_ref().ok_or_else(|| {
+            StoreError::Invalid("an indexed reading has no resolved versions".into())
+        })?;
+    if p.prepared.chain != Some(chain) {
         return Err(StoreError::Invalid(
             "prepared reading has another input chain".into(),
         ));
     }
-    if let Some(keys) = p.prepared.keys.as_deref() {
-        let key = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?;
-        tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![key.pk,b.input.id,b.input.format])?;
-    } else {
-        tx.prepare_cached("INSERT INTO input_ref(id,format) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format")?
-        .execute(params![&b.input.id,&b.input.format])?;
-    }
-    let input_pk: i64 = if let Some(keys) = p.prepared.keys.as_deref() {
-        keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk
-    } else {
-        tx.prepare_cached("SELECT pk FROM input_ref WHERE id = ?1")?
-            .query_row([&b.input.id], |r| r.get(0))?
-    };
+    let input_pk = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk;
+    tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
     }
@@ -52,18 +47,16 @@ pub(super) fn write_rows(
         counter,
         packed: &p.prepared.texts,
         first_build,
-        keys: p.prepared.keys.as_deref(),
-        choices: p.prepared.choices.as_ref(),
+        keys,
+        choices,
     };
     if p.reset {
         rows.retract()?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
-    let mut main_sessions = HashMap::new();
     for s in &p.output.sessions {
-        let (pk, main) = rows.upsert_session(s)?;
+        let (pk, _) = rows.upsert_session(s)?;
         sessions.insert(s.id.to_string(), pk);
-        main_sessions.insert(s.id.clone(), main);
     }
     let source = crate::documents::Source {
         input_pk,
@@ -72,8 +65,7 @@ pub(super) fn write_rows(
         counter,
         packed: &p.prepared.texts,
         first_build,
-        keys: p.prepared.keys.as_deref(),
-        resolved: p.prepared.choices.is_some(),
+        keys: Some(keys),
     };
     for (i, row) in p.output.documents.iter().enumerate() {
         if p.prepared
@@ -83,14 +75,7 @@ pub(super) fn write_rows(
         {
             continue;
         }
-        let fallback;
-        let prepared = match p.prepared.documents.get(i) {
-            Some(prepared) => prepared,
-            None => {
-                fallback = PreparedDocument::new(&row.document)?;
-                &fallback
-            }
-        };
+        let prepared = &p.prepared.documents[i];
         crate::documents::write(tx, &source, row, prepared)?;
     }
     let mut written = 0;
@@ -107,14 +92,7 @@ pub(super) fn write_rows(
             continue;
         }
         let session_pk = rows.session_pk(&mut sessions, &row.message.session)?;
-        let fallback;
-        let prepared = match p.prepared.messages.get(i) {
-            Some(prepared) => prepared,
-            None => {
-                fallback = PreparedMessage::new(&row.message)?;
-                &fallback
-            }
-        };
+        let prepared = &p.prepared.messages[i];
         let position = match p.order_from {
             Some(from) => ((from + i as u64) as i64, 0),
             None if p.repeats_whole_conversations => (i as i64, 0),
@@ -125,14 +103,7 @@ pub(super) fn write_rows(
             }
         };
         // A kind this step states needs no lookup.
-        let main = if let Some(choices) = rows.choices {
-            choices.message_mains[i]
-        } else {
-            match main_sessions.get(&row.message.session) {
-                Some(main) => *main,
-                None => rows.session_kind(session_pk)? == "main",
-            }
-        };
+        let main = choices.message_mains[i];
         written += u64::from(rows.write_message(row, session_pk, prepared, position, main)?);
         if let Some(at) = ms(row.message.at) {
             let last = activity.entry(session_pk).or_insert(at);
@@ -177,14 +148,7 @@ pub(super) fn write_rows(
             .as_ref()
             .map(|id| rows.session_pk(&mut sessions, id))
             .transpose()?;
-        let prepared;
-        let packed = match p.prepared.events.get(i) {
-            Some(prepared) if p.prepared.events.len() == p.output.events.len() => prepared,
-            _ => {
-                prepared = pack_event(e)?;
-                &prepared
-            }
-        };
+        let packed = &p.prepared.events[i];
         rows.write_event(e, session_pk, packed, p.order_from, p.start, occurrence, i)?;
         if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
             tx.prepare_cached(
@@ -193,13 +157,7 @@ pub(super) fn write_rows(
             .execute(params![session_pk, ms(e.at)])?;
             // Prepared events release their JSON payload before writing. Live
             // facts must read the same payload as the stored event.
-            let event = match rows.choices {
-                Some(choices) => choices.live_events[i].clone(),
-                None => Event {
-                    data: crate::encoding::unpack_json(&packed.1)?,
-                    ..e.clone()
-                },
-            };
+            let event = choices.live_events[i].clone();
             crate::live::apply(tx, session_pk, &event, counter)?;
         }
     }
@@ -209,12 +167,12 @@ pub(super) fn write_rows(
     for l in &p.output.repo_lookups {
         crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain, counter)?;
     }
-    if let Some(choices) = rows.choices {
+    {
         for pk in choices.messages.keys() {
             written += u64::from(rows.refresh_message(*pk)?);
         }
         for (pk, choice) in &choices.documents {
-            crate::documents::apply_choice(tx, *pk, choice.as_ref(), counter, first_build)?;
+            crate::documents::apply_choice(tx, *pk, choice.as_ref(), counter, first_build, keys)?;
         }
         for pk in choices.events.keys() {
             rows.refresh_event(*pk)?;
@@ -277,8 +235,8 @@ pub(super) struct RowWriter<'a, 't> {
     /// it ends ([`Inner::build_deferred`]), and rows are found by natural
     /// key through it ([`FirstBuild`]).
     first_build: Option<&'a FirstBuild>,
-    keys: Option<&'a resolve::ResolvedKeys>,
-    choices: Option<&'a resolve::versions::Choices>,
+    keys: &'a resolve::ResolvedKeys,
+    choices: &'a resolve::versions::Choices,
 }
 
 /// A message reading's source and shown fields.
@@ -310,40 +268,20 @@ pub(super) fn name<T: serde::Serialize>(v: &T) -> String {
 impl RowWriter<'_, '_> {
     /// The message with natural ID `id`.
     fn message_pk(&self, id: &str) -> Result<Option<i64>> {
-        if let Some(keys) = self.keys {
-            let pk = keys.get(resolve::Kind::Message, id.as_bytes())?.pk;
-            return Ok(self
-                .tx
-                .query_row("SELECT pk FROM message WHERE pk=?1", [pk], |r| r.get(0))
-                .optional()?);
-        }
-        match self.first_build {
-            Some(first_build) => first_build.message(self.tx, id),
-            None => Ok(self
-                .tx
-                .prepare_cached("SELECT pk FROM message WHERE id = ?1")?
-                .query_row([id], |r| r.get(0))
-                .optional()?),
-        }
+        let pk = self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk;
+        Ok(self
+            .tx
+            .prepare_cached("SELECT pk FROM message WHERE pk=?1")?
+            .query_row([pk], |row| row.get(0))
+            .optional()?)
     }
-
-    /// The event with ID `id`.
     fn event_pk(&self, id: &str) -> Result<Option<i64>> {
-        if let Some(keys) = self.keys {
-            let pk = keys.get(resolve::Kind::Event, id.as_bytes())?.pk;
-            return Ok(self
-                .tx
-                .query_row("SELECT pk FROM event WHERE pk=?1", [pk], |r| r.get(0))
-                .optional()?);
-        }
-        match self.first_build {
-            Some(first_build) => first_build.event(self.tx, id),
-            None => Ok(self
-                .tx
-                .prepare_cached("SELECT pk FROM event WHERE id = ?1")?
-                .query_row([id], |r| r.get(0))
-                .optional()?),
-        }
+        let pk = self.keys.get(resolve::Kind::Event, id.as_bytes())?.pk;
+        Ok(self
+            .tx
+            .prepare_cached("SELECT pk FROM event WHERE pk=?1")?
+            .query_row([pk], |row| row.get(0))
+            .optional()?)
     }
 
     fn session_pk(&self, cache: &mut HashMap<String, i64>, id: &SessionId) -> Result<i64> {
@@ -351,17 +289,12 @@ impl RowWriter<'_, '_> {
         if let Some(pk) = cache.get(&key) {
             return Ok(*pk);
         }
-        let existing = if let Some(keys) = self.keys {
-            let pk = keys.get(resolve::Kind::Session, key.as_bytes())?.pk;
-            self.tx
-                .query_row("SELECT pk FROM session WHERE pk=?1", [pk], |r| r.get(0))
-                .optional()?
-        } else {
-            self.tx
-                .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
-                .query_row([&key], |r| r.get::<_, i64>(0))
-                .optional()?
-        };
+        let reserved = self.keys.get(resolve::Kind::Session, key.as_bytes())?.pk;
+        let existing = self
+            .tx
+            .prepare_cached("SELECT pk FROM session WHERE pk=?1")?
+            .query_row([reserved], |row| row.get(0))
+            .optional()?;
         let pk = match existing {
             Some(pk) => pk,
             // Named by an event before any of its own records arrived: a
@@ -381,37 +314,11 @@ impl RowWriter<'_, '_> {
     /// naming the session as their child are resolved here.
     fn upsert_session(&self, s: &Session) -> Result<(i64, bool)> {
         let pk = self.session_row(&s.id, false)?;
-        let merged = if let Some(choices) = self.choices {
-            choices
-                .sessions
-                .get(&pk)
-                .ok_or_else(|| StoreError::Invalid("unresolved session facts".into()))?
-                .clone()
-        } else {
-            let stored: Option<String> = self
-            .tx
-            .prepare_cached(
-                "SELECT facts FROM session_record WHERE session_pk = ?1 AND input_pk = ?2 AND chain = ?3",
-            )?
-            .query_row(params![pk, self.input_pk, self.chain], |r| r.get(0))
-            .optional()?;
-            let merged = match stored
-                .as_deref()
-                .map(serde_json::from_str::<Session>)
-                .transpose()?
-            {
-                Some(mut cur) => {
-                    let before = cur.clone();
-                    cur.merge(s);
-                    if cur == before {
-                        return Ok((pk, cur.kind == polylogue_model::SessionKind::Main));
-                    }
-                    cur
-                }
-                None => s.clone(),
-            };
-            merged
-        };
+        let merged = self
+            .choices
+            .sessions
+            .get(&pk)
+            .ok_or_else(|| StoreError::Invalid("unresolved session facts".into()))?;
         self.tx
             .prepare_cached(
                 "INSERT INTO session_record(session_pk, input_pk, chain, facts) VALUES (?1, ?2, ?3, ?4)
@@ -419,15 +326,7 @@ impl RowWriter<'_, '_> {
             )?
             .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?])?;
         let main = merged.kind == polylogue_model::SessionKind::Main;
-        let changed=self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
-        if changed > 0 {
-            let messages=self.tx.prepare("SELECT message_pk FROM message_source WHERE session_pk=?1 AND input_pk=?2 AND chain=?3")?.query_map(params![pk,self.input_pk,self.chain],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            for message in messages {
-                if self.choices.is_none() {
-                    self.refresh_message(message)?;
-                }
-            }
-        }
+        self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
         self.tx
             .prepare_cached("UPDATE session SET changed = ?2, stub = 0 WHERE pk = ?1")?
             .execute(params![pk, self.counter])?;
@@ -438,25 +337,15 @@ impl RowWriter<'_, '_> {
     /// its own has arrived yet).
     fn session_row(&self, id: &SessionId, stub: bool) -> Result<i64> {
         let key = id.to_string();
-        let reserved = self
-            .keys
-            .map(|keys| keys.get(resolve::Kind::Session, key.as_bytes()))
-            .transpose()?;
-        let existing = match reserved {
-            Some(row) => self
-                .tx
-                .query_row("SELECT pk FROM session WHERE pk=?1", [row.pk], |r| r.get(0))
-                .optional()?,
-            None => self
-                .tx
-                .query_row("SELECT pk FROM session WHERE id=?1", [&key], |r| r.get(0))
-                .optional()?,
-        };
-        if let Some(pk) = existing {
+        let pk = self.keys.get(resolve::Kind::Session, key.as_bytes())?.pk;
+        if self
+            .tx
+            .prepare_cached("SELECT pk FROM session WHERE pk=?1")?
+            .exists([pk])?
+        {
             return Ok(pk);
         }
-        self.tx.execute("INSERT INTO session(pk,id,origin,native_id,kind,cwd_json,changed,harness,stub) VALUES (?1,?2,?3,?4,'main','[]',?5,?3,?6)",params![reserved.map(|row|row.pk),key,id.origin().as_str(),id.native().as_str(),self.counter,stub])?;
-        let pk = reserved.map_or_else(|| self.tx.last_insert_rowid(), |row| row.pk);
+        self.tx.prepare_cached("INSERT INTO session(pk,id,origin,native_id,kind,cwd_json,changed,harness,stub) VALUES (?1,?2,?3,?4,'main','[]',?5,?3,?6)")?.execute(params![pk,key,id.origin().as_str(),id.native().as_str(),self.counter,stub])?;
         self.tx
             .prepare_cached(
                 "UPDATE link SET child_pk = ?1 WHERE child_id = ?2 AND child_pk IS NULL",
@@ -478,26 +367,13 @@ impl RowWriter<'_, '_> {
         let id = m.id.to_string();
         let pk = self.message_pk(&id)?;
         let new = pk.is_none();
-        if let Some(pk) = pk.filter(|_| self.choices.is_none()) {
-            let prior: Option<i64> = self.tx.prepare_cached(
-                "SELECT source_start FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3"
-            )?.query_row(params![pk,self.input_pk,self.chain], |r|r.get(0)).optional()?;
-            if prior.is_some_and(|start| {
-                if self.repeats_whole_conversations {
-                    (row.offset as i64) < start
-                } else {
-                    (row.offset as i64) > start
-                }
-            }) {
-                return Ok(false);
-            }
-        }
         crate::versions::store(
             self.tx,
             VersionKind::Message,
             &prepared.hash,
             &prepared.body,
             &m.blocks,
+            &prepared.texts,
             self.packed,
             self.first_build,
             self.keys,
@@ -526,11 +402,8 @@ impl RowWriter<'_, '_> {
             self.tx.prepare_cached(
                 "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
                  VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12)"
-            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1,self.choices.is_none()])?;
-            if self.choices.is_none() {
-                self.insert_blocks(pk, session_pk, m, prepared)?;
-            }
-            return Ok(self.choices.is_none());
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1,false])?;
+            return Ok(false);
         }
         self.tx.prepare_cached(
             "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,shown,complete,version_hash,session_pk,main,arrival_rank,seq,record_position)
@@ -541,52 +414,30 @@ impl RowWriter<'_, '_> {
              session_pk=excluded.session_pk,main=excluded.main,arrival_rank=excluded.arrival_rank,
              seq=excluded.seq,record_position=excluded.record_position"
         )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,v.complete,v.hash,session_pk,main,self.rank,position.0,position.1])?;
-        if self.choices.is_some() {
-            Ok(false)
-        } else {
-            self.refresh_message_using(pk, Some((m, prepared)))
-        }
+        Ok(false)
     }
 
     fn refresh_message(&self, pk: i64) -> Result<bool> {
-        self.refresh_message_using(pk, None)
-    }
-
-    fn refresh_message_using(
-        &self,
-        pk: i64,
-        incoming: Option<(&Message, &PreparedMessage)>,
-    ) -> Result<bool> {
-        let resolved = self
+        let choice = self
             .choices
-            .map(|choices| {
-                choices
-                    .messages
-                    .get(&pk)
-                    .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))
-            })
-            .transpose()?;
-        let winner = if let Some(choice) = resolved {
-            choice.as_ref().map(|choice| {
-                (
-                    Version {
-                        input_pk: choice.input,
-                        chain: choice.chain,
-                        start: choice.start,
-                        end: choice.end,
-                        complete: choice.complete,
-                        rank: choice.rank,
-                        hash: choice.hash.clone(),
-                        pem: 0,
-                    },
-                    choice.session,
-                )
-            })
-        } else {
-            VersionKind::Message.select(self.tx, pk,
-                "s.input_pk,s.chain,s.source_start,s.source_end,s.main,s.complete,s.arrival_rank,s.version_hash,s.session_pk",
-                |r|Ok((Version { input_pk:r.get(0)?,chain:r.get(1)?,start:r.get(2)?,end:r.get(3)?,complete:r.get(5)?,rank:r.get(6)?,hash:r.get(7)?,pem:0 },r.get::<_,i64>(8)?)))?
-        };
+            .messages
+            .get(&pk)
+            .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))?;
+        let winner = choice.as_ref().map(|choice| {
+            (
+                Version {
+                    input_pk: choice.input,
+                    chain: choice.chain,
+                    start: choice.start,
+                    end: choice.end,
+                    complete: choice.complete,
+                    rank: choice.rank,
+                    hash: choice.hash.clone(),
+                    pem: 0,
+                },
+                choice.session,
+            )
+        });
         let Some((mut v, session_pk)) = winner else {
             if !self.tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)",
@@ -600,22 +451,9 @@ impl RowWriter<'_, '_> {
             self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
             return Ok(true);
         };
-        let order=match resolved.and_then(Option::as_ref) {
-            Some(choice)=>choice.order,
-            None=>self.tx.prepare_cached(
-                "SELECT s.input_pk,s.seq,s.record_position FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
-                 WHERE s.message_pk=?1 AND NOT EXISTS(SELECT 1 FROM message_source n WHERE n.message_pk=s.message_pk AND n.input_pk=s.input_pk AND n.chain>s.chain)
-                 ORDER BY i.id,s.seq,s.record_position LIMIT 1"
-            )?.query_row([pk],|r|Ok((r.get(0)?,(r.get(1)?,r.get(2)?))))?,
-        };
-        let old: Option<(Vec<u8>,i64)> = self.tx.prepare_cached(
-            "SELECT s.version_hash,m.session_pk FROM message_source s JOIN message m ON m.pk=s.message_pk
-             WHERE s.message_pk=?1 AND s.shown=1"
-        )?.query_row([pk],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        if old
-            .as_ref()
-            .is_some_and(|o| o.0 == v.hash && o.1 == session_pk)
-        {
+        let choice = choice.as_ref().expect("selected message");
+        let order = choice.order;
+        if !choice.changed {
             self.tx.execute("UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,arrival_rank=?6,
                 order_input_pk=?7,order_input_id=(SELECT id FROM input_ref WHERE pk=?7),seq=?8,record_position=?9 WHERE pk=?1",
                 params![pk,v.input_pk,v.chain,v.start,v.end,v.rank,order.0,order.1.0,order.1.1])?;
@@ -627,23 +465,13 @@ impl RowWriter<'_, '_> {
             self.update_event_anchors(pk, true)?;
             return Ok(false);
         }
-        let restored;
-        let prepared_incoming = resolved
-            .and_then(Option::as_ref)
-            .map(|choice| (&choice.message, &choice.prepared));
-        let (m, prepared) = match prepared_incoming
-            .or(incoming)
-            .filter(|(_, prepared)| prepared.hash.as_slice() == v.hash)
-        {
-            Some(values) => values,
-            None => {
-                let message: Message =
-                    crate::versions::read(self.tx, VersionKind::Message, &v.hash)?;
-                let prepared = PreparedMessage::new(&message)?;
-                restored = (message, prepared);
-                (&restored.0, &restored.1)
-            }
-        };
+        let m = choice.message.as_ref().ok_or_else(|| {
+            StoreError::Invalid("a changed version has no prepared message".into())
+        })?;
+        let prepared = choice
+            .prepared
+            .as_ref()
+            .ok_or_else(|| StoreError::Invalid("a changed version has no prepared body".into()))?;
         v.pem = prepared.pem.iter().copied().max().unwrap_or(0);
         self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
         self.clear_blocks(pk)?;
@@ -659,18 +487,6 @@ impl RowWriter<'_, '_> {
             params![pk, v.input_pk, v.chain],
         )?;
         Ok(())
-    }
-
-    // Placement uses this input's kind, or a fresh session's main default.
-    // Another input's facts or an earlier derive cannot classify these rows.
-    fn session_kind(&self, session_pk: i64) -> Result<String> {
-        Ok(self
-            .tx
-            .prepare_cached(
-                "SELECT COALESCE((SELECT json_extract(facts,'$.kind') FROM session_record
-                 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3),'main')",
-            )?
-            .query_row(params![session_pk, self.input_pk, self.chain], |r| r.get(0))?)
     }
 
     fn insert_message(
@@ -797,11 +613,11 @@ impl RowWriter<'_, '_> {
             // The cost derivation's value, written with the row so a first
             // build's derive does not rewrite every priced message.
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
-            self.keys
-                .map(|keys| keys
-                    .get(resolve::Kind::Message, m.id.to_string().as_bytes())
-                    .map(|row| row.pk))
-                .transpose()?,
+            Some(
+                self.keys
+                    .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
+                    .pk
+            ),
         ])?;
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
         self.update_event_anchors(pk, true)?;
@@ -904,15 +720,10 @@ impl RowWriter<'_, '_> {
             .zip(&prepared.data)
             .enumerate()
         {
-            let text_id = self
-                .tx
-                .prepare_cached(
-                    "SELECT text_id FROM message_version_text WHERE version_hash=?1 AND idx=?2",
-                )?
-                .query_row(params![prepared.hash.as_slice(), idx as i64], |r| {
-                    r.get::<_, i64>(0)
-                })
-                .optional()?;
+            let text_id = prepared.texts[idx]
+                .as_ref()
+                .map(|hash| self.keys.get(resolve::Kind::Text, hash).map(|key| key.pk))
+                .transpose()?;
             let stored = StoredBlock {
                 body,
                 data: data.as_deref(),
@@ -1122,7 +933,7 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
-    /// `packed` is the event's id and stored payload ([`pack_event`]).
+    /// `packed` is the event's id and stored payload ([`crate::encoding::RowPacker::pack_event`]).
     fn write_event(
         &self,
         e: &Event,
@@ -1166,7 +977,7 @@ impl RowWriter<'_, '_> {
             None => {
                 self.tx.prepare_cached("INSERT INTO event(pk,id,session_pk,seq,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,data)
                     VALUES (?12,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)")?
-                    .execute(params![&*id,session_pk,seq.unwrap_or(0),after.map(|a|a.0),e.kind,ms(e.at),self.input_pk,source_chain,e.range.map(|r|r.0 as i64),e.range.map(|r|r.1 as i64),data,self.keys.map(|keys|keys.get(resolve::Kind::Event,id.as_bytes()).map(|row|row.pk)).transpose()?])?;
+                    .execute(params![&*id,session_pk,seq.unwrap_or(0),after.map(|a|a.0),e.kind,ms(e.at),self.input_pk,source_chain,e.range.map(|r|r.0 as i64),e.range.map(|r|r.1 as i64),data,Some(self.keys.get(resolve::Kind::Event,id.as_bytes())?.pk)])?;
                 let pk = self.tx.last_insert_rowid();
                 if let Some(first) = self.first_build {
                     first.add_event(&id, pk);

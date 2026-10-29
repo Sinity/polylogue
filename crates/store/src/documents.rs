@@ -19,7 +19,6 @@ pub(crate) struct Source<'a> {
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,
     pub keys: Option<&'a crate::writer::resolve::ResolvedKeys>,
-    pub resolved: bool,
 }
 
 pub(crate) fn write(
@@ -35,127 +34,37 @@ pub(crate) fn write(
     }
     let doc = &row.document;
     let time = doc.source_time.map(|t| t.unix_ms());
-    let reserved = source
+    let keys = source
         .keys
-        .map(|keys| {
-            keys.get(
-                crate::writer::resolve::Kind::Document,
-                doc.id.to_string().as_bytes(),
-            )
-        })
-        .transpose()?;
-    let existing: Option<i64> = if let Some(key) = reserved {
-        tx.query_row("SELECT pk FROM document WHERE pk=?1", [key.pk], |r| {
-            r.get(0)
-        })
-        .optional()?
-    } else {
-        tx.query_row(
-            "SELECT pk FROM document WHERE id=?1",
-            [doc.id.to_string()],
-            |r| r.get(0),
-        )
-        .optional()?
-    };
-    if let Some(pk) = existing.filter(|_| !source.resolved) {
-        let earlier:Option<(Option<i64>,i64,Vec<u8>)>=tx.query_row(
-            "SELECT source_time,arrival_rank,version_hash FROM document_source WHERE document_pk=?1 AND input_pk=?2 AND chain=?3",
-            params![pk,source.input_pk,source.chain],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-        if earlier.is_some_and(|(old_time, old_rank, old_hash)| {
-            (
-                time,
-                std::cmp::Reverse(source.rank),
-                prepared.hash.as_slice(),
-            ) < (old_time, std::cmp::Reverse(old_rank), old_hash.as_slice())
-        }) {
-            return Ok(());
-        }
-    }
+        .ok_or_else(|| StoreError::Invalid("document reading has no resolved key".into()))?;
+    let reserved = keys.get(
+        crate::writer::resolve::Kind::Document,
+        doc.id.to_string().as_bytes(),
+    )?;
+    let existing = tx
+        .prepare_cached("SELECT pk FROM document WHERE pk=?1")?
+        .query_row([reserved.pk], |row| row.get::<_, i64>(0))
+        .optional()?;
     crate::versions::store(
         tx,
         VersionKind::Document,
         &prepared.hash,
         &prepared.body,
         &doc.blocks,
+        &prepared.texts,
         source.packed,
         source.first_build,
-        source.keys,
+        keys,
     )?;
     let pk = match existing {
         Some(pk) => pk,
         None => {
             tx.execute("INSERT INTO document(pk,id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
-                VALUES (?15,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields,reserved.map(|row|row.pk)])?;
+                VALUES (?15,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields,Some(reserved.pk)])?;
             tx.last_insert_rowid()
         }
     };
     set_source(tx, pk, source, row, time, &prepared.hash, false)?;
-    if source.resolved {
-        Ok(())
-    } else {
-        refresh(tx, pk, source.counter, source.first_build)
-    }
-}
-
-pub(crate) fn refresh(
-    tx: &Transaction<'_>,
-    pk: i64,
-    counter: i64,
-    first_build: Option<&crate::first_build::FirstBuild>,
-) -> Result<()> {
-    // Source time is authoritative for documents, including within one input.
-    let winner = VersionKind::Document.select(
-        tx,
-        pk,
-        "s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.arrival_rank,s.version_hash",
-        |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, Vec<u8>>(6)?,
-            ))
-        },
-    )?;
-    let Some((input_pk, _input_id, chain, start, end, rank, hash)) = winner else {
-        let texts = tx
-            .prepare(
-                "SELECT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL",
-            )?
-            .query_map([pk], |r| r.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        tx.execute("DELETE FROM document WHERE pk=?1", [pk])?;
-        for text in texts {
-            crate::text_rows::unindex_unused(tx, text, first_build.is_some())?;
-        }
-        return Ok(());
-    };
-    let document: Document = crate::versions::read(tx, VersionKind::Document, &hash)?;
-    let prepared = PreparedDocument::new(&document)?;
-    let packed = HashMap::new();
-    let source = Source {
-        input_pk,
-        chain,
-        rank,
-        counter,
-        packed: &packed,
-        first_build,
-        keys: None,
-        resolved: false,
-    };
-    let row = DocumentRow {
-        offset: start as u64,
-        end: end as u64,
-        document,
-    };
-    show(tx, pk, &source, &row, &prepared)?;
-    tx.execute(
-        "UPDATE document_source SET shown=(input_pk=?2 AND chain=?3) WHERE document_pk=?1",
-        params![pk, input_pk, chain],
-    )?;
     Ok(())
 }
 
@@ -165,6 +74,7 @@ pub(crate) fn apply_choice(
     choice: Option<&crate::writer::resolve::versions::DocumentChoice>,
     counter: i64,
     first_build: Option<&crate::first_build::FirstBuild>,
+    keys: &crate::writer::resolve::ResolvedKeys,
 ) -> Result<()> {
     let Some(choice) = choice else {
         let texts=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -182,15 +92,25 @@ pub(crate) fn apply_choice(
         counter,
         packed: &packed,
         first_build,
-        keys: None,
-        resolved: true,
+        keys: Some(keys),
     };
-    let row = DocumentRow {
-        offset: choice.start as u64,
-        end: choice.end as u64,
-        document: choice.document.clone(),
-    };
-    show(tx, pk, &source, &row, &choice.prepared)?;
+    if choice.changed {
+        let document = choice.document.as_ref().ok_or_else(|| {
+            StoreError::Invalid("a changed document has no prepared value".into())
+        })?;
+        let prepared = choice
+            .prepared
+            .as_ref()
+            .ok_or_else(|| StoreError::Invalid("a changed document has no prepared body".into()))?;
+        let row = DocumentRow {
+            offset: choice.start as u64,
+            end: choice.end as u64,
+            document: document.clone(),
+        };
+        show(tx, pk, &source, &row, prepared)?;
+    } else {
+        tx.prepare_cached("UPDATE document SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,changed=?6 WHERE pk=?1")?.execute(params![pk,choice.input,choice.chain,choice.start,choice.end,counter])?;
+    }
     tx.execute(
         "UPDATE document_source SET shown=(input_pk=?2 AND chain=?3) WHERE document_pk=?1",
         params![pk, choice.input, choice.chain],
@@ -250,14 +170,16 @@ fn insert_blocks(
         .zip(&prepared.data)
         .enumerate()
     {
-        let text = tx
-            .prepare_cached(
-                "SELECT text_id FROM document_version_text WHERE version_hash=?1 AND idx=?2",
-            )?
-            .query_row(params![prepared.hash.as_slice(), idx as i64], |r| {
-                r.get::<_, i64>(0)
+        let keys = source.keys.ok_or_else(|| {
+            StoreError::Invalid("document blocks have no resolved text keys".into())
+        })?;
+        let text = prepared.texts[idx]
+            .as_ref()
+            .map(|hash| {
+                keys.get(crate::writer::resolve::Kind::Text, hash)
+                    .map(|key| key.pk)
             })
-            .optional()?;
+            .transpose()?;
         if let Some(id) = text {
             crate::text_rows::activate(tx, id, 1, source.first_build.is_some())?;
         }
