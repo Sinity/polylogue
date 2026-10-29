@@ -971,7 +971,7 @@ mod observation_order;
 
 mod text_projection;
 
-mod failed_inputs;
+mod parse_positions;
 
 #[test]
 fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
