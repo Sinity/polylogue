@@ -180,7 +180,14 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
         let mut file = crate::daemon::query::feed::prepare_with(
             &reader,
             since,
-            0,
+            &query_language::time::Clock::new(
+                jiff::Timestamp::from_millisecond(0).unwrap(),
+                query_language::time::DaySetting::new(
+                    jiff::tz::TimeZone::UTC,
+                    jiff::civil::Time::constant(4, 0, 0, 0),
+                )
+                .unwrap(),
+            ),
             tempfile::tempfile().unwrap(),
         )
         .unwrap();

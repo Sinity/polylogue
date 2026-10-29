@@ -1,5 +1,6 @@
 use super::*;
 use crate::daemon::Response;
+use polylogue_store::Archive;
 
 #[test]
 fn socket_shutdown_unblocks_idle_and_incomplete_clients() {

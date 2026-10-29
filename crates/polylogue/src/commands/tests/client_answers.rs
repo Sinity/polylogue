@@ -186,6 +186,7 @@ fn every_client_answers_the_same_request_identically() {
     let w = test_daemon::start("look at the parser");
     let web = Arc::new(crate::web::Web {
         daemon: Arc::clone(&w.daemon),
+        operations: Arc::clone(w.operations()),
         key: "abc123def456".into(),
         token: "t0ken".into(),
         port: 8765,
