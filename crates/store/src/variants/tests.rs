@@ -238,6 +238,14 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
             .unwrap()
             .is_none()
     );
+    assert_eq!(
+        reader
+            .selected_variant("message:codex:source", BlobHash([9; 32]), &enabled, true)
+            .unwrap()
+            .unwrap()
+            .id,
+        "first",
+    );
     let mut bodies = Vec::new();
     reader
         .visit_variant_parts("first", |part| {
@@ -292,6 +300,10 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
     let reader = pool.reader().unwrap();
     assert!(matches!(
         reader.enabled_variant("message:codex:source", BlobHash([1; 32]), &enabled),
+        Err(StoreError::Ambiguous { .. })
+    ));
+    assert!(matches!(
+        reader.selected_variant("message:codex:source", BlobHash([9; 32]), &enabled, true),
         Err(StoreError::Ambiguous { .. })
     ));
 }

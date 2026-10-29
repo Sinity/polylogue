@@ -266,6 +266,17 @@ impl Reader<'_> {
         source_hash: BlobHash,
         enabled: &[String],
     ) -> Result<Option<Variant>> {
+        self.selected_variant(source, source_hash, enabled, false)
+    }
+    /// An explicit read may show an earlier source revision. Fresh matches
+    /// take precedence within each key; clocks never break an ambiguity.
+    pub fn selected_variant(
+        &self,
+        source: &str,
+        source_hash: BlobHash,
+        keys: &[String],
+        allow_stale: bool,
+    ) -> Result<Option<Variant>> {
         let conn = self.conn()?;
         let namespace = Source::reading(conn)?;
         let roots: Vec<String> = conn
@@ -279,17 +290,20 @@ impl Reader<'_> {
         for root in roots {
             let mut current = heads(conn, &root)?;
             if current.len() == 1 {
-                let v = current.remove(0);
-                if v.source_hash == source_hash {
-                    candidates.push(v);
-                }
+                candidates.push(current.remove(0));
             }
         }
-        for preference in enabled {
-            let matched: Vec<_> = candidates
+        for preference in keys {
+            let mut matched: Vec<_> = candidates
                 .iter()
-                .filter(|v| key(v) == *preference)
+                .filter(|v| key(v) == *preference && v.source_hash == source_hash)
                 .collect();
+            if matched.is_empty() && allow_stale {
+                matched = candidates
+                    .iter()
+                    .filter(|v| key(v) == *preference)
+                    .collect();
+            }
             if matched.len() > 1 {
                 return Err(StoreError::Ambiguous {
                     reference: preference.clone(),
