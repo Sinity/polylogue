@@ -274,7 +274,7 @@ pub fn visit_record(
             }
         }
         Record::Session(row) if options.view != View::Changes => {
-            if !visit(ReadItem {
+            let accepted = visit(ReadItem {
                 source,
                 kind: ItemKind::Card {
                     card: Box::new(Card::Session {
@@ -282,7 +282,8 @@ pub fn visit_record(
                         open: None,
                     }),
                 },
-            }) {
+            });
+            if !accepted {
                 return Ok(());
             }
         }
@@ -452,12 +453,12 @@ fn attachment_kind(
         .get(&source.reference)
         .and_then(|attachments| attachments.get(index));
     let inline_bytes = prepared.and_then(|prepared| prepared.inline_bytes.clone());
-    if let Some(bytes) = &inline_bytes {
-        if attachment.blob.as_ref() != Some(&polylogue_model::BlobHash::of(bytes)) {
-            return Err(ReadError::InvalidEvidence(
-                "attachment inline bytes do not match its canonical blob hash".into(),
-            ));
-        }
+    if let Some(bytes) = &inline_bytes
+        && attachment.blob.as_ref() != Some(&polylogue_model::BlobHash::of(bytes))
+    {
+        return Err(ReadError::InvalidEvidence(
+            "attachment inline bytes do not match its canonical blob hash".into(),
+        ));
     }
     Ok(ItemKind::Attachment {
         attachment: Box::new(attachment.clone()),
