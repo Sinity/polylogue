@@ -80,3 +80,5 @@ string_schema!(
 );
 
 pub mod authored;
+
+pub mod work_products;
