@@ -200,6 +200,12 @@ pub struct Program {
     pub shape: Shape,
     /// The whole answer, in order, without paging.
     pub sql: String,
+    /// Exact cardinality and missing similarities, without presentation work
+    /// that does not affect which rows the query selects.
+    pub row_count_sql: Option<String>,
+    /// Selected ordinary-row keys without presentation order. Combining
+    /// queries uses these keys when only membership matters.
+    pub row_membership_sql: Option<String>,
     pub params: Vec<Param>,
     /// Every output column but `_pk` (each row unit's key).
     pub columns: Vec<Column>,
@@ -351,15 +357,17 @@ impl Program {
     }
 
     pub fn count_sql(&self) -> String {
-        format!(
-            "SELECT count(*), {} FROM ({})",
-            if self.counts_near {
-                "count(*) FILTER (WHERE _near IS NULL)"
-            } else {
-                "0"
-            },
-            self.sql
-        )
+        self.row_count_sql.clone().unwrap_or_else(|| {
+            format!(
+                "SELECT count(*), {} FROM ({})",
+                if self.counts_near {
+                    "count(*) FILTER (WHERE _near IS NULL)"
+                } else {
+                    "0"
+                },
+                self.sql
+            )
+        })
     }
 }
 

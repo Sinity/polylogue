@@ -87,7 +87,8 @@ CREATE TABLE observation (
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   or 'capture:<id>'
   class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported
-  revision      INTEGER,                 -- the revision produced or confirmed (none for deleted)
+  revision      INTEGER,                 -- exact revision endpoint produced or confirmed
+  chain         INTEGER,                 -- proven prefix only: revision NULL, length is observed bytes
   length        INTEGER,                 -- that revision's length
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER,

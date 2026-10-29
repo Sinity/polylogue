@@ -533,6 +533,8 @@ fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), 
         }
         Some(super::measure::Paging::Facets) => {
             program.counts_near = false;
+            program.row_count_sql = None;
+            program.row_membership_sql = None;
             program.page_size = page_size.unwrap_or(100);
             program.sql = polylogue_store::measure::facets::query(
                 &m.selection_sql,

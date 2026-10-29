@@ -13,17 +13,19 @@ fn manifest() -> Manifest {
             archive: 3,
         },
         caught_up: false,
+        currency: crate::currency::IndexCurrency::Standalone,
         counts: Counts::default(),
         flags: Flags {
             format: Format::Json,
-            view: crate::read::View::Full,
             with_blobs: false,
-            inherited: true,
-            assertions: true,
+            read: crate::read::ReadOptions::default(),
         },
         enabled_variants: vec![],
         author: Author::Operator,
         inventory: None,
+        notes: vec![],
+        incomplete: vec![],
+        coverage: vec![],
     }
 }
 
@@ -199,4 +201,13 @@ fn overlapping_conflicting_content_is_not_equal_or_an_implicit_new_version() {
     let mut invalid = full;
     invalid.block_ordinals = vec![1, 1];
     assert_eq!(invalid.validate(), Err(BundleError::InvalidBlockSelection));
+}
+
+#[test]
+fn current_bundle_refuses_unknown_outer_record_fields() {
+    let malformed = include_str!("tests/extra-envelope-field.json");
+    let mut valid: serde_json::Value = serde_json::from_str(malformed).unwrap();
+    valid.as_object_mut().unwrap().remove("future");
+    assert!(serde_json::from_value::<Record>(valid).is_ok());
+    assert!(serde_json::from_str::<Record>(malformed).is_err());
 }

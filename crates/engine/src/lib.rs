@@ -376,15 +376,9 @@ impl Engine {
         })
     }
 
-    /// Derives what changed, then, in primary mode, sends Sinex the events
-    /// of every session whose rows changed. Returns how many sessions were
-    /// derived.
+    /// Derives changed sessions. Primary facts are emitted with their source reading.
     fn derive(&self) -> Result<u64, EngineError> {
-        let derived = self.writer.derive()?;
-        if let Some(sinex) = &self.sinex {
-            sinex.send_sessions(&self.reads)?;
-        }
-        Ok(derived)
+        Ok(self.writer.derive()?)
     }
 
     /// A location's input id: stable for one path on one machine.
