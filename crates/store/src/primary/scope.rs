@@ -12,6 +12,21 @@ pub(crate) fn current(index: &Connection) -> Result<Option<String>> {
         .optional()?)
 }
 
+pub(crate) fn require_readable(index: &Connection) -> Result<()> {
+    if index
+        .query_row(
+            "SELECT 1 FROM meta WHERE key='confirmed_scope_pending'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Err(StoreError::ScopeChanged);
+    }
+    Ok(())
+}
+
 fn quoted(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
@@ -27,12 +42,30 @@ pub(crate) fn reset(
             "a confirmed scope needs its owner identity".into(),
         ));
     }
-    if current(index)?.as_deref() == Some(scope) {
+    if current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
         return Ok(false);
     }
     // Cancellation precedes visibility. A failed transaction leaves reads blocked
     // until the same authoritative reset can be completed.
     archive.read_scope.begin_reset()?;
+    // The owner control must survive a failed clear and restart. This is cached
+    // grant metadata, independent of pending producer intents or input custody.
+    let previous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
+    index.pragma_update(None, "synchronous", previous.max(2))?;
+    let result = (|| {
+        index.execute("INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [scope])?;
+        clear(index, archive, resolver, scope)
+    })();
+    let restored = index.pragma_update(None, "synchronous", previous);
+    result.and_then(|changed| restored.map(|_| changed).map_err(Into::into))
+}
+
+fn clear(
+    index: &mut Connection,
+    archive: &Archive,
+    resolver: &crate::writer::resolve::Resolver,
+    scope: &str,
+) -> Result<bool> {
     resolver.discard_cached()?;
     index.flush_prepared_statement_cache();
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;

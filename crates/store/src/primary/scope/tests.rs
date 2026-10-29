@@ -164,8 +164,21 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     ));
     assert_eq!(current(&index).unwrap(), None);
     assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
+    drop(index);
+    // A new process has no in-memory cancellation state. Its fresh connection
+    // must still refuse the cached payloads after the failed clear.
+    let mut reopened = archive.clone();
+    reopened.read_scope = Default::default();
+    let pool = crate::ReadPool::with_budget(&reopened, 1, 8 << 20).unwrap();
+    assert!(matches!(pool.reader(), Err(StoreError::ScopeChanged)));
+    let mut index = Connection::open(reopened.index_db()).unwrap();
+    index.pragma_update(None, "foreign_keys", true).unwrap();
+    assert!(matches!(
+        require_readable(&index),
+        Err(StoreError::ScopeChanged)
+    ));
     index.execute_batch("DROP TRIGGER stop_reset").unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "changed").unwrap());
-    assert!(archive.read_scope.token().is_ok());
+    assert!(reset(&mut index, &reopened, &resolver, "changed").unwrap());
+    assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
 }
