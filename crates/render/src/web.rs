@@ -53,7 +53,7 @@ pub fn read(
         @for reason in &page.snapshot.incomplete { p class="read-incomplete" role="status" { (reason) } }
         nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,&route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
         (navigation(page))
-        (polylogue_render::html::document(&page.document))
+        (crate::html::document(&page.document))
         (navigation(page))
         details class="read-position" { summary { "Recorded read position" } dl {
             dt { "Generation" } dd { (&page.snapshot.read_at.generation) }
@@ -63,7 +63,7 @@ pub fn read(
             dt { "Caught up" } dd { (page.snapshot.caught_up) }
         } }
     };
-    Ok(polylogue_render::terminal::escape(
+    Ok(crate::terminal::escape(
         &frame
             .render(&body, &|body: &Markup| body.clone())
             .into_string(),
@@ -90,7 +90,7 @@ pub(crate) fn http_url(call: &HttpCall) -> Result<String, Failure> {
         || !call.path.starts_with('/')
         || call.path.starts_with("//")
         || call.path.contains(['?', '#'])
-        || !polylogue_render::html::safe_url(&call.path)
+        || !crate::html::safe_url(&call.path)
     {
         return Err(Failure::new(
             FailureKind::BadRequest,
@@ -120,9 +120,9 @@ pub(crate) fn http_url(call: &HttpCall) -> Result<String, Failure> {
             };
             url.push(if first { '?' } else { '&' });
             first = false;
-            url.push_str(&polylogue_render::html::encode_path_segment(name));
+            url.push_str(&crate::html::encode_path_segment(name));
             url.push('=');
-            url.push_str(&polylogue_render::html::encode_path_segment(&value));
+            url.push_str(&crate::html::encode_path_segment(&value));
         }
     }
     Ok(url)

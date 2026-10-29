@@ -1150,3 +1150,135 @@ fn format_flags_and_public_json_schema_use_one_closed_vocabulary() {
     assert!(Format::parse("md").is_none());
     assert!(serde_json::from_value::<Format>(serde_json::json!("md")).is_err());
 }
+
+#[test]
+fn encoded_control_expansion_is_included_in_the_page_byte_budget() {
+    let original = text(&"\u{9b}\u{202e}\"\\".repeat(4000));
+    let mut position = None;
+    let mut restored = String::new();
+    for _ in 0..1000 {
+        let mut builder = pager::PageBuilder::new(header(), budget(), position).unwrap();
+        let state = builder
+            .push_at("message:test", 0, original.clone())
+            .unwrap();
+        let next = builder.position().cloned();
+        let document = builder.finish(ReadFooter::default()).unwrap();
+        let encoded = encode(&document, Format::Json);
+        assert!(encoded.len() <= budget().bytes.get());
+        for item in document.items {
+            match item.kind {
+                ItemKind::Fragment {
+                    encoding: FragmentEncoding::Text,
+                    text,
+                    ..
+                }
+                | ItemKind::Text { text } => restored.push_str(&text),
+                _ => panic!(),
+            }
+        }
+        if state == pager::Push::Accepted {
+            break;
+        }
+        position = next;
+    }
+    assert_eq!(restored, "\u{9b}\u{202e}\"\\".repeat(4000));
+}
+#[test]
+fn variant_marks_only_describe_visible_substitutions() {
+    let record = message(vec![Block::Text {
+        text: "visible".into(),
+    }]);
+    let mut evidence = ProjectionEvidence::default();
+    evidence.variants.insert(
+        7,
+        VariantText {
+            mark: VariantMark {
+                reference: "variant:test".into(),
+                key: "en".into(),
+                original: "block:test#7".into(),
+                stale: false,
+                show_original: None,
+            },
+            text: "not selected".into(),
+        },
+    );
+    let items = layout(record, &ReadOptions::default(), &evidence);
+    assert!(matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
+}
+#[test]
+fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
+    let call = Block::ToolCall {
+        call_id: Some("c".into()),
+        tool: Some("capture".into()),
+        action: Default::default(),
+        input: json!({}),
+        command: None,
+        path: None,
+        run_by_script: false,
+    };
+    let result = Block::ToolResult {
+        call_id: Some("c".into()),
+        reported_duration_ms: None,
+        outcome: polylogue_model::ToolOutcome::Ok,
+        output: None,
+        data: None,
+        attachments: vec![Default::default()],
+    };
+    let call_source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        0,
+        false,
+    );
+    let result_source = Source::block(
+        &MessageId::parse("test:offpage:result").unwrap(),
+        &SessionId::parse("test:offpage").unwrap(),
+        7,
+        false,
+    );
+    let mut evidence = ProjectionEvidence::default();
+    evidence.tool_pairs.insert(
+        0,
+        ToolPair {
+            emit_at: call_source.reference.clone(),
+            call: SourceBlock {
+                source: call_source,
+                block: call.clone(),
+            },
+            result: Some(SourceBlock {
+                source: result_source.clone(),
+                block: result,
+            }),
+            running: false,
+            duration_ms: Default::default(),
+            error_line: None,
+            child: None,
+            edit: None,
+        },
+    );
+    evidence.attachments.insert(
+        result_source.reference.clone(),
+        std::collections::BTreeMap::from([
+            (
+                0,
+                vec![AttachmentEvidence {
+                    availability: ValueState::Unavailable {
+                        reason: "wrong ordinal".into(),
+                    },
+                    ..Default::default()
+                }],
+            ),
+            (
+                7,
+                vec![AttachmentEvidence {
+                    availability: ValueState::known("present".into()),
+                    ..Default::default()
+                }],
+            ),
+        ]),
+    );
+    let items = layout(message(vec![call]), &ReadOptions::default(), &evidence);
+    assert!(
+        matches!(&items[2],ReadItem{source,kind:ItemKind::Attachment{availability:ValueState::Value{value},..}} if source==&result_source && value=="present")
+    );
+}

@@ -27,6 +27,9 @@ impl Operation for Read {
             write: false,
         }
     }
+    fn render_text(&self, answer: &Value) -> String {
+        answer.to_string()
+    }
     fn execute(&self, _: Arguments, _: RequestContext) -> OperationFuture<'_, Answer<Value>> {
         Box::pin(async { Answer::ok(Value::Null) })
     }
@@ -72,7 +75,7 @@ fn page() -> ReadPage {
 }
 #[test]
 fn typed_page_uses_one_common_frame_and_keeps_read_currency_visible() {
-    let mut table = OperationTable::new("polylogue");
+    let mut table = OperationTable::new("polylogue", Default::default());
     table.register(Read).unwrap();
     let request = RunnableRequest {
         operation: "read".into(),
@@ -244,7 +247,7 @@ fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
 
 #[test]
 fn copied_current_invocation_preserves_controls_as_valid_json_escapes() {
-    let mut table = OperationTable::new("polylogue");
+    let mut table = OperationTable::new("polylogue", Default::default());
     table.register(Read).unwrap();
     let request = RunnableRequest {
         operation: "read".into(),
