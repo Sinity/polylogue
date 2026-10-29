@@ -106,6 +106,8 @@ pub enum ConfirmedChange {
     Archived,
     Restored,
     Tombstoned,
+    Ignored,
+    PositionComplete,
 }
 
 /// A source capture waiting in the producer spool, before cache application.
@@ -143,6 +145,7 @@ pub struct ProductWrite {
     pub location: Option<SourceLocation>,
     pub parents: Vec<String>,
     pub machine: Option<String>,
+    pub output_index: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -214,4 +217,17 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
         reset: step.reset,
     });
     Ok(products)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "capture", rename_all = "snake_case")]
+pub enum Capture {
+    Input(CapturedInput),
+    Blob { hash: BlobHash, length: u64 },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PendingCapture {
+    pub identity: String,
+    pub captured: Capture,
+    pub material: Option<Material>,
 }
