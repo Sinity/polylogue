@@ -237,3 +237,67 @@ fn read_html_negotiates_on_the_same_typed_operation_route() {
             assert!(text.contains("&lt;script&gt;"), "{text}");
         });
 }
+
+#[test]
+fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() {
+    fn reset_after_begin(
+        _: &Request,
+        daemon: &Daemon,
+        _: &polylogue_model::authorship::Authorship,
+        output: &mut dyn Write,
+    ) -> Option<Result<(), Response>> {
+        let reader = match daemon.reads.reader() {
+            Ok(reader) => reader,
+            Err(error) => return Some(Err(crate::daemon::service::store_error(&error))),
+        };
+        let result = (|| {
+            crate::protocol::stream::event(
+                output,
+                "begin",
+                &serde_json::json!({"generation":reader.change_position()?.to_string()}),
+            )?;
+            daemon.archive.advance_generation_for_test()?;
+            crate::protocol::stream::event(
+                output,
+                "record",
+                &serde_json::json!({"stale":"must not escape"}),
+            )?;
+            crate::protocol::stream::event(output, "complete", &serde_json::json!({}))?;
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })();
+        Some(result.map_err(|error| crate::daemon::service::error("io", error)))
+    }
+    let daemon = crate::test_daemon::start("native generation stream witness");
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let response = stream(
+                &web(&daemon),
+                Request::Changes { since: None },
+                reset_after_begin,
+                None,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let events = command_surface::SseDecoder::new().push(&bytes).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|event| event.event.as_str())
+                    .collect::<Vec<_>>(),
+                ["begin", "error"]
+            );
+            let answer: command_surface::Answer<serde_json::Value> =
+                serde_json::from_str(&events[1].data).unwrap();
+            let command_surface::Answer::Error { error, .. } = answer else {
+                panic!("stale stream was successful")
+            };
+            assert_eq!(error.code.as_deref(), Some("scope_changed"));
+            assert_eq!(error.kind, command_surface::FailureKind::Conflict);
+        });
+}
