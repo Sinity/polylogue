@@ -330,3 +330,10 @@ fn unavailable_kept_schema_does_not_prevent_other_vocabulary_publication() {
         assert!(kept.rows.is_none() && kept.unit.is_none() && kept.row_count.is_none());
     }
 }
+
+#[test]
+fn saved_and_kept_names_are_runnable_source_suggestions_at_the_first_word() {
+    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("catalog");populated(&path);
+    assert!(rendered(&path,"by-").contains(&"query:by-action".into()));
+    assert!(rendered(&path,"Kept").contains(&"result:kept-id".into()));
+}
