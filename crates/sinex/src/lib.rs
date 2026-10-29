@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 mod client;
+mod context;
+pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
+pub use sinex_protocol::PublicInterruptBudget;
 pub mod kinds;
 mod material;
 pub(crate) mod native;
@@ -39,6 +42,15 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// This adapter declaration is installed by the owner, never self-registered
+/// from a producer's requested permissions.
+pub(crate) fn source_reference() -> sinex_protocol::SourceRef {
+    sinex_protocol::SourceRef {
+        name: "polylogue".into(),
+        version: 1,
+    }
+}
 
 impl From<Error> for polylogue_store::StoreError {
     fn from(error: Error) -> Self {
@@ -250,20 +262,54 @@ impl Drop for Sinex {
 }
 
 impl polylogue_store::primary::Sinex for Sinex {
+    fn raw_acquisition_cursor(
+        &self,
+        generation: &polylogue_store::primary::SourceGeneration,
+    ) -> polylogue_store::Result<Option<polylogue_store::primary::RawAcquisitionCursor>> {
+        Ok(self.raw_acquisition_cursor(generation)?)
+    }
+    fn prepare_input_group(
+        &self,
+        plan: &polylogue_store::primary::CapturePlan,
+        members: &mut polylogue_store::primary::CaptureMembers<'_>,
+    ) -> polylogue_store::Result<polylogue_store::primary::CaptureReceipt> {
+        Ok(self.prepare_input_group(plan, members)?)
+    }
+    fn pending_source(
+        &self,
+        source: &polylogue_store::primary::SourceSelector,
+        reading_version: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::PendingSource> {
+        Ok(self.pending_source(source, reading_version)?)
+    }
+    fn capture_body(
+        &self,
+        identity: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::PreparedBody> {
+        Ok(self.capture_body(identity)?)
+    }
     fn prepare_input(
         &self,
         captured: &polylogue_store::primary::CapturedInput,
-        bytes: &mut dyn std::io::Read,
+        body: polylogue_store::primary::PreparedBody,
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedInput> {
-        Ok(self.prepare_input(captured, bytes)?)
+        Ok(self.prepare_input(captured, body)?)
     }
     fn prepare_blob(
         &self,
         hash: polylogue_model::BlobHash,
         length: u64,
-        bytes: &mut dyn std::io::Read,
+        body: polylogue_store::primary::PreparedBody,
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
-        Ok(self.prepare_blob(hash, length, bytes)?)
+        Ok(self.prepare_blob(hash, length, body)?)
+    }
+    fn pending_group_headers(
+        &self,
+        group: &str,
+        after: Option<u64>,
+        limit: usize,
+    ) -> polylogue_store::Result<polylogue_store::primary::PendingGroupPage> {
+        Ok(self.pending_group_headers(group, after, limit)?)
     }
     fn pending_captures(
         &self,
@@ -314,6 +360,13 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<()> {
         self.visit_pending_blobs(visit)
     }
+    fn visit_named_products(
+        &self,
+        selector: &polylogue_store::primary::NamedProductSelector,
+        visit: &mut dyn FnMut(&polylogue_store::primary::Product) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        Ok(self.visit_named_products(selector, visit)?)
+    }
     fn prepare_named_products(
         &self,
         identity: &str,
@@ -340,7 +393,7 @@ impl polylogue_store::primary::Sinex for Sinex {
                     spool::Kind::Events | spool::Kind::ReplaySequence
                 ) && receipt.refusal.is_none()
                     && receipt.commit_seq.is_some();
-                queue.acknowledge(receipt)?;
+                queue.acknowledge(client::verified_receipt(&entry, receipt)?)?;
             }
         }
         if admitted {
@@ -383,9 +436,14 @@ impl polylogue_store::primary::Sinex for Sinex {
 #[cfg(test)]
 mod tests;
 
-/// A prepared material identity is determined by its immutable frame identity.
-fn material_id(frame: &str) -> sinex_model::MaterialId {
-    let hash = blake3::hash(frame.as_bytes());
+/// Source-copy custody is scoped to the authenticated receiving producer.
+fn material_id(producer: &str, frame: &str) -> sinex_model::MaterialId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue-material-1\0");
+    hash.update(&(producer.len() as u64).to_le_bytes());
+    hash.update(producer.as_bytes());
+    hash.update(frame.as_bytes());
+    let hash = hash.finalize();
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&hash.as_bytes()[..16]);
     sinex_model::MaterialId(uuid::Uuid::from_bytes(bytes))

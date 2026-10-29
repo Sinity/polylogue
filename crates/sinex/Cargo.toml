@@ -14,9 +14,12 @@ blake3.workspace = true
 polylogue-store.workspace = true
 polylogue-model.workspace = true
 hashed-blobs.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "d437b055774797d39f74a091d1da03e9ec0afd80" }
-sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "d437b055774797d39f74a091d1da03e9ec0afd80" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "d437b055774797d39f74a091d1da03e9ec0afd80" }
+query-language.workspace = true
+signals.workspace = true
+jiff.workspace = true
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "b88fc82951b7d3ea955040eda354afd42d8150ce" }
+sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "b88fc82951b7d3ea955040eda354afd42d8150ce" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "b88fc82951b7d3ea955040eda354afd42d8150ce" }
 async-nats = "0.47"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures-util = "0.3"
@@ -27,6 +30,7 @@ thiserror.workspace = true
 toml = "0.9"
 
 [dev-dependencies]
+polylogue-store = { workspace = true, features = ["fixture"] }
 jsonschema = { version = "0.42", default-features = false }
 polylogue-testkit.workspace = true
 polylogue-engine.workspace = true

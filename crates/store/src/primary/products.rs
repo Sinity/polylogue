@@ -103,6 +103,9 @@ pub enum Product {
         claims: Vec<polylogue_model::authored::ImportAttribution>,
         current: polylogue_model::authored::ImportAttribution,
     },
+    WorkComponentStatus {
+        status: Box<polylogue_model::work_products::ComponentStatus>,
+    },
     WorkSnapshot {
         snapshot: polylogue_model::work_products::WorkSnapshot,
     },
@@ -129,7 +132,8 @@ impl Product {
             | Self::Request(_)
             | Self::RestoredRequest { .. }
             | Self::Coverage(_)
-            | Self::WorkSnapshot { .. } => None,
+            | Self::WorkSnapshot { .. }
+            | Self::WorkComponentStatus { .. } => None,
         }
     }
 }

@@ -1,6 +1,15 @@
 use super::*;
 use std::process::Command;
 
+trait CaptureFixture {
+    fn prepare_capture(&self, frame: Ingress, bytes: &[u8], capture: &Capture) -> Result<Prepared>;
+}
+impl CaptureFixture for Spool {
+    fn prepare_capture(&self, frame: Ingress, bytes: &[u8], capture: &Capture) -> Result<Prepared> {
+        self.prepare_encoded_capture(frame, crate::tests::body(&self.root, bytes), capture)
+    }
+}
+
 pub(super) fn boundary(name: &str) {
     if std::env::var("POLYLOGUE_SPOOL_CRASH").as_deref() == Ok(name) {
         std::process::exit(77);
@@ -15,6 +24,76 @@ fn events(identity: &str, value: &str) -> Ingress {
     })).unwrap()
 }
 
+#[test]
+fn named_prefix_lookup_reads_only_matching_operations_and_survives_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let one = format!("query:0123456789ab{}", "1".repeat(52));
+    let two = format!("query:0123456789ab{}", "2".repeat(52));
+    for name in [&one, &two, "bulk:unrelated"] {
+        spool.prepare(events(name, "frozen object")).unwrap();
+    }
+    let unrelated = spool
+        .operation("bulk:unrelated")
+        .unwrap()
+        .join("metadata.json");
+    let original = fs::read(&unrelated).unwrap();
+    fs::write(&unrelated, b"not a queue record").unwrap();
+    let mut found = Vec::new();
+    spool
+        .visit_names("query:0123456789ab", &mut |identity| {
+            found.push(identity.to_owned());
+            Ok(())
+        })
+        .unwrap();
+    found.sort();
+    assert_eq!(found, [one.clone(), two.clone()]);
+    assert!(spool.get("bulk:unrelated").is_err());
+    fs::write(unrelated, original).unwrap();
+    drop(spool);
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let mut restored = Vec::new();
+    spool
+        .visit_names("query:0123456789ab", &mut |identity| {
+            restored.push(identity.to_owned());
+            Ok(())
+        })
+        .unwrap();
+    restored.sort();
+    assert_eq!(restored, found);
+}
+
+#[test]
+fn named_index_bounds_paths_without_limiting_logical_name_length() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let prefix = format!("query:{}", "x".repeat(8192));
+    let first = format!("{prefix}:one");
+    let second = format!("{prefix}:two");
+    spool.prepare(events(&first, "first")).unwrap();
+    spool.prepare(events(&second, "second")).unwrap();
+    let mut found = Vec::new();
+    spool
+        .visit_names(&first, &mut |identity| {
+            found.push(identity.to_owned());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(found, [first]);
+}
+
+#[test]
+fn a_late_receipt_retires_at_the_already_applied_barrier() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool.prepare(events("late", "value")).unwrap();
+    spool.retire(10).unwrap();
+    assert!(spool.get("late").unwrap().is_some());
+    spool.acknowledge(ack("late", false, Some(8))).unwrap();
+    spool.retire(10).unwrap();
+    assert!(spool.get("late").unwrap().is_none());
+}
+
 fn material(identity: &str, bytes: &[u8]) -> Ingress {
     material_with(
         identity,
@@ -27,7 +106,8 @@ fn material_with(identity: &str, blob: String, length: u64) -> Ingress {
     Ingress::Material {
         frame: identity.into(),
         material: Box::new(sinex_protocol::MaterialFrame {
-            id: crate::material_id(identity),
+            source: crate::source_reference(),
+            id: crate::material_id("polylogue-test", identity),
             input: sinex_model::InputRef {
                 kind: "fixture".into(),
                 locator: identity.into(),
@@ -46,7 +126,7 @@ fn material_with(identity: &str, blob: String, length: u64) -> Ingress {
 
 fn ack(identity: &str, material: bool, position: Option<i64>) -> Acknowledgment {
     serde_json::from_value(serde_json::json!({
-        "number":1, "frame":identity, "material":material.then(||crate::material_id(identity)),"material_extents":[],
+        "number":1, "frame":identity, "material":material.then(||crate::material_id("polylogue-test", identity)),"material_extents":[],
         "admitted":[],"outcome":{},"refusal":null,"commit_seq":position
     })).unwrap()
 }
@@ -167,7 +247,7 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     assert!(spool.acknowledge(ack("group", false, None)).is_err());
     assert!(spool.acknowledge(ack("group", false, Some(-1))).is_err());
     spool.acknowledge(ack("group", false, Some(12))).unwrap();
-    let receipt = spool.operation("group").join("ack/receipt.json");
+    let receipt = spool.operation("group").unwrap().join("ack/receipt.json");
     let original = fs::read(&receipt).unwrap();
     let mut damaged: serde_json::Value = serde_json::from_slice(&original).unwrap();
     damaged["value"]["commit_seq"] = 0.into();
@@ -179,7 +259,7 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     fs::write(&receipt, original).unwrap();
     assert_eq!(spool.get("group").unwrap().unwrap().commit_seq, Some(12));
     fs::write(
-        spool.operation("group").join("captures.zst"),
+        spool.operation("group").unwrap().join("captures.zst"),
         b"\"other\"\n",
     )
     .unwrap();
@@ -209,7 +289,7 @@ fn material_bodies_are_verified_including_empty_files_and_fifo_rejection() {
             .is_err()
     );
     assert!(spool.get("wrong").unwrap().is_none());
-    let path = spool.operation("empty").join("body.zst");
+    let path = spool.operation("empty").unwrap().join("body.zst");
     fs::remove_file(&path).unwrap();
     let status = Command::new("mkfifo").arg(&path).status().unwrap();
     assert!(status.success());
@@ -241,6 +321,7 @@ fn pending_metadata_stays_small_with_large_immutable_frames_and_streamed_bodies(
     assert!(
         spool
             .operation("large-frame")
+            .unwrap()
             .join("metadata.json")
             .metadata()
             .unwrap()
@@ -268,7 +349,19 @@ fn crash_worker() {
     };
     let spool = Spool::open(Path::new(&root), "host").unwrap();
     let stage = std::env::var("POLYLOGUE_SPOOL_CRASH").unwrap();
-    if stage == "capture_synced" {
+    if stage.starts_with("acquisition_") {
+        spool
+            .prepare_acquisition("acquisition", "two-raws", 2, |staging| {
+                for id in ["first", "second"] {
+                    staging.prepare_material(
+                        material(id, b"source bytes"),
+                        b"source bytes".as_slice(),
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    } else if stage == "capture_synced" {
         let bytes = b"original source";
         let capture = parsed_capture(bytes, "synthetic answer");
         spool
@@ -315,6 +408,42 @@ fn crash_worker() {
             .unwrap();
     }
     panic!("fault boundary did not terminate the process");
+}
+
+#[test]
+fn process_death_publishes_all_acquisition_members_together() {
+    for stage in ["acquisition_synced", "acquisition_published"] {
+        let directory = tempfile::tempdir().unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
+            .env("POLYLOGUE_SPOOL_CRASH_ROOT", directory.path())
+            .env("POLYLOGUE_SPOOL_CRASH", stage)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(77));
+        let spool = Spool::open(directory.path(), "host").unwrap();
+        let entries = all(&spool, 1);
+        assert_eq!(
+            entries.len(),
+            if stage == "acquisition_published" {
+                2
+            } else {
+                0
+            }
+        );
+        if !entries.is_empty() {
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|entry| entry.identity.as_str())
+                    .collect::<Vec<_>>(),
+                ["first", "second"]
+            );
+            let mut raw = Vec::new();
+            spool.body("second").unwrap().read_to_end(&mut raw).unwrap();
+            assert_eq!(raw, b"source bytes");
+        }
+    }
 }
 
 #[test]
@@ -554,8 +683,9 @@ fn replay_capture_group_retains_its_material_until_applied() {
     let replay = Ingress::ReplaySequence {
         frame: "replacement".into(),
         sequence: Box::new(sinex_protocol::ProducerReplay {
+            source: crate::source_reference(),
             operation: sinex_model::OperationId(uuid::Uuid::nil()),
-            root: crate::material_id("raw"),
+            root: crate::material_id("polylogue-test", "raw"),
             materials: vec![],
             event_types: None,
             from: None,
@@ -658,7 +788,7 @@ fn complete_parser_facts_are_immutable_sidecars_and_queue_headers_stay_small() {
     spool.acknowledge(ack("captured", true, None)).unwrap();
     assert_eq!(spool.pending_after(None, 1).unwrap().len(), 1);
     assert_eq!(spool.capture("captured").unwrap(), capture);
-    let path = spool.operation("captured").join("captured.zst");
+    let path = spool.operation("captured").unwrap().join("captured.zst");
     let mut content = fs::read(&path).unwrap();
     content[0] ^= 1;
     fs::write(path, content).unwrap();
@@ -737,7 +867,7 @@ fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart()
     let expected = encoded.descriptor();
     let spool = Spool::open(directory.path(), "host").unwrap();
     spool
-        .prepare_encoded_capture(frame.clone(), encoded, &capture)
+        .prepare_encoded_capture(frame.clone(), prepared_body(encoded, None), &capture)
         .unwrap();
     let (path, actual) = spool.encoded_body("encoded").unwrap();
     assert_eq!(actual, expected);
@@ -759,7 +889,7 @@ fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart()
         "fixture distinguishes recompression"
     );
     spool
-        .prepare_encoded_capture(frame, retry, &capture)
+        .prepare_encoded_capture(frame, prepared_body(retry, None), &capture)
         .unwrap();
     assert_eq!(spool.encoded_body("encoded").unwrap().1, expected);
     assert_eq!(spool.capture("encoded").unwrap(), capture);
@@ -795,11 +925,89 @@ fn corrupted_encoded_custody_is_rejected_before_publication() {
     let spool = Spool::open(directory.path(), "host").unwrap();
     assert!(
         spool
-            .prepare_encoded_material(material("invalid", bytes), encoded)
+            .prepare_encoded_material(material("invalid", bytes), prepared_body(encoded, None))
             .is_err()
     );
     assert!(spool.get("invalid").unwrap().is_none());
     assert!(spool.pending_after(None, 1).unwrap().is_empty());
+}
+
+fn prepared_body(
+    prepared: hashed_blobs::Prepared,
+    path: Option<PathBuf>,
+) -> polylogue_store::primary::PreparedBody {
+    polylogue_store::primary::PreparedBody {
+        descriptor: prepared.descriptor(),
+        file: prepared.into_file(),
+        path,
+    }
+}
+
+#[test]
+fn prepared_path_links_only_the_pinned_inode_and_survives_original_path_drop() {
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let source = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+    let bytes = b"synthetic exact encoded source";
+    let encoded = Preparation::new(directory.path())
+        .unwrap()
+        .plain_into(source.as_file().try_clone().unwrap(), bytes.as_slice(), 3)
+        .unwrap();
+    let inode = source.as_file().metadata().unwrap().ino();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .prepare_encoded_material(
+            material("linked", bytes),
+            prepared_body(encoded, Some(source.path().into())),
+        )
+        .unwrap();
+    let (path, _) = spool.encoded_body("linked").unwrap();
+    assert_eq!(fs::metadata(path).unwrap().ino(), inode);
+    drop(source);
+    let mut decoded = Vec::new();
+    spool
+        .body("linked")
+        .unwrap()
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, bytes);
+}
+
+#[test]
+fn changed_or_symlinked_prepared_path_falls_back_to_the_verified_pinned_file() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    let directory = tempfile::tempdir().unwrap();
+    let wrong = directory.path().join("different-inode");
+    fs::write(&wrong, b"not the pinned data").unwrap();
+    let alias = directory.path().join("symlink");
+    symlink(&wrong, &alias).unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    for (identity, path) in [("different", wrong.clone()), ("symlinked", alias)] {
+        let bytes = b"the pinned source";
+        let encoded = Preparation::new(directory.path())
+            .unwrap()
+            .plain(bytes.as_slice(), 3)
+            .unwrap();
+        spool
+            .prepare_encoded_material(
+                material(identity, bytes),
+                prepared_body(encoded, Some(path)),
+            )
+            .unwrap();
+        let (path, _) = spool.encoded_body(identity).unwrap();
+        assert_ne!(
+            fs::metadata(path).unwrap().ino(),
+            fs::metadata(&wrong).unwrap().ino()
+        );
+        let mut decoded = Vec::new();
+        spool
+            .body(identity)
+            .unwrap()
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, bytes);
+    }
+    assert_eq!(fs::read(wrong).unwrap(), b"not the pinned data");
 }
 
 #[test]
@@ -827,11 +1035,11 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
         ("group", "captures.zst"),
         ("group", "ack/payload.zst"),
     ] {
-        let data = fs::read(spool.operation(identity).join(relative)).unwrap();
+        let data = fs::read(spool.operation(identity).unwrap().join(relative)).unwrap();
         assert_eq!(&data[..4], &[0x28, 0xb5, 0x2f, 0xfd], "{relative}");
     }
     let before = spool.counts().unwrap();
-    let path = spool.operation("raw").join("frame.zst");
+    let path = spool.operation("raw").unwrap().join("frame.zst");
     let mut data = fs::read(&path).unwrap();
     data[0] ^= 1;
     fs::write(path, data).unwrap();
@@ -843,7 +1051,7 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
 fn plaintext_predecessor_operations_require_an_explicit_preserved_transition() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
-    let path = spool.operation("old");
+    let path = spool.operation("old").unwrap();
     fs::create_dir(&path).unwrap();
     fs::write(path.join("frame.json"), b"{synthetic old pending bytes}").unwrap();
     drop(spool);

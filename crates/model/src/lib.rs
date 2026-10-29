@@ -30,6 +30,7 @@ pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
 mod note;
 pub mod price;
+pub mod query_objects;
 mod quota;
 mod reference;
 pub use reference::{

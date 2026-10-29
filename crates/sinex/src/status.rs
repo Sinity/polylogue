@@ -5,6 +5,7 @@ use std::time::Instant;
 
 #[derive(Default)]
 pub(crate) struct Health {
+    pub context: crate::context::Cache,
     pub reachable: Option<bool>,
     pub family: Option<String>,
     pub canonical_publisher: bool,

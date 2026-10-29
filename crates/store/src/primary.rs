@@ -52,6 +52,13 @@ pub struct PreparedBody {
     pub path: Option<std::path::PathBuf>,
 }
 
+/// Restricts immutable product lookup to its existing named custody identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedProductSelector {
+    Exact(String),
+    Prefix(String),
+}
+
 /// The connection to Sinex the writer and the loop send through.
 pub trait Sinex: Send + Sync {
     fn prepare_input(&self, captured: &CapturedInput, body: PreparedBody) -> Result<PreparedInput>;
@@ -114,6 +121,12 @@ pub trait Sinex: Send + Sync {
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
+    ) -> Result<()>;
+    /// Visits only matching named products already retained in durable custody.
+    fn visit_named_products(
+        &self,
+        selector: &NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> Result<()>,
     ) -> Result<()>;
     fn visit_pending_blobs(
         &self,
