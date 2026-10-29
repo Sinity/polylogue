@@ -1,5 +1,6 @@
 //! Product failure codes classified once into the shared transport contract.
 pub mod caller;
+pub mod complete;
 pub mod operations;
 pub mod query;
 pub mod query_aliases;

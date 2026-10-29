@@ -1380,8 +1380,10 @@ const WRITTEN: &[Command] = &[
         http: true,
         ..CLI
     },
-    Command {
+    typed_command!(CompleteCommand, crate::protocol::complete::Arguments, crate::protocol::complete::Answer, {
         name: "complete",
+        reason: "Complete an unfinished query at its actual cursor position",
+        latency: command_surface::LatencyClass::Completion,
         help: "Complete a query at a UTF-8 byte offset using its full scope and suffix",
         args: &[
             pos_opt("text", Kind::Text, "The full query text"),
@@ -1394,8 +1396,9 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::complete),
         cli: Cli::Hidden,
         http: true,
+        mcp: true,
         ..CLI
-    },
+    }),
 ];
 
 /// The command called `name` (`note add`).

@@ -5,6 +5,8 @@
 //! answered with its text and recorded as a delivery from `mcp`. Refusals
 //! are tool errors.
 
+mod completion;
+
 use crate::commands::{self, Action, COMMANDS, Caller, Command, Surface, Values};
 use crate::daemon::{Request, Response};
 use polylogue_store::Archive;
@@ -157,6 +159,12 @@ struct Session {
 
 enum Reply {
     Message(Value),
+    Completion {
+        id: Value,
+        arguments: crate::protocol::complete::Arguments,
+        deadline_ms: Option<i64>,
+        with_result_type: bool,
+    },
     Tool {
         id: Value,
         name: String,
@@ -219,7 +227,7 @@ impl Session {
             return Reply::Message(success(
                 id,
                 json!({
-                    "protocolVersion": version, "capabilities": {"tools": {}},
+                    "protocolVersion": version, "capabilities": {"tools": {}, "completions": {}},
                     "serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": crate::manual::text(),
                 }),
@@ -265,7 +273,7 @@ impl Session {
                 id,
                 json!({
                     "resultType": "complete", "supportedVersions": VERSIONS,
-                    "capabilities": {"tools": {}}, "instructions": crate::manual::text(),
+                    "capabilities": {"tools": {}, "completions": {}}, "instructions": crate::manual::text(),
                     "ttlMs": 0, "cacheScope": "private",
                     "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")}},
                 }),
@@ -273,6 +281,15 @@ impl Session {
         }
         let with_result_type = self.request_metadata || with_result_type;
         match method {
+            "completion/complete" => match completion::arguments(&params) {
+                Ok(arguments) => Reply::Completion {
+                    id,
+                    arguments,
+                    deadline_ms: meta["deadline_ms"].as_i64(),
+                    with_result_type,
+                },
+                Err(message) => invalid(-32602, message),
+            },
             "tools/list" => {
                 let mut result = json!({"tools": tools()});
                 if with_result_type {
@@ -316,6 +333,19 @@ impl Reply {
         match self {
             Self::None => None,
             Self::Message(message) => Some(message),
+            Self::Completion {
+                id,
+                arguments,
+                deadline_ms,
+                with_result_type,
+            } => Some(completion::answer(
+                id,
+                archive,
+                arguments,
+                deadline_ms,
+                cancelled,
+                with_result_type,
+            )),
             Self::Tool {
                 id,
                 name,
@@ -407,7 +437,7 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
                     }
                     Err(_) => Reply::Message(error(Value::Null, -32700, "Parse error")),
                 };
-                if let Reply::Tool { ref id, .. } = reply {
+                if let Reply::Tool { ref id, .. } | Reply::Completion { ref id, .. } = reply {
                     let id = id.clone();
                     let cancelled = tokio_util::sync::CancellationToken::new();
                     let worker_cancelled = cancelled.clone();
