@@ -287,3 +287,57 @@ fn keys_created_after_the_first_build_are_shared_by_following_routes() {
         1
     );
 }
+
+#[test]
+fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
+    let w = test_archive();
+    w.writer
+        .send(batch(
+            "observed",
+            0,
+            0,
+            vec![row(
+                1,
+                text_message("same", "s", Role::User, "before", None),
+            )],
+            &["s"],
+        ))
+        .unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    let mut metadata = batch("observed", 0, 0, Vec::new(), &[]);
+    metadata.change = Change::Unchanged;
+    metadata.parse.clear();
+    let mut rewritten = batch(
+        "observed",
+        0,
+        0,
+        vec![row(1, text_message("same", "s", Role::User, "after", None))],
+        &["s"],
+    );
+    rewritten.change = Change::Rewritten;
+    let results = w
+        .writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![
+                crate::staging::PreparedBatch {
+                    batch: metadata,
+                    files: Vec::new(),
+                },
+                crate::staging::PreparedBatch {
+                    batch: rewritten,
+                    files: Vec::new(),
+                },
+            ],
+            Arc::new(w.archive.blobs().unwrap()),
+        )
+        .unwrap();
+    for result in results {
+        result.unwrap();
+    }
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(texts(&w, "s"), ["after"]);
+}

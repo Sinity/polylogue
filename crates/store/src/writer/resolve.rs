@@ -306,12 +306,14 @@ impl Resolver {
                 ) => chain,
                 _ => prior.map_or(1, |(number, _)| number + 1),
             };
-            let number = if b.continues {
-                prior.map_or(1, |p| p.0)
-            } else {
-                prior.map_or(1, |p| p.0 + 1)
-            };
-            latest.insert(b.input.id.clone(), Some((number, chain)));
+            if !matches!(b.change, Change::Reparse { .. }) {
+                let number = match (&b.change, b.continues, prior) {
+                    (_, true, Some((number, _)))
+                    | (Change::Unchanged | Change::Disappeared, _, Some((number, _))) => number,
+                    (_, _, prior) => prior.map_or(1, |(number, _)| number + 1),
+                };
+                latest.insert(b.input.id.clone(), Some((number, chain)));
+            }
             chains.push(chain);
             for p in &mut b.parse {
                 p.prepare();
