@@ -9,6 +9,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{marker::PhantomData, sync::Arc};
 
+pub const PRODUCT: &str = "polylogue";
+
 pub trait CommandType: Send + Sync + 'static {
     type Arguments: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     type Answer: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
@@ -237,7 +239,7 @@ pub fn deadlines() -> command_surface::Deadlines {
 }
 
 pub fn table(daemon: Arc<Daemon>) -> OperationTable {
-    let mut table = OperationTable::new("polylogue", deadlines());
+    let mut table = OperationTable::new(PRODUCT, deadlines());
     for (kind, codes) in super::FAILURE_CLASSES {
         for code in *codes {
             table

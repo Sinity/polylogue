@@ -1,4 +1,5 @@
 //! Product failure codes classified once into the shared transport contract.
+pub mod attachment;
 pub mod caller;
 pub mod complete;
 pub mod operations;

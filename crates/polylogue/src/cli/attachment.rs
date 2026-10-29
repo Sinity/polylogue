@@ -7,7 +7,14 @@ use std::io::Write;
 pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
     if values.text("out").is_none() {
         if json {
-            println!("{}", polylogue_render::terminal::json(data, false));
+            println!(
+                "{}",
+                polylogue_render::terminal::json(
+                    &serde_json::to_value(crate::protocol::answer(data.clone()))
+                        .expect("answer serializes"),
+                    false
+                )
+            );
         } else {
             print!("{}", print::json(data));
         }
@@ -16,7 +23,13 @@ pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
     match write(values, data) {
         Ok(path) => {
             if json {
-                println!("{}", serde_json::json!({"written":path}));
+                println!(
+                    "{}",
+                    serde_json::to_string(&command_surface::Answer::ok(
+                        serde_json::json!({"written":path})
+                    ))
+                    .expect("answer serializes")
+                );
             }
             ExitCode::SUCCESS
         }

@@ -22,6 +22,7 @@ pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
+    operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
     page_ends: read::page_ends::Cache,
     feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
@@ -40,6 +41,59 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    pub(crate) fn ready_call(
+        &self,
+        request: &command_surface::RunnableRequest,
+    ) -> Result<polylogue_model::read::ReadyCall, command_surface::Failure> {
+        use command_surface::{Failure, FailureKind};
+        let table = self
+            .operations
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| {
+                Failure::new(
+                    FailureKind::NotRunning,
+                    "the operation table is unavailable",
+                )
+            })?;
+        let description = table
+            .descriptions()
+            .into_iter()
+            .find(|description| description.spec.name == request.operation)
+            .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
+        let command =
+            crate::commands::command(&request.operation).expect("registered command exists");
+        if let Some(build) = command.build_typed {
+            build(
+                request.arguments.clone(),
+                &crate::commands::Caller {
+                    surface: crate::commands::Surface::Http,
+                    cwd: None,
+                    json: true,
+                },
+                &request.request_id,
+            )?;
+        }
+        let mut body = serde_json::to_value(request).expect("request serializes");
+        body.as_object_mut()
+            .expect("request is an object")
+            .remove("operation");
+        Ok(polylogue_model::read::ReadyCall {
+            cli: table.cli_command(request)?,
+            mcp: serde_json::json!({"name":description.spec.mcp_name(crate::protocol::operations::PRODUCT), "arguments":body}),
+            http: polylogue_model::read::HttpCall {
+                method: if description.spec.write {
+                    "POST"
+                } else {
+                    "GET"
+                }
+                .into(),
+                path: description.spec.http_route,
+                arguments: serde_json::to_value(request).expect("request serializes"),
+            },
+        })
+    }
+
     /// Currency comes from the reader checkpoint and cached owner observations.
     pub(crate) fn currency(
         &self,
@@ -1343,6 +1397,7 @@ pub fn start(
         ..LoopStatus::default()
     }));
     let daemon = Arc::new(Daemon {
+        operations: std::sync::OnceLock::new(),
         archive,
         reads,
         callers: crate::protocol::caller::hooks::Registry::new(
@@ -1363,6 +1418,10 @@ pub fn start(
         read_limits: Mutex::new(None),
     });
     let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
+    assert!(
+        daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
+        "runtime installs its operation table once"
+    );
     let mut runtime = Runtime {
         daemon,
         operations,
