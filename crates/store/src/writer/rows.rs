@@ -318,6 +318,7 @@ pub(super) struct RowWriter<'a, 't> {
 
 /// A message reading's source and shown fields.
 pub(super) struct Version {
+    time: Vec<u8>,
     input_pk: i64,
     chain: i64,
     start: i64,
@@ -449,6 +450,7 @@ impl RowWriter<'_, '_> {
             },
         )?;
         let v = Version {
+            time: prepared.time.clone(),
             input_pk: self.input_pk,
             chain: self.chain,
             start: row.offset as i64,
@@ -496,6 +498,11 @@ impl RowWriter<'_, '_> {
         let winner = choice.as_ref().map(|choice| {
             (
                 Version {
+                    time: choice
+                        .prepared
+                        .as_ref()
+                        .map(|prepared| prepared.time.clone())
+                        .unwrap_or_default(),
                     input_pk: choice.input,
                     chain: choice.chain,
                     start: choice.start,
@@ -625,7 +632,7 @@ impl RowWriter<'_, '_> {
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
                  words = ?25, cost_nusd = ?33, provider_cost_nusd = ?27,
                  cache_write_5m_tokens = ?28, cache_write_1h_tokens = ?29, speed = ?30,
-                 record_position = ?31, pem = ?32,
+                 record_position = ?31, pem = ?32, at_time = ?35,
                  order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
              WHERE pk = ?1 AND (?34 IS NULL OR pk=?34)"
         } else {
@@ -635,10 +642,10 @@ impl RowWriter<'_, '_> {
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
                  cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, pem,
-                 cost_nusd, order_input_id)
+                 cost_nusd, order_input_id, at_time)
              VALUES (?34, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
                  ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
-                 (SELECT id FROM input_ref WHERE pk = ?3))"
+                 (SELECT id FROM input_ref WHERE pk = ?3), ?35)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -688,6 +695,7 @@ impl RowWriter<'_, '_> {
                     .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
                     .pk
             ),
+            v.time,
         ])?;
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
         self.update_event_anchors(pk, true)?;

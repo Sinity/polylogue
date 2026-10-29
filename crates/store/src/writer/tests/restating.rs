@@ -52,6 +52,9 @@ fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
             b.change = Change::Reparse { chain: 1 };
             b.length = 300;
             b.parse[0].output.events.push(polylogue_model::Event {
+                at_quality: polylogue_model::TimeQuality::Unknown,
+                at_precision: None,
+                at_until: None,
                 session: Some(sid("s")),
                 kind: "active_leaf".into(),
                 at: None,
@@ -97,6 +100,9 @@ fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
             for (input, leaf, at) in observations {
                 let mut b = restating(input, 0, &[("a", "A"), ("b", "B")]);
                 b.parse[0].output.events.push(polylogue_model::Event {
+                    at_quality: polylogue_model::TimeQuality::Unknown,
+                    at_precision: None,
+                    at_until: None,
                     session: Some(sid("s")),
                     kind: "active_leaf".into(),
                     at: timed.then(|| Timestamp::from_unix_ms(at).unwrap()),
@@ -137,6 +143,9 @@ fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
                 b.change = Change::Reparse { chain: 1 };
                 b.length = 300;
                 b.parse[0].output.events.push(polylogue_model::Event {
+                    at_quality: polylogue_model::TimeQuality::Unknown,
+                    at_precision: None,
+                    at_until: None,
                     session: Some(sid("s")),
                     kind: if empty {
                         "active_path_empty"
@@ -187,6 +196,9 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
         let mut b = restating("a", 0, &[("a", "A")]);
         if let Some((kind, after)) = invalid {
             b.parse[0].output.events.push(polylogue_model::Event {
+                at_quality: polylogue_model::TimeQuality::Unknown,
+                at_precision: None,
+                at_until: None,
                 session: Some(sid("s")),
                 kind: kind.into(),
                 at: None,
@@ -208,6 +220,9 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
         assert!(activity().is_null());
         let mut b = restating("a", 100, &[("a", "A")]);
         b.parse[0].output.events.push(polylogue_model::Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid("s")),
             kind: "active_path_empty".into(),
             at: None,
@@ -248,6 +263,9 @@ fn empty_path_uses_the_same_cross_input_marker_order_as_an_active_leaf() {
             for (input, empty, at) in inputs {
                 let mut b = restating(input, 0, &[("a", "A")]);
                 b.parse[0].output.events.push(polylogue_model::Event {
+                    at_quality: polylogue_model::TimeQuality::Unknown,
+                    at_precision: None,
+                    at_until: None,
                     session: Some(sid("s")),
                     kind: if empty {
                         "active_path_empty"

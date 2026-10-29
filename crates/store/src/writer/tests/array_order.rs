@@ -10,6 +10,9 @@ fn a_parse_from_the_first_byte_restates_event_positions() {
     };
     let mut seed = batch("array", 2, 0, vec![row], &["s"]);
     seed.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: Some(sid("s")),
         kind: "active_leaf".into(),
         at: None,

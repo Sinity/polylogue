@@ -60,7 +60,7 @@ struct Source {
     seq: i64,
     position: i64,
     hash: Vec<u8>,
-    time: Option<i64>,
+    time: Option<Timestamp>,
 }
 type MessagePriority<'a> = (
     std::cmp::Reverse<bool>,
@@ -71,7 +71,7 @@ type MessagePriority<'a> = (
     std::cmp::Reverse<i64>,
 );
 type DocumentPriority<'a> = (
-    std::cmp::Reverse<Option<i64>>,
+    std::cmp::Reverse<Option<Timestamp>>,
     i64,
     std::cmp::Reverse<&'a [u8]>,
     &'a str,
@@ -155,7 +155,7 @@ impl<'a> Projection<'a> {
             let sql = if message {
                 "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.complete,s.arrival_rank,s.seq,s.record_position,s.version_hash,NULL FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE message_pk=?1"
             } else {
-                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.source_time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
+                "SELECT s.input_pk,i.id,s.chain,s.source_start,s.source_end,0,0,1,s.arrival_rank,0,0,s.version_hash,s.time FROM document_source s JOIN input_ref i ON i.pk=s.input_pk WHERE document_pk=?1"
             };
             if message {
                 shown_messages.insert(row.pk,index.query_row("SELECT s.version_hash,m.session_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.shown=1",[row.pk],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,i64>(1)?))).optional()?);
@@ -187,7 +187,11 @@ impl<'a> Projection<'a> {
                         seq: r.get(9)?,
                         position: r.get(10)?,
                         hash: r.get(11)?,
-                        time: r.get(12)?,
+                        time: if message {
+                            None
+                        } else {
+                            crate::encoding::read_time(r, 12)?.0
+                        },
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -386,7 +390,7 @@ impl<'a> Projection<'a> {
             let previous = sources
                 .iter()
                 .position(|s| s.input == input && s.chain == chain);
-            let time = row.document.source_time.map(Timestamp::unix_ms);
+            let time = row.document.source_time;
             let rank = i64::from(input_key.arrival_rank);
             let keep = !previous.is_some_and(|n| {
                 (time, std::cmp::Reverse(rank), prepared.hash.as_slice())

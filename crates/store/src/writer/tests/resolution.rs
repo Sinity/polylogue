@@ -282,6 +282,9 @@ fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
     let data = serde_json::json!({"shared":42});
     let mut input = batch("value-route", 0, 0, Vec::new(), &["s"]);
     input.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: Some(sid("s")),
         kind: "value".into(),
         at: None,
@@ -784,6 +787,9 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     let tx = conn.transaction().unwrap();
     let mut input = batch("original", 0, 0, Vec::new(), &[]);
     let event = Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: None,
         kind: "input.report".into(),
         at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z"),
@@ -935,4 +941,94 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
         120
     );
     tx.commit().unwrap();
+}
+
+#[test]
+fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_caches() {
+    use polylogue_model::{
+        Document, DocumentId, DocumentPurpose, DocumentRow, Precision, TimeEvidence, TimeQuality,
+    };
+    let w = test_archive();
+    let at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z");
+    let evidence = TimeEvidence {
+        quality: TimeQuality::Operator,
+        precision: Some(Precision::Bounded),
+        until: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456999Z"),
+    };
+    let mut message = text_message("precise", "s", Role::User, "precise source time", None);
+    message.set_time(at, evidence).unwrap();
+    let mut document = Document::new(
+        DocumentId::parse("claude-code:precise-document").unwrap(),
+        DocumentPurpose::Context,
+    );
+    document.blocks = vec![Block::Text {
+        text: "later canonical document".into(),
+    }];
+    document.set_time(at, evidence).unwrap();
+    let mut input = batch(
+        "precise-source",
+        0,
+        0,
+        vec![row(1, message.clone())],
+        &["s"],
+    );
+    input.parse[0].output.sessions[0]
+        .set_time(at, evidence)
+        .unwrap();
+    let session = input.parse[0].output.sessions[0].clone();
+    input.parse[0].output.documents.push(DocumentRow {
+        offset: 2,
+        end: 3,
+        document: document.clone(),
+    });
+    let mut event = Event {
+        session: Some(sid("s")),
+        kind: "precise.event".into(),
+        at: None,
+        at_quality: TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some((4, 5)),
+        data: serde_json::json!({"exact":true}),
+    };
+    event.set_time(at, evidence).unwrap();
+    input.parse[0].output.events.push(event.clone());
+    w.writer.send(input).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    conn.execute_batch("UPDATE message SET at=0;UPDATE session SET started_at=0;UPDATE event SET at=0;UPDATE document_source SET source_time=0;").unwrap();
+    let reads = ReadPool::open(&w.archive).unwrap();
+    {
+        let reader = reads.reader().unwrap();
+        assert_eq!(reader.messages(&sid("s"), false).unwrap(), vec![message]);
+        assert_eq!(reader.session(&sid("s")).unwrap(), Some(session));
+        assert_eq!(
+            reader.document(&document.id).unwrap(),
+            Some(document.clone())
+        );
+        assert_eq!(reader.events(&sid("s")).unwrap(), vec![event]);
+    }
+    let mut earlier = document.clone();
+    earlier.blocks = vec![Block::Text {
+        text: "earlier canonical document".into(),
+    }];
+    earlier
+        .set_time(
+            Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456700Z"),
+            TimeEvidence::intrinsic(Precision::Instant),
+        )
+        .unwrap();
+    let mut other = batch("other-source", 0, 0, Vec::new(), &[]);
+    other.parse[0].output.documents.push(DocumentRow {
+        offset: 2,
+        end: 3,
+        document: earlier,
+    });
+    w.writer.send(other).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    assert_eq!(
+        reads.reader().unwrap().document(&document.id).unwrap(),
+        Some(document)
+    );
 }
