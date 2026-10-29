@@ -89,7 +89,7 @@ CREATE TABLE observation (
   class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported
   revision      INTEGER,                 -- exact revision endpoint produced or confirmed
   chain         INTEGER,                 -- proven prefix only: revision NULL, length is observed bytes
-  length        INTEGER,                 -- that revision's length
+  length        INTEGER,                 -- actual observed byte length
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER,
   details_json  TEXT,                    -- imported: the import member it was read as, and its format

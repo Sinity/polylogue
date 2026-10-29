@@ -75,6 +75,16 @@ impl InputRows {
     /// again, longer. Everything else present is left as it is, so inserting
     /// the rows twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
+        self.insert_rows(tx, seq, true)
+    }
+
+    /// Confirmed historical observations retain their original admission proof
+    /// when a source dependency is temporarily absent from the live projection.
+    pub(crate) fn insert_confirmed(&self, tx: &Connection, seq: i64) -> Result<()> {
+        self.insert_rows(tx, seq, false)
+    }
+
+    fn insert_rows(&self, tx: &Connection, seq: i64, prove_prefix: bool) -> Result<()> {
         let source = crate::source::Source::of(tx)?;
         tx.prepare_cached(
             &source.sql("INSERT OR IGNORE INTO @source.input(id, format) VALUES (?1, ?2)"),
@@ -117,8 +127,10 @@ impl InputRows {
                         )
                     })?;
                 if o.revision.is_some()
-                    || crate::source::Source::admitted_through(tx, &self.input, chain, length)?
-                        .is_none()
+                    || chain < 1
+                    || prove_prefix
+                        && crate::source::Source::admitted_through(tx, &self.input, chain, length)?
+                            .is_none()
                 {
                     return Err(crate::StoreError::Invalid(
                         "a prefix observation needs a committed chain prefix and no revision claim"
