@@ -414,6 +414,7 @@ fn count(counts: &mut Counts, record: &polylogue_model::bundle::Record) -> io::R
         Record::Authored(_) => &mut counts.authored,
         Record::Variant(_) => &mut counts.variants,
         Record::VariantPart(_) => &mut counts.variant_parts,
+        Record::TextFragment(_) => &mut counts.text_fragments,
         Record::Blob(_) => &mut counts.blobs,
         Record::Manifest(_) => return Err(invalid("a read cannot contain an embedded manifest")),
     };
