@@ -426,10 +426,18 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
     let mut input = batch("confirmed-input", 0, 0, vec![row(1, message)], &["s"]);
     input.change = Change::Reparse { chain: 41 };
     let available = HashMap::from([(blob, Some(15))]);
-    resolver.confirmed(&mut [&mut input], &available).unwrap();
+    let mut reading = ChainReading::new().unwrap();
+    reading.push(&mut input.parse.remove(0)).unwrap();
+    let mut readings = vec![(input.input.clone(), 41, input.length, reading)];
+    resolver
+        .confirmed_readings(&mut readings, &available)
+        .unwrap();
     assert!(!archive.archive_db().exists());
     let tx = index.transaction().unwrap();
-    write_rows(&tx, &input, &input.parse[0], 41, 1, None).unwrap();
+    readings[0]
+        .3
+        .visit(|step| rows::write_confirmed_rows(&tx, &input, step, 41, 1, None).map(|_| ()))
+        .unwrap();
     tx.commit().unwrap();
     let (chain, position): (i64, i64) = index
         .query_row("SELECT chain,parsed_upto FROM parse_state", [], |row| {
@@ -456,8 +464,11 @@ fn confirmed_readings_require_the_confirmed_chain_identity() {
     crate::schema::create_index(&index).unwrap();
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
     let mut input = batch("confirmed-input", 0, 0, Vec::new(), &[]);
+    let mut reading = ChainReading::new().unwrap();
+    reading.push(&mut input.parse.remove(0)).unwrap();
+    let mut readings = vec![(input.input, 0, input.length, reading)];
     assert!(matches!(
-        resolver.confirmed(&mut [&mut input], &HashMap::new()),
+        resolver.confirmed_readings(&mut readings, &HashMap::new()),
         Err(StoreError::Invalid(_))
     ));
     assert!(!archive.archive_db().exists());
