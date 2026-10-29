@@ -1,11 +1,12 @@
 //! Client responses match: the command line, MCP and the HTTP API
 //! give the daemon the same request for the same arguments and hand back
-//! the same answer, refusals included.
+//! the complete answer, with native transport provenance and observed read positions.
 
 use super::*;
 use crate::daemon::Response;
 use crate::test_daemon;
 use axum::body::{Body, to_bytes};
+use polylogue_model::authorship::{Authorship, Channel};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -151,6 +152,47 @@ fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answ
     }
 }
 
+// The socket peer is this actual fixture process; HTTP has the trusted Web
+// channel. Expectations come from those boundaries, never from an answer.
+fn socket_authorship(w: &test_daemon::TestDaemon) -> Authorship {
+    let (_client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (evidence, via) = crate::protocol::caller::peer(
+        &server,
+        &Default::default(),
+        w.daemon.config.requests.machine(),
+    )
+    .unwrap();
+    assert_eq!(via, Channel::Cli);
+    polylogue_model::authorship::compute_authorship(via, &evidence, None)
+}
+
+fn context_authorship_path(name: &str) -> Option<&'static str> {
+    match name {
+        "query" | "list" => Some("/resolved/context/authorship"),
+        "timeline" | "cost" => Some("/context/authorship"),
+        _ => None,
+    }
+}
+
+fn assert_transport_authorship(answer: &Answer, name: &str, expected: &Authorship) {
+    if let (Ok(value), Some(path)) = (answer, context_authorship_path(name)) {
+        assert_eq!(
+            value.pointer(path).expect("operation context authorship"),
+            &serde_json::to_value(expected).unwrap()
+        );
+    }
+}
+
+fn expected_transport_answer(baseline: &Answer, name: &str, authorship: &Authorship) -> Answer {
+    let mut expected = baseline.clone();
+    if let (Ok(value), Some(path)) = (&mut expected, context_authorship_path(name)) {
+        *value
+            .pointer_mut(path)
+            .expect("operation context authorship") = serde_json::to_value(authorship).unwrap();
+    }
+    expected
+}
+
 // A full read records its own Run. Observe each invocation's descriptor from a
 // fresh native reader before making the call, releasing it before transport I/O.
 fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition {
@@ -205,6 +247,9 @@ fn every_client_answers_the_same_request_identically() {
         token: "t0ken".into(),
         port: 8765,
     });
+    let socket_author = socket_authorship(&w);
+    let web_author =
+        polylogue_model::authorship::compute_authorship(Channel::Web, &Default::default(), None);
     for (name, args) in ASKED {
         let command = command(name).unwrap();
         let words = command.cli_words();
@@ -220,6 +265,9 @@ fn every_client_answers_the_same_request_identically() {
         let mcp = mcp_answer(&w, c, &values);
         let http_position = (*name == "read").then(|| read_position(&w));
         let http = http_answer(&web, c, &values);
+        assert_transport_authorship(&cli, name, &socket_author);
+        assert_transport_authorship(&mcp, name, &socket_author);
+        assert_transport_authorship(&http, name, &web_author);
         if *name == "read" && args.first() == Some(&"session:claude-code:s1") {
             assert_read_page(&cli, cli_position.as_ref().unwrap());
             assert_read_page(&mcp, mcp_position.as_ref().unwrap());
@@ -240,7 +288,7 @@ fn every_client_answers_the_same_request_identically() {
             argv.join(" ")
         );
         assert_eq!(
-            cli,
+            expected_transport_answer(&cli, name, &web_author),
             http,
             "`{}`: the command line and HTTP differ",
             argv.join(" ")

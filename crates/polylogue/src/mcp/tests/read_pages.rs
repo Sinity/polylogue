@@ -4,6 +4,34 @@ use polylogue_model::{BlobHash, RunId};
 use std::collections::{BTreeMap, BTreeSet};
 
 type ItemKey = (SelectionLocator, u64, BlobHash);
+
+// The public encoder owns the exact item JSON, including inert control escaping.
+fn item_json(header: &polylogue_model::read::ReadHeader, item: &ReadItem) -> String {
+    let mut prefix = Vec::new();
+    {
+        let _encoder = polylogue_render::Encoder::new(
+            header,
+            polylogue_model::read::Format::Json,
+            Default::default(),
+            &mut prefix,
+        )
+        .unwrap();
+    }
+    let mut output = Vec::new();
+    {
+        let mut encoder = polylogue_render::Encoder::new(
+            header,
+            polylogue_model::read::Format::Json,
+            Default::default(),
+            &mut output,
+        )
+        .unwrap();
+        encoder.push(item).unwrap();
+    }
+    assert!(output.starts_with(&prefix));
+    String::from_utf8(output.split_off(prefix.len())).unwrap()
+}
+
 #[derive(Default)]
 struct PartialItem {
     text: String,
@@ -32,7 +60,7 @@ impl Items {
                     !self.values.contains(item),
                     "duplicate complete layout item"
                 );
-                self.bytes += serde_json::to_vec(item).unwrap().len();
+                self.bytes += item_json(&page.document.header, item).len();
                 self.values.push(item.clone());
                 continue;
             };
@@ -106,6 +134,164 @@ pub(super) fn body(page: &ReadPage) -> String {
     items.text()
 }
 
+struct ItemUniverse {
+    items: Vec<ReadItem>,
+    encoded: BTreeMap<BlobHash, (String, Vec<usize>)>,
+    bytes: usize,
+}
+impl ItemUniverse {
+    fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
+        let child: crate::protocol::operations::McpArguments<Value> =
+            serde_json::from_value(next.mcp["arguments"].clone()).unwrap();
+        let crate::protocol::read::Arguments::Resume(resume) =
+            serde_json::from_value(child.arguments).unwrap()
+        else {
+            panic!("compact root continuation");
+        };
+        let reader = daemon.daemon.reads.reader().unwrap();
+        let root = reader
+            .query_run(&resume.root_run, None)
+            .unwrap()
+            .expect("acknowledged root")
+            .value;
+        let accepted: command_surface::RunnableRequest = serde_json::from_value(
+            root.binding
+                .original()
+                .expect("original root")
+                .accepted_request
+                .clone()
+                .expect("actual root envelope"),
+        )
+        .unwrap();
+        drop(reader);
+        let command = crate::commands::command("read").unwrap();
+        let mut request = command.build_typed.unwrap()(
+            accepted.arguments,
+            &crate::commands::Caller {
+                surface: crate::commands::Surface::Mcp,
+                cwd: None,
+                json: true,
+            },
+            &accepted.request_id,
+        )
+        .unwrap();
+        let crate::daemon::Request::Read {
+            delivery,
+            budget,
+            with_blobs,
+            ..
+        } = &mut request
+        else {
+            panic!("original full read");
+        };
+        *delivery = polylogue_model::read::ReadDelivery::Stream;
+        *budget = None;
+        *with_blobs = false;
+        let operation = daemon
+            .daemon
+            .operation_context(&crate::operation::Context::worker_authorship(
+                "polylogue-page-oracle",
+            ))
+            .unwrap();
+        let mut bytes = Vec::new();
+        crate::daemon::service::read::produce(&request, &daemon.daemon, &operation, &mut bytes)
+            .unwrap()
+            .unwrap();
+        let mut items = Vec::new();
+        let mut began = false;
+        let mut header = None;
+        let mut completed = false;
+        crate::client::stream::receive(bytes.as_slice(), |frame| {
+            match frame.event.as_str() {
+                "begin" => {
+                    assert!(!began);
+                    began = true;
+                    let begin: polylogue_model::read::ReadBegin =
+                        serde_json::from_str(&frame.data).unwrap();
+                    header = Some(begin.header);
+                }
+                "record" => {
+                    assert!(began && !completed);
+                    let record: polylogue_model::read::ReadRecord =
+                        serde_json::from_str(&frame.data).unwrap();
+                    items.extend(record.parts().iter().filter_map(|part| match part {
+                        polylogue_model::read::ReadPart::Item(item) => Some(item.clone()),
+                        _ => None,
+                    }));
+                }
+                "complete" => {
+                    assert!(began && !completed);
+                    completed = true;
+                }
+                other => panic!("unexpected read oracle frame {other}"),
+            }
+            Ok(completed)
+        })
+        .unwrap();
+        assert!(completed);
+        let header = header.expect("actual stream header");
+        let mut encoded = BTreeMap::new();
+        let mut bytes = 0;
+        for item in &items {
+            let text = item_json(&header, item);
+            bytes += text.len();
+            let boundaries = text
+                .char_indices()
+                .map(|(at, _)| at)
+                .chain(std::iter::once(text.len()))
+                .collect();
+            assert!(
+                encoded
+                    .insert(BlobHash::of(text.as_bytes()), (text, boundaries))
+                    .is_none(),
+                "duplicate source item"
+            );
+        }
+        assert!(bytes > 0);
+        Self {
+            items,
+            encoded,
+            bytes,
+        }
+    }
+    fn check(&self, page: &ReadPage) {
+        for item in &page.document.items {
+            if let ItemKind::Fragment {
+                text,
+                position,
+                until,
+                total,
+            } = &item.kind
+            {
+                let (source, boundaries) = self
+                    .encoded
+                    .get(&position.item_hash)
+                    .expect("fragment belongs to actual streamed source");
+                assert_eq!(
+                    *total,
+                    (boundaries.len() - 1) as u64,
+                    "actual encoded source total"
+                );
+                let from = usize::try_from(position.character).unwrap();
+                let until = usize::try_from(*until).unwrap();
+                assert!(from < until && until < boundaries.len());
+                assert_eq!(
+                    text,
+                    &source[boundaries[from]..boundaries[until]],
+                    "exact independently streamed fragment bytes"
+                );
+            } else {
+                let text = item_json(&page.document.header, item);
+                let (source, _) = self
+                    .encoded
+                    .get(&BlobHash::of(text.as_bytes()))
+                    .expect("complete item belongs to actual streamed source");
+                assert_eq!(&text, source);
+            }
+        }
+    }
+}
+
 /// Acts as a client: execute the actual bounded continuation, then join encoded
 /// fragments by their typed coordinate and item digest before decoding content.
 pub(super) fn collect(
@@ -115,6 +301,12 @@ pub(super) fn collect(
     max_wire_bytes: Option<usize>,
     expected_deadline: command_surface::Deadline,
 ) -> (Items, usize) {
+    let universe = page
+        .document
+        .footer
+        .next
+        .as_ref()
+        .map(|next| ItemUniverse::from_root(daemon, next));
     let archive = Archive::at(&daemon.daemon.archive.root);
     let query = page.snapshot.query.clone();
     let format = page.format;
@@ -123,6 +315,8 @@ pub(super) fn collect(
     let mut requests = BTreeSet::new();
     let mut items = Items::default();
     let mut pages = 0;
+    let mut footer_total = 0;
+    let mut wire_total = 0;
     loop {
         assert_eq!(page.snapshot.query, query);
         assert_eq!(
@@ -133,12 +327,58 @@ pub(super) fn collect(
             page.records.is_empty(),
             "bounded layout must not duplicate canonical records"
         );
+        let wire = serde_json::to_vec(&page).unwrap();
+        let footer_bytes = serde_json::to_vec(&page.document.footer).unwrap().len();
+        let payload_tokens = page
+            .document
+            .items
+            .iter()
+            .map(|item| {
+                let text = match &item.kind {
+                    ItemKind::Fragment { text, .. } => serde_json::to_string(text).unwrap(),
+                    _ => item_json(&page.document.header, item),
+                };
+                polylogue_model::read::estimate_tokens(&text)
+            })
+            .sum::<usize>();
+        let before = items.bytes;
         if let Some(cap) = max_wire_bytes {
-            assert!(serde_json::to_vec(&page).unwrap().len() < cap);
+            assert!(wire.len() < cap);
+        }
+        if let Some(universe) = &universe {
+            universe.check(&page);
         }
         items.push(&page);
         pages += 1;
-        assert!(pages < 100, "continuation failed to advance");
+        if let Some(universe) = &universe {
+            assert!(
+                items.bytes <= universe.bytes,
+                "strict byte progress cannot exceed the actual finite source"
+            );
+            assert!(
+                pages <= universe.bytes,
+                "each page delivers at least one source byte"
+            );
+        }
+        let interval = |item: &ReadItem| match &item.kind {
+            ItemKind::Fragment {
+                position,
+                until,
+                total,
+                ..
+            } => Some((*position, *until, *total)),
+            _ => None,
+        };
+        eprintln!(
+            "page {pages}: wire={} footer={footer_bytes} payload={} payload_tokens={payload_tokens} wire_tokens={} first={:?} last={:?}",
+            wire.len(),
+            items.bytes - before,
+            polylogue_model::read::estimate_tokens(std::str::from_utf8(&wire).unwrap()),
+            page.document.items.first().and_then(interval),
+            page.document.items.last().and_then(interval)
+        );
+        footer_total += footer_bytes;
+        wire_total += wire.len();
         let Some(mut ready) = page.document.footer.next.clone() else {
             break;
         };
@@ -204,6 +444,20 @@ pub(super) fn collect(
         page = execute_ready(&archive, &ready).unwrap();
     }
     items.finish();
+    if let Some(universe) = &universe {
+        assert_eq!(
+            items.bytes, universe.bytes,
+            "every actual source byte delivered exactly once"
+        );
+        assert_eq!(
+            items.values, universe.items,
+            "complete streamed item universe in source order"
+        );
+    }
+    eprintln!(
+        "delivery: pages={pages} payload={} wire={wire_total} footer={footer_total}",
+        items.bytes
+    );
     (items, pages)
 }
 
