@@ -1,9 +1,9 @@
 //! Canonical, complete Polylogue facts built from parser output. The source
 //! reading is part of every parsed fact; indexed summaries are never an input.
 use crate::{Error, Result};
+use polylogue_model::user::UserWrite;
 use polylogue_model::{Block, WrittenBy};
 use polylogue_store::primary::products::Product;
-use polylogue_model::user::UserWrite;
 use serde_json::{Value, json};
 
 pub(crate) fn kind(product: &Product) -> &'static str {

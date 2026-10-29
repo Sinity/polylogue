@@ -169,10 +169,16 @@ fn publication_waits_without_losing_changes_when_authority_is_unavailable() {
     stage(&tx, 1, 1, false).unwrap();
     tx.commit().unwrap();
     assert_eq!(
-        db.query_row("SELECT count(*) FROM primary_derived", [], |row| row.get::<_, i64>(0)).unwrap(),
+        db.query_row("SELECT count(*) FROM primary_derived", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
         0
     );
-    db.execute("INSERT INTO primary_fact SELECT * FROM primary_candidate", []).unwrap();
+    db.execute(
+        "INSERT INTO primary_fact SELECT * FROM primary_candidate",
+        [],
+    )
+    .unwrap();
     db.execute("DELETE FROM primary_candidate", []).unwrap();
     let tx = db.transaction().unwrap();
     stage(&tx, 2, 2, true).unwrap();
@@ -181,7 +187,9 @@ fn publication_waits_without_losing_changes_when_authority_is_unavailable() {
     assert_eq!(snapshot.position, 2);
     assert_eq!(snapshot.session_id.to_string(), "codex:morrow");
     assert_eq!(
-        db.query_row("SELECT count(*) FROM primary_work_dirty", [], |row| row.get::<_, i64>(0)).unwrap(),
+        db.query_row("SELECT count(*) FROM primary_work_dirty", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
         0
     );
 }

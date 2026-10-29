@@ -69,7 +69,10 @@ pub(crate) fn stage(
     if !publisher {
         return Ok(());
     }
-    tx.execute("INSERT INTO primary_work_changed SELECT session FROM primary_work_dirty", [])?;
+    tx.execute(
+        "INSERT INTO primary_work_changed SELECT session FROM primary_work_dirty",
+        [],
+    )?;
     let mut changed = tx.prepare("SELECT session FROM primary_work_changed ORDER BY session")?;
     let mut rows = changed.query([])?;
     while let Some(row) = rows.next()? {
@@ -113,7 +116,10 @@ pub(crate) fn stage(
         );
         tx.execute("INSERT OR IGNORE INTO primary_derived(identity,session,source_position,body) VALUES (?1,?2,?3,?4)",params![identity,id.to_string(),position,body])?;
         tx.execute("INSERT OR IGNORE INTO primary_derived_parent(identity,event) SELECT ?1,event FROM primary_work_parent",[identity])?;
-        tx.execute("DELETE FROM primary_work_dirty WHERE session=?1", [id.to_string()])?;
+        tx.execute(
+            "DELETE FROM primary_work_dirty WHERE session=?1",
+            [id.to_string()],
+        )?;
     }
     Ok(())
 }

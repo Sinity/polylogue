@@ -110,9 +110,6 @@ impl Replay<'_> {
                 frame: name.clone(),
                 sequence: Box::new(sequence),
             };
-            let bytes = serde_json::to_vec(&frame)?;
-            let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
-            client.write_bytes(&name, &blob, bytes.len() as u64, bytes.as_slice())?;
             client.send(frame).await
         })
     }
