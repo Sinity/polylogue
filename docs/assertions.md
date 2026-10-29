@@ -260,7 +260,7 @@ CREATE TABLE variant_part (
 ) STRICT, WITHOUT ROWID;
 ```
 
-`created_at` stores the full RFC 3339 timestamp, including submillisecond precision; the local write counter is never part of record identity.
+`created_at` stores the full RFC 3339 timestamp, including submillisecond precision; the local write counter is never part of record identity. Import history is attached to each exact rendition and part: the original author and machine stay on the rendition, locally observed ingress records its computed actor, and sender claims remain declared history. A retry preserves the first admitted observed timestamp, even after a clock rollback.
 
 Revisions use `base`; withdrawal is an ordinary `withdrawal` that `withdraws variant:<root>[@<rev>]`; currency follows the rule under Currency with `base` in place of `revises`. Finer alignment inside one part is expressed by span references in assertions about the part.
 

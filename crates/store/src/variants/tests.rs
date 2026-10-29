@@ -256,3 +256,50 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
         Err(StoreError::Ambiguous { .. })
     ));
 }
+
+#[test]
+fn variant_ingress_keeps_original_author_and_first_admitted_time_separate_from_claims() {
+    use polylogue_model::{Reference, authored::ImportAttribution};
+    let mut origin = archive();
+    let request = request("first", None, "Original");
+    write_request(&mut origin, &request, 1);
+    let effect = capture(&origin, &request, 1).unwrap();
+    let target = archive();
+    let current = ImportAttribution {
+        machine: "receiver".into(),
+        input: "local-bundle".into(),
+        chain: 1,
+        actor: Author::Operator,
+        at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap(),
+    };
+    restore(&target, &effect, &current, 2).unwrap();
+    let mut rollback = current.clone();
+    rollback.at = Timestamp::from_unix_ms(0).unwrap();
+    restore(&target, &effect, &rollback, 3).unwrap();
+    let reference = Reference::parse("variant:first@first").unwrap();
+    let part = Reference::parse("variant:first@first#0").unwrap();
+    let claim = ImportAttribution {
+        machine: "sender".into(),
+        input: "declared-bundle".into(),
+        chain: 2,
+        actor: Author::Script("importer.service".into()),
+        at: Timestamp::from_unix_ms(1).unwrap(),
+    };
+    declare_imports(&target, &reference, &[claim.clone()], 4).unwrap();
+    let history = imports::history(&target, &reference).unwrap().unwrap();
+    assert_eq!(history.observed, [current.clone()]);
+    assert_eq!(history.declared, [claim]);
+    assert_eq!(
+        imports::history(&target, &part).unwrap().unwrap().observed,
+        [current]
+    );
+    let original = rows::get(&target, "first").unwrap().unwrap();
+    assert_eq!(original.author, Author::Agent(None));
+    assert_eq!(original.machine, "machine");
+    let copied = archive();
+    copy(&target, &copied).unwrap();
+    assert_eq!(
+        imports::history(&copied, &reference).unwrap().unwrap(),
+        history
+    );
+}

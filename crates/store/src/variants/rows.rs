@@ -116,7 +116,7 @@ pub(super) fn parts(
     }
     Ok(())
 }
-fn get_part(conn: &Connection, id: &str, n: u64) -> Result<Option<VariantPart>> {
+pub(super) fn get_part(conn: &Connection, id: &str, n: u64) -> Result<Option<VariantPart>> {
     let source = reading(conn)?;
     let mut statement=conn.prepare_cached(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND n=?2"))?;
     let mut rows = statement.query(params![
