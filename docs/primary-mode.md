@@ -302,3 +302,12 @@ the same Run ID. Its phase key cannot replace the Begin body. Named producer
 custody supports immediate exact-hash and unambiguous prefix lookup while
 confirmation is pending; that state is reported as queued. The local index
 changes only from the confirmed stream.
+
+Attachment binding claims preserve their declared namespace independently from
+validated receiving members. Primary mode projects binding facts only at a confirmed barrier, after source
+observations, actual member associations and parsed rows. New publication needs
+the canonical outbox and an authenticated owner basis; without that basis the
+writer refuses publication while neutral declarations remain in source facts. Serialized witnesses remain retained data;
+primary availability stays unknown until their original receiving admission can
+be authenticated in the current grant. Standalone reads use the validated bytes
+and exact member namespace. Binding claim hashes do not request source materials.

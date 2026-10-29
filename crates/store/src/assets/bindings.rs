@@ -136,7 +136,7 @@ impl AttachmentBindingRecord {
             claim: self.claim.clone(),
         }
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         self.claim
             .validate()
             .map_err(|_| invalid("invalid attachment claim"))?;

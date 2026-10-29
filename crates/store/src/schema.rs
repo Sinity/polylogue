@@ -41,6 +41,7 @@ struct IndexMigration {
 #[derive(Clone, Copy)]
 enum IndexTarget {
     Index(&'static str),
+    IndexAndPrimary(&'static str, &'static str),
     PrimarySource(&'static str),
 }
 const INDEX_MIGRATIONS: &[IndexMigration] = &[
@@ -78,7 +79,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     },
     IndexMigration {
         version: 10,
-        target: IndexTarget::Index(include_str!("schema/attachment_bindings.sql")),
+        target: IndexTarget::IndexAndPrimary(
+            include_str!("schema/attachment_bindings.sql"),
+            crate::primary::projection::REFERENCE_INDEX,
+        ),
     },
     IndexMigration {
         version: 11,
@@ -178,6 +182,12 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         for step in INDEX_MIGRATIONS.iter().filter(|step| step.version > found) {
             match step.target {
                 IndexTarget::Index(sql) => tx.execute_batch(sql)?,
+                IndexTarget::IndexAndPrimary(sql, primary_sql) => {
+                    tx.execute_batch(sql)?;
+                    if primary {
+                        tx.execute_batch(primary_sql)?;
+                    }
+                }
                 IndexTarget::PrimarySource(sql) if primary => {
                     tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
                 }

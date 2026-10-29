@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 pub(crate) fn canonical(product: &Product) -> bool {
     match product {
-        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => true,
+        Product::AttachmentBinding { .. } | Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => true,
         Product::Request(prepared) | Product::RestoredRequest { prepared, .. } => {
             signal_content(prepared)
         }
@@ -39,6 +39,7 @@ pub(crate) fn require_source(product: &Product) -> Result<()> {
 
 pub(crate) fn kind(product: &Product) -> &'static str {
     match product {
+        Product::AttachmentBinding { .. } => "polylogue.attachment_binding",
         Product::Input { .. } => "polylogue.input_observation",
         Product::Blob(_) => "polylogue.blob",
         Product::Session { .. } => "polylogue.session",
@@ -75,6 +76,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
 /// every source rank and provider attribute when another copy arrives.
 pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
     let natural = match product {
+        Product::AttachmentBinding { record } => json!([record.selection()]),
         Product::Input { rows, .. } => json!([
             rows.input,
             rows.revision,
@@ -251,6 +253,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         Product::QueryRunOutcome { outcome } => json!({
             "run": outcome.run, "binding_hash": outcome.binding_hash, "run_hash": outcome.run_hash, "at": outcome.at,
         }),
+        Product::AttachmentBinding { record } => json!({"message":record.context().message,"binding":record.selection()}),
         Product::Coverage(_) => json!({}),
         Product::WorkComponentStatus { status } => json!({
             "component_kind":status.component_kind,"component_sessions":status.sessions().collect::<Vec<_>>(),
@@ -392,6 +395,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
     use sinex_model::kinds::{FieldHint, KeyRule, Normalization, RemovedRule, Search, TimeRule};
     use sinex_model::{Class, KindDeclaration, KindRef, ReplaceRule, TimeQuality};
     const KINDS: &[(&str, &str)] = &[
+        ("polylogue.attachment_binding", "attachment_binding"),
         ("polylogue.input_observation", "input"),
         ("polylogue.blob", "blob"),
         ("polylogue.session", "session"),
@@ -483,7 +487,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     version: match *product {
                         "work_snapshot" => 5,
                         "input" | "message" | "request" | "restored_request" => 4,
-                        "fragment"
+                        "attachment_binding"
+                        | "fragment"
                         | "query"
                         | "query_run"
                         | "query_run_outcome"
@@ -506,7 +511,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 replace_rule: Some(
                     if matches!(
                         *product,
-                        "request"
+                        "attachment_binding"
+                            | "request"
                             | "restored_request"
                             | "blob"
                             | "query"
@@ -519,7 +525,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     },
                 ),
                 time_rule: Some(
-                    if matches!(*product, "work_snapshot" | "work_component_status") {
+                    if matches!(*product, "attachment_binding" | "work_snapshot" | "work_component_status") {
                         TimeRule::Unknown
                     } else {
                         TimeRule::FirstPresent {

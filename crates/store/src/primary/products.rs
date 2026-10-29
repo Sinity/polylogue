@@ -90,6 +90,9 @@ pub enum Product {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     },
+    AttachmentBinding {
+        record: Box<crate::assets::bindings::AttachmentBindingRecord>,
+    },
     Query {
         object: Box<polylogue_model::query_objects::QueryObject>,
     },
@@ -128,6 +131,7 @@ impl Product {
             | Self::ParseProgress { reading, .. } => Some(reading),
             Self::Input { .. }
             | Self::Blob(_)
+            | Self::AttachmentBinding { .. }
             | Self::Query { .. }
             | Self::QueryRun { .. }
             | Self::QueryRunOutcome { .. }
