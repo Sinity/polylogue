@@ -917,6 +917,15 @@ impl Engine {
     /// every input is stored and parsed up to its size; then waits for the
     /// writer to commit.
     pub(crate) fn execute(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
+        self.execute_with_import_context(plans, pass, None)
+    }
+
+    pub(crate) fn execute_with_import_context(
+        &mut self,
+        plans: Vec<Plan>,
+        pass: &mut Pass,
+        current_import: Option<&polylogue_model::authored::ImportAttribution>,
+    ) -> Result<(), EngineError> {
         if plans.is_empty() {
             return Ok(());
         }
@@ -932,7 +941,7 @@ impl Engine {
                 continue;
             }
 
-            if let Err(error) = self.restore_captured_authored(&plan, pass) {
+            if let Err(error) = self.restore_captured_authored(&plan, pass, current_import) {
                 pass.errors.push(format!(
                     "authored restoration {}: {error}",
                     plan.path.display()
