@@ -73,6 +73,9 @@ fn fixture(changed: bool) -> Vec<Batch> {
         (&mut child, 100),
     ] {
         b.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid("main")),
             kind: "quota_report".into(),
             at: Timestamp::from_unix_ms(1000),
@@ -91,6 +94,9 @@ fn fixture(changed: bool) -> Vec<Batch> {
     }
     if !changed {
         main.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid("main")),
             kind: "hook_notification".into(),
             at: Timestamp::from_unix_ms(2000),
@@ -451,6 +457,9 @@ fn a_later_reading_failure_rolls_back_retraction_and_prior_steps() {
     let mut later = b.parse[0].clone();
     reading.push(&mut b.parse[0]).unwrap();
     later.output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: None,
         kind: "unbound".into(),
         at: None,
@@ -555,6 +564,9 @@ fn hook_event_times_produce_the_same_live_state_in_both_input_orders() {
     let make = |input, kind: &str, at, data| {
         let mut b = batch(input, 0, 0, Vec::new(), &["s"]);
         b.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid("s")),
             kind: kind.into(),
             at: Timestamp::from_unix_ms(at),
@@ -639,6 +651,9 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
     let make = |input, session, rank, limit| {
         let mut b = batch(input, rank, 0, Vec::new(), &[session]);
         b.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid(session)),
             kind: "quota_report".into(),
             at: Timestamp::from_unix_ms(1000),
@@ -863,6 +878,9 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     let mut events = batch("events", 0, 0, vec![], &["events"]);
     for (kind, range) in [("message_position", None), ("own_position", Some((7, 8)))] {
         events.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid("events")),
             kind: kind.into(),
             at: Timestamp::from_unix_ms(1000),

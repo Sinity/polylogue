@@ -210,20 +210,28 @@ impl OpenRouter {
             session.offer_title(title, TitleSource::Generated);
         }
         if let Some(at) = first.and_then(|m| m.get("createdAt")).and_then(time_of) {
-            session.offer_start(at);
+            session
+                .offer_start(at.timestamp(), at.evidence())
+                .expect("decoded source time is valid");
         }
         self.session = Some(sid.clone());
         sink.out.sessions.push(session);
         sink.records.record("room", &RecordOutcome::Used);
 
         self.characters = doc.get("characters").cloned().unwrap_or(Json::Null);
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "room_models".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: self.characters.clone(),
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid.clone()),
+                kind: "room_models".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: self.characters.clone(),
+            }
         });
         let artifacts: serde_json::Map<String, Json> = [
             "artifacts",
@@ -240,13 +248,19 @@ impl OpenRouter {
         })
         .collect();
         if !artifacts.is_empty() {
-            sink.out.events.push(Event {
-                session: Some(sid.clone()),
-                kind: "artifacts".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: Json::Object(artifacts),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(sid.clone()),
+                    kind: "artifacts".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: Json::Object(artifacts),
+                }
             });
         }
     }
@@ -268,7 +282,11 @@ fn message_order(raw: &serde_json::value::RawValue, key: &str) -> Vec<u8> {
         .get("id")
         .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
         .filter(|id| !id.is_empty());
-    room_order(at, id.as_deref(), key)
+    room_order(
+        at.map(crate::time::SourceTime::timestamp),
+        id.as_deref(),
+        key,
+    )
 }
 
 fn room_order(at: Option<polylogue_model::Timestamp>, id: Option<&str>, key: &str) -> Vec<u8> {
@@ -415,31 +433,37 @@ fn message(
             .and_then(Json::as_u64),
         ..Usage::default()
     };
-    Ok(Message {
-        id,
-        session: sid.clone(),
-        parent: str_of(m, "parentMessageId").and_then(|p| message_id(ORIGIN, p)),
-        role,
-        at: m.get("createdAt").and_then(time_of),
-        model: if role == Role::Assistant { model } else { None },
-        prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-        blocks,
-        usage: if role == Role::Assistant {
-            usage
-        } else {
-            Usage::default()
-        },
-        stop_reason: None,
-        reported_cost_usd: if role == Role::Assistant {
-            reported_cost_usd
-        } else {
-            None
-        },
-        duration_ms: meta
-            .and_then(|x| x.get("generateDuration"))
-            .and_then(Json::as_u64),
-        attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
-        production,
+    Ok({
+        let (at, time_evidence) = crate::time::parts(m.get("createdAt").and_then(time_of));
+        Message {
+            id,
+            session: sid.clone(),
+            parent: str_of(m, "parentMessageId").and_then(|p| message_id(ORIGIN, p)),
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: if role == Role::Assistant { model } else { None },
+            prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+            blocks,
+            usage: if role == Role::Assistant {
+                usage
+            } else {
+                Usage::default()
+            },
+            stop_reason: None,
+            reported_cost_usd: if role == Role::Assistant {
+                reported_cost_usd
+            } else {
+                None
+            },
+            duration_ms: meta
+                .and_then(|x| x.get("generateDuration"))
+                .and_then(Json::as_u64),
+            attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
+            production,
+        }
     })
 }
 

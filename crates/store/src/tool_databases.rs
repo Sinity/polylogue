@@ -161,6 +161,7 @@ struct Table {
     name: String,
     sql: String,
     columns: Vec<String>,
+    metadata: Value,
     /// Primary-key column positions; empty when the rowid is the key.
     key: Vec<usize>,
     rowid: Option<String>,
@@ -185,20 +186,25 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
             "PRAGMA table_xinfo(\"{}\")",
             name.replace('"', "\"\"")
         ))?;
-        let cols: Vec<(String, i64)> = info
+        let metadata_columns: Vec<Value> = info
             .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(5)?,
-                    r.get::<_, i64>(6)?,
-                ))
+                Ok(
+                    json!({"cid":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,
+                "declared_type":r.get::<_,String>(2)?,"not_null":r.get::<_,bool>(3)?,
+                "primary_key":r.get::<_,i64>(5)?,"hidden":r.get::<_,i64>(6)?}),
+                )
             })?
-            .filter_map(|row| match row {
-                Ok((_, _, 1)) => None,
-                Ok((name, key, _)) => Some(Ok((name, key))),
-                Err(error) => Some(Err(error)),
-            })
             .collect::<rusqlite::Result<_>>()?;
+        let cols: Vec<(String, i64)> = metadata_columns
+            .iter()
+            .filter(|column| column["hidden"] != 1)
+            .map(|column| {
+                (
+                    column["name"].as_str().expect("column name").to_owned(),
+                    column["primary_key"].as_i64().expect("primary key ordinal"),
+                )
+            })
+            .collect();
         let mut key: Vec<(i64, usize)> = cols
             .iter()
             .enumerate()
@@ -222,6 +228,7 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
         out.push(Table {
             name,
             sql,
+            metadata: json!({"columns":metadata_columns,"without_rowid":without_rowid}),
             columns: cols.into_iter().map(|(c, _)| c).collect(),
             key: key.into_iter().map(|(_, i)| i).collect(),
             rowid,
@@ -264,13 +271,21 @@ fn read_rows(
         .map(|t| (t.name.clone(), t.sql.clone().into()))
         .collect();
     let schema = Value::Object(schema);
-    let changed_schema = catalog.schema.as_ref() != Some(&schema);
+    let table_metadata: Map<String, Value> = tables
+        .iter()
+        .map(|table| (table.name.clone(), table.metadata.clone()))
+        .collect();
+    let table_metadata = Value::Object(table_metadata);
+    // Comparison includes native metadata so a pre-metadata capture emits the
+    // additive header even when its SQL declaration has not changed.
+    let signature = json!({"schema":schema,"table_metadata":table_metadata});
+    let changed_schema = catalog.schema.as_ref() != Some(&signature);
     let at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64);
     let mut bytes = Vec::new();
     if changed_schema {
-        serde_json::to_writer(&mut bytes, &json!({"db":db.file_name().map(|n| n.to_string_lossy()), "at_ms":at_ms, "schema":schema, "source":{"machine":observation.machine,"path":observation.path}})).map_err(std::io::Error::from)?;
+        serde_json::to_writer(&mut bytes, &json!({"db":db.file_name().map(|n| n.to_string_lossy()), "at_ms":at_ms, "schema":schema, "table_metadata":table_metadata, "source":{"machine":observation.machine,"path":observation.path}})).map_err(std::io::Error::from)?;
         bytes.push(b'\n');
     }
     let mut done = ReadReport::default();

@@ -101,6 +101,7 @@ fn an_expired_claim_returns_the_action_to_the_queue() {
         created_at: 0,
         attachments: vec![],
         events: vec![ChatEvent {
+            request: "event-request".into(),
             at: 1_000,
             kind: "claimed".into(),
             phase: "claimed".into(),

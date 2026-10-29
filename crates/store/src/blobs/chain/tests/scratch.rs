@@ -32,7 +32,7 @@ fn a_killed_extent_list_owner_leaves_no_named_payload() {
         let tx = source.conn.unchecked_transaction().unwrap();
         {
             let mut insert = tx
-                .prepare("INSERT INTO extent VALUES ('input',1,?1,256,?2,?3)")
+                .prepare("INSERT INTO extent VALUES ('input',1,?1,256,?2,?3,1)")
                 .unwrap();
             for n in 1u64..32768 {
                 insert

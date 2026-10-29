@@ -23,9 +23,16 @@ pub struct Output {
     /// The containing input still owns the local bytes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub imported_events: BTreeMap<usize, crate::bundle::ImportedEventIdentity>,
+    /// Event identities already derived from the original complete reading.
+    /// Canonical fact subsets keep these positions when earlier facts are hidden.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub event_ids: BTreeMap<usize, String>,
     /// Explicit session reading order, indexed by message; byte ranges stay local.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_order: BTreeMap<usize, u64>,
+    /// Selected original block positions retain the original source version.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_projections: BTreeMap<usize, crate::bundle::MessageProjection>,
     /// Upserted by [`Link::key`]; parts one file lacks are filled from
     /// another ([`Link::merge`]).
     pub links: Vec<Link>,

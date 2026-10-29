@@ -275,11 +275,11 @@ impl Reader<'_> {
         let Some(row) = self.deliveries("WHERE d.id = ?1", id)?.pop() else {
             return Ok(None);
         };
-        let body: Vec<u8> =
-            self.conn()?
-                .query_row("SELECT body FROM source_delivery WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })?;
+        let body: Vec<u8> = self.conn()?.query_row(
+            "SELECT body FROM source_delivery WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
         let text = crate::encoding::unpack_text(&body)?;
         Ok(Some((row, text)))
     }

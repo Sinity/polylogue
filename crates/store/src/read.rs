@@ -136,6 +136,8 @@ pub struct Status {
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer.
     pub search_pending: u64,
+    /// The latest confirmed full discovery walk from each source machine.
+    pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
 }
 
 impl ReadPool {
@@ -193,6 +195,9 @@ impl ReadPool {
 
     fn connect(&self) -> Result<Connection> {
         let conn = open_read(&self.archive.index_db())?;
+        // Set temp storage before creating views: changing it drops TEMP objects.
+        conn.pragma_update(None, "temp_store", "file")?;
+        conn.pragma_update(Some("temp"), "cache_size", -1024)?;
         if !self.archive.is_primary() {
             let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
             conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
@@ -545,6 +550,10 @@ impl Reader<'_> {
         crate::primary::projection::position(self.conn()?)
     }
 
+    pub fn confirmed_checkpoint(&self) -> Result<Option<i64>> {
+        crate::primary::projection::checkpoint(self.conn()?)
+    }
+
     pub fn primary_cache_identity(&self) -> Result<String> {
         crate::primary::cache_identity(self.conn()?)
     }
@@ -719,7 +728,7 @@ impl Reader<'_> {
         mut keep: impl FnMut(i64) -> bool,
         visit: &mut impl FnMut(i64, Message) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
-        const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at, m.parent_id,
+        const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
             m.cache_write_1h_tokens, m.speed, m.pem";
@@ -774,7 +783,7 @@ impl Reader<'_> {
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<i64>>(5)?,
+                crate::encoding::read_time(r, 5)?,
                 r.get::<_, Option<String>>(6)?,
                 [
                     r.get::<_, Option<i64>>(7)?,
@@ -858,7 +867,10 @@ impl Reader<'_> {
                 session: session.clone(),
                 parent: parent.and_then(|p| MessageId::parse(&p).ok()),
                 role: parse_name(&role).unwrap_or(Role::User),
-                at: ts(at),
+                at: at.0,
+                at_quality: at.1.quality,
+                at_precision: at.1.precision,
+                at_until: at.1.until,
                 model,
                 prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
                 blocks,
@@ -929,6 +941,7 @@ impl Reader<'_> {
             parse_states,
             unused,
             search_pending: count("SELECT COUNT(*) FROM search_pending")?,
+            capture_coverage: self.all_capture_coverage()?,
         })
     }
 

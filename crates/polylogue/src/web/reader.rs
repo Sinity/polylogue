@@ -1,7 +1,8 @@
 //! HTTP selections and navigation for the shared paged reader.
 use super::*;
 use crate::daemon::{PageSelection, ReadTarget};
-use polylogue_render::{View, html::encode_path_segment as encode};
+use polylogue_model::read::View;
+use polylogue_render::html::encode_path_segment as encode;
 
 const DEFAULT_BUDGET: usize = 8192;
 

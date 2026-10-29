@@ -26,12 +26,15 @@
           "id": "codex-functions-exec-multiple",
           "timestamp": "2026-07-15T11:00:00Z",
           "cwd": "/repo"
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:codex-functions-exec-multiple"
+        "session": "codex:codex-functions-exec-multiple",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -55,7 +58,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-functions-exec-multiple"
+          "session": "codex:codex-functions-exec-multiple",
+          "at_quality": "unknown"
         },
         "offset": 122
       },
@@ -121,7 +125,8 @@
           "id": "codex:fco-multiple",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-functions-exec-multiple"
+          "session": "codex:codex-functions-exec-multiple",
+          "at_quality": "unknown"
         },
         "offset": 1275
       }
@@ -133,7 +138,9 @@
         ],
         "id": "codex:codex-functions-exec-multiple",
         "kind": "main",
-        "started": "2026-07-15T11:00:00Z"
+        "started": "2026-07-15T11:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

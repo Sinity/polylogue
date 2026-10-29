@@ -67,7 +67,8 @@
           133,
           207
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "at": "2026-03-01T12:00:00Z",
@@ -86,7 +87,9 @@
           208,
           362
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "at": "2026-03-01T12:00:01Z",
@@ -106,7 +109,9 @@
           363,
           541
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {
@@ -120,7 +125,8 @@
           542,
           620
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -133,7 +139,8 @@
           656,
           720
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "session": "claude-code:s1",
@@ -150,7 +157,8 @@
             "type": "agent_progress",
             "agentId": "ab12"
           }
-        }
+        },
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -166,7 +174,8 @@
           920,
           1012
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -180,7 +189,8 @@
           1013,
           1178
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "unknown"
       }
     ],
     "links": [
@@ -204,7 +214,9 @@
         "title": {
           "source": "custom",
           "text": "Build fix"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

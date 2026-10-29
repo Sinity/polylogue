@@ -26,7 +26,9 @@
           3,
           1040
         ],
-        "session": "claude-ai:claude-order-fixture"
+        "session": "claude-ai:claude-order-fixture",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [],
@@ -66,7 +68,9 @@
           "id": "claude-ai:claude-order-fixture#1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-ai:claude-order-fixture"
+          "session": "claude-ai:claude-order-fixture",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -113,7 +117,9 @@
           "id": "claude-ai:claude-order-fixture#0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-ai:claude-order-fixture"
+          "session": "claude-ai:claude-order-fixture",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -126,7 +132,9 @@
         "title": {
           "source": "generated",
           "text": "Synthetic native attachment order"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

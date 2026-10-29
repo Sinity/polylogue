@@ -46,6 +46,12 @@ impl VersionKind {
     }
 }
 
+pub(crate) struct TextRows<'a> {
+    pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
+    pub first_build: Option<&'a FirstBuild>,
+    pub keys: &'a crate::writer::resolve::ResolvedKeys,
+}
+
 pub(crate) fn store(
     conn: &Connection,
     kind: VersionKind,
@@ -53,10 +59,13 @@ pub(crate) fn store(
     body: &[u8],
     blocks: &[Block],
     texts: &[Option<[u8; 32]>],
-    packed: &HashMap<[u8; 32], Vec<u8>>,
-    first_build: Option<&FirstBuild>,
-    keys: &crate::writer::resolve::ResolvedKeys,
+    text_rows: TextRows<'_>,
 ) -> Result<()> {
+    let TextRows {
+        packed,
+        first_build,
+        keys,
+    } = text_rows;
     let kind = kind.name();
     let inserted = conn
         .prepare_cached(&format!(

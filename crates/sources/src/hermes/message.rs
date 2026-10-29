@@ -64,21 +64,27 @@ pub(super) fn seed(row: &Json) -> Option<String> {
 }
 
 pub(super) fn system(id: MessageId, session: SessionId, text: String) -> Message {
-    Message {
-        id,
-        session,
-        parent: None,
-        role: Role::System,
-        at: None,
-        model: None,
-        prompt_kind: Some(PromptKind::Harness),
-        blocks: vec![Block::Text { text }],
-        usage: Default::default(),
-        stop_reason: None,
-        reported_cost_usd: None,
-        duration_ms: None,
-        attrs: Default::default(),
-        production: Default::default(),
+    {
+        let (at, time_evidence) = crate::time::parts(None);
+        Message {
+            id,
+            session,
+            parent: None,
+            role: Role::System,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: None,
+            prompt_kind: Some(PromptKind::Harness),
+            blocks: vec![Block::Text { text }],
+            usage: Default::default(),
+            stop_reason: None,
+            reported_cost_usd: None,
+            duration_ms: None,
+            attrs: Default::default(),
+            production: Default::default(),
+        }
     }
 }
 
@@ -285,7 +291,11 @@ pub(super) fn parse(
     } else {
         None
     };
-    message.at = row.get("timestamp").and_then(crate::time::epoch_seconds);
+    let (at, evidence) =
+        crate::time::parts(row.get("timestamp").and_then(crate::time::epoch_seconds));
+    message
+        .set_time(at, evidence)
+        .expect("decoded source time is valid");
     message.model = (role == Role::Assistant && !harness)
         .then_some(model)
         .flatten();

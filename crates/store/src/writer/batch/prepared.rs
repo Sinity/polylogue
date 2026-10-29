@@ -32,6 +32,19 @@ impl PreparedRows {
                 .validate()
                 .map_err(|error| StoreError::Invalid(error.to_string()))?;
         }
+        for (&index, id) in &output.event_ids {
+            if index >= output.events.len()
+                || id.is_empty()
+                || output
+                    .imported_events
+                    .get(&index)
+                    .is_some_and(|identity| &identity.id != id)
+            {
+                return Err(StoreError::Invalid(
+                    "event identity does not match its canonical fact".into(),
+                ));
+            }
+        }
         for (&index, &order) in &output.message_order {
             if index >= output.messages.len() || i64::try_from(order).is_err() {
                 return Err(StoreError::Invalid("invalid imported message order".into()));
@@ -205,5 +218,42 @@ impl ParseStep {
             event.data = crate::encoding::unpack_json(data)?;
         }
         Ok(output)
+    }
+}
+impl ParseStep {
+    /// Native identities are derived once from the complete reading. Confirmed
+    /// fact subsets and portable imports retain their supplied canonical IDs.
+    pub(crate) fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
+        self.prepared.validate(&self.output)?;
+        let mut occurrences = std::collections::BTreeMap::<(u64, u64), u64>::new();
+        self.output
+            .events
+            .iter()
+            .zip(&self.prepared.events)
+            .enumerate()
+            .map(|(index, (event, packed))| {
+                let occurrence = if event.session.is_none() {
+                    let next = occurrences
+                        .entry(event.range.unwrap_or_default())
+                        .or_default();
+                    let current = *next;
+                    *next = next.checked_add(1).ok_or_else(|| {
+                        StoreError::Invalid(
+                            "event occurrence is outside the stored integer range".into(),
+                        )
+                    })?;
+                    current
+                } else {
+                    0
+                };
+                if let Some(id) = self.output.event_ids.get(&index) {
+                    return Ok(id.clone());
+                }
+                if let Some(identity) = self.output.imported_events.get(&index) {
+                    return Ok(identity.id.clone());
+                }
+                super::super::resolve::event_id(input, chain, event, &packed.0, occurrence)
+            })
+            .collect()
     }
 }

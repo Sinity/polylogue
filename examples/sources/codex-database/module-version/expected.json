@@ -2,7 +2,10 @@
   "counts": {
     "records": 1,
     "skipped": {},
-    "unread_fields": {},
+    "unread_fields": {
+      "threads.h": 1,
+      "threads.k[]": 1
+    },
     "unreadable": {},
     "used": {
       "threads": 1
@@ -25,7 +28,9 @@
         "title": {
           "source": "generated",
           "text": "Read the module"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

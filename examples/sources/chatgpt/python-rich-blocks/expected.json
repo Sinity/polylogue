@@ -31,7 +31,8 @@
           3,
           2818
         ],
-        "session": "chatgpt:native-rich-chatgpt"
+        "session": "chatgpt:native-rich-chatgpt",
+        "at_quality": "unknown"
       },
       {
         "after": "chatgpt:files",
@@ -41,7 +42,8 @@
           3,
           2818
         ],
-        "session": "chatgpt:native-rich-chatgpt"
+        "session": "chatgpt:native-rich-chatgpt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -62,7 +64,9 @@
           "session": "chatgpt:native-rich-chatgpt",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -86,7 +90,9 @@
           "session": "chatgpt:native-rich-chatgpt",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -111,7 +117,9 @@
           "session": "chatgpt:native-rich-chatgpt",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -131,7 +139,9 @@
           "session": "chatgpt:native-rich-chatgpt",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -156,7 +166,9 @@
           "session": "chatgpt:native-rich-chatgpt",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -190,7 +202,9 @@
           "session": "chatgpt:native-rich-chatgpt",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -202,7 +216,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic rich blocks"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

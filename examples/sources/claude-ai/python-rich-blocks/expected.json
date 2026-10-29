@@ -29,7 +29,8 @@
           3,
           1768
         ],
-        "session": "claude-ai:native-rich-blocks"
+        "session": "claude-ai:native-rich-blocks",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -71,7 +72,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -132,7 +135,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -184,7 +189,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -218,7 +225,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -230,7 +239,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic rich blocks"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

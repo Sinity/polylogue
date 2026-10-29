@@ -185,18 +185,25 @@ impl ExportParser for GeminiCli {
             "user" => Role::User,
             "gemini" => Role::Assistant,
             "info" | "error" => {
-                sink.out.events.push(Event {
-                    session: Some(sid.clone()),
-                    kind: if kind == "error" {
-                        "api_error"
-                    } else {
-                        "notice"
+                sink.out.events.push({
+                    let (at, time_evidence) =
+                        crate::time::parts(m.get("timestamp").and_then(time_of));
+                    Event {
+                        session: Some(sid.clone()),
+                        kind: if kind == "error" {
+                            "api_error"
+                        } else {
+                            "notice"
+                        }
+                        .into(),
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        after: self.state.previous.clone(),
+                        range: None,
+                        data: m.get("content").cloned().unwrap_or(Json::Null),
                     }
-                    .into(),
-                    at: m.get("timestamp").and_then(time_of),
-                    after: self.state.previous.clone(),
-                    range: None,
-                    data: m.get("content").cloned().unwrap_or(Json::Null),
                 });
                 sink.records.record(&kind, &RecordOutcome::Used);
                 return Ok(());
@@ -212,21 +219,27 @@ impl ExportParser for GeminiCli {
                 .record(&kind, &RecordOutcome::unreadable("no id"));
             return Ok(());
         };
-        let message = Message {
-            id: id.clone(),
-            session: sid.clone(),
-            parent: self.state.previous.replace(id),
-            role,
-            at: m.get("timestamp").and_then(time_of),
-            model: string_of(m, "model"),
-            prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-            blocks: blocks(m),
-            usage: usage(m.get("tokens")),
-            stop_reason: None,
-            reported_cost_usd: None,
-            duration_ms: None,
-            attrs: Default::default(),
-            production: Default::default(),
+        let message = {
+            let (at, time_evidence) = crate::time::parts(m.get("timestamp").and_then(time_of));
+            Message {
+                id: id.clone(),
+                session: sid.clone(),
+                parent: self.state.previous.replace(id),
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: string_of(m, "model"),
+                prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+                blocks: blocks(m),
+                usage: usage(m.get("tokens")),
+                stop_reason: None,
+                reported_cost_usd: None,
+                duration_ms: None,
+                attrs: Default::default(),
+                production: Default::default(),
+            }
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
@@ -260,7 +273,9 @@ impl GeminiCli {
             session.offer_title(summary, TitleSource::Summary);
         }
         if let Some(at) = doc.get("startTime").and_then(time_of) {
-            session.offer_start(at);
+            session
+                .offer_start(at.timestamp(), at.evidence())
+                .expect("decoded source time is valid");
         }
         for dir in doc
             .get("directories")
@@ -274,13 +289,19 @@ impl GeminiCli {
         sink.out.sessions.push(session);
         sink.records.record("session", &RecordOutcome::Used);
         if let Some(hash) = str_of(doc, "projectHash") {
-            sink.out.events.push(Event {
-                session: Some(sid.clone()),
-                kind: "project".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: serde_json::json!({"project_hash": hash}),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(sid.clone()),
+                    kind: "project".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: serde_json::json!({"project_hash": hash}),
+                }
             });
         }
 

@@ -148,7 +148,16 @@ impl Engine {
             errors.extend(self.refresh_lookups().err());
         }
         let (mut found, unreadable) = if discover {
-            collect::scan(&self.config)
+            let scan = collect::scan_with_coverage(&self.config);
+            self.writer.coverage(polylogue_model::capture::Coverage {
+                version: 1,
+                machine: self.config.machine.clone(),
+                observed_at: polylogue_model::Timestamp::from_unix_ms(now_ms()).ok_or_else(
+                    || std::io::Error::other("capture observation time is out of range"),
+                )?,
+                roots: scan.roots,
+            })?;
+            (scan.found, scan.unreadable)
         } else {
             collect::scan_paths(&self.config, paths)
         };
