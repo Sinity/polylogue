@@ -105,8 +105,13 @@ impl TestDaemon {
         self.runtime.stop_accepting();
         self.server.shutdown().unwrap();
         self.runtime.shutdown().unwrap();
-        self.runtime =
-            service::start_with_catalog(&root, self.config.clone(), service::ArchiveMode::Standalone, self._dir.path().join("catalog")).unwrap();
+        self.runtime = service::start_with_catalog(
+            &root,
+            self.config.clone(),
+            service::ArchiveMode::Standalone,
+            self._dir.path().join("catalog"),
+        )
+        .unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);
         self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
     }

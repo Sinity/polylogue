@@ -80,11 +80,13 @@ impl Reader<'_> {
                 ("harness", row.get(9)?),
             ] {
                 if let Some(value) = value.filter(|value| !value.is_empty()) {
-                    let values=item.values.entry(field.into()).or_default();
-                    if field=="cwd" {
-                        for (at,_) in value.match_indices('/').skip(1) { values.insert(value[..at].to_owned(),1); }
+                    let values = item.values.entry(field.into()).or_default();
+                    if field == "cwd" {
+                        for (at, _) in value.match_indices('/').skip(1) {
+                            values.insert(value[..at].to_owned(), 1);
+                        }
                     }
-                    values.insert(value,1);
+                    values.insert(value, 1);
                 }
             }
             let mut counts=conn.prepare("SELECT 'model',model,count(*) FROM message WHERE session_pk=?1 AND model IS NOT NULL AND model<>'' GROUP BY model UNION ALL SELECT 'tool',tool,count(*) FROM tool_call WHERE session_pk=?1 GROUP BY tool")?;
@@ -168,7 +170,7 @@ impl Reader<'_> {
                         });
                     }
                 } else if kind == "tag" {
-                    change.tag = key.map(|key|(key,value));
+                    change.tag = key.map(|key| (key, value));
                 }
             }
             visit(change)?;

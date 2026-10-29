@@ -182,7 +182,13 @@ impl State {
             writer.remove_item("saved", &change.family)?;
             let values = change
                 .tag
-                .map(|(key,value)| {let mut tags=BTreeMap::from([(key.clone(),1)]);if let Some(value)=value{tags.insert(format!("{key}:{value}"),1);}BTreeMap::from([("tag".into(),tags)])})
+                .map(|(key, value)| {
+                    let mut tags = BTreeMap::from([(key.clone(), 1)]);
+                    if let Some(value) = value {
+                        tags.insert(format!("{key}:{value}"), 1);
+                    }
+                    BTreeMap::from([("tag".into(), tags)])
+                })
                 .unwrap_or_default();
             writer.put_values(&format!("note:{}", change.family), &values)?;
             if let Some(saved) = change.saved {

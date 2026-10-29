@@ -1226,10 +1226,15 @@ pub fn start(
     config: Config,
     mode: ArchiveMode,
 ) -> std::io::Result<Runtime> {
-    start_with_catalog(root,config,mode,crate::completion_catalog::path(root))
+    start_with_catalog(root, config, mode, crate::completion_catalog::path(root))
 }
 
-pub(crate) fn start_with_catalog(root:&std::path::Path,config:Config,mode:ArchiveMode,completion_path:std::path::PathBuf)->std::io::Result<Runtime> {
+pub(crate) fn start_with_catalog(
+    root: &std::path::Path,
+    config: Config,
+    mode: ArchiveMode,
+    completion_path: std::path::PathBuf,
+) -> std::io::Result<Runtime> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let settings = config.clone();
     let (archive, lock, mode, engine) = match mode {

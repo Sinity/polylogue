@@ -223,11 +223,32 @@ fn real_writer_deltas_publish_source_values_and_native_first_prompt() {
 
 #[test]
 fn completion_handler_uses_the_catalog_when_archive_reader_slots_are_closed() {
-    let daemon=crate::test_daemon::start("A synthetic completion prompt");
-    daemon.wait_for(|_| CatalogReader::open(&daemon.daemon.completion_path,&crate::runtime_dir::archive_key(&daemon.daemon.archive.root)).ok().flatten().is_some());
+    let daemon = crate::test_daemon::start("A synthetic completion prompt");
+    daemon.wait_for(|_| {
+        CatalogReader::open(
+            &daemon.daemon.completion_path,
+            &crate::runtime_dir::archive_key(&daemon.daemon.archive.root),
+        )
+        .ok()
+        .flatten()
+        .is_some()
+    });
     daemon.daemon.reads.close();
-    let text="tool_calls where outcome:err";
-    let response=crate::daemon::service::handle(crate::daemon::Request::Complete{text:text.into(),position:text.len()},&daemon.daemon);
-    let crate::daemon::Response::Ok{data,..}=response else{panic!("{response:?}")};
-    assert!(data.as_array().unwrap().iter().any(|candidate|candidate["value"]=="error"));
+    let text = "tool_calls where outcome:err";
+    let response = crate::daemon::service::handle(
+        crate::daemon::Request::Complete {
+            text: text.into(),
+            position: text.len(),
+        },
+        &daemon.daemon,
+    );
+    let crate::daemon::Response::Ok { data, .. } = response else {
+        panic!("{response:?}")
+    };
+    assert!(
+        data.as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["value"] == "error")
+    );
 }
