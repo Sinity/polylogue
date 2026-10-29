@@ -1,4 +1,4 @@
-use crate::{Config, Error, Mode, Sinex};
+use crate::{Authentication, Config, Error, Mode, Sinex};
 use sinex_protocol::{ProducerWelcome, Subjects};
 use std::{path::Path, time::Duration};
 const PASSWORD: &str = "synthetic-password";
@@ -73,7 +73,12 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
         });
     });
     wait.recv().unwrap();
-    let sinex = Sinex::connect(&config(&server, root.path(), Some(&file))).unwrap();
+    let sinex = Sinex::connect(
+        &config(&server, root.path(), Some(&file)),
+        &Authentication::Password(PASSWORD.into()),
+        "fixture-host",
+    )
+    .unwrap();
     assert_eq!(sinex.status().unwrap().family.as_deref(), Some("polylogue"));
     assert!(sinex.status().unwrap().canonical_publisher);
     let control =
@@ -107,25 +112,54 @@ fn missing_and_wrong_passwords_are_refused_before_publication() {
     let server = server();
     let root = tempfile::tempdir().unwrap();
     assert!(matches!(
-        Sinex::connect(&config(&server, &root.path().join("missing"), None)),
+        Sinex::connect(
+            &config(&server, &root.path().join("missing"), None),
+            &Authentication::Anonymous,
+            "fixture-host"
+        ),
         Err(Error::Unreachable(_))
     ));
     let file = root.path().join("password");
     std::fs::write(&file, "incorrect").unwrap();
     assert!(matches!(
-        Sinex::connect(&config(&server, &root.path().join("wrong"), Some(&file))),
+        Sinex::connect(
+            &config(&server, &root.path().join("wrong"), Some(&file)),
+            &Authentication::Password("incorrect".into()),
+            "fixture-host"
+        ),
         Err(Error::Unreachable(_))
     ));
 }
 
 #[test]
-fn unreadable_secret_is_named_and_offline_capture_remains_openable() {
+fn unavailable_authentication_is_named_and_offline_capture_remains_openable() {
     let server = server();
     let root = tempfile::tempdir().unwrap();
     let file = root.path().join("absent");
     let config = config(&server, root.path(), Some(&file));
-    assert!(Sinex::open(&config).is_ok());
+    let authentication = Authentication::Unavailable {
+        reason: "password file absent".into(),
+    };
+    assert!(Sinex::open(&config, &authentication, "fixture-host").is_ok());
     assert!(
-        matches!(Sinex::connect(&config),Err(Error::Invalid(message)) if message.contains("password file") && message.contains("absent"))
+        matches!(Sinex::connect(&config, &authentication, "fixture-host"),Err(Error::Invalid(message)) if message.contains("password file") && message.contains("absent"))
     );
+}
+
+#[test]
+fn authentication_and_host_are_explicit_and_password_debug_is_redacted() {
+    let root = tempfile::tempdir().unwrap();
+    let config = Config {
+        mode: Mode::Primary,
+        nats: "nats://127.0.0.1:1".into(),
+        password_file: Some(root.path().join("not-read")),
+        subject_root: "fixture".into(),
+        producer: "polylogue".into(),
+        store: root.path().into(),
+    };
+    assert!(Sinex::open(&config, &Authentication::Anonymous, "").is_err());
+    let secret = Authentication::Password("synthetic-sensitive-value".into());
+    assert!(!format!("{secret:?}").contains("synthetic-sensitive-value"));
+    let sinex = Sinex::open(&config, &secret, "supplied-host").unwrap();
+    assert_eq!(sinex.host, "supplied-host");
 }

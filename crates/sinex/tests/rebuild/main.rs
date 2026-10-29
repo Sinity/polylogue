@@ -8,7 +8,7 @@
 use polylogue_engine::Engine;
 use polylogue_model::user::UserWrite;
 use polylogue_model::{Author, NewNote, NoteKind, Target};
-use polylogue_sinex::{Config, Mode, Sinex};
+use polylogue_sinex::{Authentication, Config, Mode, Sinex};
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{Morrow, Set};
 use std::collections::BTreeMap;
@@ -97,10 +97,10 @@ fn sinex(dir: &Path) -> Running {
 }
 
 /// A connection once `sinexd` answers.
-fn connect(config: &Config, root: &Path) -> Arc<Sinex> {
+fn connect(config: &Config) -> Arc<Sinex> {
     let started = Instant::now();
     loop {
-        if let Ok(sinex) = Sinex::connect(config, root)
+        if let Ok(sinex) = Sinex::connect(config, &Authentication::Anonymous, "fixture-host")
             && sinex.reachable().is_ok()
         {
             return Arc::new(sinex);
@@ -186,7 +186,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
 
     let example = Morrow::lay_out(Set::Main);
     let running = sinex(example.dir.path());
-    let sinex = connect(&running.config, &example.root);
+    let sinex = connect(&running.config);
     phase("sinexd answers");
     build_on_sinex(&example, &example.home, &sinex, &running.config);
     phase("built on Sinex");
