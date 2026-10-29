@@ -97,9 +97,8 @@ pub(super) fn write_rows(
         }
         let session_pk = rows.session_pk(&mut sessions, &row.message.session)?;
         let prepared = &p.prepared.messages[i];
-        let position = match p.order_from {
-            Some(from) => ((from + i as u64) as i64, 0),
-            None if p.repeats_whole_conversations => (i as i64, 0),
+        let position = match p.message_position(i)? {
+            Some(order) => (order, 0),
             None => {
                 let next = in_record.entry(row.offset).or_default();
                 *next += 1;
