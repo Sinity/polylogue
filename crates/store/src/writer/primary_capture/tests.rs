@@ -106,8 +106,16 @@ impl crate::primary::Sinex for OfflineProducer {
         &self,
         _: &crate::primary::CapturePlan,
         _: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<crate::primary::PreparedWrite> {
+    ) -> Result<crate::primary::CaptureReceipt> {
         Self::unavailable()
+    }
+    fn pending_group_headers(
+        &self,
+        _: &str,
+        _: Option<u64>,
+        _: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        Ok(crate::primary::PendingGroupPage::default())
     }
     fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
         Self::unavailable()
