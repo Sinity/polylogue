@@ -33,7 +33,7 @@ pub(crate) struct DocumentChoice {
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Choices {
     pub messages: BTreeMap<i64, Option<MessageChoice>>,
-    pub message_versions: BTreeMap<Vec<u8>, (Message, PreparedMessage)>,
+    pub message_versions: BTreeMap<BlobHash, (Message, PreparedMessage)>,
     pub documents: BTreeMap<i64, Option<DocumentChoice>>,
     pub sessions: BTreeMap<i64, Session>,
     pub message_mains: Vec<bool>,
@@ -445,7 +445,7 @@ impl<'a> Projection<'a> {
             }
             choices
                 .message_versions
-                .insert(prepared.hash.to_vec(), merged.clone());
+                .insert(BlobHash(prepared.hash), merged.clone());
             message_values.insert(prepared.hash.to_vec(), merged);
         }
         for (row, prepared) in step.output.documents.iter().zip(&step.prepared.documents) {

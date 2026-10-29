@@ -472,7 +472,7 @@ impl RowWriter<'_, '_> {
         let (version_message, version_prepared) = self
             .choices
             .message_versions
-            .get(prepared.hash.as_slice())
+            .get(&BlobHash(prepared.hash))
             .ok_or_else(|| {
                 StoreError::Invalid("an incoming message has no resolved value".into())
             })?;

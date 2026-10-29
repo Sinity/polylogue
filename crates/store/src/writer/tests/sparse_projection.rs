@@ -38,7 +38,11 @@ fn projected_batch(input: &str, message: Message, projection: MessageProjection)
     batch
 }
 
-fn write(w: &TestArchive, batch: Batch) {
+fn write(w: &TestArchive, mut batch: Batch) {
+    if matches!(batch.change, Change::First) {
+        batch.new_blob =
+            Some(NewBlob::prepare(&w.archive, &vec![b' '; batch.length as usize]).unwrap());
+    }
     w.writer.send(batch).unwrap();
     let report = w.writer.flush_rows().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
