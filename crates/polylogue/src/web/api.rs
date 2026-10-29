@@ -92,7 +92,7 @@ async fn answer(
             })
             .unwrap_or_default();
         let request = crate::protocol::operations::request(c, values, request_id, deadline);
-        let table = crate::protocol::operations::table(Arc::clone(&web.daemon));
+        let table = &web.operations;
         let limit = super::request_limit();
         let accepted = crate::protocol::caller::accept(
             &web.daemon.callers,

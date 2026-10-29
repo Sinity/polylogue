@@ -1093,6 +1093,7 @@ fn export(
 /// before this runtime; external daemon references cannot keep workers alive.
 pub struct Runtime {
     pub daemon: Arc<Daemon>,
+    pub operations: Arc<command_surface::OperationTable>,
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
     counts_stop: Option<Sender<()>>,
@@ -1318,8 +1319,10 @@ pub fn start(
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
+    let operations = Arc::new(crate::protocol::operations::table(Arc::clone(&daemon)));
     let mut runtime = Runtime {
         daemon,
+        operations,
         signals_stop: None,
         signals: None,
         counts_stop: None,

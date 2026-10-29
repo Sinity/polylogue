@@ -7,6 +7,7 @@ fn finite_batches_are_scrubbed_once_and_reopened_with_independent_positions() {
     let daemon = crate::test_daemon::start("synthetic changes");
     let web = Web {
         daemon: Arc::clone(&daemon.daemon),
+        operations: Arc::clone(daemon.operations()),
         key: "synthetic".into(),
         token: "synthetic".into(),
         port: 8765,

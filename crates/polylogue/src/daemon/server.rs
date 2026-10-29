@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
+fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surface::OperationTable) {
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
@@ -102,7 +102,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
             }),
         };
         let response = if let Some((operation, arguments)) = typed {
-            let table = crate::protocol::operations::table(Arc::clone(d));
+            let table = operations;
             let request = command_surface::Request {
                 operation: operation.into(),
                 arguments,
@@ -180,13 +180,14 @@ pub fn serve() -> std::io::Result<()> {
     #[cfg(not(feature = "sinex"))]
     let mode = service::ArchiveMode::Standalone;
     let runtime = service::start(&root, Config::from_env(), mode)?;
-    let server = Server::start(Arc::clone(&runtime.daemon))?;
+    let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;
     eprintln!(
         "polylogue: serving {} on {}",
         root.display(),
         runtime.daemon.archive.socket().display()
     );
-    let _web = match crate::web::start(Arc::clone(&runtime.daemon)) {
+    let _web = match crate::web::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
+    {
         Ok(web) => {
             eprintln!("polylogue: web reader on http://127.0.0.1:{}/", web.port);
             Some(web)
@@ -208,7 +209,10 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Self> {
+    pub fn start(
+        daemon: Arc<Daemon>,
+        operations: Arc<command_surface::OperationTable>,
+    ) -> std::io::Result<Self> {
         let listener = bind(&daemon)?;
         let (stop, stopped) = channel();
         let (quiesce, quiescing) = channel();
@@ -222,7 +226,7 @@ impl Server {
         server.thread = Some(
             std::thread::Builder::new()
                 .name("polylogue-socket".into())
-                .spawn(move || listen(listener, daemon, stopped, quiesce))?,
+                .spawn(move || listen(listener, daemon, operations, stopped, quiesce))?,
         );
         Ok(server)
     }
@@ -279,6 +283,7 @@ pub fn bind(daemon: &Daemon) -> std::io::Result<UnixListener> {
 fn listen(
     listener: UnixListener,
     daemon: Arc<Daemon>,
+    operations: Arc<command_surface::OperationTable>,
     stopped: Receiver<()>,
     quiesce: Sender<()>,
 ) -> std::io::Result<()> {
@@ -296,9 +301,10 @@ fn listen(
                         }
                     };
                     let daemon = Arc::clone(&daemon);
+                    let operations = Arc::clone(&operations);
                     match std::thread::Builder::new()
                         .name("polylogue-client".into())
-                        .spawn(move || serve_client(stream, &daemon))
+                        .spawn(move || serve_client(stream, &daemon, &operations))
                     {
                         Ok(thread) => clients.push((to_close, thread)),
                         Err(error) => {

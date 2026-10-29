@@ -14,6 +14,7 @@ fn fixture() -> Fixture {
     let daemon = crate::test_daemon::start("synthetic workbench prompt");
     let web = Arc::new(Web {
         daemon: Arc::clone(&daemon.daemon),
+        operations: Arc::clone(daemon.operations()),
         key: "notes".into(),
         token: "token".into(),
         port: 8765,
