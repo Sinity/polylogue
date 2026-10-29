@@ -82,14 +82,7 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
             }
             continue;
         }
-        let response = match request {
-            request @ Request::Attachment { reveal: true, .. } => {
-                super::execution::run(request, &limit, |request| {
-                    super::attachment::socket(&out, request, d)
-                })
-            }
-            request => service::handle_with_limit(request, d, &limit),
-        };
+        let response = service::handle_with_limit(request, d, &limit);
         let Ok(mut text) = serde_json::to_string(&response) else {
             return;
         };

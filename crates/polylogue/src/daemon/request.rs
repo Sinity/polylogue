@@ -128,8 +128,6 @@ pub enum Request {
         attachment: usize,
         #[serde(default)]
         input: Option<String>,
-        #[serde(default)]
-        reveal: bool,
         #[serde(default = "attachment_chunk")]
         length: usize,
         #[serde(default)]
