@@ -454,13 +454,31 @@ impl Reader<'_> {
             params.extend(after.values.iter().map(sql_value));
         }
         params.push(SqlValue::Int(-1));
-        let sql = program.page_sql_in_direction(after.is_some(), reverse);
+        let sql = if reverse {
+            program.metadata_page_sql(after.is_some(), true)
+        } else {
+            program.page_sql(after.is_some())
+        };
         let result = self.query_each(&sql, &params, |mut row| {
             selection
                 .scope
                 .check()
                 .map_err(SelectionError::from)
                 .map_err(VisitError::Selection)?;
+            if reverse {
+                let mut exact_params = values(&program.params);
+                exact_params.extend(program.order.iter().map(|key| sql_value(&row[&key.column])));
+                let mut projected = self
+                    .query(&program.row_at_sql(), &exact_params)
+                    .map_err(SelectionError::from)
+                    .map_err(VisitError::Selection)?;
+                row = projected.pop().ok_or_else(|| {
+                    VisitError::Selection(invalid(
+                        "stale_cursor",
+                        "the selected row position is unavailable",
+                    ))
+                })?;
+            }
             let order = program
                 .order
                 .iter()

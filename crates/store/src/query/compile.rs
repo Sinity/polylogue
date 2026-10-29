@@ -219,8 +219,37 @@ impl Program {
     }
 
     pub(crate) fn page_sql_in_direction(&self, after: bool, reverse: bool) -> String {
+        self.page_sql_projected(after, reverse, "*")
+    }
+
+    /// Ordering can sort eagerly. Keep answer-only body expressions outside
+    /// that work until the consumer actually requests the selected row.
+    pub(crate) fn metadata_page_sql(&self, after: bool, reverse: bool) -> String {
+        let columns = self
+            .order
+            .iter()
+            .map(|key| format!("\"{}\"", key.column))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.page_sql_projected(after, reverse, &columns)
+    }
+
+    /// Project exactly one already-selected total-order key, without sorting
+    /// answer bodies for the other selected rows.
+    pub(crate) fn row_at_sql(&self) -> String {
+        let predicate = self
+            .order
+            .iter()
+            .enumerate()
+            .map(|(i, key)| format!("\"{}\" IS ?{}", key.column, self.params.len() + i + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        format!("SELECT * FROM ({}) WHERE {predicate} LIMIT 1", self.sql)
+    }
+
+    fn page_sql_projected(&self, after: bool, reverse: bool, projection: &str) -> String {
         let n = self.params.len();
-        let mut sql = format!("SELECT * FROM ({})", self.sql);
+        let mut sql = format!("SELECT {projection} FROM ({})", self.sql);
         if after && !self.order.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&self.after_condition(n, reverse));

@@ -181,22 +181,22 @@ fn reverse_callback_stops_before_poisoned_earlier_body() {
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let options = options();
-    let selection = reader
-        .prepare_selection("events | sort by id", &options)
-        .unwrap();
-    let mut found = vec![];
-    reader
-        .visit_selection_before::<SelectionError>(&selection, 2, None, |ordinal, row| {
-            found.push((ordinal, row.values["kind"].clone()));
-            Ok(ControlFlow::Break(()))
-        })
-        .unwrap();
-    assert_eq!(found, vec![(1, Value::String("previous".into()))]);
-    assert!(
+    for query in ["events | sort by id", "events | sort by id | limit 3"] {
+        let selection = reader.prepare_selection(query, &options).unwrap();
+        let mut found = vec![];
         reader
-            .visit_selection_before::<SelectionError>(&selection, 2, None, |_, _| Ok(
-                ControlFlow::Continue(())
-            ))
-            .is_err()
-    );
+            .visit_selection_before::<SelectionError>(&selection, 2, None, |ordinal, row| {
+                found.push((ordinal, row.values["kind"].clone()));
+                Ok(ControlFlow::Break(()))
+            })
+            .unwrap();
+        assert_eq!(found, vec![(1, Value::String("previous".into()))]);
+        assert!(
+            reader
+                .visit_selection_before::<SelectionError>(&selection, 2, None, |_, _| Ok(
+                    ControlFlow::Continue(())
+                ))
+                .is_err()
+        );
+    }
 }
