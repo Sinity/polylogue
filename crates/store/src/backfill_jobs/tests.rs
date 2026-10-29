@@ -125,6 +125,7 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
         created_at: 0,
         events: vec![
             BackfillEvent {
+                request: "event-request".into(),
                 at: 0,
                 kind: "started".into(),
                 by: None,
@@ -133,6 +134,7 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
                 detail: None,
             },
             BackfillEvent {
+                request: "event-request".into(),
                 at: 10,
                 kind: "claimed".into(),
                 by: Some("ext".into()),

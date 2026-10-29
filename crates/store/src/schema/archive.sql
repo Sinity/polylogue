@@ -218,6 +218,7 @@ CREATE TABLE delivery_event (
   what              TEXT NOT NULL CHECK (what IN ('delivered','failed','not_sent','used')),
   at                INTEGER NOT NULL,
   detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
@@ -263,6 +264,7 @@ CREATE TABLE chat_action_event (
   detail            TEXT,
   by                TEXT,                   -- the extension instance holding the claim, or the operator
   receipt_json      TEXT,                   -- the provider's record of the result, as the extension saw it
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
   PRIMARY KEY (action, n)
 ) STRICT, WITHOUT ROWID;
@@ -306,6 +308,7 @@ CREATE TABLE backfill_job_event (
   unchanged         INTEGER NOT NULL,       -- already in the archive as the provider has them
   failed            INTEGER NOT NULL,       -- could not be captured
   detail            TEXT,
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
   PRIMARY KEY (job, n)
 ) STRICT, WITHOUT ROWID;

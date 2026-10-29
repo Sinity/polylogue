@@ -48,26 +48,30 @@ pub fn new_request_id() -> String {
 /// archive's write counter for this transaction.
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
     let source = crate::source::Source::of(tx)?;
-    let content = serde_json::to_vec(&r.write.intent())?;
-    let hash = blake3::hash(&content);
-    let seen: Option<Vec<u8>> = tx
-        .query_row(
-            &source.sql("SELECT content_hash FROM @source.client_request WHERE id = ?1"),
-            [&r.id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    match seen {
-        Some(h) if h.as_slice() == hash.as_bytes() => {
-            return Ok(UserOutcome {
-                pending: false,
-                id: r.id.clone(),
-                repeat: true,
-            });
-        }
-        Some(_) => return Err(StoreError::Conflict(r.id.clone())),
-        None => {}
+    apply_using(tx, r, seq, &|attachment| {
+        Ok(tx
+            .prepare_cached(&source.sql("SELECT 1 FROM @source.blob WHERE hash=?1 AND size=?2"))?
+            .exists(params![
+                &attachment.blob.0[..],
+                i64::try_from(attachment.size)
+                    .map_err(|_| StoreError::Invalid("attachment size is out of range".into()))?
+            ])?)
+    })
+}
+
+pub(crate) fn apply_using(
+    tx: &Transaction<'_>,
+    r: &UserRequest,
+    seq: i64,
+    available: &dyn Fn(&polylogue_model::user::ChatAttachment) -> Result<bool>,
+) -> Result<UserOutcome> {
+    let source = crate::source::Source::of(tx)?;
+    if let Some(known) = crate::primary::authored::known_request(tx, r)? {
+        let mut outcome = known.outcome;
+        outcome.repeat = true;
+        return Ok(outcome);
     }
+    let hash = crate::primary::authored::request_hash(r)?;
     tx.execute(
         &source.sql(
             "INSERT INTO @source.client_request(id, content_hash, created_at, request, commit_seq)
@@ -75,14 +79,15 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         ),
         params![
             r.id,
-            hash.as_bytes().as_slice(),
+            &hash[..],
             r.at.unix_ms(),
             crate::encoding::pack_text(&serde_json::to_string(r)?)?,
             seq
         ],
     )?;
     let at = r.at.unix_ms();
-    match &r.write {
+    let outcome = match &r.write {
+        UserWrite::Variant { variant } => crate::variants::write(tx, r, variant, seq),
         UserWrite::AddNote { note } | UserWrite::AnnotateQuery { note, .. } => {
             add_note(tx, r, note, seq)
         }
@@ -90,7 +95,19 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             if note.kind != NoteKind::SavedQuery {
                 return Err(StoreError::Invalid("save needs a saved query note".into()));
             }
-            add_note(tx, r, note, seq)
+            let mut resolved = note.clone();
+            let name = resolved
+                .key
+                .as_ref()
+                .ok_or_else(|| StoreError::Invalid("a saved query needs a name".into()))?;
+            let heads:Vec<String>=tx.prepare_cached(&source.sql("SELECT n.id FROM @source.note n WHERE n.kind='saved_query' AND n.key=?1 AND NOT EXISTS(SELECT 1 FROM @source.note_relation r WHERE r.kind='revises' AND r.other='note:'||n.id) AND NOT EXISTS(SELECT 1 FROM @source.note_relation w WHERE w.kind='withdraws' AND w.other='note:'||n.first_note) ORDER BY n.id"))?.query_map([name],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?;
+            if heads.len() > 1 {
+                return Err(StoreError::Conflict(format!(
+                    "saved query {name} has conflicting heads"
+                )));
+            }
+            resolved.revises = heads.into_iter().next();
+            add_note(tx, r, &resolved, seq)
         }
         UserWrite::Withdraw {
             note,
@@ -136,8 +153,8 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 ],
             )?;
             if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
-                tx.execute(&source.sql("INSERT INTO @source.delivery_event(delivery, what, at, detail, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4)"),
-                    params![r.id, at, "written to the harness hook output", seq])?;
+                tx.execute(&source.sql("INSERT INTO @source.delivery_event(delivery, what, at, detail, request, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4, ?5)"),
+                    params![r.id, at, "written to the harness hook output", r.id, seq])?;
             }
             Ok(UserOutcome {
                 pending: false,
@@ -157,9 +174,9 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 return Err(StoreError::NotFound(format!("delivery {delivery}")));
             }
             tx.execute(
-                &source.sql("INSERT OR IGNORE INTO @source.delivery_event(delivery, what, at, detail, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5)"),
-                params![delivery, what.as_str(), at, detail, seq],
+                &source.sql("INSERT OR IGNORE INTO @source.delivery_event(delivery, what, at, detail, request, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
+                params![delivery, what.as_str(), at, detail, r.id, seq],
             )?;
             Ok(UserOutcome {
                 pending: false,
@@ -187,7 +204,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             })
         }
         UserWrite::ChatEnqueue(new) => {
-            let id = crate::chat_actions::enqueue(tx, new, at, seq)?;
+            let id = crate::chat_actions::enqueue(tx, new, at, seq, &r.id, available)?;
             Ok(UserOutcome {
                 pending: false,
                 repeat: id != new.id,
@@ -196,7 +213,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         }
         UserWrite::ChatClaim { by } => Ok(UserOutcome {
             pending: false,
-            id: crate::chat_actions::claim(tx, by, at, seq)?,
+            id: crate::chat_actions::claim(tx, by, at, seq, &r.id)?,
             repeat: false,
         }),
         UserWrite::ChatReport {
@@ -217,6 +234,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 receipt.as_ref(),
                 at,
                 seq,
+                &r.id,
             )?;
             Ok(UserOutcome {
                 pending: false,
@@ -230,7 +248,16 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             by,
             detail,
         } => {
-            crate::chat_actions::decide(tx, action, *approve, by, detail.as_deref(), at, seq)?;
+            crate::chat_actions::decide(
+                tx,
+                action,
+                *approve,
+                by,
+                detail.as_deref(),
+                at,
+                seq,
+                &r.id,
+            )?;
             Ok(UserOutcome {
                 pending: false,
                 id: action.clone(),
@@ -238,7 +265,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             })
         }
         UserWrite::BackfillStart(new) => {
-            let id = crate::backfill_jobs::start(tx, new, at, seq)?;
+            let id = crate::backfill_jobs::start(tx, new, at, seq, &r.id)?;
             Ok(UserOutcome {
                 pending: false,
                 repeat: id != new.id,
@@ -247,11 +274,11 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         }
         UserWrite::BackfillClaim { by } => Ok(UserOutcome {
             pending: false,
-            id: crate::backfill_jobs::claim(tx, by, at, seq)?,
+            id: crate::backfill_jobs::claim(tx, by, at, seq, &r.id)?,
             repeat: false,
         }),
         UserWrite::BackfillReport { job, by, report } => {
-            crate::backfill_jobs::report(tx, job, by, report, at, seq)?;
+            crate::backfill_jobs::report(tx, job, by, report, at, seq, &r.id)?;
             Ok(UserOutcome {
                 pending: false,
                 id: job.clone(),
@@ -259,7 +286,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             })
         }
         UserWrite::BackfillCancel { job } => {
-            crate::backfill_jobs::cancel(tx, job, at, seq)?;
+            crate::backfill_jobs::cancel(tx, job, at, seq, &r.id)?;
             Ok(UserOutcome {
                 pending: false,
                 id: job.clone(),
@@ -291,7 +318,17 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 repeat: false,
             })
         }
-    }
+    }?;
+    let effect = crate::primary::authored::capture(tx, r, seq)?;
+    tx.execute(
+        &source.sql("UPDATE @source.client_request SET outcome=?2,effect=?3 WHERE id=?1"),
+        params![
+            r.id,
+            crate::primary::authored::pack(&outcome)?,
+            crate::primary::authored::pack(&effect)?
+        ],
+    )?;
+    Ok(outcome)
 }
 
 /// The first note of the note a request adds or withdraws, once applied in

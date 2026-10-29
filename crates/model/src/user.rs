@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case")]
 pub enum UserWrite {
+    Variant {
+        variant: crate::NewVariant,
+    },
     AddNote {
         note: NewNote,
     },

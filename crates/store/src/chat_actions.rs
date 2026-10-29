@@ -216,7 +216,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         .collect::<Result<_>>()?;
     let events = conn
         .prepare_cached(&format!(
-            "SELECT at, kind, phase, detail, by, receipt_json FROM {schema}chat_action_event
+            "SELECT at, kind, phase, detail, by, receipt_json, request FROM {schema}chat_action_event
              WHERE action = ?1 ORDER BY n"
         ))?
         .query_map([id], |r| {
@@ -232,6 +232,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         .map(|row| {
             let (at, kind, phase, detail, by, receipt) = row?;
             Ok(ChatEvent {
+                request:r.get(6)?,
                 at,
                 kind,
                 phase,
@@ -263,7 +264,14 @@ fn refused(code: &'static str) -> StoreError {
 }
 
 /// Stores a new action, or finds the one a resent request made.
-pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -> Result<String> {
+pub(crate) fn enqueue(
+    tx: &Connection,
+    new: &NewChatAction,
+    at: i64,
+    seq: i64,
+    request: &str,
+    available: &dyn Fn(&ChatAttachment) -> Result<bool>,
+) -> Result<String> {
     let source = crate::source::Source::of(tx)?;
     let known: Option<(String, Vec<u8>)> = tx
         .query_row(
@@ -295,14 +303,7 @@ pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -
         ],
     )?;
     for a in &new.attachments {
-        let present: bool = tx
-            .query_row(
-                &source.sql("SELECT 1 FROM @source.blob WHERE hash = ?1"),
-                [&a.blob.0[..]],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(false);
+        let present = available(a)?;
         if !present {
             return Err(refused("unknown_attachment"));
         }
@@ -324,12 +325,14 @@ pub(crate) fn enqueue(tx: &Connection, new: &NewChatAction, at: i64, seq: i64) -
     } else {
         "queued"
     };
-    add_event(tx, &new.id, at, phase, phase, None, None, None, seq)?;
+    add_event(
+        tx, request, &new.id, at, phase, phase, None, None, None, seq,
+    )?;
     Ok(new.id.clone())
 }
 
 /// Hands the oldest queued action to `by`, unless another action is out.
-pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<String> {
+pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64, request: &str) -> Result<String> {
     let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
         .prepare_cached(&source.sql("SELECT id FROM @source.chat_action ORDER BY created_at, id"))?
@@ -347,7 +350,18 @@ pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<Stri
         }
     }
     let id = next.ok_or_else(|| StoreError::NotFound("a queued chat action".into()))?;
-    add_event(tx, &id, at, "claimed", "claimed", None, Some(by), None, seq)?;
+    add_event(
+        tx,
+        request,
+        &id,
+        at,
+        "claimed",
+        "claimed",
+        None,
+        Some(by),
+        None,
+        seq,
+    )?;
     Ok(id)
 }
 
@@ -363,6 +377,7 @@ pub(crate) fn report(
     receipt: Option<&serde_json::Value>,
     at: i64,
     seq: i64,
+    request: &str,
 ) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
     let action = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_chat_action"))?;
@@ -377,7 +392,18 @@ pub(crate) fn report(
     if action.stage_only && next == Some(ChatStatus::Submitted) {
         return Err(refused("stage_only_action_cannot_submit"));
     }
-    add_event(tx, id, at, kind, phase, detail, Some(by), receipt, seq)
+    add_event(
+        tx,
+        request,
+        id,
+        at,
+        kind,
+        phase,
+        detail,
+        Some(by),
+        receipt,
+        seq,
+    )
 }
 
 /// The operator's approval or refusal of a held submit.
@@ -389,6 +415,7 @@ pub(crate) fn decide(
     detail: Option<&str>,
     at: i64,
     seq: i64,
+    request: &str,
 ) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
     let action = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_chat_action"))?;
@@ -400,12 +427,24 @@ pub(crate) fn decide(
     } else {
         ("declined", "declined")
     };
-    add_event(tx, id, at, kind, phase, detail, Some(by), None, seq)
+    add_event(
+        tx,
+        request,
+        id,
+        at,
+        kind,
+        phase,
+        detail,
+        Some(by),
+        None,
+        seq,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn add_event(
     tx: &Connection,
+    request: &str,
     id: &str,
     at: i64,
     kind: &str,
@@ -417,9 +456,9 @@ fn add_event(
 ) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
     tx.execute(
-        &source.sql("INSERT INTO @source.chat_action_event(action, n, at, kind, phase, detail, by, receipt_json, commit_seq)
+        &source.sql("INSERT INTO @source.chat_action_event(action, n, at, kind, phase, detail, by, receipt_json, request, commit_seq)
          VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM @source.chat_action_event WHERE action = ?1),
-                 ?2, ?3, ?4, ?5, ?6, ?7, ?8)"),
+                 ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"),
         params![
             id,
             at,
@@ -428,6 +467,7 @@ fn add_event(
             detail,
             by,
             receipt.map(serde_json::to_string).transpose()?,
+            request,
             seq
         ],
     )?;

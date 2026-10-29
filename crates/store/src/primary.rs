@@ -1,4 +1,5 @@
 //! Durable primary producer intents and the confirmed cache contract.
+pub mod authored;
 pub mod products;
 pub(crate) mod projection;
 pub use products::{
