@@ -9,12 +9,12 @@ fn typed_page(output: &Output) -> ReadPage {
     serde_json::from_value(json(output)).unwrap()
 }
 #[derive(Default)]
-struct Items {
+pub(super) struct Items {
     values: Vec<ReadItem>,
     partial: BTreeMap<(SelectionLocator, u64, BlobHash), (String, u64)>,
 }
 impl Items {
-    fn push(&mut self, page: &ReadPage) {
+    pub(super) fn push(&mut self, page: &ReadPage) {
         for item in &page.document.items {
             if let ItemKind::Fragment {
                 text,
@@ -47,7 +47,7 @@ impl Items {
             }
         }
     }
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         assert!(
             self.partial.is_empty(),
             "delivery ended within an encoded item"

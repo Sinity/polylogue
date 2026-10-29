@@ -388,7 +388,7 @@ mod structured_json;
 mod read_current;
 mod read_pages;
 
-mod read_masking;
+mod stored_text;
 
 mod search_snippets;
 
