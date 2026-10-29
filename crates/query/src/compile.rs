@@ -70,7 +70,7 @@ pub struct SavedQuery {
 }
 
 /// A saved query a program ran, by the revision its name resolved to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Definition {
     pub name: String,
     pub revision: String,
@@ -104,7 +104,7 @@ pub enum Param {
     Text(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
     /// One row per unit row.
@@ -118,7 +118,7 @@ pub enum Shape {
     Matches,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ColKind {
     Text,
@@ -137,7 +137,7 @@ pub enum ColKind {
 }
 
 /// The entity named by a scalar column, proven by its owning field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnReference {
     Session,
@@ -146,7 +146,7 @@ pub enum ColumnReference {
     Note,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Column {
     pub name: String,
     pub kind: ColKind,
