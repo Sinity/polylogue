@@ -74,7 +74,7 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
             &source,
             title.as_deref(),
             vec![],
-            polylogue_render::View::Full,
+            polylogue_model::read::View::Full,
             polylogue_render::Format::Json,
             &[],
         )
