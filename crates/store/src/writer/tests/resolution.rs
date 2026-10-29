@@ -199,3 +199,91 @@ fn collection_without_a_parser_commits_its_explicit_status() {
         .unwrap();
     assert_eq!(progress, ("no_parser_yet".into(), 100, String::new()));
 }
+
+#[test]
+fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
+    let w = test_archive();
+    let sender = w.writer.sender().unwrap();
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let snapshot = index.unchecked_transaction().unwrap();
+    assert_eq!(
+        snapshot
+            .query_row("SELECT count(*) FROM event_value", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let data = serde_json::json!({"shared":42});
+    let mut input = batch("value-route", 0, 0, Vec::new(), &["s"]);
+    input.parse[0].output.events.push(Event {
+        session: Some(sid("s")),
+        kind: "value".into(),
+        at: None,
+        after: None,
+        range: Some((0, 1)),
+        data: data.clone(),
+    });
+    sender.send(input).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    let latest = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let committed: i64 = latest
+        .query_row("SELECT pk FROM event_value", [], |row| row.get(0))
+        .unwrap();
+    let prepared = sender
+        .0
+        .resolver
+        .value(&snapshot, resolve::Kind::EventValue, &data)
+        .unwrap();
+    assert_eq!(
+        prepared.key.pk, committed,
+        "an older snapshot assigned a second identity to committed content"
+    );
+}
+
+#[test]
+fn keys_created_after_the_first_build_are_shared_by_following_routes() {
+    let w = test_archive();
+    w.writer
+        .send(batch(
+            "initial",
+            0,
+            0,
+            vec![row(
+                1,
+                text_message("initial", "s", Role::User, "initial", None),
+            )],
+            &["s"],
+        ))
+        .unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    for input in ["later-a", "later-b"] {
+        w.writer
+            .send(batch(
+                input,
+                0,
+                0,
+                vec![row(
+                    1,
+                    text_message("later", "s", Role::User, "later", None),
+                )],
+                &["s"],
+            ))
+            .unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+    }
+    assert_eq!(texts(&w, "s").len(), 2);
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM message WHERE id='claude-code:later'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}

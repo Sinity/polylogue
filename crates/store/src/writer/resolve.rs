@@ -72,7 +72,9 @@ impl ResolvedKeys {
 struct Active {
     keys: BTreeSet<Key>,
     next: BTreeMap<Kind, i64>,
-    values: BTreeMap<Key, std::sync::Weak<Reservation>>,
+    // IDs outlive their payload owners: an older snapshot can resolve a value
+    // after another group committed it and released its prepared bytes.
+    values: BTreeMap<Key, (i64, std::sync::Weak<Reservation>)>,
 }
 pub(super) struct Resolver {
     archive: Archive,
@@ -92,9 +94,6 @@ impl Drop for Lease {
         for key in &self.keys {
             active.keys.remove(key);
         }
-        active
-            .values
-            .retain(|_, reservation| reservation.strong_count() > 0);
         drop(active);
         self.resolver.available.notify_all();
     }
@@ -180,6 +179,22 @@ impl Resolver {
         Ok(pk)
     }
 
+    pub(super) fn remember(&self, key: &Key, pk: i64) {
+        if let Some(first) = &self.first {
+            match key.kind {
+                Kind::Message => {
+                    first.add_message(std::str::from_utf8(&key.bytes).expect("message key"), pk)
+                }
+                Kind::Event => {
+                    first.add_event(std::str::from_utf8(&key.bytes).expect("event key"), pk)
+                }
+                Kind::Text => {
+                    first.add_text(key.bytes.as_slice().try_into().expect("text hash"), pk)
+                }
+                _ => {}
+            }
+        }
+    }
     pub(super) fn find(&self, index: &Connection, key: &Key) -> Result<Option<i64>> {
         let first = self.first.as_deref();
         match key.kind {
@@ -474,6 +489,7 @@ impl Resolver {
                     },
                     existing: existing.is_some(),
                 };
+                self.remember(&key, row.pk);
                 resolved.rows.insert(key, row);
             }
             versions::resolve(self, &snapshot, batches, &chains, &resolved)?;
@@ -508,7 +524,7 @@ pub(crate) struct PackedValue {
     pub body: Vec<u8>,
 }
 impl Resolver {
-    fn value(
+    pub(super) fn value(
         &self,
         index: &Connection,
         kind: Kind,
@@ -530,8 +546,15 @@ impl Resolver {
         } else {
             let mut active = self.active.lock().expect("resolver lock");
             let key = Key::new(kind, hash.as_slice());
-            if let Some(prior) = active.values.get(&key).and_then(std::sync::Weak::upgrade) {
-                prior
+            if let Some((pk, prior)) = active.values.get_mut(&key) {
+                match prior.upgrade() {
+                    Some(prior) => prior,
+                    None => {
+                        let reservation = Arc::new(Reservation { pk: *pk });
+                        *prior = Arc::downgrade(&reservation);
+                        reservation
+                    }
+                }
             } else {
                 let next = active.next.get_mut(&kind).expect("value allocator");
                 let pk = *next;
@@ -539,7 +562,9 @@ impl Resolver {
                     .checked_add(1)
                     .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?;
                 let reservation = Arc::new(Reservation { pk });
-                active.values.insert(key, Arc::downgrade(&reservation));
+                active
+                    .values
+                    .insert(key, (pk, Arc::downgrade(&reservation)));
                 reservation
             }
         };
@@ -592,6 +617,7 @@ pub(super) fn prepare_index(
             },
             existing: existing.is_some(),
         };
+        resolver.remember(&key, row.pk);
         resolved.rows.insert(key, row);
     }
     versions::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;

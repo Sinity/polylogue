@@ -120,6 +120,7 @@ fn loading_committed_rows_restores_every_key_map() {
 #[test]
 fn startup_key_snapshot_never_reads_payload_columns() {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use rusqlite::params;
     let conn = index();
     let pk = insert_event(&conn, "kept");
     conn.execute(

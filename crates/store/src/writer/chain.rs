@@ -93,6 +93,7 @@ impl ChainReading {
                     },
                     existing: existing.is_some(),
                 };
+                resolver.remember(&key, row.pk);
                 resolved.rows.insert(key, row);
             }
             let keys = Arc::new(resolved);

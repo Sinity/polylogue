@@ -43,7 +43,6 @@ pub use batch::{
 };
 pub(crate) use bytes::observation_id;
 use bytes::*;
-use excluded::*;
 use rows::*;
 use search::*;
 
