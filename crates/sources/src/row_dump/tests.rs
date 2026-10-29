@@ -45,12 +45,15 @@ fn malformed_row_records_are_counted_with_fixed_reasons() {
     let step = run(
         &RowDump,
         &mut NoState::default(),
-        b"{\"t\":\"facts\"}\n{\"schema\":false}\n{bad}\n",
+        b"{\"t\":\"facts\"}\n{\"schema\":false,\"table_metadata\":{\"facts\":{\"future\":{\"leaf\":true}}}}\n{bad}\n",
         0,
     )
     .unwrap();
     assert_eq!(step.counts.records, 3);
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 3);
+    let shape = &step.counts.wire_shapes
+        [&serde_json::to_string(&("table_metadata", "facts", "/future/leaf")).unwrap()];
+    assert_eq!(shape.unused_count, 1);
 }
 
 #[test]

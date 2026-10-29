@@ -51,22 +51,25 @@ impl Parser for RowDump {
                 &crate::fields::header(value, &["schema", "table_metadata"]),
                 &HEADER,
             );
-            let Some(tables) = schema.as_object() else {
-                return RecordOutcome::unreadable("row-dump schema is not an object");
-            };
-            for (table, definition) in tables {
-                records.unknown_table_schema(table, definition);
+            let mut invalid = None;
+            if let Some(tables) = schema.as_object() {
+                for (table, definition) in tables {
+                    records.unknown_table_schema(table, definition);
+                }
+            } else {
+                invalid = Some("row-dump schema is not an object");
             }
             if let Some(metadata) = value.get("table_metadata") {
-                let Some(tables) = metadata.as_object() else {
+                if let Some(tables) = metadata.as_object() {
+                    for (table, metadata) in tables {
+                        records.table_metadata(table, metadata);
+                    }
+                } else {
                     records.fields("table metadata", metadata, &INVALID);
-                    return RecordOutcome::unreadable("row-dump table metadata is not an object");
-                };
-                for (table, metadata) in tables {
-                    records.table_metadata(table, metadata);
+                    invalid.get_or_insert("row-dump table metadata is not an object");
                 }
             }
-            return RecordOutcome::Used;
+            return invalid.map_or(RecordOutcome::Used, RecordOutcome::unreadable);
         }
         let Some(table) = value.get("t").and_then(Json::as_str) else {
             records.fields("row", value, &INVALID);
