@@ -119,3 +119,50 @@ fn variant_source_binding_cannot_be_changed_by_a_revision() {
         Err(StoreError::Invalid(_))
     ));
 }
+
+#[test]
+fn variant_text_is_a_separate_derived_index_and_tracks_canonical_lifecycle() {
+    let mut ledger = archive();
+    let request = request("first", None, "Tłumaczenie uniquely searchable");
+    write_request(&mut ledger, &request, 1);
+    let effect = capture(&ledger, &request, 1).unwrap();
+    let index = Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&index).unwrap();
+    index
+        .execute_batch(&crate::source::schema().unwrap().ddl)
+        .unwrap();
+    index.execute_batch(SCHEMA).unwrap();
+    apply(&index, &effect, 7).unwrap();
+    project(&index).unwrap();
+    project(&index).unwrap();
+    let count: i64 = index
+        .query_row(
+            "SELECT count(*) FROM variant_fts WHERE variant_fts MATCH 'uniquely'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM variant_text", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    index
+        .execute("DELETE FROM source_variant_part", [])
+        .unwrap();
+    index.execute("DELETE FROM source_variant", []).unwrap();
+    project(&index).unwrap();
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM variant_fts WHERE variant_fts MATCH 'uniquely'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
