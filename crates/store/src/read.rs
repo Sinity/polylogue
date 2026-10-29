@@ -23,6 +23,8 @@ mod captured;
 mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;
+mod revisions;
+pub use revisions::RevisionPoint;
 mod tool_outcomes;
 pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
