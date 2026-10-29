@@ -161,6 +161,8 @@ pub struct UserOutcome {
     pub id: String,
     /// The request had already been written; nothing changed.
     pub repeat: bool,
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// One user write with the request that carries it.

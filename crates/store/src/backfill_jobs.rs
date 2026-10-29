@@ -119,7 +119,7 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?;
         ids.iter()
             .map(|id| {
-                read(conn, "a.", id)?
+                read(conn, "source_", id)?
                     .ok_or_else(|| StoreError::NotFound(format!("backfill job {id}")))
             })
             .collect()
@@ -187,20 +187,25 @@ fn refused(code: &'static str) -> StoreError {
 /// Starts a job, or finds the provider's job that has not ended: one runs
 /// per provider at a time.
 pub(crate) fn start(tx: &Connection, new: &NewBackfillJob, at: i64, seq: i64) -> Result<String> {
+    let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
-        .prepare_cached("SELECT id FROM backfill_job WHERE provider = ?1 ORDER BY created_at, id")?
+        .prepare_cached(&source.sql(
+            "SELECT id FROM @source.backfill_job WHERE provider = ?1 ORDER BY created_at, id",
+        ))?
         .query_map([&new.provider], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for id in ids {
-        if let Some(job) = read(tx, "", &id)?
+        if let Some(job) = read(tx, source.prefix(), &id)?
             && !job.status(at).0.ended()
         {
             return Ok(id);
         }
     }
     tx.execute(
-        "INSERT INTO backfill_job(id, provider, since, created_at, commit_seq)
+        &source.sql(
+            "INSERT INTO @source.backfill_job(id, provider, since, created_at, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5)",
+        ),
         params![new.id, new.provider, new.since, at, seq],
     )?;
     let event = BackfillEvent {
@@ -217,13 +222,14 @@ pub(crate) fn start(tx: &Connection, new: &NewBackfillJob, at: i64, seq: i64) ->
 
 /// Hands `by` the job it already holds, or the oldest waiting one.
 pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64) -> Result<String> {
+    let source = crate::source::Source::of(tx)?;
     let ids: Vec<String> = tx
-        .prepare_cached("SELECT id FROM backfill_job ORDER BY created_at, id")?
+        .prepare_cached(&source.sql("SELECT id FROM @source.backfill_job ORDER BY created_at, id"))?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut next = None;
     for id in ids {
-        let Some(job) = read(tx, "", &id)? else {
+        let Some(job) = read(tx, source.prefix(), &id)? else {
             continue;
         };
         match job.status(at) {
@@ -255,7 +261,8 @@ pub(crate) fn report(
     at: i64,
     seq: i64,
 ) -> Result<()> {
-    let job = read(tx, "", id)?.ok_or_else(|| refused("unknown_backfill_job"))?;
+    let source = crate::source::Source::of(tx)?;
+    let job = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_backfill_job"))?;
     if report_status(&report.kind).is_none() {
         return Err(refused("unknown_report"));
     }
@@ -279,7 +286,8 @@ pub(crate) fn report(
 
 /// The operator stops a job.
 pub(crate) fn cancel(tx: &Connection, id: &str, at: i64, seq: i64) -> Result<()> {
-    let job = read(tx, "", id)?.ok_or_else(|| refused("unknown_backfill_job"))?;
+    let source = crate::source::Source::of(tx)?;
+    let job = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_backfill_job"))?;
     if job.status(at).0.ended() {
         return Err(refused("job_ended"));
     }
@@ -296,12 +304,13 @@ pub(crate) fn cancel(tx: &Connection, id: &str, at: i64, seq: i64) -> Result<()>
 }
 
 fn add_event(tx: &Connection, id: &str, e: &BackfillEvent, seq: i64) -> Result<()> {
+    let source = crate::source::Source::of(tx)?;
     let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
     tx.execute(
-        "INSERT INTO backfill_job_event(job, n, at, kind, by, position, listed, captured,
+        &source.sql("INSERT INTO @source.backfill_job_event(job, n, at, kind, by, position, listed, captured,
              unchanged, failed, detail, commit_seq)
-         VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM backfill_job_event WHERE job = ?1),
-                 ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM @source.backfill_job_event WHERE job = ?1),
+                 ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
         params![
             id,
             e.at,
