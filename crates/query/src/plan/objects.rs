@@ -234,6 +234,56 @@ fn replay_bindings(object: &QueryObject, native: &Catalog) -> Result<Bindings, Q
             }],
         );
     }
+    for output in &native.source_outputs {
+        if let OutputSource::Result { reference, part } = &output.source {
+            let id = reference
+                .strip_prefix("result:")
+                .ok_or_else(|| invalid("kept output has no canonical result identity"))?;
+            let unit = output
+                .schema
+                .unit
+                .clone()
+                .ok_or_else(|| invalid("kept output has no row domain"))?;
+            let columns = output
+                .schema
+                .fields
+                .iter()
+                .map(|field| {
+                    use query_language::catalog::FieldKind;
+                    let kind = match field.kind {
+                        FieldKind::Integer | FieldKind::Number => crate::ColKind::Number,
+                        FieldKind::Money => crate::ColKind::Money,
+                        FieldKind::Time => crate::ColKind::Time,
+                        FieldKind::Duration => crate::ColKind::Duration,
+                        FieldKind::Bool => crate::ColKind::Bool,
+                        FieldKind::Json => crate::ColKind::Json,
+                        FieldKind::List(_) => crate::ColKind::Ids,
+                        _ => crate::ColKind::Text,
+                    };
+                    crate::Column {
+                        name: field.name.clone(),
+                        kind,
+                        reference: None,
+                    }
+                })
+                .collect();
+            let kept = bindings
+                .kept
+                .entry(id.to_owned())
+                .or_insert_with(|| crate::Kept {
+                    unit: unit.clone(),
+                    columns: vec![],
+                    match_columns: vec![],
+                });
+            if kept.unit != unit {
+                return Err(invalid("kept output parts disagree about their row domain"));
+            }
+            match part {
+                ResultPart::Rows => kept.columns = columns,
+                ResultPart::Matches => kept.match_columns = columns,
+            }
+        }
+    }
     Ok(bindings)
 }
 fn expand(query: &Query, native: &Catalog, bindings: &Bindings) -> Result<Query, QueryError> {

@@ -459,3 +459,106 @@ fn model_authored_user_task_does_not_answer_a_turn() {
     assert_eq!(after[0]["latency"], 2000);
     assert_eq!(after[0]["attempts"], 1);
 }
+
+#[test]
+fn selected_content_binding_tracks_versions_without_decoding_bodies() {
+    use crate::fixture::writer::{WriterArchive, prose};
+    let mut archive = WriterArchive::new();
+    archive.write("one", prose("one", 1, 1, "first body"));
+    archive.write("two", prose("two", 1, 2, "unrelated body"));
+    let fingerprint = |target: &str| {
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let prepared = reader.prepare_selection(target, &options()).unwrap();
+        reader
+            .selection_content_fingerprint(&prepared, false, None)
+            .unwrap()
+    };
+    let first_session = fingerprint("session:claude-code:one");
+    let first_message = fingerprint("message:claude-code:one-p1");
+    archive.write("two", prose("two", 2, 3, "unrelated append"));
+    let fingerprint = |target: &str| {
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let prepared = reader.prepare_selection(target, &options()).unwrap();
+        reader
+            .selection_content_fingerprint(&prepared, false, None)
+            .unwrap()
+    };
+    assert_eq!(fingerprint("session:claude-code:one"), first_session);
+    assert_eq!(fingerprint("message:claude-code:one-p1"), first_message);
+    archive.write("one", prose("one", 2, 4, "selected session append"));
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let session = reader
+        .prepare_selection("session:claude-code:one", &options())
+        .unwrap();
+    assert_ne!(
+        reader
+            .selection_content_fingerprint(&session, false, None)
+            .unwrap(),
+        first_session
+    );
+    drop(session);
+    drop(reader);
+    drop(pool);
+    let conn = crate::archive::open_write(&archive.archive.index_db(), 1).unwrap();
+    conn.execute("UPDATE message_version SET body=X'ff'", [])
+        .unwrap();
+    drop(conn);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let message = reader
+        .prepare_selection("message:claude-code:one-p1", &options())
+        .unwrap();
+    assert_eq!(
+        reader
+            .selection_content_fingerprint(&message, false, None)
+            .unwrap(),
+        first_message
+    );
+    assert!(
+        reader
+            .message_with_projection(&MessageId::parse("claude-code:one-p1").unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
+    let (_dir, mut f) = fixture();
+    f.note(
+        "saved_query",
+        Some("picked"),
+        Some("sessions where session:test:one"),
+        "query:picked",
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let prepared = reader
+        .prepare_selection("query:picked", &options())
+        .unwrap();
+    let object = prepared.query_object().unwrap();
+    let mut unrelated = options();
+    unrelated.saved.clear();
+    let replay = reader
+        .prepare_query_object_selection(
+            &object,
+            &unrelated,
+            &polylogue_query::plan::catalog_fingerprint(),
+        )
+        .unwrap();
+    let mut references = vec![];
+    reader
+        .visit_selection::<SelectionError>(&replay, None, None, |row| {
+            references.push(row.reference.unwrap().to_string());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(references, ["session:test:one"]);
+    assert_eq!(
+        prepared.cursor_context().versions,
+        replay.cursor_context().versions
+    );
+}

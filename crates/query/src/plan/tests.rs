@@ -145,3 +145,32 @@ fn native_saved_outputs_expose_only_columns_the_definition_produces() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn canonical_kept_replay_retains_its_immutable_typed_columns() {
+    let mut bindings = Bindings::default();
+    bindings.kept.insert(
+        "kept-one".into(),
+        crate::Kept {
+            unit: "sessions".into(),
+            columns: vec![
+                crate::Column {
+                    name: "when".into(),
+                    kind: crate::ColKind::Time,
+                    reference: None,
+                },
+                crate::Column {
+                    name: "ready".into(),
+                    kind: crate::ColKind::Bool,
+                    reference: None,
+                },
+            ],
+            match_columns: vec![],
+        },
+    );
+    let plan = prepare("result:kept-one | where ready:true", &bindings, |_| Ok(())).unwrap();
+    let object = plan.query_object().unwrap();
+    let restored = replay(&object, &catalog_fingerprint()).unwrap();
+    assert_eq!(restored.bindings().kept, bindings.kept);
+    assert_eq!(restored.question_id(), plan.question_id());
+}
