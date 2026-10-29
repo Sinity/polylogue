@@ -22,7 +22,7 @@ pub(super) fn project(
         }
         Ok(None) => Ok(None),
         Err(ReadError::UnsupportedTarget { view, target, accepted_views })
-            if mixed && target == "document" =>
+            if mixed && target.starts_with("document:") =>
         {
             if let Some(coverage) = footer.coverage.iter_mut().find(|coverage| {
                 coverage.target == TargetKind::Document && coverage.view == view
@@ -78,6 +78,9 @@ impl<'a> Stream<'a> {
     }
 
     pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Response> {
+        if matches!(record.record(), Some(Record::Manifest(_))) {
+            return Err(error("read", "a read cannot emit an embedded manifest"));
+        }
         self.emit("record", record)?;
         if let Some(record) = record.record() {
             match record {

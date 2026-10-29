@@ -13,6 +13,7 @@ use std::ops::ControlFlow;
 const CURSOR_VERSION: u8 = 6;
 
 mod attachments;
+mod output;
 pub(crate) mod page_ends;
 
 pub(super) struct Options<'a> {

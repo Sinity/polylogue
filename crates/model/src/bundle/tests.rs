@@ -218,18 +218,30 @@ fn presentation_transfer_cannot_carry_an_omitted_canonical_body() {
     let record: ReadRecord = serde_json::from_str(r#"{"kind":"presentation","parts":[]}"#).unwrap();
     assert!(record.record().is_none());
     assert!(record.parts().is_empty());
-    assert_eq!(serde_json::to_string(&record).unwrap(), r#"{"kind":"presentation","parts":[]}"#);
-    let forbidden = r#"{"kind":"presentation","parts":[],"record":{"record":"document","data":{}}}"#;
+    assert_eq!(
+        serde_json::to_string(&record).unwrap(),
+        r#"{"kind":"presentation","parts":[]}"#
+    );
+    let forbidden =
+        r#"{"kind":"presentation","parts":[],"record":{"record":"document","data":{}}}"#;
     assert!(serde_json::from_str::<ReadRecord>(forbidden).is_err());
     let schema = serde_json::to_value(schemars::schema_for!(ReadRecord)).unwrap();
-    assert!(schema["oneOf"].as_array().is_some_and(|variants| variants.len() == 2));
+    assert!(
+        schema["oneOf"]
+            .as_array()
+            .is_some_and(|variants| variants.len() == 2)
+    );
 }
 
 #[test]
 fn canonical_transfer_retains_its_typed_record_after_round_trip() {
     use crate::read::ReadRecord;
-    let transfer = ReadRecord::Canonical { record: Box::new(Record::Message(Box::new(message_record()))), parts: vec![] };
-    let restored: ReadRecord = serde_json::from_slice(&serde_json::to_vec(&transfer).unwrap()).unwrap();
+    let transfer = ReadRecord::Canonical {
+        record: Box::new(Record::Message(Box::new(message_record()))),
+        parts: vec![],
+    };
+    let restored: ReadRecord =
+        serde_json::from_slice(&serde_json::to_vec(&transfer).unwrap()).unwrap();
     assert_eq!(transfer, restored);
     assert!(matches!(restored.record(), Some(Record::Message(_))));
 }
