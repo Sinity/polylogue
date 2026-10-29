@@ -38,6 +38,8 @@ pub struct Extent {
     pub offset: i64,
     pub length: i64,
     pub blob: BlobHash,
+    /// Offset into the original captured material after an exact prefix overlap.
+    pub blob_offset: i64,
 }
 
 /// One look at a path that found something.
@@ -88,14 +90,14 @@ impl InputRows {
         if let Some(e) = &self.extent {
             tx.prepare_cached(
                 &source.sql("INSERT OR REPLACE INTO @source.extent(input, chain, offset, length, blob, blob_offset)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)"),
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
             )?
             .execute(params![
                 self.input,
                 e.chain,
                 e.offset,
                 e.length,
-                &e.blob.0[..]
+                &e.blob.0[..],e.blob_offset
             ])?;
         }
         if let Some(o) = &self.observation {
