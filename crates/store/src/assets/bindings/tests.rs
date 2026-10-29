@@ -850,3 +850,60 @@ fn unknown_declared_namespaces_remain_distinct_and_never_borrow_foreign_membersh
         AttachmentBindingRecord::new(context, &known, 0, vec![witness.for_candidate(0)]).is_err()
     );
 }
+
+#[test]
+fn retained_nonshown_claims_export_exactly_without_granting_their_members_to_the_shown_source() {
+    let fixture = Fixture::new();
+    let bytes = b"retained namespace bytes";
+    let record = record(bytes);
+    let first = fixture.message("message-a", "scope-a", 0, &record);
+    let second = fixture.message("message-b", "scope-b", 1, &record);
+    fixture.member("member-b", "scope-b", bytes);
+    let observed = fixture.refresh();
+    let witness = fixture
+        .reads
+        .reader()
+        .unwrap()
+        .validate_attachment_member(
+            source(&observed, "member-b"),
+            BlobHash::of(bytes),
+            bytes.len() as u64,
+        )
+        .unwrap();
+    let unavailable = AttachmentBindingRecord::new(first, &record, 0, Vec::new()).unwrap();
+    let retained =
+        AttachmentBindingRecord::new(second, &record, 0, vec![witness.for_candidate(0)]).unwrap();
+    assert_eq!(unavailable.claim(), retained.claim());
+    for fact in [&unavailable, &retained] {
+        fixture.install(fact.clone()).unwrap();
+        fixture.install(fact.clone()).unwrap();
+    }
+    let reader = fixture.reads.reader().unwrap();
+    let shown = reader
+        .attachment_binding_contexts(&record.message.id, 0, 0)
+        .unwrap();
+    assert_eq!(shown.namespace_count, 1);
+    assert_eq!(shown.state, AttachmentState::Unavailable);
+    assert_eq!(shown.contexts[0].selection.context.input, "message-a");
+    assert!(shown.contexts[0].members.is_empty());
+    let expected = vec![unavailable, retained];
+    let claims = reader
+        .attachment_binding_claims(&record.message.id, record.source_version)
+        .unwrap();
+    assert_eq!(claims, expected);
+    assert_ne!(claims[0].context(), claims[1].context());
+    assert_eq!(claims[0].claim(), claims[1].claim());
+    assert_eq!(claims[1].members().len(), 1);
+    assert_eq!(
+        reader
+            .attachment_binding_claims(&record.message.id, record.source_version)
+            .unwrap(),
+        expected
+    );
+    assert!(
+        reader
+            .attachment_binding_claims(&record.message.id, BlobHash::of(b"another source version"))
+            .unwrap()
+            .is_empty()
+    );
+}

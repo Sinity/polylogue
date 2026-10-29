@@ -504,6 +504,92 @@ fn binding_body(conn: &Connection, selection: &BindingSelection) -> Result<Optio
         .optional()?)
 }
 
+fn retained_bindings(
+    conn: &Connection,
+    message: &MessageId,
+    source_version: Option<BlobHash>,
+    slot: Option<(u64, u64)>,
+    shown_only: bool,
+) -> Result<Vec<AttachmentBindingRecord>> {
+    let block = slot.map(|(block, _)| block.to_string());
+    let attachment = slot.map(|(_, attachment)| attachment.to_string());
+    let version = source_version.as_ref().map(|version| version.0.as_slice());
+    let mut statement = conn.prepare(
+        "SELECT b.source_version,b.input,b.chain,b.import_id,b.block,b.attachment,
+                b.declared_input,b.declared_chain,b.declared_import_id,b.claim,b.body
+         FROM attachment_binding b
+         WHERE b.message=?1 AND (?2 IS NULL OR b.source_version=?2)
+           AND (?3 IS NULL OR (b.block=?3 AND b.attachment=?4))
+           AND EXISTS(SELECT 1 FROM message m
+             JOIN message_source s ON s.message_pk=m.pk AND s.version_hash=b.source_version AND s.chain=b.chain
+             JOIN input_ref i ON i.pk=s.input_pk AND i.id=b.input
+             WHERE m.id=b.message AND (?5=0 OR s.shown=1))
+         ORDER BY b.input,b.chain,b.import_id,b.source_version,b.declared_input,b.declared_chain,b.declared_import_id,b.claim"
+    )?;
+    let mut rows = statement.query(params![
+        message.to_string(),
+        version,
+        block,
+        attachment,
+        shown_only
+    ])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let version: Vec<u8> = row.get(0)?;
+        let encoded_claim: Vec<u8> = row.get(9)?;
+        let claim: AttachmentBinding = serde_json::from_slice(&encoded_claim)?;
+        if serde_json::to_vec(&claim)? != encoded_claim {
+            return Err(invalid("attachment claim key is not canonical"));
+        }
+        if claim.block.to_string() != row.get::<_, String>(4)?
+            || claim.attachment.to_string() != row.get::<_, String>(5)?
+            || claim.namespace.input != row.get::<_, String>(6)?
+            || claim.namespace.chain != row.get::<_, i64>(7)?
+            || claim.namespace.import_id != row.get::<_, String>(8)?
+        {
+            return Err(invalid(
+                "attachment claim key differs from its declared namespace or slot",
+            ));
+        }
+        let selection = BindingSelection {
+            context: BindingContext {
+                message: message.clone(),
+                source_version: BlobHash(
+                    version
+                        .try_into()
+                        .map_err(|_| invalid("invalid binding source version"))?,
+                ),
+                input: row.get(1)?,
+                chain: row.get(2)?,
+                import_id: row.get(3)?,
+            },
+            claim,
+        };
+        let body: Vec<u8> = row.get(10)?;
+        let record: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
+        record.validate()?;
+        if record.selection() != selection {
+            return Err(invalid("attachment projection key differs from its fact"));
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
+pub(crate) fn known(conn: &Connection, record: &AttachmentBindingRecord) -> Result<bool> {
+    record.validate()?;
+    let Some(body) = binding_body(conn, &record.selection())? else {
+        return Ok(false);
+    };
+    let existing: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
+    if existing != *record {
+        return Err(StoreError::Conflict(
+            "different attachment binding facts under one source context".into(),
+        ));
+    }
+    Ok(true)
+}
+
 pub(crate) fn project(
     index: &Connection,
     catalog: &Connection,
@@ -512,14 +598,7 @@ pub(crate) fn project(
     record.validate()?;
     let selection = record.selection();
     let body = serde_json::to_vec(record)?;
-    let old = binding_body(index, &selection)?;
-    if let Some(old) = old {
-        let existing: AttachmentBindingRecord = crate::encoding::unpack_json(&old)?;
-        if existing != *record {
-            return Err(StoreError::Conflict(
-                "different attachment binding facts under one source context".into(),
-            ));
-        }
+    if known(index, record)? {
         return Ok(());
     }
     // Source/member absence is an unavailable association, not a reason to
@@ -611,6 +690,19 @@ impl Reader<'_> {
         if record.selection() != *selection {
             return Err(invalid("attachment projection key differs from its fact"));
         }
+        if matches!(
+            crate::source::Source::of(conn)?,
+            crate::source::Source::Cache
+        ) {
+            // Canonical serialization preserves the witness, but receiving
+            // authority requires authenticated original admission context.
+            return Ok(Some(BindingResolution {
+                selection: selection.clone(),
+                claim: record.claim,
+                state: AttachmentState::Unknown,
+                members: Vec::new(),
+            }));
+        }
         let mut members = Vec::new();
         let mut seen = BTreeSet::new();
         let context_present = source_context(conn, conn, "source_", &record.context)?;
@@ -640,75 +732,27 @@ impl Reader<'_> {
         }))
     }
 
+    /// Frozen claims from every retained matching reading, including sources
+    /// not selected for display. This metadata never grants member availability.
+    pub fn attachment_binding_claims(
+        &self,
+        message: &MessageId,
+        source_version: BlobHash,
+    ) -> Result<Vec<AttachmentBindingRecord>> {
+        retained_bindings(self.conn()?, message, Some(source_version), None, false)
+    }
+
     pub fn attachment_binding_contexts(
         &self,
         message: &MessageId,
         block: u64,
         attachment: u64,
     ) -> Result<BindingContexts> {
-        let conn = self.conn()?;
-        let mut statement = conn.prepare("SELECT b.source_version,b.input,b.chain,b.import_id,b.declared_input,b.declared_chain,b.declared_import_id,b.claim FROM attachment_binding b JOIN message m ON m.id=b.message JOIN message_source s ON s.message_pk=m.pk AND s.version_hash=b.source_version AND s.chain=b.chain AND s.shown=1 JOIN input_ref i ON i.pk=s.input_pk AND i.id=b.input WHERE b.message=?1 AND b.block=?2 AND b.attachment=?3 ORDER BY b.input,b.chain,b.import_id,b.source_version,b.declared_input,b.declared_chain,b.declared_import_id,b.claim")?;
-        let rows = statement.query_map(
-            params![
-                message.to_string(),
-                block.to_string(),
-                attachment.to_string()
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Vec<u8>>(7)?,
-                ))
-            },
-        )?;
+        let records =
+            retained_bindings(self.conn()?, message, None, Some((block, attachment)), true)?;
         let mut contexts = Vec::new();
-        for row in rows {
-            let (
-                version,
-                input,
-                chain,
-                import_id,
-                declared_input,
-                declared_chain,
-                declared_import_id,
-                claim,
-            ) = row?;
-            let encoded_claim = claim;
-            let claim: AttachmentBinding = serde_json::from_slice(&encoded_claim)?;
-            if serde_json::to_vec(&claim)? != encoded_claim {
-                return Err(invalid("attachment claim key is not canonical"));
-            }
-            if claim.block != block
-                || claim.attachment != attachment
-                || claim.namespace.input != declared_input
-                || claim.namespace.chain != declared_chain
-                || claim.namespace.import_id != declared_import_id
-            {
-                return Err(invalid(
-                    "attachment claim key differs from its declared namespace or slot",
-                ));
-            }
-            let selection = BindingSelection {
-                context: BindingContext {
-                    message: message.clone(),
-                    source_version: BlobHash(
-                        version
-                            .try_into()
-                            .map_err(|_| invalid("invalid binding source version"))?,
-                    ),
-                    input,
-                    chain,
-                    import_id,
-                },
-                claim,
-            };
-            if let Some(resolution) = self.attachment_binding(&selection)? {
+        for record in records {
+            if let Some(resolution) = self.attachment_binding(&record.selection())? {
                 contexts.push(resolution);
             }
         }
