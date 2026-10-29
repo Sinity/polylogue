@@ -714,6 +714,7 @@ fn apply_confirmed_readings(
     let tx = index.transaction()?;
     for (input, chain, length, reading) in readings {
         let batch = Batch {
+            required_disposition: None,
             input: input.clone(),
             change: Change::Reparse { chain: *chain },
             observation: None,

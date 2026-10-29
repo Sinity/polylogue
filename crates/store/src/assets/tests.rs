@@ -34,6 +34,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
             .store_group(
                 vec![crate::staging::PreparedBatch {
                     batch: Batch {
+                        required_disposition: None,
                         input: input.clone(),
                         change: Change::First,
                         observation: Some(observation.clone()),
@@ -98,6 +99,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: Batch {
+                    required_disposition: None,
                     input: input.clone(),
                     change: Change::Rewritten,
                     observation: Some(Observation {

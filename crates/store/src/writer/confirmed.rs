@@ -8,6 +8,7 @@ pub(crate) fn apply_confirmed_readings(
 ) -> Result<()> {
     for (input, chain, length, reading) in readings {
         let batch = Batch {
+            required_disposition: None,
             input: input.clone(),
             change: Change::Reparse { chain: *chain },
             observation: None,

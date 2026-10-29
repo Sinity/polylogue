@@ -18,6 +18,7 @@ fn stage(
 ) -> PreparedBatch {
     let prepared = archive.prepare_bytes(body).unwrap();
     let batch = Batch {
+        required_disposition: None,
         input: InputKey {
             id: prepared.hash().to_string(),
             format: "export-file".into(),

@@ -277,6 +277,7 @@ fn gather<'a>(
                 history.documents.insert(prepared.hash.to_vec(), location);
             }
             let mut batch = Batch {
+                required_disposition: None,
                 input: reading.input.clone(),
                 change: Change::Reparse {
                     chain: reading.chain,
@@ -562,6 +563,7 @@ impl Inner {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&tx)?;
         let mut batch = Batch {
+            required_disposition: None,
             input,
             change: Change::Reparse { chain },
             observation: None,

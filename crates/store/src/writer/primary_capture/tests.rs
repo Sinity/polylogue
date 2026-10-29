@@ -3,6 +3,7 @@ use super::*;
 fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
     PreparedBatch {
         batch: Batch {
+            required_disposition: None,
             input: InputKey {
                 id: id.into(),
                 format: "codex".into(),

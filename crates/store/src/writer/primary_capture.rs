@@ -237,6 +237,19 @@ impl Inner {
         let mut bases = BTreeMap::new();
         let mut required_disposition = None;
         for item in group {
+            match item.batch.required_disposition {
+                Some(crate::primary::CaptureDisposition::Prepared) => {
+                    return Err(StoreError::Invalid(
+                        "an acquisition constraint cannot require source acceptance".into(),
+                    ));
+                }
+                Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict) => {
+                    required_disposition = item.batch.required_disposition
+                }
+                None => {}
+            }
+        }
+        for item in group {
             let source = self.capture_source_selector(&item.batch, &pending)?;
             if let Some(existing) = bases.get(&source) {
                 if item
@@ -245,7 +258,8 @@ impl Inner {
                     .as_ref()
                     .is_some_and(|basis| basis != existing)
                 {
-                    required_disposition = Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
+                    required_disposition =
+                        Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
                 }
             } else {
                 let version = item
@@ -259,7 +273,8 @@ impl Inner {
                         || sampled.confirmed != snapshot.basis.confirmed
                         || sampled.status != snapshot.basis.status
                     {
-                        required_disposition = Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
+                        required_disposition =
+                            Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
                     }
                     // Pending predecessor is compared under the SDK custody
                     // lock, after the serialized writer checks confirmed state.
