@@ -9,6 +9,7 @@
 //!   tests of what the writer and the derive step make of parsed records.
 //! - [`text_search`]: whether a text is still stored or indexed anywhere.
 
+pub mod authored;
 pub mod text_search;
 pub mod writer;
 

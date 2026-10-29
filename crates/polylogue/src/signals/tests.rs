@@ -309,9 +309,9 @@ fn an_interrupt_runs_the_notify_command_and_reports_its_failure() {
         let r = handle(
             Request::Setting {
                 request_id: Some(polylogue_store::user_writes::new_request_id()),
-                key: "notify.command".into(),
+                key: Some("notify.command".into()),
                 value: Some(value.into()),
-                machine: false,
+                machine: None,
             },
             &d.daemon,
         );

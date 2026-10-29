@@ -1,47 +1,13 @@
 //! Calendar billing outlooks from dated plan settings and grouped recorded usage.
 use super::{Selection, reports, usage};
 use crate::{Reader, Result, StoreError};
+use polylogue_model::settings::PLAN_UNITS;
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 const DAY: i64 = 86_400_000;
-pub const UNITS: &[&str] = &[
-    "api_nusd",
-    "reported_nusd",
-    "input_tokens",
-    "cached_input_tokens",
-    "cache_write_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-];
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Plan {
-    pub name: String,
-    pub origin: String,
-    pub cycle_anchor_day: Option<i8>,
-    pub price_nusd: Option<i64>,
-    pub budget: Option<Budget>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Budget {
-    pub population: Population,
-    pub unit: String,
-    pub amount: i64,
-    pub overage_rate_nusd_per_unit: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Population {
-    Responses,
-    RecordedReports,
-}
-
+pub use polylogue_model::settings::{Budget, Plan, Population};
 #[derive(Debug, Serialize)]
 pub struct Window {
     pub start: i64,
@@ -114,19 +80,13 @@ pub struct Outlook {
 
 struct Setting {
     id: String,
-    machine: String,
     at: i64,
     value: String,
 }
 
-/// The setting's own recorded time determines when its terms start to apply.
-fn plans(
-    reader: &Reader<'_>,
-    provider: &str,
-    machine: &str,
-    now: i64,
-) -> Result<Vec<(i64, Option<Plan>)>> {
-    let rows=reader.conn()?.prepare("SELECT id,machine,set_at,value FROM source_setting WHERE key=?1 AND machine IN (?2,'*') AND set_at<=?3 ORDER BY set_at,id")?.query_map(params![format!("plan.{provider}"),machine,now],|r|Ok(Setting{id:r.get(0)?,machine:r.get(1)?,at:r.get(2)?,value:r.get(3)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+/// Archive-wide plan assertions apply from their own recorded time.
+fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, Option<Plan>)>> {
+    let rows=reader.conn()?.prepare("SELECT id,set_at,value FROM source_setting WHERE key=?1 AND machine='*' AND set_at<=?2 ORDER BY set_at,id")?.query_map(params![format!("plan.{provider}"),now],|r|Ok(Setting{id:r.get(0)?,at:r.get(1)?,value:r.get(2)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let times: BTreeSet<_> = rows.iter().map(|r| r.at).collect();
     let mut result = vec![];
     let mut previous = None;
@@ -134,7 +94,7 @@ fn plans(
         let row = rows
             .iter()
             .filter(|r| r.at <= at)
-            .max_by(|a, b| (a.machine != "*", a.at, &a.id).cmp(&(b.machine != "*", b.at, &b.id)))
+            .max_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)))
             .expect("time belongs to a setting");
         if previous.as_ref() == Some(&row.id) {
             continue;
@@ -161,7 +121,6 @@ pub fn outlook(
     selection: &Selection,
     now: i64,
     options: &str,
-    machine: &str,
 ) -> Result<Outlook> {
     selection.session_condition("s.pk")?;
     let (provider, method) = options.split_once(':').unwrap_or((options, "linear"));
@@ -184,7 +143,7 @@ pub fn outlook(
         answer.reason = Some("provider_required");
         return Ok(answer);
     }
-    let history = plans(reader, provider, machine, now)?;
+    let history = plans(reader, provider, now)?;
     let Some((_, Some(current))) = history.last() else {
         answer.reason = Some("plan_not_configured");
         return Ok(answer);
@@ -266,7 +225,7 @@ pub fn outlook(
             answer.segments[i].unknown_boundary_items += n;
             continue;
         }
-        for (j, &unit) in UNITS.iter().enumerate() {
+        for (j, &unit) in PLAN_UNITS.iter().enumerate() {
             let known = row.get::<_, i64>(5 + j * 2)? as u64;
             data[i].0.entry(unit.into()).or_default().add(
                 day,
@@ -332,7 +291,7 @@ pub fn outlook(
                 as_i64(report.usage.output)?,
                 as_i64(report.usage.reasoning)?,
             ];
-            for (unit, value) in UNITS.iter().zip(amounts) {
+            for (unit, value) in PLAN_UNITS.iter().zip(amounts) {
                 data[i].1.entry((*unit).into()).or_default().add(
                     day,
                     value,
@@ -567,23 +526,10 @@ fn validate_method(method: &str) -> Result<()> {
     }
 }
 fn validate_plan(plan: &Plan) -> Result<()> {
-    if plan.name.trim().is_empty()
-        || plan.name.eq_ignore_ascii_case("max")
-        || plan.origin.is_empty()
-        || plan
-            .cycle_anchor_day
-            .is_some_and(|d| !(1..=31).contains(&d))
-        || plan.price_nusd.is_some_and(|n| n < 0)
-        || plan.budget.as_ref().is_some_and(|b| {
-            !UNITS.contains(&b.unit.as_str())
-                || b.amount < 0
-                || b.overage_rate_nusd_per_unit.is_some_and(|n| n < 0)
-        })
-    {
-        return Err(StoreError::Invalid("plan needs an unambiguous name, origin, anchor day 1 to 31 and nonnegative integer amounts; budget unit must name a recorded lane or nano-USD money kind".into()));
-    }
-    Ok(())
+    plan.validate()
+        .map_err(|error| StoreError::Invalid(error.to_string()))
 }
+
 fn window(now: i64, anchor: i8) -> Result<Window> {
     let invalid = |e| StoreError::Invalid(format!("billing window: {e}"));
     let date = jiff::Timestamp::from_millisecond(now)

@@ -3,17 +3,17 @@
 //! by the same rules everywhere.
 
 use super::{Ask, run};
-use polylogue_model::{Note, Target, Timestamp};
+use polylogue_model::{Note, Reference};
 use polylogue_store::{Reader, StoreError};
 
 /// Every note `notes where CONDITIONS` lists, newest first.
 pub fn list(
     reader: &Reader<'_>,
     conditions: &str,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<Note>, StoreError> {
     let mut notes = Vec::new();
-    for id in ids(reader, conditions, now)? {
+    for id in ids(reader, conditions, context)? {
         if let Some(note) = reader.note(&id)? {
             notes.push(note);
         }
@@ -22,13 +22,17 @@ pub fn list(
 }
 
 /// How many notes `notes where CONDITIONS` lists.
-pub fn count(reader: &Reader<'_>, conditions: &str, now: Timestamp) -> Result<u64, StoreError> {
-    let page = page(reader, &text(conditions), None, now)?;
+pub fn count(
+    reader: &Reader<'_>,
+    conditions: &str,
+    context: &std::sync::Arc<crate::operation::Context>,
+) -> Result<u64, StoreError> {
+    let page = page(reader, &text(conditions), None, context)?;
     Ok(page["count"].as_u64().unwrap_or(0))
 }
 
 /// The condition that a note is about at least one of `targets`.
-pub fn about(targets: &[Target]) -> String {
+pub fn about(targets: &[Reference]) -> String {
     let any: Vec<String> = targets
         .iter()
         .map(|t| format!("target:{}", quoted(&t.to_string())))
@@ -47,12 +51,16 @@ fn text(conditions: &str) -> String {
     }
 }
 
-fn ids(reader: &Reader<'_>, conditions: &str, now: Timestamp) -> Result<Vec<String>, StoreError> {
+fn ids(
+    reader: &Reader<'_>,
+    conditions: &str,
+    context: &std::sync::Arc<crate::operation::Context>,
+) -> Result<Vec<String>, StoreError> {
     let text = text(conditions);
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let page = page(reader, &text, cursor.as_deref(), now)?;
+        let page = page(reader, &text, cursor.as_deref(), context)?;
         ids.extend(
             page["rows"]
                 .as_array()
@@ -71,7 +79,7 @@ fn page(
     reader: &Reader<'_>,
     text: &str,
     cursor: Option<&str>,
-    now: Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<serde_json::Value, StoreError> {
     run(
         reader,
@@ -81,8 +89,7 @@ fn page(
             page_size: None,
             why: false,
             session: None,
-            now: now.unix_ms(),
-            day: None,
+            context: std::sync::Arc::clone(context),
             embeddings: false,
             near: None,
             fields: &[],

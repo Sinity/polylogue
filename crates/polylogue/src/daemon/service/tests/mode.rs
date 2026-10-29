@@ -100,9 +100,9 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
         },
         Request::Setting {
             request_id: None,
-            key: "test".into(),
-            value: Some("changed".into()),
-            machine: false,
+            key: Some("browser.actions".into()),
+            value: Some("on".into()),
+            machine: None,
         },
         Request::Context {
             request_id: "delivery".into(),
@@ -169,12 +169,12 @@ fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
             data(
                 Request::Setting {
                     request_id: None,
-                    key: "test".into(),
+                    key: Some("browser.actions".into()),
                     value: None,
-                    machine: false
+                    machine: None
                 },
                 &runtime
-            )["value"]
+            )["authored"]
                 .is_null()
         );
         let context = data(

@@ -4,6 +4,7 @@
 #[macro_use]
 mod stored_names;
 
+pub mod assertion;
 pub mod atomic_write;
 pub mod authored;
 pub mod authorship;
@@ -13,19 +14,30 @@ pub mod bundle;
 pub mod capture;
 pub mod capture_log;
 mod change_position;
-pub mod command;
+pub mod clock;
 pub mod currency;
+pub use clock::WallClock;
+pub mod command;
+pub mod context;
 mod delivery;
 mod document;
 mod event;
 pub mod export;
 mod id;
+pub mod injection;
+pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
 mod note;
 pub mod price;
 mod quota;
+mod reference;
+pub use reference::{
+    Reference, ReferenceError, RevisionReference, SpanBounds, SpanError, SpanUnit,
+    TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece, span_bodies, text_body,
+};
 pub mod read;
 mod session;
+pub mod settings;
 mod time;
 mod usage;
 pub mod user;
@@ -49,16 +61,15 @@ pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, SessionId};
 pub mod reports;
+pub use authorship::Author;
 pub use message::{
     ApiError, Attribution, Message, Production, PromptKind, Role, ServerToolUse, WrittenBy,
     is_prompt,
 };
-pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
+pub use note::{NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
-pub use time::{LogicalDay, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
-pub mod note_sql;
-pub mod session_sql;
+pub use time::{Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};
@@ -84,10 +95,7 @@ macro_rules! string_schema {
     )* };
 }
 string_schema!(
-    Origin, SessionId, MessageId, DocumentId, BlobHash, Target, Author
+    Origin, SessionId, MessageId, DocumentId, BlobHash, Reference, Author
 );
 
 pub mod work_products;
-
-pub mod clock;
-pub use clock::WallClock;

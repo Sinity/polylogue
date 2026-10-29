@@ -4,6 +4,8 @@ Polylogue asks every question through one query language: listings, reports, rec
 
 The grammar, its spelling, the AST's three-valued semantics, time expressions, the logical day and the cursor type are shared with Sinex and owned by the common [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) crate, together with the laws that are properties of the language. Text and semantic search are in [search.md](search.md); how the command line reads arguments, completion and exit codes are in [interfaces.md](interfaces.md); references are in [references.md](references.md); measures in [measures.md](measures.md); queries that mix Polylogue and Sinex data in [primary-mode.md](primary-mode.md#cross-system-queries).
 
+The product catalog comes from the unit and field registries used by the compiler. Parsing, grammar completion and discovery use that vocabulary. Observed repositories, models and other values extend completion suggestions; they do not turn an open field into a closed set. The product compiler consumes the shared tree directly and refuses a shared form whose execution it does not implement with `not_built`.
+
 ## Principles
 
 - **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. Ruling, 2026-06-17: "The whole point of expressive query DSL is to make such funcitonality alwasy within reach. I don't want tons of specific weird little features" (chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). Ruling, 2026-07-02: "dont build one-off silos, build things that powerfully compose" (cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
@@ -84,8 +86,9 @@ A reference drops the reachability defaults for its own match. A group or sort k
 
 Time expressions (relative, calendar, natural-language dates, bounds, daylight-saving rules) and the logical day are the shared language's. Polylogue's use of them:
 
-- A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run.
+- A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run. Runtime execution receives one captured operation context; its explicit shared `Clock`, named day setting and full civil start are retained in `resolved.context.clock`. `resolved.context` also records the actual accepting instant (`ran_at`), configured machine, computed authorship and public owner provenance. An authenticated continuation replays its evaluation clock while retaining the new invocation’s actual `ran_at`. A changed owner settings revision or day setting invalidates a continuation. Calendar and cost continuations use the same authenticated cursor envelope, so a caller cannot replace the frozen instant in its payload. Completion and schema inspection need no clock. The timestamp index stores integer milliseconds: fractional bounds use ceiling conversion for lower and exclusive upper comparisons, without recovering source precision absent from that index.
 - Every time Polylogue reads carries `time_quality` and `precision` ([sessions.md](sessions.md#times)), in the closed sets shared with Sinex.
+- Tool-call `result_at` is the native result or completion-notification time. `reported_duration` is the harness's own duration, in milliseconds, and stays unknown when absent. It is separate from the elapsed `duration` defined in [measures](measures.md); that field requires the declared same-clock interval and its reason before it enters the product catalog.
 - **Coarse times.** A coarse or bounded time satisfies a time condition only when its whole period does, fails when none of its period does, and is otherwise `unknown`. A row whose time is unknown never matches a time condition, is counted in `notes`, and `group by day` puts it in an `unknown` group.
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`.
 
@@ -202,7 +205,7 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 - **Four bounds stay apart.** Selection (`limit`, `[last:k]`) is in the question. `page_size` is how much travels now (default 20 sessions or 50 other rows, the same on every surface). A presentation budget cuts display, never a figure's population. The deadline bounds execution.
 - **Cursors** hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are sealed: opaque and integrity-checked.
 - **Continuation is by key,** never by offset, and no read transaction is held between pages. When the archive changes between pages, no row whose key did not change is skipped or repeated, and `notes` say "the archive changed since the first page", listing rows that moved before the anchor.
-- **Refusals:** a cursor from another question is `invalid_query`; one from an earlier index generation, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
+- **Refusals:** a cursor with an invalid or retired seal, or from another question, is `invalid_query`. An authenticated cursor whose read context is no longer available, including a ranked cursor after a vector write, is `stale_cursor`. The index keeps its private seal key across daemon restarts; rebuilding retires that key. Neither refusal restarts the query silently. Only the page size may change between pages.
 - A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is kept first, then paged.
 - The count is computed once per question and read position, and reused by later pages.
 
@@ -285,7 +288,7 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **ranked-keep-or-refuse**: keeping a fused answer stores ranks and contributions; keeping one whose vector side is missing is refused naming the list.
 - **figure-needs-denominator**: a figure without a denominator is refused at save; a kept figure reports value, denominator count and unknown count.
 - **kept-result-derivation-versions**: a kept result records derivation versions and reports the change after a price-table change.
-- **paging-stable-under-writes**: paging across concurrent writes never repeats or skips an unchanged row; a cursor across a rebuild is `stale_cursor`; random-order pages never overlap.
+- **paging-stable-under-writes**: paging across concurrent writes never repeats or skips an unchanged row; a cursor across a rebuild is refused with `invalid_query` after its seal key retires; random-order pages never overlap.
 - **deadline-timeout-and-lift**: a read past its deadline ends `timeout` naming a narrower query and the lifted form, and is cancelled in the daemon within 100 ms; the same query with `--deadline none`, or `deadline: null` over MCP called as an agent, completes.
 - **disconnect-cancels**: a client disconnect cancels the read.
 - **answer-schema**: one JSON-schema test of the answer holds across all surfaces; `empty` never results from a failure.

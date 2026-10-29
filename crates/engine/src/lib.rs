@@ -22,7 +22,7 @@ mod watch;
 
 use databases::Databases;
 use plan::{InputState, Plan};
-use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
+use polylogue_sources::{ORIGINS, OriginSpec, Support};
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -184,7 +184,7 @@ impl Config {
 }
 
 /// What one pass of the loop found and did, for `status`.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Pass {
     /// Historical effects accepted during ordinary stored-input replay.
     pub authored: UserStateReport,
@@ -215,7 +215,7 @@ pub struct Pass {
 /// change to be read waits until the change shows and the loop is not busy:
 /// rows become visible to readers before the pass that wrote them has
 /// derived from them.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct LoopStatus {
     pub full_scans: u64,
     /// A pass or import is running, or a capture continues
@@ -235,14 +235,14 @@ pub struct ImportOptions {
     pub authorship: Option<polylogue_model::authorship::Authorship>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportRefusal {
     pub path: PathBuf,
     pub reason: String,
     pub structures_tried: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportClassification {
     pub path: PathBuf,
     pub origin: Option<String>,
@@ -250,7 +250,7 @@ pub struct ImportClassification {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportPackage {
     pub path: PathBuf,
     pub sessions: u64,
@@ -258,7 +258,7 @@ pub struct ImportPackage {
     pub assets: u64,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportReport {
     pub packages: Vec<ImportPackage>,
     pub refused: Vec<ImportRefusal>,
@@ -271,8 +271,10 @@ pub struct ImportReport {
     pub pass: Pass,
 }
 
-/// Requests replayed from Polylogue exports.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+/// Historical authored records restored through the frozen import ingress.
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct UserStateReport {
     /// Durably accepted and awaiting the confirmed primary stream.
     pub pending: u64,

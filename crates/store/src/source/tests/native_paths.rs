@@ -259,6 +259,7 @@ fn queued_source_snapshot_and_reader_keep_the_same_exact_observation() {
     rows("native", Some(path.to_vec()))
         .insert(&conn, 1)
         .unwrap();
+    conn.execute("INSERT INTO meta(key,value) VALUES('write_counter','1')", []).unwrap();
     drop(conn);
     let writer = crate::Writer::start(&archive).unwrap();
     let snapshot = writer

@@ -20,11 +20,7 @@ fn usage_text(data: &Value) -> String {
 fn time(ms: &Value) -> String {
     ms.as_i64()
         .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
-        .map(|t| {
-            t.to_zoned(jiff::tz::TimeZone::system())
-                .strftime("%a %Y-%m-%d %H:%M")
-                .to_string()
-        })
+        .map(|t| t.to_string())
         .unwrap_or_else(|| "unknown".into())
 }
 

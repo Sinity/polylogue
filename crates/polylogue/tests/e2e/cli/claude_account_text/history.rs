@@ -9,11 +9,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     std::fs::create_dir_all(&home).unwrap();
     let source = dir.path().join("projects/p.json");
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     let context = "document:claude-ai:project:p:doc:d";
     let instruction = "document:claude-ai:project:p:instructions";

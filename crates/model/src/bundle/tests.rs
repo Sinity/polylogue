@@ -77,7 +77,7 @@ fn inventory_names_are_relative_and_cannot_escape_or_alias_members() {
 
 #[test]
 fn event_identity_keeps_every_claim_and_validates_exact_reference_and_time() {
-    let claim = |input: &str| EventSourceClaim {
+    let claim = |input: &str| SourceClaim {
         input: input.into(),
         source: "codex".into(),
         source_chain: 1,

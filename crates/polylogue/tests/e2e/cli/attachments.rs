@@ -19,12 +19,8 @@ fn conversation() -> Vec<u8> {
 }
 
 impl TestArchive {
-    fn env(&self) -> [(&str, &Path); 3] {
-        [
-            ("POLYLOGUE_HOME", &self.home),
-            ("POLYLOGUE_ARCHIVE", &self.archive),
-            ("XDG_CONFIG_HOME", &self.config),
-        ]
+    fn env(&self) -> crate::Fixture {
+        crate::Fixture::new(&self.archive, &self.home, &self.config)
     }
     fn new(zip: bool) -> Self {
         Self::with_bytes(zip, SECRET)
@@ -41,11 +37,7 @@ impl TestArchive {
         let archive = dir.path().join("archive");
         let config = dir.path().join("config");
         std::fs::create_dir_all(&home).unwrap();
-        let env = [
-            ("POLYLOGUE_HOME", home.as_path()),
-            ("POLYLOGUE_ARCHIVE", archive.as_path()),
-            ("XDG_CONFIG_HOME", config.as_path()),
-        ];
+        let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
         let daemon = start_daemon(&env);
         let conversation = conversation();
         let naming = serde_json::to_vec(&json!({"file-Native.dat":label})).unwrap();
@@ -144,9 +136,6 @@ fn exact_attachment_output_is_available_to_agents_without_terminal_stdout() {
     for agent in [false, true] {
         std::fs::write(&target, b"previous complete output").unwrap();
         let mut child = command(&fixture.env());
-        for (key, value) in fixture.env() {
-            child.env(key, value);
-        }
         if agent {
             child.env("CODEX_SESSION_ID", "synthetic-harness");
         }

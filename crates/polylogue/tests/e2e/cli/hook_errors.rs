@@ -15,11 +15,7 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
         "hookAdditionalContext":[], "preventedContinuation":true, "stopReason":"check blocked"});
     let original = format!("{summary}\n");
     std::fs::write(&source, &original).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let id = polylogue_model::SessionId::parse("claude-code:hooks").unwrap();
     loop {

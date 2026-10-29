@@ -11,7 +11,7 @@ impl Source {
         conn: &Connection,
         selector: &SourceSelector,
     ) -> Result<(SourceStatus, Option<ConfirmedSource>)> {
-        let source = Self::of(conn)?;
+        let source = Self::reading(conn)?;
         let exact: Option<(i64, String, ObservationRow)> = conn.query_row(
             &source.sql("SELECT o.rowid,o.input,o.id,o.machine,m.host,o.path,o.path_bytes,o.class,o.revision,o.chain,o.length,o.device,o.inode,o.size,o.mtime_ns,o.ctime_ns,o.polylogue_version,o.seen_at,o.details_json FROM @source.observation o JOIN @source.input i ON i.id=o.input JOIN @source.machine m ON m.id=o.machine WHERE i.format=?1 AND o.machine=?2 AND o.path_bytes=?3 ORDER BY o.rowid DESC LIMIT 1"),
             params![selector.origin,selector.machine,selector.path_bytes],

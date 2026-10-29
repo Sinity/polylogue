@@ -1,3 +1,4 @@
+mod boundaries;
 mod native_paths;
 use super::*;
 
@@ -298,4 +299,34 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
     )
     .unwrap();
     assert_eq!(bytes, b"abcd");
+}
+
+#[test]
+fn source_reference_namespace_keeps_archive_metadata_distinct_from_index_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("archive.db");
+    let ledger = Connection::open(&path).unwrap();
+    ledger.execute_batch(crate::schema::ARCHIVE).unwrap();
+    ledger
+        .execute(
+            "INSERT INTO meta(key,value) VALUES('namespace','archive')",
+            [],
+        )
+        .unwrap();
+    let reader = Connection::open_in_memory().unwrap();
+    reader.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('namespace','index');").unwrap();
+    reader
+        .execute("ATTACH DATABASE ?1 AS a", [path.to_string_lossy().as_ref()])
+        .unwrap();
+    views(&reader).unwrap();
+    let source = Source::reading(&reader).unwrap();
+    let value: String = reader
+        .query_row(
+            &source.sql("SELECT value FROM @source.meta WHERE key='namespace'"),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "archive");
+    assert!(matches!(Source::of(&reader).unwrap(), Source::Ledger));
 }

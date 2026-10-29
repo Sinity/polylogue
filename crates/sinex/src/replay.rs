@@ -46,7 +46,7 @@ impl Replay<'_> {
 
     /// `batches` is the completed parse of every material in `selection`.
     /// An empty replacement is valid only when the completed parse has no
-    /// readings in this scope. The caller updates its index after this returns.
+    /// readings in this scope. Only the confirmed consumer updates the index.
     /// A different parse or build needs a new operation.
     pub fn sequence(
         &mut self,
@@ -62,7 +62,8 @@ impl Replay<'_> {
                     .blob
                     .strip_prefix("blake3:")
                     .ok_or_else(|| Error::Invalid("invalid material digest".into()))?;
-                let extents = crate::parts::decode_extents(&material.extents)?;
+                let fetched = client.fetch_material(material.id).await?;
+                let extents = crate::material::decode_extents(&fetched.extents)?;
                 if extents.is_empty()
                     || extents.iter().try_fold(0u64, |length, extent| {
                         length.checked_add(extent.decoded_len)
@@ -86,7 +87,7 @@ impl Replay<'_> {
                 event_types: scope.event_types,
                 from: scope.from,
                 until: scope.until,
-                declarations: crate::kinds::declarations(client.producer())
+                declarations: crate::kinds::declarations(client.family())
                     .iter()
                     .map(|d| DeclarationHash {
                         kind: d.kind.clone(),
@@ -94,7 +95,7 @@ impl Replay<'_> {
                     })
                     .collect(),
                 parser_build: build_id()?,
-                parser_version: crate::parts::parser_version().to_string(),
+                parser_version: crate::material::parser_version().to_string(),
                 expected_live_hash: selection.expected_live_hash,
                 batches,
             };
@@ -109,17 +110,20 @@ impl Replay<'_> {
                 frame: name.clone(),
                 sequence: Box::new(sequence),
             };
-            let bytes = serde_json::to_vec(&frame)?;
-            let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
-            client.write_bytes(&name, &blob, bytes.len() as u64, bytes.as_slice())?;
             client.send(frame).await
         })
     }
 }
 
-fn build_id() -> Result<String> {
+pub(crate) fn build_id() -> Result<String> {
+    static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(build) = BUILD.get() {
+        return Ok(build.clone());
+    }
     let mut file = std::fs::File::open("/proc/self/exe")?;
     let mut hash = blake3::Hasher::new();
     std::io::copy(&mut file, &mut hash)?;
-    Ok(hash.finalize().to_hex().to_string())
+    let build = hash.finalize().to_hex().to_string();
+    let _ = BUILD.set(build.clone());
+    Ok(build)
 }

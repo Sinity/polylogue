@@ -33,6 +33,7 @@ fn scope_reset_interrupts_a_statement_without_a_deadline() {
     let limit = ReadLimit::without_deadline(Default::default());
     std::thread::scope(|threads| {
         let (ready, waiting) = std::sync::mpsc::channel();
+
         let worker_limit = &limit;
         let pool = &pool;
         let work = threads.spawn(move || worker_limit.scope(|| {
@@ -47,6 +48,7 @@ fn scope_reset_interrupts_a_statement_without_a_deadline() {
             assert!(Instant::now() < until, "statement never reached SQLite");
             std::thread::yield_now();
         }
+
         fixture.archive.read_scope.begin_reset().unwrap();
         assert!(matches!(
             work.join().unwrap(),

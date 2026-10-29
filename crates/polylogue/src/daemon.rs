@@ -10,8 +10,9 @@ pub mod execution;
 pub mod measure;
 pub mod query;
 pub mod request;
+pub(crate) mod schema;
 pub mod server;
 pub mod service;
 pub mod warm;
 
-pub use request::{PageSelection, ReadTarget, Request, Response};
+pub use request::{PageSelection, Request, Response};

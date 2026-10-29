@@ -47,6 +47,10 @@ pub struct Output {
     /// into what it already holds ([`Session::merge`]).
     pub sessions: Vec<Session>,
     pub messages: Vec<MessageRow>,
+    /// Native parser claims, indexed by message. Receiving admission validates
+    /// their source before promoting them to observed injection evidence.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub native_hook_fields: BTreeMap<usize, Vec<crate::HookFieldClaim>>,
     /// Textual provider records without conversation roles or usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentRow>,
