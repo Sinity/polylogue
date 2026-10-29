@@ -95,6 +95,8 @@ pub struct Done {
     /// Accepted SDK custody; this is neither failure nor confirmed admission.
     pub pending: Option<String>,
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    pub raw_custody: Option<polylogue_store::primary::RawCustodyReceipt>,
+    pub raw_acquisition: Option<polylogue_store::primary::AcquisitionReceipt>,
 }
 
 struct Queue {
@@ -290,6 +292,14 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                             Some(Err(polylogue_store::StoreError::PrimaryPending { identity })) => {
                                 result.pending = Some(identity);
                             }
+                            Some(Err(polylogue_store::StoreError::UnresolvedBasisConflict {
+                                custody,
+                            })) => {
+                                result.raw_custody = Some(custody);
+                                result.stored = 0;
+                                result.checkpoint = None;
+                                result.parser_state = None;
+                            }
                             Some(Err(error)) => {
                                 result.error = Some(error.to_string());
                                 result.write_failed = true;
@@ -377,6 +387,8 @@ pub(crate) fn run(
         continuation_missing: false,
         pending: None,
         checkpoint: None,
+        raw_custody: None,
+        raw_acquisition: None,
     };
     let started = std::time::Instant::now();
     let mut file_snapshot = None;
@@ -449,6 +461,7 @@ pub(crate) fn run(
                 None => context.finish(range, blob.hash),
             }
         });
+    out.raw_acquisition = acquisition.clone();
     let mut extra = Vec::new();
     let parser = (job.origin.open)(&job.path).or_else(|| {
         job.origin
@@ -566,7 +579,10 @@ pub(crate) fn run(
     }
     out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     let batch = Batch {
-        required_disposition: None,
+        required_disposition: job
+            .acquisition
+            .as_ref()
+            .and_then(|context| context.required_disposition),
         input: job.input,
         change: job.change,
         observation: job.observation,

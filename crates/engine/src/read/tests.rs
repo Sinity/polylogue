@@ -301,3 +301,130 @@ fn native_range_binds_the_opened_file_generation_and_rejects_path_replacement() 
     std::fs::rename(replacement, &path).unwrap();
     assert!(read_native_range(&path, 0, facts.size, Some(facts)).is_err());
 }
+
+#[test]
+fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    home.append("empty.jsonl", "");
+    let path = home.home.join(".claude/projects/-proj/empty.jsonl");
+    let facts = polylogue_store::FileFacts::of(&std::fs::metadata(&path).unwrap());
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+    let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
+    let input = polylogue_store::InputKey {
+        id: "empty-native".into(),
+        format: origin.name.into(),
+        arrival_rank: 0,
+    };
+    let mut plan = crate::plan::Plan::stored(
+        path.clone(),
+        origin,
+        input.clone(),
+        polylogue_store::Change::First,
+        Some(facts),
+        0,
+        0,
+        crate::pool::Bytes::File,
+        64,
+        true,
+    );
+    plan.observation = Some(engine.observation(&path, Some(facts)));
+    plan.parser_deferred = true;
+    assert!(
+        !plan.finished(),
+        "an unrecorded observation is still local acquisition work"
+    );
+    let mut job = plan.next_job();
+    assert_eq!(job.store_from, Some(0));
+    let mut context = engine
+        .sampling_context(&path, origin.name, &origin.reading_version())
+        .unwrap();
+    context.facts = Some(facts);
+    job.acquisition = Some(context);
+    let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+    assert!(done.error.is_none(), "{:?}", done.error);
+    let prepared = prepared.unwrap();
+    assert!(prepared.batch.parse.is_empty());
+    assert_eq!(prepared.batch.new_blob.as_ref().unwrap().size, 0);
+    let receipt = prepared.batch.acquisition.as_ref().unwrap();
+    assert_eq!(
+        receipt.range,
+        polylogue_store::primary::RawRange { start: 0, end: 0 }
+    );
+    assert_eq!(receipt.raw_total, Some(0));
+    assert!(
+        matches!(&receipt.generation, Some(polylogue_store::primary::SourceGeneration::File { observed, .. }) if observed.size == 0)
+    );
+    let results = engine
+        .writer
+        .sender()
+        .unwrap()
+        .store_group(vec![prepared], std::sync::Arc::clone(&engine.blobs))
+        .unwrap();
+    assert!(results.into_iter().all(|result| result.is_ok()));
+    let hash = hashed_blobs::Hash(*blake3::hash(b"").as_bytes());
+    assert_eq!(engine.blobs.extent(&hash).unwrap().decoded_len, 0);
+    let reader = engine.reads.reader().unwrap();
+    let progress = reader.input_progress(&input.id).unwrap().unwrap();
+    assert_eq!(progress.length, 0);
+    assert!(!progress.parsed);
+}
+
+#[test]
+fn malformed_middle_stops_parser_facts_but_keeps_quiet_native_bytes_through_eof_and_reopen() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let first = polylogue_testkit::claude_user("first", "raw-error", "valid prefix");
+    let bytes = [
+        first.as_bytes(),
+        b"not-json\n",
+        polylogue_testkit::claude_user("later", "raw-error", &"retained raw tail ".repeat(128))
+            .as_bytes(),
+    ]
+    .concat();
+    home.append("corrupt.jsonl", std::str::from_utf8(&bytes).unwrap());
+    assert!(bytes.len() > 3 * first.len());
+    for attempt in 0..2 {
+        let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
+        let pass = engine.run_pass().unwrap();
+        assert!(
+            pass.errors.iter().any(|error| error.contains("parse")),
+            "attempt {attempt}: {pass:?}"
+        );
+        let reader = engine.reads.reader().unwrap();
+        let known = reader
+            .known_watched_input_at(
+                "test-machine",
+                home.file("corrupt.jsonl").as_os_str().as_encoded_bytes(),
+            )
+            .unwrap()
+            .unwrap();
+        let progress = reader.input_progress(&known.input_id).unwrap().unwrap();
+        assert_eq!(progress.length, bytes.len() as u64);
+        assert_eq!(progress.parsed_upto, first.len() as u64);
+        assert!(!progress.parsed);
+        assert_eq!(
+            reader
+                .stored_range(
+                    &known.input_id,
+                    progress.chain,
+                    0,
+                    progress.length,
+                    &engine.blobs
+                )
+                .unwrap(),
+            bytes
+        );
+        let session = polylogue_model::SessionId::parse("claude-code:raw-error").unwrap();
+        assert_eq!(
+            reader
+                .messages(&session, false)
+                .unwrap()
+                .iter()
+                .map(polylogue_model::Message::text)
+                .collect::<Vec<_>>(),
+            ["valid prefix"]
+        );
+        drop(reader);
+        drop(engine);
+        drop(lock);
+    }
+}
