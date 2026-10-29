@@ -1,6 +1,6 @@
 //! Natural archive addresses. Parsing does not read an archive or resolve a
 //! shorthand; an address may name a target that has not arrived yet.
-use crate::{DocumentId, IdError, MessageId, SessionId};
+use crate::{DocumentId, IdError, MessageId, RunId, SessionId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
@@ -58,6 +58,7 @@ pub enum Reference {
     ToolCall(SessionId, String),
     Document(DocumentId),
     Event(String),
+    Run(RunId),
     Attachment(String),
     Assertion(RevisionReference),
     Variant {
@@ -163,6 +164,7 @@ impl Reference {
             }
             "document" => Self::Document(DocumentId::parse(rest).map_err(id)?),
             "event" => Self::Event(nonempty(rest)?),
+            "run" => Self::Run(RunId::parse(rest).map_err(id)?),
             "attachment" => Self::Attachment(nonempty(rest)?),
             "assertion" => Self::Assertion(revision(rest)?),
             "variant" => {
@@ -306,6 +308,7 @@ impl fmt::Display for Reference {
             Self::ToolCall(session, call) => write!(f, "tool:{session}#{call}"),
             Self::Document(id) => write!(f, "document:{id}"),
             Self::Event(id) => write!(f, "event:{id}"),
+            Self::Run(id) => write!(f, "run:{id}"),
             Self::Attachment(id) => write!(f, "attachment:{id}"),
             Self::Assertion(revision) => write!(f, "assertion:{revision}"),
             Self::Variant { revision, part } => {
