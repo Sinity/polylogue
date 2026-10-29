@@ -58,6 +58,7 @@ impl EnvSnapshot {
             "KITTY_PID",
             "KITTY_WINDOW_ID",
             "DBUS_SESSION_BUS_ADDRESS",
+            "VOYAGE_API_KEY",
         ]
         .into_iter()
         .collect();
@@ -249,6 +250,7 @@ pub struct Config {
     pub requests: polylogue_model::user::RequestMetadata,
     pub signals: SignalDeployment,
     pub notification_bus_address: Option<String>,
+    pub embedding_credentials: crate::embeddings::Credentials,
     standalone_day: Option<DaySetting>,
     #[cfg(feature = "sinex")]
     pub primary_auth: polylogue_sinex::Authentication,
@@ -522,6 +524,12 @@ impl Startup {
             identity,
             signals,
             notification_bus_address,
+            embedding_credentials: crate::embeddings::Credentials::new(
+                process
+                    .environment
+                    .text("VOYAGE_API_KEY")?
+                    .map(str::to_string),
+            ),
             standalone_day,
             #[cfg(feature = "sinex")]
             primary_auth,

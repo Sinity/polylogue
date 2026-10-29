@@ -121,6 +121,7 @@ fn output_and_grammar_inputs_need_no_deployment_or_machine_identity() {
     let environment = EnvSnapshot::from_values([
         ("CODEX_THREAD_ID".into(), "synthetic-thread".into()),
         ("POLYLOGUE_AUTH_TOKEN_FILE".into(), "/secret-path".into()),
+        ("VOYAGE_API_KEY".into(), "synthetic-secret".into()),
     ]);
     assert_eq!(
         environment

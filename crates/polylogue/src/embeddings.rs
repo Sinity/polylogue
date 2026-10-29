@@ -11,13 +11,12 @@
 //! - `embed.price_per_mtok`: dollars per million tokens, for the preview;
 //!   unset for a paid provider means the cost is shown as unknown.
 //!
-//! Voyage reads its key from `VOYAGE_API_KEY` and never runs without
+//! Startup supplies the Voyage credential captured from `VOYAGE_API_KEY` and never runs without
 //! `--yes` after a preview.
 
 use crate::daemon::Response;
-use crate::daemon::service::{error, now_ms, ok, store_error};
+use crate::daemon::service::{error, ok, store_error};
 use polylogue_store::Reader;
-use polylogue_store::user_writes::machine_id;
 use polylogue_store::vectors::{Vector, Vectors};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -32,6 +31,29 @@ const CHUNK_CHARS: usize = 6000;
 /// Texts read from the index per page.
 const PAGE: u64 = 2000;
 
+/// Secrets captured once at the startup boundary; diagnostics never print them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Credentials {
+    voyage: Option<String>,
+}
+impl Credentials {
+    pub fn new(voyage: Option<String>) -> Self {
+        Self { voyage }
+    }
+}
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("voyage", &self.voyage.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+pub struct Context<'a> {
+    pub settings: &'a polylogue_model::settings::Snapshot,
+    pub credentials: &'a Credentials,
+    pub clock: &'a query_language::time::Clock,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderKind {
     Voyage,
@@ -44,39 +66,48 @@ pub struct Provider {
     pub endpoint: String,
     pub model: String,
     pub price_per_mtok: Option<f64>,
+    credentials: Credentials,
 }
 
 impl Provider {
     /// From settings; `None` while embeddings are off.
-    pub fn from_settings(reader: &Reader<'_>, machine: &str) -> Result<Option<Self>, String> {
-        let get = |k: &str| reader.setting(k, machine).map_err(|e| e.to_string());
-        let kind = match get("embed.provider")?.as_deref() {
-            None | Some("off" | "") => return Ok(None),
-            Some("local") => ProviderKind::Local,
-            Some("voyage") => ProviderKind::Voyage,
-            Some(other) => {
-                return Err(format!(
-                    "embed.provider is {other:?}; it is `local`, `voyage` or `off`"
-                ));
-            }
+    pub fn from_settings(
+        settings: &polylogue_model::settings::Snapshot,
+        credentials: &Credentials,
+    ) -> Result<Option<Self>, String> {
+        use polylogue_model::settings::{EmbeddingProvider, Value};
+        let kind = match settings.get("embed.provider") {
+            Some(Value::EmbeddingProvider(EmbeddingProvider::Off)) => return Ok(None),
+            Some(Value::EmbeddingProvider(EmbeddingProvider::Local)) => ProviderKind::Local,
+            Some(Value::EmbeddingProvider(EmbeddingProvider::Voyage)) => ProviderKind::Voyage,
+            _ => return Err("the typed settings snapshot lacks embed.provider".into()),
         };
         let (endpoint, model) = match kind {
             ProviderKind::Local => ("http://127.0.0.1:11434/v1", "qwen3-embedding:0.6b"),
             ProviderKind::Voyage => ("https://api.voyageai.com/v1", "voyage-4"),
         };
-        let price = match get("embed.price_per_mtok")? {
-            Some(p) => Some(
-                p.parse::<f64>()
-                    .map_err(|_| format!("embed.price_per_mtok is not a number: {p:?}"))?,
-            ),
+        let endpoint = match settings.get("embed.endpoint") {
+            Some(Value::Endpoint(value)) => value.clone(),
+            None => endpoint.into(),
+            _ => return Err("invalid typed embed.endpoint".into()),
+        };
+        let model = match settings.get("embed.model") {
+            Some(Value::Text(value)) => value.clone(),
+            None => model.into(),
+            _ => return Err("invalid typed embed.model".into()),
+        };
+        let price_per_mtok = match settings.get("embed.price_per_mtok") {
+            Some(Value::NonnegativeNumber(value)) => Some(*value),
             None if kind == ProviderKind::Local => Some(0.0),
             None => None,
+            _ => return Err("invalid typed embed.price_per_mtok".into()),
         };
         Ok(Some(Self {
-            endpoint: get("embed.endpoint")?.unwrap_or_else(|| endpoint.to_owned()),
-            model: get("embed.model")?.unwrap_or_else(|| model.to_owned()),
+            endpoint,
+            model,
             kind,
-            price_per_mtok: price,
+            price_per_mtok,
+            credentials: credentials.clone(),
         }))
     }
 
@@ -148,8 +179,14 @@ impl Provider {
         let client = client.build().map_err(failed)?;
         let mut request = client.post(&url).json(&body);
         if self.kind == ProviderKind::Voyage {
-            let key = std::env::var("VOYAGE_API_KEY")
-                .map_err(|_| EmbedError::Config("VOYAGE_API_KEY is not set".into()))?;
+            let key = self
+                .credentials
+                .voyage
+                .as_deref()
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| {
+                    EmbedError::Config("the startup Voyage credential is unavailable".into())
+                })?;
             request = request.bearer_auth(key);
         }
         let response = request.send().await.map_err(failed)?;
@@ -422,7 +459,11 @@ pub fn ranking_key(reader: &Reader<'_>, provider: Option<&Provider>) -> Option<S
 
 /// The IDs of every session a sessions query returns, through all its
 /// pages.
-fn query_sessions(reader: &Reader<'_>, query: &str) -> Result<Vec<String>, Response> {
+fn query_sessions(
+    reader: &Reader<'_>,
+    query: &str,
+    clock: &query_language::time::Clock,
+) -> Result<Vec<String>, Response> {
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -432,7 +473,7 @@ fn query_sessions(reader: &Reader<'_>, query: &str) -> Result<Vec<String>, Respo
             page_size: Some(1_000),
             why: false,
             session: None,
-            now: now_ms(),
+            now: clock.now.as_millisecond(),
             day: None,
             embeddings: false,
             near: None,
@@ -467,8 +508,9 @@ pub fn handle(
     query: Option<&str>,
     limit: Option<u64>,
     yes: bool,
+    context: Context<'_>,
 ) -> Response {
-    let provider = match Provider::from_settings(reader, &machine_id()) {
+    let provider = match Provider::from_settings(context.settings, context.credentials) {
         Ok(p) => p,
         Err(e) => return error("bad_request", e),
     };
@@ -493,7 +535,7 @@ pub fn handle(
     // A query limits the work to the sessions it finds.
     let sessions: Option<Vec<String>> = match query.filter(|q| !q.trim().is_empty()) {
         None => None,
-        Some(q) => match query_sessions(reader, q) {
+        Some(q) => match query_sessions(reader, q, context.clock) {
             Ok(ids) => Some(ids),
             Err(response) => return response,
         },
