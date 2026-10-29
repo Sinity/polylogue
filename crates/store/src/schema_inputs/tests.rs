@@ -122,3 +122,30 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
     assert_eq!(tail.missing_revisions, ["c"]);
     assert!(tail.next.is_none());
 }
+
+#[test]
+fn exact_revision_time_selection_reports_missing_separately_from_unobserved_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
+    conn.execute_batch("INSERT INTO input VALUES('missing','fixture'),('recent','fixture'),('unknown','fixture');
+      INSERT INTO revision VALUES('missing',1,'first',1,1,1),('recent',2,'first',2,1,2),('unknown',2,'first',2,1,3);
+      INSERT INTO observation(id,input,machine,path,class,revision,length,polylogue_version,seen_at,commit_seq)
+      VALUES('o','recent','m','recent.json','first',2,1,'test',200,2);").unwrap();
+    let pool = fixture.reads().unwrap();
+    let page = pool
+        .reader()
+        .unwrap()
+        .schema_inputs_page(Some("fixture"), Some(2), Some(150), None, 10)
+        .unwrap();
+    assert_eq!(
+        page.inputs
+            .iter()
+            .map(|input| input.input.as_str())
+            .collect::<Vec<_>>(),
+        ["recent"]
+    );
+    assert_eq!(page.missing_revisions, ["missing"]);
+    assert_eq!(page.unknown_time_inputs, Some(1));
+    assert!(page.next.is_none());
+}

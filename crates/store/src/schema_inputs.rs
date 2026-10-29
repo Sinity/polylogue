@@ -48,7 +48,8 @@ impl Reader<'_> {
 #[derive(Debug, Clone)]
 pub struct SchemaInputsPage {
     pub inputs: Vec<InputRevision>,
-    /// Inputs present in the origin whose requested revision is absent.
+    /// Inputs present in the origin whose requested revision is absent,
+    /// retained even when a time bound cannot be evaluated for that revision.
     pub missing_revisions: Vec<String>,
     pub next: Option<String>,
     /// Whole-selection count on the initial page, absent on continuation.
@@ -81,7 +82,7 @@ impl Reader<'_> {
           WHERE (?1 IS NULL OR i.format=?1))";
         let unknown_time_inputs = if after.is_none() {
             let count: i64 = conn.query_row(
-                &format!("{base} SELECT count(*) FROM selected WHERE observed_at IS NULL"),
+                &format!("{base} SELECT count(*) FROM selected WHERE number IS NOT NULL AND observed_at IS NULL"),
                 params![origin, revision],
                 |row| row.get(0),
             )?;
@@ -96,7 +97,7 @@ impl Reader<'_> {
         let mut statement = conn.prepare_cached(&format!(
             "{base}
           SELECT id,format,number,chain,length,path FROM selected
-          WHERE (?3 IS NULL OR observed_at>=?3) AND (?4 IS NULL OR id>?4)
+          WHERE (?3 IS NULL OR observed_at>=?3 OR number IS NULL) AND (?4 IS NULL OR id>?4)
           ORDER BY id LIMIT ?5"
         ))?;
         let mut rows = statement.query(params![origin, revision, since_ms, after, limit])?;
