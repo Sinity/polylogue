@@ -1478,7 +1478,7 @@
       "type": "string",
       "enum": [
         "none",
-        "collapsed",
+        "headers",
         "full"
       ]
     },
