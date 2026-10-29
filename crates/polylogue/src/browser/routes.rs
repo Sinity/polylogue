@@ -12,7 +12,7 @@ use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response as HttpResponse};
 use axum::routing::{get, post};
-use polylogue_store::backfill_jobs::BackfillReport;
+use polylogue_model::user::BackfillReport;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;

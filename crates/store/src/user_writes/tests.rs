@@ -11,7 +11,7 @@ fn request_ids_are_uuid_v7() {
 #[test]
 fn search_requests_with_resolved_content_hashes_conflict_without_changing_data() {
     let w = crate::fixture::writer::WriterArchive::new();
-    let kept = UserRequest::now(
+    let kept = crate::user_writes::request_now(
         "kept".into(),
         UserWrite::KeepResult {
             name: Some("example".into()),
@@ -20,7 +20,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             read_at: "{\"now\":1}".into(),
         },
     );
-    let saved = UserRequest::now(
+    let saved = crate::user_writes::request_now(
         "saved".into(),
         UserWrite::AddNote {
             note: NewNote {

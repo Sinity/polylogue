@@ -7,36 +7,13 @@
 
 use crate::{Reader, Result, StoreError};
 use polylogue_model::BlobHash;
+use polylogue_model::user::{ChatAttachment, NewChatAction};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 /// How long a claim lasts without a report from the extension instance
 /// holding it; an expired claim returns the action to the queue.
 pub const CLAIM_MS: i64 = 180_000;
-
-/// A new chat action, as the writer stores it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NewChatAction {
-    pub id: String,
-    /// The request's idempotency key: a resent request is the same action.
-    pub request_key: String,
-    /// BLAKE3 of the request's JSON.
-    pub request_hash: BlobHash,
-    pub request: serde_json::Value,
-    pub stage_only: bool,
-    pub needs_approval: bool,
-    pub attachments: Vec<ChatAttachment>,
-}
-
-/// A file attached to a chat action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChatAttachment {
-    pub id: String,
-    pub blob: BlobHash,
-    pub name: String,
-    pub media_type: String,
-    pub size: u64,
-}
 
 /// One thing that happened to a chat action.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

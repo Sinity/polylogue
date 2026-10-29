@@ -100,7 +100,7 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
     let saved = reader.user_request(&id).unwrap().unwrap();
     assert!(matches!(
         saved.write,
-        polylogue_store::UserWrite::Deliver(_)
+        polylogue_model::user::UserWrite::Deliver(_)
     ));
     let events = reader
         .query(

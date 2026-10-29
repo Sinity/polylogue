@@ -104,8 +104,8 @@ struct WriterQueue {
 }
 
 type UserMsg = (
-    Box<crate::user_writes::UserRequest>,
-    SyncSender<Result<crate::user_writes::UserOutcome>>,
+    Box<polylogue_model::user::UserRequest>,
+    SyncSender<Result<polylogue_model::user::UserOutcome>>,
 );
 
 /// User writes waiting before their senders block.
@@ -354,8 +354,8 @@ impl Writer {
     /// it to commit. It goes ahead of batches still queued.
     pub fn user(
         &self,
-        request: crate::user_writes::UserRequest,
-    ) -> Result<crate::user_writes::UserOutcome> {
+        request: polylogue_model::user::UserRequest,
+    ) -> Result<polylogue_model::user::UserOutcome> {
         user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
     }
 
@@ -509,8 +509,8 @@ impl WriterSender {
     /// As [`Writer::user`].
     pub fn user(
         &self,
-        request: crate::user_writes::UserRequest,
-    ) -> Result<crate::user_writes::UserOutcome> {
+        request: polylogue_model::user::UserRequest,
+    ) -> Result<polylogue_model::user::UserOutcome> {
         user_via(&self.0, request)
     }
 
@@ -542,8 +542,8 @@ fn derive_via(tx: &WriterQueue) -> Result<u64> {
 
 fn user_via(
     tx: &WriterQueue,
-    request: crate::user_writes::UserRequest,
-) -> Result<crate::user_writes::UserOutcome> {
+    request: polylogue_model::user::UserRequest,
+) -> Result<polylogue_model::user::UserOutcome> {
     let (reply, wait) = sync_channel(1);
     tx.send_user((Box::new(request), reply))
         .map_err(|_| StoreError::WriterGone)?;
@@ -914,8 +914,8 @@ impl Inner {
 
     fn write_user(
         &mut self,
-        request: &crate::user_writes::UserRequest,
-    ) -> Result<crate::user_writes::UserOutcome> {
+        request: &polylogue_model::user::UserRequest,
+    ) -> Result<polylogue_model::user::UserOutcome> {
         let tx = self.archive.transaction()?;
         let seq = bump_counter(&tx)?;
         let outcome = crate::user_writes::apply(&tx, request, seq)?;
