@@ -53,6 +53,11 @@ fn run(term: &str, earlier: bool, output: bool) {
         assert_eq!(snippet["message"], "claude-code:matched");
         let shown = snippet["text"].as_str().unwrap();
         assert!(shown.contains(term), "{snippet}");
+        // Only the documented edge ellipses may differ from the stored block.
+        assert!(
+            text.contains(shown.trim_matches('…')),
+            "rewritten snippet: {snippet}"
+        );
         let marks = snippet["marks"].as_array().unwrap();
         assert!(!marks.is_empty(), "{snippet}");
         for mark in marks {
@@ -67,14 +72,18 @@ fn run(term: &str, earlier: bool, output: bool) {
         let unicode = json(&unicode);
         assert_eq!(unicode["count"], 1, "{unicode}");
         let snippet = &unicode["rows"][0]["snippet"];
-        let text = snippet["text"].as_str().unwrap();
+        let unicode_text = snippet["text"].as_str().unwrap();
+        assert!(
+            text.contains(unicode_text.trim_matches('…')),
+            "rewritten snippet: {snippet}"
+        );
         let marks = snippet["marks"].as_array().unwrap();
         assert!(!marks.is_empty(), "{snippet}");
         for mark in marks {
             let start = mark[0].as_u64().unwrap() as usize;
             let end = mark[1].as_u64().unwrap() as usize;
-            assert!(text.is_char_boundary(start) && text.is_char_boundary(end));
-            assert_eq!(&text[start..end], "Łódź");
+            assert!(unicode_text.is_char_boundary(start) && unicode_text.is_char_boundary(end));
+            assert_eq!(&unicode_text[start..end], "Łódź");
         }
     });
 }

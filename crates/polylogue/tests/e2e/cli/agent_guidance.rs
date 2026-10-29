@@ -98,7 +98,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             assert_eq!(request["op"], "context");
             assert_eq!(request["sender"], "hook");
             assert_eq!(request["ask"], expected);
-            writeln!(stream, "{}", json!({"result":"ok","data":{"delivery":"synthetic-delivery","prepared":{"empty":false,"text":"Synthetic context"}}})).unwrap();
+            writeln!(stream, "{}", command_surface::Answer::ok(json!({"delivery":"synthetic-delivery","prepared":{"empty":false,"text":"Synthetic context"}}))).unwrap();
             let (mut stream, _) = listener.accept().unwrap();
             line.clear();
             BufReader::new(&stream).read_line(&mut line).unwrap();
@@ -106,7 +106,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             assert_eq!(request["op"], "delivery_event");
             assert_eq!(request["delivery"], "synthetic-delivery");
             assert_eq!(request["what"], "delivered");
-            writeln!(stream, "{}", json!({"result":"ok","data":{}})).unwrap();
+            writeln!(stream, "{}", command_surface::Answer::ok(json!({}))).unwrap();
         });
         let mut child = crate::command(dir.path())
             .args(["hook", event, "--harness", "gemini-cli"])
@@ -124,9 +124,17 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{out:?}");
         assert_eq!(
-            json(&out),
+            gemini_hook_output(&out),
             json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":"Synthetic context"}})
         );
         server.join().unwrap();
     }
+}
+
+/// Native harness output is its own protocol, not a command Answer.
+fn gemini_hook_output(output: &Output) -> Value {
+    assert!(output.status.success(), "{output:?}");
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value.get("hookSpecificOutput").is_some(), "{value}");
+    value
 }
