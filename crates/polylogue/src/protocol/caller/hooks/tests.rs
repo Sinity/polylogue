@@ -60,23 +60,25 @@ fn latest_session_and_exact_tool_call_replace_stale_startup_identity() {
         "agent:claude-code:agent-worker-two"
     );
     let caller = evidence(None);
-    let selected = registry.identity(&caller).unwrap();
-    assert_eq!(
-        compute_authorship(Channel::Cli, &caller, Some(&selected))
-            .author
-            .to_string(),
-        "agent:claude-code:resumed"
-    );
+    assert!(registry.identity(&caller).is_none());
     append(
         &path,
         event("PostToolUse", "resumed", Some("call-two"), None),
     );
-    let selected = registry.identity(&caller).unwrap();
+    assert!(
+        registry.identity(&caller).is_none(),
+        "a unique remaining call is not evidence"
+    );
+    assert!(registry.identity(&evidence(Some("call-two"))).is_none());
+    let session_only = CallerEvidence {
+        session: Some(SessionId::parse("claude-code:explicit-session").unwrap()),
+        ..caller
+    };
     assert_eq!(
-        compute_authorship(Channel::Cli, &caller, Some(&selected))
+        compute_authorship(Channel::Cli, &session_only, None)
             .author
             .to_string(),
-        "agent:claude-code:agent-worker-one"
+        "agent:claude-code:explicit-session"
     );
 }
 
@@ -85,47 +87,30 @@ fn partial_hook_record_is_observed_only_after_its_newline_and_file_replacement_r
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
     let registry = Registry::new(directory.path().into());
-    append(&path, event("SessionStart", "first", None, None));
-    assert_eq!(
-        registry
-            .identity(&evidence(None))
-            .unwrap()
-            .session
-            .to_string(),
-        "claude-code:first"
-    );
-    let next = serde_json::to_vec(&event("SessionStart", "second", None, None)).unwrap();
+    let caller = evidence(Some("call-one"));
+    let next = serde_json::to_vec(&event("PreToolUse", "first", Some("call-one"), None)).unwrap();
     let mut output = std::fs::OpenOptions::new()
+        .create(true)
         .append(true)
         .open(&path)
         .unwrap();
     output.write_all(&next).unwrap();
-    assert_eq!(
-        registry
-            .identity(&evidence(None))
-            .unwrap()
-            .session
-            .to_string(),
-        "claude-code:first"
-    );
+    assert!(registry.identity(&caller).is_none());
     output.write_all(b"\n").unwrap();
     assert_eq!(
-        registry
-            .identity(&evidence(None))
-            .unwrap()
-            .session
-            .to_string(),
-        "claude-code:second"
+        registry.identity(&caller).unwrap().session.to_string(),
+        "claude-code:first"
     );
     let replacement = directory.path().join("replacement");
     append(
         &replacement,
-        event("SessionStart", "replacement", None, None),
+        event("PreToolUse", "replacement", Some("other-call"), None),
     );
     std::fs::rename(&replacement, &path).unwrap();
+    assert!(registry.identity(&caller).is_none());
     assert_eq!(
         registry
-            .identity(&evidence(None))
+            .identity(&evidence(Some("other-call")))
             .unwrap()
             .session
             .to_string(),
@@ -134,24 +119,16 @@ fn partial_hook_record_is_observed_only_after_its_newline_and_file_replacement_r
 }
 
 #[test]
-fn a_quoted_reference_to_the_program_does_not_claim_a_cli_tool_call() {
-    assert!(!runs_polylogue("echo 'polylogue status'"));
-    assert!(runs_polylogue("env LANG=C polylogue status"));
-    assert!(runs_polylogue("/tools/polylogue status"));
-    assert!(runs_polylogue("true; env -C /work polylogue status"));
-    assert!(!runs_polylogue("echo 'literal;' polylogue status"));
-}
-
-#[test]
 fn a_reused_pid_never_applies_another_harnesses_hook_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
     let registry = Registry::new(directory.path().into());
-    append(&path, event("SessionStart", "old", None, None));
-    assert!(registry.identity(&evidence(None)).is_some());
+    append(&path, event("PreToolUse", "old", Some("call-one"), None));
+    assert!(registry.identity(&evidence(Some("call-one"))).is_some());
     let caller = CallerEvidence {
         harness: Some(Origin::new("codex").unwrap()),
         harness_pid: Some(17),
+        tool_call_id: Some("call-one".into()),
         ..Default::default()
     };
     assert!(registry.identity(&caller).is_none());

@@ -22,12 +22,7 @@ struct Cursor {
     device: u64,
     inode: u64,
     offset: u64,
-    session: Option<HookIdentity>,
-    calls: BTreeMap<String, Call>,
-}
-struct Call {
-    identity: HookIdentity,
-    polylogue_shell: bool,
+    calls: BTreeMap<String, HookIdentity>,
 }
 #[derive(Deserialize)]
 struct Event {
@@ -48,12 +43,6 @@ struct Payload {
     session_id: Option<String>,
     tool_use_id: Option<String>,
     agent_id: Option<String>,
-    tool_name: Option<String>,
-    tool_input: Option<ToolInput>,
-}
-#[derive(Deserialize)]
-struct ToolInput {
-    command: Option<String>,
 }
 
 impl Registry {
@@ -97,28 +86,12 @@ impl Registry {
             }
             cursor.observe(event);
         }
-        let selected = if let Some(tool) = caller.tool_call_id.as_ref() {
-            cursor
-                .calls
-                .get(tool)
-                .map(|call| call.identity.clone())
-                .or_else(|| cursor.session.clone())
-        } else {
-            let mut matching = cursor.calls.values().filter(|call| call.polylogue_shell);
-            let first = matching.next();
-            if matching.next().is_none()
-                && caller
-                    .harness
-                    .as_ref()
-                    .is_some_and(|origin| origin.as_str() == "claude-code")
-            {
-                first
-                    .map(|call| call.identity.clone())
-                    .or_else(|| cursor.session.clone())
-            } else {
-                cursor.session.clone()
-            }
-        };
+        // A session association does not identify an active tool invocation.
+        let selected = caller
+            .tool_call_id
+            .as_ref()
+            .and_then(|tool| cursor.calls.get(tool))
+            .cloned();
         selected.filter(|identity| {
             caller
                 .harness
@@ -141,26 +114,12 @@ impl Cursor {
             agent_id: event.agent_id.or(event.payload.agent_id),
         });
         match event.event.as_str() {
-            "SessionStart" => {
-                self.session = identity;
-                self.calls.clear();
-            }
-            "SessionEnd" => {
-                self.session = None;
+            "SessionStart" | "SessionEnd" => {
                 self.calls.clear();
             }
             "PreToolUse" => {
                 if let (Some(tool), Some(identity)) = (tool, identity) {
-                    let command = event.payload.tool_input.and_then(|input| input.command);
-                    let polylogue_shell = event.payload.tool_name.as_deref() == Some("Bash")
-                        && command.as_deref().is_some_and(runs_polylogue);
-                    self.calls.insert(
-                        tool,
-                        Call {
-                            identity,
-                            polylogue_shell,
-                        },
-                    );
+                    self.calls.insert(tool, identity);
                 }
             }
             "PostToolUse" | "PostToolUseFailure" | "ToolUseCancelled" => {
@@ -172,11 +131,5 @@ impl Cursor {
         }
     }
 }
-fn runs_polylogue(command: &str) -> bool {
-    polylogue_model::command::effective_stages(command)
-        .iter()
-        .any(|stage| stage.program == "polylogue")
-}
-
 #[cfg(test)]
 mod tests;
