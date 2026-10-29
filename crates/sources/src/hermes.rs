@@ -505,30 +505,46 @@ impl ExportParser for Database {
                 }
                 session.git_branch = text(row, "git_branch");
                 session.repo = text(row, "git_remote");
-                session.started = row.get("started_at").and_then(crate::time::epoch_seconds);
+                let (at, evidence) =
+                    crate::time::parts(row.get("started_at").and_then(crate::time::epoch_seconds));
+                session
+                    .set_time(at, evidence)
+                    .expect("decoded source time is valid");
                 sink.out.sessions.push(session);
-                sink.out.events.push(Event {
-                    session: Some(id.clone()),
-                    kind: "session_metadata".into(),
-                    at: None,
-                    after: None,
-                    range: None,
-                    data: row.clone(),
+                sink.out.events.push({
+                    let (at, time_evidence) = crate::time::parts(None);
+                    Event {
+                        session: Some(id.clone()),
+                        kind: "session_metadata".into(),
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        after: None,
+                        range: None,
+                        data: row.clone(),
+                    }
                 });
                 let mut limits = Vec::new();
                 if facts.messages && (!facts.activity_known || facts.leaf.is_none()) {
-                    sink.out.events.push(Event {
-                        session: Some(id.clone()),
-                        kind: if facts.activity_known {
-                            "active_path_empty"
-                        } else {
-                            "active_path_unknown"
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(None);
+                        Event {
+                            session: Some(id.clone()),
+                            kind: if facts.activity_known {
+                                "active_path_empty"
+                            } else {
+                                "active_path_unknown"
+                            }
+                            .into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: None,
+                            range: None,
+                            data: Json::Null,
                         }
-                        .into(),
-                        at: None,
-                        after: None,
-                        range: None,
-                        data: Json::Null,
                     });
                 }
                 if row.get("source").is_some_and(|value| {
@@ -554,13 +570,19 @@ impl ExportParser for Database {
                     }
                 }
                 if !limits.is_empty() {
-                    sink.out.events.push(Event {
-                        session: Some(id.clone()),
-                        kind: "hermes_session_diagnostic".into(),
-                        at: None,
-                        after: None,
-                        range: None,
-                        data: serde_json::json!({"reason":limits}),
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(None);
+                        Event {
+                            session: Some(id.clone()),
+                            kind: "hermes_session_diagnostic".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: None,
+                            range: None,
+                            data: serde_json::json!({"reason":limits}),
+                        }
                     });
                 }
                 if let Some((parent, kind)) = self.parent(&raw)
@@ -599,13 +621,21 @@ impl ExportParser for Database {
                     });
                 }
                 if let Some(end) = text(row, "end_reason") {
-                    sink.out.events.push(Event {
-                        session: Some(id),
-                        kind: "session_end".into(),
-                        at: row.get("ended_at").and_then(crate::time::epoch_seconds),
-                        after: facts.leaf.clone(),
-                        range: None,
-                        data: serde_json::json!({"end_reason":end}),
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(
+                            row.get("ended_at").and_then(crate::time::epoch_seconds),
+                        );
+                        Event {
+                            session: Some(id),
+                            kind: "session_end".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: facts.leaf.clone(),
+                            range: None,
+                            data: serde_json::json!({"end_reason":end}),
+                        }
                     });
                 }
                 sink.records.record(table, &RecordOutcome::Used);
@@ -653,13 +683,19 @@ impl ExportParser for Database {
                             .clone()
                             .or_else(|| facts.system.then(|| self.mid(raw, "system")).flatten());
                         for (kind, data) in diagnostics {
-                            sink.out.events.push(Event {
-                                session: Some(sid.clone()),
-                                kind,
-                                at: message.at,
-                                after: Some(id.clone()),
-                                range: None,
-                                data,
+                            sink.out.events.push({
+                                let (at, time_evidence) = (message.at, message.time_evidence());
+                                Event {
+                                    session: Some(sid.clone()),
+                                    kind,
+                                    at,
+                                    at_quality: time_evidence.quality,
+                                    at_precision: time_evidence.precision,
+                                    at_until: time_evidence.until,
+                                    after: Some(id.clone()),
+                                    range: None,
+                                    data,
+                                }
                             });
                         }
                         let offset = sink.position();
@@ -669,13 +705,19 @@ impl ExportParser for Database {
                             message,
                         });
                         if facts.activity_known && facts.leaf.as_ref() == Some(id) {
-                            sink.out.events.push(Event {
-                                session: Some(sid),
-                                kind: "active_leaf".into(),
-                                at: None,
-                                after: Some(id.clone()),
-                                range: None,
-                                data: Json::Null,
+                            sink.out.events.push({
+                                let (at, time_evidence) = crate::time::parts(None);
+                                Event {
+                                    session: Some(sid),
+                                    kind: "active_leaf".into(),
+                                    at,
+                                    at_quality: time_evidence.quality,
+                                    at_precision: time_evidence.precision,
+                                    at_until: time_evidence.until,
+                                    after: Some(id.clone()),
+                                    range: None,
+                                    data: Json::Null,
+                                }
                             });
                         }
                         sink.records.record(table, &RecordOutcome::Used);

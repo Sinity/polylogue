@@ -152,7 +152,8 @@ impl Parser for Database {
                     .and_then(time::epoch_millis)
                     .or_else(|| row.get("created_at").and_then(time::epoch_seconds))
                 {
-                    s.offer_start(at);
+                    s.offer_start(at.timestamp(), at.evidence())
+                        .expect("decoded source time is valid");
                 }
                 out.sessions.push(s);
                 RecordOutcome::Used
@@ -189,13 +190,19 @@ impl Parser for Database {
                         row.get("generated_at").and_then(time::epoch_seconds),
                     )
                 };
-                out.events.push(Event {
-                    session: Some(session),
-                    kind: kind.into(),
-                    at,
-                    after: None,
-                    range: Some((record.offset, record.offset + record.bytes.len() as u64)),
-                    data: row.clone(),
+                out.events.push({
+                    let (at, time_evidence) = crate::time::parts(at);
+                    Event {
+                        session: Some(session),
+                        kind: kind.into(),
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        after: None,
+                        range: Some((record.offset, record.offset + record.bytes.len() as u64)),
+                        data: row.clone(),
+                    }
                 });
                 RecordOutcome::Used
             }

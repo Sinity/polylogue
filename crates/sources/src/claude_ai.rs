@@ -250,7 +250,9 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         session.offer_title(summary, TitleSource::Summary);
     }
     if let Some(at) = conv.get("created_at").and_then(time_of) {
-        session.offer_start(at);
+        session
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
     sink.records.record("conversation", &RecordOutcome::Used);
@@ -262,13 +264,19 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
             .filter(|(k, _)| k.as_str() != "chat_messages")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "conversation_settings".into(),
-            at: conv.get("updated_at").and_then(time_of),
-            after: None,
-            range: None,
-            data: Json::Object(settings),
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(conv.get("updated_at").and_then(time_of));
+            Event {
+                session: Some(sid.clone()),
+                kind: "conversation_settings".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: Json::Object(settings),
+            }
         });
     }
 
@@ -290,13 +298,19 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                     .get("compaction_summary")
                     .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
                 {
-                    sink.out.events.push(Event {
-                        session: Some(sid.clone()),
-                        kind: "compaction".into(),
-                        at: msg.at,
-                        after: msg.parent.clone(),
-                        range: None,
-                        data: serde_json::json!({ "summary": summary }),
+                    sink.out.events.push({
+                        let (at, time_evidence) = crate::time::parts(msg.at);
+                        Event {
+                            session: Some(sid.clone()),
+                            kind: "compaction".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: msg.parent.clone(),
+                            range: None,
+                            data: serde_json::json!({ "summary": summary }),
+                        }
                     });
                 }
                 collect_inline(m, &mut sink.out.blobs);
@@ -320,13 +334,19 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     if let Some(leaf) = str_of(conv, "current_leaf_message_uuid")
         && let Some(id) = message_id(ORIGIN, leaf)
     {
-        sink.out.events.push(Event {
-            session: Some(sid),
-            kind: "active_leaf".into(),
-            at: None,
-            after: Some(id),
-            range: None,
-            data: Json::Null,
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid),
+                kind: "active_leaf".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: Some(id),
+                range: None,
+                data: Json::Null,
+            }
         });
     }
 }
@@ -389,23 +409,29 @@ fn message(
     let parent = str_of(m, "parent_message_uuid")
         .filter(|p| *p != ROOT_PARENT)
         .and_then(|p| message_id(ORIGIN, p));
-    Ok(Message {
-        id,
-        session: sid.clone(),
-        parent,
-        role,
-        at: m.get("created_at").and_then(time_of),
-        model: (role == Role::Assistant)
-            .then(|| string_of(m, "model").or_else(|| model.map(str::to_owned)))
-            .flatten(),
-        prompt_kind,
-        blocks,
-        usage: Default::default(),
-        stop_reason: string_of(m, "stop_reason"),
-        reported_cost_usd: None,
-        duration_ms: None,
-        attrs: content_attrs(m),
-        production: Default::default(),
+    Ok({
+        let (at, time_evidence) = crate::time::parts(m.get("created_at").and_then(time_of));
+        Message {
+            id,
+            session: sid.clone(),
+            parent,
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: (role == Role::Assistant)
+                .then(|| string_of(m, "model").or_else(|| model.map(str::to_owned)))
+                .flatten(),
+            prompt_kind,
+            blocks,
+            usage: Default::default(),
+            stop_reason: string_of(m, "stop_reason"),
+            reported_cost_usd: None,
+            duration_ms: None,
+            attrs: content_attrs(m),
+            production: Default::default(),
+        }
     })
 }
 
@@ -688,18 +714,26 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         session.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = chat.get("created_at").and_then(time_of) {
-        session.offer_start(at);
+        session
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
     sink.records.record("chat", &RecordOutcome::Used);
     if let Some(project) = chat.get("project").filter(|p| !p.is_null()) {
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "design_project".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: project.clone(),
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid.clone()),
+                kind: "design_project".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: project.clone(),
+            }
         });
     }
     let mut previous: Option<polylogue_model::MessageId> = None;
@@ -752,24 +786,31 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
                 ..Attachment::default()
             }));
         }
-        let message = Message {
-            id: id.clone(),
-            session: sid.clone(),
-            parent: previous.replace(id),
-            role,
-            at: m
-                .get("created_at")
-                .and_then(time_of)
-                .or_else(|| body.get("timestamp").and_then(time_of)),
-            model: None,
-            prompt_kind,
-            blocks,
-            usage: Default::default(),
-            stop_reason: None,
-            reported_cost_usd: None,
-            duration_ms: None,
-            attrs: Default::default(),
-            production: Default::default(),
+        let message = {
+            let (at, time_evidence) = crate::time::parts(
+                m.get("created_at")
+                    .and_then(time_of)
+                    .or_else(|| body.get("timestamp").and_then(time_of)),
+            );
+            Message {
+                id: id.clone(),
+                session: sid.clone(),
+                parent: previous.replace(id),
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: None,
+                prompt_kind,
+                blocks,
+                usage: Default::default(),
+                stop_reason: None,
+                reported_cost_usd: None,
+                duration_ms: None,
+                attrs: Default::default(),
+                production: Default::default(),
+            }
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {

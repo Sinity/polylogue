@@ -18,8 +18,8 @@ use crate::export::{ExportParser, ExportState};
 use crate::parse::{MessageRow, Parse, Step};
 use crate::{RecordOutcome, Records};
 use polylogue_model::{
-    Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, ToolAction,
-    ToolOutcome, Usage,
+    Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, ToolAction, ToolOutcome,
+    Usage,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -68,7 +68,7 @@ static SPAN_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
 /// One span with its attributes decoded from OTLP `AnyValue`s.
 struct Span<'a> {
     trace: &'a str,
-    start: Option<Timestamp>,
+    start: Option<crate::time::SourceTime>,
     end_ns: Option<u64>,
     start_ns: Option<u64>,
     attrs: BTreeMap<String, Json>,
@@ -87,7 +87,9 @@ fn span(raw: &Json) -> Span<'_> {
     let start_ns = nanos(raw, "startTimeUnixNano");
     Span {
         trace: raw.get("traceId").and_then(Json::as_str).unwrap_or(""),
-        start: start_ns.and_then(|n| Timestamp::from_unix_ms((n / 1_000_000) as i64)),
+        start: raw
+            .get("startTimeUnixNano")
+            .and_then(crate::time::epoch_nanos),
         start_ns,
         end_ns: nanos(raw, "endTimeUnixNano"),
         attrs: attributes(raw.get("attributes")),
@@ -165,17 +167,24 @@ impl ExportParser for OtelGenAi {
         {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
             if let Some(at) = span.start {
-                s.offer_start(at);
+                s.offer_start(at.timestamp(), at.evidence())
+                    .expect("decoded source time is valid");
             }
             sink.out.sessions.push(s);
         }
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "otel_span".into(),
-            at: span.start,
-            after: None,
-            range: None,
-            data: span.raw.clone(),
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(span.start);
+            Event {
+                session: Some(sid.clone()),
+                kind: "otel_span".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: span.raw.clone(),
+            }
         });
         sink.records
             .fields(op.unwrap_or("gen_ai"), value, &SPAN_FIELDS);
@@ -285,37 +294,43 @@ fn model_span(
         let parent = place
             .checked_sub(1)
             .and_then(|p| message_id(ORIGIN, &format!("{conversation}#{p}")));
-        let message = Message {
-            id,
-            session: sid.clone(),
-            parent,
-            role,
-            at: if is_output { span.start } else { None },
-            model: is_output.then(|| model.clone()).flatten(),
-            prompt_kind: (role == Role::User).then_some(
-                if m.get("role").and_then(Json::as_str) == Some("tool") {
-                    PromptKind::Harness
+        let message = {
+            let (at, time_evidence) = crate::time::parts(if is_output { span.start } else { None });
+            Message {
+                id,
+                session: sid.clone(),
+                parent,
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: is_output.then(|| model.clone()).flatten(),
+                prompt_kind: (role == Role::User).then_some(
+                    if m.get("role").and_then(Json::as_str) == Some("tool") {
+                        PromptKind::Harness
+                    } else {
+                        PromptKind::Prose
+                    },
+                ),
+                blocks,
+                usage: if is_output && place == n {
+                    usage.clone()
                 } else {
-                    PromptKind::Prose
+                    Usage::default()
                 },
-            ),
-            blocks,
-            usage: if is_output && place == n {
-                usage.clone()
-            } else {
-                Usage::default()
-            },
-            stop_reason: m
-                .get("finish_reason")
-                .and_then(Json::as_str)
-                .map(str::to_owned),
-            reported_cost_usd: None,
-            duration_ms: match (is_output, span.start_ns, span.end_ns) {
-                (true, Some(a), Some(b)) if b >= a => Some((b - a) / 1_000_000),
-                _ => None,
-            },
-            attrs: Default::default(),
-            production: Default::default(),
+                stop_reason: m
+                    .get("finish_reason")
+                    .and_then(Json::as_str)
+                    .map(str::to_owned),
+                reported_cost_usd: None,
+                duration_ms: match (is_output, span.start_ns, span.end_ns) {
+                    (true, Some(a), Some(b)) if b >= a => Some((b - a) / 1_000_000),
+                    _ => None,
+                },
+                attrs: Default::default(),
+                production: Default::default(),
+            }
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
@@ -330,19 +345,25 @@ fn model_span(
 /// An `execute_tool` span: its call and result, when no model message
 /// carried them, as an event on the conversation.
 fn tool_span(span: &Span, sid: &polylogue_model::SessionId, sink: &mut Sink<'_>) {
-    sink.out.events.push(Event {
-        session: Some(sid.clone()),
-        kind: "tool_execution".into(),
-        at: span.start,
-        after: None,
-        range: None,
-        data: serde_json::json!({
-            "call_id": span.attrs.get("gen_ai.tool.call.id"),
-            "tool": span.attrs.get("gen_ai.tool.name"),
-            "arguments": span.attrs.get("gen_ai.tool.call.arguments"),
-            "result": span.attrs.get("gen_ai.tool.call.result"),
-            "error": span.status_error,
-        }),
+    sink.out.events.push({
+        let (at, time_evidence) = crate::time::parts(span.start);
+        Event {
+            session: Some(sid.clone()),
+            kind: "tool_execution".into(),
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            after: None,
+            range: None,
+            data: serde_json::json!({
+                "call_id": span.attrs.get("gen_ai.tool.call.id"),
+                "tool": span.attrs.get("gen_ai.tool.name"),
+                "arguments": span.attrs.get("gen_ai.tool.call.arguments"),
+                "result": span.attrs.get("gen_ai.tool.call.result"),
+                "error": span.status_error,
+            }),
+        }
     });
 }
 

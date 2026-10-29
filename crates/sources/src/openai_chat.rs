@@ -174,27 +174,33 @@ impl ExportParser for OpenAiChat {
             return Ok(());
         }
         let harness = matches!(kind.as_str(), "tool" | "function");
-        let message = Message {
-            id: id.clone(),
-            session: sid.clone(),
-            parent: self.state.previous.replace(id),
-            role,
-            at: None,
-            model: (role == Role::Assistant)
-                .then(|| self.state.model.clone())
-                .flatten(),
-            prompt_kind: (role == Role::User).then_some(if harness {
-                PromptKind::Harness
-            } else {
-                PromptKind::Prose
-            }),
-            blocks,
-            usage: Usage::default(),
-            stop_reason: None,
-            reported_cost_usd: None,
-            duration_ms: None,
-            attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
-            production: Default::default(),
+        let message = {
+            let (at, time_evidence) = crate::time::parts(None);
+            Message {
+                id: id.clone(),
+                session: sid.clone(),
+                parent: self.state.previous.replace(id),
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: (role == Role::Assistant)
+                    .then(|| self.state.model.clone())
+                    .flatten(),
+                prompt_kind: (role == Role::User).then_some(if harness {
+                    PromptKind::Harness
+                } else {
+                    PromptKind::Prose
+                }),
+                blocks,
+                usage: Usage::default(),
+                stop_reason: None,
+                reported_cost_usd: None,
+                duration_ms: None,
+                attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
+                production: Default::default(),
+            }
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {

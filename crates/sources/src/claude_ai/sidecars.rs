@@ -7,7 +7,7 @@ use crate::fields::{Fields, Rule};
 use crate::parse::{Output, Parse, Step};
 use crate::{RecordOutcome, Records};
 use polylogue_model::{
-    Block, Document, DocumentId, DocumentPurpose, DocumentRow, Json, NativeId, Origin, Timestamp,
+    Block, Document, DocumentId, DocumentPurpose, DocumentRow, Json, NativeId, Origin,
 };
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
@@ -129,7 +129,7 @@ fn scope(input: &str, kind: &str, id: Option<&str>, at: u64) -> (String, bool) {
         None => (format!("~input:{}:at:{at}", component(input)), true),
     }
 }
-fn time(fields: &BTreeMap<String, Field<'_>>) -> (Option<Timestamp>, bool) {
+fn time(fields: &BTreeMap<String, Field<'_>>) -> (Option<crate::time::SourceTime>, bool) {
     for field in ["updated_at", "created_at"] {
         if let Some(raw) = fields.get(field) {
             let value: Json = serde_json::from_str(raw.raw.get()).unwrap_or(Json::Null);
@@ -137,16 +137,16 @@ fn time(fields: &BTreeMap<String, Field<'_>>) -> (Option<Timestamp>, bool) {
                 continue;
             }
             // These sidecar fields declare ISO times with an offset, not epochs.
-            let time = value.as_str().and_then(Timestamp::parse_rfc3339);
+            let time = crate::time::rfc3339(&value);
             return (time, time.is_none());
         }
     }
     (None, false)
 }
-fn source_time(fields: &Json) -> (Option<Timestamp>, bool) {
+fn source_time(fields: &Json) -> (Option<crate::time::SourceTime>, bool) {
     for key in ["updated_at", "created_at"] {
         if let Some(value) = fields.get(key).filter(|value| !value.is_null()) {
-            let time = value.as_str().and_then(Timestamp::parse_rfc3339);
+            let time = crate::time::rfc3339(&value);
             return (time, time.is_none());
         }
     }
@@ -156,7 +156,7 @@ fn document(
     native: String,
     purpose: DocumentPurpose,
     title: Option<String>,
-    source_time: Option<Timestamp>,
+    source_time: Option<crate::time::SourceTime>,
     source_kind: &str,
     input: &str,
     fallback: bool,
@@ -167,7 +167,10 @@ fn document(
     );
     let mut document = Document::new(id, purpose);
     document.title = title;
-    document.source_time = source_time;
+    let (at, evidence) = crate::time::parts(source_time);
+    document
+        .set_time(at, evidence)
+        .expect("decoded source time is valid");
     document.metadata = serde_json::json!({"source_kind":source_kind,"identity":if fallback {serde_json::json!({"kind":"input_scoped","input":input})}else{serde_json::json!({"kind":"provider_scoped"})}});
     Ok(document)
 }
@@ -407,7 +410,9 @@ impl ExportParser for Sidecars {
                 }] = Json::String(id.to_owned());
             }
             if doc.purpose != DocumentPurpose::Context {
-                doc.source_time = source_time(fields).0;
+                let (at, evidence) = crate::time::parts(source_time(fields).0);
+                doc.set_time(at, evidence)
+                    .expect("decoded source time is valid");
             }
             if doc.purpose == DocumentPurpose::Instruction {
                 doc.title = fields.get("name").and_then(Json::as_str).map(str::to_owned);

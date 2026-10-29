@@ -12,7 +12,7 @@ use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse, Step};
 use crate::{RecordOutcome, Records};
 use polylogue_model::{
-    Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, TitleSource,
+    Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -187,7 +187,10 @@ impl Export {
         {
             session.offer_title(title, TitleSource::Generated);
         }
-        session.started = time(conversation, &mut warnings);
+        let (at, evidence) = crate::time::parts(time(conversation, &mut warnings));
+        session
+            .set_time(at, evidence)
+            .expect("decoded source time is valid");
         sink.out.sessions.push(session);
         sink.records.record("conversation", &RecordOutcome::Used);
         let mut occurrences = HashMap::<String, usize>::new();
@@ -286,27 +289,33 @@ impl Export {
             sink.out.messages.push(MessageRow {
                 offset,
                 end: offset + 1,
-                message: Message {
-                    id,
-                    session: sid.clone(),
-                    parent: fields
-                        .get("parentResponseId")
-                        .and_then(Json::as_str)
-                        .filter(|id| !id.is_empty())
-                        .and_then(|id| message_id(ORIGIN, id)),
-                    role,
-                    at,
-                    model,
-                    prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-                    blocks: vec![Block::Text {
-                        text: text.to_owned(),
-                    }],
-                    usage: Default::default(),
-                    stop_reason: None,
-                    reported_cost_usd: None,
-                    duration_ms: None,
-                    attrs: Default::default(),
-                    production: Default::default(),
+                message: {
+                    let (at, time_evidence) = crate::time::parts(at);
+                    Message {
+                        id,
+                        session: sid.clone(),
+                        parent: fields
+                            .get("parentResponseId")
+                            .and_then(Json::as_str)
+                            .filter(|id| !id.is_empty())
+                            .and_then(|id| message_id(ORIGIN, id)),
+                        role,
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        model,
+                        prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+                        blocks: vec![Block::Text {
+                            text: text.to_owned(),
+                        }],
+                        usage: Default::default(),
+                        stop_reason: None,
+                        reported_cost_usd: None,
+                        duration_ms: None,
+                        attrs: Default::default(),
+                        production: Default::default(),
+                    }
                 },
             });
             sink.records.record("response", &RecordOutcome::Used);
@@ -314,19 +323,25 @@ impl Export {
         if !warnings.is_empty() {
             warnings.sort();
             warnings.dedup();
-            sink.out.events.push(Event {
-                session: Some(sid),
-                kind: "grok_import_diagnostic".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: serde_json::json!({"warnings": warnings}),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(sid),
+                    kind: "grok_import_diagnostic".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: serde_json::json!({"warnings": warnings}),
+                }
             });
         }
     }
 }
 
-fn time(fields: &Json, warnings: &mut Vec<String>) -> Option<Timestamp> {
+fn time(fields: &Json, warnings: &mut Vec<String>) -> Option<crate::time::SourceTime> {
     match identity::time(fields) {
         Ok(time) => time,
         Err(reason) => {

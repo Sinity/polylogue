@@ -336,7 +336,8 @@ impl ClaudeCode {
             s.tool_version = Some(version.to_owned());
         }
         if let Some(at) = v.get("timestamp").and_then(time::rfc3339) {
-            s.offer_start(at);
+            s.offer_start(at.timestamp(), at.evidence())
+                .expect("decoded source time is valid");
         }
         if let Some(mode) = str_field(v, "sessionKind") {
             s.mode = Some(mode.to_owned());
@@ -404,13 +405,20 @@ impl ClaudeCode {
         }
         parser_state.names.insert(key, name.to_owned());
         if let Some(session) = session_id(stem) {
-            out.events.push(Event {
-                session: Some(session),
-                kind: kind.to_owned(),
-                at: v.get("timestamp").and_then(time::rfc3339),
-                after: parser_state.last.clone(),
-                range: Some(range(record)),
-                data,
+            out.events.push({
+                let (at, time_evidence) =
+                    crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+                Event {
+                    session: Some(session),
+                    kind: kind.to_owned(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: parser_state.last.clone(),
+                    range: Some(range(record)),
+                    data,
+                }
             });
         }
     }
@@ -430,13 +438,20 @@ impl ClaudeCode {
         let Some(session) = session else {
             return RecordOutcome::unreadable("session ID is empty");
         };
-        out.events.push(Event {
-            session: Some(session),
-            kind: kind.to_owned(),
-            at: v.get("timestamp").and_then(time::rfc3339),
-            after: parser_state.last.clone(),
-            range: Some(range(record)),
-            data: v.clone(),
+        out.events.push({
+            let (at, time_evidence) =
+                crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+            Event {
+                session: Some(session),
+                kind: kind.to_owned(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: parser_state.last.clone(),
+                range: Some(range(record)),
+                data: v.clone(),
+            }
         });
         RecordOutcome::Used
     }
@@ -470,21 +485,28 @@ impl ClaudeCode {
             out.messages.push(MessageRow {
                 offset: record.offset,
                 end: range(record).1,
-                message: Message {
-                    id: id.clone(),
-                    session,
-                    parent: parser_state.parent(v),
-                    role: Role::System,
-                    at: v.get("timestamp").and_then(time::rfc3339),
-                    model: None,
-                    prompt_kind: Some(PromptKind::Harness),
-                    blocks,
-                    usage: Usage::default(),
-                    stop_reason: None,
-                    reported_cost_usd: None,
-                    duration_ms: None,
-                    attrs: Default::default(),
-                    production: Production::default(),
+                message: {
+                    let (at, time_evidence) =
+                        crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+                    Message {
+                        id: id.clone(),
+                        session,
+                        parent: parser_state.parent(v),
+                        role: Role::System,
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        model: None,
+                        prompt_kind: Some(PromptKind::Harness),
+                        blocks,
+                        usage: Usage::default(),
+                        stop_reason: None,
+                        reported_cost_usd: None,
+                        duration_ms: None,
+                        attrs: Default::default(),
+                        production: Production::default(),
+                    }
                 },
             });
             parser_state.last = Some(id);
@@ -620,21 +642,28 @@ impl ClaudeCode {
                         key,
                         offset: record.offset,
                         end,
-                        message: Message {
-                            id: id.clone(),
-                            session,
-                            parent: parser_state.parent(v),
-                            role,
-                            at: v.get("timestamp").and_then(time::rfc3339),
-                            model,
-                            prompt_kind: None,
-                            blocks,
-                            usage,
-                            stop_reason,
-                            reported_cost_usd: cost,
-                            duration_ms: duration,
-                            attrs,
-                            production,
+                        message: {
+                            let (at, time_evidence) =
+                                crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+                            Message {
+                                id: id.clone(),
+                                session,
+                                parent: parser_state.parent(v),
+                                role,
+                                at,
+                                at_quality: time_evidence.quality,
+                                at_precision: time_evidence.precision,
+                                at_until: time_evidence.until,
+                                model,
+                                prompt_kind: None,
+                                blocks,
+                                usage,
+                                stop_reason,
+                                reported_cost_usd: cost,
+                                duration_ms: duration,
+                                attrs,
+                                production,
+                            }
                         },
                     });
                     parser_state.last = Some(id);
@@ -645,25 +674,32 @@ impl ClaudeCode {
                 // Runtime notices keep their own record identity.
                 close(parser_state, out);
             }
-            let message = Message {
-                id: id.clone(),
-                session,
-                parent: parser_state.parent(v),
-                role,
-                at: v.get("timestamp").and_then(time::rfc3339),
-                model,
-                prompt_kind: Some(if harness {
-                    PromptKind::Harness
-                } else {
-                    self.prompt_kind(v, content)
-                }),
-                blocks,
-                usage,
-                stop_reason,
-                reported_cost_usd: cost,
-                duration_ms: duration,
-                attrs,
-                production,
+            let message = {
+                let (at, time_evidence) =
+                    crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+                Message {
+                    id: id.clone(),
+                    session,
+                    parent: parser_state.parent(v),
+                    role,
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    model,
+                    prompt_kind: Some(if harness {
+                        PromptKind::Harness
+                    } else {
+                        self.prompt_kind(v, content)
+                    }),
+                    blocks,
+                    usage,
+                    stop_reason,
+                    reported_cost_usd: cost,
+                    duration_ms: duration,
+                    attrs,
+                    production,
+                }
             };
             out.messages.push(MessageRow {
                 offset: record.offset,
@@ -1196,7 +1232,10 @@ impl Parser for ClaudeCode {
                     }
                 {
                     out.background.push(BackgroundUpdate {
-                        result_at: v.get("timestamp").and_then(time::rfc3339),
+                        result_at: v
+                            .get("timestamp")
+                            .and_then(time::rfc3339)
+                            .map(crate::time::SourceTime::timestamp),
                         reported_duration_ms: v.get("durationMs").and_then(Json::as_u64),
                         session,
                         task_id,

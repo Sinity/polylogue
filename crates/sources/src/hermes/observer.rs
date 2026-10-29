@@ -124,18 +124,25 @@ impl ExportParser for Atof {
         sink.records.fields("atof", &value, &FIELDS);
         let at = value.get("timestamp").and_then(crate::time::rfc3339);
         if value.get("timestamp").is_some_and(|time| !time.is_null()) && at.is_none() {
-            sink.out.events.push(Event {
-                session: None, kind: "hermes_import_diagnostic".into(), at: None, after: None, range: None,
+            sink.out.events.push({ let (at,time_evidence)=crate::time::parts(None); Event {
+                session: None, kind: "hermes_import_diagnostic".into(),
+ at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until, after: None, range: None,
                 data: serde_json::json!({"field":"timestamp","reason":"ATOF RFC3339 time unreadable; time remains unknown"}),
-            });
+            } });
         }
-        sink.out.events.push(Event {
-            session: None,
-            kind: kind.into(),
-            at,
-            after: None,
-            range: None,
-            data: value,
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(at);
+            Event {
+                session: None,
+                kind: kind.into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: value,
+            }
         });
         sink.records.record("atof", &RecordOutcome::Used);
         Ok(())
