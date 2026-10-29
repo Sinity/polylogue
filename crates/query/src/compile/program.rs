@@ -11,7 +11,9 @@ impl<'a> Compiler<'a> {
     ) -> Result<Program, QueryError> {
         self.stages_start = q.stages.first().map_or(usize::MAX, |s| s.span.start);
         let (mut scope, wheres, top) = match &q.source {
-            Source::Unit { unit, condition } => {
+            Source::Unit {
+                unit, condition, ..
+            } => {
                 let top = condition.as_ref().map(top_level).unwrap_or_default();
                 (
                     RowContext::plain(bind_unit(unit)?),

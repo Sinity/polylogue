@@ -470,3 +470,42 @@ fn saved_query_parameters_bind_typed_time_bounds() {
         &options,
     );
 }
+
+#[test]
+fn nested_saved_condition_uses_its_own_source_coordinates() {
+    let options = opts(&[(
+        "long",
+        "sessions where id in (sessions where title:\"a long synthetic title that extends beyond the calling saved query reference\" repo:morrow | group by id)",
+    )]);
+    compile("sessions where query:long", &options).unwrap();
+}
+
+#[test]
+fn saved_kept_source_records_its_resolved_definition() {
+    let mut options = opts(&[("kept", "result:example")]);
+    options.kept.insert(
+        "example".into(),
+        Kept {
+            unit: "sessions".into(),
+            columns: c("sessions").columns,
+            match_columns: vec![],
+        },
+    );
+    let program = compile("query:kept | sort by id", &options).unwrap();
+    assert_eq!(
+        program.definitions,
+        [Definition {
+            name: "kept".into(),
+            revision: "kept-revision".into()
+        }]
+    );
+}
+
+#[test]
+fn omitted_nested_source_inherits_the_bound_tool_call_unit() {
+    same(
+        "tool_calls where command in (outcome:error | group by command)",
+        "tool_calls where command in (tool_calls where outcome:error | group by command)",
+        &opts(&[]),
+    );
+}

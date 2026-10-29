@@ -190,6 +190,7 @@ pub(crate) fn narrower(query: &str) -> Option<String> {
                 .map_or(query.len(), |end| start + end);
             format!("{} where since:1d{}", &query[..end], &query[end..])
         }
+        _ => return None,
     };
     polylogue_query::parse(&suggestion).ok().map(|_| suggestion)
 }
