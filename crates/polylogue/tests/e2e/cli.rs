@@ -236,7 +236,10 @@ pub(super) fn cli(env: &crate::Fixture, args: &[&str]) -> Output {
 fn json(out: &Output) -> serde_json::Value {
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
-    answer.value().cloned().unwrap_or_else(|| serde_json::to_value(answer).unwrap())
+    answer
+        .value()
+        .cloned()
+        .unwrap_or_else(|| serde_json::to_value(answer).unwrap())
 }
 
 fn line(uuid: &str, session: &str, text: &str) -> String {
@@ -382,8 +385,8 @@ fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
 
 mod structured_json;
 
-mod read_pages;
 mod read_current;
+mod read_pages;
 
 mod read_masking;
 
