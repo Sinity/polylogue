@@ -350,10 +350,10 @@ async fn supervise(
         }
         first_signal = Some(*signal);
     }
-    if let Some(notifications) = &notifications {
-        if let Err(error) = notifications.send(b"STOPPING=1") {
-            eprintln!("polylogue: service stopping notification: {error}");
-        }
+    if let Some(notifications) = &notifications
+        && let Err(error) = notifications.send(b"STOPPING=1")
+    {
+        eprintln!("polylogue: service stopping notification: {error}");
     }
     let mut drained = tokio::task::spawn_blocking(move || drain(app));
     let result = loop {
