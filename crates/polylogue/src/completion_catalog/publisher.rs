@@ -95,7 +95,7 @@ impl Drop for Publisher {
 }
 
 pub(super) struct State {
-    writer: Option<CatalogWriter>,
+    writer: Option<(String,CatalogWriter)>,
     position: Option<ChangePosition>,
     catalog: Catalog,
     definitions: BTreeMap<String, completion::Saved>,
@@ -124,7 +124,7 @@ impl State {
         if self
             .writer
             .as_ref()
-            .is_some_and(|writer| !writer.is_current_file())
+            .is_some_and(|(_,writer)| !writer.is_current_file())
         {
             self.writer = None;
             self.position = None;
@@ -138,10 +138,8 @@ impl State {
         if self.position.as_ref() == Some(&position) {
             return Ok(());
         }
-        if self
-            .position
-            .as_ref()
-            .is_some_and(|previous| previous.generation != position.generation)
+        if self.writer.as_ref().is_some_and(|(generation,_)|generation!=&position.generation)
+            || self.position.as_ref().is_some_and(|previous| previous.generation != position.generation)
         {
             self.writer = None;
             self.position = None;
@@ -156,11 +154,11 @@ impl State {
         let pointer = completion::CatalogPointer::new(path.to_owned());
         let generation_path = pointer.generation_path(&position.generation);
         let after = self.position.clone();
-        let result = if let Some(mut writer) = self.writer.take() {
+        let result = if let Some((generation,mut writer)) = self.writer.take() {
             let result = writer.update(&metadata, |writer| {
                 self.apply(reader, writer, after.as_ref())
             });
-            self.writer = Some(writer);
+            self.writer = Some((generation,writer));
             result
         } else {
             CatalogWriter::build(&generation_path, &metadata, |writer| {
@@ -168,7 +166,7 @@ impl State {
                 self.apply(reader, writer, None)
             })
             .map(|writer| {
-                self.writer = Some(writer);
+                self.writer = Some((position.generation.clone(),writer));
             })
         };
         result?;
@@ -348,3 +346,6 @@ const KNOWN_SETTINGS: &[(&str, &[&str])] = &[
     ("notify.command", &[]),
     ("signal.interrupts_per_hour", &[]),
 ];
+
+#[cfg(test)]
+mod tests;
