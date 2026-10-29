@@ -22,7 +22,7 @@
 //! interrupts become plain notices. Every handoff is a `delivery` record,
 //! so what fired survives restarts and index rebuilds.
 
-use crate::daemon::service::{Daemon, now_ms};
+use crate::daemon::service::Daemon;
 use polylogue_model::user::{Delivery, UserWrite};
 use polylogue_model::{Author, Note, NoteKind};
 use serde_json::{Value, json};
@@ -491,7 +491,12 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 if let Ok(mut status) = d.signals.lock() {
                     *status = json!({"held":[{"reason":"the operation clock is unavailable","detail":response}]});
                 }
-                if !matches!(stop.recv_timeout(std::time::Duration::from_secs(30)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)) { return; }
+                if !matches!(
+                    stop.recv_timeout(std::time::Duration::from_secs(30)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    return;
+                }
                 continue;
             }
         };
@@ -613,7 +618,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
         }
         let wait = eval
             .next_due()
-            .map_or(30_000, |due| (due - now_ms()).clamp(1_000, 30_000));
+            .map_or(30_000, |due| (due - d.config.requests.now().unix_ms()).clamp(1_000, 30_000));
         if !matches!(
             stop.recv_timeout(std::time::Duration::from_millis(wait as u64)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
