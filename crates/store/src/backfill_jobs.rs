@@ -114,7 +114,7 @@ impl Reader<'_> {
     pub fn backfill_jobs(&self) -> Result<Vec<BackfillJob>> {
         let conn = self.conn()?;
         let ids: Vec<String> = conn
-            .prepare_cached("SELECT id FROM a.backfill_job ORDER BY created_at, id")?
+            .prepare_cached("SELECT id FROM source_backfill_job ORDER BY created_at, id")?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         ids.iter()
@@ -126,7 +126,7 @@ impl Reader<'_> {
     }
 
     pub fn backfill_job(&self, id: &str) -> Result<Option<BackfillJob>> {
-        read(self.conn()?, "a.", id)
+        read(self.conn()?, "source_", id)
     }
 }
 

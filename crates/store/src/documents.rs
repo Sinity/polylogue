@@ -184,7 +184,7 @@ fn insert_blocks(
             crate::text_rows::activate(tx, id, 1, source.first_build.is_some())?;
         }
         let blob = match block {
-            Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
+            Block::Image(a) | Block::File(a) => source_blob.map(|h| h.0.to_vec()),
             _ => None,
         };
         tx.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![pk,idx as i64,block.kind().as_str(),body,text,blob,data])?;
@@ -327,7 +327,7 @@ impl DocumentRead<'_, '_> {
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             let input: String = row.get(0)?;
-            let locations=self.reader.conn()?.prepare("SELECT machine,path,seen_at FROM a.observation WHERE input=?1 ORDER BY seen_at,machine,path")?.query_map([&input],|r|Ok(serde_json::json!({"machine":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"seen_at_ms":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let locations=self.reader.conn()?.prepare("SELECT machine,path,seen_at FROM source_observation WHERE input=?1 ORDER BY seen_at,machine,path")?.query_map([&input],|r|Ok(serde_json::json!({"machine":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"seen_at_ms":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
             out.push(DocumentSource {
                 input,
                 chain: row.get(1)?,

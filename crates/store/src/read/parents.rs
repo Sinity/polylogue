@@ -539,7 +539,7 @@ impl MessageSelection<'_, '_> {
         // visiting each message.
         let mut selected = conn.prepare_cached(
             "SELECT DISTINCT own.import_id FROM parsed p
-            JOIN input_ref ir ON ir.pk=p.input_pk JOIN a.input i ON i.id=ir.id
+            JOIN input_ref ir ON ir.pk=p.input_pk JOIN source_input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
             WHERE p.session_pk=?1",
         )?;
@@ -552,8 +552,8 @@ impl MessageSelection<'_, '_> {
         let mut stmt=conn.prepare_cached("SELECT m.observation,m.input,m.member,m.source_id,r.chain,r.length,e.offset,e.length,e.blob,e.blob_offset,b.storage,
             metadata.ordinal,metadata.source_id,metadata.name,metadata.media_type,metadata.size,s.version,s.error
             FROM import_member m
-            LEFT JOIN a.revision r ON r.input=m.input AND r.number=(SELECT max(latest.number) FROM a.revision latest WHERE latest.input=m.input)
-            LEFT JOIN a.extent e ON e.input=r.input AND e.chain=r.chain LEFT JOIN a.blob b ON b.hash=e.blob
+            LEFT JOIN source_revision r ON r.input=m.input AND r.number=(SELECT max(latest.number) FROM source_revision latest WHERE latest.input=m.input)
+            LEFT JOIN source_extent e ON e.input=r.input AND e.chain=r.chain LEFT JOIN source_blob b ON b.hash=e.blob
             LEFT JOIN import_asset_metadata metadata ON metadata.input=m.input AND metadata.sidecar=m.sidecar
             LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
             WHERE m.import_id=?1 ORDER BY m.observation,e.offset,metadata.ordinal")?;

@@ -123,7 +123,7 @@ impl Reader<'_> {
     pub fn chat_actions(&self) -> Result<Vec<ChatAction>> {
         let conn = self.conn()?;
         let ids: Vec<String> = conn
-            .prepare_cached("SELECT id FROM a.chat_action ORDER BY created_at, id")?
+            .prepare_cached("SELECT id FROM source_chat_action ORDER BY created_at, id")?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         ids.iter()
@@ -135,7 +135,7 @@ impl Reader<'_> {
     }
 
     pub fn chat_action(&self, id: &str) -> Result<Option<ChatAction>> {
-        read(self.conn()?, "a.", id)
+        read(self.conn()?, "source_", id)
     }
 
     /// A chat action attachment's bytes, checked against their hash.
