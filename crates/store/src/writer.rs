@@ -62,6 +62,10 @@ enum Msg {
         Box<crate::export_items::ExportItems>,
         SyncSender<Result<()>>,
     ),
+    Coverage(
+        Box<polylogue_model::capture::Coverage>,
+        SyncSender<Result<()>>,
+    ),
     /// Bytes no input holds (a chat action's attachment), as one blob.
     StoreBlob(
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
@@ -401,6 +405,12 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Accepts one completed discovery walk. Primary visibility follows its
+    /// confirmed product; standalone visibility follows the index transaction.
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
+    }
+
     /// Installs export associations derived from committed source observations.
     pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
         let (reply, wait) = sync_channel(1);
@@ -541,10 +551,22 @@ impl WriterSender {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// As [`Writer::coverage`].
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(&self.0, coverage)
+    }
+
     /// As [`Writer::derive`].
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
     }
+}
+
+fn coverage_via(tx: &WriterQueue, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Coverage(Box::new(coverage), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 fn derive_via(tx: &WriterQueue) -> Result<u64> {
@@ -603,6 +625,7 @@ impl Inner {
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
         let mut assets = Vec::new();
+        let mut coverage = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
@@ -637,6 +660,10 @@ impl Inner {
                     }
                     Msg::Assets(staged, reply) => {
                         assets.push((staged, reply));
+                        false
+                    }
+                    Msg::Coverage(fact, reply) => {
+                        coverage.push((fact, reply));
                         false
                     }
                     Msg::StoreBlob(blob, reply) => {
@@ -728,6 +755,9 @@ impl Inner {
                 self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
+            for (fact, reply) in coverage.drain(..) {
+                let _ = reply.send(self.write_coverage(*fact));
+            }
             for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
@@ -737,6 +767,29 @@ impl Inner {
             }
         }
         let _ = self.finish_build();
+    }
+
+    fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage
+            .validate()
+            .map_err(|error| StoreError::Invalid(error.into()))?;
+        if let Some(sinex) = &self.sinex {
+            let machine = coverage.machine.clone();
+            sinex.prepare_products(&[crate::primary::ProductWrite {
+                product: crate::primary::Product::Coverage(coverage),
+                location: None,
+                parents: Vec::new(),
+                machine: Some(machine),
+                output_index: 0,
+            }])?;
+            return Ok(());
+        }
+        let tx = self.index.transaction()?;
+        bump_counter(&tx)?;
+        crate::coverage::apply(&tx, &coverage)?;
+        crate::write_lock::commit(tx)?;
+        self.report.transactions += 1;
+        Ok(())
     }
 
     /// Derives from the rows written since the last derive. With nothing
