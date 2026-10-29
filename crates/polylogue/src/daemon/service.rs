@@ -19,6 +19,7 @@ use std::time::Instant;
 
 /// What request handlers share.
 pub struct Daemon {
+    pub(crate) config: Arc<crate::config::Config>,
     pub archive: Archive,
     pub reads: ReadPool,
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
@@ -1255,6 +1256,7 @@ impl Drop for Runtime {
 /// cannot be read, or a Sinex that cannot be reached at start; never a
 /// fallback to another mode. Only a build with the
 /// `sinex` feature reads a Sinex configuration, so only it can be blocked.
+#[derive(Clone)]
 pub enum ArchiveMode {
     Standalone,
     #[cfg(feature = "sinex")]
@@ -1324,10 +1326,11 @@ impl ModeState {
 /// Opens the archive and starts owned application workers. Startup errors
 /// join any workers already started before releasing the archive lock.
 pub fn start(
-    root: &std::path::Path,
+    deployment: Arc<crate::config::Config>,
     config: Config,
     mode: ArchiveMode,
 ) -> std::io::Result<Runtime> {
+    let root = deployment.archive.as_path();
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let settings = config.clone();
     let (archive, lock, mode, engine) = match mode {
@@ -1353,7 +1356,8 @@ pub fn start(
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Primary { config: sinex, .. } => {
-            let (archive, lock, connection) = crate::sinex::open(root, &sinex)?;
+            let (archive, lock, connection) =
+                crate::sinex::open(root, &sinex, &deployment.primary_auth, &settings.host)?;
             let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
                 .map_err(|error| to_io(&error))?;
             (
@@ -1386,6 +1390,7 @@ pub fn start(
         ..LoopStatus::default()
     }));
     let daemon = Arc::new(Daemon {
+        config: deployment,
         operations: std::sync::OnceLock::new(),
         archive,
         reads,

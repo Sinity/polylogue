@@ -29,13 +29,14 @@ fn selection() -> Value {
 #[test]
 fn selected_passage_notes_survive_restart_and_identical_retries() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().join("home");
     config.tool_dirs.clear();
     config.workers = 1;
     let root = dir.path().join("archive");
     let mut runtime =
-        service::start(&root, config.clone(), service::ArchiveMode::Standalone).unwrap();
+        crate::test_daemon::start_runtime(&root, config.clone(), service::ArchiveMode::Standalone)
+            .unwrap();
     let host = Arc::new(BrowserHost::at(&config, &runtime.daemon.archive).unwrap());
     let mut socket =
         server::Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
@@ -66,7 +67,8 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     socket.shutdown().unwrap();
     runtime.shutdown().unwrap();
     drop(runtime);
-    let mut runtime = service::start(&root, config, service::ArchiveMode::Standalone).unwrap();
+    let mut runtime =
+        crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut socket =
         server::Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
             .unwrap();
