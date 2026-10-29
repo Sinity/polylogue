@@ -41,7 +41,7 @@ fn staged_pages_survive_restart_and_a_cumulative_barrier_commits_them_atomically
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
-    let archive = crate::Archive::on_sinex(&dir.path().join("cache"), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     assert_eq!(
         apply(&mut index, &resolver, &[input(2, "first")]).unwrap(),
@@ -102,7 +102,7 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     assert_eq!(checkpoint(&index).unwrap(), None);
-    let archive = crate::Archive::on_sinex(&dir.path().join("cache"), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(&mut index, &resolver, &[barrier(0)]).unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(0));
@@ -115,7 +115,7 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
     use polylogue_model::user::{UserRequest, UserWrite};
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let archive = crate::Archive::on_sinex(&dir.path().join("cache"), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     let request = UserRequest {
         id: "setting-request".into(),
@@ -214,7 +214,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let bytes_root = dir.path().join("unavailable-bytes");
-    let archive = crate::Archive::on_sinex(&dir.path().join("cache"), &bytes_root);
+    let archive = crate::Archive::on_sinex(dir.path(), &bytes_root);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     let hash = polylogue_model::BlobHash::of(b"abcd");
     let extent = hashed_blobs::Extent {
@@ -300,10 +300,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
     };
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let archive = crate::Archive::on_sinex(
-        &dir.path().join("cache"),
-        &dir.path().join("unavailable-bytes"),
-    );
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("unavailable-bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     let hash = polylogue_model::BlobHash::of(b"image");
     let session = SessionId::parse("claude-code:session").unwrap();
