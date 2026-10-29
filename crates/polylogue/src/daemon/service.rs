@@ -157,7 +157,6 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
             "identity": identity, "pending": true,
         })),
 
-
         StoreError::IncompleteParents(issue) => Response::Error {
             kind: "incomplete_parents".into(),
             message: e.to_string(),
@@ -829,7 +828,7 @@ fn handle_inner(
             };
             drop(reader);
             match write(d, request_id, resolved) {
-                Response::Ok {mut data} => {
+                Response::Ok { mut data } => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
                     });

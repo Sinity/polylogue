@@ -78,7 +78,7 @@ pub fn start(
     daemon: Arc<Daemon>,
     operations: Arc<command_surface::OperationTable>,
 ) -> std::io::Result<Server> {
-    let port=daemon.config.http.listen.port();
+    let port = daemon.config.http.listen.port();
     start_on(daemon, operations, port)
 }
 
@@ -89,7 +89,10 @@ fn start_on(
 ) -> std::io::Result<Server> {
     use std::future::IntoFuture;
     let key = crate::runtime_dir::archive_key(&daemon.archive.root);
-    let listener = std::net::TcpListener::bind(std::net::SocketAddr::new(daemon.config.http.listen.ip(),port))?;
+    let listener = std::net::TcpListener::bind(std::net::SocketAddr::new(
+        daemon.config.http.listen.ip(),
+        port,
+    ))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -100,8 +103,11 @@ fn start_on(
         let _entered = runtime.enter();
         tokio::net::TcpListener::from_std(listener)?
     };
-    let token=match &daemon.config.http.token {Some(token)=>token.expose().to_owned(),None=>access::new_token()?};
-    let directory=daemon.config.paths.runtime_dir(&daemon.archive.root);
+    let token = match &daemon.config.http.token {
+        Some(token) => token.expose().to_owned(),
+        None => access::new_token()?,
+    };
+    let directory = daemon.config.paths.runtime_dir(&daemon.archive.root);
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,

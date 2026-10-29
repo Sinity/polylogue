@@ -49,12 +49,20 @@ pub fn query_plain(data: &Value) -> String {
 }
 
 /// The same typed read document, rendered for an MCP/model-facing transcript.
-pub fn read(data:&Value)->String {
-    let page:polylogue_model::read::ReadPage=serde_json::from_value(data.clone()).expect("read operation returns its declared page type");
-    let mut bytes=Vec::new();
-    polylogue_render::encode_document(&page.document,polylogue_render::Format::Markdown,
-        polylogue_render::EncodeOptions{model_facing:true,..Default::default()},&mut bytes)
-        .expect("typed read document writes to a byte vector");
+pub fn read(data: &Value) -> String {
+    let page: polylogue_model::read::ReadPage = serde_json::from_value(data.clone())
+        .expect("read operation returns its declared page type");
+    let mut bytes = Vec::new();
+    polylogue_render::encode_document(
+        &page.document,
+        polylogue_render::Format::Markdown,
+        polylogue_render::EncodeOptions {
+            model_facing: true,
+            ..Default::default()
+        },
+        &mut bytes,
+    )
+    .expect("typed read document writes to a byte vector");
     String::from_utf8(bytes).expect("read encoder writes UTF-8")
 }
 
