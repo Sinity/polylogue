@@ -207,7 +207,7 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
         ),
     )
     .unwrap();
-    d.wait_for(|s| s["store"]["messages"] == 2);
+    d.wait_for(|s| s["store"]["messages"] == 2 && values("model:model").as_array().unwrap().iter().any(|value|value["value"]=="\"model with spaces\""));
     assert!(
         values("model:model")
             .as_array()

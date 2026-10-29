@@ -31,7 +31,7 @@ pub fn complete(root: &Path, text: &str, position: usize) -> Vec<Completion> {
         position,
     )
 }
-fn complete_file(path: &Path, archive: &str, text: &str, position: usize) -> Vec<Completion> {
+pub(crate) fn complete_file(path: &Path, archive: &str, text: &str, position: usize) -> Vec<Completion> {
     if position > text.len() || !text.is_char_boundary(position) {
         return vec![];
     }
@@ -188,7 +188,14 @@ fn complete_snapshot(
         });
         candidates.extend(references);
     }
+    let written_at=jiff::Timestamp::from_millisecond(reader.metadata.written_at).ok().map(|at|at.to_string());
     for candidate in &mut candidates {
+        if candidate.kind==CompletionKind::Value {
+            if let Some(written_at)=&written_at {
+                let separator=if candidate.help.is_empty(){""}else{" · "};
+                candidate.help.push_str(&format!("{separator}values as of {written_at}"));
+            }
+        }
         candidate.help = polylogue_render::terminal::escape(&candidate.help);
     }
     candidates.retain(|candidate| {

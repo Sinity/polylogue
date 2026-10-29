@@ -46,7 +46,7 @@ impl Publisher {
                         let reader = daemon.reads.reader()?;
                         publisher.refresh(
                             &reader,
-                            &super::path(&daemon.archive.root),
+                            &daemon.completion_path,
                             &crate::runtime_dir::archive_key(&daemon.archive.root),
                         )
                     })();
@@ -182,7 +182,7 @@ impl State {
             writer.remove_item("saved", &change.family)?;
             let values = change
                 .tag
-                .map(|tag| BTreeMap::from([("tag".into(), BTreeMap::from([(tag, 1)]))]))
+                .map(|(key,value)| {let mut tags=BTreeMap::from([(key.clone(),1)]);if let Some(value)=value{tags.insert(format!("{key}:{value}"),1);}BTreeMap::from([("tag".into(),tags)])})
                 .unwrap_or_default();
             writer.put_values(&format!("note:{}", change.family), &values)?;
             if let Some(saved) = change.saved {

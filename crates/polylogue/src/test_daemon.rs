@@ -56,10 +56,11 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
     config.home = home.clone();
     config.tool_dirs.clear();
     config.workers = workers;
-    let runtime = service::start(
+    let runtime = service::start_with_catalog(
         &dir.path().join("archive"),
         config.clone(),
         service::ArchiveMode::Standalone,
+        dir.path().join("catalog"),
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
@@ -105,7 +106,7 @@ impl TestDaemon {
         self.server.shutdown().unwrap();
         self.runtime.shutdown().unwrap();
         self.runtime =
-            service::start(&root, self.config.clone(), service::ArchiveMode::Standalone).unwrap();
+            service::start_with_catalog(&root, self.config.clone(), service::ArchiveMode::Standalone, self._dir.path().join("catalog")).unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);
         self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
     }

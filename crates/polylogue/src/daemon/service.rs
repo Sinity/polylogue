@@ -19,6 +19,7 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
+    pub(crate) completion_path: std::path::PathBuf,
     page_ends: read::page_ends::Cache,
     feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
@@ -253,8 +254,9 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 "completion position must be a UTF-8 byte boundary within the query",
             );
         }
-        return ok(crate::completion_catalog::complete(
-            &d.archive.root,
+        return ok(crate::completion_catalog::complete_file(
+            &d.completion_path,
+            &crate::runtime_dir::archive_key(&d.archive.root),
             text,
             *position,
         ));
@@ -1224,6 +1226,10 @@ pub fn start(
     config: Config,
     mode: ArchiveMode,
 ) -> std::io::Result<Runtime> {
+    start_with_catalog(root,config,mode,crate::completion_catalog::path(root))
+}
+
+pub(crate) fn start_with_catalog(root:&std::path::Path,config:Config,mode:ArchiveMode,completion_path:std::path::PathBuf)->std::io::Result<Runtime> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let settings = config.clone();
     let (archive, lock, mode, engine) = match mode {
@@ -1290,6 +1296,7 @@ pub fn start(
     let daemon = Arc::new(Daemon {
         archive,
         reads,
+        completion_path,
         page_ends: read::page_ends::Cache::default(),
         feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
