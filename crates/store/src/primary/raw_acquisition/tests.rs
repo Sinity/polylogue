@@ -151,3 +151,17 @@ fn custody_continuation_preserves_unresolved_or_unknown_disposition() {
         assert_eq!(cursor.disposition(), disposition);
     }
 }
+
+#[test]
+fn distinct_original_acquisitions_with_equal_bytes_are_ambiguous_not_disposition_merges() {
+    let generation = generation();
+    let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
+    let mut old = body(&generation, 0, 10);
+    old.body = "original-unresolved".into();
+    old.disposition = Some(CaptureDisposition::UnresolvedBasisConflict);
+    proof.push(old).unwrap();
+    let mut new = body(&generation, 0, 10);
+    new.body = "new-actual-observation".into();
+    proof.push(new).unwrap();
+    assert!(proof.finish().is_none());
+}
