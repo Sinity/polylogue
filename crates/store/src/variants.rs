@@ -245,6 +245,16 @@ impl Reader<'_> {
     ) -> Result<()> {
         rows::parts(self.conn()?, id, visit)
     }
+    /// Exact source-address lookup. Part numbers describe rendition order;
+    /// they never stand in for the original source block's ordinal.
+    pub fn visit_variant_parts_for(
+        &self,
+        id: &str,
+        source_reference: &str,
+        visit: impl FnMut(VariantPart) -> Result<()>,
+    ) -> Result<()> {
+        rows::parts_for(self.conn()?, id, source_reference, visit)
+    }
     pub fn current_variants(&self, root: &str) -> Result<Vec<Variant>> {
         heads(self.conn()?, root)
     }

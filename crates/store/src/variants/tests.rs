@@ -199,7 +199,24 @@ fn variant_restoration_is_exact_idempotent_and_refuses_changed_facts() {
 #[test]
 fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
     let archive = crate::fixture::writer::WriterArchive::new();
-    let first = request("first", None, "uniqueword");
+    let mut first = request("first", None, "uniqueword");
+    let UserWrite::Variant { variant } = &mut first.write else {
+        unreachable!()
+    };
+    variant.parts.extend([
+        NewVariantPart {
+            of: "block:codex:source#1".into(),
+            of_hash: BlobHash([4; 32]),
+            relation: VariantRelation::Translates,
+            body: "different source".into(),
+        },
+        NewVariantPart {
+            of: "block:codex:source#0".into(),
+            of_hash: BlobHash([2; 32]),
+            relation: VariantRelation::Translates,
+            body: "second rendition part".into(),
+        },
+    ]);
     archive.writer.user(first).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -228,7 +245,29 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(bodies, ["uniqueword"]);
+    assert_eq!(
+        bodies,
+        ["uniqueword", "different source", "second rendition part"]
+    );
+    let mut selected = Vec::new();
+    reader
+        .visit_variant_parts_for("first", "block:codex:source#0", |part| {
+            selected.push((part.n, part.body));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        selected,
+        vec![
+            (0, "uniqueword".into()),
+            (2, "second rendition part".into())
+        ]
+    );
+    reader
+        .visit_variant_parts_for("first", "block:codex:source#9", |_| {
+            panic!("an absent exact source address matched another block")
+        })
+        .unwrap();
     let mut hits = Vec::new();
     reader
         .visit_variant_search("uniqueword", Some("pl"), |hit| {

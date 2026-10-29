@@ -27,6 +27,8 @@ CREATE TABLE variant_part (
   PRIMARY KEY(variant,n)
 ) STRICT, WITHOUT ROWID;
 
+CREATE INDEX variant_part_source ON variant_part(variant,of,n);
+
 -- Observed ingress is computed locally; declared claims retain sender history.
 CREATE TABLE variant_import (
   ref TEXT NOT NULL,

@@ -104,6 +104,22 @@ pub(super) fn parts(
     }
     Ok(())
 }
+pub(super) fn parts_for(
+    conn: &Connection,
+    id: &str,
+    source_reference: &str,
+    mut visit: impl FnMut(VariantPart) -> Result<()>,
+) -> Result<()> {
+    let source = Source::reading(conn)?;
+    let mut statement = conn.prepare_cached(&source.sql(
+        "SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND of=?2 ORDER BY n",
+    ))?;
+    let mut rows = statement.query(params![id, source_reference])?;
+    while let Some(row) = rows.next()? {
+        visit(part(row)?)?;
+    }
+    Ok(())
+}
 pub(super) fn get_part(conn: &Connection, id: &str, n: u64) -> Result<Option<VariantPart>> {
     let source = Source::reading(conn)?;
     let mut statement=conn.prepare_cached(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND n=?2"))?;
