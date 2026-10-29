@@ -387,6 +387,29 @@ fn step(
     step
 }
 
+fn finish_step(
+    file: &mut crate::writer::ChainReading,
+    reading: &super::Reading,
+    output: polylogue_model::Output,
+    counts: polylogue_model::RecordCounts,
+    receipt: Option<crate::wire_shapes::ReadingReceipt>,
+    published_reset: bool,
+    through: &mut u64,
+    missing: &mut bool,
+) -> Result<()> {
+    if published_reset {
+        *missing = false;
+    } else if reading.start > *through {
+        *missing = true;
+    }
+    let mut step = step(reading, output, counts);
+    step.receipt = receipt;
+    step.reset = published_reset;
+    step.source_prefix_missing = *missing || step.receipt.is_none();
+    *through = (*through).max(reading.parsed_upto);
+    file.push_confirmed(&mut step)
+}
+
 fn plan(index: &Connection) -> Result<Plan> {
     let mut out = Plan {
         readings: Vec::new(),
@@ -440,12 +463,16 @@ fn plan(index: &Connection) -> Result<Plan> {
         let mut current: Option<super::Reading> = None;
         let mut output = polylogue_model::Output::default();
         let mut counts = polylogue_model::RecordCounts::default();
+        let mut receipt = None;
+        let mut published_reset = false;
+        let mut through = 0;
+        let mut missing = false;
         let mut length = index.query_row(
             "SELECT coalesce(max(length),0) FROM source_revision WHERE input=?1 AND chain=?2",
             params![input, chain],
             |row| unsigned_column(row, 0),
         )?;
-        let mut query=index.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='parsed' AND input=?1 AND chain=?2 ORDER BY step_start,step_end,reading_version,admitted,source_order,event")?;
+        let mut query=index.prepare("SELECT product,event,admitted FROM primary_next WHERE state='live' AND kind='parsed' AND input=?1 AND chain=?2 ORDER BY step_start,step_end,reading_version,admitted,source_order,event")?;
         let mut rows = query.query(params![input, chain])?;
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(0)?;
@@ -453,11 +480,17 @@ fn plan(index: &Connection) -> Result<Plan> {
             let reading = product.reading().expect("parsed fact has reading").clone();
             if current.as_ref().is_some_and(|old| old != &reading) {
                 let old = current.take().expect("reading exists");
-                reading_file.push(&mut step(
+                finish_step(
+                    &mut reading_file,
                     &old,
                     std::mem::take(&mut output),
                     std::mem::take(&mut counts),
-                ))?;
+                    receipt.take(),
+                    published_reset,
+                    &mut through,
+                    &mut missing,
+                )?;
+                published_reset = false;
             }
             current = Some(reading.clone());
             length = length.max(reading.parsed_upto);
@@ -487,20 +520,37 @@ fn plan(index: &Connection) -> Result<Plan> {
                 Product::Repository { facts, .. } => output.repo_lookups.push(facts),
                 Product::ParseProgress {
                     counts: record_counts,
+                    reset,
                     ..
-                } => counts = record_counts,
+                } => {
+                    counts = record_counts;
+                    published_reset = reset;
+                    receipt = Some(crate::wire_shapes::ReadingReceipt {
+                        sequence: row.get(2)?,
+                        id: Some(row.get(1)?),
+                        observation: None,
+                        observed_at_ms: None,
+                    });
+                }
                 _ => unreachable!(),
             }
         }
         if let Some(reading) = current {
-            reading_file.push(&mut step(&reading, output, counts))?;
+            finish_step(
+                &mut reading_file,
+                &reading,
+                output,
+                counts,
+                receipt,
+                published_reset,
+                &mut through,
+                &mut missing,
+            )?;
         } else {
-            reading_file.push(&mut crate::ParseStep::new(
-                Default::default(),
-                Default::default(),
-                0..0,
-                false,
-            ))?;
+            let mut absent =
+                crate::ParseStep::new(Default::default(), Default::default(), 0..0, false);
+            absent.source_prefix_missing = true;
+            reading_file.push_confirmed(&mut absent)?;
         }
         reading_file.finish()?;
         out.readings.push((key, chain, length, reading_file));
@@ -666,3 +716,6 @@ pub(crate) fn apply(
         drop(plan);
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -9,6 +9,15 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Retained facts without their reading receipt cannot establish current coverage.
+pub(crate) fn unobserved(tx: &Transaction<'_>, input_pk: i64, chain: i64) -> Result<()> {
+    tx.execute(
+        "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2",
+        params![input_pk, chain],
+    )?;
+    Ok(())
+}
+
 pub const SCHEMA: &str = include_str!("schema/wire_shapes.sql");
 
 /// Product-native confirmation of the reading's source. Sequence is the
