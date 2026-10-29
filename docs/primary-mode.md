@@ -161,6 +161,12 @@ When Sinex is unreachable or refuses this producer:
 
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgement; prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
 
+Read-derived authored actions retain the pinned reader's opaque scope token in
+an internal writer envelope. The serialized writer checks the token's archive
+and generation before the authored transaction or durable producer preparation
+commits. A revoked read returns `scope_changed` without committing its action.
+The token does not supply native parent or coverage evidence.
+
 ## Rebuild and parser upgrades
 
 **Rebuild.** Moving the local `index.db` aside and starting the daemon resets its subscription position and applies the confirmed stream from its start, with progress in `status`. A rebuild reads only the stream; it does not read materials back to re-parse them.

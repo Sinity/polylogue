@@ -226,7 +226,9 @@ impl Inner {
     pub(super) fn primary_request(
         &mut self,
         request: &polylogue_model::user::UserRequest,
+        scope: Option<&crate::ReadScopeToken>,
     ) -> Result<polylogue_model::user::UserOutcome> {
+        scoped::require_current(&self.location, scope)?;
         self.primary_cache_ready()?;
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         if let Some(known) = crate::primary::authored::known_request(&self.index, request)? {
@@ -258,6 +260,9 @@ impl Inner {
             |apply| sinex.visit_pending_requests(apply),
             |apply| sinex.visit_pending_blobs(apply),
         )?;
+        // Scope controls use this same serialized writer. Check after effect
+        // preparation, immediately before transferring durable outbox custody.
+        scoped::require_current(&self.location, scope)?;
         sinex.prepare_request(&prepared)
     }
 

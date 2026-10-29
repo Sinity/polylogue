@@ -9,6 +9,7 @@ mod input_events;
 mod resolution;
 mod sparse_projection;
 mod tool_durations;
+mod scoped;
 
 fn write_test_rows(
     tx: &Transaction<'_>,
@@ -981,6 +982,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
                     machine: None,
                 },
             )),
+            None,
             reply,
         ))
         .unwrap();

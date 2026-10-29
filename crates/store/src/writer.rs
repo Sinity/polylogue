@@ -33,6 +33,7 @@ mod confirmed;
 mod primary;
 mod primary_capture;
 mod source_snapshot;
+mod scoped;
 mod query_objects;
 pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
@@ -131,6 +132,7 @@ struct WriterQueue {
 enum UserMsg {
     Request(
         Box<polylogue_model::user::UserRequest>,
+        Option<crate::ReadScopeToken>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
     ),
     QueryObject(
@@ -454,7 +456,25 @@ impl Writer {
         &self,
         request: polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+            None,
+        )
+    }
+
+    /// Writes an action selected by a pinned read. The writer checks that
+    /// read's archive and generation again before committing its effect.
+    pub fn user_from_read(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: crate::ReadScopeToken,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+            Some(scope),
+        )
     }
 
     /// Derives the products of sessions changed since they were last
@@ -676,7 +696,16 @@ impl WriterSender {
         &self,
         request: polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request)
+        user_via(&self.0, request, None)
+    }
+
+    /// As [`Writer::user_from_read`].
+    pub fn user_from_read(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: crate::ReadScopeToken,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, Some(scope))
     }
 
     /// As [`Writer::store_blob`].
@@ -768,9 +797,10 @@ fn derive_via(tx: &WriterQueue) -> Result<u64> {
 fn user_via(
     tx: &WriterQueue,
     request: polylogue_model::user::UserRequest,
+    scope: Option<crate::ReadScopeToken>,
 ) -> Result<polylogue_model::user::UserOutcome> {
     let (reply, wait) = sync_channel(1);
-    tx.send_user(UserMsg::Request(Box::new(request), reply))
+    tx.send_user(UserMsg::Request(Box::new(request), scope, reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -806,8 +836,8 @@ impl Inner {
     fn serve_users(&mut self, users: &Receiver<UserMsg>) {
         while let Ok(message) = users.try_recv() {
             match message {
-                UserMsg::Request(request, reply) => {
-                    let _ = reply.send(self.write_user(&request));
+                UserMsg::Request(request, scope, reply) => {
+                    let _ = reply.send(self.write_user(&request, scope.as_ref()));
                 }
                 UserMsg::QueryObject(object, reply) => {
                     let _ = reply.send(self.write_query_object(&object));
@@ -1257,11 +1287,13 @@ impl Inner {
     fn write_user(
         &mut self,
         request: &polylogue_model::user::UserRequest,
+        scope: Option<&crate::ReadScopeToken>,
     ) -> Result<polylogue_model::user::UserOutcome> {
         if self.sinex.is_some() {
-            return self.primary_request(request);
+            return self.primary_request(request, scope);
         }
         let tx = self.archive.transaction()?;
+        scoped::require_current(&self.location, scope)?;
         let known: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
             [&request.id],
@@ -1279,6 +1311,7 @@ impl Inner {
             bump_counter(&tx)?
         };
         let outcome = crate::user_writes::apply(&tx, request, seq)?;
+        scoped::require_current(&self.location, scope)?;
         if known {
             tx.rollback()?;
         } else {
