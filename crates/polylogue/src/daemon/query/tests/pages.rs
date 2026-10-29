@@ -7,7 +7,7 @@ fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
     let request = ask("messages where parser");
-    let opts = options(&reader, &request, request.now, 1).unwrap();
+    let opts = options(&reader, &request, 1).unwrap();
     let program = polylogue_store::query::compile(request.text, &opts).unwrap();
     let params = values(&program.params);
     let count_sql = program.count_sql();
@@ -32,7 +32,7 @@ fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
     let request = ask(
         "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)",
     );
-    let opts = options(&reader, &request, request.now, 1).unwrap();
+    let opts = options(&reader, &request, 1).unwrap();
     let program = polylogue_store::query::compile(request.text, &opts).unwrap();
     let params = values(&program.params);
     let count_sql = program.count_sql();
@@ -102,7 +102,7 @@ fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
         "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow) | limit 2",
     ] {
         let request = ask(query);
-        let opts = options(&reader, &request, request.now, 1).unwrap();
+        let opts = options(&reader, &request, 1).unwrap();
         let program = polylogue_store::query::compile(query, &opts).unwrap();
         let params = values(&program.params);
         let rows = reader.query(&program.sql, &params).unwrap();
@@ -178,7 +178,11 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
             request.cursor = Some(&next);
             request.page_size = Some(size);
             size += 1;
-            request.now += DAY;
+            request.clock.now = request
+                .clock
+                .now
+                .checked_add(jiff::SignedDuration::from_millis(DAY))
+                .unwrap();
             let page = run_q(&w, request).unwrap();
             assert_eq!(page["count"], count, "{query}");
             assert_eq!(page["resolved"], first["resolved"], "{query}");
@@ -216,11 +220,13 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
         match changed {
             "fields" => request.fields = &fields,
             "caller" => request.session = Some("claude-code:different-caller".into()),
-            "zone" => request.day = Some(LogicalDay::named("Europe/Warsaw", 0).unwrap()),
+            "zone" => request.clock.day = fixture_clock(0, "Europe/Warsaw", 0).day,
             "day-start" => {
-                if let Some(day) = &mut request.day {
-                    day.start_minutes = 240;
-                }
+                request.clock.day = DaySetting::new(
+                    request.clock.day.zone().clone(),
+                    jiff::civil::Time::constant(4, 0, 0, 0),
+                )
+                .unwrap();
             }
             "embeddings" => request.embeddings = true,
             "why" => request.why = true,
@@ -434,7 +440,7 @@ fn random_selection_count_rows_and_pages_use_one_resolved_seed() {
         let pool = w.fx.reads().unwrap();
         let reader = pool.reader().unwrap();
         let request = ask(query);
-        let options = options(&reader, &request, request.now, 0).unwrap();
+        let options = options(&reader, &request, 0).unwrap();
         let seal = CursorSeal::new(reader.cursor_key().unwrap());
         let question = page::identity(query, &options).unwrap();
         let seed = page::open(
@@ -689,7 +695,7 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         "tool_calls where since:7d",
     ] {
         let mut whole = ask(text);
-        whole.now = first_now;
+        whole.clock.now = jiff::Timestamp::from_millisecond(first_now).unwrap();
         whole.page_size = Some(1000);
         let whole = run_q(&w, whole).unwrap();
         let mut rows = vec![];
@@ -697,7 +703,7 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
         let mut now = first_now;
         loop {
             let mut request = ask(text);
-            request.now = now;
+            request.clock.now = jiff::Timestamp::from_millisecond(now).unwrap();
             request.page_size = Some(1);
             request.cursor = cursor.as_deref();
             let page = run_q(&w, request).unwrap();

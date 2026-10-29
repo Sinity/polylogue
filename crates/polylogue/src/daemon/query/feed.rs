@@ -94,7 +94,7 @@ fn check_change(
 pub(crate) fn prepare_with(
     reader: &Reader<'_>,
     since: Option<&str>,
-    now: i64,
+    clock: &query_language::time::Clock,
     mut file: File,
 ) -> Result<File, Failure> {
     let previous = since
@@ -149,8 +149,7 @@ pub(crate) fn prepare_with(
         // This fixed internal query has neither saved sources nor kept
         // results, so compilation need not load either archive-wide catalog.
         let opts = Options {
-            clock: polylogue_store::query::time::clock(now, super::logical_day(reader)?)
-                .map_err(|error| StoreError::Invalid(error.to_string()))?,
+            clock: clock.clone(),
             origins: Vec::new(),
             command_words: Vec::new(),
             page_size: None,

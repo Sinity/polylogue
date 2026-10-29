@@ -188,10 +188,10 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     let window = units::spec(x.unit)
         .until
         .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
-    Ok(x.scope
-        .a
-        .expand(window)
-        .replace("{v}", &t.until_bound().as_millisecond().to_string()))
+    Ok(x.scope.a.expand(window).replace(
+        "{v}",
+        &crate::calendar::boundary_ms(t.until_bound()).to_string(),
+    ))
 }
 
 /// `evidence_until:T`: the evidence Polylogue had by T, read with today's

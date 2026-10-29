@@ -1,10 +1,13 @@
 use super::*;
 fn fixture() -> Clock {
-    clock(
-        1_791_367_200_000,
-        LogicalDay::named("Europe/Warsaw", 240).unwrap(),
+    Clock::new(
+        "2026-10-07T10:00:00Z".parse().unwrap(),
+        query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+            jiff::civil::Time::constant(4, 0, 0, 0),
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 fn ms(text: &str) -> i64 {
     text.parse::<jiff::Timestamp>().unwrap().as_millisecond()
@@ -39,31 +42,6 @@ fn source_time_expressions_use_one_shared_clock() {
     assert!(resolve("soon", &clock).is_err());
 }
 #[test]
-fn native_zone_and_valid_boundaries_are_required_at_the_adapter() {
-    assert!(
-        clock(
-            0,
-            LogicalDay {
-                zone: jiff::tz::TimeZone::fixed(jiff::tz::Offset::from_seconds(3_600).unwrap()),
-                start_minutes: 240
-            }
-        )
-        .is_err()
-    );
-    for start_minutes in [1500, 15360, u16::MAX] {
-        assert!(
-            clock(
-                0,
-                LogicalDay {
-                    zone: jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
-                    start_minutes
-                }
-            )
-            .is_err()
-        );
-    }
-}
-#[test]
 fn exact_shared_durations_and_product_money_keep_storage_units() {
     for (text, expected) in [
         ("5m", 300_000),
@@ -77,4 +55,38 @@ fn exact_shared_durations_and_product_money_keep_storage_units() {
     assert_eq!(duration_ms("0.0000001ms"), None);
     assert_eq!(money_nusd("2.90"), Some(2_900_000_000));
     assert_eq!(money_nusd("$1usd"), Some(1_000_000_000));
+}
+
+#[test]
+fn fractional_query_bounds_select_exact_integer_index_instants() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let read = |value: Time| {
+        conn.prepare("SELECT column1 FROM (VALUES(-1),(0),(1),(2)) WHERE column1>=?1 AND column1<?2 ORDER BY column1").unwrap().query_map([value.start_ms(),value.end_ms().unwrap()],|row|row.get::<_,i64>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
+    assert_eq!(
+        read(Time::Span {
+            start: at("1970-01-01T00:00:00.0002Z"),
+            end: at("1970-01-01T00:00:00.0012Z")
+        }),
+        [1]
+    );
+    assert!(
+        read(Time::Instant {
+            at: at("1970-01-01T00:00:00.0005Z")
+        })
+        .is_empty()
+    );
+    assert!(
+        read(Time::Instant {
+            at: at("1969-12-31T23:59:59.9995Z")
+        })
+        .is_empty()
+    );
+    assert_eq!(
+        read(Time::Instant {
+            at: at("1970-01-01T00:00:00.001Z")
+        }),
+        [1]
+    );
 }

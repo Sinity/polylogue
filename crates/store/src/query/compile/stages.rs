@@ -169,11 +169,9 @@ impl<'a> Compiler<'a> {
                         position: at,
                     });
                 }
-                let zone = self.text_param(self.opts.clock.day.zone_name());
-                let start = time::product_day(&self.opts.clock).start_minutes;
                 (
                     format!("{}_{name}", bucket_name(b)),
-                    format!("pl_{}({expr}, {zone}, {start})", bucket_name(b)),
+                    format!("pl_{}({expr})", bucket_name(b)),
                     ColKind::Text,
                 )
             }

@@ -1,38 +1,8 @@
 //! Shared time mechanics with explicit conversion at the millisecond SQL seam.
-use polylogue_model::LogicalDay;
+//! Bounds are ceiled for integer-index comparisons. This does not recover
+//! submillisecond source precision absent from the timestamp index.
 use polylogue_query::QueryError;
 pub use query_language::time::{Clock, ResolvedTime, Time, duration_ms, resolve};
-
-pub fn clock(now: i64, day: LogicalDay) -> Result<Clock, QueryError> {
-    let invalid = |message: String| QueryError::Invalid {
-        message,
-        position: 0,
-    };
-    if day.start_minutes >= 24 * 60 {
-        return Err(invalid(
-            "logical day start must be within one civil day".into(),
-        ));
-    }
-    let now = jiff::Timestamp::from_millisecond(now).map_err(|e| invalid(e.to_string()))?;
-    let start = jiff::civil::Time::new(
-        (day.start_minutes / 60) as i8,
-        (day.start_minutes % 60) as i8,
-        0,
-        0,
-    )
-    .map_err(|e| invalid(e.to_string()))?;
-    let day = query_language::time::DaySetting::new(day.zone, start)
-        .map_err(|e| QueryError::language(e, ""))?;
-    Ok(Clock::new(now, day))
-}
-
-pub fn product_day(clock: &Clock) -> LogicalDay {
-    LogicalDay {
-        zone: clock.day.zone().clone(),
-        start_minutes: u16::from(clock.day.start().hour() as u8) * 60
-            + u16::from(clock.day.start().minute() as u8),
-    }
-}
 
 /// Dollars to the product's integer nano-dollar storage unit.
 pub fn money_nusd(text: &str) -> Option<i64> {
@@ -51,19 +21,18 @@ pub trait Milliseconds {
 }
 impl Milliseconds for Time {
     fn start_ms(self) -> i64 {
-        self.start().as_millisecond()
+        crate::calendar::boundary_ms(self.start())
     }
     fn end_ms(self) -> Result<i64, QueryError> {
         match self {
-            Time::Span { end, .. } => Ok(end.as_millisecond()),
-            Time::Instant { at } => {
-                at.as_millisecond()
-                    .checked_add(1)
-                    .ok_or_else(|| QueryError::Invalid {
-                        message: "time boundary cannot be represented by the index".into(),
-                        position: 0,
-                    })
-            }
+            Time::Span { end, .. } => Ok(crate::calendar::boundary_ms(end)),
+            Time::Instant { at } => i64::try_from(at.as_nanosecond().div_euclid(1_000_000))
+                .expect("jiff timestamps fit the millisecond index")
+                .checked_add(1)
+                .ok_or_else(|| QueryError::Invalid {
+                    message: "time boundary cannot be represented by the index".into(),
+                    position: 0,
+                }),
         }
     }
 }

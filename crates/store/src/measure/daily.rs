@@ -3,7 +3,7 @@
 
 use super::{Selection, usage};
 use crate::{Reader, Result};
-use polylogue_model::LogicalDay;
+use query_language::time::DaySetting;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -117,7 +117,7 @@ pub fn daily(
     reader: &Reader<'_>,
     selection: &Selection,
     metric: &str,
-    day: &LogicalDay,
+    day: &DaySetting,
 ) -> Result<Series> {
     let (cond, params) = selection.condition();
     let Some((_, expr, from)) = DAILY.iter().find(|(name, _, _)| *name == metric) else {
@@ -166,7 +166,7 @@ pub fn daily(
     for row in rows {
         let (at, v, session, missing) = row?;
         incomplete |= missing;
-        let d = day.date_of(at);
+        let d = crate::calendar::date(day, at)?;
         *by_day.entry(d).or_default() += v;
         if metric == "sessions" {
             sessions.entry(d).or_default().insert(session);
@@ -200,7 +200,7 @@ pub fn daily(
                 sum.map(|n| n as f64)
             };
             if let Some(value) = value {
-                *by_day.entry(day.date_of(at)).or_default() += value;
+                *by_day.entry(crate::calendar::date(day, at)?).or_default() += value;
             } else {
                 incomplete = true;
             }
@@ -278,14 +278,14 @@ pub struct Rhythm {
     pub grid: [[u64; 24]; 7],
 }
 
-pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &LogicalDay) -> Result<Rhythm> {
+pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &DaySetting) -> Result<Rhythm> {
     let (cond, params) = selection.condition();
     let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT m.at FROM message m WHERE m.at IS NOT NULL AND m.written_by = 'human'
            AND m.prompt_kind = 'prose' AND {cond}"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| r.get::<_, i64>(0))?;
-    let zone = &day.zone;
+    let zone = day.zone();
     let mut grid = [[0u64; 24]; 7];
     let mut prompts = 0;
     for at in rows {
@@ -298,7 +298,7 @@ pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &LogicalDay) -> R
         prompts += 1;
     }
     Ok(Rhythm {
-        zone: day.zone_name().map(str::to_owned),
+        zone: Some(day.zone_name().to_string()),
         prompts,
         grid,
     })
