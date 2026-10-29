@@ -656,3 +656,37 @@ fn capture_sidecar_and_body_publish_together_after_process_death() {
             .is_none()
     );
 }
+
+#[test]
+fn request_restore_metadata_remains_discoverable_after_acknowledgment_and_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    for (identity, parser, expected) in [
+        ("live", "polylogue-request", true),
+        ("restore", "polylogue-request-restore", true),
+        ("observation", "polylogue-observation", false),
+    ] {
+        let mut frame = material(identity, b"[]");
+        if let Ingress::Material { material, .. } = &mut frame {
+            material.parser = parser.into();
+        }
+        assert_eq!(
+            spool
+                .prepare_material(frame, b"[]".as_slice())
+                .unwrap()
+                .request,
+            expected
+        );
+        spool.acknowledge(ack(identity, true, None)).unwrap();
+    }
+    drop(spool);
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let requests: Vec<_> = spool
+        .pending_after(None, 10)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.request)
+        .map(|entry| entry.identity)
+        .collect();
+    assert_eq!(requests, ["live", "restore"]);
+}

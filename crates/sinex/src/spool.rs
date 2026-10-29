@@ -868,17 +868,19 @@ impl Spool {
 
 pub(crate) fn capture_header(capture: &Capture) -> Capture {
     match capture {
-        Capture::Input(input) => Capture::Input(polylogue_store::primary::CapturedInput {
-            input: input.input.clone(),
-            rows: input.rows.clone(),
-            index: input.index,
-            previous: input.previous.clone(),
-            hash: input.hash,
-            length: input.length,
-            group: input.group.clone(),
-            arrival_rank: input.arrival_rank,
-            parsed: Vec::new(),
-        }),
+        Capture::Input(input) => {
+            Capture::Input(Box::new(polylogue_store::primary::CapturedInput {
+                input: input.input.clone(),
+                rows: input.rows.clone(),
+                index: input.index,
+                previous: input.previous.clone(),
+                hash: input.hash,
+                length: input.length,
+                group: input.group.clone(),
+                arrival_rank: input.arrival_rank,
+                parsed: Vec::new(),
+            }))
+        }
         Capture::Blob { hash, length } => Capture::Blob {
             hash: *hash,
             length: *length,
@@ -911,7 +913,10 @@ fn describe(frame: &Ingress) -> Result<(Kind, Option<Material>, Option<Capture>,
                 .get("polylogue_capture")
                 .map(|capture| serde_json::from_value(capture.clone()))
                 .transpose()?,
-            material.parser == "polylogue-request",
+            matches!(
+                material.parser.as_str(),
+                "polylogue-request" | "polylogue-request-restore"
+            ),
         ),
         Ingress::Events { .. } => (Kind::Events, None, None, false),
         Ingress::ReplaySequence { .. } => (Kind::ReplaySequence, None, None, false),
