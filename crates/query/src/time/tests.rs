@@ -44,7 +44,7 @@ fn native_zone_and_valid_boundaries_are_required_at_the_adapter() {
         clock(
             0,
             LogicalDay {
-                zone: jiff::tz::TimeZone::fixed(jiff::tz::Offset::UTC),
+                zone: jiff::tz::TimeZone::fixed(jiff::tz::Offset::from_seconds(3_600).unwrap()),
                 start_minutes: 240
             }
         )

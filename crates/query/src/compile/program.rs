@@ -241,7 +241,7 @@ impl<'a> Compiler<'a> {
                     order = Some(sorted);
                 }
                 StageKind::Sort { keys } if keys.len() != 1 => {
-                    return Err(not_built("multiple grouped sort operands"));
+                    return Err(not_built("a grouped or matched sort with more than one key"));
                 }
                 StageKind::Sort { keys } => {
                     let key = &keys[0];
