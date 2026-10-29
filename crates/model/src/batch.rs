@@ -54,6 +54,10 @@ pub struct Output {
     /// Imported hook evidence remains declared, independent of local acquisition.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub declared_injections: BTreeMap<usize, Vec<crate::injection::InjectionEvidence>>,
+    /// Portable attachment claims are independent of receiving membership proof.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub declared_attachment_bindings:
+        BTreeMap<usize, Vec<crate::attachment_binding::AttachmentBinding>>,
     /// Textual provider records without conversation roles or usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentRow>,
