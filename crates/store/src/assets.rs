@@ -4,6 +4,7 @@ use crate::{ImportMember, Reader, Result, StoreError, export_items::ExportItems}
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+pub mod bindings;
 mod read;
 pub use read::{AssetMatch, AttachmentResolution, AttachmentState};
 
@@ -109,6 +110,7 @@ pub enum AssetRow {
         source_id: Option<String>,
         sidecar: Option<String>,
     },
+    Binding { record: bindings::AttachmentBindingRecord },
     Metadata {
         input: String,
         sidecar: String,
@@ -233,6 +235,12 @@ impl Reader<'_> {
     }
 }
 
+/// The same actual-member projection is used by import refresh and confirmed replay.
+pub(crate) fn project_member(conn: &Connection, source: &ObservedMember, source_id: Option<&str>, sidecar: Option<&str>) -> Result<()> {
+    conn.execute("INSERT OR IGNORE INTO import_member VALUES (?1,?2,?3,?4,?5,?6)", params![source.observation,source.membership.import_id,source.input,source.membership.member,source_id,sidecar])?;
+    Ok(())
+}
+
 pub(crate) fn install(
     conn: &mut Connection,
     archive: &Connection,
@@ -247,18 +255,9 @@ pub(crate) fn install(
                 source_id,
                 sidecar,
             } => {
-                tx.execute(
-                    "INSERT OR IGNORE INTO import_member VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![
-                        source.observation,
-                        source.membership.import_id,
-                        source.input,
-                        source.membership.member,
-                        source_id,
-                        sidecar
-                    ],
-                )?;
+                project_member(&tx, &source, source_id.as_deref(), sidecar.as_deref())?;
             }
+            AssetRow::Binding { record } => bindings::project(&tx, archive, &record)?,
             AssetRow::Metadata {
                 input,
                 sidecar,

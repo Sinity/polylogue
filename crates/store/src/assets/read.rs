@@ -46,10 +46,10 @@ impl Reader<'_> {
         attachment_index: usize,
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
-        let (pk,version,body):(i64,Vec<u8>,Vec<u8>)=conn.query_row(
-            "SELECT m.pk,ms.version_hash,b.body FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.shown=1 JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
+        let (version,body,source_input,source_chain):(Vec<u8>,Vec<u8>,String,i64)=conn.query_row(
+            "SELECT ms.version_hash,b.body,i.id,ms.chain FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.shown=1 JOIN input_ref i ON i.pk=ms.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
-            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?
+            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
         let source = match unpack_block(&body)? {
             Block::Image(a) | Block::File(a) if attachment_index == 0 => a,
@@ -63,14 +63,28 @@ impl Reader<'_> {
                 ));
             }
         };
+        let bound = self.attachment_binding_contexts(message,block as u64,attachment_index as u64)?;
+        if bound.namespace_count != 0 {
+            let mut matches = Vec::new();
+            for context in &bound.contexts {
+                if source.blob.is_some() || source.source_id.as_deref() != Some(context.claim.source_id.as_str()) {
+                    return Err(StoreError::Invalid("binding claim differs from the selected attachment".into()));
+                }
+                for member in &context.members { matches.push(super::bindings::asset_match(conn,member)?); }
+            }
+            let binding = blake3::hash(&serde_json::to_vec(&(message,block,attachment_index,&version,&source,&bound))?).to_hex().to_string();
+            return Ok(AttachmentResolution { message:message.clone(),block,attachment_index,source,state:bound.state,matches,binding });
+        }
         let mut scopes = conn.prepare(
-            "SELECT DISTINCT own.import_id FROM message_source ms
-            JOIN input_ref ir ON ir.pk=ms.input_pk JOIN source_input i ON i.id=ir.id
-            JOIN import_member own ON own.input=ir.id
-            WHERE ms.message_pk=?1 AND ms.version_hash=?2 ORDER BY own.import_id",
+            "SELECT DISTINCT own.import_id FROM import_member own
+            JOIN source_observation o ON o.id=own.observation AND o.input=own.input
+            LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision
+            WHERE own.input=?1 AND coalesce(o.chain,r.chain)=?2
+              AND json_extract(o.details_json,'$.import.import_id')=own.import_id
+            ORDER BY own.import_id",
         )?;
         let scopes = scopes
-            .query_map(params![pk, version], |r| r.get::<_, String>(0))?
+            .query_map(params![source_input,source_chain], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut matches = std::collections::BTreeMap::<String, AssetMatch>::new();
         let mut known = std::collections::HashMap::<String, Option<AssetSource>>::new();
