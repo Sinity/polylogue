@@ -122,12 +122,16 @@ fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
             .map(|arg| arg.name.to_owned())
             .collect::<std::collections::BTreeSet<_>>();
         let schema = (command.typed_schemas.unwrap())().0;
+        assert_eq!(schema["type"], "object", "{}", command.name);
         let typed = schema["properties"]
             .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
+            .map(|properties| {
+                properties
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
         assert_eq!(typed, declared, "{}", command.name);
         assert_eq!(schema["additionalProperties"], false, "{}", command.name);
     }
@@ -208,6 +212,20 @@ fn local_schema_output_path_stays_out_of_the_typed_request() {
 #[test]
 fn typed_setting_catalog_is_a_real_table_answer() {
     let daemon = crate::test_daemon::start("typed settings catalog witness");
+    let raw = crate::daemon::service::handle(
+        crate::daemon::Request::Setting {
+            request_id: None,
+            key: None,
+            value: None,
+            machine: None,
+        },
+        &daemon.daemon,
+    );
+    let crate::daemon::Response::Ok { data } = raw else {
+        panic!("catalog producer failed: {raw:?}");
+    };
+    let _: crate::protocol::setting::Answer =
+        serde_json::from_value(data).expect("catalog producer emits its declared DTO");
     let table = table(Arc::clone(&daemon.daemon));
     let answer = runtime().block_on(table.call(
         command_surface::Request {
@@ -219,8 +237,13 @@ fn typed_setting_catalog_is_a_real_table_answer() {
         command_surface::Origin::Cli,
         Default::default(),
     ));
-    let catalog: Vec<polylogue_model::settings::Current> =
-        serde_json::from_value(answer.value().expect("catalog succeeds").clone()).unwrap();
+    let catalog: Vec<polylogue_model::settings::Current> = serde_json::from_value(
+        answer
+            .value()
+            .unwrap_or_else(|| panic!("catalog failed: {answer:?}"))
+            .clone(),
+    )
+    .unwrap();
     assert!(
         catalog
             .iter()

@@ -1,18 +1,23 @@
 use super::*;
-use polylogue_model::read::{ItemKind, ReadPage, ReadyCall};
+use polylogue_model::read::{FragmentEncoding, ItemKind, ReadPage, ReadyCall};
 
 pub(super) fn body(page: &ReadPage) -> String {
     page.document
         .items
         .iter()
         .filter_map(|item| match &item.kind {
-            ItemKind::Text { text } => Some(text.as_str()),
+            ItemKind::Text { text }
+            | ItemKind::Fragment {
+                encoding: FragmentEncoding::Text,
+                text,
+                ..
+            } => Some(text.as_str()),
             _ => None,
         })
         .collect()
 }
 
-fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
+pub(super) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
     let name = ready.mcp["name"].as_str().expect("generated MCP tool name");
     let arguments = ready.mcp["arguments"]
         .as_object()

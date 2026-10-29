@@ -302,8 +302,14 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
     let error = call(&archive, hostile, args(json!({}))).unwrap_err();
     assert!(error.contains(&escaped), "{error}");
     for response in [
-        json!({"result":"ok", "data":{"value":hostile}}),
-        json!({"result":"error", "kind":"cancelled", "message":hostile, "detail":{"suggestion":hostile}}),
+        serde_json::to_value(command_surface::Answer::ok(json!({"value":hostile}))).unwrap(),
+        serde_json::to_value(command_surface::Answer::<Value>::error(
+            command_surface::Failure {
+                suggestion: Some(Box::new(json!(hostile))),
+                ..command_surface::Failure::new(command_surface::FailureKind::Cancelled, hostile)
+            },
+        ))
+        .unwrap(),
     ] {
         let listener = UnixListener::bind(archive.socket()).unwrap();
         let server = std::thread::spawn(move || {

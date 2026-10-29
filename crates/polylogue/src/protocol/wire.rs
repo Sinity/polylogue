@@ -15,14 +15,34 @@ pub fn incoming(
     let mut value: serde_json::Value = serde_json::from_str(text).ok()?;
     value.get("operation")?;
     Some((|| {
-        let caller = serde_json::from_value(
-            value
-                .as_object_mut()
-                .expect("operation belongs to an object")
-                .remove("caller")
-                .unwrap_or(serde_json::Value::Null),
-        )?;
+        let caller = match value
+            .as_object_mut()
+            .expect("operation belongs to an object")
+            .remove("caller")
+        {
+            Some(caller) => serde_json::from_value(caller)?,
+            None => CallerEvidence::default(),
+        };
         let request = serde_json::from_value(value)?;
         Ok((request, caller))
     })())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_shared_envelope_needs_no_client_supplied_identity_evidence() {
+        let request = command_surface::Request {
+            operation: "status".into(),
+            arguments: serde_json::json!({}),
+            request_id: "bare-shared-envelope".into(),
+            deadline: command_surface::Deadline::None,
+        };
+        let (accepted, caller) = incoming(&serde_json::to_string(&request).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted, request);
+        assert_eq!(caller, CallerEvidence::default());
+    }
 }

@@ -158,7 +158,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                 return Answer::error(error);
             }
             let cancellation = accepted
-                .map(|caller| caller.cancellation.clone())
+                .map(|caller| caller.cancellation.child())
                 .unwrap_or_default();
             let authorship = accepted
                 .map(|caller| caller.authorship.clone())

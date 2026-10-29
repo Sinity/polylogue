@@ -88,7 +88,7 @@ fn call_with_limit(
 ) -> Result<(String, Value, bool), String> {
     let command = tool_commands()
         .find(|command| command.mcp_name() == name)
-        .ok_or_else(|| format!("no tool {name}"))?;
+        .ok_or_else(|| polylogue_render::terminal::escape(&format!("no tool {name}")))?;
     let canonical = if command.register.is_some() {
         let envelope: crate::protocol::operations::McpArguments<Value> =
             serde_json::from_value(Value::Object(arguments.clone()))
