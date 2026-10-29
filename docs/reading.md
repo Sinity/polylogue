@@ -182,6 +182,7 @@ One table binds every format:
 |---|---|
 | unknown | `—` / `unknown (reason)` |
 | not recorded | `not recorded` |
+| unavailable | `unavailable (reason)` |
 | not applicable | `n/a` |
 | partial | `≥ X (N unknown)` |
 | inferred | `≈ X` |
