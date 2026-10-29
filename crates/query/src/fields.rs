@@ -149,6 +149,7 @@ const SESSION_HAS_NAMES: [&str; 8] = [
     "conflict",
 ];
 const MESSAGE_HAS_NAMES: [&str; 4] = ["thinking", "tool_calls", "attachments", "code"];
+pub const LIVE_STATES: &[&str] = &["working", "waiting", "idle", "unknown", "stale", "ended"];
 pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"];
 pub static FIELDS: &[Field] = &[
     f(Documents, "id", Prefix, "document ID or a unique prefix"),

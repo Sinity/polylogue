@@ -500,7 +500,7 @@ pub fn work_goal(r: &str) -> String {
 }
 
 /// The live states.
-pub const LIVE_STATES: &[&str] = &["working", "waiting", "idle", "unknown", "stale", "ended"];
+pub use polylogue_query::fields::LIVE_STATES;
 
 /// The live window: hook evidence this recent makes a session live.
 pub const LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;

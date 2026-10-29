@@ -17,7 +17,8 @@ pub mod ast {
 }
 pub use compile::{
     Attach, ChatPage, ColKind, Column, ColumnReference, Definition, IdCheck, Kept, Measure, Near,
-    OrderKey, Param, Program, RANK_FUSION_OFFSET, SavedQuery, Shape, WhyClause, compile, lower,
+    OrderKey, Param, Program, RANK_FUSION_OFFSET, RowBasis, SavedQuery, Shape, WhyClause, compile,
+    lower,
 };
 pub use polylogue_query::{Options, QueryError, catalog, parse};
 pub fn quoted(value: &str) -> String {

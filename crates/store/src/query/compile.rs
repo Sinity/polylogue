@@ -6,14 +6,14 @@
 
 use crate::query::ast::*;
 use crate::query::fields::{self, Aliases, Kind};
-use crate::query::time::{self, Clock, Milliseconds, Time};
+use crate::query::time::{self, Milliseconds, Time};
 use crate::query::units::{self, Index, Search, Via};
 use polylogue_query::QueryError;
 use polylogue_query::compile::Parameters;
 pub use polylogue_query::{
     ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashSet;
 
 mod combine;
@@ -78,8 +78,19 @@ pub struct Near {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowBasis {
+    Native { unit: Unit, columns: Vec<String> },
+    Group { columns: Vec<String> },
+    Summary,
+    Distinct { columns: Vec<String> },
+    Unknown { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Program {
     pub query: String,
+    pub row_basis: RowBasis,
     pub unit: Unit,
     pub shape: Shape,
     /// The whole answer, in order, without paging.

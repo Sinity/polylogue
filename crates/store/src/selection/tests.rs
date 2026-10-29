@@ -111,3 +111,104 @@ fn prepared_selection_retains_exact_block_reference() {
         .unwrap();
     assert_eq!(refs, [target]);
 }
+
+#[test]
+fn selected_reference_survives_projection_and_membership_keeps_offset() {
+    let (_dir, f) = fixture();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["title".into()];
+    let prepared = reader
+        .prepare_selection("sessions | limit 1 | offset 1", &options)
+        .unwrap();
+    let mut rows = vec![];
+    reader
+        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+            rows.push(row);
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].reference.as_ref().unwrap().to_string(),
+        "session:test:two"
+    );
+    assert!(
+        reader
+            .selection_contains(
+                &prepared,
+                &Reference::Message(MessageId::parse("test:two:m").unwrap())
+            )
+            .unwrap()
+    );
+    assert!(
+        !reader
+            .selection_contains(
+                &prepared,
+                &Reference::Message(MessageId::parse("test:three:m").unwrap())
+            )
+            .unwrap()
+    );
+}
+#[test]
+fn group_identity_excludes_counts_and_unknown_observation_stays_unknown() {
+    let (_dir, f) = fixture();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let prepared = reader
+        .prepare_selection("sessions | group by origin", &options())
+        .unwrap();
+    let mut rows = vec![];
+    reader
+        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+            rows.push(row);
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].identity,
+        Some(RowIdentity::Group {
+            keys: BTreeMap::from([("origin".into(), Value::String("test".into()))])
+        })
+    );
+    assert_eq!(
+        rows[0].aggregates,
+        BTreeMap::from([("count".into(), Some(3.))])
+    );
+    assert!(rows[0].reference.is_none());
+    assert!(rows[0].first_seen.is_none());
+}
+#[test]
+fn pure_bindings_preserve_closed_group_values_without_a_clock() {
+    let bindings = polylogue_query::Bindings {
+        saved: BTreeMap::from([(
+            "by-outcome".into(),
+            vec![polylogue_query::SavedQuery {
+                text: "tool_calls | group by outcome".into(),
+                revision: "rev".into(),
+                first_note: "root".into(),
+            }],
+        )]),
+        ..Default::default()
+    };
+    let schema = bindings.output_schema("query:by-outcome").unwrap();
+    let outcome = schema
+        .fields
+        .iter()
+        .find(|field| field.name == "outcome")
+        .unwrap();
+    assert_eq!(outcome.kind, query_language::catalog::FieldKind::Match);
+    assert!(outcome.values.iter().any(|value| value == "error"));
+    let kept = polylogue_query::compile::columns_schema(
+        &bindings.catalog(),
+        "tool_calls",
+        &[polylogue_query::Column {
+            name: "outcome".into(),
+            kind: polylogue_query::ColKind::Text,
+            reference: None,
+        }],
+    );
+    assert_eq!(kept.fields[0].values, outcome.values);
+}
