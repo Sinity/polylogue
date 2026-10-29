@@ -108,7 +108,7 @@ pub fn run(
         Request::Sql { .. } => ("sql", None),
         Request::Status => ("status", None),
         Request::Complete { .. } => ("completion", None),
-        Request::Read { .. } => ("read", None),
+        Request::Read { .. } | Request::ReadResume { .. } => ("read", None),
         Request::Outline { .. } => ("outline", None),
         Request::Changes { .. } => ("changes", None),
         Request::Attachment { .. } => ("attachment", None),

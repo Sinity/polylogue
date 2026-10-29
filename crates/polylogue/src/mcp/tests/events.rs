@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::read::{FragmentEncoding, ItemKind, ReadItem, ReadPage};
+use polylogue_model::read::{ItemKind, ReadPage};
 
 #[test]
 fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
@@ -40,9 +40,9 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         .unwrap(),
     )
     .unwrap();
+    let (ordinary, _) = super::read_pages::collect(&daemon, ordinary, None, None);
     let item = ordinary
-        .document
-        .items
+        .values
         .iter()
         .find(|item| matches!(item.kind, ItemKind::Other { .. }))
         .expect("event layout item");
@@ -51,7 +51,7 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     };
     assert_eq!(data["event"]["data"]["data"]["text"], text);
     assert_eq!(data["event"]["data"]["data"]["credential"], credential);
-    let mut page: ReadPage = serde_json::from_str(
+    let page: ReadPage = serde_json::from_str(
         &call(
             &archive,
             "read",
@@ -73,34 +73,13 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     let mut wrong = next.clone();
     wrong.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
     let error = super::read_pages::execute_ready(&archive, &wrong).unwrap_err();
-    assert!(error.contains("stale_cursor"), "{error}");
-    let mut serialized = String::new();
-    let mut pages = 0;
-    loop {
-        for part in &page.document.items {
-            let ItemKind::Fragment {
-                encoding: FragmentEncoding::ReadItemJson,
-                text,
-                from,
-                until,
-                total,
-            } = &part.kind
-            else {
-                panic!("expected an exact structured-item fragment: {part:?}");
-            };
-            assert_eq!(*from, serialized.chars().count() as u64);
-            assert_eq!(*until - *from, text.chars().count() as u64);
-            assert!(*until <= *total);
-            serialized.push_str(text);
-        }
-        pages += 1;
-        assert!(pages < 100, "structured continuation did not advance");
-        let Some(ready) = page.document.footer.next.clone() else {
-            break;
-        };
-        page = super::read_pages::execute_ready(&archive, &ready).unwrap();
-    }
-    let reconstructed: ReadItem = serde_json::from_str(&serialized).unwrap();
-    assert_eq!(&reconstructed, item);
+    assert!(error.contains("bad_request"), "{error}");
+    let (reconstructed, pages) = super::read_pages::collect(&daemon, page, None, None);
+    let actual = reconstructed
+        .values
+        .iter()
+        .find(|item| matches!(item.kind, ItemKind::Other { .. }))
+        .expect("complete structured event survived paging");
+    assert_eq!(actual, item);
     assert!(pages > 1);
 }
