@@ -197,8 +197,54 @@ fn replayed_projection_produces_identical_intent_and_snapshot_confirmation_has_n
     assert_eq!(identity(&first), identity(&second));
     assert_eq!(staged(&first), staged(&second));
     let snapshot = staged(&first);
+    let original_intent = identity(&first);
+    // The applied source facts remain present when their canonical output arrives.
+    first
+        .execute(
+            "INSERT INTO primary_fact SELECT * FROM primary_candidate",
+            [],
+        )
+        .unwrap();
     first.execute("DELETE FROM primary_candidate", []).unwrap();
     first.execute("INSERT INTO primary_candidate(event,admitted,changed,source_order,state,product,kind) VALUES('snapshot-event',4,4,0,'live',?1,'derived')",[pack(&Product::WorkSnapshot{snapshot}).unwrap()]).unwrap();
+    let tx = first.transaction().unwrap();
+    stage(&tx, 4, 4, Some(&proof(4))).unwrap();
+    tx.commit().unwrap();
+    // Matching payload bytes without owner context cannot discharge custody.
+    assert_eq!(identity(&first), original_intent);
+    assert_eq!(
+        first
+            .query_row(
+                "SELECT count(*) FROM primary_derived WHERE cancelled_at IS NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    let native = crate::primary::NativeFactContext {
+        kind: crate::primary::NativeKind {
+            name: "polylogue.work_snapshot".into(),
+            version: 5,
+        },
+        kind_definition_hash: "a".repeat(64),
+        projection: crate::primary::ProjectionIdentity {
+            policy_epoch: 1,
+            payload_hash: "b".repeat(64),
+        },
+        origin: crate::primary::ConfirmedOrigin {
+            producer_family: Some("polylogue".into()),
+            producer_identity: Some("synthetic-producer".into()),
+            source: None,
+            source_fingerprint: None,
+        },
+    };
+    first
+        .execute(
+            "UPDATE primary_candidate SET native_context=?1 WHERE event='snapshot-event'",
+            [pack(&native).unwrap()],
+        )
+        .unwrap();
     let tx = first.transaction().unwrap();
     stage(&tx, 4, 4, Some(&proof(4))).unwrap();
     tx.commit().unwrap();
