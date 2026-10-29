@@ -1,3 +1,4 @@
+use super::fixture_clock;
 //! The query examples over the Morrow archive built by the real
 //! loop and import (`examples/morrow/expected/main/expected.json`).
 //!

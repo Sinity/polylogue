@@ -2,6 +2,7 @@ use super::*;
 use crate::daemon::service::handle;
 use crate::daemon::{Request, Response};
 use crate::test_daemon;
+use polylogue_model::Timestamp;
 use polylogue_model::{Author, NewNote, NoteKind, SessionId};
 
 fn add(w: &test_daemon::TestDaemon, id: &str, note: NewNote) {

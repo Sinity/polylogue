@@ -978,7 +978,11 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
         a.page_size = Some(3);
         a.cursor = Some(&c);
         // A later request still answers the first one's question.
-        a.now += DAY;
+        a.clock.now = a
+            .clock
+            .now
+            .checked_add(jiff::SignedDuration::from_millis(DAY))
+            .unwrap();
         let page = run_q(&w, a).unwrap();
         seen.extend(ids(&page));
         cursor = page["next"].as_str().map(str::to_owned);

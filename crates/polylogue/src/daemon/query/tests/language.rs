@@ -319,7 +319,7 @@ fn no_sort_key_holds_bytes() {
     let mut checked = 0;
     for unit in polylogue_query::units::UNITS {
         let questions = std::iter::once(unit.name.to_owned()).chain(
-            polylogue_query::fields::FIELDS
+            polylogue_store::query::fields::FIELDS
                 .iter()
                 .filter(|f| f.unit == unit.unit && f.sql.is_some())
                 .map(|f| format!("{} | sort by {}", unit.name, f.name)),
