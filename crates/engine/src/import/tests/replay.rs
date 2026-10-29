@@ -21,7 +21,8 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
                 std::slice::from_ref(&path),
                 &ImportOptions {
                     format: Some("claude-code".into()),
-                    explain: false
+                    explain: false,
+                    ..Default::default()
                 }
             )
             .unwrap()
@@ -211,6 +212,7 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
     captured.member = Some(polylogue_store::ImportMember {
         version: 1,
         import_id: "competing".into(),
+        authorship: None,
         member: "conversations.json".into(),
         format: None,
     });

@@ -92,11 +92,36 @@ impl crate::primary::Sinex for OfflineProducer {
             identity: "offline-capture".into(),
         })
     }
+    fn capture(&self, _: &str) -> Result<Capture> {
+        Ok(Capture::Input(Box::new(self.captured())))
+    }
+    fn prepare_reading(
+        &self,
+        _: &str,
+        _: &str,
+        _: &mut crate::primary::ReadingProducts<'_>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn prepare_named_products(
+        &self,
+        _: &str,
+        _: &[ProductWrite],
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
+        Ok(())
+    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         Ok(if self.root.join("capture.json").exists() {
             vec![PendingCapture {
                 identity: "offline-capture".into(),
-                captured: Capture::Input(self.captured()),
+                captured: Capture::Input(Box::new({
+                    let mut header = self.captured();
+                    header.parsed.clear();
+                    header
+                })),
                 material: None,
                 anchor: None,
             }]
@@ -130,7 +155,7 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn visit_pending_requests(
         &self,
-        _: &mut dyn FnMut(&polylogue_model::authored::PreparedRequest) -> Result<()>,
+        _: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
     ) -> Result<()> {
         Ok(())
     }
@@ -208,7 +233,7 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
                 .unwrap(),
             0
         );
-        assert!(!archive.archive_db().exists());
+        assert!(!archive.root.join("archive.db").exists());
     }
     // The ordinary reopen has neither the source preparation nor a provider
     // file available. The producer's immutable capture contains both facts.
@@ -229,4 +254,43 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
             .count(),
         0
     );
+}
+
+#[test]
+fn import_retry_intent_excludes_its_generated_operation_id() {
+    let mut group = vec![source("bundle", b"source")];
+    group[0].batch.observation.as_mut().unwrap().import = Some(crate::ImportMember {
+        version: 1,
+        import_id: "first-operation".into(),
+        member: "records.jsonl".into(),
+        authorship: Some(polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Script("import-program".into()),
+            via: polylogue_model::authorship::Channel::Import,
+        }),
+        format: Some("polylogue-bundle".into()),
+    });
+    let first = capture_group_identity(&group).unwrap();
+    let member = group[0]
+        .batch
+        .observation
+        .as_mut()
+        .unwrap()
+        .import
+        .as_mut()
+        .unwrap();
+    member.import_id = "retry-operation".into();
+    assert_eq!(capture_group_identity(&group).unwrap(), first);
+    group[0]
+        .batch
+        .observation
+        .as_mut()
+        .unwrap()
+        .import
+        .as_mut()
+        .unwrap()
+        .authorship
+        .as_mut()
+        .unwrap()
+        .author = polylogue_model::Author::Script("other-importer".into());
+    assert_ne!(capture_group_identity(&group).unwrap(), first);
 }

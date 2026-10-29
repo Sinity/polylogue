@@ -13,6 +13,8 @@ pub mod backfill_jobs;
 pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
+pub mod completion;
+mod admission;
 mod container_members;
 pub mod context;
 pub mod coverage;
@@ -79,6 +81,8 @@ pub enum StoreError {
     Blobs(#[from] hashed_blobs::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Projection(#[from] polylogue_model::bundle::BundleError),
     #[error("archive {path} is held by another process")]
     Locked { path: std::path::PathBuf },
     #[error(
@@ -116,6 +120,11 @@ pub enum StoreError {
     ReadIndexReplaced,
     #[error("request {0} was already used for different content")]
     Conflict(String),
+    #[error("{reference} is ambiguous: {candidates:?}")]
+    Ambiguous {
+        reference: String,
+        candidates: Vec<String>,
+    },
     #[error("the session's parents are incomplete: {0}")]
     IncompleteParents(read::ParentIssue),
     #[error("{0} not found")]

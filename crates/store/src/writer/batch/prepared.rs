@@ -16,6 +16,26 @@ pub(crate) struct PreparedRows {
 
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
+        for (&index, &receipt) in &output.message_receipts {
+            if index >= output.messages.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid message admission receipt".into(),
+                ));
+            }
+        }
+        for (&index, projection) in &output.message_projections {
+            let row = output
+                .messages
+                .get(index)
+                .ok_or(polylogue_model::bundle::BundleError::InvalidBlockSelection)?;
+            projection.validate(row.message.blocks.len())?;
+            if !self.released
+                && projection.block_count == row.message.blocks.len() as u64
+                && row.message.content_hash()? != projection.source_version
+            {
+                return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+            }
+        }
         if !self.released {
             return Err(StoreError::Invalid("reading rows were not prepared".into()));
         }
@@ -45,6 +65,26 @@ impl PreparedRows {
                 ));
             }
         }
+        for (receipts, length) in [
+            (&output.session_receipts, output.sessions.len()),
+            (&output.document_receipts, output.documents.len()),
+            (&output.link_receipts, output.links.len()),
+        ] {
+            for (&index, &receipt) in receipts {
+                if index >= length || receipt == 0 || i64::try_from(receipt).is_err() {
+                    return Err(StoreError::Invalid(
+                        "invalid canonical admission receipt".into(),
+                    ));
+                }
+            }
+        }
+        for (&index, &receipt) in &output.event_receipts {
+            if index >= output.events.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid canonical event admission receipt".into(),
+                ));
+            }
+        }
         for (&index, &order) in &output.message_order {
             if index >= output.messages.len() || i64::try_from(order).is_err() {
                 return Err(StoreError::Invalid("invalid imported message order".into()));
@@ -68,6 +108,28 @@ impl PreparedRows {
                 "prepared rows no longer match their parsed records".into(),
             ));
         }
+        for (index, prepared) in self.messages.iter().enumerate() {
+            prepared.projection.validate(prepared.blocks.len())?;
+            if prepared.projection.source_version.0 != prepared.hash {
+                return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+            }
+            match output.message_projections.get(&index) {
+                Some(projection) if projection != &prepared.projection => {
+                    return Err(polylogue_model::bundle::BundleError::ProjectionConflict.into());
+                }
+                None if prepared.projection.block_count != prepared.blocks.len() as u64
+                    || prepared
+                        .projection
+                        .block_ordinals
+                        .iter()
+                        .copied()
+                        .ne(0..prepared.blocks.len() as u64) =>
+                {
+                    return Err(polylogue_model::bundle::BundleError::InvalidBlockSelection.into());
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 }
@@ -86,7 +148,13 @@ impl ParseStep {
             .output
             .messages
             .iter()
-            .map(|r| packer.pack_message(&r.message))
+            .enumerate()
+            .map(
+                |(index, r)| match self.output.message_projections.get(&index) {
+                    Some(projection) => packer.pack_projected_message(&r.message, projection),
+                    None => packer.pack_message(&r.message),
+                },
+            )
             .collect::<Result<Vec<_>>>()
         else {
             return;
