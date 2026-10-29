@@ -562,3 +562,48 @@ fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
         replay.cursor_context().versions
     );
 }
+
+#[test]
+fn selected_assertion_reference_retains_its_actual_family_and_revision() {
+    let (_dir, mut fixture) = fixture();
+    let first = fixture
+        .note("note", None, Some("first"), "session:test:one")
+        .unwrap();
+    let second = fixture
+        .note("note", None, Some("second"), "session:test:one")
+        .unwrap();
+    let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
+    conn.execute(
+        "UPDATE note SET first_note=?1 WHERE id=?2",
+        rusqlite::params![first, second],
+    )
+    .unwrap();
+    drop(conn);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["value".into()];
+    let selected = reader
+        .prepare_selection("notes where current:* | sort by id", &options)
+        .unwrap();
+    let mut rows = vec![];
+    reader
+        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+            rows.push((row.reference.unwrap().to_string(), row.values));
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                format!("assertion:{first}@{first}"),
+                serde_json::json!({"value":"first"})
+            ),
+            (
+                format!("assertion:{first}@{second}"),
+                serde_json::json!({"value":"second"})
+            )
+        ]
+    );
+}

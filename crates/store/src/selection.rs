@@ -838,6 +838,10 @@ fn identity_reference(unit: Unit, values: &[Value]) -> Option<Reference> {
         Unit::Messages => MessageId::parse(text(0)?).ok().map(Reference::Message),
         Unit::Documents => DocumentId::parse(text(0)?).ok().map(Reference::Document),
         Unit::Events => Some(Reference::Event(text(0)?.to_owned())),
+        Unit::Notes => Some(Reference::Assertion(
+            polylogue_model::RevisionReference::exact(text(1)?.to_owned(), text(0)?.to_owned()),
+        )),
+        Unit::Deliveries => Some(Reference::Delivery(text(0)?.to_owned())),
         Unit::Blocks | Unit::ToolCalls => Some(Reference::Block {
             message: MessageId::parse(text(0)?).ok()?,
             n: values.get(1)?.as_u64()?,
