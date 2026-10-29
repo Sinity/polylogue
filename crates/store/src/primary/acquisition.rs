@@ -164,9 +164,38 @@ pub struct SourceSnapshot {
     pub pending: PendingSource,
 }
 
-/// Bounded private custody metadata. Exhaustion does not prove provider EOF.
-#[derive(Debug, Clone, PartialEq)]
+/// Durable acquisition preparation is distinct from committed source semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CaptureReceipt {
+    Accepted { write: super::PreparedWrite },
+    UnresolvedBasisConflict { custody: RawCustodyReceipt },
+}
+
+/// Existing group identity and original count. Bodies are resolved one page at
+/// a time through group headers and capture_body, never by provider paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawCustodyReceipt {
+    pub identity: String,
+    pub count: u64,
+}
+
+/// A private custody disposition cannot acknowledge a byte cursor or revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureDisposition {
+    Prepared,
+    UnresolvedBasisConflict,
+}
+
+/// One bounded page of retained original group members. Exhaustion says
+/// nothing about provider EOF or missing members already applied elsewhere.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PendingGroupPage {
+    /// None means no retained group disposition is known, not accepted EOF.
+    pub disposition: Option<CaptureDisposition>,
     pub headers: Vec<PendingCapture>,
     /// Original ordinal, exclusive, for the next page.
     pub next: Option<u64>,
