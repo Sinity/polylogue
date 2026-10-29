@@ -59,6 +59,7 @@ fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> Que
         authorship,
         binding: ExecutionBinding {
             query_options: QueryExecutionOptions {
+                direct_reference: None,
                 fields: vec![],
                 self_session: None,
                 embeddings: false,

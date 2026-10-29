@@ -46,6 +46,8 @@ pub struct FrozenDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryExecutionOptions {
+    /// Actual accepted direct presentation, independent of semantic query identity.
+    pub direct_reference: Option<crate::Reference>,
     pub fields: Vec<String>,
     pub self_session: Option<crate::SessionId>,
     pub embeddings: bool,
