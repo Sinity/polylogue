@@ -51,14 +51,14 @@ pub(super) fn visit(
     Ok(())
 }
 
-struct Walk<'a, 'pool> {
+struct Walk<'a, 'pool, 'read> {
     reader: &'a Reader<'pool>,
-    selection: &'a PreparedSelection,
+    selection: &'a PreparedSelection<'read>,
     options: &'a ReadOptions,
     footer: &'a mut ReadFooter,
     emit: &'a mut dyn FnMut(ReadRecord, SelectionLocator) -> Result<bool, Response>,
 }
-impl Walk<'_, '_> {
+impl Walk<'_, '_, '_> {
     fn row(
         &mut self,
         ordinal: u64,
