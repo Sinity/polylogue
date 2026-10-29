@@ -224,7 +224,12 @@ pub fn logical_day(reader: &Reader<'_>) -> Result<LogicalDay, Failure> {
     }
 }
 
-fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Options, Failure> {
+pub(crate) fn options(
+    reader: &Reader<'_>,
+    ask: &Ask<'_>,
+    now: i64,
+    seed: u64,
+) -> Result<Options, Failure> {
     let day = match &ask.day {
         Some(day) => day.clone(),
         None => logical_day(reader)?,
@@ -358,7 +363,7 @@ fn answer(
     if let Some(m) = &program.measure {
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let (definition, _) = super::measure::find_checked(&m.what)?;
-        if let Some(paging) = definition.paging {
+        if let Some(measure_paging) = definition.paging {
             let (rows, count, next, _) = read_page(reader, program, &after, paging)?;
             let session_order: std::collections::BTreeMap<_, _> = rows
                 .iter()
@@ -370,7 +375,7 @@ fn answer(
                 sessions: Some(keys),
                 ..Default::default()
             };
-            let data = match paging {
+            let data = match measure_paging {
                 super::measure::Paging::Facets => {
                     let selected =
                         reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
@@ -819,7 +824,7 @@ pub(crate) fn usage_selection(
     text: &str,
     now: i64,
     embeddings: bool,
-    similar: Option<&NearFn<'_>>,
+    near: Option<&NearFn<'_>>,
 ) -> Result<(polylogue_store::measure::Selection, String), Failure> {
     let text = format!("{text} | measure usage");
     let ask = Ask {

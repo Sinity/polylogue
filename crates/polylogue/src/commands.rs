@@ -715,32 +715,6 @@ const WRITTEN: &[Command] = &[
         ..CLI
     }),
     Command {
-        name: "export",
-        help: "Write sessions, text documents and events out as files. `user-state` adds every note, setting, kept result, delivery, chat action, backfill job which `import` replays into another archive",
-        args: &[
-            pos_opt(
-                "sessions",
-                Kind::List,
-                "Session IDs, document:origin:native_id or event:ID references, or user-state",
-            ),
-            Arg {
-                default: Some("json"),
-                ..opt("format", Kind::Choice(FORMATS), "The file format")
-            },
-            Arg {
-                cli_only: true,
-                ..opt(
-                    "out",
-                    Kind::Text,
-                    "The file to write (default: standard output)",
-                )
-            },
-        ],
-        action: Action::Request(requests::export),
-        output: Some(crate::cli::write_export),
-        ..CLI
-    },
-    Command {
         name: "note read",
         help: "Read one exact note revision, including an older or withdrawn revision",
         args: &[pos("id", Kind::Text, "The exact note revision ID")],

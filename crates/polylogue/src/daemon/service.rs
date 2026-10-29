@@ -3,7 +3,7 @@
 
 mod status;
 
-use super::{ReadTarget, Request, Response};
+use super::{Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
 use polylogue_model::user::{Delivery, UserWrite};
@@ -24,7 +24,7 @@ pub struct Daemon {
     pub reads: ReadPool,
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
-    page_ends: read::page_ends::Cache,
+
     feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
@@ -156,6 +156,8 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::PrimaryPending { identity } => ok(serde_json::json!({
             "identity": identity, "pending": true,
         })),
+
+
         StoreError::IncompleteParents(issue) => Response::Error {
             kind: "incomplete_parents".into(),
             message: e.to_string(),
@@ -239,7 +241,6 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
         {
             return store_error(&error);
         }
-        let _invalidation = d.page_ends.mutation();
         let result = writes.user(polylogue_store::user_writes::request_now(request_id, write));
         match result {
             Ok(out) => {
@@ -262,7 +263,6 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
         Ok(writes) => writes,
         Err(response) => return response,
     };
-    let _invalidation = d.page_ends.mutation();
     match writes.user(polylogue_store::user_writes::request_now(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
@@ -382,7 +382,6 @@ fn handle_inner(
         return super::attachment::read(request, d);
     }
     let _foreground = d.schema_admission.foreground();
-    let read_epoch = d.page_ends.epoch();
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
@@ -616,33 +615,7 @@ fn handle_inner(
             page_size,
             cursor.as_deref(),
         ),
-        Request::Read {
-            slices,
-            target,
-            view,
-            format,
-            with_parents,
-            budget,
-            cursor,
-            selection,
-        } => {
-            let options = read::Options {
-                slices,
-                view: &view,
-                format: &format,
-                with_parents,
-                budget,
-                cursor: cursor.as_deref(),
-                selection: selection.as_ref(),
-            };
-            match &target {
-                ReadTarget::Session(session) => {
-                    read::run(&reader, session, options, &d.page_ends, read_epoch)
-                }
-                ReadTarget::Document(document) => read::document(&reader, document, options),
-                ReadTarget::Event(event) => read::event(&reader, event, options),
-            }
-        }
+        request @ Request::Read { .. } => read::page(&reader, d, &request, authorship),
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -671,11 +644,6 @@ fn handle_inner(
             unreachable!("inference is admitted before acquiring a reader")
         }
         Request::SchemaUnread { origin } => super::schema::unread(&reader, origin.as_deref()),
-        Request::Export {
-            targets,
-            format,
-            user_state,
-        } => export(&reader, &targets, &format, user_state),
         Request::Embed {
             what,
             query,
@@ -861,10 +829,7 @@ fn handle_inner(
             };
             drop(reader);
             match write(d, request_id, resolved) {
-                Response::Ok {
-                    mut data,
-                    references,
-                } => {
+                Response::Ok {mut data} => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
                     });
@@ -873,7 +838,7 @@ fn handle_inner(
                         Ok(None) => return error("not_found", "the committed note is absent"),
                         Err(e) => return store_error(&e),
                     }
-                    Response::Ok { data, references }
+                    Response::Ok { data }
                 }
                 other => other,
             }
@@ -1107,78 +1072,6 @@ fn query_targets(
     })
 }
 
-/// Whole sessions in the structured export format (`json`, read back by
-/// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
-/// With `user_state`, the `json` export also carries every request, which `import` replays.
-fn export(
-    reader: &polylogue_store::Reader<'_>,
-    targets: &[ReadTarget],
-    format: &str,
-    user_state: bool,
-) -> Response {
-    let mut sessions = Vec::new();
-    for id in targets.iter().filter_map(|t| match t {
-        ReadTarget::Session(id) => Some(id),
-        _ => None,
-    }) {
-        match reader.session_export(id) {
-            Ok(Some(s)) => sessions.push(s),
-            Ok(None) => return error("not_found", format!("no session {id}")),
-            Err(e) => return store_error(&e),
-        }
-    }
-    let mut documents = Vec::new();
-    for id in targets.iter().filter_map(|t| match t {
-        ReadTarget::Document(id) => Some(id),
-        _ => None,
-    }) {
-        match reader.document(id) {
-            Ok(Some(doc)) => documents.push(doc),
-            Ok(None) => return error("not_found", format!("no document {id}")),
-            Err(e) => return store_error(&e),
-        }
-    }
-    let mut events = Vec::new();
-    for id in targets.iter().filter_map(|t| match t {
-        ReadTarget::Event(id) => Some(id),
-        _ => None,
-    }) {
-        match reader.event_export(id) {
-            Ok(Some(event)) => events.push(event),
-            Ok(None) => return error("not_found", format!("no event {id}")),
-            Err(e) => return store_error(&e),
-        }
-    }
-    let mut doc = polylogue_model::export::Document::new(sessions)
-        .with_documents(documents)
-        .with_events(events);
-    if user_state {
-        if format != "json" {
-            return error("bad_request", "user state is exported only as json");
-        }
-        let entries = match reader.user_state() {
-            Ok(entries) => entries,
-            Err(e) => return store_error(&e),
-        };
-        let entries = match entries
-            .iter()
-            .map(serde_json::to_value)
-            .collect::<Result<Vec<_>, _>>()
-        {
-            Ok(entries) => entries,
-            Err(e) => return error("internal", e.to_string()),
-        };
-        doc = doc.with_user_state(entries);
-    }
-    let Some(format) = polylogue_render::Format::parse(format) else {
-        return error("bad_request", format!("unknown export format {format:?}"));
-    };
-    match polylogue_render::export(doc, format) {
-        Ok(value) => ok(value),
-        Err(error) => self::error("internal", error),
-    }
-}
-
 /// Owns the application workers and writer lock. Transports must stop
 /// before this runtime; external daemon references cannot keep workers alive.
 pub struct Runtime {
@@ -1198,7 +1091,6 @@ impl Runtime {
     /// running finish as usual.
     pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
-        self.daemon.page_ends.clear();
         self.daemon.warm.clear();
         self.daemon.reads.close();
     }
@@ -1237,7 +1129,6 @@ impl Runtime {
                 }
             }
         }
-        self.daemon.page_ends.clear();
         self.daemon.reads.close();
         self.lock.take();
         failure.map_or(Ok(()), Err)
@@ -1397,7 +1288,6 @@ pub fn start(
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
-        page_ends: read::page_ends::Cache::default(),
         feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
         writes,
@@ -1481,7 +1371,7 @@ pub fn start(
 }
 
 mod browser;
-mod read;
+pub(crate) mod read;
 
 #[cfg(test)]
 mod tests;

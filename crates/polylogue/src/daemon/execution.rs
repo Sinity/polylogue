@@ -61,13 +61,13 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLi
 }
 
 /// Limits cover read phases, including context preparation before its receipt.
-/// Export waits until done unless asked otherwise.
+/// Unbudgeted streams and inference have cancellation without a default deadline.
 pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i64> {
     if !request.has_read_phase() {
         None
     } else if matches!(
         request,
-        Request::Export { .. } | Request::SchemaInfer { .. }
+        Request::Read{delivery:polylogue_model::read::ReadDelivery::Stream,..} | Request::SchemaInfer { .. }
     ) {
         deadline_ms
     } else {
@@ -109,7 +109,6 @@ pub fn run(
         Request::Outline { .. } => ("outline", None),
         Request::Changes { .. } => ("changes", None),
         Request::Attachment { .. } => ("attachment", None),
-        Request::Export { .. } => ("export", None),
         Request::SchemaInfer { .. } => ("schema_infer", None),
         Request::SchemaUnread { .. } => ("schema_unread", None),
         _ => ("request", None),
@@ -140,7 +139,9 @@ pub fn refusal(
     info: &serde_json::Value,
     limit: &ReadLimit,
 ) -> Response {
+
     let kind = crate::protocol::store_code(error);
+
     let query = info["text"]
         .as_str()
         .or_else(|| info["expression"].as_str());

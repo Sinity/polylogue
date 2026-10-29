@@ -82,6 +82,7 @@ pub struct ReadyCall {
 pub struct HttpCall {
     pub method: String,
     pub path: String,
+    /// The operation table supplies the complete request envelope, including identity and deadline.
     pub arguments: serde_json::Value,
 }
 

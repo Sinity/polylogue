@@ -269,8 +269,8 @@ pub struct ImportReport {
     pub pass: Pass,
 }
 
-/// Requests replayed from Polylogue exports.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+/// Historical authored records restored through the frozen import ingress.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct UserStateReport {
     /// Durably accepted and awaiting the confirmed primary stream.
     pub pending: u64,

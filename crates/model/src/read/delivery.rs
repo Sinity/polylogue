@@ -18,9 +18,32 @@ pub enum ReadDelivery {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadPage {
-    pub snapshot: ReadSnapshot,
+    pub snapshot: ReadPageSnapshot,
     pub records: Vec<Record>,
     pub document: ReadDocument,
+}
+
+/// The fixed reading identity for a budgeted page. Query text, notes and other
+/// unbounded metadata belong in budgeted items or the full stream header.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadPageSnapshot {
+    pub query: String,
+    pub ran_at: crate::Timestamp,
+    pub read_at: crate::ChangePosition,
+    pub caught_up: bool,
+    pub currency: crate::currency::IndexCurrency,
+}
+impl From<&ReadSnapshot> for ReadPageSnapshot {
+    fn from(snapshot: &ReadSnapshot) -> Self {
+        Self {
+            query: snapshot.query.clone(),
+            ran_at: snapshot.ran_at,
+            read_at: snapshot.read_at.clone(),
+            caught_up: snapshot.caught_up,
+            currency: snapshot.currency.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

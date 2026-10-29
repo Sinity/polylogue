@@ -109,7 +109,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
             match enabled(&reader) {
                 Ok(true) => {}
                 Ok(false) => {
-                    return browser_refusal(actions::Refused(409, "browser_actions_off"));
+                    return browser_refusal(actions::Refused("browser_actions_off"));
                 }
                 Err(response) => return response,
             }

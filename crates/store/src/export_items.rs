@@ -2,10 +2,11 @@
 use crate::{Result, StoreError};
 use polylogue_model::{MessageId, SessionId};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::fs::File;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
+use std::path::Path;
 
 pub struct ExportItems {
     db: Connection,
@@ -14,6 +15,7 @@ pub struct ExportItems {
     cursor: Option<(Vec<u8>, i64)>,
     order: Order,
     scan_group: Option<(i64, u64)>,
+    retained: bool,
 }
 
 /// Closed scan orders over the same staged payload bytes.
@@ -45,23 +47,68 @@ impl Read for RangeReader {
 
 impl ExportItems {
     pub fn new() -> Result<Self> {
-        let db = Connection::open("")?;
-        db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024;
+        Self::open(Connection::open("")?, tempfile::tempfile()?, false)
+    }
+
+    /// Retained scratch uses the same single compressed payload and ordering
+    /// database. Opening it again resumes the staged records, never the cursor.
+    pub fn in_directory(directory: &Path) -> Result<Self> {
+        fs::create_dir_all(directory)?;
+        let db = Connection::open(directory.join("items.db"))?;
+        let payload = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join("payload.zst"))?;
+        Self::open(db, payload, true)
+    }
+
+    fn open(db: Connection, payload: File, retained: bool) -> Result<Self> {
+        db.execute_batch(if retained {
+            "PRAGMA synchronous=FULL;"
+        } else {
+            "PRAGMA synchronous=OFF;"
+        })?;
+        db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA cache_size=-1024;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
-            CREATE TABLE item(ordinal INTEGER PRIMARY KEY, source_key TEXT UNIQUE, sort BLOB NOT NULL, alternate_sort BLOB NOT NULL,
+            CREATE TABLE IF NOT EXISTS item(ordinal INTEGER PRIMARY KEY, source_key TEXT UNIQUE, sort BLOB NOT NULL, alternate_sort BLOB NOT NULL,
                 start INTEGER NOT NULL, end INTEGER NOT NULL, compressed_start INTEGER NOT NULL, compressed_end INTEGER NOT NULL);
-            CREATE INDEX item_order ON item(sort,ordinal);
-            CREATE INDEX item_alternate_order ON item(alternate_sort,ordinal);
-            CREATE TABLE owner(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID;
-            CREATE TABLE previous(session TEXT PRIMARY KEY,message TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
+            CREATE INDEX IF NOT EXISTS item_order ON item(sort,ordinal);
+            CREATE INDEX IF NOT EXISTS item_alternate_order ON item(alternate_sort,ordinal);
+            CREATE TABLE IF NOT EXISTS owner(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS previous(session TEXT PRIMARY KEY,message TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
+        let ordinal = db.query_row("SELECT COALESCE(MAX(ordinal)+1,0) FROM item", [], |r| {
+            r.get(0)
+        })?;
         Ok(Self {
             db,
-            payload: tempfile::tempfile()?,
-            ordinal: 0,
+            payload,
+            ordinal,
             cursor: None,
             order: Order::Primary,
             scan_group: None,
+            retained,
         })
+    }
+
+    /// Commit ordering only after its referenced compressed bytes are durable.
+    /// This is also used before retaining a failed client's working directory.
+    pub fn checkpoint(&mut self) -> Result<()> {
+        if self.scan_group.is_some() {
+            return Err(StoreError::Invalid(
+                "export scan group is incomplete".into(),
+            ));
+        }
+        self.payload.sync_data()?;
+        self.db.execute_batch("COMMIT; BEGIN;")?;
+        Ok(())
+    }
+
+    pub fn close(mut self) -> Result<()> {
+        self.checkpoint()?;
+        self.retained = false;
+        Ok(())
     }
 
     /// Stage original bytes and their range before reading ordered items.
@@ -275,5 +322,17 @@ impl ExportItems {
     }
 }
 
+impl Drop for ExportItems {
+    fn drop(&mut self) {
+        if self.retained {
+            if self.scan_group.is_some() {
+                let _ = self.rollback_scan();
+            }
+            let _ = self.checkpoint();
+        }
+    }
+}
+
 #[cfg(test)]
+#[path = "export_items/tests.rs"]
 mod tests;

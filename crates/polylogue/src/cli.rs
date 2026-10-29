@@ -9,6 +9,7 @@ pub mod local;
 pub mod print;
 pub(crate) mod schema;
 pub(crate) mod staged_file;
+pub(crate) mod write_out;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
 use crate::daemon::{Request, Response};
@@ -299,26 +300,6 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         } => {
             let code = crate::daemon::execution::exit_code(&kind);
             fail_detail(json, &kind, &message, detail, code)
-        }
-    }
-}
-
-/// `export`: the document written to `--out`, or to standard output.
-pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
-    let out = values.text("out").map(PathBuf::from);
-    let out = out.as_deref();
-    let text = match data.get("content").and_then(|c| c.as_str()) {
-        Some(content) => content.to_owned(),
-        None => polylogue_render::terminal::json(data, true),
-    };
-    match out {
-        Some(path) => match std::fs::write(path, text.as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => fail(json, "io", &format!("{}: {e}", path.display()), 1),
-        },
-        None => {
-            print!("{}", polylogue_render::terminal::stdout_text(&text));
-            ExitCode::SUCCESS
         }
     }
 }
