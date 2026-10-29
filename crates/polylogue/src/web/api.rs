@@ -174,14 +174,20 @@ async fn stream(
             runtime,
             ready: Some(ready),
         };
+        let mut guarded = crate::protocol::stream::GuardedWriter::new(&mut output, limit.clone());
         let result = limit.scope(|| {
             produce(
                 &worker_request,
                 &worker.daemon,
                 &accepted.authorship,
-                &mut output,
+                &mut guarded,
             )
         });
+        let result = match guarded.failure() {
+            Some(failure) => Some(Err(failure)),
+            None => result,
+        };
+        drop(guarded);
         let Some(result) = result else {
             if let Some(ready) = output.ready.take() {
                 let _ = ready.send(Ok(false));
@@ -245,7 +251,14 @@ impl std::io::Write for ProducerWriter {
                 .send(Ok(true))
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
         }
-        self.runtime.block_on(self.output.write(bytes))
+        self.runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                self.output.write(bytes),
+            )
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::WouldBlock))?
+        })
     }
     fn flush(&mut self) -> std::io::Result<()> {
         use tokio::io::AsyncWriteExt;
