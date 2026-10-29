@@ -179,7 +179,7 @@ impl State {
         reader.visit_completion_definitions(after.map(|position| position.archive), |change| {
             changed = true;
             self.definitions.remove(&change.family);
-            writer.remove_item("saved", &change.family)?;
+            writer.remove_saved(&change.family)?;
             let values = change
                 .tag
                 .map(|(key, value)| {
@@ -209,30 +209,21 @@ impl State {
         })?;
         reader.visit_completion_kept(after.map(|position| position.archive), |kept| {
             changed = true;
-            let columns = serde_json::from_value(kept.columns)?;
-            let matches: Option<Vec<polylogue_query::Column>> =
-                kept.match_columns.map(serde_json::from_value).transpose()?;
-            let schema =
-                polylogue_query::compile::columns_schema(&self.catalog, &kept.unit, &columns);
-            let match_schema = matches.as_ref().map(|columns| {
-                polylogue_query::compile::columns_schema(&self.catalog, &kept.unit, columns)
+            let columns:Option<Vec<polylogue_query::Column>>=kept.columns.and_then(|columns|serde_json::from_value(columns).ok());
+            let matches:Option<Vec<polylogue_query::Column>>=kept.match_columns.and_then(|columns|serde_json::from_value(columns).ok());
+            let schema=kept.unit.as_ref().zip(columns.as_ref()).map(|(unit,columns)|{
+                let mut schema=polylogue_query::compile::columns_schema(&self.catalog,unit,columns);
+                if self.catalog.unit(unit).is_none(){schema.unit=None;}
+                schema
             });
-            writer.put_kept(&completion::Kept {
-                id: kept.id.clone(),
-                name: kept.name,
-                unit: kept.unit.clone(),
-                row_count: Some(kept.row_count),
-                rows: schema,
-                matches: match_schema,
-            })?;
-            self.kept.insert(
-                kept.id,
-                polylogue_query::Kept {
-                    unit: kept.unit,
-                    columns,
-                    match_columns: matches.unwrap_or_default(),
-                },
-            );
+            let match_schema=kept.unit.as_ref().zip(matches.as_ref()).map(|(unit,columns)|{
+                let mut schema=polylogue_query::compile::columns_schema(&self.catalog,unit,columns);
+                if self.catalog.unit(unit).is_none(){schema.unit=None;}
+                schema
+            });
+            writer.put_kept(&completion::Kept{id:kept.id.clone(),name:kept.name,unit:kept.unit.clone(),row_count:kept.row_count,rows:schema,matches:match_schema})?;
+            self.kept.remove(&kept.id);
+            if let (Some(unit),Some(columns))=(kept.unit,columns){self.kept.insert(kept.id,polylogue_query::Kept{unit,columns,match_columns:matches.unwrap_or_default()});}
             Ok(())
         })?;
         if changed {

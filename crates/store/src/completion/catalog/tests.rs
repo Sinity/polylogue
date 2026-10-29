@@ -154,9 +154,9 @@ fn read_only_snapshot_never_writes_and_typed_items_use_exact_identity() {
             writer.put_kept(&Kept {
                 id: "result-id".into(),
                 name: Some("human name".into()),
-                unit: "messages".into(),
+                unit: Some("messages".into()),
                 row_count: Some(3),
-                rows: schema.clone(),
+                rows: Some(schema.clone()),
                 matches: None,
             })
         })

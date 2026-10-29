@@ -68,13 +68,13 @@ fn seed(root: &Path, cache: &Path) {
             writer.put_kept(&Kept {
                 id: "kept-id".into(),
                 name: Some("Kept calls".into()),
-                unit: "tool_calls".into(),
+                unit: Some("tool_calls".into()),
                 row_count: Some(3),
-                rows: OutputSchema {
+                rows: Some(OutputSchema {
                     unit: Some("tool_calls".into()),
                     fields: vec![field("count", FieldKind::Number)],
                     main_time: None,
-                },
+                }),
                 matches: Some(OutputSchema {
                     unit: Some("tool_calls".into()),
                     fields: vec![field("tool", FieldKind::Text)],

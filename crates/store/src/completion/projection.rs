@@ -6,7 +6,7 @@ use rusqlite::{OptionalExtension, params};
 use std::collections::BTreeMap;
 
 pub enum SessionChange {
-    Upsert(Session),
+    Upsert(Box<Session>),
     Removed(String),
 }
 #[derive(Debug)]
@@ -25,10 +25,10 @@ pub struct NativeSaved {
 pub struct NativeKept {
     pub id: String,
     pub name: Option<String>,
-    pub unit: String,
-    pub columns: serde_json::Value,
+    pub unit: Option<String>,
+    pub columns: Option<serde_json::Value>,
     pub match_columns: Option<serde_json::Value>,
-    pub row_count: u64,
+    pub row_count: Option<u64>,
 }
 impl Reader<'_> {
     /// Streams session-grain projections. `None` is the single startup snapshot;
@@ -107,7 +107,7 @@ impl Reader<'_> {
             item.first_prompt = prompt
                 .map(|body| crate::encoding::unpack_text(&body))
                 .transpose()?;
-            visit(SessionChange::Upsert(item))?;
+            visit(SessionChange::Upsert(Box::new(item)))?;
         }
         if let Some(after) = after {
             let mut removed = conn
@@ -183,9 +183,11 @@ impl Reader<'_> {
         mut visit: impl FnMut(NativeKept) -> Result<()>,
     ) -> Result<()> {
         let conn = self.conn()?;
-        let mut statement=conn.prepare(if after.is_some() {
-            "SELECT k.id,k.name,json_extract(k.rows_json,'$.unit'),json_extract(k.rows_json,'$.columns'),json_extract(k.rows_json,'$.match_columns'),json_array_length(k.rows_json,'$.rows') FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id"
-        } else {"SELECT id,name,json_extract(rows_json,'$.unit'),json_extract(rows_json,'$.columns'),json_extract(rows_json,'$.match_columns'),json_array_length(rows_json,'$.rows') FROM source_kept_result ORDER BY id"})?;
+        let fields="k.id,k.name,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.unit')='text' THEN json_extract(k.rows_json,'$.unit') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.columns')='array' THEN json_extract(k.rows_json,'$.columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.match_columns')='array' THEN json_extract(k.rows_json,'$.match_columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.rows')='array' THEN json_array_length(k.rows_json,'$.rows') END END";
+        let sql=if after.is_some() {
+            format!("SELECT {fields} FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id")
+        } else {format!("SELECT {fields} FROM source_kept_result k ORDER BY k.id")};
+        let mut statement=conn.prepare(&sql)?;
         let mut rows = if let Some(after) = after {
             statement.query([after])?
         } else {
@@ -197,12 +199,12 @@ impl Reader<'_> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 unit: row.get(2)?,
-                columns: serde_json::from_str(&row.get::<_, String>(3)?)?,
+                columns: row.get::<_,Option<String>>(3)?.map(|value|serde_json::from_str(&value)).transpose()?,
                 match_columns: row
                     .get::<_, Option<String>>(4)?
                     .map(|value| serde_json::from_str(&value))
                     .transpose()?,
-                row_count: row.get::<_, i64>(5)? as u64,
+                row_count: row.get::<_,Option<i64>>(5)?.map(|count|count as u64),
             })?;
         }
         Ok(())

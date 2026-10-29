@@ -67,9 +67,9 @@ pub struct Saved {
 pub struct Kept {
     pub id: String,
     pub name: Option<String>,
-    pub unit: String,
+    pub unit: Option<String>,
     pub row_count: Option<u64>,
-    pub rows: OutputSchema,
+    pub rows: Option<OutputSchema>,
     pub matches: Option<OutputSchema>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -298,11 +298,8 @@ impl CatalogWriter {
         self.conn.execute("INSERT INTO item VALUES(?1,?2,?3,?4) ON CONFLICT(kind,id) DO UPDATE SET name=excluded.name,payload=excluded.payload", params![kind,id,name,serde_json::to_string(item)?])?;
         Ok(())
     }
-    pub fn remove_item(&mut self, kind: &str, id: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM item WHERE kind=?1 AND id=?2",
-            params![kind, id],
-        )?;
+    pub fn remove_saved(&mut self, family:&str)->Result<()> {
+        self.conn.execute("DELETE FROM item WHERE kind='saved' AND id=?1",[family])?;
         Ok(())
     }
 }
