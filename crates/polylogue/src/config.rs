@@ -316,6 +316,7 @@ pub struct Startup {
     pub mode: crate::daemon::service::ArchiveMode,
     pub clock: WallClock,
     pub output: OutputConfig,
+    pub hook: crate::hook::Inputs,
 }
 #[derive(Debug, Clone, Default)]
 pub struct Overrides {
@@ -613,6 +614,20 @@ impl Startup {
             mode,
             clock: process.clock.clone(),
             output: process.output,
+            hook: crate::hook::Inputs {
+                kitty_pid: process
+                    .environment
+                    .get_os("KITTY_PID")
+                    .and_then(OsStr::to_str)
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|pid| *pid > 0),
+                kitty_window: process
+                    .environment
+                    .get_os("KITTY_WINDOW_ID")
+                    .and_then(OsStr::to_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            },
         })
     }
 }
@@ -671,6 +686,10 @@ impl Startup {
             engine,
             mode: crate::daemon::service::ArchiveMode::Standalone,
             output: OutputConfig::new(false, false, true),
+            hook: crate::hook::Inputs {
+                kitty_pid: None,
+                kitty_window: None,
+            },
         }
     }
 }
