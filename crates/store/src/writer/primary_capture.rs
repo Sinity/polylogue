@@ -207,6 +207,16 @@ impl Inner {
         &mut self,
         group: Vec<PreparedBatch>,
     ) -> Vec<Result<StoredInput>> {
+        if super::staging::independent_files(&group) {
+            let mut outcomes = Vec::with_capacity(group.len());
+            for item in group {
+                match self.capture_primary_group(std::slice::from_ref(&item)) {
+                    Ok(result) => outcomes.extend(result),
+                    Err(error) => outcomes.extend(failed(1, error)),
+                }
+            }
+            return outcomes;
+        }
         let count = group.len();
         match self.capture_primary_group(&group) {
             Ok(outcomes) => outcomes,
