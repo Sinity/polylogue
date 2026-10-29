@@ -83,6 +83,16 @@ enum Msg {
     SynchronizePrimary(SyncSender<Result<i64>>),
     CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
     Capture(String, SyncSender<Result<crate::primary::Capture>>),
+    RawAcquisitionCursor(
+        Box<crate::primary::SourceGeneration>,
+        SyncSender<Result<Option<crate::primary::RawAcquisitionCursor>>>,
+    ),
+    PendingGroupHeaders(
+        String,
+        Option<u64>,
+        usize,
+        SyncSender<Result<crate::primary::PendingGroupPage>>,
+    ),
     SourceSnapshot(
         crate::primary::SourceSelector,
         String,
@@ -532,6 +542,26 @@ impl Writer {
         capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
     }
 
+    /// Reads a local custody cursor for one exact provider generation.
+    pub fn raw_acquisition_cursor(
+        &self,
+        generation: crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        raw_acquisition_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, generation)
+    }
+
+    /// Pages original group membership without hydrating parsed facts.
+    pub fn pending_group_headers(
+        &self,
+        group: String,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        pending_group_headers_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?, group, after_ordinal, limit,
+        )
+    }
+
     /// Reads confirmed identity and local durable pending source evidence in writer order.
     pub fn source_snapshot(
         &self,
@@ -736,6 +766,24 @@ impl WriterSender {
         capture_body_via(&self.0, identity)
     }
 
+    /// As [`Writer::raw_acquisition_cursor`].
+    pub fn raw_acquisition_cursor(
+        &self,
+        generation: crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        raw_acquisition_cursor_via(&self.0, generation)
+    }
+
+    /// As [`Writer::pending_group_headers`].
+    pub fn pending_group_headers(
+        &self,
+        group: String,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        pending_group_headers_via(&self.0, group, after_ordinal, limit)
+    }
+
     /// As [`Writer::source_snapshot`].
     pub fn source_snapshot(
         &self,
@@ -761,6 +809,28 @@ fn capture_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::Cap
 fn capture_body_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::PreparedBody> {
     let (reply, wait) = sync_channel(1);
     tx.send(Msg::CaptureBody(identity, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn raw_acquisition_cursor_via(
+    tx: &WriterQueue,
+    generation: crate::primary::SourceGeneration,
+) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::RawAcquisitionCursor(Box::new(generation), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn pending_group_headers_via(
+    tx: &WriterQueue,
+    group: String,
+    after_ordinal: Option<u64>,
+    limit: usize,
+) -> Result<crate::primary::PendingGroupPage> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::PendingGroupHeaders(group, after_ordinal, limit, reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -877,6 +947,8 @@ impl Inner {
         let mut snapshots = Vec::new();
         let mut pending_bodies = Vec::new();
         let mut private_captures = Vec::new();
+        let mut raw_cursors = Vec::new();
+        let mut group_pages = Vec::new();
         let mut restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
@@ -932,6 +1004,14 @@ impl Inner {
                     }
                     Msg::RestoreAuthored(restoration, reply) => {
                         restorations.push((restoration, reply));
+                        false
+                    }
+                    Msg::RawAcquisitionCursor(generation, reply) => {
+                        raw_cursors.push((generation, reply));
+                        false
+                    }
+                    Msg::PendingGroupHeaders(group, after, limit, reply) => {
+                        group_pages.push((group, after, limit, reply));
                         false
                     }
                     Msg::Capture(identity, reply) => {
@@ -1046,6 +1126,25 @@ impl Inner {
             }
             for (fact, reply) in coverage.drain(..) {
                 let _ = reply.send(self.write_coverage(*fact));
+            }
+            for (generation, reply) in raw_cursors.drain(..) {
+                let result = generation.validate().and_then(|()| {
+                    self.sinex.as_ref().map_or(Ok(None), |sinex| {
+                        sinex.raw_acquisition_cursor(&generation)
+                    })
+                });
+                let _ = reply.send(result);
+            }
+            for (group, after, limit, reply) in group_pages.drain(..) {
+                let result = if group.is_empty() || limit == 0 {
+                    Err(StoreError::Invalid("group identity and positive page limit are required".into()))
+                } else {
+                    self.sinex.as_ref().map_or_else(
+                        || Ok(crate::primary::PendingGroupPage::default()),
+                        |sinex| sinex.pending_group_headers(&group, after, limit),
+                    )
+                };
+                let _ = reply.send(result);
             }
             for (identity, reply) in private_captures.drain(..) {
                 let result = self

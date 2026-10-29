@@ -19,6 +19,37 @@ impl PendingProducer {
     }
 }
 impl Sinex for PendingProducer {
+    fn prepare_input_group(
+        &self,
+        _: &crate::primary::CapturePlan,
+        _: &mut crate::primary::CaptureMembers<'_>,
+    ) -> Result<crate::primary::CaptureReceipt> {
+        Self::unavailable()
+    }
+    fn pending_source(
+        &self,
+        _: &crate::primary::SourceSelector,
+        _: &str,
+    ) -> Result<crate::primary::PendingSource> {
+        Ok(Default::default())
+    }
+    fn pending_group_headers(
+        &self,
+        _: &str,
+        _: Option<u64>,
+        _: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        Self::unavailable()
+    }
+    fn capture_body(&self, _: &str) -> Result<PreparedBody> {
+        Self::unavailable()
+    }
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
     fn prepare_input(&self, _: &CapturedInput, _: PreparedBody) -> Result<PreparedInput> {
         Self::unavailable()
     }
