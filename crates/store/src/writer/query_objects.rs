@@ -45,7 +45,11 @@ impl Inner {
         crate::query_objects::validate_object(object)?;
         if let Some(sinex) = &self.sinex {
             self.primary_cache_ready()?;
-            crate::query_objects::validate_result_bindings(&self.index, object)?;
+            crate::query_objects::validate_result_bindings(
+                &self.index,
+                crate::source::Source::of(&self.index)?,
+                object,
+            )?;
             if crate::query_objects::known_object(&self.index, object)? {
                 return Ok(QueryCustody::Canonical);
             }
@@ -81,7 +85,11 @@ impl Inner {
             )?;
             return Ok(QueryCustody::Queued);
         }
-        crate::query_objects::validate_result_bindings(&self.archive, object)?;
+        crate::query_objects::validate_result_bindings(
+            &self.archive,
+            crate::source::Source::of(&self.archive)?,
+            object,
+        )?;
         let tx = self.archive.transaction()?;
         let before = tx.total_changes();
         crate::query_objects::apply_object(&tx, object)?;

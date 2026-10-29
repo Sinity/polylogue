@@ -65,7 +65,11 @@ pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
 }
 
 /// Frozen result schemas must agree with the same canonical metadata readers bind.
-pub(crate) fn validate_result_bindings(conn: &Connection, object: &QueryObject) -> Result<()> {
+pub(crate) fn validate_result_bindings(
+    conn: &Connection,
+    source: Source,
+    object: &QueryObject,
+) -> Result<()> {
     let outputs = object.source_outputs.iter().chain(
         object
             .definitions
@@ -83,8 +87,8 @@ pub(crate) fn validate_result_bindings(conn: &Connection, object: &QueryObject) 
     if result_outputs.is_empty() {
         return Ok(());
     }
-    let kept = crate::selection::kept_results(conn, Source::of(conn)?)
-        .map_err(|error| invalid(error.to_string()))?;
+    let kept =
+        crate::selection::kept_results(conn, source).map_err(|error| invalid(error.to_string()))?;
     let actual = polylogue_query::Bindings {
         kept,
         ..Default::default()
