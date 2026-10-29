@@ -502,6 +502,7 @@ fn answer(
             "now": polylogue_model::Timestamp::from_unix_ms(program.now),
             "zone": program.zone,
             "day_start_minutes": program.day_start_minutes,
+            "times": program.resolved_times,
         },
         "read_at": read_at,
     });
