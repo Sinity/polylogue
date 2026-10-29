@@ -408,7 +408,7 @@ fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() 
 }
 
 #[test]
-fn read_position_codec_is_versioned_closed_and_has_no_native_identity_fallback() {
+fn read_seek_codec_is_versioned_closed_and_has_no_native_identity_fallback() {
     let position = ReadPosition {
         selection: SelectionLocator {
             row: 17,
@@ -421,44 +421,80 @@ fn read_position_codec_is_versioned_closed_and_has_no_native_identity_fallback()
         character: 184,
         item_hash: crate::BlobHash::of(b"complete encoded ReadItem"),
     };
-    let encoded = position.to_order_position().unwrap();
+    let seek = ReadSeek {
+        direction: ReadDirection::After,
+        anchor: position,
+    };
+    let encoded = seek.to_order_position().unwrap();
     assert_eq!(encoded.row_identity, "read-position-v1");
-    assert_eq!(
-        encoded.values,
-        vec![serde_json::to_value(position).unwrap()]
-    );
-    assert_eq!(
-        ReadPosition::from_order_position(&encoded).unwrap(),
-        position
-    );
+    assert_eq!(encoded.values, vec![serde_json::to_value(seek).unwrap()]);
+    assert_eq!(ReadSeek::from_order_position(&encoded).unwrap(), seek);
     let mut invalid = encoded.clone();
     invalid.row_identity = "message:native:legacy".into();
     assert!(matches!(
-        ReadPosition::from_order_position(&invalid),
-        Err(ReadPositionCodecError::Sentinel)
+        ReadSeek::from_order_position(&invalid),
+        Err(ReadSeekCodecError::Sentinel)
     ));
     let mut invalid = encoded.clone();
     invalid.values.push(serde_json::Value::Null);
     assert!(matches!(
-        ReadPosition::from_order_position(&invalid),
-        Err(ReadPositionCodecError::Arity { found: 2 })
+        ReadSeek::from_order_position(&invalid),
+        Err(ReadSeekCodecError::Arity { found: 2 })
     ));
     let mut invalid = encoded.clone();
     invalid.values.clear();
     assert!(matches!(
-        ReadPosition::from_order_position(&invalid),
-        Err(ReadPositionCodecError::Arity { found: 0 })
+        ReadSeek::from_order_position(&invalid),
+        Err(ReadSeekCodecError::Arity { found: 0 })
     ));
     let mut invalid = encoded.clone();
     invalid.values[0]["native_reference"] = serde_json::json!("message:synthetic:unexpected");
     assert!(matches!(
-        ReadPosition::from_order_position(&invalid),
-        Err(ReadPositionCodecError::Value(_))
+        ReadSeek::from_order_position(&invalid),
+        Err(ReadSeekCodecError::Value(_))
     ));
     let mut invalid = encoded;
-    invalid.values[0]["selection"]["row"] = serde_json::json!(-1);
+    invalid.values[0]["anchor"]["selection"]["row"] = serde_json::json!(-1);
     assert!(matches!(
-        ReadPosition::from_order_position(&invalid),
-        Err(ReadPositionCodecError::Value(_))
+        ReadSeek::from_order_position(&invalid),
+        Err(ReadSeekCodecError::Value(_))
+    ));
+}
+
+#[test]
+fn read_seek_codec_binds_direction_and_rejects_old_or_open_shapes() {
+    let anchor = ReadPosition {
+        selection: SelectionLocator {
+            row: 3,
+            record: ReadRecordLocator {
+                kind: ReadRecordKind::Message,
+                ordinal: 1,
+            },
+        },
+        item: 0,
+        character: 9,
+        item_hash: crate::BlobHash::of(b"current page start"),
+    };
+    let before = ReadSeek {
+        direction: ReadDirection::Before,
+        anchor,
+    };
+    let mut encoded = before.to_order_position().unwrap();
+    assert_eq!(ReadSeek::from_order_position(&encoded).unwrap(), before);
+    let after = ReadSeek {
+        direction: ReadDirection::After,
+        anchor,
+    };
+    assert_ne!(encoded, after.to_order_position().unwrap());
+    encoded.values[0] = serde_json::to_value(anchor).unwrap();
+    assert!(matches!(
+        ReadSeek::from_order_position(&encoded),
+        Err(ReadSeekCodecError::Value(_))
+    ));
+    encoded.values[0] = serde_json::to_value(before).unwrap();
+    encoded.values[0]["direction"] = serde_json::json!("previous_receipt");
+    assert!(matches!(
+        ReadSeek::from_order_position(&encoded),
+        Err(ReadSeekCodecError::Value(_))
     ));
 }

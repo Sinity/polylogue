@@ -17,6 +17,7 @@ thiserror.workspace = true
 jiff.workspace = true
 blake3.workspace = true
 unicode-normalization.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [lints]
 workspace = true

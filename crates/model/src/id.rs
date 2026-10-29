@@ -78,6 +78,12 @@ impl fmt::Display for NativeId {
 pub struct RunId(String);
 
 impl RunId {
+    /// Mints a server run identity independently of its captured execution time.
+    /// Existing canonical UUIDs of every version remain valid references.
+    pub fn new_v4() -> Self {
+        Self(uuid::Uuid::new_v4().hyphenated().to_string())
+    }
+
     pub fn parse(id: &str) -> Result<Self, IdError> {
         if id.len() == 36
             && id.bytes().enumerate().all(|(i, byte)| {

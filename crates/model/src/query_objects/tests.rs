@@ -101,13 +101,16 @@ fn page_action_identity_is_stable_but_current_position_and_envelope_have_indepen
     use crate::{
         ChangePosition, RunId, Timestamp,
         authorship::{Author, Authorship, Channel},
-        read::{ReadPosition, ReadRecordKind, ReadRecordLocator, SelectionLocator},
+        read::{
+            ReadDirection, ReadPosition, ReadRecordKind, ReadRecordLocator, ReadSeek,
+            SelectionLocator,
+        },
     };
     let root_hash = BlobHash::of(b"original acknowledged execution");
     let page = QueryRun {
-        id: RunId::parse("019a2f20-1234-7000-8000-0123456789ab").unwrap(),
+        id: RunId::new_v4(),
         question: QuestionId([1; 32]),
-        at: Timestamp::from_unix_ms(100).unwrap(),
+        at: Timestamp::from_unix_ms(-100).unwrap(),
         read_at: ChangePosition {
             generation: "synthetic".into(),
             index: 2,
@@ -121,30 +124,43 @@ fn page_action_identity_is_stable_but_current_position_and_envelope_have_indepen
         binding: RunBinding::Continuation {
             root: RunId::parse("019a2f20-1234-7000-8000-0123456789aa").unwrap(),
             binding_hash: root_hash,
-            position: ReadPosition {
-                selection: SelectionLocator {
-                    row: 1,
-                    record: ReadRecordLocator {
-                        kind: ReadRecordKind::Message,
-                        ordinal: 4,
+            seek: ReadSeek {
+                direction: ReadDirection::After,
+                anchor: ReadPosition {
+                    selection: SelectionLocator {
+                        row: 1,
+                        record: ReadRecordLocator {
+                            kind: ReadRecordKind::Message,
+                            ordinal: 4,
+                        },
                     },
+                    item: 3,
+                    character: 27,
+                    item_hash: BlobHash::of(b"actual C1-safe item"),
                 },
-                item: 3,
-                character: 27,
-                item_hash: BlobHash::of(b"actual C1-safe item"),
             },
             accepted_request: Some(
                 serde_json::json!({"id":"actual-current-correlation","deadline":"actual-current-deadline"}),
             ),
         },
     };
+    let round_trip: QueryRun =
+        serde_json::from_value(serde_json::to_value(&page).unwrap()).unwrap();
+    assert_eq!(round_trip.at, Timestamp::from_unix_ms(-100).unwrap());
     let original_hash = page.record_hash().unwrap();
-    assert_eq!(page.binding_hash().unwrap(), root_hash);
-    let mut moved = page.clone();
-    let RunBinding::Continuation { position, .. } = &mut moved.binding else {
+    let mut reversed = page.clone();
+    let RunBinding::Continuation { seek, .. } = &mut reversed.binding else {
         unreachable!()
     };
-    position.character += 1;
+    seek.direction = ReadDirection::Before;
+    assert_eq!(reversed.binding_hash().unwrap(), root_hash);
+    assert_ne!(reversed.record_hash().unwrap(), original_hash);
+    assert_eq!(page.binding_hash().unwrap(), root_hash);
+    let mut moved = page.clone();
+    let RunBinding::Continuation { seek, .. } = &mut moved.binding else {
+        unreachable!()
+    };
+    seek.anchor.character += 1;
     assert_eq!(moved.binding_hash().unwrap(), root_hash);
     assert_ne!(moved.record_hash().unwrap(), original_hash);
     let mut current = page;

@@ -96,10 +96,27 @@ impl ReadFraming {
     }
 }
 
+/// Direction is part of the authenticated content-navigation intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadDirection {
+    /// Resume at the first unconsumed character, as captured by the prior page.
+    After,
+    /// Read content strictly before this page start after validating its digest.
+    Before,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSeek {
+    pub direction: ReadDirection,
+    pub anchor: ReadPosition,
+}
+
 const READ_POSITION_SENTINEL: &str = "read-position-v1";
 
 #[derive(Debug, thiserror::Error)]
-pub enum ReadPositionCodecError {
+pub enum ReadSeekCodecError {
     #[error("read continuation has an unsupported position encoding")]
     Sentinel,
     #[error("read continuation position needs exactly one value, found {found}")]
@@ -107,12 +124,12 @@ pub enum ReadPositionCodecError {
     #[error("read continuation position is invalid: {0}")]
     Value(#[from] serde_json::Error),
 }
-impl ReadPosition {
-    /// Encode only bounded delivery coordinates. Authentication and root/run
-    /// bindings remain with the existing common cursor seal and its caller.
+impl ReadSeek {
+    /// Encode bounded direction and anchor. Authentication and root/run bindings
+    /// remain with the existing common cursor seal and its caller.
     pub fn to_order_position(
         &self,
-    ) -> Result<query_language::cursor::OrderPosition, ReadPositionCodecError> {
+    ) -> Result<query_language::cursor::OrderPosition, ReadSeekCodecError> {
         Ok(query_language::cursor::OrderPosition {
             row_identity: READ_POSITION_SENTINEL.into(),
             values: vec![serde_json::to_value(self)?],
@@ -120,12 +137,12 @@ impl ReadPosition {
     }
     pub fn from_order_position(
         position: &query_language::cursor::OrderPosition,
-    ) -> Result<Self, ReadPositionCodecError> {
+    ) -> Result<Self, ReadSeekCodecError> {
         if position.row_identity != READ_POSITION_SENTINEL {
-            return Err(ReadPositionCodecError::Sentinel);
+            return Err(ReadSeekCodecError::Sentinel);
         }
         let [value] = position.values.as_slice() else {
-            return Err(ReadPositionCodecError::Arity {
+            return Err(ReadSeekCodecError::Arity {
                 found: position.values.len(),
             });
         };

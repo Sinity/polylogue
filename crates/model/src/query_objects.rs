@@ -246,7 +246,7 @@ pub enum RunBinding {
     Continuation {
         root: crate::RunId,
         binding_hash: crate::BlobHash,
-        position: crate::read::ReadPosition,
+        seek: crate::read::ReadSeek,
         accepted_request: Option<serde_json::Value>,
     },
 }
