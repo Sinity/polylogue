@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod attachments;
+mod authored;
 mod batch;
 mod bytes;
 mod chain;
@@ -76,6 +77,10 @@ enum Msg {
     ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
     SynchronizePrimary(SyncSender<Result<i64>>),
+    RestoreAuthored(
+        Box<authored::Restoration>,
+        SyncSender<Result<polylogue_model::user::UserOutcome>>,
+    ),
     Stop,
     /// A user write is waiting in its own queue.
     Wake,
@@ -399,6 +404,23 @@ impl Writer {
 
     /// Writes one user request (a note, delivery or setting) and waits for
     /// it to commit. It goes ahead of batches still queued.
+    /// Restores an original authored effect without resolving its intent again.
+    pub fn restore_authored(
+        &self,
+        prepared: polylogue_model::authored::PreparedRequest,
+        claims: Vec<polylogue_model::authored::ImportAttribution>,
+        current: polylogue_model::authored::ImportAttribution,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        authored::restore_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            authored::Restoration {
+                prepared,
+                claims,
+                current,
+            },
+        )
+    }
+
     pub fn user(
         &self,
         request: polylogue_model::user::UserRequest,
@@ -577,6 +599,22 @@ impl WriterSender {
     }
 
     /// As [`Writer::user`].
+    pub fn restore_authored(
+        &self,
+        prepared: polylogue_model::authored::PreparedRequest,
+        claims: Vec<polylogue_model::authored::ImportAttribution>,
+        current: polylogue_model::authored::ImportAttribution,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        authored::restore_via(
+            &self.0,
+            authored::Restoration {
+                prepared,
+                claims,
+                current,
+            },
+        )
+    }
+
     pub fn user(
         &self,
         request: polylogue_model::user::UserRequest,
@@ -675,6 +713,7 @@ impl Inner {
         let mut coverage = Vec::new();
         let mut confirmations = Vec::new();
         let mut synchronizations = Vec::new();
+        let mut restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
@@ -725,6 +764,10 @@ impl Inner {
                     }
                     Msg::Confirmed(events, reply) => {
                         confirmations.push((events, reply));
+                        false
+                    }
+                    Msg::RestoreAuthored(restoration, reply) => {
+                        restorations.push((restoration, reply));
                         false
                     }
                     Msg::SynchronizePrimary(reply) => {
@@ -791,6 +834,9 @@ impl Inner {
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
                 let _ = reply.send(self.store_blob(new_blob, file));
+            }
+            for (restoration, reply) in restorations.drain(..) {
+                let _ = reply.send(self.restore_authored(*restoration));
             }
             self.serve_users(users);
 
