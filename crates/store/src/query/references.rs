@@ -93,6 +93,6 @@ pub(crate) fn membership(
             };
             format!("SELECT pk FROM event WHERE id={}", bind(id.clone()))
         }
-        _ => return Ok(None),
+        _ => return None,
     })
 }
