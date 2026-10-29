@@ -99,8 +99,8 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
             expected
         );
         let mut blocks = Vec::new();
-        crate::ordered_blocks::visit(r.conn().unwrap(), session, |block| {
-            blocks.push(block.block.text().unwrap().to_owned());
+        crate::ordered_blocks::visit_text(r.conn().unwrap(), session, |block| {
+            blocks.push(block.text().unwrap().to_owned());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
