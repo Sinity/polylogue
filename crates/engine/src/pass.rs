@@ -502,10 +502,10 @@ impl Engine {
             && st.parser_state.is_none()
             && st.parsed_upto > 0
         {
-            let known = self
-                .reads
-                .reader()?
-                .known_watched_input_at(&self.config.machine, &path.to_string_lossy())?;
+            let known = self.reads.reader()?.known_watched_input_at(
+                &self.config.machine,
+                path.as_os_str().as_encoded_bytes(),
+            )?;
             if let Some(known) = known
                 && known.input_id == st.input_id
                 && known.facts == st.facts
@@ -1029,7 +1029,7 @@ impl Engine {
                 if plan.tracked {
                     let known = self.reads.reader()?.known_watched_input_at(
                         &self.config.machine,
-                        &plan.path.to_string_lossy(),
+                        plan.path.as_os_str().as_encoded_bytes(),
                     )?;
                     if let Some(state) = self.inputs.get_mut(&plan.path) {
                         state.facts = known.as_ref().and_then(|known| known.facts);
