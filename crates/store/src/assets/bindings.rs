@@ -13,7 +13,9 @@ use std::{collections::BTreeSet, io::Read, ops::Range, sync::Arc};
 #[serde(deny_unknown_fields)]
 pub struct BindingContext {
     pub message: MessageId,
+    /// Complete source message identity, independent of attachment metadata.
     pub source_version: BlobHash,
+    /// The receiving source input whose reading contains the message.
     pub input: String,
     pub chain: i64,
     pub import_id: String,
@@ -35,6 +37,7 @@ pub struct ReceivingMember {
     pub input: String,
     pub member: String,
     pub chain: i64,
+    /// Pinned source-extent fingerprint, not the complete content hash.
     pub source_version: String,
     pub hash: BlobHash,
     pub size: u64,

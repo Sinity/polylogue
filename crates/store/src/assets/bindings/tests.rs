@@ -299,20 +299,21 @@ fn exact_member_classification_fills_unknown_fields_and_refuses_conflicting_know
     fixture.member("member-a","scope-a",b"actual bytes");
     let members = fixture.refresh();
     let observed = source(&members,"member-a");
-    let mut staged = ExportItems::new().unwrap();
-    stage(&mut staged,&AssetRow::Member { source:observed.clone(),source_id:Some("classified:opaque".into()),sidecar:Some("metadata.json".into()) });
-    fixture.writer.import_assets(staged).unwrap();
-    let mut staged = ExportItems::new().unwrap();
-    stage(&mut staged,&AssetRow::Member { source:observed.clone(),source_id:None,sidecar:None });
-    fixture.writer.import_assets(staged).unwrap();
+    for (source_id,sidecar) in [(Some("classified:opaque"),None),(None,Some("metadata.json")),(None,None)] {
+        let mut staged = ExportItems::new().unwrap();
+        stage(&mut staged,&AssetRow::Member { source:observed.clone(),source_id:source_id.map(str::to_owned),sidecar:sidecar.map(str::to_owned) });
+        fixture.writer.import_assets(staged).unwrap();
+    }
     let before = fixture.reads.reader().unwrap().query("SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE input='member-a'",&[]).unwrap();
     assert_eq!(before[0]["source_id"],"classified:opaque");
     assert_eq!(before[0]["sidecar"],"metadata.json");
-    for conflicting_identity in [false,true] {
+    for conflict in ["source_id","sidecar","identity"] {
         let mut source = observed.clone();
-        if conflicting_identity { source.membership.import_id = "another-namespace".into(); }
+        if conflict == "identity" { source.membership.import_id = "another-namespace".into(); }
         let mut staged = ExportItems::new().unwrap();
-        stage(&mut staged,&AssetRow::Member { source,source_id:Some(if conflicting_identity { "classified:opaque" } else { "conflicting-id" }.into()),sidecar:Some("metadata.json".into()) });
+        stage(&mut staged,&AssetRow::Member { source,
+            source_id:Some(if conflict == "source_id" { "conflicting-id" } else { "classified:opaque" }.into()),
+            sidecar:Some(if conflict == "sidecar" { "conflicting.json" } else { "metadata.json" }.into()) });
         assert!(matches!(fixture.writer.import_assets(staged),Err(StoreError::Conflict(_))));
         assert_eq!(fixture.reads.reader().unwrap().query("SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE input='member-a'",&[]).unwrap(),before);
     }
