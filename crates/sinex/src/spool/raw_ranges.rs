@@ -27,6 +27,26 @@ fn generation_key(generation: &SourceGeneration) -> Result<String> {
     Ok(hash(&serde_json::to_vec(generation)?))
 }
 
+fn disposition(
+    spool: &Spool,
+    identity: &str,
+) -> Result<Option<polylogue_store::primary::CaptureDisposition>> {
+    let operation = spool.operation(identity)?;
+    let parent = operation.parent().expect("operation parent");
+    if parent == spool.root.join("operations") {
+        return Ok(None);
+    }
+    let group = parent.parent().expect("acquisition parent");
+    let receipt = read_checked::<Acquisition>(&group.join("acquisition.json"))?
+        .ok_or_else(|| Error::Invalid("raw body has no published acquisition receipt".into()))?;
+    if group.file_name().and_then(|name| name.to_str())
+        != Some(hash(receipt.identity.as_bytes()).as_str())
+    {
+        return invalid("raw acquisition receipt has another identity");
+    }
+    Ok(Some(receipt.disposition))
+}
+
 pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
     let Some(Capture::Input(input)) = &prepared.capture else {
         return Ok(());
@@ -104,6 +124,7 @@ impl Spool {
                         decoded_length: input.length,
                         known_total: input.raw_total,
                         predecessor: input.raw_predecessor.clone(),
+                        disposition: disposition(self, identity)?,
                     },
                     file: regular(&path)?,
                     descriptor,
