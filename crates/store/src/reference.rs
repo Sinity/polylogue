@@ -183,7 +183,8 @@ impl Reader<'_> {
                     .prepare_cached("SELECT pk,idx FROM block WHERE message_pk=?1 ORDER BY idx")?;
                 let mut rows = statement.query([pk])?;
                 while let Some(row) = rows.next()? {
-                    let index: usize = row.get(1)?;
+                    let index = usize::try_from(row.get::<_, i64>(1)?)
+                        .map_err(|_| StoreError::Invalid("invalid stored block index".into()))?;
                     if !complete
                         && projection.block_ordinals.get(index).copied() != Some(index as u64)
                     {
