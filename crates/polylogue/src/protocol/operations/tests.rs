@@ -237,6 +237,17 @@ fn typed_setting_catalog_is_a_real_table_answer() {
         Default::default(),
     ));
     assert!(invalid.value().is_none());
+    let invalid_host = runtime().block_on(table.call(
+        command_surface::Request {
+            operation: "setting".into(),
+            arguments: json!({"machine":"*"}),
+            request_id: "invalid-host-witness".into(),
+            deadline: command_surface::Deadline::None,
+        },
+        command_surface::Origin::Cli,
+        Default::default(),
+    ));
+    assert!(invalid_host.value().is_none());
 }
 
 #[test]

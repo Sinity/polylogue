@@ -1104,6 +1104,18 @@ fn handle_inner(
                     Err(error) => store_error(&error),
                 }
             } else {
+                for spec in polylogue_model::settings::CATALOG
+                    .iter()
+                    .filter(|spec| spec.scope == polylogue_model::settings::Scope::Host)
+                {
+                    if let Err(error) = polylogue_model::settings::target_machine(
+                        spec.key,
+                        machine.as_deref(),
+                        &invocation.machine,
+                    ) {
+                        return self::error("bad_value", error);
+                    }
+                }
                 match reader.settings_catalog(selected) {
                     Ok(catalog) => ok(catalog),
                     Err(error) => store_error(&error),
