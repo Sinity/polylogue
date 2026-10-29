@@ -2043,6 +2043,7 @@ fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverag
     use polylogue_model::{
         Author, Timestamp,
         authored::{AuthoredEffect, PreparedRequest, Setting},
+        authorship::{Authorship, Channel},
         bundle::AuthoredRecord,
         user::{UserOutcome, UserRequest, UserWrite},
     };
@@ -2055,10 +2056,13 @@ fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverag
                 id: "synthetic".into(),
                 machine: "test-machine".into(),
                 at,
+                authorship: Authorship {
+                    author: Author::Operator,
+                    via: Channel::Cli,
+                },
                 write: UserWrite::SetSetting {
                     key: "one".into(),
                     value: "original".into(),
-                    author: Author::Operator,
                     machine: None,
                 },
             },
