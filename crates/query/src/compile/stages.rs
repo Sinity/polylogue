@@ -135,6 +135,7 @@ impl<'a> Compiler<'a> {
             return Err(self.unknown_field(field, scope.unit, span));
         };
         let Some(expr) = def.expr(a, self.opts.clock.now.as_millisecond()) else {
+            scalar(def.column_kind(), def.name, at)?;
             return Err(QueryError::Invalid {
                 message: format!("{} cannot be grouped or sorted by", def.name),
                 position: span.start,
