@@ -384,7 +384,9 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
     let restored = products
         .iter()
         .find_map(|p| match p {
-            crate::primary::Product::Message { reading, facts, .. } => Some((reading, facts)),
+            crate::primary::Product::Message { reading, facts, .. } => {
+                Some((reading, facts.as_ref()))
+            }
             _ => None,
         })
         .unwrap();

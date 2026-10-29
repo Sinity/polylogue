@@ -92,11 +92,36 @@ impl crate::primary::Sinex for OfflineProducer {
             identity: "offline-capture".into(),
         })
     }
+    fn capture(&self, _: &str) -> Result<Capture> {
+        Ok(Capture::Input(Box::new(self.captured())))
+    }
+    fn prepare_reading(
+        &self,
+        _: &str,
+        _: &str,
+        _: &mut dyn FnMut(&mut dyn FnMut(ProductWrite) -> Result<()>) -> Result<()>,
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn prepare_named_products(
+        &self,
+        _: &str,
+        _: &[ProductWrite],
+    ) -> Result<crate::primary::PreparedWrite> {
+        Self::unavailable()
+    }
+    fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
+        Ok(())
+    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         Ok(if self.root.join("capture.json").exists() {
             vec![PendingCapture {
                 identity: "offline-capture".into(),
-                captured: Capture::Input(self.captured()),
+                captured: Capture::Input(Box::new({
+                    let mut header = self.captured();
+                    header.parsed.clear();
+                    header
+                })),
                 material: None,
                 anchor: None,
             }]
@@ -124,13 +149,13 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn prepare_request(
         &self,
-        _: &polylogue_model::authored::PreparedRequest,
+        _: &polylogue_model::authored::PendingAuthored,
     ) -> Result<polylogue_model::user::UserOutcome> {
         Self::unavailable()
     }
     fn visit_pending_requests(
         &self,
-        _: &mut dyn FnMut(&polylogue_model::authored::PreparedRequest) -> Result<()>,
+        _: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
     ) -> Result<()> {
         Ok(())
     }

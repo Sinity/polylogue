@@ -402,8 +402,6 @@ impl Writer {
         Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
     }
 
-    /// Writes one user request (a note, delivery or setting) and waits for
-    /// it to commit. It goes ahead of batches still queued.
     /// Restores an original authored effect without resolving its intent again.
     pub fn restore_authored(
         &self,
@@ -421,6 +419,8 @@ impl Writer {
         )
     }
 
+    /// Writes one user request and waits for its source commit.
+    /// It goes ahead of batches still queued.
     pub fn user(
         &self,
         request: polylogue_model::user::UserRequest,
@@ -598,7 +598,7 @@ impl WriterSender {
         Ok(wait)
     }
 
-    /// As [`Writer::user`].
+    /// As [`Writer::restore_authored`].
     pub fn restore_authored(
         &self,
         prepared: polylogue_model::authored::PreparedRequest,
@@ -615,6 +615,7 @@ impl WriterSender {
         )
     }
 
+    /// As [`Writer::user`].
     pub fn user(
         &self,
         request: polylogue_model::user::UserRequest,
@@ -906,6 +907,9 @@ impl Inner {
     /// stale, so the scan for stale sessions, which reads every session for
     /// every derivation, is skipped.
     fn derive(&mut self) -> Result<u64> {
+        let tx = self.index.transaction()?;
+        crate::variants::project(&tx)?;
+        tx.commit()?;
         // Changes only when another connection commits.
         let version = |index: &Connection| -> Result<i64> {
             Ok(index.pragma_query_value(None, "data_version", |r| r.get(0))?)

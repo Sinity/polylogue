@@ -13,6 +13,9 @@ use polylogue_model::user::UserOutcome;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
+pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
+
 /// The connection to Sinex the writer and the loop send through.
 pub trait Sinex: Send + Sync {
     fn prepare_input(
@@ -30,6 +33,8 @@ pub trait Sinex: Send + Sync {
         false
     }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
+    /// Loads complete private facts for one ready capture, never the whole queue.
+    fn capture(&self, identity: &str) -> Result<Capture>;
     fn complete_captures(
         &self,
         identities: &[String],
@@ -42,7 +47,7 @@ pub trait Sinex: Send + Sync {
     ) -> Result<UserOutcome>;
     fn visit_pending_requests(
         &self,
-        visit: &mut dyn FnMut(&polylogue_model::authored::PreparedRequest) -> Result<()>,
+        visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
     ) -> Result<()>;
     fn visit_pending_blobs(
         &self,
@@ -53,7 +58,7 @@ pub trait Sinex: Send + Sync {
         &self,
         root: &str,
         reading_version: &str,
-        visit: &mut dyn FnMut(&mut dyn FnMut(ProductWrite) -> Result<()>) -> Result<()>,
+        visit: &mut ReadingProducts<'_>,
     ) -> Result<PreparedWrite>;
     /// Retry identity comes from the same transaction as the applied position.
     fn prepare_named_products(

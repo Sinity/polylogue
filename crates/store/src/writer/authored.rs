@@ -60,7 +60,15 @@ impl Inner {
             let writes = self.product_writes(vec![product])?;
             let identity = format!(
                 "authored-restore:{}",
-                blake3::hash(&serde_json::to_vec(&writes)?).to_hex()
+                blake3::hash(&serde_json::to_vec(&(
+                    &restoration.prepared,
+                    &restoration.claims,
+                    &restoration.current.input,
+                    restoration.current.chain,
+                    &restoration.current.machine,
+                    &restoration.current.actor
+                ))?)
+                .to_hex()
             );
             sinex.prepare_named_products(&identity, &writes)?;
             match self.poll_primary() {
@@ -93,6 +101,10 @@ impl Inner {
         )?;
         // Repeated content can still add a newly observed import provenance.
         crate::write_lock::commit(tx)?;
+        let tx = self.index.transaction()?;
+        crate::variants::project(&tx)?;
+        tx.commit()?;
+        self.derive_due = true;
         Ok(outcome)
     }
 }

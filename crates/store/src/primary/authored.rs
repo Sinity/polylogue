@@ -7,7 +7,7 @@ mod tests;
 use crate::source::Source;
 use crate::{NewBlob, Result, StoreError};
 use polylogue_model::authored::{
-    AuthoredEffect, ImportAttribution, ImportHistory, PreparedRequest,
+    AuthoredEffect, ImportAttribution, ImportHistory, PendingAuthored, PreparedRequest,
 };
 use polylogue_model::user::{UserOutcome, UserRequest};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -79,7 +79,7 @@ pub fn known_request(conn: &Connection, request: &UserRequest) -> Result<Option<
 pub fn prepare(
     index: &Connection,
     request: &UserRequest,
-    visit_pending: impl FnOnce(&mut dyn FnMut(&PreparedRequest) -> Result<()>) -> Result<()>,
+    visit_pending: impl FnOnce(&mut dyn FnMut(&PendingAuthored) -> Result<()>) -> Result<()>,
     visit_blobs: impl FnOnce(&mut dyn FnMut(&NewBlob) -> Result<()>) -> Result<()>,
 ) -> Result<PreparedRequest> {
     let _snapshot = if index.is_autocommit() {
@@ -116,7 +116,19 @@ pub fn prepare(
     scratch.execute_batch(&crate::source::schema()?.ddl)?;
     let tx = scratch.transaction()?;
     records::copy(index, &tx)?;
-    visit_pending(&mut |pending| apply(&tx, pending, 0))?;
+    visit_pending(&mut |pending| {
+        match pending {
+            PendingAuthored::Live { prepared } => apply(&tx, prepared, 0)?,
+            PendingAuthored::Restore {
+                prepared,
+                claims,
+                current,
+            } => {
+                restore(&tx, prepared, claims, current, 0)?;
+            }
+        }
+        Ok(())
+    })?;
     if let Some(known) = known_request(&tx, request)? {
         return Ok(known);
     }
