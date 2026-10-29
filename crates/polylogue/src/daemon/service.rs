@@ -203,11 +203,12 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
+        let clock = match d.query_clock() { Ok(clock) => clock, Err(response) => return response };
         let result = briefing::prepare(
             &reader,
             ask,
             &request_id,
-            d.config.requests.now(),
+            &clock,
             near,
             &d.config.paths.check_history,
         );
@@ -1004,9 +1005,9 @@ fn handle_inner(
             )
         }
         Request::Resumable { cwd, limit } => {
-            match crate::resume::resumable(&reader, &cwd, limit.unwrap_or(10), user_writes::now()) {
+            match d.query_clock().and_then(|clock| crate::resume::resumable(&reader, &cwd, limit.unwrap_or(10), &clock).map_err(|e| store_error(&e))) {
                 Ok(c) => ok(c),
-                Err(e) => store_error(&e),
+                Err(e) => e,
             }
         }
         Request::Continue { session } => match crate::resume::plan(&reader, &session) {

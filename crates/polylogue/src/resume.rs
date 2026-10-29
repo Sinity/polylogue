@@ -76,7 +76,7 @@ pub fn resumable(
     reader: &Reader<'_>,
     cwd: &Path,
     limit: u64,
-    now: polylogue_model::Timestamp,
+    clock: &query_language::time::Clock,
 ) -> Result<Vec<ResumableSession>, StoreError> {
     use crate::daemon::query::notes;
     use polylogue_model::{NoteKind, Reference};
@@ -92,7 +92,7 @@ pub fn resumable(
             NoteKind::Handoff.as_str(),
             NoteKind::Blocker.as_str(),
         );
-        let follow_ups: Vec<String> = notes::list(reader, &conditions, now)?
+        let follow_ups: Vec<String> = notes::list(reader, &conditions, clock)?
             .into_iter()
             .map(|n| format!("{}: {}", n.kind.as_str(), n.value.unwrap_or_default()))
             .collect();
