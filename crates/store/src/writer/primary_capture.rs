@@ -94,12 +94,12 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
             ));
         }
     }
-    if let Some(blob) = &batch.new_blob {
-        if blob.size > batch.length {
-            return Err(StoreError::Invalid(
-                "captured bytes exceed their source endpoint".into(),
-            ));
-        }
+    if let Some(blob) = &batch.new_blob
+        && blob.size > batch.length
+    {
+        return Err(StoreError::Invalid(
+            "captured bytes exceed their source endpoint".into(),
+        ));
     }
     Ok(())
 }
@@ -305,7 +305,7 @@ impl Inner {
                 PreparedInput::Pending { identity } => identity,
             };
             let chain = if let Some(observation) = &rows.observation {
-                self.index.query_row("SELECT r.chain FROM source_observation o LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1",[&observation.id],|row|row.get::<_,Option<i64>>(0)).optional()?.map(|chain|chain.unwrap_or(1))
+                self.index.query_row("SELECT coalesce(o.chain,r.chain) FROM source_observation o LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1",[&observation.id],|row|row.get::<_,Option<i64>>(0)).optional()?.map(|chain|chain.unwrap_or(1))
             } else if let Some(extent) = &rows.extent {
                 self.index.query_row("SELECT e.chain FROM source_extent e JOIN source_revision r ON r.input=e.input AND r.chain=e.chain WHERE e.input=?1 AND e.blob=?2 AND e.offset-e.blob_offset=?3 AND r.length>=?4 ORDER BY r.number DESC LIMIT 1",params![input,&extent.blob.0[..],extent.offset-extent.blob_offset,length as i64],|row|row.get(0)).optional()?
             } else {
@@ -418,7 +418,8 @@ impl Inner {
         }
         let mut writes = Vec::new();
         for member in &members {
-            match &member.captured {
+            let captured = sinex.capture(&member.identity)?;
+            match &captured {
                 Capture::Blob { hash, length } => {
                     let material = member.material.as_ref().expect("ready material");
                     if material.hash != *hash || material.length != *length {
@@ -439,7 +440,10 @@ impl Inner {
                     else {
                         return Ok(());
                     };
-                    let chain = if let Some(extent) = &rows.extent {
+                    let chain = if let Some(chain) = rows.observation.as_ref().and_then(|o| o.chain)
+                    {
+                        chain
+                    } else if let Some(extent) = &rows.extent {
                         extent.chain
                     } else if let Some(revision) = &rows.revision {
                         revision.chain
@@ -465,16 +469,16 @@ impl Inner {
                     } else {
                         None
                     };
-                    if rows.extent.is_none() {
-                        if let Some(material) = &member.material {
-                            writes.push(ProductWrite {
-                                product: Product::Blob(material.clone()),
-                                location: member.anchor.clone(),
-                                parents: Vec::new(),
-                                machine: rows.observation.as_ref().map(|o| o.machine.clone()),
-                                output_index: writes.len() as u64,
-                            });
-                        }
+                    if rows.extent.is_none()
+                        && let Some(material) = &member.material
+                    {
+                        writes.push(ProductWrite {
+                            product: Product::Blob(material.clone()),
+                            location: member.anchor.clone(),
+                            parents: Vec::new(),
+                            machine: rows.observation.as_ref().map(|o| o.machine.clone()),
+                            output_index: writes.len() as u64,
+                        });
                     }
                     writes.push(ProductWrite {
                         machine: rows.observation.as_ref().map(|o| o.machine.clone()),
@@ -636,7 +640,8 @@ impl Inner {
             rows.extent = None;
             if let Some(observation) = &mut rows.observation {
                 let exact=self.index.query_row("SELECT number FROM source_revision WHERE input=?1 AND chain=?2 AND length=?3 ORDER BY number DESC LIMIT 1",params![rows.input,current.chain,end as i64],|row|row.get(0)).optional()?;
-                observation.revision = Some(exact.unwrap_or(current.number));
+                observation.revision = exact.or_else(|| (end == stored).then_some(current.number));
+                observation.chain = observation.revision.is_none().then_some(current.chain);
                 observation.length = Some(end as i64);
                 observation.class = "back".into();
             }
@@ -677,3 +682,6 @@ impl Inner {
         Ok(Some(rows))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -15,7 +15,7 @@ fn input(position: i64, id: &str) -> Confirmed {
         position,
         output_index: 0,
         event: format!("event-{id}"),
-        change: ConfirmedChange::Live(Product::Input {
+        change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
                 input: id.into(),
                 format: "synthetic".into(),
@@ -24,7 +24,7 @@ fn input(position: i64, id: &str) -> Confirmed {
                 observation: None,
             },
             material: None,
-        }),
+        })),
     }
 }
 fn barrier(position: i64) -> Confirmed {
@@ -139,7 +139,7 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
                 position: 2,
                 output_index: 0,
                 event: "authored".into(),
-                change: ConfirmedChange::Live(Product::Request(prepared)),
+                change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
             },
             barrier(2),
         ],
@@ -237,7 +237,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         position,
         output_index: 0,
         event: format!("event-{id}"),
-        change: ConfirmedChange::Live(Product::Input {
+        change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
                 input: id.into(),
                 format: "synthetic".into(),
@@ -257,7 +257,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
                 }),
             },
             material: Some(material.clone()),
-        }),
+        })),
     };
     apply(
         &mut index,
@@ -362,7 +362,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         position: 1,
         output_index: 0,
         event: "input-fact".into(),
-        change: ConfirmedChange::Live(Product::Input {
+        change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
                 input: "input".into(),
                 format: "synthetic".into(),
@@ -376,7 +376,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                 observation: None,
             },
             material: None,
-        }),
+        })),
     }];
     changes.extend(
         products
@@ -386,7 +386,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                 position: 1,
                 output_index: index as u64,
                 event: format!("parsed-{index}"),
-                change: ConfirmedChange::Live(product),
+                change: ConfirmedChange::Live(Box::new(product)),
             }),
     );
     changes.push(barrier(1));
@@ -424,7 +424,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                 position: 2,
                 output_index: 0,
                 event: "blob-fact".into(),
-                change: ConfirmedChange::Live(blob),
+                change: ConfirmedChange::Live(Box::new(blob)),
             },
             barrier(2),
         ],
@@ -451,4 +451,129 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         .unwrap();
         assert_eq!(shown(&index), present.then(|| hash.0.to_vec()));
     }
+}
+
+#[test]
+fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
+    use polylogue_model::{Event, Output, RecordCounts, RecordOutcome};
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("unavailable-bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let event = Event {
+        session: None,
+        kind: "native".into(),
+        at: None,
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some((0, 1)),
+        data: serde_json::json!({"same":true}),
+    };
+    let mut counts = RecordCounts {
+        records: 1,
+        ..Default::default()
+    };
+    counts.add("native", &RecordOutcome::Used);
+    let mut step = crate::ParseStep::new(
+        Output {
+            events: vec![event.clone(), event],
+            ..Default::default()
+        },
+        counts,
+        0..1,
+        true,
+    );
+    step.reading_version = "synthetic-v1".into();
+    step.prepare();
+    let key = crate::InputKey {
+        id: "input".into(),
+        format: "synthetic".into(),
+        arrival_rank: 0,
+    };
+    let products = crate::primary::products::parse(&key, 1, &step).unwrap();
+    let ids = products
+        .iter()
+        .filter_map(|product| match product {
+            Product::Event { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(ids[0], ids[1]);
+    let mut changes = vec![Confirmed {
+        position: 1,
+        output_index: 0,
+        event: "input-fact".into(),
+        change: ConfirmedChange::Live(Box::new(Product::Input {
+            rows: crate::input_rows::InputRows {
+                input: "input".into(),
+                format: "synthetic".into(),
+                revision: Some(crate::input_rows::Revision {
+                    number: 1,
+                    produced: "first".into(),
+                    chain: 1,
+                    length: 1,
+                }),
+                extent: None,
+                observation: None,
+            },
+            material: None,
+        })),
+    }];
+    changes.extend(
+        products
+            .into_iter()
+            .enumerate()
+            .map(|(index, product)| Confirmed {
+                position: 1,
+                output_index: index as u64,
+                event: format!("parsed-{index}"),
+                change: ConfirmedChange::Live(Box::new(product)),
+            }),
+    );
+    changes.push(barrier(1));
+    apply(&mut index, &resolver, &changes).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            Confirmed {
+                position: 2,
+                output_index: 0,
+                event: "parsed-0".into(),
+                change: ConfirmedChange::Archived,
+            },
+            barrier(2),
+        ],
+    )
+    .unwrap();
+    let remaining: String = index
+        .query_row("SELECT id FROM event", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(remaining, ids[1]);
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            Confirmed {
+                position: 3,
+                output_index: 0,
+                event: "parsed-0".into(),
+                change: ConfirmedChange::Restored,
+            },
+            barrier(3),
+        ],
+    )
+    .unwrap();
+    let actual = index
+        .prepare("SELECT id FROM event ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let mut expected = ids;
+    expected.sort();
+    assert_eq!(actual, expected);
 }
