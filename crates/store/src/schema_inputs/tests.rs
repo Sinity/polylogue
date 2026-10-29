@@ -37,17 +37,14 @@ fn exact_revisions_are_distinguishable_and_missing_selection_stays_empty() {
 fn primary_selection_uses_the_typed_store_without_a_standalone_archive() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("primary");
-    let fixture = Fixture::new(&root).unwrap();
-    let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
+    let (archive, _lock) = Archive::open_primary(&root, &dir.path().join("sinex")).unwrap();
+    let conn = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     conn.execute_batch(
-        "INSERT INTO input VALUES ('primary-input','claude-code');
-        INSERT INTO revision VALUES ('primary-input',1,'first',1,0,1);",
+        "INSERT INTO source_input VALUES ('primary-input','claude-code');
+        INSERT INTO source_revision VALUES ('primary-input',1,'first',1,0,1);",
     )
     .unwrap();
     drop(conn);
-    drop(fixture);
-    std::fs::rename(root.join("archive.db"), root.join("sinex.db")).unwrap();
-    let archive = Archive::on_sinex(&root, &dir.path().join("sinex"));
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(
@@ -59,6 +56,12 @@ fn primary_selection_uses_the_typed_store_without_a_standalone_archive() {
         1
     );
     assert!(!root.join("archive.db").exists());
+    let page = reader
+        .schema_inputs_page(None, None, None, None, 1)
+        .unwrap();
+    assert_eq!(page.inputs[0].input, "primary-input");
+    assert_eq!(page.unknown_time_inputs, 1);
+    assert!(page.next.is_none());
 }
 
 #[test]

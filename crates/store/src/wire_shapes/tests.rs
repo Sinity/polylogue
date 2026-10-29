@@ -636,3 +636,92 @@ fn wire_shape_native_tables_stay_distinct_and_unused_counts_are_explicit() {
         2
     );
 }
+
+#[test]
+fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
+    let archive = crate::fixture::writer::WriterArchive::new();
+    let mut batch = crate::fixture::writer::step(
+        "wire-input",
+        "fixture",
+        "wire.json",
+        Output::default(),
+        0,
+        1,
+    );
+    batch.parse = vec![step(
+        "v1",
+        0..2,
+        true,
+        vec![root(), shape("/new", "number", &[])],
+    )];
+    archive.writer.send(batch.clone()).unwrap();
+    archive.writer.flush().unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let before = pool
+        .reader()
+        .unwrap()
+        .wire_shapes(Scope::current(Some("fixture")))
+        .unwrap();
+    assert_eq!(before.shapes.len(), 2);
+    let observed = at(&before, "/new");
+    assert_eq!(observed.types["number"].count, 1);
+    assert!(observed.last.id.is_none());
+    assert!(observed.last.observation.is_some());
+    assert_eq!(observed.last.observed_at_ms, Some(1));
+    let source = Connection::open(archive.archive.archive_db()).unwrap();
+    let native: i64 = source
+        .query_row(
+            "SELECT commit_seq FROM revision WHERE input='wire-input'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(observed.last.sequence, native);
+    archive.writer.send(batch.clone()).unwrap();
+    archive.writer.flush().unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .wire_shapes(Scope::current(Some("fixture")))
+            .unwrap(),
+        before
+    );
+    let chain = pool
+        .reader()
+        .unwrap()
+        .input_progress("wire-input")
+        .unwrap()
+        .unwrap()
+        .chain;
+    batch.change = crate::Change::Reparse { chain };
+    batch.observation = None;
+    batch.parse[0] = step(
+        "v2",
+        0..2,
+        true,
+        vec![root(), shape("/new", "number", &["number"])],
+    );
+    archive.writer.send(batch).unwrap();
+    archive.writer.flush().unwrap();
+    let current = pool
+        .reader()
+        .unwrap()
+        .wire_shapes(Scope::current(Some("fixture")))
+        .unwrap();
+    assert_eq!(current.shapes.len(), 2);
+    assert!(current.drift.is_empty());
+    assert_eq!(current.shapes[0].reading_version, "v2");
+    assert_eq!(current.shapes[0].last.sequence, native);
+    let history = pool
+        .reader()
+        .unwrap()
+        .wire_shapes(Scope::history(Some("fixture"), None))
+        .unwrap();
+    assert_eq!(history.shapes.len(), 4);
+    assert!(
+        history
+            .drift
+            .iter()
+            .any(|drift| drift.kind == Kind::NewPath && drift.shape.reading_version == "v1")
+    );
+}

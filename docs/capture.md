@@ -114,6 +114,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 
 - **A tool's SQLite database is captured as committed rows, never as a database image.** Each capture keeps rows the tool later deleted (a row seen once stays in the archive) and writes no export side file. Uncommitted write-ahead-log rows are not read.
 - Captured: Codex `state`, `goals`, `memories`, `queue`; Hermes `state.db`, `verification_evidence.db` and each profile's `state.db`; Antigravity `conversations/*.db`, `conversation_summaries.db` and each `state.vscdb`; Grok `memory-v2/**/*.sqlite` and `worktrees.db`; `llm` `logs.db`.
+- Row-dump headers retain the original SQL and structured native column metadata from the same SQLite read transaction: column names and order, declared type, nullability, primary-key order, hidden/generated status and `WITHOUT ROWID`. Schema tools report this metadata separately from observed JSON types and omit SQL and default expressions. A historical SQL-only header establishes table presence; its unobserved columns remain unknown.
 - A table whose schema no parser knows keeps its raw rows readable and is reported as [format drift](archive.md#format-drift).
 
 ## Import
