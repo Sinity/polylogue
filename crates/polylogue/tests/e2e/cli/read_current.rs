@@ -24,10 +24,11 @@ fn words(page: &ReadPage) -> String {
 
 #[test]
 fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
-    let directory = tempfile::tempdir().unwrap();
-    let home = directory.path().join("home");
-    let archive = directory.path().join("archive");
-    let config = directory.path().join("config");
+    let directory = tempfile::tempdir().unwrap().keep();
+    eprintln!("typed read fixture: {}", directory.display());
+    let home = directory.as_path().join("home");
+    let archive = directory.as_path().join("archive");
+    let config = directory.as_path().join("config");
     let fixture = crate::Fixture::new(&archive, &home, &config);
     let project = home.join(".claude/projects/-typed-read");
     std::fs::create_dir_all(&project).unwrap();
@@ -36,7 +37,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     let _daemon = start_daemon(&fixture);
     let until = Instant::now() + Duration::from_secs(30);
     loop {
-        let output = cli(&fixture, &["--json", "status"]);
+        let output = cli(&fixture, &["--deadline", "none", "--json", "status"]);
         assert!(output.status.success(), "{output:?}");
         let status = json(&output);
         if status["store"]["messages"] == 1 && status["busy"] == false {
@@ -95,7 +96,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
         output = cli(&fixture, &arguments);
     }
     assert_eq!(reconstructed, expected);
-    let destination = directory.path().join("bundle");
+    let destination = directory.as_path().join("bundle");
     std::fs::create_dir(&destination).unwrap();
     let delivered = cli(
         &fixture,
@@ -134,4 +135,6 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
         }
     }
     assert_eq!(messages, 1);
+    drop(_daemon);
+    std::fs::remove_dir_all(directory).unwrap();
 }
