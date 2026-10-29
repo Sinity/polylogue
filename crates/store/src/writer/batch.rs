@@ -198,8 +198,8 @@ pub struct WriteReport {
     pub batches: u64,
     pub messages: u64,
     pub transactions: u64,
-    pub blob_syncs: u64,
-    pub blob_bytes_written: u64,
+    pub segment_syncs: u64,
+    pub segment_bytes_written: u64,
     pub blobs_appended: u64,
     pub blobs_deduplicated: u64,
     /// Batches the writer could not store, with the reason. The rest of

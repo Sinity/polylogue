@@ -109,8 +109,8 @@ impl Engine {
             total.inputs_changed += next.inputs_changed;
             total.bytes_read += next.bytes_read;
             total.bytes_stored += next.bytes_stored;
-            total.blob_syncs += next.blob_syncs;
-            total.blob_bytes_written += next.blob_bytes_written;
+            total.segment_syncs += next.segment_syncs;
+            total.segment_bytes_written += next.segment_bytes_written;
             total.blobs_appended += next.blobs_appended;
             total.blobs_deduplicated += next.blobs_deduplicated;
             total.messages_written += next.messages_written;
@@ -762,7 +762,6 @@ impl Engine {
             .stored_chain(&plan.input.id, chain, length)
         {
             Ok(stored) => stored,
-            Err(polylogue_store::StoreError::InputPending { .. }) => return Ok(false),
             Err(error) => return Err(error.into()),
         };
         plan.source = if decoded {
@@ -952,8 +951,8 @@ impl Engine {
         drop(pool);
         let report: WriteReport = self.flush_writes()?;
         pass.messages_written += report.messages;
-        pass.blob_syncs += report.blob_syncs;
-        pass.blob_bytes_written += report.blob_bytes_written;
+        pass.segment_syncs += report.segment_syncs;
+        pass.segment_bytes_written += report.segment_bytes_written;
         pass.blobs_appended += report.blobs_appended;
         pass.blobs_deduplicated += report.blobs_deduplicated;
         pass.errors.extend(report.errors);

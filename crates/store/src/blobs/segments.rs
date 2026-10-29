@@ -150,3 +150,23 @@ pub(crate) fn insert_extent(conn: &Connection, extent: &hashed_blobs::Extent) ->
     )?;
     Ok(())
 }
+
+pub(crate) fn open_writer(conn: &Connection, root: &Path) -> Result<hashed_blobs::SegmentWriter> {
+    let end: i64 = conn
+        .query_row(
+            "SELECT committed_end FROM segment WHERE name=?1",
+            ["segments/current.hb"],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let end = u64::try_from(end)
+        .map_err(|_| StoreError::Invalid("negative committed segment end".into()))?;
+    Ok(hashed_blobs::SegmentWriter::open(
+        root,
+        "segments/current.hb",
+        end,
+        &[],
+        0o600,
+    )?)
+}

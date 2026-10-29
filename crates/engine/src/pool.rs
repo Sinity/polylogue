@@ -88,7 +88,6 @@ pub struct Done {
     pub tail: Vec<u8>,
     pub stored: u64,
     pub error: Option<String>,
-    pub refused: bool,
     pub write_failed: bool,
 }
 
@@ -282,10 +281,6 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                 for (result, queued) in group.waiting.iter_mut().zip(group.queued) {
                     if queued {
                         match results.next() {
-                            Some(Err(polylogue_store::StoreError::InputRefused { .. })) => {
-                                result.refused = true;
-                                result.stored = 0;
-                            }
                             Some(Err(error)) => {
                                 result.error = Some(error.to_string());
                                 result.write_failed = true;
@@ -369,7 +364,6 @@ pub(crate) fn run(
         tail: Vec::new(),
         stored: 0,
         error: None,
-        refused: false,
         write_failed: false,
     };
     let started = std::time::Instant::now();

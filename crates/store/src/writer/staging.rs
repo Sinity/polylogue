@@ -93,29 +93,32 @@ impl Inner {
                 return errors(&group, error);
             }
         }
-        let mut prepared = Vec::new();
-        if self.sinex.is_none() {
-            for item in &mut group {
-                for file in item.files.drain(..) {
-                    let crate::staging::Prepared::Local { prepared: file } = file.file else {
-                        return errors(
-                            &group,
-                            StoreError::Invalid("Sinex bytes reached the segment writer".into()),
-                        );
-                    };
-                    prepared.push(*file);
+        let prepared = if self.sinex.is_none() {
+            let prepared = group
+                .iter_mut()
+                .flat_map(|item| item.files.drain(..))
+                .map(|file| match file.file {
+                    crate::staging::Prepared::Local { prepared } => Ok(*prepared),
+                    crate::staging::Prepared::Part { .. } => Err(StoreError::Invalid(
+                        "Sinex bytes reached the segment writer".into(),
+                    )),
+                })
+                .collect::<Result<Vec<_>>>();
+            match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => return errors(&group, error),
+            }
+        } else {
+            Vec::new()
+        };
+        let synced = if self.sinex.is_none() && !prepared.is_empty() {
+            if self.segment.is_none() {
+                match crate::blobs::open_writer(&self.archive, &self.location.root) {
+                    Ok(writer) => self.segment = Some(writer),
+                    Err(error) => return errors(&group, error),
                 }
             }
-        }
-        let synced = if self.sinex.is_none() && !prepared.is_empty() {
-            let Some(writer) = self.segment.as_mut() else {
-                return errors(
-                    &group,
-                    StoreError::Invalid(
-                        "segment writer requires reopen after failed commit".into(),
-                    ),
-                );
-            };
+            let writer = self.segment.as_mut().expect("opened segment writer");
             let appended = writer.append_group(prepared, |hash| {
                 crate::blobs::load_extent(&self.archive, "", hash)
                     .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
@@ -160,8 +163,8 @@ impl Inner {
                 self.segment.take();
                 return errors(&group, error);
             }
-            self.report.blob_syncs += synced.metrics.syncs;
-            self.report.blob_bytes_written += synced.metrics.appended_bytes;
+            self.report.segment_syncs += synced.metrics.syncs;
+            self.report.segment_bytes_written += synced.metrics.appended_bytes;
             self.report.blobs_appended += synced.metrics.appended_materials;
             self.report.blobs_deduplicated += synced.metrics.deduplicated_materials;
             if let Err(error) = self
@@ -199,9 +202,7 @@ impl Inner {
         stored.into_iter().map(Ok).collect()
     }
 
-    /// Checks every batch, then in one transaction writes the rows of its
-    /// bytes: a `writing` row for each private file, and the revision,
-    /// extents and observation that use them.
+    /// Commits the durable extents and the revisions and observations that cite them.
     fn write_rows_first(
         &mut self,
         group: &mut [PreparedBatch],
@@ -278,6 +279,7 @@ impl Inner {
                 already_stored,
             });
         }
+        crate::fault::check("write.archive_commit", "")?;
         crate::write_lock::commit(tx)?;
         self.report.transactions += 1;
         self.report.batches += group.iter().filter(|g| g.batch.parse.is_empty()).count() as u64;

@@ -67,10 +67,6 @@ pub use writer::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("input {input} is excluded by the archive's removal policy")]
-    InputRefused { input: String },
-    #[error("input {input} has bytes still being written: {reason}")]
-    InputPending { input: String, reason: String },
     #[error(transparent)]
     Sqlite(rusqlite::Error),
     #[error(transparent)]

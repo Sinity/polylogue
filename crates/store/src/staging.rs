@@ -145,7 +145,7 @@ pub(crate) fn require_range(
     if range.start > range.end {
         return Err(StoreError::Invalid("invalid stored range".into()));
     }
-    let length: Option<u64> = conn
+    let length: Option<i64> = conn
         .query_row(
             &format!("SELECT max(length) FROM {schema}revision WHERE input=?1 AND chain=?2"),
             rusqlite::params![input, chain],
@@ -153,7 +153,7 @@ pub(crate) fn require_range(
         )
         .optional()?
         .flatten();
-    if length.is_none_or(|length| range.end > length) {
+    if length.is_none_or(|length| length < 0 || range.end > length as u64) {
         return Err(StoreError::NotFound(format!(
             "stored input {input} chain {chain} range {}..{}",
             range.start, range.end

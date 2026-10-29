@@ -10,8 +10,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE input_ref (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- archive.db input.id
-  format            TEXT NOT NULL DEFAULT '', -- parser declaration used for this input
-  excised           INTEGER NOT NULL DEFAULT 0  -- 1 once an input excision removed the input; the row stays (above)
+  format            TEXT NOT NULL DEFAULT '' -- parser declaration used for this input
 ) STRICT;
 
 CREATE TABLE session (
@@ -153,7 +152,7 @@ CREATE TABLE message_source (
   version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's sorted-key JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
-CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
+CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check
 
 -- Text is stored once per distinct content; `id` is the rowid of its search entries.
 CREATE TABLE text (
@@ -364,7 +363,7 @@ CREATE TABLE unused (
 ) STRICT, WITHOUT ROWID;
 
 
--- Sessions removed without a surviving row (rebuild or excision), for the change
+-- Sessions removed without a surviving row (reading replacement), for the change
 -- feed. Emptied only when a new generation starts.
 CREATE TABLE removed_session (
   session_id        TEXT PRIMARY KEY,
@@ -443,7 +442,7 @@ CREATE INDEX work_node_verification ON work_node(kind, title, at);   -- one veri
 CREATE INDEX work_node_call ON work_node(tool_call_pk) WHERE tool_call_pk IS NOT NULL;   -- foreign-key check
 
 CREATE TABLE work_edge (
-  -- An edge goes with either node, so an excision deleting a session's nodes
+  -- An edge goes with either node, so replacing a session's nodes
   -- by `session_pk` needs no rule of its own for edges.
   from_pk           INTEGER NOT NULL REFERENCES work_node(pk) ON DELETE CASCADE,
   to_pk             INTEGER NOT NULL REFERENCES work_node(pk) ON DELETE CASCADE,
@@ -464,7 +463,7 @@ CREATE TABLE session_record (
   facts             TEXT NOT NULL,
   PRIMARY KEY (session_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX session_record_input ON session_record(input_pk);   -- excision scope, foreign-key check
+CREATE INDEX session_record_input ON session_record(input_pk);   -- foreign-key check
 
 -- Which derivation (derive.rs) made a session's derived rows, at which
 -- version and from which state of the session; a session is derived again

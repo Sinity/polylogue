@@ -199,7 +199,6 @@ impl Engine {
             batch.new_blob = Some(polylogue_store::NewBlob {
                 hash: captured.prepared.hash(),
                 size: captured.prepared.len(),
-                stored: polylogue_store::blobs::Stored::File { stored_size: 0 },
             });
             metadata.push((at, origin, facts, batch.input.clone()));
             group.push(polylogue_store::staging::PreparedBatch {

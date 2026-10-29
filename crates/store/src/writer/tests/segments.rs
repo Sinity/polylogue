@@ -67,7 +67,7 @@ fn group_commits_one_sync_and_one_extent_for_equal_bytes() {
     let report = writer.flush_rows().unwrap();
     assert_eq!(
         (
-            report.blob_syncs,
+            report.segment_syncs,
             report.blobs_appended,
             report.blobs_deduplicated
         ),
@@ -165,14 +165,14 @@ fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
         std::io::Read::read_to_end(&mut reader, &mut bytes).unwrap();
         assert_eq!(bytes, first);
         let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
-        let end: u64 = conn
+        let end: i64 = conn
             .query_row("SELECT committed_end FROM segment", [], |row| row.get(0))
             .unwrap();
         assert_eq!(
             std::fs::metadata(directory.path().join("segments/current.hb"))
                 .unwrap()
                 .len(),
-            end
+            end as u64
         );
         let expected = 1 + i64::from(point == "segment.after_commit");
         assert_eq!(

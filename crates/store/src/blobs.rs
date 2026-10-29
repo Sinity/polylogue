@@ -13,7 +13,7 @@ pub(crate) use copy::copy_plain;
 
 mod segments;
 pub use segments::Blobs;
-pub(crate) use segments::{insert_extent, load_extent};
+pub(crate) use segments::{insert_extent, load_extent, open_writer};
 
 /// The read operations used by stored chains.
 pub trait PlainBlobs {

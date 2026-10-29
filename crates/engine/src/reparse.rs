@@ -324,7 +324,6 @@ fn prepare(
         let reads = ReadPool::with_budget(archive, 1, read_memory)?;
         let stored = match reads.reader()?.stored_chain(&plan.input.id, chain, length) {
             Ok(stored) => stored,
-            Err(polylogue_store::StoreError::InputPending { .. }) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         plan.source = if decoded {

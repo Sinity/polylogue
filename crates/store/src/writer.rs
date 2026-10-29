@@ -287,21 +287,7 @@ impl Writer {
             .then(|| crate::first_build::FirstBuild::load(&index))
             .transpose()?;
         let segment = if sinex.is_none() {
-            let end: u64 = archive_conn
-                .query_row(
-                    "SELECT committed_end FROM segment WHERE name=?1",
-                    ["segments/current.hb"],
-                    |r| r.get(0),
-                )
-                .optional()?
-                .unwrap_or(0);
-            Some(hashed_blobs::SegmentWriter::open(
-                &archive.root,
-                "segments/current.hb",
-                end,
-                &[],
-                0o600,
-            )?)
+            Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
             None
         };
@@ -868,10 +854,27 @@ impl Inner {
                 "Sinex bytes reached local segment writer".into(),
             ));
         };
-        let writer = self.segment.as_mut().ok_or_else(|| {
-            StoreError::Invalid("segment writer requires reopen after failed commit".into())
-        })?;
-        let synced = writer.append_group(vec![*prepared], |_| Ok(None))?.wait()?;
+        if self.segment.is_none() {
+            self.segment = Some(crate::blobs::open_writer(
+                &self.archive,
+                &self.location.root,
+            )?);
+        }
+        let writer = self.segment.as_mut().expect("opened segment writer");
+        let pending = match writer.append_group(vec![*prepared], |_| Ok(None)) {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.segment.take();
+                return Err(error.into());
+            }
+        };
+        let synced = match pending.wait() {
+            Ok(synced) => synced,
+            Err(error) => {
+                self.segment.take();
+                return Err(error.into());
+            }
+        };
         let result = (|| {
             let tx = self.archive.transaction()?;
             for extent in &synced.extents {
@@ -886,6 +889,10 @@ impl Inner {
             self.segment.take();
             return Err(error);
         }
+        self.report.segment_syncs += synced.metrics.syncs;
+        self.report.segment_bytes_written += synced.metrics.appended_bytes;
+        self.report.blobs_appended += synced.metrics.appended_materials;
+        self.report.blobs_deduplicated += synced.metrics.deduplicated_materials;
         self.segment
             .as_mut()
             .expect("appended writer")
