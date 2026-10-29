@@ -35,6 +35,7 @@ pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod rows;
+mod signals;
 mod source_commit;
 mod source_snapshot;
 use order::RecordOrder;

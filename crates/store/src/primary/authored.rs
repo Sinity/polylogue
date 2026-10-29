@@ -153,6 +153,7 @@ pub fn prepare(
 
 /// Checks internal frozen history consistency without applying or executing it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
+    crate::signals::validate(prepared)?;
     fn events<T: PartialEq>(
         all: &[T],
         added: &[T],
@@ -300,6 +301,15 @@ fn insert_request(
     Ok(())
 }
 
+pub(crate) fn store_delivery(
+    conn: &Connection,
+    value: &polylogue_model::authored::DeliveryRecord,
+    counter: i64,
+    historical: bool,
+) -> Result<()> {
+    records::insert_delivery(conn, value, counter, historical)
+}
+
 pub(crate) fn capture(
     conn: &Connection,
     request: &UserRequest,
@@ -316,6 +326,8 @@ pub fn clear(conn: &Connection) -> Result<()> {
         "variant",
         "note_target",
         "note_relation",
+        "signal_event",
+        "signal_state",
         "delivery_event",
         "chat_action_attachment",
         "chat_action_event",
@@ -366,4 +378,24 @@ impl crate::Reader<'_> {
     ) -> Result<()> {
         visit(self.conn()?, accept)
     }
+}
+
+/// Uses the logical source views of a Reader in either storage mode.
+pub(crate) fn signal_outbox(
+    conn: &Connection,
+    id: &str,
+) -> Result<polylogue_model::signal::StoredOutbox> {
+    let record = records::delivery_from(conn, Source::Cache, id)?;
+    let metadata = record
+        .signal
+        .ok_or_else(|| StoreError::Invalid("delivery has no signal metadata".into()))?;
+    Ok(polylogue_model::signal::StoredOutbox {
+        id: record.id,
+        at: record.at,
+        outbox: polylogue_model::signal::Outbox {
+            record: record.prepared,
+            metadata,
+        },
+        events: crate::signals::events(conn, Source::Cache, id)?,
+    })
 }

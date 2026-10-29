@@ -3,6 +3,7 @@ use super::*;
 use polylogue_model::authored::*;
 use polylogue_model::user::{BackfillJob, ChatAction, UserWrite};
 use polylogue_model::{Author, Note, NoteKind, Reference, Relation, Timestamp};
+use std::collections::BTreeSet;
 
 fn event_index(n: i64) -> Result<usize> {
     usize::try_from(
@@ -140,7 +141,14 @@ fn delivery_events(
     id: &str,
     counter: Option<i64>,
 ) -> Result<Vec<DeliveryEvent>> {
-    let source = Source::of(conn)?;
+    delivery_events_from(conn, Source::of(conn)?, id, counter)
+}
+fn delivery_events_from(
+    conn: &Connection,
+    source: Source,
+    id: &str,
+    counter: Option<i64>,
+) -> Result<Vec<DeliveryEvent>> {
     let mut query =
         source.sql("SELECT what,at,detail,request FROM @source.delivery_event WHERE delivery=?1");
     if counter.is_some() {
@@ -166,7 +174,9 @@ fn delivery_events(
     Ok(events)
 }
 fn delivery(conn: &Connection, id: &str) -> Result<DeliveryRecord> {
-    let source = Source::of(conn)?;
+    delivery_from(conn, Source::of(conn)?, id)
+}
+pub(super) fn delivery_from(conn: &Connection, source: Source, id: &str) -> Result<DeliveryRecord> {
     struct DeliveryRow {
         recipient_kind: String,
         recipient_id: Option<String>,
@@ -184,6 +194,7 @@ fn delivery(conn: &Connection, id: &str) -> Result<DeliveryRecord> {
         |r| Ok(DeliveryRow { recipient_kind: r.get(0)?, recipient_id: r.get(1)?, sender: r.get(2)?, event: r.get(3)?, cwd: r.get(4)?, at: r.get(5)?, body: r.get(6)?, refs: r.get(7)?, left_out: r.get(8)? }),
     )?;
     Ok(DeliveryRecord {
+        signal: crate::signals::metadata(conn, source, id)?,
         id: id.into(),
         prepared: polylogue_model::user::Delivery {
             recipient_kind,
@@ -196,7 +207,7 @@ fn delivery(conn: &Connection, id: &str) -> Result<DeliveryRecord> {
             left_out: serde_json::from_str(&left_out)?,
         },
         at: time(at)?,
-        events: delivery_events(conn, id, None)?,
+        events: delivery_events_from(conn, source, id, None)?,
     })
 }
 
@@ -222,7 +233,16 @@ pub(super) fn capture(
     let touched = |table: &str, event_table: &str, column: &str| -> Result<Vec<String>> {
         Ok(conn.prepare(&source.sql(&format!("SELECT id FROM @source.{table} WHERE commit_seq=?1 UNION SELECT {column} FROM @source.{event_table} WHERE commit_seq=?1 ORDER BY 1")))?.query_map([counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?)
     };
-    for id in touched("delivery", "delivery_event", "delivery")? {
+    let mut delivery_ids: BTreeSet<String> = touched("delivery", "delivery_event", "delivery")?
+        .into_iter()
+        .collect();
+    delivery_ids.extend(crate::signals::capture(
+        conn,
+        request,
+        counter,
+        &mut effect,
+    )?);
+    for id in delivery_ids {
         effect.deliveries.push(DeliveryChange {
             delivery: delivery(conn, &id)?,
             added_events: delivery_events(conn, &id, Some(counter))?,
@@ -315,7 +335,12 @@ fn insert_kept(conn: &Connection, value: &KeptResult) -> Result<()> {
     conn.execute(&source.sql("INSERT INTO @source.kept_result(id,name,query,ran_at,read_at,rows_json) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.name,value.query,value.ran_at.unix_ms(),value.read_at,value.rows_json])?;
     Ok(())
 }
-fn insert_delivery(conn: &Connection, value: &DeliveryRecord, counter: i64) -> Result<()> {
+pub(super) fn insert_delivery(
+    conn: &Connection,
+    value: &DeliveryRecord,
+    counter: i64,
+    historical: bool,
+) -> Result<()> {
     let source = Source::of(conn)?;
     let d = &value.prepared;
     let existing: bool = conn
@@ -323,12 +348,26 @@ fn insert_delivery(conn: &Connection, value: &DeliveryRecord, counter: i64) -> R
         .exists([&value.id])?;
     if existing {
         let old = delivery(conn, &value.id)?;
-        if old.prepared != value.prepared || old.at != value.at {
+        let mut old_signal = old.signal;
+        let mut new_signal = value.signal.clone();
+        for signal in [&mut old_signal, &mut new_signal].into_iter().flatten() {
+            signal.execution = ExecutionEligibility::Historical;
+        }
+        if old.prepared != value.prepared || old.at != value.at || old_signal != new_signal {
             return Err(StoreError::Conflict(value.id.clone()));
         }
         return Ok(());
     }
     conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender,d.event,d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],i64::try_from(d.text.len()).map_err(|_|StoreError::Invalid("delivery size is out of range".into()))?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter])?;
+    if let Some(mut signal) = value.signal.clone() {
+        if historical {
+            signal.execution = ExecutionEligibility::Historical;
+        }
+        conn.execute(
+            &source.sql("UPDATE @source.delivery SET signal=?2 WHERE id=?1"),
+            params![value.id, pack(&signal)?],
+        )?;
+    }
     Ok(())
 }
 fn append_delivery(
@@ -488,13 +527,14 @@ pub(super) fn apply(
         insert_kept(conn, value)?;
     }
     for value in &effect.deliveries {
-        insert_delivery(conn, &value.delivery, counter)?;
+        insert_delivery(conn, &value.delivery, counter, historical)?;
         append_delivery(conn, &value.delivery.id, &value.delivery.events, counter)?;
     }
     for value in &effect.chats {
         insert_chat(conn, &value.action, counter, historical)?;
         append_chat(conn, &value.action.id, &value.action.events, counter)?;
     }
+    crate::signals::apply(conn, effect, counter, historical)?;
     for value in &effect.backfills {
         insert_backfill(conn, &value.job, counter, historical)?;
         append_backfill(conn, &value.job.id, &value.job.events, counter)?;
@@ -527,6 +567,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
             copy(from, to, &id)?;
         }
     }
+    crate::signals::copy(from, to)?;
     let sql=source.sql("SELECT id,content_hash,created_at,request,outcome,effect,imports FROM @source.client_request ORDER BY id");
     let mut statement = from.prepare(&sql)?;
     let mut rows = statement.query([])?;
@@ -563,7 +604,7 @@ fn copy_kept(from: &Connection, to: &Connection, id: &str) -> Result<()> {
 }
 fn copy_delivery(from: &Connection, to: &Connection, id: &str) -> Result<()> {
     let value = delivery(from, id)?;
-    insert_delivery(to, &value, 0)?;
+    insert_delivery(to, &value, 0, false)?;
     append_delivery(to, id, &value.events, 0)
 }
 fn copy_chat(from: &Connection, to: &Connection, id: &str) -> Result<()> {

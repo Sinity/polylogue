@@ -64,6 +64,22 @@ pub fn start(text: &str) -> TestDaemon {
 }
 
 pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
+    start_with_clock_and_workers(
+        text,
+        workers,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    )
+}
+
+pub(crate) fn start_with_clock(text: &str, clock: polylogue_model::WallClock) -> TestDaemon {
+    start_with_clock_and_workers(text, 2, clock)
+}
+
+fn start_with_clock_and_workers(
+    text: &str,
+    workers: usize,
+    clock: polylogue_model::WallClock,
+) -> TestDaemon {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let project = home.join(".claude/projects/-p");
@@ -75,6 +91,7 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
     .unwrap();
     let mut config = engine_config(home.clone());
     config.home = home.clone();
+    config.clock = clock;
     config.tool_dirs.clear();
     config.workers = workers;
     let runtime = start_runtime(
@@ -102,6 +119,10 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
 }
 
 impl TestDaemon {
+    pub(crate) fn pause_signals(&mut self) {
+        self.runtime.pause_signals().unwrap();
+    }
+
     /// Waits until `status` satisfies `ok` and then until the loop is idle,
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.
