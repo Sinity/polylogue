@@ -16,7 +16,7 @@
 //! and their parent session, and the rest is accounted as copied.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 pub mod database;
 mod fields;
@@ -723,6 +723,10 @@ impl Rollout {
         {
             out.background.push(BackgroundUpdate {
                 result_at: at.map(crate::time::SourceTime::timestamp),
+                result_at_evidence: at.map_or(
+                    polylogue_model::TimeEvidence::UNKNOWN,
+                    crate::time::SourceTime::evidence,
+                ),
                 reported_duration_ms: None,
                 session: session.clone(),
                 task_id: handle.clone(),
@@ -789,6 +793,10 @@ impl Rollout {
                     if call.answered {
                         out.background.push(BackgroundUpdate {
                             result_at: at.map(crate::time::SourceTime::timestamp),
+                            result_at_evidence: at.map_or(
+                                polylogue_model::TimeEvidence::UNKNOWN,
+                                crate::time::SourceTime::evidence,
+                            ),
                             reported_duration_ms: done.duration_ms,
                             session,
                             task_id: id.to_owned(),
@@ -944,6 +952,10 @@ impl Rollout {
                     {
                         out.background.push(BackgroundUpdate {
                             result_at: at.map(crate::time::SourceTime::timestamp),
+                            result_at_evidence: at.map_or(
+                                polylogue_model::TimeEvidence::UNKNOWN,
+                                crate::time::SourceTime::evidence,
+                            ),
                             reported_duration_ms: done.duration_ms,
                             session,
                             task_id: id.to_owned(),
