@@ -214,7 +214,7 @@ fn no_parser_capture_keeps_its_reading_version_without_replaying_raw_bytes() {
             .unwrap();
         assert_eq!(saved.reading_version, origin.reading_version());
         assert_eq!(saved.checkpoint, None);
-        let rows=reader.query("SELECT status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",&[serde_json::json!(input)]).unwrap();
+        let rows=reader.query("SELECT status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",&[polylogue_store::read::SqlValue::Text(input)]).unwrap();
         assert_eq!(rows[0]["status"], "no_parser_yet");
     }
 }
