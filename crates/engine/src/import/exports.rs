@@ -229,6 +229,13 @@ impl Engine {
         parse.order_from = Some(order_from);
         parse.reset = reset;
         parse.reading_version = plan.origin.reading_version();
+        if done {
+            parse.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
+                parse.reading_version.clone(),
+                parse.parsed_upto,
+                None,
+            ));
+        }
         if done && plan.origin.is_row_dump(&plan.path) {
             let pool::Bytes::Stored(chain) = &plan.source else {
                 return Err(
