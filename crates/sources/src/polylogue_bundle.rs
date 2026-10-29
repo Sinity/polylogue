@@ -12,7 +12,7 @@ use std::path::Path;
 /// Stream canonical record values, or an inventory-named array of record values.
 /// Only one record is buffered; the manifest and inventory are validated by ingress.
 pub fn visit(
-    reader: &mut dyn crate::export::Input,
+    reader: &mut dyn std::io::BufRead,
     mut accept: impl FnMut(Range<u64>, Record, &[u8]) -> Result<(), String>,
 ) -> Result<ScanStats, ScanError> {
     let mut prefix = Vec::new();

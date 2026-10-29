@@ -145,7 +145,8 @@ impl Engine {
                     if executed.contains(&id) {
                         continue;
                     }
-                    if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
+                    let progress = self.reads.reader()?.input_progress(&id)?;
+                    if let Some(progress) = progress {
                         let current = polylogue_model::authored::ImportAttribution {
                             machine: self.config.machine.clone(),
                             input: id,
