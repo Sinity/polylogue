@@ -172,13 +172,23 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
     ));
     let source = "tool_calls | group by day(at), tool | agg count, sum:duration, p90:duration, count_distinct:session | sort by count desc | where count >= 3 | limit 5 | offset 10";
     let mut catalog = crate::catalog::catalog(&[], &[]);
-    catalog.units.iter_mut().find(|unit| unit.name == "tool_calls").unwrap().fields.push(query_language::catalog::Field {
-        name: "duration".into(),
-        kind: query_language::catalog::FieldKind::Duration,
-        ..Default::default()
-    });
+    catalog
+        .units
+        .iter_mut()
+        .find(|unit| unit.name == "tool_calls")
+        .unwrap()
+        .fields
+        .push(query_language::catalog::Field {
+            name: "duration".into(),
+            kind: query_language::catalog::FieldKind::Duration,
+            ..Default::default()
+        });
     let query = with_catalog(source, &catalog).unwrap();
-    assert_eq!(parse(source).unwrap_err().kind(), "unknown_field", "elapsed duration has no product producer yet");
+    assert_eq!(
+        parse(source).unwrap_err().kind(),
+        "unknown_field",
+        "elapsed duration has no product producer yet"
+    );
     assert_eq!(query.stages.len(), 6);
     let StageKind::Aggregate { aggregates } = &query.stages[1].kind else {
         panic!()

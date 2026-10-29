@@ -492,10 +492,18 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             };
             match d.warm.completion(&reader, &position) {
                 Ok(data) => {
-                    if let Err(error) = crate::completion_catalog::publish(&d.archive.root, &position, &data, now_ms()) {
+                    if let Err(error) = crate::completion_catalog::publish(
+                        &d.archive.root,
+                        &position,
+                        &data,
+                        now_ms(),
+                    ) {
                         return self::error("completion_catalog", error);
                     }
-                    ok(super::warm::completions(&data, &word).into_iter().map(|(value, help)| serde_json::json!({"value":value,"help":help})).collect::<Vec<_>>())
+                    ok(super::warm::completions(&data, &word)
+                        .into_iter()
+                        .map(|(value, help)| serde_json::json!({"value":value,"help":help}))
+                        .collect::<Vec<_>>())
                 }
                 Err(error) => self::error("store", error),
             }

@@ -28,7 +28,7 @@
 use crate::embeddings::Provider;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{self, Loaded, Similarity};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -98,7 +98,11 @@ pub struct Completion {
 }
 impl Default for Completion {
     fn default() -> Self {
-        Self { catalog: polylogue_query::catalog::catalog(&[], &[]), values: BTreeMap::new(), sessions: vec![] }
+        Self {
+            catalog: polylogue_query::catalog::catalog(&[], &[]),
+            values: BTreeMap::new(),
+            sessions: vec![],
+        }
     }
 }
 
@@ -442,8 +446,14 @@ fn count(reader: &Reader<'_>, position: &str) -> Result<Counted, String> {
 
 /// Values completion offers, read from the index and the archive.
 fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreError> {
-    let origins = polylogue_sources::origin::ORIGINS.iter().map(|origin| origin.name.to_owned()).collect::<Vec<_>>();
-    let mut data = Completion { catalog: polylogue_query::catalog::catalog(&origins, &crate::commands::command_words()), ..Completion::default() };
+    let origins = polylogue_sources::origin::ORIGINS
+        .iter()
+        .map(|origin| origin.name.to_owned())
+        .collect::<Vec<_>>();
+    let mut data = Completion {
+        catalog: polylogue_query::catalog::catalog(&origins, &crate::commands::command_words()),
+        ..Completion::default()
+    };
     let column = |sql: &str,
                   field: &str,
                   out: &mut BTreeMap<String, Vec<String>>|
@@ -492,7 +502,10 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
         &mut values,
     )?;
     for origin in polylogue_sources::origin::ORIGINS {
-        values.entry("origin".into()).or_default().push(origin.name.into());
+        values
+            .entry("origin".into())
+            .or_default()
+            .push(origin.name.into());
     }
     data.values = values;
     for row in reader.query(
@@ -513,13 +526,22 @@ fn completion(reader: &Reader<'_>) -> Result<Completion, polylogue_store::StoreE
 
 /// Complete the full source at a byte offset using the shared grammar. Only
 /// this temporary completion catalog receives observed values.
-pub fn complete_at(data: &Completion, text: &str, position: usize) -> Vec<query_language::complete::Completion> {
+pub fn complete_at(
+    data: &Completion,
+    text: &str,
+    position: usize,
+) -> Vec<query_language::complete::Completion> {
     let mut catalog = data.catalog.clone();
     for unit in &mut catalog.units {
         for (id, _) in &data.sessions {
             if let Some((origin, _)) = id.split_once(':')
-                && !unit.fields.iter().any(|field| field.name == origin) {
-                unit.fields.push(query_language::catalog::Field { name: origin.into(), kind: query_language::catalog::FieldKind::Reference, ..Default::default() });
+                && !unit.fields.iter().any(|field| field.name == origin)
+            {
+                unit.fields.push(query_language::catalog::Field {
+                    name: origin.into(),
+                    kind: query_language::catalog::FieldKind::Reference,
+                    ..Default::default()
+                });
             }
         }
     }
@@ -528,37 +550,66 @@ pub fn complete_at(data: &Completion, text: &str, position: usize) -> Vec<query_
             let short = field.name.strip_prefix("session.").unwrap_or(&field.name);
             if let Some(values) = data.values.get(short) {
                 for value in values {
-                    if !value.chars().any(char::is_control) && !field.values.contains(value) { field.values.push(value.clone()); }
+                    if !value.chars().any(char::is_control) && !field.values.contains(value) {
+                        field.values.push(value.clone());
+                    }
                 }
             }
             for (id, _) in &data.sessions {
                 if let Some((origin, native)) = id.split_once(':')
-                    && field.name == origin && !id.chars().any(char::is_control) { field.values.push(native.into()); }
+                    && field.name == origin
+                    && !id.chars().any(char::is_control)
+                {
+                    field.values.push(native.into());
+                }
             }
         }
     }
     // A complete reference is one legal leading atom. These names are used
     // only for suggestions and never become the parser's command vocabulary.
     for (id, _) in &data.sessions {
-        if !id.chars().any(char::is_control) { catalog.commands.push(id.clone()); }
+        if !id.chars().any(char::is_control) {
+            catalog.commands.push(id.clone());
+        }
     }
     let mut candidates = query_language::complete::complete(text, position, &catalog);
     for candidate in &mut candidates {
-        let completed = format!("{}{}{}", &text[..candidate.replace.start], candidate.value, &text[candidate.replace.end..]);
+        let completed = format!(
+            "{}{}{}",
+            &text[..candidate.replace.start],
+            candidate.value,
+            &text[candidate.replace.end..]
+        );
         if let Some((_, title)) = data.sessions.iter().find(|(id, _)| id == &completed) {
             candidate.kind = query_language::complete::CompletionKind::Value;
             candidate.help = polylogue_render::terminal::escape(title);
-        } else { candidate.help = polylogue_render::terminal::escape(&candidate.help); }
+        } else {
+            candidate.help = polylogue_render::terminal::escape(&candidate.help);
+        }
     }
-    candidates.retain(|candidate| !candidate.value.chars().any(char::is_control) && polylogue_render::terminal::escape(&candidate.value) == candidate.value);
+    candidates.retain(|candidate| {
+        !candidate.value.chars().any(char::is_control)
+            && polylogue_render::terminal::escape(&candidate.value) == candidate.value
+    });
     candidates
 }
 
 /// The command's string candidates are replacements applied to its full text.
 pub fn completions(data: &Completion, text: &str) -> Vec<(String, String)> {
-    complete_at(data, text, text.len()).into_iter().map(|candidate| {
-        (format!("{}{}{}", &text[..candidate.replace.start], candidate.value, &text[candidate.replace.end..]), candidate.help)
-    }).collect()
+    complete_at(data, text, text.len())
+        .into_iter()
+        .map(|candidate| {
+            (
+                format!(
+                    "{}{}{}",
+                    &text[..candidate.replace.start],
+                    candidate.value,
+                    &text[candidate.replace.end..]
+                ),
+                candidate.help,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
