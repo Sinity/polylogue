@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::io::{self, Write};
 
 pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
-    if format == Format::Json || data.get("fields").is_some() {
+    if matches!(format, Format::Json | Format::Jsonl) || data.get("fields").is_some() {
         write!(out, "{}", crate::terminal::json(data, true))?;
         return writeln!(out);
     }

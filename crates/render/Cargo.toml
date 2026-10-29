@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-render"
-description = "Views and formats, reading for models, masking on output"
+description = "Canonical read layout and streaming text, Markdown, HTML and JSON encoders"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,11 @@ polylogue-model.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 jiff.workspace = true
+web-shell.workspace = true
+maud = "0.27"
+http = "1"
+base64 = "0.22"
+pulldown-cmark = "0.13"
 
 [lints]
 workspace = true
