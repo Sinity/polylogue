@@ -80,10 +80,11 @@ impl RowWriter<'_, '_> {
             .prepare_cached("INSERT OR IGNORE INTO event_value(pk,hash,body) VALUES (?1,?2,?3)")?
             .execute(params![value.key.pk, value.hash.as_slice(), value.body])?;
         let imported = &source.imported;
-        self.tx.prepare_cached("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,seq,source_start,source_end,after_message_id,at,fields,imported_provenance)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
-            ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at,fields=excluded.fields,imported_provenance=excluded.imported_provenance")?
-            .execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank,source.session,source.seq,source.start,source.end,source.after,source.at,source.fields,imported])?;
+        let admitted = source.admitted.or(self.source_admitted);
+        self.tx.prepare_cached("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,seq,source_start,source_end,after_message_id,at,fields,imported_provenance,admitted)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+            ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at,fields=excluded.fields,imported_provenance=excluded.imported_provenance,admitted=excluded.admitted")?
+            .execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank,source.session,source.seq,source.start,source.end,source.after,source.at,source.fields,imported,admitted])?;
         Ok(())
     }
 }

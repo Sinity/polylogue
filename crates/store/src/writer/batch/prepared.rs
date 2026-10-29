@@ -45,6 +45,13 @@ impl PreparedRows {
                 ));
             }
         }
+        for (&index, &receipt) in &output.event_receipts {
+            if index >= output.events.len() || receipt == 0 || i64::try_from(receipt).is_err() {
+                return Err(StoreError::Invalid(
+                    "invalid canonical event admission receipt".into(),
+                ));
+            }
+        }
         for (&index, &order) in &output.message_order {
             if index >= output.messages.len() || i64::try_from(order).is_err() {
                 return Err(StoreError::Invalid("invalid imported message order".into()));

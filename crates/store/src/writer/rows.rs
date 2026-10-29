@@ -104,6 +104,14 @@ fn apply_rows(
     }
     let rows = RowWriter {
         tx,
+        source_admitted: if confirmed {
+            None
+        } else {
+            receipt
+                .or(p.receipt.as_ref())
+                .map(|r| r.sequence)
+                .filter(|n| *n > 0)
+        },
         input_pk,
         chain,
         rank: i64::from(b.input.arrival_rank),
@@ -334,6 +342,7 @@ struct StoredBlock<'a> {
 }
 
 pub(super) struct RowWriter<'a, 't> {
+    source_admitted: Option<i64>,
     tx: &'a Transaction<'t>,
     input_pk: i64,
     chain: i64,

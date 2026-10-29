@@ -784,45 +784,102 @@ fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
     );
 }
 
+fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch {
+    let (blob, file) = w.archive.prepare_blob(bytes).unwrap();
+    input.new_blob = Some(blob);
+    input.length = bytes.len() as u64;
+    for step in &mut input.parse {
+        step.start = 0;
+        step.parsed_upto = input.length;
+        step.at_end = true;
+    }
+    let mut retry = input.clone();
+    let stored = w
+        .writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch: input,
+                files: file.into_iter().collect(),
+            }],
+            Arc::new(w.archive.blobs().unwrap()),
+        )
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .unwrap();
+    retry.change = Change::Reparse {
+        chain: stored.chain,
+    };
+    retry.new_blob = None;
+    retry.observation = None;
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    retry
+}
+
 #[test]
 fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     let first = test_archive();
-    let mut conn = crate::archive::open_write(&first.archive.index_db(), 1).unwrap();
-    let tx = conn.transaction().unwrap();
     let mut input = batch("original", 0, 0, Vec::new(), &[]);
     let event = Event {
-        at_quality: polylogue_model::TimeQuality::Unknown,
-        at_precision: None,
+        at_quality: polylogue_model::TimeQuality::Intrinsic,
+        at_precision: Some(polylogue_model::Precision::Instant),
         at_until: None,
         session: None,
         kind: "input.report".into(),
         at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z"),
         after: None,
-        range: Some((3, 17)),
+        range: Some((0, 1000)),
         data: serde_json::json!({"remaining":42}),
     };
     input.parse[0].output.events.push(event.clone());
-    write_test_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
-    let id: String = tx
+    input.parse[0].counts = counts(1);
+    let mut native = serde_json::to_vec(&event).unwrap();
+    assert!(native.len() <= 1000);
+    native.resize(1000, b' ');
+    commit_event_bytes(&first, input, &native);
+    let conn = crate::archive::open_read(&first.archive.index_db()).unwrap();
+    let id: String = conn
         .query_row("SELECT id FROM event", [], |row| row.get(0))
         .unwrap();
-    tx.commit().unwrap();
+    let source = crate::archive::open_read(&first.archive.archive_db()).unwrap();
+    let admitted: i64 = source
+        .query_row(
+            "SELECT commit_seq FROM extent WHERE input='original' AND offset=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    commit_event_bytes(
+        &first,
+        batch("unrelated", 0, 0, Vec::new(), &[]),
+        b"         ",
+    );
     let reads = ReadPool::open(&first.archive).unwrap();
-    let exported = reads.reader().unwrap().event_record(&id).unwrap().unwrap();
+    let reader = reads.reader().unwrap();
+    let exported = reader.event_record(&id).unwrap().unwrap();
     assert_eq!(exported.event, event);
+    assert_eq!(exported.commit, admitted as u64);
+    assert!(reader.change_position().unwrap().index > admitted);
+    drop(reader);
+    let wire = serde_json::to_vec(&exported).unwrap();
+    let imported: polylogue_model::bundle::InputEventRecord =
+        serde_json::from_slice(&wire).unwrap();
+    imported.validate().unwrap();
     let second = test_archive();
-    let mut conn = crate::archive::open_write(&second.archive.index_db(), 1).unwrap();
     let mut portable = batch("bundle-local", 2, 0, Vec::new(), &[]);
-    portable.parse[0].output.events.push(exported.event.clone());
+    portable.input.format = polylogue_model::bundle::FORMAT.into();
+    portable.parse[0].output.events.push(imported.event);
     portable.parse[0]
         .output
         .imported_events
-        .insert(0, exported.identity.clone());
-    for counter in [1, 2] {
-        let tx = conn.transaction().unwrap();
-        write_test_rows(&tx, &portable, &portable.parse[0], 1, counter, None).unwrap();
-        tx.commit().unwrap();
-    }
+        .insert(0, imported.identity);
+    portable.parse[0].counts = counts(1);
+    let retry = commit_event_bytes(&second, portable, &wire);
+    second.writer.send(retry).unwrap();
+    assert!(second.writer.flush().unwrap().errors.is_empty());
     let reads = ReadPool::open(&second.archive).unwrap();
     let reexported = reads.reader().unwrap().event_record(&id).unwrap().unwrap();
     assert_eq!(reexported.identity.id, id);
@@ -841,8 +898,9 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .iter()
             .any(|claim| claim.input == "bundle-local"
                 && claim.source_start == Some(0)
-                && claim.source_end == Some(100))
+                && claim.source_end == Some(wire.len() as u64))
     );
+    let conn = crate::archive::open_read(&second.archive.index_db()).unwrap();
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM input_ref WHERE id='original'",
@@ -857,51 +915,50 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .unwrap(),
         1
     );
-    let tx = conn.transaction().unwrap();
-    let mut competing = batch("preferred-local", 0, 0, Vec::new(), &[]);
     let mut newer = event.clone();
     newer.kind = "input.revised".into();
     newer.range = Some((500, 999));
     newer.data = serde_json::json!({"remaining":7});
+    let identity = polylogue_model::bundle::ImportedEventIdentity {
+        id: id.clone(),
+        sources: vec![polylogue_model::bundle::EventSourceClaim {
+            input: "newer-original".into(),
+            source: "native".into(),
+            source_chain: 1,
+            source_start: Some(500),
+            source_end: Some(999),
+        }],
+    };
+    let record = polylogue_model::bundle::InputEventRecord {
+        reference: format!("event:{id}"),
+        commit: 17,
+        identity: identity.clone(),
+        event: newer.clone(),
+    };
+    let wire = serde_json::to_vec(&record).unwrap();
+    let mut competing = batch("preferred-local", 0, 0, Vec::new(), &[]);
+    competing.input.format = polylogue_model::bundle::FORMAT.into();
     competing.parse[0].output.events.push(newer.clone());
-    competing.parse[0].output.imported_events.insert(
-        0,
-        polylogue_model::bundle::ImportedEventIdentity {
-            id: id.clone(),
-            sources: vec![polylogue_model::bundle::EventSourceClaim {
-                input: "newer-original".into(),
-                source: "native".into(),
-                source_chain: 1,
-                source_start: Some(500),
-                source_end: Some(999),
-            }],
-        },
-    );
-    write_test_rows(&tx, &competing, &competing.parse[0], 1, 3, None).unwrap();
+    competing.parse[0]
+        .output
+        .imported_events
+        .insert(0, identity);
+    competing.parse[0].counts = counts(1);
+    let retry = commit_event_bytes(&second, competing, &wire);
     assert_eq!(
-        tx.query_row("SELECT count(*) FROM event_source", [], |r| r
+        conn.query_row("SELECT count(*) FROM event_source", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         2
     );
     assert_eq!(
-        tx.query_row("SELECT count(*) FROM event_value", [], |r| r
+        conn.query_row("SELECT count(*) FROM event_value", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         2
-    );
-    tx.commit().unwrap();
-    assert_eq!(
-        reads
-            .reader()
-            .unwrap()
-            .event_record(&id)
-            .unwrap()
-            .unwrap()
-            .event,
-        newer
     );
     let selected = reads.reader().unwrap().event_record(&id).unwrap().unwrap();
+    assert_eq!(selected.event, newer);
     assert!(
         selected
             .identity
@@ -916,11 +973,11 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .iter()
             .any(|claim| claim.input == "newer-original")
     );
-
-    let tx = conn.transaction().unwrap();
-    let empty = batch("preferred-local", 0, 0, Vec::new(), &[]);
-    write_test_rows(&tx, &empty, &empty.parse[0], 1, 4, None).unwrap();
-    tx.commit().unwrap();
+    let mut empty = retry;
+    empty.parse[0].output = Output::default();
+    empty.parse[0].counts = counts(0);
+    second.writer.send(empty).unwrap();
+    assert!(second.writer.flush().unwrap().errors.is_empty());
     assert_eq!(
         reads
             .reader()
@@ -1043,8 +1100,8 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     };
     event.set_time(at, evidence).unwrap();
     input.parse[0].output.events.push(event.clone());
-    w.writer.send(input).unwrap();
-    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let bytes = serde_json::to_vec(&input.parse[0].output).unwrap();
+    commit_event_bytes(&w, input, &bytes);
     let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     conn.execute_batch("UPDATE message SET at=0;UPDATE session SET started_at=0;UPDATE event SET at=0;UPDATE document_source SET source_time=0;").unwrap();
     let reads = ReadPool::open(&w.archive).unwrap();
@@ -1074,8 +1131,8 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
         end: 3,
         document: earlier,
     });
-    w.writer.send(other).unwrap();
-    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let bytes = serde_json::to_vec(&other.parse[0].output).unwrap();
+    commit_event_bytes(&w, other, &bytes);
     assert_eq!(
         reads.reader().unwrap().document(&document.id).unwrap(),
         Some(document)
@@ -1132,4 +1189,81 @@ fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection(
         1
     );
     tx.commit().unwrap();
+}
+
+#[test]
+fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_mappings() {
+    let w = test_archive();
+    let event = Event {
+        session: None,
+        kind: "retained.event".into(),
+        at: None,
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        after: None,
+        range: Some((0, 1000)),
+        data: serde_json::json!({"retained":true}),
+    };
+    let mut input = batch("retained-source", 0, 0, Vec::new(), &[]);
+    input.parse[0].output.events.push(event);
+    input.parse[0].counts = counts(1);
+    let mut bytes = serde_json::to_vec(&input.parse[0].output.events[0]).unwrap();
+    assert!(bytes.len() <= 1000);
+    bytes.resize(1000, b' ');
+    let mut confirmed = commit_event_bytes(&w, input, &bytes);
+    confirmed.parse[0].output.event_receipts.insert(0, 41);
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let tx = conn.transaction().unwrap();
+    resolve::prepare_index(&tx, &mut confirmed, 1, false).unwrap();
+    let control = crate::wire_shapes::ReadingReceipt {
+        sequence: 777,
+        id: Some("parse-progress-control".into()),
+        observation: None,
+        observed_at_ms: None,
+    };
+    rows::write_confirmed_rows(
+        &tx,
+        &confirmed,
+        &confirmed.parse[0],
+        1,
+        999,
+        None,
+        Some(&control),
+    )
+    .unwrap();
+    let id: String = tx
+        .query_row("SELECT id FROM event", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        tx.query_row("SELECT admitted FROM event_source", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        41
+    );
+    tx.commit().unwrap();
+    let reads = ReadPool::open(&w.archive).unwrap();
+    {
+        let reader = reads.reader().unwrap();
+        assert!(
+            reader
+                .source_commit("retained-source", 1, Some(1000))
+                .unwrap()
+                .unwrap()
+                < 41
+        );
+        assert_eq!(reader.event_record(&id).unwrap().unwrap().commit, 41);
+    }
+    let source = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
+    source
+        .execute("DELETE FROM extent WHERE input='retained-source'", [])
+        .unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(
+        reader
+            .source_commit("retained-source", 1, Some(1000))
+            .unwrap(),
+        None
+    );
+    assert_eq!(reader.event_record(&id).unwrap().unwrap().commit, 41);
 }

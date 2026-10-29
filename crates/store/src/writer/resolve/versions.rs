@@ -595,6 +595,7 @@ pub(super) fn resolve(
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EventChoice {
+    pub admitted: Option<i64>,
     pub kind: String,
     pub fields: Vec<u8>,
     pub imported: String,
@@ -650,7 +651,7 @@ impl Assertions {
             }
             match key.kind {
                 Kind::Event => {
-                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:body.clone(),event:Some(EventChoice {kind:String::new(),fields:Vec::new(),imported:String::new(),value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    let values=index.prepare("SELECT s.input_pk,i.id,s.chain,s.arrival_rank,s.value_pk,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,s.admitted FROM event_source s JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?.query_map([row.pk],|r| {let body=Vec::new();Ok(Assertion {input:r.get(0)?,id:r.get(1)?,chain:r.get(2)?,rank:r.get(3)?,value_pk:r.get(4)?,body:body.clone(),event:Some(EventChoice {admitted:r.get(11)?,kind:String::new(),fields:Vec::new(),imported:String::new(),value_pk:r.get(4)?,input:r.get(0)?,chain:r.get(2)?,session:r.get(5)?,seq:r.get(6)?,start:r.get(7)?,end:r.get(8)?,after:r.get(9)?,at:r.get(10)?,body})})})?.collect::<rusqlite::Result<Vec<_>>>()?;
                     assertions.events.insert(row.pk, values);
                 }
                 Kind::Link => {
@@ -765,6 +766,18 @@ impl Assertions {
                 event.range.or(Some((step.start, step.parsed_upto)))
             };
             let choice = EventChoice {
+                admitted: step
+                    .output
+                    .event_receipts
+                    .get(&i)
+                    .copied()
+                    .map(i64::try_from)
+                    .transpose()
+                    .map_err(|_| {
+                        StoreError::Invalid(
+                            "canonical event admission exceeds SQLite's integer range".into(),
+                        )
+                    })?,
                 kind: event.kind.clone(),
                 fields,
                 imported: serde_json::to_string(&original)?,
