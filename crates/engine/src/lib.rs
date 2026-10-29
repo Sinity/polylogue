@@ -233,14 +233,14 @@ pub struct ImportOptions {
     pub authorship: Option<polylogue_model::authorship::Authorship>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportRefusal {
     pub path: PathBuf,
     pub reason: String,
     pub structures_tried: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportClassification {
     pub path: PathBuf,
     pub origin: Option<String>,
@@ -248,7 +248,7 @@ pub struct ImportClassification {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportPackage {
     pub path: PathBuf,
     pub sessions: u64,
@@ -256,7 +256,7 @@ pub struct ImportPackage {
     pub assets: u64,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportReport {
     pub packages: Vec<ImportPackage>,
     pub refused: Vec<ImportRefusal>,
