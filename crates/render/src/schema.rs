@@ -1,4 +1,4 @@
-//! Offline schema reports contain structure and counts only.
+//! Schema reports contain structure and counts only.
 use crate::Format;
 use serde_json::Value;
 use std::io::{self, Write};
