@@ -279,6 +279,7 @@ pub fn step(
             machine: "m".into(),
             host: "h".into(),
             path: path.into(),
+            path_bytes: path.as_bytes().to_vec(),
             facts: None,
             seen_at_ms: 1,
             import: None,

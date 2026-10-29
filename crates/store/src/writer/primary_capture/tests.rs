@@ -13,6 +13,7 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
                 machine: "machine".into(),
                 host: "host".into(),
                 path: format!("/home/op/{id}"),
+                path_bytes: format!("/home/op/{id}").into_bytes(),
                 facts: None,
                 seen_at_ms: 1,
                 import: None,

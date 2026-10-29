@@ -298,6 +298,7 @@ fn observation_known(
         machine: o.machine.clone(),
         host: o.host.clone(),
         path: o.path.clone(),
+        path_bytes: Some(o.path_bytes.clone()),
         class: class.to_owned(),
         revision,
         chain: None,

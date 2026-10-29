@@ -28,6 +28,7 @@ fn stage(
             machine: "synthetic-machine".into(),
             host: "synthetic-host".into(),
             path: format!("/synthetic/{member}"),
+            path_bytes: format!("/synthetic/{member}").into_bytes(),
             facts: None,
             seen_at_ms: 1,
             container: zip,

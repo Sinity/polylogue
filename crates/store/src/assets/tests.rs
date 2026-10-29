@@ -20,6 +20,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         machine: "synthetic".into(),
         host: "synthetic".into(),
         path: "/synthetic/asset.bin".into(),
+        path_bytes: b"/synthetic/asset.bin".to_vec(),
         facts: None,
         seen_at_ms: 1,
         import: None,

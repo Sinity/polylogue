@@ -24,6 +24,8 @@ pub struct Observation {
     pub machine: String,
     pub host: String,
     pub path: String,
+    /// Exact acquired location bytes; `path` is only its display label.
+    pub path_bytes: Vec<u8>,
     pub facts: Option<FileFacts>,
     pub seen_at_ms: i64,
     /// Membership established by this explicit import, independent of byte deduplication.
