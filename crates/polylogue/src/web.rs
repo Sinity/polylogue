@@ -175,8 +175,8 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/m/{id}", get(reader::message))
         .route("/n/{id}", get(reader::note))
         .route("/auth", get(auth_page).post(auth_exchange))
-        .route("/assets/reader.css", get(css))
-        .route("/assets/reader.js", get(js))
+        .route("/assets/auth.js", get(auth_js))
+        .route("/assets/{*path}", get(asset))
         .route("/assets/live.js", get(live_js))
         .nest("/api/v1", api::routes())
         .layer(middleware::from_fn_with_state(Arc::clone(&web), guard))
@@ -260,37 +260,27 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
         {
             Some(value) => Some(value),
             None => {
-                return json_answer(
+                return web_shell::assets::secure(json_answer(
                     &web,
                     crate::daemon::service::error(
                         "bad_request",
                         "x-polylogue-deadline-ms must be Unix milliseconds",
                     ),
-                );
+                ));
             }
         },
         None => None,
     };
+    let is_asset = req.uri().path().starts_with("/assets/");
     let mut response = READ_LIMIT
         .scope((deadline_ms, cancellation), guarded(web, req, next))
         .await;
-    let h = response.headers_mut();
-    h.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        ),
-    );
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    h.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    if !is_asset {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    web_shell::assets::secure(response)
 }
 
 /// Runs a request on a blocking thread, as the socket would.
@@ -530,18 +520,22 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-async fn css() -> HttpResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("web/assets/reader.css"),
-    )
-        .into_response()
+async fn asset(request: HttpRequest) -> HttpResponse {
+    let (parts, _) = request.into_parts();
+    let request = axum::http::Request::from_parts(parts, ());
+    let theme = web_shell::theme::Theme {
+        stylesheet: Some(include_str!("web/assets/theme.css").into()),
+        fallback_reason: None,
+    };
+    web_shell::assets::serve_with_theme(&request, Some(&theme)).map(axum::body::Body::from)
 }
-
-async fn js() -> HttpResponse {
+async fn auth_js() -> HttpResponse {
     (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("web/assets/reader.js"),
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        include_str!("web/assets/auth.js"),
     )
         .into_response()
 }

@@ -10,6 +10,7 @@ pub mod authorship;
 pub mod batch;
 mod block;
 pub mod bundle;
+pub mod currency;
 pub mod capture;
 pub mod capture_log;
 mod change_position;

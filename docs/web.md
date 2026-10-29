@@ -557,3 +557,11 @@ Checks on Morrow, each a test:
 - Cost since Oct 01: known `$5.86 (exact 5.8626)`, 4 unknown; Oct 04 and Oct 07 hatched.
 - Analysis renders a kept figure with its denominator and hatched unknowns, and a bar opens its rows.
 - Each run stores screenshots of every view at 1,440 and 390 px in light and dark, an accessibility report, a keyboard-only journey, and screencasts usable in the README.
+
+## Read pages and shared shell
+
+The web reader uses the common `web-shell` frame, visual tokens, browser behavior and asset adapter. Product code owns the sign-in exchange and its own view markup. Sign-in removes the token fragment from browser history before sending it in the authenticated POST body; reader interactions use the shared shell script.
+
+Stable session, document and message URLs forward their exact target and read parameters to the command table's read endpoint. Browsers request HTML on that same endpoint; programmatic callers request JSON. The page consumes the typed `ReadPage` and its `ReadDocument`, with no independent message selection, parent walk, outline scan or cursor decoder. Next and previous links use the service's complete HTTP calls. A view switch starts a new invocation, resets the cursor and uses the model's option validation to clear options the new view does not accept.
+
+The recorded read position and the exact `IndexCurrency` observation remain visible. The page performs no synchronous primary-owner status probe. Original source text remains escaped data in every fragment and copied commands retain a runnable invocation.
