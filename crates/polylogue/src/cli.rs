@@ -7,6 +7,7 @@ pub mod changes;
 pub(crate) mod completion;
 pub mod local;
 pub mod print;
+pub(crate) mod write_out;
 pub(crate) mod schema;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
