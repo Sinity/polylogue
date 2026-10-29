@@ -9,12 +9,30 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "event_msg/item_completed.item.process_id": 4,
+      "event_msg/item_completed.item.source": 4,
+      "event_msg/item_completed.item.stderr": 5
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "session": "codex:codex-item-completed",
+        "kind": "session_meta",
+        "at": "2026-09-02T10:00:00Z",
+        "range": [
+          0,
+          120
+        ],
+        "data": {
+          "id": "codex-item-completed",
+          "timestamp": "2026-09-02T10:00:00Z",
+          "cwd": "/repo"
+        }
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
@@ -81,7 +99,8 @@
                 }
               },
               "output": "FAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\n2 failed, 3 passed\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 4000
             }
           ],
           "duration_ms": 4000,
@@ -102,7 +121,17 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 4.0 seconds\nOutput:\n\n2 failed, 3 passed\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 4.0 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "2 failed, 3 passed\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-a",
@@ -145,7 +174,13 @@
                 "reason": "running_in_background"
               },
               "output": "Script running with cell ID 3\nWall time 1.0 seconds\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script running with cell ID 3\nWall time 1.0 seconds\nOutput:\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-b",
@@ -187,7 +222,8 @@
                 "kind": "ok"
               },
               "output": "built 2 targets\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 9000
             }
           ],
           "duration_ms": 9000,
@@ -252,7 +288,8 @@
                 "kind": "ok"
               },
               "output": "12 alpha.py\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 0
             }
           ],
           "duration_ms": 0,
@@ -299,7 +336,8 @@
                 }
               },
               "output": "wc: beta.py: No such file or directory\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 0
             }
           ],
           "duration_ms": 0,
@@ -320,7 +358,13 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-c",
@@ -396,7 +440,13 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-d",

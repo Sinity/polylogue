@@ -311,13 +311,13 @@ impl Resolver {
         let mut latest = BTreeMap::<String, Option<(i64, i64)>>::new();
         for b in batches {
             keys.insert(Key::new(Kind::Input, b.input.id.as_bytes()));
-            let prior = if matches!(b.change, Change::Reparse { .. }) {
+            let prior = if matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 None
             } else {
                 match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?}
             };
             let chain = match (&b.change, b.continues, prior) {
-                (Change::Reparse { chain }, _, _) => *chain,
+                (Change::Reparse { chain } | Change::Observed { chain, .. }, _, _) => *chain,
                 (_, true, Some((_, chain)))
                 | (
                     Change::Appended { .. } | Change::Unchanged | Change::Disappeared,
@@ -326,7 +326,7 @@ impl Resolver {
                 ) => chain,
                 _ => prior.map_or(1, |(number, _)| number + 1),
             };
-            if !matches!(b.change, Change::Reparse { .. }) {
+            if !matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 let number = match (&b.change, b.continues, prior) {
                     (_, true, Some((number, _)))
                     | (Change::Unchanged | Change::Disappeared, _, Some((number, _))) => number,
@@ -399,28 +399,15 @@ impl Resolver {
                 for hash in p.prepared.texts.keys() {
                     keys.insert(Key::new(Kind::Text, hash.as_slice()));
                 }
-                let mut occurrences = BTreeMap::<(u64, u64), u64>::new();
-                for (event, packed) in p.output.events.iter().zip(&p.prepared.events) {
+                let event_ids = p.event_identities(&b.input.id, chain)?;
+                for (index, event) in p.output.events.iter().enumerate() {
                     if let Some(session) = &event.session {
                         keys.insert(Key::new(Kind::Session, session.to_string().into_bytes()));
                     }
                     if let Some(message) = &event.after {
                         keys.insert(Key::new(Kind::Message, message.to_string().into_bytes()));
                     }
-                    let occurrence = if event.session.is_none() {
-                        let next = occurrences
-                            .entry(event.range.unwrap_or_default())
-                            .or_default();
-                        let value = *next;
-                        *next += 1;
-                        value
-                    } else {
-                        0
-                    };
-                    keys.insert(Key::new(
-                        Kind::Event,
-                        event_id(&b.input.id, chain, event, &packed.0, occurrence)?.into_bytes(),
-                    ));
+                    keys.insert(Key::new(Kind::Event, event_ids[index].as_bytes()));
                 }
                 for link in &p.output.links {
                     keys.insert(Key::new(Kind::Link, link_key(link)?));
@@ -478,73 +465,33 @@ impl Resolver {
             return Ok(());
         }
         let archive = crate::archive::open_read(&self.archive.archive_db())?;
-        self.prepare(batches, SourceLookup::Archive(&archive))
+        self.prepare(batches, &archive)
     }
 
-    /// Batches keep their key leases until they are dropped after the transaction
-    /// result. Rebuild the batches from the confirmed facts when retrying a failed
-    /// transaction, so a retry takes a fresh snapshot.
-    pub(crate) fn confirmed(
-        self: &Arc<Self>,
-        batches: &mut [&mut Batch],
-        available: &HashMap<BlobHash, Option<u64>>,
-    ) -> Result<()> {
-        if batches
-            .iter()
-            .any(|batch| !matches!(batch.change, Change::Reparse { .. }))
-        {
-            return Err(StoreError::Invalid(
-                "confirmed readings require explicit input chains".into(),
-            ));
-        }
-        self.prepare(batches, SourceLookup::Confirmed(available))
-    }
-
-    fn prepare(
-        self: &Arc<Self>,
-        batches: &mut [&mut Batch],
-        source: SourceLookup<'_>,
-    ) -> Result<()> {
+    fn prepare(self: &Arc<Self>, batches: &mut [&mut Batch], archive: &Connection) -> Result<()> {
         if batches.iter().all(|batch| batch.parse.is_empty()) {
             return Ok(());
         }
         loop {
             let index = crate::archive::open_read(&self.archive.index_db())?;
-            let (keys, _) = match source {
-                SourceLookup::Archive(archive) => self.gather(batches, &index, archive)?,
-                SourceLookup::Confirmed(_) => self.gather(batches, &index, &index)?,
-            };
+            let (keys, _) = self.gather(batches, &index, archive)?;
             drop(index);
             let lease = self.lease(keys.clone());
             let index = crate::archive::open_read(&self.archive.index_db())?;
             let snapshot = index.unchecked_transaction()?;
-            let (fresh, chains) = match source {
-                SourceLookup::Archive(archive) => self.gather(batches, &snapshot, archive)?,
-                SourceLookup::Confirmed(_) => self.gather(batches, &snapshot, &snapshot)?,
-            };
+            let (fresh, chains) = self.gather(batches, &snapshot, archive)?;
             if fresh != keys {
                 drop(snapshot);
                 drop(lease);
                 continue;
             }
-            match source {
-                SourceLookup::Archive(archive) => {
-                    let pending: HashMap<_, _> = batches
-                        .iter()
-                        .flat_map(|batch| batch.new_blob.iter().chain(&batch.blobs))
-                        .map(|blob| (blob.hash, blob.size))
-                        .collect();
-                    for batch in batches.iter_mut() {
-                        attachments::normalize(batch, archive, &pending)?;
-                    }
-                }
-                SourceLookup::Confirmed(available) => {
-                    for batch in batches.iter_mut() {
-                        for step in &mut batch.parse {
-                            attachments::normalize_known(step, available)?;
-                        }
-                    }
-                }
+            let pending: HashMap<_, _> = batches
+                .iter()
+                .flat_map(|batch| batch.new_blob.iter().chain(&batch.blobs))
+                .map(|blob| (blob.hash, blob.size))
+                .collect();
+            for batch in batches.iter_mut() {
+                attachments::normalize(batch, archive, &pending)?;
             }
             let mut resolved = ResolvedKeys::default();
             for key in keys {
@@ -569,12 +516,6 @@ impl Resolver {
             return Ok(());
         }
     }
-}
-
-#[derive(Clone, Copy)]
-enum SourceLookup<'a> {
-    Archive(&'a Connection),
-    Confirmed(&'a HashMap<BlobHash, Option<u64>>),
 }
 
 #[derive(Debug, PartialEq)]

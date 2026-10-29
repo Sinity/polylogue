@@ -4,7 +4,6 @@
 use super::*;
 use crate::first_build::FirstBuild;
 use crate::versions::VersionKind;
-use std::collections::BTreeMap;
 
 mod assertions;
 mod retract;
@@ -19,6 +18,62 @@ pub(super) fn write_rows(
     counter: i64,
     first_build: Option<&FirstBuild>,
 ) -> Result<u64> {
+    apply_rows(
+        tx,
+        b,
+        p,
+        ReadingWrite {
+            chain,
+            counter,
+            first_build,
+            confirmed: false,
+        },
+    )
+}
+
+/// Apply confirmed canonical facts to the derived cache; source byte admission
+/// was already proved by the producer and lifecycle may hide earlier facts.
+pub(super) fn write_confirmed_rows(
+    tx: &Transaction<'_>,
+    b: &Batch,
+    p: &ParseStep,
+    chain: i64,
+    counter: i64,
+    first_build: Option<&FirstBuild>,
+) -> Result<u64> {
+    apply_rows(
+        tx,
+        b,
+        p,
+        ReadingWrite {
+            chain,
+            counter,
+            first_build,
+            confirmed: true,
+        },
+    )
+}
+
+struct ReadingWrite<'a> {
+    chain: i64,
+    counter: i64,
+    first_build: Option<&'a FirstBuild>,
+    confirmed: bool,
+}
+
+fn apply_rows(
+    tx: &Transaction<'_>,
+    b: &Batch,
+    p: &ParseStep,
+    context: ReadingWrite<'_>,
+) -> Result<u64> {
+    let ReadingWrite {
+        chain,
+        counter,
+        first_build,
+        confirmed,
+    } = context;
+    p.counts.check()?;
     p.prepared.validate(&p.output)?;
     let keys = p.prepared.keys.as_deref().ok_or_else(|| {
         StoreError::Invalid("an indexed reading has no resolved natural keys".into())
@@ -33,6 +88,10 @@ pub(super) fn write_rows(
         ));
     }
     let input_pk = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk;
+    validate_range(b, p)?;
+    if !confirmed && !admit_step(tx, input_pk, chain, p)? {
+        return Ok(0);
+    }
     tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
@@ -40,9 +99,7 @@ pub(super) fn write_rows(
     let rows = RowWriter {
         tx,
         input_pk,
-        input_id: &b.input.id,
         chain,
-        repeats_whole_conversations: p.repeats_whole_conversations,
         rank: i64::from(b.input.arrival_rank),
         counter,
         packed: &p.prepared.texts,
@@ -93,9 +150,8 @@ pub(super) fn write_rows(
         }
         let session_pk = rows.session_pk(&mut sessions, &row.message.session)?;
         let prepared = &p.prepared.messages[i];
-        let position = match p.order_from {
-            Some(from) => ((from + i as u64) as i64, 0),
-            None if p.repeats_whole_conversations => (i as i64, 0),
+        let position = match p.message_position(i)? {
+            Some(order) => (order, 0),
             None => {
                 let next = in_record.entry(row.offset).or_default();
                 *next += 1;
@@ -118,48 +174,11 @@ pub(super) fn write_rows(
         )?
         .execute(params![session_pk, at, counter])?;
     }
-    let mut event_occurrences = BTreeMap::<(u64, u64), u64>::new();
     for (i, e) in p.output.events.iter().enumerate() {
-        let occurrence = if e.session.is_none() {
-            if rows.input_id.is_empty() {
-                return Err(StoreError::Invalid(
-                    "an event about its input has no input identity".into(),
-                ));
-            }
-            let range = e.range.filter(|(start, end)| start < end).ok_or_else(|| {
-                StoreError::Invalid("an event about its input has no record range".into())
-            })?;
-            if e.after.is_some() {
-                return Err(StoreError::Invalid(
-                    "an event about its input cannot follow a conversation message".into(),
-                ));
-            }
-            let next = event_occurrences.entry(range).or_default();
-            let occurrence = *next;
-            *next = next
-                .checked_add(1)
-                .ok_or_else(|| StoreError::Invalid("too many events in one record".into()))?;
-            occurrence
-        } else {
-            0
-        };
-        let session_pk = e
-            .session
-            .as_ref()
-            .map(|id| rows.session_pk(&mut sessions, id))
-            .transpose()?;
-        let packed = &p.prepared.events[i];
-        rows.write_event(e, session_pk, packed, p.order_from, p.start, occurrence, i)?;
-        if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
-            tx.prepare_cached(
-                "UPDATE session SET live_reparse=1 WHERE pk=?1 AND ?2<=live_last_event_at",
-            )?
-            .execute(params![session_pk, ms(e.at)])?;
-            // Prepared events release their JSON payload before writing. Live
-            // facts must read the same payload as the stored event.
-            let event = choices.live_events[i].clone();
-            crate::live::apply(tx, session_pk, &event, counter)?;
+        if let Some(id) = &e.session {
+            rows.session_pk(&mut sessions, id)?;
         }
+        rows.write_event(i)?;
     }
     for (i, l) in p.output.links.iter().enumerate() {
         rows.write_link(l, i)?;
@@ -185,6 +204,24 @@ pub(super) fn write_rows(
     for pk in sessions.values() {
         tx.prepare_cached("UPDATE session SET changed = ?2 WHERE pk = ?1 AND changed IS NOT ?2")?
             .execute(params![pk, counter])?;
+    }
+    // Hooks name the selected tool-call rows, which message projection just wrote.
+    for (i, e) in p.output.events.iter().enumerate() {
+        let session_pk = e
+            .session
+            .as_ref()
+            .map(|id| rows.session_pk(&mut sessions, id))
+            .transpose()?;
+        if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
+            tx.prepare_cached(
+                "UPDATE session SET live_reparse=1 WHERE pk=?1 AND ?2<=live_last_event_at",
+            )?
+            .execute(params![session_pk, ms(e.at)])?;
+            // Prepared events release their JSON payload before writing. Live
+            // facts must read the same payload as the stored event.
+            let event = choices.live_events[i].clone();
+            crate::live::apply(tx, session_pk, &event, counter)?;
+        }
     }
     for u in &p.output.background {
         let (outcome, reason, exit) = outcome_columns(&u.outcome);
@@ -212,6 +249,49 @@ pub(super) fn write_rows(
     Ok(written)
 }
 
+fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
+    if step.start > step.parsed_upto
+        || step.parsed_upto > batch.length
+        || i64::try_from(batch.length).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "reading range is outside its stored input".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A continuing reading can only extend its committed prefix. Explicit resets
+/// replace a complete reading, including row dumps whose accounting starts later.
+fn admit_step(tx: &Transaction<'_>, input: i64, chain: i64, step: &ParseStep) -> Result<bool> {
+    if step.reset {
+        return Ok(true);
+    }
+    let previous: Option<(u64, String)> = tx
+        .query_row(
+            "SELECT parsed_upto, reading_version FROM parse_state WHERE input_pk=?1 AND chain=?2",
+            params![input, chain],
+            |row| Ok((row.get::<_, i64>(0)? as u64, row.get(1)?)),
+        )
+        .optional()?;
+    let cursor = previous.as_ref().map_or(0, |(cursor, _)| *cursor);
+    if step.start < cursor
+        && step.parsed_upto <= cursor
+        && previous
+            .as_ref()
+            .is_some_and(|(_, version)| version == &step.reading_version)
+    {
+        return Ok(false);
+    }
+    if step.start != cursor {
+        return Err(StoreError::Invalid(format!(
+            "reading starts at {} after committed position {cursor}",
+            step.start
+        )));
+    }
+    Ok(true)
+}
+
 /// A block's packed body and structured value, as `block` stores them.
 #[derive(Clone, Copy)]
 struct StoredBlock<'a> {
@@ -223,10 +303,7 @@ struct StoredBlock<'a> {
 pub(super) struct RowWriter<'a, 't> {
     tx: &'a Transaction<'t>,
     input_pk: i64,
-    input_id: &'a str,
     chain: i64,
-    /// The step's records restate whole conversations ([`ParseStep::restates`]).
-    repeats_whole_conversations: bool,
     rank: i64,
     counter: i64,
     packed: &'a HashMap<[u8; 32], Vec<u8>>,
@@ -241,6 +318,7 @@ pub(super) struct RowWriter<'a, 't> {
 
 /// A message reading's source and shown fields.
 pub(super) struct Version {
+    time: Vec<u8>,
     input_pk: i64,
     chain: i64,
     start: i64,
@@ -275,15 +353,6 @@ impl RowWriter<'_, '_> {
             .query_row([pk], |row| row.get(0))
             .optional()?)
     }
-    fn event_pk(&self, id: &str) -> Result<Option<i64>> {
-        let pk = self.keys.get(resolve::Kind::Event, id.as_bytes())?.pk;
-        Ok(self
-            .tx
-            .prepare_cached("SELECT pk FROM event WHERE pk=?1")?
-            .query_row([pk], |row| row.get(0))
-            .optional()?)
-    }
-
     fn session_pk(&self, cache: &mut HashMap<String, i64>, id: &SessionId) -> Result<i64> {
         let key = id.to_string();
         if let Some(pk) = cache.get(&key) {
@@ -374,11 +443,14 @@ impl RowWriter<'_, '_> {
             &prepared.body,
             &m.blocks,
             &prepared.texts,
-            self.packed,
-            self.first_build,
-            self.keys,
+            crate::versions::TextRows {
+                packed: self.packed,
+                first_build: self.first_build,
+                keys: self.keys,
+            },
         )?;
         let v = Version {
+            time: prepared.time.clone(),
             input_pk: self.input_pk,
             chain: self.chain,
             start: row.offset as i64,
@@ -426,6 +498,11 @@ impl RowWriter<'_, '_> {
         let winner = choice.as_ref().map(|choice| {
             (
                 Version {
+                    time: choice
+                        .prepared
+                        .as_ref()
+                        .map(|prepared| prepared.time.clone())
+                        .unwrap_or_default(),
                     input_pk: choice.input,
                     chain: choice.chain,
                     start: choice.start,
@@ -555,7 +632,7 @@ impl RowWriter<'_, '_> {
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
                  words = ?25, cost_nusd = ?33, provider_cost_nusd = ?27,
                  cache_write_5m_tokens = ?28, cache_write_1h_tokens = ?29, speed = ?30,
-                 record_position = ?31, pem = ?32,
+                 record_position = ?31, pem = ?32, at_time = ?35,
                  order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
              WHERE pk = ?1 AND (?34 IS NULL OR pk=?34)"
         } else {
@@ -565,10 +642,10 @@ impl RowWriter<'_, '_> {
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
                  cache_write_5m_tokens, cache_write_1h_tokens, speed, record_position, pem,
-                 cost_nusd, order_input_id)
+                 cost_nusd, order_input_id, at_time)
              VALUES (?34, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?26, ?15, ?16,
                  ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?27, ?28, ?29, ?30, ?31, ?32, ?33,
-                 (SELECT id FROM input_ref WHERE pk = ?3))"
+                 (SELECT id FROM input_ref WHERE pk = ?3), ?35)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -618,6 +695,7 @@ impl RowWriter<'_, '_> {
                     .get(resolve::Kind::Message, m.id.to_string().as_bytes())?
                     .pk
             ),
+            v.time,
         ])?;
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
         self.update_event_anchors(pk, true)?;
@@ -933,60 +1011,16 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
-    /// `packed` is the event's id and stored payload ([`crate::encoding::RowPacker::pack_event`]).
-    fn write_event(
-        &self,
-        e: &Event,
-        session_pk: Option<i64>,
-        packed: &(String, Vec<u8>),
-        order: Option<u64>,
-        step_start: u64,
-        occurrence: u64,
-        prepared_idx: usize,
-    ) -> Result<()> {
-        let (content_id, data) = packed;
-        // An event about a session keeps its content identity across inputs.
-        // An event about its input belongs to one exact input record
-        // occurrence, including repeated identical events from that record.
-        let id = resolve::event_id(self.input_id, self.chain, e, content_id, occurrence)?;
-        let after: Option<(i64, i64)> = match &e.after {
-            Some(id) => match self.message_pk(&id.to_string())? {
-                Some(pk) => Some((
-                    pk,
-                    self.tx
-                        .prepare_cached("SELECT seq FROM message WHERE pk = ?1")?
-                        .query_row([pk], |r| r.get(0))?,
-                )),
-                None => None,
-            },
-            None => None,
-        };
-        // An event with its own byte range sorts by it among the input's
-        // messages (whose `seq` is their record offset); otherwise it takes
-        // the position of the message it follows.
-        // In a repeating whole conversations step an event without a range takes the step's place.
-        let seq = order
-            .map(|order| order as i64)
-            .or(e.range.map(|(start, _)| start as i64))
-            .or(self
-                .repeats_whole_conversations
-                .then_some(step_start as i64));
-        let source_chain = e.range.map(|_| self.chain);
-        let pk = match self.event_pk(&id)? {
-            Some(pk) => pk,
-            None => {
-                self.tx.prepare_cached("INSERT INTO event(pk,id,session_pk,seq,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,data)
-                    VALUES (?12,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)")?
-                    .execute(params![&*id,session_pk,seq.unwrap_or(0),after.map(|a|a.0),e.kind,ms(e.at),self.input_pk,source_chain,e.range.map(|r|r.0 as i64),e.range.map(|r|r.1 as i64),data,Some(self.keys.get(resolve::Kind::Event,id.as_bytes())?.pk)])?;
-                let pk = self.tx.last_insert_rowid();
-                if let Some(first) = self.first_build {
-                    first.add_event(&id, pk);
-                }
-                pk
-            }
-        };
-        self.store_event_value(pk, e, data, seq, prepared_idx)?;
-        Ok(())
+    fn write_event(&self, index: usize) -> Result<()> {
+        let id = &self.choices.event_ids[index];
+        let (pk, source) = &self.choices.event_sources[index];
+        self.tx.prepare_cached("INSERT OR IGNORE INTO event(pk,id,session_pk,seq,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?
+            .execute(params![pk,id,source.session,source.seq.unwrap_or(0),source.kind,source.at,self.input_pk,self.chain,source.start,source.end,source.fields,source.body])?;
+        if let Some(first) = self.first_build {
+            first.add_event(id, *pk);
+        }
+        self.store_event_value(index)
     }
 
     fn write_link(&self, l: &Link, index: usize) -> Result<()> {
@@ -1001,7 +1035,9 @@ impl RowWriter<'_, '_> {
         let used: u64 = a.used.values().sum();
         let skipped: u64 = a.skipped.values().sum();
         let unreadable: u64 = a.unreadable.values().sum();
-        let status = if p.no_parser_yet {
+        let status = if p.at_end && p.parsed_upto < b.length {
+            "waiting"
+        } else if p.no_parser_yet {
             "no_parser_yet"
         } else if p.parsed_upto >= b.length {
             "done"
@@ -1040,11 +1076,7 @@ impl RowWriter<'_, '_> {
             skipped as i64,
             unreadable as i64,
             detail,
-            if p.no_parser_yet {
-                ""
-            } else {
-                p.reading_version.as_str()
-            },
+            p.reading_version.as_str(),
         ])?;
         let groups = [
             ("skipped:", &a.skipped, 1),

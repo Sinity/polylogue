@@ -123,7 +123,7 @@ pub(crate) fn saved_queries(
 ) -> Result<std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>>, Failure> {
     let sql = format!(
         "SELECT n.key AS k, n.value AS v, n.id AS id, n.first_note AS first \
-         FROM a.note n WHERE n.kind = 'saved_query' \
+         FROM source_note n WHERE n.kind = 'saved_query' \
          AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {} ORDER BY n.first_note",
         polylogue_query::fields::current_note("n"),
         polylogue_query::fields::withdrawn_note("n"),
@@ -161,7 +161,7 @@ fn kept_results(
             "SELECT id, json_extract(rows_json, '$.unit') AS unit, \
              json_extract(rows_json, '$.columns') AS columns, \
              json_extract(rows_json, '$.match_columns') AS match_columns, \
-             json_type(rows_json, '$.match_columns') AS match_columns_type FROM a.kept_result",
+             json_type(rows_json, '$.match_columns') AS match_columns_type FROM source_kept_result",
             &[],
         )?
         .iter()

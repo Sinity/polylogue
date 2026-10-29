@@ -8,7 +8,9 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "session_meta.ordinal": 1
+    }
   },
   "output": {
     "background": [
@@ -18,11 +20,37 @@
           "kind": "ok"
         },
         "session": "codex:019a0000-0000-7000-8000-000000000001",
-        "task_id": "process 31337"
+        "task_id": "process 31337",
+        "result_at": "2026-03-01T10:00:05Z"
       }
     ],
     "blobs": [],
     "events": [
+      {
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "kind": "session_meta",
+        "at": "2026-03-01T10:00:01Z",
+        "range": [
+          0,
+          380
+        ],
+        "data": {
+          "id": "019a0000-0000-7000-8000-000000000001",
+          "timestamp": "2026-03-01T10:00:00.000Z",
+          "cwd": "/work/repo",
+          "originator": "codex_cli_rs",
+          "cli_version": "0.160.0",
+          "source": "cli",
+          "model_provider": "openai",
+          "base_instructions": {
+            "text": "You are a coding agent."
+          },
+          "git": {
+            "branch": "main",
+            "commit_hash": "abc"
+          }
+        }
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
@@ -68,7 +96,8 @@
                 "reason": "running_in_background"
               },
               "output": "Chunk ID: 2b\nWall time: 1.0 seconds\nProcess running with session ID 31337\nOriginal token count: 0\nOutput:\n",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 1000
             }
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@573",
@@ -115,7 +144,8 @@
                 "kind": "ok"
               },
               "output": "Chunk ID: 3c\nWall time: 4.9 seconds\nProcess exited with code 0\nOriginal token count: 4\nOutput:\ntest result: ok",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 4900
             }
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@1064",
@@ -135,7 +165,10 @@
         "id": "codex:019a0000-0000-7000-8000-000000000001",
         "kind": "main",
         "started": "2026-03-01T10:00:00Z",
-        "tool_version": "0.160.0"
+        "tool_version": "0.160.0",
+        "git_commit": "abc",
+        "model_provider": "openai",
+        "instructions": "You are a coding agent."
       }
     ]
   }

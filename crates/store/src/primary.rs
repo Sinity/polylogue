@@ -6,35 +6,46 @@
 //! after Sinex acknowledged what it describes, so the local register
 //! (`sinex.db`) and `index.db` are caches: deleted, they are rebuilt from
 //! what Sinex holds ([`load`]). `polylogue-sinex` implements [`Sinex`].
+pub mod products;
+pub(crate) mod projection;
+pub use products::{
+    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, Material, PendingCapture,
+    PreparedInput, PreparedWrite, Product, ProductWrite, Reading, SourceLocation,
+};
+
 use crate::input_rows::InputRows;
 use crate::{ReadPool, Result, StoreError};
 use polylogue_model::BlobHash;
-use polylogue_model::user::UserRequest;
+use polylogue_model::user::{UserOutcome, UserRequest};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 /// The connection to Sinex the writer and the loop send through.
 pub trait Sinex: Send + Sync {
-    /// Sends `bytes` (`part.length` long, hashing to `part.hash`) as one part
-    /// of its input and waits until Sinex acknowledged it. Returns the
-    /// material Sinex registered.
-    fn send_part(&self, part: &Part, bytes: &mut dyn std::io::Read) -> Result<ConfirmedBlob>;
-    /// Stores decoded or attached bytes as a material independently of an input.
-    fn send_blob(
+    fn prepare_input(
+        &self,
+        captured: &CapturedInput,
+        bytes: &mut dyn std::io::Read,
+    ) -> Result<PreparedInput>;
+    fn prepare_blob(
         &self,
         hash: BlobHash,
         length: u64,
         bytes: &mut dyn std::io::Read,
-    ) -> Result<ConfirmedBlob>;
-    /// Sends a register change and the events it makes, and waits until
-    /// Sinex acknowledged them. Returns the register material holding it.
-    fn send_change(&self, change: &RegisterChange) -> Result<String>;
-    /// One page of what Sinex holds from this archive, in the order it was
-    /// sent, after `after` (0 for the first page). An empty page is the end.
-    fn held(&self, after: i64) -> Result<Vec<Held>>;
-    /// Sends the events of every session whose rows changed since they were
-    /// last sent, read from the index.
-    fn send_sessions(&self, reads: &ReadPool) -> Result<()>;
+    ) -> Result<PreparedWrite>;
+    fn canonical_publisher(&self) -> bool {
+        false
+    }
+    fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
+    fn complete_captures(
+        &self,
+        identities: &[String],
+        products: &[ProductWrite],
+    ) -> Result<PreparedWrite>;
+    fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
+    fn prepare_request(&self, request: &UserRequest) -> Result<UserOutcome>;
+    fn confirmed(&self, after: i64, cache: &str) -> Result<Vec<Confirmed>>;
+    fn acknowledge(&self, position: i64) -> Result<()>;
 }
 
 /// The material and committed descriptors Sinex acknowledged for these bytes.
@@ -76,7 +87,7 @@ pub struct Part {
 
 /// What an input is, in words Sinex keeps: the origin that wrote it, its
 /// path (or `drive:<id>`, an import's file name, …) and the host.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InputName {
     pub origin: String,
     pub path: String,
@@ -354,7 +365,7 @@ fn forget_uncommitted(
 ) -> Result<()> {
     if let Some(id) = observation {
         tx.execute(
-            "DELETE FROM observation_zip WHERE observation_id = ?1",
+            "DELETE FROM observation_container WHERE observation_id = ?1",
             [id],
         )?;
         tx.execute("DELETE FROM observation WHERE id = ?1", [id])?;
@@ -370,3 +381,16 @@ fn forget_uncommitted(
 
 #[cfg(test)]
 mod tests;
+
+/// The primary cache's persistent identity, independent of read cursor generations.
+pub fn cache_identity(index: &Connection) -> Result<String> {
+    index
+        .query_row(
+            "SELECT value FROM meta WHERE key='primary_cache'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .filter(|value: &String| !value.is_empty())
+        .ok_or_else(|| StoreError::Invalid("the primary cache has no identity".into()))
+}

@@ -28,6 +28,8 @@ mod attachments;
 mod batch;
 mod bytes;
 mod chain;
+mod confirmed;
+pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
 mod rows;
 mod search;
@@ -39,9 +41,8 @@ use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, unpack_block};
 pub use batch::{
-    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
+    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
 };
-pub(crate) use bytes::observation_id;
 use bytes::*;
 use rows::*;
 use search::*;
@@ -59,6 +60,10 @@ enum Msg {
     ),
     Assets(
         Box<crate::export_items::ExportItems>,
+        SyncSender<Result<()>>,
+    ),
+    Coverage(
+        Box<polylogue_model::capture::Coverage>,
         SyncSender<Result<()>>,
     ),
     /// Bytes no input holds (a chat action's attachment), as one blob.
@@ -400,6 +405,23 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Accepts one completed discovery walk. Primary visibility follows its
+    /// confirmed product; standalone visibility follows the index transaction.
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
+    }
+
+    /// Installs export associations derived from committed source observations.
+    pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Assets(Box::new(staged), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Waits until earlier batches are committed and their memory charges
     /// are released, then returns what was written since the previous flush.
     /// Outside a first build what it reports is also derived and searchable;
@@ -529,10 +551,22 @@ impl WriterSender {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// As [`Writer::coverage`].
+    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage_via(&self.0, coverage)
+    }
+
     /// As [`Writer::derive`].
     pub fn derive(&self) -> Result<u64> {
         derive_via(&self.0)
     }
+}
+
+fn coverage_via(tx: &WriterQueue, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Coverage(Box::new(coverage), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 fn derive_via(tx: &WriterQueue) -> Result<u64> {
@@ -591,6 +625,7 @@ impl Inner {
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
         let mut assets = Vec::new();
+        let mut coverage = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
@@ -625,6 +660,10 @@ impl Inner {
                     }
                     Msg::Assets(staged, reply) => {
                         assets.push((staged, reply));
+                        false
+                    }
+                    Msg::Coverage(fact, reply) => {
+                        coverage.push((fact, reply));
                         false
                     }
                     Msg::StoreBlob(blob, reply) => {
@@ -716,6 +755,9 @@ impl Inner {
                 self.derive_due |= result.is_ok();
                 let _ = reply.send(result);
             }
+            for (fact, reply) in coverage.drain(..) {
+                let _ = reply.send(self.write_coverage(*fact));
+            }
             for (reply, _) in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
@@ -725,6 +767,29 @@ impl Inner {
             }
         }
         let _ = self.finish_build();
+    }
+
+    fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        coverage
+            .validate()
+            .map_err(|error| StoreError::Invalid(error.into()))?;
+        if let Some(sinex) = &self.sinex {
+            let machine = coverage.machine.clone();
+            sinex.prepare_products(&[crate::primary::ProductWrite {
+                product: crate::primary::Product::Coverage(coverage),
+                location: None,
+                parents: Vec::new(),
+                machine: Some(machine),
+                output_index: 0,
+            }])?;
+            return Ok(());
+        }
+        let tx = self.index.transaction()?;
+        bump_counter(&tx)?;
+        crate::coverage::apply(&tx, &coverage)?;
+        crate::write_lock::commit(tx)?;
+        self.report.transactions += 1;
+        Ok(())
     }
 
     /// Derives from the rows written since the last derive. With nothing
@@ -940,9 +1005,9 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
-            if crate::zip_members::zip_of(b).is_some() {
+            if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
-                    "a ZIP member is stored with its ZIP's group".into(),
+                    "a container member is stored with its container's group".into(),
                 ));
             }
             crate::fault::check("write.input", &b.input.id)?;

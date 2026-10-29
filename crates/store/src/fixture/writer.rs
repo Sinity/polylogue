@@ -35,6 +35,9 @@ pub fn sid(n: &str) -> SessionId {
 
 pub fn message(id: &str, session: &str, role: Role, at: i64, blocks: Vec<Block>) -> Message {
     Message {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         id: MessageId::parse(&format!("claude-code:{session}-{id}")).unwrap(),
         session: sid(session),
         parent: None,
@@ -254,6 +257,7 @@ pub fn step(
             facts: None,
             seen_at_ms: 1,
             import: None,
+            container: None,
         }),
         continues: false,
         new_blob: None,

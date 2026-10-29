@@ -9,7 +9,12 @@
     "skipped": {
       "summary: no summary": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "summary.message.content": 1,
+      "summary.message.role": 1,
+      "summary.parentUuid": 1,
+      "summary.uuid": 1
+    }
   },
   "output": {
     "background": [],

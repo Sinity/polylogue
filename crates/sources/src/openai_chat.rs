@@ -62,7 +62,8 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read(T::String)),
     ("model", Rule::Read(T::String)),
     ("title", Rule::Read(T::String)),
-]);
+])
+.for_kind("document");
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("tool_calls[].id", Rule::Read(T::String)),
@@ -92,7 +93,8 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("reasoning_content", Rule::Read(T::StringOrArray)),
     ("refusal", Rule::Read(T::String)),
     ("function_call", Rule::Read(T::Object)),
-]);
+])
+.for_kind("message");
 
 impl ExportParser for OpenAiChat {
     fn scan(

@@ -1,7 +1,6 @@
 use super::*;
-use crate::blobs::{INLINE_LIMIT, NewBlob, Stored};
 use rusqlite::params;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 
 struct Fixture {
     conn: Connection,
@@ -10,16 +9,21 @@ struct Fixture {
 }
 impl Fixture {
     fn new(length: u64) -> Self {
-        let conn = Connection::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("archive.db");
+        let conn = Connection::open(&catalog).unwrap();
         crate::schema::ensure_archive(&conn).unwrap();
         conn.execute(
-            "INSERT INTO input(id,format) VALUES ('input','claude-code')",
+            "INSERT INTO input(id,format) VALUES ('input','synthetic')",
             [],
         )
         .unwrap();
         conn.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',1,'first',1,?1,1)", [length as i64]).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
+        let store = Arc::new(crate::blobs::Blobs::new(
+            dir.path().to_owned(),
+            catalog,
+            crate::blobs::BlobCatalog::Archive,
+        ));
         Self {
             conn,
             store,
@@ -27,14 +31,42 @@ impl Fixture {
         }
     }
     fn add(&self, at: u64, length: u64, blob_offset: u64, bytes: &[u8]) -> BlobHash {
-        let p = NewBlob::prepare(&self.store, bytes).unwrap();
-        let (place, size, data) = match &p.stored {
-            Stored::Inline(data) => ("inline", data.len() as u64, Some(data.as_slice())),
-            Stored::File { stored_size } => ("file", *stored_size, None),
-        };
-        self.conn.execute("INSERT OR IGNORE INTO blob(hash,size,stored_size,place,encoding,state,data) VALUES (?1,?2,?3,?4,'plain','present',?5)",params![p.hash.0.as_slice(),p.size as i64,size as i64,place,data]).unwrap();
-        self.conn.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('input',1,?1,?2,?3,?4)",params![at as i64,length as i64,p.hash.0.as_slice(),blob_offset as i64]).unwrap();
-        p.hash
+        self.add_group([(at, length, blob_offset, bytes)])
+            .pop()
+            .unwrap()
+    }
+    fn add_group<'a>(
+        &self,
+        rows: impl IntoIterator<Item = (u64, u64, u64, &'a [u8])>,
+    ) -> Vec<BlobHash> {
+        let rows: Vec<_> = rows.into_iter().collect();
+        let preparation = hashed_blobs::Preparation::new(self._dir.path().join("parts")).unwrap();
+        let prepared = rows
+            .iter()
+            .map(|(_, _, _, bytes)| preparation.plain(*bytes, crate::blobs::LEVEL).unwrap())
+            .collect();
+        let mut writer = crate::blobs::open_writer(&self.conn, self._dir.path()).unwrap();
+        let group = writer
+            .append_group(prepared, |hash| {
+                crate::blobs::load_extent(&self.conn, "", hash)
+                    .map_err(|e| hashed_blobs::Error::Refused(e.to_string()))
+            })
+            .unwrap()
+            .wait()
+            .unwrap();
+        let tx = self.conn.unchecked_transaction().unwrap();
+        for ((at, length, blob_offset, _), extent) in rows.iter().zip(&group.extents) {
+            crate::blobs::insert_extent(&tx, extent).unwrap();
+            tx.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('input',1,?1,?2,?3,?4)",params![*at as i64,*length as i64,extent.hash.0.as_slice(),*blob_offset as i64]).unwrap();
+        }
+        tx.execute("INSERT INTO segment(name,committed_end) VALUES ('segments/current.hb',?1) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",[group.end as i64]).unwrap();
+        tx.commit().unwrap();
+        writer.acknowledge(&group).unwrap();
+        group
+            .extents
+            .iter()
+            .map(|extent| BlobHash(extent.hash.0))
+            .collect()
     }
     fn load(&self, length: u64) -> StoredChain {
         StoredChain::load(&self.conn, "", "input", 1, length).unwrap()
@@ -44,7 +76,7 @@ impl Fixture {
 #[test]
 fn independent_sequential_and_range_readers_preserve_shared_slices_and_short_reads() {
     let w = Fixture::new(9);
-    let mut file = vec![b'x'; INLINE_LIMIT + 1];
+    let mut file = vec![b'x'; 64 << 10];
     file[5..8].copy_from_slice(b"def");
     w.add(0, 3, 1, b"_abc_");
     w.add(3, 3, 5, &file);
@@ -86,13 +118,21 @@ fn independent_sequential_and_range_readers_preserve_shared_slices_and_short_rea
 }
 
 #[test]
-fn many_inline_blobs_stay_compressed_on_disk_and_clones_share_one_selected_view() {
+fn many_segment_blobs_stay_compressed_and_clones_share_one_extent_view() {
     let w = Fixture::new(512 * 16384);
-    for n in 0u64..512 {
-        let mut bytes = vec![b'x'; 16384];
-        bytes[..8].copy_from_slice(&n.to_le_bytes());
-        w.add(n * 16384, 16384, 0, &bytes);
-    }
+    let bytes: Vec<_> = (0u64..512)
+        .map(|n| {
+            let mut bytes = vec![b'x'; 16384];
+            bytes[..8].copy_from_slice(&n.to_le_bytes());
+            bytes
+        })
+        .collect();
+    w.add_group(
+        bytes
+            .iter()
+            .enumerate()
+            .map(|(n, bytes)| (n as u64 * 16384, 16384, 0, bytes.as_slice())),
+    );
     let chain = w.load(512 * 16384);
     let clone = chain.clone();
     assert!(Arc::ptr_eq(
@@ -100,16 +140,14 @@ fn many_inline_blobs_stay_compressed_on_disk_and_clones_share_one_selected_view(
         clone.extents.as_ref().unwrap()
     ));
     let extents = chain.extents.as_ref().unwrap();
-    let conn = extents.connection();
-    let (new_blobs, compressed): (i64, i64) = conn
-        .query_row("SELECT count(*),sum(length(data)) FROM blob", [], |r| {
+    let (new_blobs, compressed): (i64, i64) = w
+        .conn
+        .query_row("SELECT count(*),sum(stored_size) FROM blob", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
     assert_eq!(new_blobs, 512);
-    assert!(compressed < (chain.length / 100) as i64);
-    drop(conn);
-    w.conn.execute("UPDATE blob SET data=x'00'", []).unwrap();
+    assert!(compressed < (chain.length / 10) as i64);
     w.conn.execute("DELETE FROM extent", []).unwrap();
     assert_eq!(
         chain
@@ -131,12 +169,17 @@ fn unrelated_corruption_is_not_decoded_but_selected_corruption_and_gaps_refuse()
     let w = Fixture::new(6);
     let bad = w.add(0, 3, 0, b"abc");
     w.add(3, 3, 0, b"def");
-    w.conn
-        .execute(
-            "UPDATE blob SET data=x'00' WHERE hash=?1",
-            [bad.0.as_slice()],
-        )
+    let extent = w.store.extent(&hashed_blobs::Hash(bad.0)).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(w._dir.path().join(&extent.segment))
         .unwrap();
+    use std::os::unix::fs::FileExt;
+    let mut byte = [0];
+    file.read_exact_at(&mut byte, extent.offset).unwrap();
+    byte[0] ^= 1;
+    file.write_all_at(&byte, extent.offset).unwrap();
     let chain = w.load(6);
     assert_eq!(chain.read_range(&w.store, 3, 6).unwrap(), b"def");
     assert!(chain.read_range(&w.store, 2, 6).is_err());
@@ -172,18 +215,10 @@ fn invalid_extent_metadata_refuses_capture_without_panicking() {
 }
 
 #[test]
-fn historical_oversized_inline_blobs_are_verified_before_any_range_is_exposed() {
-    let w = Fixture::new(2 << 20);
+fn large_segment_blobs_refuse_changed_catalog_size_before_exposing_ranges() {
     let bytes = vec![b'z'; 2 << 20];
-    let hash = BlobHash::of(&bytes);
-    let data = zstd::bulk::compress(&bytes, 3).unwrap();
-    w.conn.execute("INSERT INTO blob(hash,size,stored_size,place,encoding,state,data) VALUES (?1,?2,?3,'inline','plain','present',?4)",params![hash.0.as_slice(),bytes.len() as i64,data.len() as i64,data]).unwrap();
-    w.conn
-        .execute(
-            "INSERT INTO extent VALUES ('input',1,0,?1,?2,0)",
-            params![bytes.len() as i64, hash.0.as_slice()],
-        )
-        .unwrap();
+    let w = Fixture::new(bytes.len() as u64);
+    w.add(0, bytes.len() as u64, 0, &bytes);
     let chain = w.load(bytes.len() as u64);
     assert_eq!(
         chain.read_range(&w.store, 100, 117).unwrap(),
@@ -195,9 +230,9 @@ fn historical_oversized_inline_blobs_are_verified_before_any_range_is_exposed() 
 }
 
 #[test]
-fn only_a_complete_file_blob_uses_the_direct_reader() {
-    let w = Fixture::new((INLINE_LIMIT + 1) as u64);
-    let bytes = vec![b'x'; INLINE_LIMIT + 1];
+fn only_a_complete_single_blob_uses_the_direct_reader() {
+    let w = Fixture::new(64 << 10);
+    let bytes = vec![b'x'; 64 << 10];
     let hash = w.add(0, bytes.len() as u64, 0, &bytes);
     assert_eq!(w.load(bytes.len() as u64).single_file_blob(), Some(hash));
     assert_eq!(w.load(10).single_file_blob(), None);
@@ -212,29 +247,28 @@ fn overlapping_extents_refuse_instead_of_selecting_a_different_source_by_cursor_
 }
 
 #[test]
-fn a_file_range_uses_one_verification_pass_without_decoding_its_prefix_twice() {
-    let w = Fixture::new(2 << 20);
-    let bytes: Vec<_> = (0..2 << 20).map(|n| (n % 251) as u8).collect();
-    let hash = w.add(0, bytes.len() as u64, 0, &bytes);
-    let extent = extents::Extent {
-        offset: 0,
-        length: bytes.len() as u64,
-        hash,
-        blob_offset: 0,
-        size: bytes.len() as u64,
-        inline: false,
-    };
-    let mut out = [0; 37];
-    let start = bytes.len() as u64 - 100;
-    let stats = reader::file_range(w.store.as_ref(), &extent, start, &mut out).unwrap();
-    assert_eq!(out, bytes[start as usize..start as usize + 37]);
-    assert_eq!(stats.decoded_bytes, bytes.len() as u64);
+fn a_segment_range_decodes_only_its_selected_frame() {
+    let size = 2 * hashed_blobs::DEFAULT_FRAME + 1024;
+    let bytes: Vec<_> = (0..size).map(|n| (n % 251) as u8).collect();
+    let w = Fixture::new(size as u64);
+    let hash = w.add(0, size as u64, 0, &bytes);
+    let mut reader = w
+        .store
+        .read_plain(&hashed_blobs::Hash(hash.0), Some(size as u64), || Ok(()))
+        .unwrap();
+    let start = size - 100;
+    reader.seek(SeekFrom::Start(start as u64)).unwrap();
+    let mut actual = [0; 37];
+    reader.read_exact(&mut actual).unwrap();
+    assert_eq!(actual, bytes[start..start + 37]);
+    assert_eq!(reader.stats().decoded_bytes, 1024);
+    assert_eq!(reader.stats().frames, 1);
 }
 
 #[test]
 fn an_open_file_reader_needs_no_extent_list_lock() {
-    let w = Fixture::new((INLINE_LIMIT + 1) as u64);
-    let bytes = vec![b'q'; INLINE_LIMIT + 1];
+    let w = Fixture::new(64 << 10);
+    let bytes = vec![b'q'; 64 << 10];
     w.add(0, bytes.len() as u64, 0, &bytes);
     let chain = w.load(bytes.len() as u64);
     let mut reader = chain.reader(Arc::clone(&w.store));

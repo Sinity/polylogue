@@ -12,12 +12,33 @@
     "skipped": {
       "state: turn-state marker of 2025 rollouts; holds no content": 2
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "state.record_type": 2
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "session": "codex:019a0000-0000-7000-8000-000000000002",
+        "kind": "session_meta",
+        "at": "2025-08-11T16:59:28.123Z",
+        "range": [
+          0,
+          200
+        ],
+        "data": {
+          "id": "019a0000-0000-7000-8000-000000000002",
+          "timestamp": "2025-08-11T16:59:28.123Z",
+          "instructions": null,
+          "git": {
+            "commit_hash": "abc",
+            "branch": "main",
+            "repository_url": "https://example.invalid/repo.git"
+          }
+        }
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
@@ -49,7 +70,8 @@
             {
               "redacted": true,
               "text": null,
-              "type": "thinking"
+              "type": "thinking",
+              "signature": "gAAAA"
             }
           ],
           "id": "codex:rs_1",
@@ -134,7 +156,9 @@
         "git_branch": "main",
         "id": "codex:019a0000-0000-7000-8000-000000000002",
         "kind": "main",
-        "started": "2025-08-11T16:59:28.123Z"
+        "started": "2025-08-11T16:59:28.123Z",
+        "git_commit": "abc",
+        "repo": "https://example.invalid/repo.git"
       }
     ]
   }

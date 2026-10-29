@@ -407,7 +407,12 @@ pub(crate) fn run(
         None => None,
     };
     let mut extra = Vec::new();
-    let parse = (job.origin.open)(&job.path)
+    let parser = (job.origin.open)(&job.path).or_else(|| {
+        job.origin
+            .is_row_dump(&job.path)
+            .then(polylogue_sources::row_dump::open)
+    });
+    let parse = parser
         .map(|parser| {
             // A parser that panics loses only its own input: the panic
             // becomes this input's failure, and every other input is parsed.
@@ -456,6 +461,8 @@ pub(crate) fn run(
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);
+                        p.no_parser_yet =
+                            job.origin.support == polylogue_sources::Support::NoParser;
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
                         if job.origin.is_row_dump(&job.path) {
                             let start = step.start as usize;
@@ -477,9 +484,26 @@ pub(crate) fn run(
                 }
             }
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            out.parsed_upto = job.end;
+            out.parser_state = None;
+            if job.origin.support != polylogue_sources::Support::NoParser {
+                return Vec::new();
+            }
+            let mut step = ParseStep::new(
+                Default::default(),
+                Default::default(),
+                job.start..job.end,
+                job.at_end,
+            );
+            step.no_parser_yet = true;
+            if prepare {
+                step.prepare();
+            }
+            vec![step]
+        });
     if let Bytes::Import(source) = &job.source {
-        let upto = if job.origin.support == polylogue_sources::Support::Parsed {
+        let upto = if job.origin.support != polylogue_sources::Support::Kept {
             out.parsed_upto
         } else {
             job.end

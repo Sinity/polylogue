@@ -8,9 +8,6 @@ use std::os::unix::fs::MetadataExt;
 mod chain;
 pub use chain::{ChainReader, StoredChain};
 
-mod copy;
-pub(crate) use copy::copy_plain;
-
 mod segments;
 pub use segments::{BlobCatalog, Blobs};
 pub(crate) use segments::{insert_extent, load_extent, open_writer};
@@ -71,6 +68,9 @@ pub enum Change {
     First,
     /// Same facts as last time: nothing is read.
     Unchanged,
+    /// An exact previously recorded revision was observed at another location.
+    /// Its bytes and native current revision remain unchanged.
+    Observed { revision: i64, chain: i64 },
     /// Parse bytes already stored in this exact chain.
     Reparse { chain: i64 },
     /// The same file grew: only the bytes from `from` on are new. The caller

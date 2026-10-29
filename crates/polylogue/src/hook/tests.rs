@@ -9,6 +9,7 @@ fn hook_spool_files_get_one_line_per_event() {
         Harness::ClaudeCode,
         "Stop",
         &json!({"session_id": "a"}),
+        &json!({}),
     )
     .unwrap();
     append_to_spool(
@@ -16,6 +17,7 @@ fn hook_spool_files_get_one_line_per_event() {
         Harness::Codex,
         "SessionEnd",
         &json!({"session_id": "b"}),
+        &json!({}),
     )
     .unwrap();
     let file = dir
@@ -45,7 +47,14 @@ fn a_hermes_turn_keeps_its_event_without_the_conversation() {
         "cwd": "/tmp",
         "extra": {"is_first_turn": true, "user_message": "hi", "conversation_history": [{"role": "user"}]},
     });
-    append_to_spool(dir.path(), Harness::Hermes, "pre_llm_call", &payload).unwrap();
+    append_to_spool(
+        dir.path(),
+        Harness::Hermes,
+        "pre_llm_call",
+        &payload,
+        &json!({}),
+    )
+    .unwrap();
     let file = dir
         .path()
         .join(format!("{}.ndjson", std::os::unix::process::parent_id()));

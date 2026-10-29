@@ -130,7 +130,8 @@ static SESSION_FIELDS: Fields = Fields::new(&[
     ("ended_at", Rule::Read(T::StringOrNumber)),
     ("end_reason", Rule::Read(T::String)),
     ("system_prompt", Rule::Read(T::String)),
-]);
+])
+.for_kind("session");
 
 fn lines(
     reader: &mut dyn Input,

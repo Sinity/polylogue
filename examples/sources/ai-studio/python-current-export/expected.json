@@ -10,7 +10,9 @@
     "skipped": {
       "user: empty chunk": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "user.youtubeVideo.url": 1
+    }
   },
   "output": {
     "background": [],
@@ -61,6 +63,27 @@
           3410
         ],
         "session": "ai-studio:current_export"
+      },
+      {
+        "session": "ai-studio:current_export",
+        "kind": "prompt_metadata",
+        "range": [
+          0,
+          3410
+        ],
+        "data": {
+          "chunkedPrompt.pendingInputs": [
+            {
+              "role": "user",
+              "text": ""
+            }
+          ],
+          "citations": [
+            {
+              "uri": "https://example.invalid/synthetic-citation"
+            }
+          ]
+        }
       }
     ],
     "links": [],
@@ -126,6 +149,12 @@
             "input": null,
             "output": null,
             "reasoning": 3
+          },
+          "attrs": {
+            "thoughtSignatures": [
+              "synthetic-signature"
+            ],
+            "thinkingBudget": 2048
           }
         },
         "offset": 170
@@ -151,6 +180,14 @@
             "input": null,
             "output": 3,
             "reasoning": null
+          },
+          "attrs": {
+            "safetyRatings": [
+              {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "probability": "NEGLIGIBLE"
+              }
+            ]
           }
         },
         "offset": 395
@@ -351,6 +388,11 @@
             "input": null,
             "output": 3,
             "reasoning": null
+          },
+          "attrs": {
+            "grounding": {
+              "groundingChunks": []
+            }
           }
         },
         "offset": 1835
@@ -387,7 +429,18 @@
           "parent": "ai-studio:14:current_export#position:2:13",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "attrs": {
+            "isEdited": true,
+            "branchChildren": [
+              {
+                "id": "synthetic-branch-child"
+              }
+            ],
+            "branchParent": {
+              "id": "synthetic-branch-parent"
+            }
+          }
         },
         "offset": 2119
       }

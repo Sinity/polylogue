@@ -62,7 +62,8 @@ static SPAN_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
         "status.code",
         crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
     ),
-]);
+])
+.for_kind("span");
 
 /// One span with its attributes decoded from OTLP `AnyValue`s.
 struct Span<'a> {
@@ -139,7 +140,8 @@ impl ExportParser for OtelGenAi {
             .get("gen_ai.operation.name")
             .and_then(Json::as_str);
         if op.is_none() && !span.attrs.keys().any(|k| k.starts_with("gen_ai.")) {
-            static UNUSED: crate::fields::Fields = crate::fields::Fields::new(&[]);
+            static UNUSED: crate::fields::Fields =
+                crate::fields::Fields::new(&[]).for_kind("unused");
             sink.records.fields("span", value, &UNUSED);
             sink.records
                 .record("span", &RecordOutcome::skipped("not a GenAI span"));

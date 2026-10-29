@@ -335,9 +335,6 @@ impl Engine {
     pub(super) fn refresh_database_progress(&mut self) -> Result<(), EngineError> {
         let reader = self.reads.reader()?;
         for (path, name) in &self.databases {
-            if self.refused.contains(path) {
-                continue;
-            }
             let origin = polylogue_sources::origin::by_name(name).ok_or_else(|| {
                 polylogue_store::StoreError::Invalid(format!("unknown database origin {name}"))
             })?;
@@ -402,19 +399,17 @@ impl Engine {
         let mut deferred_database = false;
         if capture_due && !self.captures.pending() {
             deferred_database = self.databases.keys().any(|path| {
-                !self.refused.contains(path)
-                    && self.inputs.get(path).is_some_and(|state| {
-                        state.stored > 0 && (!state.parsed || state.parsed_upto < state.stored)
-                    })
+                self.inputs.get(path).is_some_and(|state| {
+                    state.stored > 0 && state.parsed_upto < state.stored
+                })
             });
             self.capture_checked = (!deferred_database).then(Instant::now);
             let databases = self
                 .databases
                 .iter()
-                .filter(|(path, _)| !self.refused.contains(*path))
                 .filter(|(path, _)| {
                     self.inputs.get(*path).is_none_or(|state| {
-                        state.stored == 0 || (state.parsed && state.parsed_upto == state.stored)
+                        state.stored == 0 || state.parsed_upto == state.stored
                     })
                 })
                 .map(|(path, origin)| databases::DatabaseInput {

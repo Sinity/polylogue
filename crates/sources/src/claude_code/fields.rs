@@ -375,11 +375,13 @@ pub static TITLE_FIELDS: Fields = Fields::new(&[
     ("aiTitle", Read(T::String)),
     ("cwd", Read(T::String)),
     ("timestamp", Read(T::StringOrNumber)),
-]);
+])
+.for_kind("title");
 pub static CONTINUATION_FIELDS: Fields = Fields::new(&[
     ("type", Read(T::String)),
     ("continuedInSessionId", Read(T::String)),
-]);
+])
+.for_kind("continuation");
 
 pub static AGENT_PROGRESS_FIELDS: Fields = Fields::new(&[
     ("", Kept("complete progress record in the event")),
@@ -387,4 +389,5 @@ pub static AGENT_PROGRESS_FIELDS: Fields = Fields::new(&[
     ("sessionId", Read(T::String)),
     ("data.type", Read(T::String)),
     ("data.agentId", Read(T::String)),
-]);
+])
+.for_kind("agent_progress");

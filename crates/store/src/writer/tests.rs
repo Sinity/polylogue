@@ -23,10 +23,10 @@ fn write_test_rows(
 }
 
 struct TestArchive {
-    _dir: tempfile::TempDir,
-    archive: Archive,
-    _lock: crate::ArchiveLock,
     writer: Writer,
+    _lock: crate::ArchiveLock,
+    archive: Archive,
+    _dir: tempfile::TempDir,
 }
 
 fn test_archive() -> TestArchive {
@@ -47,6 +47,9 @@ fn sid(n: &str) -> SessionId {
 
 fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&str>) -> Message {
     Message {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         id: MessageId::parse(&format!("claude-code:{id}")).unwrap(),
         session: sid(session),
         parent: None,
@@ -95,6 +98,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             facts: None,
             seen_at_ms: 1,
             import: None,
+            container: None,
         }),
         continues: false,
         new_blob: None,
@@ -507,18 +511,37 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
 #[test]
 fn revisions_extents_and_parse_state_follow_appends() {
     let w = test_archive();
-    let store = hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap();
+    let store = Arc::new(w.archive.blobs().unwrap());
     let mut b1 = batch("i", 0, 0, vec![], &[]);
-    b1.new_blob = Some(NewBlob::prepare(&store, b"line one\n").unwrap());
+    let (blob1, file1) = w.archive.prepare_blob(b"line one\n").unwrap();
+    b1.new_blob = Some(blob1);
     b1.length = 9;
     b1.parse.first_mut().unwrap().parsed_upto = 9;
     let mut b2 = batch("i", 0, 9, vec![], &[]);
-    b2.new_blob = Some(NewBlob::prepare(&store, b"line two\npartial").unwrap());
+    let (blob2, file2) = w.archive.prepare_blob(b"line two\npartial").unwrap();
+    b2.new_blob = Some(blob2);
     b2.length = 25;
     b2.parse.first_mut().unwrap().parsed_upto = 18;
     b2.parse.first_mut().unwrap().at_end = false;
-    w.writer.send(b1).unwrap();
-    w.writer.send(b2).unwrap();
+    let results = w
+        .writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![
+                crate::staging::PreparedBatch {
+                    batch: b1,
+                    files: file1.into_iter().collect(),
+                },
+                crate::staging::PreparedBatch {
+                    batch: b2,
+                    files: file2.into_iter().collect(),
+                },
+            ],
+            store,
+        )
+        .unwrap();
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
@@ -557,23 +580,49 @@ fn revisions_extents_and_parse_state_follow_appends() {
 #[test]
 fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let w = test_archive();
-    let store = hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap();
+    let store = Arc::new(w.archive.blobs().unwrap());
     let mut first = batch("i", 0, 0, vec![], &[]);
-    first.new_blob = Some(NewBlob::prepare(&store, b"line\npartial").unwrap());
+    let (first_blob, first_file) = w.archive.prepare_blob(b"line\npartial").unwrap();
+    first.new_blob = Some(first_blob);
     first.length = 12;
     let parse = first.parse.first_mut().unwrap();
     parse.parsed_upto = 5;
     parse.at_end = true;
-    w.writer.send(first).unwrap();
+    let results = w
+        .writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch: first,
+                files: first_file.into_iter().collect(),
+            }],
+            Arc::clone(&store),
+        )
+        .unwrap();
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     assert!(pool.reader().unwrap().known_inputs("m").unwrap()[0].waiting);
 
     let mut append = batch("i", 0, 12, vec![], &[]);
-    append.new_blob = Some(NewBlob::prepare(&store, b"rest").unwrap());
+    let (append_blob, append_file) = w.archive.prepare_blob(b"rest").unwrap();
+    append.new_blob = Some(append_blob);
     append.length = 16;
     append.parse.clear();
-    w.writer.send(append).unwrap();
+    let results = w
+        .writer
+        .sender()
+        .unwrap()
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch: append,
+                files: append_file.into_iter().collect(),
+            }],
+            store,
+        )
+        .unwrap();
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
     let known = pool.reader().unwrap().known_inputs("m").unwrap();
     assert_eq!(known[0].stored, 16);
@@ -926,7 +975,7 @@ mod observation_order;
 
 mod text_projection;
 
-mod failed_inputs;
+mod parse_positions;
 
 #[test]
 fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {

@@ -6,13 +6,13 @@ pub fn live_note(n: &str) -> String {
 
 pub fn current_note(n: &str) -> String {
     format!(
-        "NOT EXISTS (SELECT 1 FROM a.note nr WHERE nr.first_note = {n}.first_note AND nr.commit_seq > {n}.commit_seq)"
+        "NOT EXISTS (SELECT 1 FROM source_note nr WHERE nr.first_note = {n}.first_note AND nr.commit_seq > {n}.commit_seq)"
     )
 }
 
 /// Whether note `n`'s family is withdrawn: a withdrawal names its first note.
 pub fn withdrawn_note(n: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM a.note_relation nw WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {n}.first_note)"
+        "EXISTS (SELECT 1 FROM source_note_relation nw WHERE nw.kind = 'withdraws' AND nw.other = 'note:' || {n}.first_note)"
     )
 }

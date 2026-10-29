@@ -60,6 +60,31 @@ fn input_rows(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>,
         extent: None,
         observation: None,
     };
+    if let Change::Observed {
+        revision: number,
+        chain,
+    } = b.change
+    {
+        if b.continues
+            || b.new_blob.is_some()
+            || !b.blobs.is_empty()
+            || !b.parse.is_empty()
+            || b.observation.is_none()
+        {
+            return Err(StoreError::Invalid(
+                "a recorded revision observation carries only its source facts".into(),
+            ));
+        }
+        let source = crate::source::Source::of(tx)?;
+        let exact:bool=tx.query_row(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,b.length as i64],|row|row.get(0))?;
+        if !exact {
+            return Err(StoreError::Invalid(
+                "observed revision point is not stored".into(),
+            ));
+        }
+        rows.observation = observation(tx, b, "back", Some(number), seq)?;
+        return Ok((Some(chain), rows));
+    }
     let revision = |number, produced: &str, chain| Revision {
         number,
         produced: produced.to_owned(),
@@ -130,7 +155,7 @@ fn input_rows(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<(Option<i64>,
             Change::Rewritten => "rewritten",
             Change::Unchanged if b.input.arrival_rank == 2 => "imported",
             Change::Unchanged => "back",
-            Change::Reparse { .. } => unreachable!(),
+            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
             Change::Disappeared => "deleted",
         };
         rows.observation = observation(tx, b, class, Some(number), seq)?;
@@ -201,8 +226,8 @@ pub(super) fn observation(
         return Ok(None);
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
-    let zip = match o.import.as_ref().and_then(|member| member.zip.as_ref()) {
-        Some(zip) => Some(crate::zip_members::check(tx, &b.input.id, zip)?),
+    let container = match o.container.as_ref() {
+        Some(zip) => Some(crate::container_members::check(tx, &b.input.id, zip)?),
         None => None,
     };
     let f = o.facts;
@@ -230,6 +255,6 @@ pub(super) fn observation(
                 )
             })
             .transpose()?,
-        zip,
+        container,
     }))
 }

@@ -51,7 +51,12 @@ fn absent_and_present_blobs_keep_other_prepared_values() {
         normalize(&mut original, &archive, &HashMap::new()).unwrap();
         let indexed = original;
         let actual = &indexed.parse[0].output.messages[0].message;
-        if let Block::ToolResult { attachments, .. } = &mut message.blocks[2] {
+        if let Block::ToolResult {
+            reported_duration_ms: None,
+            attachments,
+            ..
+        } = &mut message.blocks[2]
+        {
             attachments[0].blob = None;
             attachments[1].size = Some(5);
         }

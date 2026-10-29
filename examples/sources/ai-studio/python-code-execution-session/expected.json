@@ -56,7 +56,10 @@
           "id": "ai-studio:22:code_execution_session#id:15:chunk-thought-1",
           "parent": "ai-studio:22:code_execution_session#id:12:chunk-user-1",
           "role": "assistant",
-          "session": "ai-studio:code_execution_session"
+          "session": "ai-studio:code_execution_session",
+          "attrs": {
+            "thinkingBudget": 64
+          }
         },
         "offset": 231
       },

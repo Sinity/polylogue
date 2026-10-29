@@ -213,7 +213,6 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
         import_id: "competing".into(),
         member: "conversations.json".into(),
         format: None,
-        zip: None,
     });
     let mut report = ImportReport::default();
     e.import_captured(

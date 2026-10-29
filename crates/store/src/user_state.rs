@@ -12,7 +12,7 @@ impl Reader<'_> {
         let packed: Option<Option<Vec<u8>>> = self
             .conn()?
             .query_row(
-                "SELECT request FROM a.client_request WHERE id = ?1",
+                "SELECT request FROM source_client_request WHERE id = ?1",
                 [id],
                 |row| row.get(0),
             )
@@ -35,7 +35,7 @@ impl Reader<'_> {
         // requests.
         let mut entries: Vec<(i64, i64, String, RegisterChange)> = Vec::new();
         let mut requests =
-            conn.prepare("SELECT id, request, commit_seq, created_at FROM a.client_request")?;
+            conn.prepare("SELECT id, request, commit_seq, created_at FROM source_client_request")?;
         let rows = requests.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,

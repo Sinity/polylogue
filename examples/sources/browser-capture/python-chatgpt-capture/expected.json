@@ -1,6 +1,43 @@
 {
   "counts": {
     "records": 10,
+    "skipped": {},
+    "unread_fields": {
+      "attachment.inline_base64": 1,
+      "attachment.provider_meta.asset_kind": 1,
+      "attachment.provider_meta.capture_source": 1,
+      "capture.capture_id": 1,
+      "capture.source": 1,
+      "execution_output.end_turn": 1,
+      "execution_output.update_time": 1,
+      "multimodal_text.content.parts[].height": 2,
+      "multimodal_text.content.parts[].width": 2,
+      "multimodal_text.end_turn": 2,
+      "multimodal_text.update_time": 2,
+      "node.children": 2,
+      "node.children[]": 8,
+      "reasoning_recap.end_turn": 1,
+      "reasoning_recap.update_time": 1,
+      "session.created_at": 1,
+      "session.model": 1,
+      "session.provider_meta.capture_fidelity": 1,
+      "session.provider_session_id": 1,
+      "session.session_kind": 1,
+      "session.title": 1,
+      "session.turns[].ordinal": 2,
+      "session.turns[].provider_turn_id": 2,
+      "session.turns[].role": 2,
+      "session.turns[].text": 2,
+      "session.turns[].timestamp": 2,
+      "session.updated_at": 1,
+      "text.end_turn": 2,
+      "text.update_time": 2,
+      "thoughts.end_turn": 1,
+      "thoughts.update_time": 1,
+      "user_editable_context.end_turn": 1,
+      "user_editable_context.update_time": 1
+    },
+    "unreadable": {},
     "used": {
       "capture": 1,
       "conversation": 1,
@@ -10,10 +47,7 @@
       "text": 2,
       "thoughts": 1,
       "user_editable_context": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -50,6 +84,12 @@
       {
         "at": "2026-07-16T16:00:00Z",
         "data": {
+          "attachments": [
+            {
+              "id": "sandbox:answer-active-message:/mnt/data/fixture-result.zip",
+              "not_fetched": null
+            }
+          ],
           "provenance": {
             "adapter_name": "chatgpt-native-v1",
             "adapter_version": "1",
@@ -64,13 +104,7 @@
           "provider_meta": {
             "capture_fidelity": "native_full"
           },
-          "schema_version": 1,
-          "attachments": [
-            {
-              "id": "sandbox:answer-active-message:/mnt/data/fixture-result.zip",
-              "not_fetched": null
-            }
-          ]
+          "schema_version": 1
         },
         "kind": "browser_capture",
         "range": [
@@ -86,6 +120,11 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:00Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {},
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Privacy-safe fixture profile.\n\nPreserve structured provider evidence.",
@@ -102,6 +141,21 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:40Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {
+              "attachments": [
+                {
+                  "file_id": "file-fixture-upload-1",
+                  "id": "fixture-upload-1",
+                  "mime_type": "text/plain",
+                  "name": "input.txt",
+                  "size": 42
+                }
+              ]
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Analyze the attached fixture and create an artifact.",
@@ -135,6 +189,14 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:42Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {
+              "model_slug": "gpt-5-6-pro",
+              "thinking_effort": "standard"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Superseded answer.",
@@ -156,6 +218,16 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:44.946Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {
+              "durationMs": 5190000,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Privacy-safe reasoning trace.",
@@ -177,6 +249,16 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:45Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {
+              "duration_ms": 5190000,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "action": "web",
@@ -203,6 +285,14 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:46Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {
+              "durationMs": 5190000,
+              "reasoning_start_time": 1784164541.690012
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "call_id": "tool-call-message",
@@ -225,6 +315,18 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T02:42:12.588194Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {
+              "durationMs": 5190000,
+              "finished_duration_sec": 5190,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_end_time": 1784169732.588194,
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Privacy-safe reasoning summary.",
@@ -247,6 +349,17 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T02:42:13Z",
+          "attrs": {
+            "author.metadata": {},
+            "metadata": {
+              "duration_ms": 5190000,
+              "finished_duration_sec": 5190,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Final answer. [Download artifact](sandbox:/mnt/data/fixture-result.zip)",

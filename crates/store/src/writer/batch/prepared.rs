@@ -19,6 +19,37 @@ impl PreparedRows {
         if !self.released {
             return Err(StoreError::Invalid("reading rows were not prepared".into()));
         }
+        for (&index, identity) in &output.imported_events {
+            if index >= output.events.len() {
+                return Err(StoreError::Invalid("imported identity has no event".into()));
+            }
+            if output.events[index].session.is_none() && output.events[index].after.is_some() {
+                return Err(StoreError::Invalid(
+                    "an imported input event cannot follow a message".into(),
+                ));
+            }
+            identity
+                .validate()
+                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        }
+        for (&index, id) in &output.event_ids {
+            if index >= output.events.len()
+                || id.is_empty()
+                || output
+                    .imported_events
+                    .get(&index)
+                    .is_some_and(|identity| &identity.id != id)
+            {
+                return Err(StoreError::Invalid(
+                    "event identity does not match its canonical fact".into(),
+                ));
+            }
+        }
+        for (&index, &order) in &output.message_order {
+            if index >= output.messages.len() || i64::try_from(order).is_err() {
+                return Err(StoreError::Invalid("invalid imported message order".into()));
+            }
+        }
         if self.messages.len() != output.messages.len()
             || self.documents.len() != output.documents.len()
             || self
@@ -140,5 +171,89 @@ impl ParseStep {
         for event in &mut self.output.events {
             event.data = Json::Null;
         }
+    }
+}
+impl ParseStep {
+    pub(in crate::writer) fn message_position(&self, index: usize) -> Result<Option<i64>> {
+        let order =
+            match self.output.message_order.get(&index) {
+                Some(&order) => Some(order),
+                None => match self.order_from {
+                    Some(from) => Some(from.checked_add(index as u64).ok_or_else(|| {
+                        StoreError::Invalid("message reading order overflow".into())
+                    })?),
+                    None => self.repeats_whole_conversations.then_some(index as u64),
+                },
+            };
+        order
+            .map(|order| {
+                i64::try_from(order).map_err(|_| {
+                    StoreError::Invalid(
+                        "message reading order is outside the stored integer range".into(),
+                    )
+                })
+            })
+            .transpose()
+    }
+}
+
+impl ParseStep {
+    /// Restores complete domain facts for the primary producer from the worker's codecs.
+    pub fn complete_output(&self) -> Result<Output> {
+        self.prepared.validate(&self.output)?;
+        let mut output = self.output.clone();
+        if !self.prepared.released {
+            return Ok(output);
+        }
+        for (row, prepared) in output.messages.iter_mut().zip(&self.prepared.messages) {
+            crate::writer::attachments::restore_values(&mut row.message.blocks, prepared)?;
+        }
+        for (row, prepared) in output.documents.iter_mut().zip(&self.prepared.documents) {
+            let mut blocks = std::mem::take(&mut row.document.blocks);
+            crate::writer::attachments::restore_values(&mut blocks, prepared)?;
+            row.document = crate::encoding::unpack_json(&prepared.fields)?;
+            row.document.blocks = blocks;
+        }
+        for (event, (_, data)) in output.events.iter_mut().zip(&self.prepared.events) {
+            event.data = crate::encoding::unpack_json(data)?;
+        }
+        Ok(output)
+    }
+}
+impl ParseStep {
+    /// Native identities are derived once from the complete reading. Confirmed
+    /// fact subsets and portable imports retain their supplied canonical IDs.
+    pub(crate) fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
+        self.prepared.validate(&self.output)?;
+        let mut occurrences = std::collections::BTreeMap::<(u64, u64), u64>::new();
+        self.output
+            .events
+            .iter()
+            .zip(&self.prepared.events)
+            .enumerate()
+            .map(|(index, (event, packed))| {
+                let occurrence = if event.session.is_none() {
+                    let next = occurrences
+                        .entry(event.range.unwrap_or_default())
+                        .or_default();
+                    let current = *next;
+                    *next = next.checked_add(1).ok_or_else(|| {
+                        StoreError::Invalid(
+                            "event occurrence is outside the stored integer range".into(),
+                        )
+                    })?;
+                    current
+                } else {
+                    0
+                };
+                if let Some(id) = self.output.event_ids.get(&index) {
+                    return Ok(id.clone());
+                }
+                if let Some(identity) = self.output.imported_events.get(&index) {
+                    return Ok(identity.id.clone());
+                }
+                super::super::resolve::event_id(input, chain, event, &packed.0, occurrence)
+            })
+            .collect()
     }
 }

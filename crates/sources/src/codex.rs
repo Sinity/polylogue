@@ -51,6 +51,9 @@ pub const LOCATIONS: &[&str] = &[
     "session_index.jsonl",
 ];
 
+mod header;
+pub use header::rollout_id;
+
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     File::from_path(path).is_some()
         && head
@@ -129,6 +132,7 @@ pub enum File {
 impl File {
     pub fn from_path(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_str()?;
+        let name = name.strip_suffix(".zst").unwrap_or(name);
         match name {
             "history.jsonl" => Some(Self::History),
             "session_index.jsonl" => Some(Self::SessionIndex),
@@ -1166,10 +1170,10 @@ impl Parser for Rollout {
                 if let (Some(cwd), Some(s)) = (str_field(p, "cwd"), parser_state.session.as_mut()) {
                     s.offer_cwd(cwd);
                 }
-                if let Some(s) = parser_state.session.as_mut() {
-                    if s.instructions.is_none() {
-                        s.instructions = str_field(p, "user_instructions").map(str::to_owned);
-                    }
+                if let Some(s) = parser_state.session.as_mut()
+                    && s.instructions.is_none()
+                {
+                    s.instructions = str_field(p, "user_instructions").map(str::to_owned);
                 }
                 self.event(parser_state, p, "turn_context", rec.at, out)
             }

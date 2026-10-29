@@ -8,7 +8,9 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "conversation.create_time.$date.$numberLong": 1
+    }
   },
   "output": {
     "background": [],

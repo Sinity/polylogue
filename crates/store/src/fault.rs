@@ -72,13 +72,18 @@ pub fn check(point: &str, subject: &str) -> crate::Result<()> {
         }
         Some(Action::Panic) => panic!("injected panic at {point} ({subject})"),
         Some(Action::StopProcess) => {
-            // The harness kills the stopped process; no Rust destructor runs.
-            unsafe {
-                libc::raise(libc::SIGSTOP);
-            }
+            stop_process();
         }
         None => {}
     }
     let _ = (point, subject);
     Ok(())
+}
+
+#[cfg(feature = "faults")]
+#[allow(unsafe_code)]
+fn stop_process() {
+    // SIGSTOP has no memory preconditions. The test parent owns this process
+    // and kills it without running Rust destructors.
+    unsafe { libc::raise(libc::SIGSTOP); }
 }

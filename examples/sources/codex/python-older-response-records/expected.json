@@ -12,12 +12,33 @@
     "skipped": {
       "state: turn-state marker of 2025 rollouts; holds no content": 3
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "state.record_type": 3
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "session": "codex:older-response-session",
+        "kind": "session_meta",
+        "at": "2025-08-01T10:00:00Z",
+        "range": [
+          0,
+          254
+        ],
+        "data": {
+          "id": "older-response-session",
+          "timestamp": "2025-08-01T10:00:00.000Z",
+          "instructions": "Synthetic project instructions.",
+          "git": {
+            "commit_hash": "0000000000000000000000000000000000000001",
+            "branch": "main",
+            "repository_url": "https://example.invalid/sample.git"
+          }
+        }
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
@@ -48,7 +69,8 @@
           "blocks": [
             {
               "text": "Listing the directory first.",
-              "type": "thinking"
+              "type": "thinking",
+              "signature": "c2FtcGxlLW9wYXF1ZQ=="
             }
           ],
           "id": "codex:rs_sample_1",
@@ -182,7 +204,10 @@
         "git_branch": "main",
         "id": "codex:older-response-session",
         "kind": "main",
-        "started": "2025-08-01T10:00:00Z"
+        "started": "2025-08-01T10:00:00Z",
+        "git_commit": "0000000000000000000000000000000000000001",
+        "instructions": "Synthetic project instructions.",
+        "repo": "https://example.invalid/sample.git"
       }
     ]
   }

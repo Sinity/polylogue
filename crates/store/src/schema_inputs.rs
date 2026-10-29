@@ -23,8 +23,8 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let row = conn.query_row(
             "SELECT i.format,r.number,r.chain,r.length,
-             coalesce((SELECT o.path FROM a.observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.rowid DESC LIMIT 1),'')
-             FROM a.input i JOIN a.revision r ON r.input=i.id
+             coalesce((SELECT o.path FROM source_observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.rowid DESC LIMIT 1),'')
+             FROM source_input i JOIN source_revision r ON r.input=i.id
              WHERE i.id=?1 AND (?2 IS NULL OR r.number=?2) ORDER BY r.number DESC LIMIT 1",
             params![input, revision], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))
         ).optional()?;

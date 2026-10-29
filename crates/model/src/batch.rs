@@ -23,6 +23,10 @@ pub struct Output {
     /// The containing input still owns the local bytes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub imported_events: BTreeMap<usize, crate::bundle::ImportedEventIdentity>,
+    /// Event identities already derived from the original complete reading.
+    /// Canonical fact subsets keep these positions when earlier facts are hidden.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub event_ids: BTreeMap<usize, String>,
     /// Explicit session reading order, indexed by message; byte ranges stay local.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_order: BTreeMap<usize, u64>,
@@ -162,6 +166,7 @@ pub struct WireShape {
     pub dynamic_map: bool,
     pub known_kinds: Vec<String>,
     pub unknown_kind_count: u64,
+    pub unused_count: u64,
     pub table: Option<String>,
     pub unknown_table_count: u64,
 }
@@ -170,6 +175,7 @@ impl WireShape {
         self.record_kind.clone_from(&other.record_kind);
         self.path.clone_from(&other.path);
         self.unknown_kind_count += other.unknown_kind_count;
+        self.unused_count += other.unused_count;
         self.unknown_table_count += other.unknown_table_count;
         if other.table.is_some() {
             self.table.clone_from(&other.table);

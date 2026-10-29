@@ -131,7 +131,8 @@ static DOCUMENT_FIELDS: Fields = Fields::new(&[
         Rule::Kept("the unsent draft in the input box"),
     ),
     ("citations", Rule::Kept("sources the replies cited")),
-]);
+])
+.for_kind("document");
 
 static CHUNK_FIELDS: Fields = Fields::new(&[
     ("inlineData.mimeType", Rule::Read(T::String)),
@@ -238,7 +239,8 @@ static CHUNK_FIELDS: Fields = Fields::new(&[
         "branchChildren",
         Rule::Kept("other prompts branched from here"),
     ),
-]);
+])
+.for_kind("chunk");
 
 impl ExportParser for AiStudio {
     fn message_range(&self, message: &Message) -> Option<std::ops::Range<u64>> {
@@ -800,7 +802,8 @@ static LISTING_FIELDS: Fields = Fields::new(&[
         Rule::Excluded("the collector's own bookkeeping"),
     ),
     ("size", Rule::Excluded("each stored revision has its size")),
-]);
+])
+.for_kind("listing");
 
 impl ExportParser for Listing {
     fn scan(

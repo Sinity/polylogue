@@ -141,3 +141,152 @@ fn structure_checks_field_types_and_reads_past_long_values() {
         "claude-ai"
     );
 }
+
+#[test]
+fn sibling_packages_route_only_their_declared_origin() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("mixed.zip");
+    zip(
+        &source,
+        &[
+            ("chatgpt/conversations.json", CHAT.as_bytes()),
+            (
+                "chatgpt/foreign.json",
+                br#"{"uuid":"foreign","chat_messages":[]}"#,
+            ),
+            (
+                "claude/conversations.json",
+                br#"[{"uuid":"claude","chat_messages":[]}]"#,
+            ),
+        ],
+    );
+    let members = stage(&source, scratch.path(), None).unwrap();
+    assert_eq!(members[1].origin.unwrap().name, "chatgpt");
+    assert_eq!(members[2].origin.unwrap().name, "export-file");
+    assert_eq!(members[3].origin.unwrap().name, "claude-ai");
+}
+
+#[test]
+fn aider_requires_its_declared_pair_and_codex_cloud_keeps_its_namespace() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("pair.zip");
+    zip(
+        &source,
+        &[(
+            ".aider.chat.history.md",
+            b"# aider chat started at 2026-01-01 10:00:00\n",
+        )],
+    );
+    assert!(
+        stage(&source, scratch.path(), None)
+            .unwrap()
+            .iter()
+            .all(|member| member.origin.is_none())
+    );
+    zip(&source,&[(".aider.llm.history",b"TO LLM 2026-01-01T10:00:00\n-------\nUSER hello\nLLM RESPONSE 2026-01-01T10:00:01\nASSISTANT hi\n"),(".aider.chat.history.md",b"# aider chat started at 2026-01-01 10:00:00\n")]);
+    let members = stage(&source, scratch.path(), None).unwrap();
+    assert_eq!(members[1].origin.unwrap().name, "aider");
+    assert_eq!(members[2].origin.unwrap().name, "aider");
+    let cloud = scratch.path().join("codex.json");
+    std::fs::write(&cloud,br#"[{"id":"task_e_one","turns":[{"id":"task_e_one~usertrn_e_one","role":"user","input_items":[]}]}]"#).unwrap();
+    assert_eq!(
+        stage(&cloud, scratch.path(), None).unwrap()[0]
+            .origin
+            .unwrap()
+            .name,
+        "codex-cloud"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_container_names_keep_distinct_original_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("names.tar");
+    let mut tar = tar::Builder::new(std::fs::File::create(&source).unwrap());
+    for (name, bytes) in [
+        (b"conversations.json".to_vec(), CHAT.as_bytes()),
+        (vec![b'a', 0xff], b"one".as_slice()),
+        (vec![b'a', 0xfe], b"two".as_slice()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            PathBuf::from(std::ffi::OsString::from_vec(name)),
+            bytes,
+        )
+        .unwrap();
+    }
+    tar.finish().unwrap();
+    drop(tar);
+    let members = stage(&source, scratch.path(), None).unwrap();
+    assert_eq!(
+        members[2].member_path_bytes.as_deref(),
+        Some([b'a', 0xff].as_slice())
+    );
+    assert_eq!(
+        members[3].member_path_bytes.as_deref(),
+        Some([b'a', 0xfe].as_slice())
+    );
+    assert_ne!(members[2].path, members[3].path);
+}
+
+#[test]
+fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("scratch");
+    std::fs::create_dir(&scratch).unwrap();
+    let sentinel = root.path().join("asset.bin");
+    std::fs::write(&sentinel, b"untouched").unwrap();
+    let source = root.path().join("names.zip");
+    zip(
+        &source,
+        &[
+            ("../conversations.json", CHAT.as_bytes()),
+            ("../asset.bin", b"archive asset"),
+            ("/absolute/conversations.json", CHAT.as_bytes()),
+        ],
+    );
+    let members = stage(&source, &scratch, None).unwrap();
+    assert_eq!(members.len(), 4);
+    assert_eq!(
+        members[1].member_path_bytes.as_deref(),
+        Some(b"../conversations.json".as_slice())
+    );
+    assert_eq!(
+        members[2].member_path_bytes.as_deref(),
+        Some(b"../asset.bin".as_slice())
+    );
+    assert_eq!(
+        members[3].member_path_bytes.as_deref(),
+        Some(b"/absolute/conversations.json".as_slice())
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+    let source = root.path().join("names.tar");
+    let mut tar = tar::Builder::new(std::fs::File::create(&source).unwrap());
+    for name in ["../conversations.json", "/absolute/conversations.json"] {
+        let mut header = tar::Header::new_gnu();
+        header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+        header.set_size(CHAT.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append(&header, CHAT.as_bytes()).unwrap();
+    }
+    tar.finish().unwrap();
+    drop(tar);
+    let members = stage(&source, &scratch, None).unwrap();
+    assert_eq!(members.len(), 3);
+    assert_eq!(
+        members[1].member_path_bytes.as_deref(),
+        Some(b"../conversations.json".as_slice())
+    );
+    assert_eq!(
+        members[2].member_path_bytes.as_deref(),
+        Some(b"/absolute/conversations.json".as_slice())
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+}
