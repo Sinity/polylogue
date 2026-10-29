@@ -20,7 +20,11 @@ fn question(text: &str) -> QueryObject {
 fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> QueryRun {
     let clock = Clock::new(
         jiff::Timestamp::from_millisecond(at).unwrap(),
-        DaySetting::new(jiff::tz::TimeZone::UTC, jiff::civil::time(4, 0, 0, 0)).unwrap(),
+        DaySetting::new(
+            jiff::tz::TimeZone::get("UTC").unwrap(),
+            jiff::civil::time(4, 0, 0, 0),
+        )
+        .unwrap(),
     );
     let authorship = compute_authorship(
         Channel::Mcp,
@@ -65,7 +69,7 @@ fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosition) -> Que
 #[test]
 fn query_objects_keep_one_semantic_body_and_reject_forged_identity() {
     let archive = WriterArchive::new();
-    let first = question("sessions | limit 5");
+    let first = question("sessions title:focus | limit 5");
     assert_eq!(
         archive.writer.query_object(first.clone()).unwrap(),
         QueryCustody::Canonical
@@ -85,7 +89,11 @@ fn query_objects_keep_one_semantic_body_and_reject_forged_identity() {
         .unwrap();
     assert_eq!(read.value, first);
     assert_eq!(read.custody, QueryCustody::Canonical);
-    let mut forged = question("sessions | limit 6");
+    let equivalent = question("sessions  title:focus | limit 5");
+    assert_eq!(equivalent.id, first.id);
+    archive.writer.query_object(equivalent).unwrap();
+    assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
+    let mut forged = question("sessions title:focus | limit 6");
     forged.id = first.id;
     assert!(archive.writer.query_object(forged).is_err());
     assert_eq!(
