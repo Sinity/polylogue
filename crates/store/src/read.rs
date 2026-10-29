@@ -44,6 +44,8 @@ mod work_status;
 pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
+mod record_seek;
+pub use record_seek::PhysicalRecordCounts;
 mod rows;
 mod signals;
 mod source_commit;
