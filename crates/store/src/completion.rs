@@ -37,3 +37,9 @@ impl CommitSubscription {
         self.wake.clone()
     }
 }
+
+mod catalog;
+pub use catalog::{CatalogReader, CatalogWriter, Kept, Metadata, Parameter, Saved, Session, Setting, ValueCount};
+
+mod projection;
+pub use projection::{SessionChange, DefinitionChange, NativeSaved, NativeKept};
