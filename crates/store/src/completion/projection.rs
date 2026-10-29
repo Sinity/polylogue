@@ -88,11 +88,11 @@ impl Reader<'_> {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, u64>(2)?,
+                    row.get::<_, i64>(2)?,
                 ))
             })? {
                 let (field, value, count) = row?;
-                item.values.entry(field).or_default().insert(value, count);
+                item.values.entry(field).or_default().insert(value, count as u64);
             }
             let prompt:Option<Vec<u8>>=conn.query_row("SELECT t.body FROM message m JOIN block b ON b.message_pk=m.pk JOIN text t ON t.id=b.text_id WHERE m.session_pk=?1 AND m.written_by='human' AND m.prompt_kind='prose' AND b.kind='text' ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx LIMIT 1",[pk],|row|row.get(0)).optional()?;
             item.first_prompt = prompt
