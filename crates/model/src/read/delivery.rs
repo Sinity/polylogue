@@ -31,11 +31,33 @@ pub struct ReadBegin {
     pub options: ReadOptions,
 }
 
+/// Portable source records and presentation-only evidence are explicit kinds.
+/// An omission never stands in for an unavailable canonical record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadRecord {
-    pub record: Record,
-    pub parts: Vec<ReadPart>,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadRecord {
+    Canonical {
+        record: Box<Record>,
+        parts: Vec<ReadPart>,
+    },
+    Presentation {
+        parts: Vec<ReadPart>,
+    },
+}
+
+impl ReadRecord {
+    pub fn record(&self) -> Option<&Record> {
+        match self {
+            Self::Canonical { record, .. } => Some(record),
+            Self::Presentation { .. } => None,
+        }
+    }
+
+    pub fn parts(&self) -> &[ReadPart] {
+        match self {
+            Self::Canonical { parts, .. } | Self::Presentation { parts, .. } => parts,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
