@@ -343,6 +343,7 @@ CREATE TABLE parse_state (
   skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
   unreadable        INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
   commit_seq INTEGER CHECK(commit_seq > 0), -- actual committed parse checkpoint, never a read position
+  checkpoint BLOB,                        -- versioned opaque parser state at this exact cursor
   PRIMARY KEY (input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work

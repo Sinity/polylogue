@@ -22,6 +22,8 @@ pub mod scope;
 
 mod behind_index;
 mod captured;
+mod parser_checkpoint;
+pub use parser_checkpoint::StoredParserCheckpoint;
 mod import_attribution;
 mod import_counts;
 pub use import_counts::ImportCounts;

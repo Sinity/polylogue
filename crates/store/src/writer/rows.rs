@@ -304,7 +304,7 @@ fn apply_rows(
             u.session.to_string(),
             u.call_id,
             ms(u.result_at),
-            u.reported_duration_ms.map(|ms|ms as i64)
+            u.reported_duration_ms.and_then(|ms| i64::try_from(ms).ok())
         ])?;
     }
     for pk in sessions.values() {
@@ -991,7 +991,7 @@ impl RowWriter<'_, '_> {
                              exit_code = ?4, result_at=?7,reported_duration_ms=?8
                          WHERE session_pk = ?5 AND call_id = ?6",
                     )?
-                    .execute(params![block_pk, outcome, reason, exit, session_pk, call_id,at,reported_duration_ms.map(|ms|ms as i64)])?;
+                    .execute(params![block_pk, outcome, reason, exit, session_pk, call_id,at,reported_duration_ms.and_then(|ms| i64::try_from(ms).ok())])?;
                 Ok(())
             }
             _ => Ok(()),
@@ -1081,7 +1081,7 @@ impl RowWriter<'_, '_> {
                     reason,
                     exit,
                     result_at,
-                    reported_duration_ms.map(|ms| ms as i64)
+                    reported_duration_ms.and_then(|ms| i64::try_from(ms).ok())
                 ])?;
         }
         Ok(())

@@ -1,5 +1,5 @@
 //! Grok CLI sessions: `~/.grok/sessions/<cwd>/<session>/chat_history.jsonl`,
-//! where `<cwd>` is the working directory percent-encoded (`%2Frealm%2F…`).
+//! where `<cwd>` is the working directory percent-encoded (`%2Fworkspace%2F…`).
 //!
 //! The history is the model's message list, appended a line at a time:
 //! `system`, `user`, `reasoning`, `assistant` (with tool calls) and
@@ -50,7 +50,7 @@ impl Place {
     }
 }
 
-/// `%2Frealm%2Fproject` → `/realm/project`.
+/// `%2Fworkspace%2Fproject` → `/workspace/project`.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

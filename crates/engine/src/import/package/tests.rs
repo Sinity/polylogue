@@ -25,7 +25,7 @@ fn import_every_structure_keeps_package_assets_and_refuses_unknown() {
             ("asset.dat", b"asset"),
         ],
     );
-    let members = stage(&source, scratch.path(), None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
     let names: Vec<_> = members.iter().map(|m| m.origin.map(|o| o.name)).collect();
     assert_eq!(
         names,
@@ -39,12 +39,22 @@ fn import_every_structure_keeps_package_assets_and_refuses_unknown() {
     let unknown = scratch.path().join("unknown.jsonl");
     std::fs::write(&unknown, "{\"type\":\"user\",\"message\":{}}\n").unwrap();
     assert!(
-        stage(&unknown, scratch.path(), None).unwrap()[0]
+        stage(
+            &unknown,
+            &Archive::at(&scratch.path().join("encoded")),
+            None
+        )
+        .unwrap()[0]
             .origin
             .is_none()
     );
     assert_eq!(
-        stage(&unknown, scratch.path(), Some("claude-code")).unwrap()[0]
+        stage(
+            &unknown,
+            &Archive::at(&scratch.path().join("encoded")),
+            Some("claude-code")
+        )
+        .unwrap()[0]
             .origin
             .unwrap()
             .name,
@@ -66,7 +76,7 @@ fn nested_tar_and_compressed_tar_keep_originals_and_decoded_members() {
     let bytes = tar.into_inner().unwrap();
     let zst = zstd::stream::encode_all(bytes.as_slice(), 1).unwrap();
     zip(&source, &[("export.tar.zst", &zst)]);
-    let members = stage(&source, scratch.path(), None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
     assert_eq!(members.len(), 3);
     assert_eq!(members[2].origin.unwrap().name, "chatgpt");
     assert_eq!(members[2].parent, Some((1, 0)));
@@ -83,7 +93,7 @@ fn corrupt_member_refuses_container_before_staging_completes() {
             ("broken.tar.zst", b"not a compressed tar"),
         ],
     );
-    assert!(stage(&source, scratch.path(), None).is_err());
+    assert!(stage(&source, &Archive::at(&scratch.path().join("encoded")), None).is_err());
 }
 
 #[test]
@@ -97,7 +107,7 @@ fn takeout_routes_only_declared_products() {
             ("Takeout/Mail/message.json", CHAT.as_bytes()),
         ],
     );
-    let members = stage(&source, scratch.path(), None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
     assert_eq!(members[0].origin.unwrap().name, "export-file");
     assert_eq!(members[1].origin.unwrap().name, "export-file");
     assert!(members[2].origin.is_none());
@@ -113,7 +123,7 @@ fn structure_checks_field_types_and_reads_past_long_values() {
     )
     .unwrap();
     assert!(
-        stage(&source, scratch.path(), None).unwrap()[0]
+        stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap()[0]
             .origin
             .is_none()
     );
@@ -126,7 +136,7 @@ fn structure_checks_field_types_and_reads_past_long_values() {
     )
     .unwrap();
     assert_eq!(
-        stage(&source, scratch.path(), None).unwrap()[0]
+        stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap()[0]
             .origin
             .unwrap()
             .name,
@@ -134,7 +144,7 @@ fn structure_checks_field_types_and_reads_past_long_values() {
     );
     std::fs::write(&source, br#"{"uuid":"one","chat_messages":[]}"#).unwrap();
     assert_eq!(
-        stage(&source, scratch.path(), None).unwrap()[0]
+        stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap()[0]
             .origin
             .unwrap()
             .name,
@@ -160,7 +170,7 @@ fn sibling_packages_route_only_their_declared_origin() {
             ),
         ],
     );
-    let members = stage(&source, scratch.path(), None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
     assert_eq!(members[1].origin.unwrap().name, "chatgpt");
     assert_eq!(members[2].origin.unwrap().name, "export-file");
     assert_eq!(members[3].origin.unwrap().name, "claude-ai");
@@ -178,19 +188,19 @@ fn aider_requires_its_declared_pair_and_codex_cloud_keeps_its_namespace() {
         )],
     );
     assert!(
-        stage(&source, scratch.path(), None)
+        stage(&source, &Archive::at(&scratch.path().join("encoded")), None)
             .unwrap()
             .iter()
             .all(|member| member.origin.is_none())
     );
     zip(&source,&[(".aider.llm.history",b"TO LLM 2026-01-01T10:00:00\n-------\nUSER hello\nLLM RESPONSE 2026-01-01T10:00:01\nASSISTANT hi\n"),(".aider.chat.history.md",b"# aider chat started at 2026-01-01 10:00:00\n")]);
-    let members = stage(&source, scratch.path(), None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
     assert_eq!(members[1].origin.unwrap().name, "aider");
     assert_eq!(members[2].origin.unwrap().name, "aider");
     let cloud = scratch.path().join("codex.json");
     std::fs::write(&cloud,br#"[{"id":"task_e_one","turns":[{"id":"task_e_one~usertrn_e_one","role":"user","input_items":[]}]}]"#).unwrap();
     assert_eq!(
-        stage(&cloud, scratch.path(), None).unwrap()[0]
+        stage(&cloud, &Archive::at(&scratch.path().join("encoded")), None).unwrap()[0]
             .origin
             .unwrap()
             .name,
@@ -223,7 +233,7 @@ fn non_utf8_container_names_keep_distinct_original_bytes() {
     }
     tar.finish().unwrap();
     drop(tar);
-    let members = stage(&source, scratch.path(), None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
     assert_eq!(
         members[2].member_path_bytes.as_deref(),
         Some([b'a', 0xff].as_slice())
@@ -251,7 +261,7 @@ fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
             ("/absolute/conversations.json", CHAT.as_bytes()),
         ],
     );
-    let members = stage(&source, &scratch, None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch), None).unwrap();
     assert_eq!(members.len(), 4);
     assert_eq!(
         members[1].member_path_bytes.as_deref(),
@@ -278,7 +288,7 @@ fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
     }
     tar.finish().unwrap();
     drop(tar);
-    let members = stage(&source, &scratch, None).unwrap();
+    let members = stage(&source, &Archive::at(&scratch), None).unwrap();
     assert_eq!(members.len(), 3);
     assert_eq!(
         members[1].member_path_bytes.as_deref(),
@@ -289,4 +299,102 @@ fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
         Some(b"/absolute/conversations.json".as_slice())
     );
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+}
+
+#[test]
+fn package_preflight_keeps_only_encoded_members_and_releases_refused_or_dropped_custody() {
+    use std::io::Read;
+    let root = tempfile::tempdir().unwrap();
+    let archive = Archive::at(&root.path().join("archive"));
+    let source = root.path().join("export.zip");
+    let asset = vec![b'q'; 4 * 1024 * 1024];
+    zip(
+        &source,
+        &[
+            ("conversations.json", CHAT.as_bytes()),
+            ("asset.bin", &asset),
+        ],
+    );
+    let members = stage(&source, &archive, None).unwrap();
+    assert_eq!(members.len(), 3);
+    let mut restored = Vec::new();
+    members[2]
+        .bytes
+        .reader()
+        .unwrap()
+        .read_to_end(&mut restored)
+        .unwrap();
+    assert_eq!(restored, asset);
+    // Every named private file is an encoded preparation. No expanded asset or
+    // tar stream is written as a second plaintext scratch representation.
+    let parts = archive.staging_dir();
+    let files: Vec<_> = std::fs::read_dir(&parts).unwrap().collect();
+    assert_eq!(files.len(), 3);
+    for file in files {
+        let file = std::fs::File::open(file.unwrap().path()).unwrap();
+        let prepared = hashed_blobs::Prepared::inspect(file, None, Default::default()).unwrap();
+        assert!(prepared.stored_len() < 64 * 1024);
+    }
+    drop(members);
+    assert_eq!(std::fs::read_dir(&parts).unwrap().count(), 0);
+    let broken = root.path().join("broken.zip");
+    std::fs::write(&broken, b"PK\x03\x04broken synthetic archive").unwrap();
+    assert!(stage(&broken, &archive, None).is_err());
+    assert_eq!(std::fs::read_dir(&parts).unwrap().count(), 0);
+}
+
+#[test]
+#[allow(unsafe_code)]
+fn descriptor_window_child() {
+    if std::env::var_os("POLYLOGUE_PACKAGE_FD_CHILD").is_none() {
+        return;
+    }
+    // This resource limit applies only to the synthetic child process.
+    let limit = libc::rlimit {
+        rlim_cur: 128,
+        rlim_max: 128,
+    };
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+    let home = polylogue_testkit::ClaudeHome::new();
+    let source = home.dir.path().join("many.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
+    zip.start_file(
+        "conversations.json",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(CHAT.as_bytes()).unwrap();
+    for index in 0..512 {
+        zip.start_file(
+            format!("asset-{index}.txt"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        write!(zip, "synthetic asset {index}").unwrap();
+    }
+    zip.finish().unwrap();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
+    let report = engine.import(&[source]).unwrap();
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    assert_eq!(report.imported.len(), 514);
+}
+
+#[test]
+fn package_import_respects_a_bounded_descriptor_window() {
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "import::package::tests::descriptor_window_child",
+            "--nocapture",
+        ])
+        .env("POLYLOGUE_PACKAGE_FD_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "descriptor child failed: {}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

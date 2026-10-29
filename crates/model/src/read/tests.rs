@@ -223,3 +223,16 @@ fn document_dialogue_refuses_by_target_without_projecting_its_positions() {
         matches!(error,ReadError::UnsupportedTarget{accepted_views,..} if accepted_views==vec![View::Transcript,View::Raw])
     );
 }
+
+#[test]
+fn expansion_headers_is_the_only_public_collapsed_spelling() {
+    assert_eq!(
+        serde_json::to_string(&Expansion::Collapsed).unwrap(),
+        "\"headers\""
+    );
+    assert_eq!(
+        serde_json::from_str::<Expansion>("\"headers\"").unwrap(),
+        Expansion::Collapsed
+    );
+    assert!(serde_json::from_str::<Expansion>("\"collapsed\"").is_err());
+}

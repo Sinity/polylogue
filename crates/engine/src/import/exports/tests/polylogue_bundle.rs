@@ -5,9 +5,9 @@ fn authored_bundle() -> Vec<u8> {
     // to the current program accepting this historical setting.
     let manifest = json!({"record":"manifest","data":{
         "format":"polylogue-bundle","version":1,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
-        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"caught_up":true,
+        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"caught_up":true,"currency":{"mode":"standalone"},
         "counts":{"sessions":1,"messages":0,"documents":0,"events":0,"links":0,"authored":1,"variants":0,"variant_parts":0,"blobs":0},
-        "flags":{"format":"jsonl","view":"full","with_blobs":false,"inherited":false,"assertions":true},"enabled_variants":[],"author":"operator"}});
+        "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"assertions":true}},"enabled_variants":[],"author":"operator"}});
     let session = json!({"record":"session","data":{"ref":"session:claude-code:bundle-session","commit":1,"session":{"id":"claude-code:bundle-session","kind":"main","cwd":[]}}});
     let authored = json!({"record":"authored","data":{"ref":"request:setting-request","commit":2,"prepared":{
         "request":{"id":"setting-request","machine":"exported-machine","at":"2026-01-01T00:00:00Z","write":{"write":"set_setting","key":"day.zone","value":"UTC","author":"operator"}},
