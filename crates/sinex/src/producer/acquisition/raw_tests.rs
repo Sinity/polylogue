@@ -93,6 +93,7 @@ fn offline_raw_cursor_spans_pages_and_restarts_without_source_or_parser_authorit
     let cursor = sinex.raw_acquisition_cursor(&generation).unwrap().unwrap();
     assert_eq!(cursor.range(), RawRange { start: 0, end: 35 });
     assert!(cursor.is_complete_stream());
+    assert_eq!(cursor.disposition(), Some(CaptureDisposition::Prepared));
     let last = sinex
         .pending_group_headers(&write.identity, Some(33), 1)
         .unwrap();
@@ -163,6 +164,10 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
     }
     let cursor = sinex.raw_acquisition_cursor(&generation).unwrap().unwrap();
     assert!(cursor.is_complete_stream());
+    assert_eq!(
+        cursor.disposition(),
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
     assert_eq!(cursor.last_body(), page.headers[2].identity);
     assert_eq!(
         sinex
