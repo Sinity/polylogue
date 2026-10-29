@@ -95,6 +95,7 @@ impl Product {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Confirmed {
     pub position: i64,
+    pub output_index: u64,
     pub event: String,
     pub change: ConfirmedChange,
 }
