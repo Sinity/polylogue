@@ -161,6 +161,12 @@ impl crate::primary::Sinex for OfflineProducer {
     ) -> Result<polylogue_model::user::UserOutcome> {
         Self::unavailable()
     }
+    fn visit_pending_products(
+        &self,
+        _: &mut dyn FnMut(&crate::primary::Product) -> Result<()>,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn visit_pending_requests(
         &self,
         _: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,
