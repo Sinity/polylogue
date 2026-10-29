@@ -109,6 +109,7 @@ pub enum Cli {
 pub type StreamProducer = fn(
     &Request,
     &crate::daemon::service::Daemon,
+    &polylogue_model::authorship::Authorship,
     &mut dyn std::io::Write,
 ) -> Option<Result<(), crate::daemon::Response>>;
 
@@ -135,6 +136,7 @@ pub struct Command {
         fn(std::sync::Arc<crate::daemon::service::Daemon>, &mut command_surface::OperationTable),
     >,
     pub typed_schemas: Option<fn() -> (Value, Value)>,
+    pub build_typed: Option<fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>>,
     /// The command-line words (`note add`); the MCP tool joins them with
     /// `_`, the HTTP route with `/`.
     pub name: &'static str,
@@ -307,6 +309,7 @@ const CLI: Command = Command {
     failures: &command_surface::FailureKind::ALL,
     register: None,
     typed_schemas: None,
+    build_typed: None,
     name: "",
     help: "",
     args: &[],
@@ -365,6 +368,7 @@ macro_rules! typed_command {
         Command {
             name: $name,
             register: Some(crate::protocol::operations::register::<$marker>),
+            build_typed: Some(crate::protocol::operations::build::<$marker>),
             typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
             $($fields)*
         }
@@ -645,45 +649,36 @@ const WRITTEN: &[Command] = &[
         http: true,
         ..CLI
     },
-    Command {
+    typed_command!(ReadCommand, crate::protocol::read::Arguments, crate::protocol::read::Answer, {
         name: "read",
-        help: "Read one session, text document or event",
+        reason: "Render a selected query or reference and transfer its canonical records",
+        latency: command_surface::LatencyClass::Read,
+        help: "Read a query or reference; write a consistent bundle with --to DIR",
         args: &[
-            pos(
-                "session",
-                Kind::Text,
-                "A session ID, `document:origin:native_id`, or `event:ID` from a query",
-            ),
-            Arg {
-                default: Some("full"),
-                ..opt("view", Kind::Choice(VIEWS), "What to show")
-            },
-            opt(
-                "format",
-                Kind::Choice(FORMATS),
-                "Default: typed JSON for programs (`--json`, MCP, HTTP), else terminal text",
-            ),
-            opt("budget", Kind::Integer, "Page budget in estimated tokens"),
-            CURSOR,
-            opt(
-                "message",
-                Kind::Text,
-                "Start at this message in the selected session",
-            ),
-            opt("slices", Kind::Bool, "Include masked block slices"),
-            opt("latest", Kind::Bool, "Start at the latest message"),
-            opt(
-                "with_parents",
-                Kind::Bool,
-                "Include messages inherited from a parent session",
-            ),
+            pos("target", Kind::Text, "A query or canonical reference"),
+            Arg { default: Some("transcript"), ..opt("view", Kind::Choice(VIEWS), "The reading view") },
+            opt("format", Kind::Choice(FORMATS), "The output format"),
+            opt("delivery", Kind::Choice(&["page", "stream"]), "Page or finite SSE transfer"),
+            opt("budget", Kind::Integer, "Page budget in estimated tokens"), CURSOR,
+            opt("tools", Kind::Choice(&["none", "headers", "full"]), "Tool output expansion"),
+            opt("thinking", Kind::Choice(&["none", "headers", "full"]), "Thinking expansion"),
+            opt("harness", Kind::Choice(&["none", "headers", "full"]), "Harness expansion"),
+            Arg { default: Some("100"), ..opt("output_lines", Kind::Integer, "Tool output head and tail lines; zero keeps all lines") },
+            opt("inherited", Kind::Bool, "Include inherited messages"),
+            opt("branches", Kind::Bool, "Include branches"),
+            opt("turns", Kind::Bool, "Show turn boundaries"),
+            opt("assertions", Kind::Bool, "Include assertions (default true)"),
+            opt("for_others", Kind::Bool, "Prepare a reading for another caller"),
+            opt("variant", Kind::List, "Ordered variant layers"),
+            opt("with_blobs", Kind::Bool, "Include stored blob bytes in a stream"),
+            Arg { cli_only: true, ..opt("to", Kind::Text, "Write a bundle directory") },
+            Arg { cli_only: true, ..opt("no_inherited", Kind::Bool, "Omit inherited messages from the bundle") },
+            Arg { cli_only: true, ..opt("no_assertions", Kind::Bool, "Omit assertions from the bundle") },
         ],
-        action: Action::Request(requests::read),
-        print: print::read,
-        mcp: true,
-        http: true,
+        action: Action::Stream { build: requests::read, produce: crate::daemon::service::read::produce, cli: crate::cli::write_out::run },
+        print: print::read, mcp: true, http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "attachment",
         help: "Read a bounded range of the stored bytes for a message attachment",

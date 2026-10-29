@@ -269,6 +269,7 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
 pub(crate) fn change_feed(
     request: &Request,
     d: &Daemon,
+    _authorship: &polylogue_model::authorship::Authorship,
     output: &mut dyn std::io::Write,
 ) -> Option<Result<(), Response>> {
     let Request::Changes { since } = request else {

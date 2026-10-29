@@ -315,6 +315,17 @@ pub enum Request {
 }
 
 impl Request {
+    pub(crate) fn streaming(&self) -> bool {
+        matches!(
+            self,
+            Self::Changes { .. }
+                | Self::Read {
+                    delivery: polylogue_model::read::ReadDelivery::Stream,
+                    ..
+                }
+        )
+    }
+
     /// Whether the request can run without writing to the archive.
     /// Conditional delivery and setting writes are resolved from their values.
     pub(crate) fn read_only(&self) -> bool {

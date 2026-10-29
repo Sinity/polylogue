@@ -22,11 +22,12 @@ pub fn error(output: &mut dyn Write, response: &Response) -> io::Result<()> {
 pub fn produce(
     request: &Request,
     daemon: &Daemon,
+    authorship: &polylogue_model::authorship::Authorship,
     output: &mut dyn Write,
 ) -> Option<Result<(), Response>> {
     crate::commands::COMMANDS.iter().find_map(|command| {
         if let crate::commands::Action::Stream { produce, .. } = command.action {
-            produce(request, daemon, output)
+            produce(request, daemon, authorship, output)
         } else {
             None
         }
