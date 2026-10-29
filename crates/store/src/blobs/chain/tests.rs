@@ -44,10 +44,10 @@ impl Fixture {
         let prepared = rows
             .iter()
             .map(|(_, _, _, bytes)| preparation.plain(*bytes, crate::blobs::LEVEL).unwrap())
-            .collect();
+            .collect::<Vec<_>>();
         let mut writer = crate::blobs::open_writer(&self.conn, self._dir.path()).unwrap();
         let group = writer
-            .append_group(prepared, |hash| {
+            .append_group(prepared.into_iter().map(Ok), |hash| {
                 crate::blobs::load_extent(&self.conn, "", hash)
                     .map_err(|e| hashed_blobs::Error::Refused(e.to_string()))
             })

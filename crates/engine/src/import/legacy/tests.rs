@@ -1,4 +1,14 @@
 use super::*;
+fn decoded(member: &package::Member) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    member
+        .bytes
+        .reader()
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    bytes
+}
 const FULL:&[u8]=b"{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"legacy\",\"message\":{\"role\":\"user\",\"content\":\"one\"}}\n";
 const APPEND:&[u8]=b"{\"type\":\"assistant\",\"uuid\":\"a1\",\"sessionId\":\"legacy\",\"message\":{\"role\":\"assistant\",\"content\":\"two\"}}\n";
 fn fixture(root: &Path) {
@@ -21,14 +31,13 @@ fn predecessor_blobs_keep_original_fragments_and_join_only_recorded_append_offse
     let root = tempfile::tempdir().unwrap();
     let scratch = tempfile::tempdir().unwrap();
     fixture(root.path());
-    let members = stage(root.path(), scratch.path()).unwrap().unwrap();
+    let members = stage(root.path(), &Archive::at(scratch.path()))
+        .unwrap()
+        .unwrap();
     assert_eq!(members.len(), 4);
-    assert_eq!(std::fs::read(&members[1].bytes).unwrap(), FULL);
-    assert_eq!(std::fs::read(&members[2].bytes).unwrap(), APPEND);
-    assert_eq!(
-        std::fs::read(&members[3].bytes).unwrap(),
-        [FULL, APPEND].concat()
-    );
+    assert_eq!(decoded(&members[1]), FULL);
+    assert_eq!(decoded(&members[2]), APPEND);
+    assert_eq!(decoded(&members[3]), [FULL, APPEND].concat());
     assert_eq!(members[3].origin.unwrap().name, "claude-code");
     let db = rusqlite::Connection::open(root.path().join("source.db")).unwrap();
     db.execute(
@@ -37,7 +46,7 @@ fn predecessor_blobs_keep_original_fragments_and_join_only_recorded_append_offse
     )
     .unwrap();
     assert!(
-        stage(root.path(), scratch.path())
+        stage(root.path(), &Archive::at(scratch.path()))
             .err()
             .unwrap()
             .to_string()

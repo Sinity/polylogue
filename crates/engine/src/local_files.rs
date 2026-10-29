@@ -17,23 +17,21 @@ fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> st
                     }
                 }
             }
-            if o.get("type").and_then(Json::as_str) == Some("local_image") {
-                if let Some(path) = o.get("path").and_then(Json::as_str) {
-                    emit(path)?;
-                }
+            if o.get("type").and_then(Json::as_str) == Some("local_image")
+                && let Some(path) = o.get("path").and_then(Json::as_str)
+            {
+                emit(path)?;
             }
             if matches!(
                 o.get("type").and_then(Json::as_str),
                 Some("input_image" | "image")
-            ) {
-                if let Some(path) = o
-                    .get("image_url")
-                    .or_else(|| o.get("url"))
-                    .and_then(Json::as_str)
-                    .filter(|p| p.starts_with("file://"))
-                {
-                    emit(path)?;
-                }
+            ) && let Some(path) = o
+                .get("image_url")
+                .or_else(|| o.get("url"))
+                .and_then(Json::as_str)
+                .filter(|p| p.starts_with("file://"))
+            {
+                emit(path)?;
             }
             for value in o.values() {
                 visit(value, emit)?;
@@ -89,15 +87,13 @@ impl Engine {
                 if matches!(
                     value.get("type").and_then(Json::as_str),
                     Some("session_meta" | "turn_context" | "older_header")
-                ) {
-                    if let Some(cwd) = value
-                        .get("payload")
-                        .and_then(|p| p.get("cwd"))
-                        .and_then(Json::as_str)
-                    {
-                        // A relative recorded cwd is insufficient to resolve a ref.
-                        directory = Some(PathBuf::from(cwd));
-                    }
+                ) && let Some(cwd) = value
+                    .get("payload")
+                    .and_then(|p| p.get("cwd"))
+                    .and_then(Json::as_str)
+                {
+                    // A relative recorded cwd is insufficient to resolve a ref.
+                    directory = Some(PathBuf::from(cwd));
                 }
                 visit(&value, &mut |raw| {
                     references += 1;

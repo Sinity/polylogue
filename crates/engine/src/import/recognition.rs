@@ -123,10 +123,9 @@ impl<'de> Deserialize<'de> for Shape {
 
 pub(super) fn declared(
     path: &Path,
-    file: &mut std::fs::File,
+    file: &mut (impl std::io::Read + std::io::Seek),
     format: Option<&str>,
 ) -> std::io::Result<Option<&'static OriginSpec>> {
-    use std::io::{Read, Seek};
     file.rewind()?;
     let mut head = [0; 64];
     let n = file.read(&mut head)?;
@@ -214,10 +213,10 @@ pub(super) fn declared(
         return Ok(polylogue_sources::origin::by_name(name));
     }
     for name in ["browser-capture", "hook-spool", "hermes", "claude-design"] {
-        if let Some(origin) = polylogue_sources::origin::by_name(name) {
-            if (origin.recognize)(path, &head[..n]) {
-                return Ok(Some(origin));
-            }
+        if let Some(origin) = polylogue_sources::origin::by_name(name)
+            && (origin.recognize)(path, &head[..n])
+        {
+            return Ok(Some(origin));
         }
     }
     // Outside a tool's root its preserved layout is the declaration.

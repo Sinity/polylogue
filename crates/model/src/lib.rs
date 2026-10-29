@@ -14,7 +14,7 @@ pub mod bundle;
 pub mod capture;
 pub mod capture_log;
 mod change_position;
-mod clock;
+pub mod clock;
 pub mod currency;
 pub use clock::WallClock;
 pub mod command;
@@ -67,7 +67,7 @@ pub use message::{
 pub use note::{NewNote, Note, NoteKind, Relation};
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
-pub use time::{Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
+pub use time::{LogicalDay, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};

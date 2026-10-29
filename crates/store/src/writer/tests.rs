@@ -8,6 +8,7 @@ mod extent_checkpoint;
 mod input_events;
 mod resolution;
 mod sparse_projection;
+mod tool_durations;
 
 fn write_test_rows(
     tx: &Transaction<'_>,

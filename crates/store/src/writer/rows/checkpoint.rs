@@ -8,6 +8,7 @@ struct State {
     status: String,
     detail: Option<String>,
     counts: [i64; 4],
+    checkpoint: Option<Vec<u8>>,
 }
 
 pub(super) struct Stored {
@@ -24,8 +25,8 @@ impl Stored {
 }
 
 pub(super) fn read(tx: &Transaction<'_>, input: i64, chain: i64) -> Result<Option<Stored>> {
-    Ok(tx.query_row("SELECT parsed_upto,reading_version,status,detail,records,used,skipped,unreadable,commit_seq FROM parse_state WHERE input_pk=?1 AND chain=?2",
-        params![input,chain],|r|Ok(Stored{state:State {cursor:r.get::<_,i64>(0)? as u64,version:r.get(1)?,status:r.get(2)?,detail:r.get(3)?,counts:[r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?]},commit:r.get(8)?})).optional()?)
+    Ok(tx.query_row("SELECT parsed_upto,reading_version,status,detail,records,used,skipped,unreadable,commit_seq,checkpoint FROM parse_state WHERE input_pk=?1 AND chain=?2",
+        params![input,chain],|r|Ok(Stored{state:State {cursor:r.get::<_,i64>(0)? as u64,version:r.get(1)?,status:r.get(2)?,detail:r.get(3)?,counts:[r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?],checkpoint:r.get(9)?},commit:r.get(8)?})).optional()?)
 }
 
 pub(super) struct Update {
@@ -74,12 +75,24 @@ impl Update {
         } else {
             "parsing"
         };
+        if let Some(checkpoint) = &step.checkpoint
+            && !checkpoint.matches(&step.reading_version, step.parsed_upto)
+        {
+            return Err(StoreError::Invalid(
+                "parser checkpoint differs from its reading cursor".into(),
+            ));
+        }
         let state = State {
             cursor: step.parsed_upto,
             version: step.reading_version.clone(),
             status: status.into(),
             detail: (status == "waiting").then(|| batch.length.to_string()),
             counts: totals,
+            checkpoint: step
+                .checkpoint
+                .as_ref()
+                .map(crate::encoding::pack_json)
+                .transpose()?,
         };
         let commit = if confirmed {
             receipt
@@ -95,12 +108,12 @@ impl Update {
     }
 
     pub(super) fn write(&self, tx: &Transaction<'_>, input: i64, chain: i64) -> Result<()> {
-        tx.prepare_cached("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,records,used,skipped,unreadable,detail,reading_version,commit_seq)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+        tx.prepare_cached("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,records,used,skipped,unreadable,detail,reading_version,commit_seq,checkpoint)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
             ON CONFLICT(input_pk,chain) DO UPDATE SET status=excluded.status,parsed_upto=excluded.parsed_upto,
             records=excluded.records,used=excluded.used,skipped=excluded.skipped,unreadable=excluded.unreadable,
-            detail=excluded.detail,reading_version=excluded.reading_version,commit_seq=excluded.commit_seq")?
-            .execute(params![input,chain,self.state.status,self.state.cursor as i64,self.state.counts[0],self.state.counts[1],self.state.counts[2],self.state.counts[3],self.state.detail,self.state.version,self.commit])?;
+            detail=excluded.detail,reading_version=excluded.reading_version,commit_seq=excluded.commit_seq,checkpoint=excluded.checkpoint")?
+            .execute(params![input,chain,self.state.status,self.state.cursor as i64,self.state.counts[0],self.state.counts[1],self.state.counts[2],self.state.counts[3],self.state.detail,self.state.version,self.commit,self.state.checkpoint])?;
         Ok(())
     }
 }

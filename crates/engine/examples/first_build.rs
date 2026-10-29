@@ -149,7 +149,7 @@ fn session_file(path: &Path, session: &str, target: u64, rng: &mut Rng) -> std::
     let base = |kind: &str, uuid: &str, parent: &serde_json::Value| {
         serde_json::json!({
             "type": kind, "uuid": uuid, "parentUuid": parent, "sessionId": session,
-            "timestamp": "2026-09-01T10:00:00.000Z", "cwd": "/realm/project/polylogue/repo",
+            "timestamp": "2026-09-01T10:00:00.000Z", "cwd": "/workspace/project",
             "gitBranch": "master", "version": "2.1.200", "isSidechain": false,
             "userType": "external",
         })
