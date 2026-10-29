@@ -89,7 +89,8 @@ pub struct ExecutionBinding {
     pub replay: ReplayBinding,
     pub query_options: QueryExecutionOptions,
     pub presentation: ExecutionPresentation,
-    /// The original trusted transport envelope. Internal calls may have none.
+    /// Original trusted envelope without credentials; provenance grants no authority.
+    /// Internal calls may have none. Replay uses current operation validation.
     pub accepted_request: Option<serde_json::Value>,
 }
 
@@ -121,10 +122,45 @@ pub struct QueryRun {
     pub read_at: ChangePosition,
     pub machine: String,
     pub authorship: Authorship,
+    pub binding: ExecutionBinding,
+}
+
+/// Completion never replaces the immutable execution inputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryRunOutcome {
+    pub run: String,
+    pub binding_hash: crate::BlobHash,
+    pub at: Timestamp,
     pub outcome: RunOutcome,
     pub count: Option<u64>,
     pub exact: bool,
-    pub replay: ReplayBinding,
+}
+
+impl ExecutionBinding {
+    /// Stable identity across JSON map insertion orders and feature unions.
+    pub fn hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
+        fn ordered(value: serde_json::Value) -> serde_json::Value {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    let fields: BTreeMap<_, _> = fields.into_iter().collect();
+                    serde_json::Value::Object(
+                        fields
+                            .into_iter()
+                            .map(|(key, value)| (key, ordered(value)))
+                            .collect(),
+                    )
+                }
+                serde_json::Value::Array(values) => {
+                    serde_json::Value::Array(values.into_iter().map(ordered).collect())
+                }
+                value => value,
+            }
+        }
+        let mut bytes = b"polylogue-execution-binding-v1\0".to_vec();
+        bytes.extend(serde_json::to_vec(&ordered(serde_json::to_value(self)?))?);
+        Ok(crate::BlobHash::of(&bytes))
+    }
 }
 
 /// Composition is recorded in semantic question coordinates, not mutable names.
