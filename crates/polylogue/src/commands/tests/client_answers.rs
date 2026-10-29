@@ -18,6 +18,10 @@ const ASKED: &[(&str, &[&str])] = &[
     ("explain", &["syntax"]),
     ("schema infer", &[]),
     ("schema unread", &[]),
+    (
+        "complete",
+        &["sessions where ori | count", "--position", "18"],
+    ),
     ("list", &[]),
     ("read", &["claude-code:s1"]),
     ("outline", &["claude-code:s1"]),
