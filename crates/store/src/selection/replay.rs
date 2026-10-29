@@ -89,7 +89,7 @@ impl Reader<'_> {
             },
         )?;
         // Only the one bounded read-position codec is accepted on this path.
-        polylogue_model::read::ReadPosition::from_order_position(&opened.after)
+        polylogue_model::read::ReadSeek::from_order_position(&opened.after)
             .map_err(|error| invalid("invalid_cursor", error.to_string()))?;
         let captured = &opened.context;
         if captured.clock.day.wire() != context.current_clock.day.wire() {

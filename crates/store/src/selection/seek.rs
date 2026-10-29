@@ -32,6 +32,36 @@ impl Reader<'_> {
         })
     }
 
+    /// Visit rows strictly before `end_row`, in reverse prepared order. The
+    /// anchor row's record/item boundary is handled by the read layout caller.
+    /// Only private order metadata is inspected while resolving the anchor.
+    pub fn visit_selection_before<E>(
+        &self,
+        selection: &PreparedSelection<'_>,
+        end_row: u64,
+        near: Option<&NearFn<'_>>,
+        mut visit: impl FnMut(u64, SelectionRow) -> Result<ControlFlow<()>, E>,
+    ) -> Result<(), E>
+    where
+        E: From<SelectionError>,
+    {
+        self.in_selection_context(selection, near, || {
+            if end_row == 0 {
+                return Ok(());
+            }
+            let before = self
+                .selection_order_at(selection, end_row)
+                .map_err(E::from)?;
+            let mut ordinal = end_row;
+            self.visit_selection_scoped_in_direction(selection, Some(&before), true, &mut |row| {
+                ordinal = ordinal
+                    .checked_sub(1)
+                    .ok_or_else(|| E::from(invalid("store", "selected row ordinal underflow")))?;
+                visit(ordinal, row)
+            })
+        })
+    }
+
     fn selection_order_at(
         &self,
         selection: &PreparedSelection<'_>,

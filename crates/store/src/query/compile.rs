@@ -186,9 +186,13 @@ fn hidden_order(order: &[String], prefix: &str) -> (Vec<String>, Vec<OrderKey>) 
 
 /// An ORDER BY list over order keys.
 fn order_by(keys: &[OrderKey]) -> String {
+    order_by_in_direction(keys, false)
+}
+
+fn order_by_in_direction(keys: &[OrderKey], reverse: bool) -> String {
     keys.iter()
         .map(|k| {
-            let dir = if k.descending { " DESC" } else { "" };
+            let dir = if k.descending ^ reverse { " DESC" } else { "" };
             format!("\"{}\"{dir}", k.column)
         })
         .collect::<Vec<_>>()
@@ -211,15 +215,19 @@ impl Program {
     /// after a row whose order-key values are bound after `params`, one per
     /// key; the page size is bound last.
     pub fn page_sql(&self, after: bool) -> String {
+        self.page_sql_in_direction(after, false)
+    }
+
+    pub(crate) fn page_sql_in_direction(&self, after: bool, reverse: bool) -> String {
         let n = self.params.len();
         let mut sql = format!("SELECT * FROM ({})", self.sql);
         if after && !self.order.is_empty() {
             sql.push_str(" WHERE ");
-            sql.push_str(&self.after_condition(n));
+            sql.push_str(&self.after_condition(n, reverse));
         }
         if !self.order.is_empty() {
             sql.push_str(" ORDER BY ");
-            sql.push_str(&order_by(&self.order));
+            sql.push_str(&order_by_in_direction(&self.order, reverse));
         }
         let limit = if after {
             n + self.order.len() + 1
@@ -231,8 +239,9 @@ impl Program {
     }
 
     /// Rows after the bound key values `?{first+1}`...: equal on every
-    /// earlier key and after on this one, for some key. NULL sorts first.
-    fn after_condition(&self, first: usize) -> String {
+    /// earlier key and after on this one, for some key. Reversing the order
+    /// reverses NULL placement together with each value comparison.
+    fn after_condition(&self, first: usize, reverse: bool) -> String {
         let mut any = vec![];
         for (i, key) in self.order.iter().enumerate() {
             let mut all: Vec<String> = self.order[..i]
@@ -241,7 +250,7 @@ impl Program {
                 .map(|(j, k)| format!("\"{}\" IS ?{}", k.column, first + j + 1))
                 .collect();
             let (column, value) = (format!("\"{}\"", key.column), format!("?{}", first + i + 1));
-            all.push(if key.descending {
+            all.push(if key.descending ^ reverse {
                 format!("({column} < {value} OR ({column} IS NULL AND {value} IS NOT NULL))")
             } else {
                 format!("({column} > {value} OR ({value} IS NULL AND {column} IS NOT NULL))")

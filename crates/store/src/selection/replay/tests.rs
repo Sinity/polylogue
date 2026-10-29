@@ -118,17 +118,20 @@ fn acknowledged_execution() -> (
             run,
             Continuation {
                 context,
-                after: polylogue_model::read::ReadPosition {
-                    selection: polylogue_model::read::SelectionLocator {
-                        row: 0,
-                        record: polylogue_model::read::ReadRecordLocator {
-                            kind: polylogue_model::read::ReadRecordKind::Presentation,
-                            ordinal: 0,
+                after: polylogue_model::read::ReadSeek {
+                    direction: polylogue_model::read::ReadDirection::After,
+                    anchor: polylogue_model::read::ReadPosition {
+                        selection: polylogue_model::read::SelectionLocator {
+                            row: 0,
+                            record: polylogue_model::read::ReadRecordLocator {
+                                kind: polylogue_model::read::ReadRecordKind::Presentation,
+                                ordinal: 0,
+                            },
                         },
+                        item: 0,
+                        character: 0,
+                        item_hash: polylogue_model::BlobHash::of(b"synthetic item"),
                     },
-                    item: 0,
-                    character: 0,
-                    item_hash: polylogue_model::BlobHash::of(b"synthetic item"),
                 }
                 .to_order_position()
                 .unwrap(),
@@ -254,4 +257,39 @@ fn an_authentic_root_seal_cannot_authorize_an_unbounded_legacy_position() {
         .err()
         .unwrap();
     assert_eq!(error.kind(), "invalid_cursor");
+}
+
+#[test]
+fn authenticated_reverse_intent_is_preserved_and_flat_positions_are_refused() {
+    use polylogue_model::read::{ReadDirection, ReadSeek};
+    let (_dir, _lock, pool, options, run, mut continuation) = acknowledged_execution();
+    let reader = pool.reader().unwrap();
+    let mut seek = ReadSeek::from_order_position(&continuation.after).unwrap();
+    seek.direction = ReadDirection::Before;
+    continuation.after = seek.to_order_position().unwrap();
+    let open = |continuation: &Continuation| {
+        let cursor = CursorSeal::new(reader.cursor_key().unwrap())
+            .seal(continuation)
+            .unwrap();
+        reader.prepare_authenticated_run_selection(
+            &cursor,
+            &run.id,
+            None,
+            RunReplayContext {
+                current_clock: &options.clock,
+                current_versions: &BTreeMap::new(),
+                ranking_identity: None,
+                page_size: None,
+                near: None,
+            },
+        )
+    };
+    let (selection, position) = open(&continuation).unwrap();
+    assert_eq!(ReadSeek::from_order_position(&position).unwrap(), seek);
+    assert_eq!(
+        selection.authenticated_execution(&reader).unwrap().0,
+        &run.id
+    );
+    continuation.after.values = vec![serde_json::to_value(seek.anchor).unwrap()];
+    assert_eq!(open(&continuation).err().unwrap().kind(), "invalid_cursor");
 }

@@ -409,6 +409,19 @@ impl Reader<'_> {
     where
         E: From<SelectionError>,
     {
+        self.visit_selection_scoped_in_direction(selection, after, false, visit)
+    }
+
+    fn visit_selection_scoped_in_direction<E>(
+        &self,
+        selection: &PreparedSelection<'_>,
+        after: Option<&OrderPosition>,
+        reverse: bool,
+        visit: &mut impl FnMut(SelectionRow) -> Result<ControlFlow<()>, E>,
+    ) -> Result<(), E>
+    where
+        E: From<SelectionError>,
+    {
         let _visit = VisitGuard {
             previous: selection.visiting.replace(true),
             cell: &selection.visiting,
@@ -441,7 +454,7 @@ impl Reader<'_> {
             params.extend(after.values.iter().map(sql_value));
         }
         params.push(SqlValue::Int(-1));
-        let sql = program.page_sql(after.is_some());
+        let sql = program.page_sql_in_direction(after.is_some(), reverse);
         let result = self.query_each(&sql, &params, |mut row| {
             selection
                 .scope
