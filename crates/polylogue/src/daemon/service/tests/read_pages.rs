@@ -551,8 +551,10 @@ fn selected_latest_user_message_does_not_include_later_assistant_bodies() {
     let source = [
         polylogue_testkit::claude_user("u1", "s1", "first prompt"),
         polylogue_testkit::claude_assistant("a1", "s1", "earlier assistant answer"),
-        polylogue_testkit::claude_user("u2", "s1", "latest human prompt λ🙂"),
-        polylogue_testkit::claude_assistant("a2", "s1", "later assistant body"),
+        polylogue_testkit::claude_user("u2", "s1", "latest human prompt λ🙂")
+            .replace("2026-03-01T10:00:00Z", "2026-03-01T10:00:02Z"),
+        polylogue_testkit::claude_assistant("a2", "s1", "later assistant body")
+            .replace("2026-03-01T10:00:01Z", "2026-03-01T10:00:03Z"),
     ]
     .concat();
     std::fs::write(d.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
@@ -560,7 +562,7 @@ fn selected_latest_user_message_does_not_include_later_assistant_bodies() {
     assert_eq!(
         all(
             &d.daemon,
-            "messages role:user | last 1",
+            "messages where role:user | sort by at desc, id desc | limit 1",
             false,
             View::Transcript
         ),
