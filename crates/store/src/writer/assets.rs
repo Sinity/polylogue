@@ -3,7 +3,10 @@ use super::*;
 use crate::assets::AssetRow;
 
 impl Inner {
-    pub(super) fn install_assets(&mut self, mut staged: crate::export_items::ExportItems) -> Result<()> {
+    pub(super) fn install_assets(
+        &mut self,
+        mut staged: crate::export_items::ExportItems,
+    ) -> Result<()> {
         if self.sinex.is_none() {
             return crate::assets::install(&mut self.index, &self.archive, staged);
         }
@@ -25,7 +28,9 @@ impl Inner {
                 row => {
                     let bytes = serde_json::to_vec(&row)?;
                     local.push(item.range, ordinal.to_be_bytes().to_vec(), None, &bytes)?;
-                    ordinal = ordinal.checked_add(1).ok_or_else(|| StoreError::Invalid("asset metadata order overflow".into()))?;
+                    ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                        StoreError::Invalid("asset metadata order overflow".into())
+                    })?;
                 }
             }
         }
@@ -33,7 +38,8 @@ impl Inner {
         if let Some(message) = missing {
             return Err(StoreError::ReferenceUnavailable {
                 reference: format!("attachment-binding:{message}"),
-                reason: "canonical receiving admission and owner publication proof are unavailable".into(),
+                reason: "canonical receiving admission and owner publication proof are unavailable"
+                    .into(),
             });
         }
         Ok(())
