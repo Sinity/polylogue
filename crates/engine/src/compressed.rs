@@ -325,6 +325,7 @@ impl Engine {
                 chain: Some(progress.chain),
                 failed: None,
                 failed_history: HashMap::new(),
+                working: None,
             },
         );
         self.stored_plan(path)
@@ -346,6 +347,8 @@ impl Engine {
                     path_bytes: observation.path_bytes.clone(),
                 },
                 route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                basis: None,
+                facts: None,
                 clock: self.config.clock.clone(),
             }
             .finish(
@@ -378,6 +381,7 @@ impl Engine {
                 blobs: Vec::new(),
                 parse: Vec::new(),
                 acquisition,
+                basis: None,
                 release: Default::default(),
             },
             files: bytes.into_iter().collect(),

@@ -186,6 +186,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             step
         }],
         acquisition: None,
+        basis: None,
         release: InFlight::default(),
     }
 }

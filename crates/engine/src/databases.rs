@@ -3,7 +3,6 @@
 use crate::*;
 use polylogue_store::tool_databases::{DatabaseError, DatabaseReader};
 use polylogue_store::{Batch, staging::PreparedBatch};
-use std::collections::VecDeque;
 use std::sync::mpsc::{TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 
@@ -20,6 +19,7 @@ pub(super) struct Completed {
     pub changed: bool,
     pub inputs_seen: u64,
     pub bytes_stored: u64,
+    pub primary_pending: bool,
 }
 struct Worker {
     thread: JoinHandle<()>,
@@ -96,13 +96,24 @@ impl Databases {
                         )
                     }));
                     match outcome {
-                        Ok(Ok(_)) => completed.changed = true,
+                        Ok(Ok(_)) => {
+                            completed.changed = true;
+                            if let Err(error) = queue.publish() {
+                                reader.forget(&source.path);
+                                completed.errors.push(format!(
+                                    "stage database {}: {error}",
+                                    source.path.display()
+                                ));
+                                continue;
+                            }
+                        }
                         Ok(Err(error)) => {
                             reader.forget(&source.path);
                             completed.changed = true;
                             completed
                                 .errors
                                 .push(format!("read database {}: {error}", source.path.display()));
+                            continue;
                         }
                         Err(_) => {
                             completed.changed = true;
@@ -112,18 +123,22 @@ impl Databases {
                             ));
                             reader = DatabaseReader::default();
                             reader.stop_when(Arc::clone(&cancelled));
+                            continue;
                         }
                     }
                     // Another source can be read while these groups commit.
                     pending.push((source, queue));
                 }
                 for (source, mut queue) in pending {
-                    if let Err(error) = queue.finish() {
-                        reader.forget(&source.path);
-                        completed.changed = true;
-                        completed
-                            .errors
-                            .push(format!("write database {}: {error}", source.path.display()));
+                    match queue.finish() {
+                        Ok(pending) => completed.primary_pending |= pending,
+                        Err(error) => {
+                            reader.forget(&source.path);
+                            completed.changed = true;
+                            completed
+                                .errors
+                                .push(format!("write database {}: {error}", source.path.display()));
+                        }
                     }
                 }
                 let _ = tx.send((reader, completed));
@@ -201,7 +216,8 @@ struct InputWriter<'a> {
     blobs: Arc<polylogue_store::blobs::Blobs>,
     length: u64,
     exists: bool,
-    waiting: VecDeque<(u64, Acknowledgment)>,
+    staged: Vec<PreparedBatch>,
+    acknowledgment: Option<Acknowledgment>,
     bytes: u64,
     notify: SyncSender<()>,
     wake: Option<Sender<LoopMsg>>,
@@ -226,7 +242,8 @@ impl<'a> InputWriter<'a> {
             blobs: Arc::new(archive.blobs()?),
             length: progress.as_ref().map_or(0, |p| p.length),
             exists: progress.is_some(),
-            waiting: VecDeque::new(),
+            staged: Vec::new(),
+            acknowledgment: None,
             bytes: 0,
             notify,
             wake,
@@ -267,78 +284,57 @@ impl<'a> InputWriter<'a> {
                 Change::Unchanged
             },
             observation: Some(self.source.observation.clone()),
-            continues: false,
+            continues: !self.staged.is_empty(),
             new_blob,
             blobs: vec![],
             length: self.length,
             parse: vec![],
             acquisition,
+            basis: self.source.acquisition.basis.clone(),
             release: Default::default(),
         };
         self.exists = true;
-        let ack = self.writer.enqueue_group(
-            vec![PreparedBatch { batch, files }],
-            Arc::clone(&self.blobs),
-        )?;
-        self.waiting.push_back((size, ack));
+        // Only closed encodings and small batch metadata survive a callback;
+        // no provider payload or open body descriptor accumulates in memory.
+        self.staged.push(PreparedBatch { batch, files });
         self.bytes += size;
-        // Groups already queued may commit while the next group is read.
-        while self.bytes >= 128 << 20 {
-            self.acknowledge()?;
-        }
-        self.acknowledge_ready()?;
         Ok(())
     }
-    fn accepted(
-        &mut self,
-        size: u64,
-        results: Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>,
-    ) -> Result<(), DatabaseError> {
-        self.bytes -= size;
+    fn publish(&mut self) -> Result<(), DatabaseError> {
+        if self.staged.is_empty() {
+            return Ok(());
+        }
+        // The read transaction has completed successfully before one SDK group
+        // can accept any of its members. The pre-IO basis is unchanged.
+        self.acknowledgment = Some(
+            self.writer
+                .enqueue_group(std::mem::take(&mut self.staged), Arc::clone(&self.blobs))?,
+        );
+        Ok(())
+    }
+    fn finish(&mut self) -> Result<bool, DatabaseError> {
+        let Some(ack) = self.acknowledgment.take() else {
+            return Ok(false);
+        };
+        let results = ack
+            .recv()
+            .map_err(|_| polylogue_store::StoreError::WriterGone)?;
+        let mut pending = false;
+        for result in results {
+            match result {
+                Ok(_) => {}
+                Err(polylogue_store::StoreError::PrimaryPending { .. }) => pending = true,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.captured
+            .fetch_add(self.bytes, std::sync::atomic::Ordering::Relaxed);
         if self.notify.try_send(()).is_ok()
             && let Some(wake) = &self.wake
         {
             let _ = wake.send(LoopMsg::Changed);
         }
-        for result in results {
-            result?;
-        }
-        self.captured
-            .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
-    }
-    fn acknowledge_ready(&mut self) -> Result<(), DatabaseError> {
-        while let Some((_, ack)) = self.waiting.front() {
-            match ack.try_recv() {
-                Ok(results) => {
-                    let (size, _) = self.waiting.pop_front().expect("waiting group");
-                    self.accepted(size, results)?;
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    return Err(polylogue_store::StoreError::WriterGone.into());
-                }
-            }
-        }
-        Ok(())
-    }
-    fn acknowledge(&mut self) -> Result<(), DatabaseError> {
-        if let Some((size, ack)) = self.waiting.pop_front() {
-            let results = ack
-                .recv()
-                .map_err(|_| polylogue_store::StoreError::WriterGone)?;
-            self.accepted(size, results)?;
-        }
-        Ok(())
-    }
-    fn finish(&mut self) -> Result<(), DatabaseError> {
-        let mut error = None;
-        while !self.waiting.is_empty() {
-            if let Err(e) = self.acknowledge() {
-                error.get_or_insert(e);
-            }
-        }
-        error.map_or(Ok(()), Err)
+        Ok(pending)
     }
 }
 
@@ -373,6 +369,7 @@ impl Engine {
                     chain: Some(progress.chain),
                     failed: None,
                     failed_history: HashMap::new(),
+                    working: None,
                 },
             );
         }
@@ -395,6 +392,7 @@ impl Engine {
         let completed = self.captures.completed(false);
         pass.inputs_seen += completed.inputs_seen;
         pass.bytes_stored += completed.bytes_stored;
+        pass.capture_pending |= completed.primary_pending;
         pass.errors.extend(completed.errors);
         if completed.finished && self.capture_checked.is_some() {
             self.capture_checked = Some(Instant::now());
@@ -415,7 +413,7 @@ impl Engine {
                     .is_some_and(|state| state.stored > 0 && state.parsed_upto < state.stored)
             });
             self.capture_checked = (!deferred_database).then(Instant::now);
-            let databases = self
+            let sources: Vec<_> = self
                 .databases
                 .iter()
                 .filter(|(path, _)| {
@@ -423,26 +421,33 @@ impl Engine {
                         .get(*path)
                         .is_none_or(|state| state.stored == 0 || state.parsed_upto == state.stored)
                 })
-                .map(|(path, origin)| databases::DatabaseInput {
-                    path: path.clone(),
+                .map(|(path, origin)| (path.clone(), *origin))
+                .collect();
+            let mut databases = Vec::with_capacity(sources.len());
+            for (path, origin) in sources {
+                let declaration = polylogue_sources::origin::by_name(origin).ok_or_else(|| {
+                    polylogue_store::StoreError::Invalid(format!(
+                        "unknown database origin {origin}"
+                    ))
+                })?;
+                let acquisition =
+                    self.sampling_context(&path, origin, &declaration.reading_version())?;
+                databases.push(databases::DatabaseInput {
                     input: InputKey {
                         id: self
                             .inputs
-                            .get(path)
-                            .filter(|state| state.origin.name == *origin)
+                            .get(&path)
+                            .filter(|state| state.origin.name == origin)
                             .map(|state| state.input_id.clone())
-                            .unwrap_or_else(|| self.location_id(path)),
-                        format: (*origin).into(),
+                            .unwrap_or_else(|| self.location_id(&path)),
+                        format: origin.into(),
                         arrival_rank: 0,
                     },
-                    observation: self.observation(path, None),
-                    acquisition: self.acquisition_context(
-                        path,
-                        origin,
-                        polylogue_store::primary::AcquisitionRoute::NativeCapture,
-                    ),
-                })
-                .collect();
+                    observation: self.observation(&path, None),
+                    acquisition,
+                    path,
+                });
+            }
             self.captures.start(
                 databases,
                 self.archive.clone(),

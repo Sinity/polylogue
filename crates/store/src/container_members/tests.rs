@@ -49,6 +49,7 @@ fn stage(
         length: prepared.len(),
         parse: vec![],
         acquisition: None,
+        basis: None,
         release: InFlight::default(),
     };
     PreparedBatch {

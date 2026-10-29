@@ -20,6 +20,30 @@ pub fn read_range(path: &Path, start: u64, end: u64) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Native byte proof uses one opened file and verifies the sampled generation
+/// across the read. Replacing the path or changing that file defers the sample.
+pub(crate) fn read_native_range(
+    path: &Path,
+    start: u64,
+    end: u64,
+    expected: Option<polylogue_store::FileFacts>,
+) -> io::Result<Vec<u8>> {
+    let mut file = File::open(path)?;
+    let before = polylogue_store::FileFacts::of(&file.metadata()?);
+    if expected.is_some_and(|facts| facts != before) {
+        return Err(io::Error::other("native source changed before reading"));
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; (end - start) as usize];
+    file.read_exact(&mut bytes)?;
+    if polylogue_store::FileFacts::of(&file.metadata()?) != before
+        || polylogue_store::FileFacts::of(&std::fs::metadata(path)?) != before
+    {
+        return Err(io::Error::other("native source changed during reading"));
+    }
+    Ok(bytes)
+}
+
 /// Whether the bytes just before `from` still equal `tail`, the end of what
 /// was stored. False means the file changed in place, not only grew.
 pub fn tail_intact(path: &Path, from: u64, tail: &[u8]) -> io::Result<bool> {

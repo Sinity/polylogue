@@ -211,6 +211,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
                     length: 8,
                     parse: Vec::new(),
                     acquisition: None,
+                    basis: None,
                     release: Default::default(),
                 },
                 files: prepared.into_iter().collect(),

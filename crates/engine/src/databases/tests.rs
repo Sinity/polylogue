@@ -21,6 +21,8 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
                 path_bytes: db.as_os_str().as_encoded_bytes().to_vec(),
             },
             route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
+            basis: None,
+            facts: None,
             clock: polylogue_model::WallClock::fixed(jiff::Timestamp::from_millisecond(1).unwrap()),
         },
         observation: Observation {
@@ -140,6 +142,7 @@ fn native_capture_continues_the_input_named_by_its_source_header() {
                     length: bytes.len() as u64,
                     parse: vec![],
                     acquisition: None,
+                    basis: None,
                     release: Default::default(),
                 },
             )

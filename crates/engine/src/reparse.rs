@@ -431,6 +431,7 @@ fn keep_decoded(
                 length: plan.size,
                 parse: Vec::new(),
                 acquisition: None,
+                basis: None,
                 release: Default::default(),
             },
             files,

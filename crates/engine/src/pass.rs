@@ -273,6 +273,7 @@ impl Engine {
                 length: st.stored,
                 parse: Vec::new(),
                 acquisition: None,
+                basis: None,
                 release: Default::default(),
             };
             self.writer.send(batch)?;
@@ -381,6 +382,7 @@ impl Engine {
                 chain: None,
                 failed: None,
                 failed_history: HashMap::new(),
+                working: None,
             },
         );
         true
@@ -473,9 +475,6 @@ impl Engine {
             if !self.track(f) {
                 continue;
             }
-            if self.inputs[&f.path].facts == Some(now) {
-                continue;
-            }
             if let Some(mut plan) = self.plan(&f.path, now)? {
                 plan.priority = Priority::Live;
                 plans.push(plan);
@@ -500,6 +499,42 @@ impl Engine {
 
     /// Decides what to read for one tracked path.
     fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
+        let origin = self.inputs[path].origin;
+        let source = self
+            .acquisition_context(
+                path,
+                origin.name,
+                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+            )
+            .source;
+        let snapshot = self.writer.source_snapshot(source, "")?;
+        let pending = snapshot.pending.head.as_ref();
+        if let Some(working) = &self.inputs[path].working
+            && pending.is_some_and(|head| head.identity == working.capture)
+            && working.facts == Some(now)
+            && working.stored == now.size
+        {
+            // This is a private-custody wait, not confirmed source progress.
+            let mut plan = Plan::stored(
+                path.to_path_buf(),
+                origin,
+                InputKey {
+                    id: self.inputs[path].input_id.clone(),
+                    format: origin.name.into(),
+                    arrival_rank: origin.arrival.rank(),
+                },
+                Change::Unchanged,
+                Some(now),
+                now.size,
+                now.size,
+                pool::Bytes::File,
+                self.config.chunk,
+                false,
+            );
+            plan.pending = Some(working.group.clone());
+            plan.basis = Some(snapshot.basis);
+            return Ok(Some(plan));
+        }
         let obs = self.observation(path, Some(now));
         let restored = if let Some(st) = self.inputs.get(path)
             && st.parser_state.is_none()
@@ -588,6 +623,9 @@ impl Engine {
             (parse_pos, parser_state)
         };
         Ok(Some(Plan {
+            basis: Some(snapshot.basis),
+            pending: None,
+            checkpoint: None,
             path: path.to_path_buf(),
             origin: st.origin,
             input: InputKey {
@@ -610,6 +648,7 @@ impl Engine {
             priority,
             tracked: true,
             failed: false,
+            parse_failed: false,
             replace: false,
             waiting: false,
             source: pool::Bytes::File,
@@ -886,6 +925,11 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
+            if plan.pending.is_some() && !plan.tracked && plan.finished() {
+                pass.capture_pending = true;
+                continue;
+            }
+
             if let Err(error) = self.restore_captured_authored(&plan, pass) {
                 pass.errors.push(format!(
                     "authored restoration {}: {error}",
@@ -999,6 +1043,7 @@ impl Engine {
                 && let Some(mut plan) = waiting.pop_front()
             {
                 if plan.finished() {
+                    pass.capture_pending |= plan.pending.is_some();
                     self.finish_plan(plan);
                     continue;
                 }
@@ -1009,11 +1054,23 @@ impl Engine {
                 }
                 let mut job = plan.next_job();
                 if matches!(job.source, pool::Bytes::File) {
-                    job.acquisition = Some(self.acquisition_context(
-                        &job.path,
-                        &job.input.format,
-                        polylogue_store::primary::AcquisitionRoute::NativeCapture,
-                    ));
+                    let mut context = if !plan.storing_started && plan.basis.is_some() {
+                        let mut context = self.acquisition_context(
+                            &job.path,
+                            &job.input.format,
+                            polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                        );
+                        context.basis = plan.basis.clone();
+                        context
+                    } else {
+                        self.sampling_context(
+                            &job.path,
+                            &job.input.format,
+                            &job.origin.reading_version(),
+                        )?
+                    };
+                    context.facts = plan.facts;
+                    job.acquisition = Some(context);
                 }
                 pass.bytes_read += job.end - job.start;
                 pool.submit(job);
@@ -1068,6 +1125,7 @@ impl Engine {
             let parsed = plan.origin.support != Support::Kept;
             plan.apply(d, parsed);
             if plan.finished() {
+                pass.capture_pending |= plan.pending.is_some();
                 self.finish_plan(plan);
             } else {
                 // The next part of the same input keeps its place.
@@ -1089,6 +1147,48 @@ impl Engine {
     /// is kept in memory only for files written recently; an older file's
     /// state is restored from its admitted checkpoint if it grows.
     pub(crate) fn finish_plan(&mut self, plan: Plan) {
+        if plan.pending.is_some() && !plan.tracked {
+            return;
+        }
+        if let Some(group) = &plan.pending {
+            let source = polylogue_store::primary::SourceSelector {
+                origin: plan.input.format.clone(),
+                machine: self.config.machine.clone(),
+                path_bytes: plan.path.as_os_str().as_encoded_bytes().to_vec(),
+            };
+            let snapshot = self
+                .writer
+                .source_snapshot(source, &plan.origin.reading_version())
+                .ok();
+            let checkpoint = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.pending.continuation.clone());
+            let head = snapshot.and_then(|snapshot| snapshot.pending.head);
+            let capture = head.and_then(|head| match head.captured {
+                polylogue_store::primary::Capture::Input(input)
+                    if input.rows.input == plan.input.id
+                        && input.group.as_ref().is_some_and(|g| &g.identity == group)
+                        && input
+                            .raw_range
+                            .is_some_and(|range| range.end == plan.stored_upto) =>
+                {
+                    Some(head.identity)
+                }
+                _ => None,
+            });
+            if let Some(state) = self.inputs.get_mut(&plan.path) {
+                state.failed = if plan.parse_failed { plan.facts } else { None };
+                state.working = capture.map(|capture| crate::plan::WorkingState {
+                    capture,
+                    group: group.clone(),
+                    facts: plan.facts,
+                    stored: plan.stored_upto,
+                    checkpoint,
+                });
+            }
+            return;
+        }
+
         if let Change::Reparse { chain } = plan.change
             && let Some(st) = self.inputs.get_mut(&plan.path)
             && st.input_id == plan.input.id
@@ -1118,6 +1218,15 @@ impl Engine {
                 st.chain = None;
             } else {
                 st.stored = plan.stored_upto.max(st.stored);
+            }
+            if plan.parse_failed {
+                st.failed = plan.facts;
+                st.parsed_upto = plan.parse_pos;
+                st.parser_state = plan
+                    .checkpoint
+                    .and_then(|checkpoint| checkpoint.parser_state);
+                st.waiting = false;
+                return;
             }
             if plan.failed {
                 // Tried again when the bytes change; the facts stay old, so

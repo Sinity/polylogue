@@ -6,6 +6,8 @@ pub(crate) struct AcquisitionContext {
     pub source: SourceSelector,
     pub route: AcquisitionRoute,
     pub clock: polylogue_model::WallClock,
+    pub basis: Option<polylogue_store::primary::SourceBasis>,
+    pub facts: Option<FileFacts>,
 }
 impl AcquisitionContext {
     pub(crate) fn finish(
@@ -24,6 +26,20 @@ impl AcquisitionContext {
     }
 }
 impl Engine {
+    pub(crate) fn sampling_context(
+        &mut self,
+        path: &Path,
+        origin: &str,
+        reading_version: &str,
+    ) -> Result<AcquisitionContext, EngineError> {
+        let mut context = self.acquisition_context(path, origin, AcquisitionRoute::NativeCapture);
+        context.basis = Some(
+            self.writer
+                .source_snapshot(context.source.clone(), reading_version)?
+                .basis,
+        );
+        Ok(context)
+    }
     pub(crate) fn acquisition_context(
         &self,
         path: &Path,
@@ -38,6 +54,8 @@ impl Engine {
             },
             route,
             clock: self.config.clock.clone(),
+            basis: None,
+            facts: None,
         }
     }
 }

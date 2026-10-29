@@ -290,6 +290,7 @@ pub fn step(
         blobs: vec![],
         length,
         acquisition: None,
+        basis: None,
         release: Default::default(),
         parse: vec![{
             let mut step = ParseStep::new(output, counts, start..length, true);

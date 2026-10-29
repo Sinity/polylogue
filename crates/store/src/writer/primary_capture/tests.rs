@@ -28,6 +28,7 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
             length: bytes.len() as u64,
             parse: Vec::new(),
             acquisition: None,
+            basis: None,
             release: Default::default(),
         },
         files: Vec::new(),

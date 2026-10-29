@@ -423,6 +423,7 @@ impl Engine {
                     chain: k.chain,
                     failed: None,
                     failed_history: HashMap::new(),
+                    working: None,
                 },
             );
         }

@@ -91,6 +91,9 @@ pub struct Done {
     pub error: Option<String>,
     pub write_failed: bool,
     pub continuation_missing: bool,
+    /// Accepted SDK custody; this is neither failure nor confirmed admission.
+    pub pending: Option<String>,
+    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
 }
 
 struct Queue {
@@ -283,6 +286,9 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                 for (result, queued) in group.waiting.iter_mut().zip(group.queued) {
                     if queued {
                         match results.next() {
+                            Some(Err(polylogue_store::StoreError::PrimaryPending { identity })) => {
+                                result.pending = Some(identity);
+                            }
                             Some(Err(error)) => {
                                 result.error = Some(error.to_string());
                                 result.write_failed = true;
@@ -368,6 +374,8 @@ pub(crate) fn run(
         error: None,
         write_failed: false,
         continuation_missing: false,
+        pending: None,
+        checkpoint: None,
     };
     let started = std::time::Instant::now();
     let read = match &job.source {
@@ -378,7 +386,10 @@ pub(crate) fn run(
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
             .map_err(|e| std::io::Error::other(e.to_string())),
-        Bytes::File => read::read_range(&job.path, job.start, job.end),
+        Bytes::File => match &job.acquisition {
+            Some(context) => read::read_native_range(&job.path, job.start, job.end, context.facts),
+            None => read::read_range(&job.path, job.start, job.end),
+        },
         Bytes::Unloaded { .. } => Err(std::io::Error::other(
             "stored bytes were not loaded before their job",
         )),
@@ -535,6 +546,7 @@ pub(crate) fn run(
         };
         source.lock().expect("import reader lock").consume(upto);
     }
+    out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     let batch = Batch {
         input: job.input,
         change: job.change,
@@ -545,6 +557,10 @@ pub(crate) fn run(
         length: job.length,
         parse,
         acquisition,
+        basis: job
+            .acquisition
+            .as_ref()
+            .and_then(|context| context.basis.clone()),
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)

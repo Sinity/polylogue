@@ -36,6 +36,7 @@ fn store(archive: &Archive, writer: &polylogue_store::Writer, revision: bool, by
                 length: bytes.len() as u64,
                 parse: vec![],
                 acquisition: None,
+                basis: None,
                 release: Default::default(),
             },
         )
