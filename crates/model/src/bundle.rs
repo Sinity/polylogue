@@ -107,6 +107,12 @@ pub struct MessageRecord {
     /// Reading position within the physical session, independent of commit
     /// order and of the receiving bundle's actual local byte extents.
     pub order: u64,
+    /// Identity of the complete source value, unchanged by view projection.
+    pub source_version: BlobHash,
+    /// Original source cardinality; absent positions are unavailable or omitted.
+    pub block_count: u64,
+    /// Original source positions aligned to `message.blocks`.
+    pub block_ordinals: Vec<u64>,
     pub message: Message,
 }
 
@@ -245,6 +251,16 @@ impl Record {
     }
 }
 
+/// Projection metadata transported through parse and primary projection. It
+/// describes selected content without changing the canonical source identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MessageProjection {
+    pub source_version: BlobHash,
+    pub block_count: u64,
+    pub block_ordinals: Vec<u64>,
+}
+
 /// One original source claim carried through a bundle. The receiving
 /// archive keeps its actual local bundle input and chain separately.
 #[derive(
@@ -296,6 +312,14 @@ pub enum BundleError {
     InvalidPath,
     #[error("bundle record reference does not match its canonical identity")]
     ReferenceMismatch,
+    #[error("message projection has invalid original block positions")]
+    InvalidBlockSelection,
+    #[error("complete message content does not match its source version")]
+    SourceVersionMismatch,
+    #[error("partial message observations conflict at the same source version")]
+    ProjectionConflict,
+    #[error("cannot encode canonical message content: {0}")]
+    CanonicalMessage(String),
     #[error("invalid source time evidence: {0}")]
     Time(#[from] crate::TimeEvidenceError),
     #[error("invalid event identity or original source claim")]
@@ -413,7 +437,100 @@ impl MessageRecord {
             return Err(BundleError::ReferenceMismatch);
         }
         self.message.time_evidence().validate(self.message.at)?;
+        self.projection().validate(self.message.blocks.len())?;
+        if self.is_complete()
+            && self
+                .message
+                .content_hash()
+                .map_err(|e| BundleError::CanonicalMessage(e.to_string()))?
+                != self.source_version
+        {
+            return Err(BundleError::SourceVersionMismatch);
+        }
         Ok(())
+    }
+
+    pub fn projection(&self) -> MessageProjection {
+        MessageProjection {
+            source_version: self.source_version,
+            block_count: self.block_count,
+            block_ordinals: self.block_ordinals.clone(),
+        }
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.block_count == self.block_ordinals.len() as u64
+    }
+}
+
+impl MessageProjection {
+    pub fn validate(&self, selected_blocks: usize) -> Result<(), BundleError> {
+        if self.block_ordinals.len() != selected_blocks
+            || self
+                .block_ordinals
+                .iter()
+                .any(|&index| index >= self.block_count)
+            || self
+                .block_ordinals
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(BundleError::InvalidBlockSelection);
+        }
+        Ok(())
+    }
+}
+
+impl MessageProjection {
+    /// Distinct source versions stay distinct. Compatible views of one
+    /// version union original positions; an overlap must contain equal facts.
+    pub fn merge(
+        &self,
+        message: &Message,
+        other: &Self,
+        other_message: &Message,
+    ) -> Result<Option<(Message, Self)>, BundleError> {
+        self.validate(message.blocks.len())?;
+        other.validate(other_message.blocks.len())?;
+        if self.source_version != other.source_version {
+            return Ok(None);
+        }
+        let mut header = message.clone();
+        header.blocks.clear();
+        let mut other_header = other_message.clone();
+        other_header.blocks.clear();
+        if header != other_header || self.block_count != other.block_count {
+            return Err(BundleError::ProjectionConflict);
+        }
+        let mut blocks = std::collections::BTreeMap::new();
+        for (index, block) in self
+            .block_ordinals
+            .iter()
+            .zip(&message.blocks)
+            .chain(other.block_ordinals.iter().zip(&other_message.blocks))
+        {
+            if let Some(previous) = blocks.insert(*index, block.clone())
+                && previous != *block
+            {
+                return Err(BundleError::ProjectionConflict);
+            }
+        }
+        let ordinals = blocks.keys().copied().collect();
+        header.blocks = blocks.into_values().collect();
+        let projection = Self {
+            source_version: self.source_version,
+            block_count: self.block_count,
+            block_ordinals: ordinals,
+        };
+        if projection.block_ordinals.len() as u64 == projection.block_count
+            && header
+                .content_hash()
+                .map_err(|e| BundleError::CanonicalMessage(e.to_string()))?
+                != projection.source_version
+        {
+            return Err(BundleError::SourceVersionMismatch);
+        }
+        Ok(Some((header, projection)))
     }
 }
 
