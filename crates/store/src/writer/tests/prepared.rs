@@ -205,7 +205,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
                     .unwrap()
             );
         }
-        let b=w.commit_source(b,&SOURCE_RECORD).unwrap();
+        let b = w.commit_source(b, &SOURCE_RECORD).unwrap();
         w.writer.send(b).unwrap();
         let report = w.writer.flush().unwrap();
         assert!(report.errors.is_empty(), "{mode}: {:?}", report.errors);
@@ -298,7 +298,7 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             if prepared {
                 b.parse[0].prepare();
             }
-            let b=w.commit_source(b,&SOURCE_RECORD).unwrap();
+            let b = w.commit_source(b, &SOURCE_RECORD).unwrap();
             w.writer.send(b).unwrap();
             assert!(w.writer.flush().unwrap().errors.is_empty());
             let pool = ReadPool::open(&w.archive).unwrap();
