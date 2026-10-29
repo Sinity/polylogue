@@ -60,20 +60,9 @@ impl SourceBoundary {
 }
 
 fn source_position(conn: &Connection) -> Result<Option<u64>> {
-    // Readers expose the source ledger through logical views, while the
-    // standalone writer uses its ledger connection directly.
-    let logical: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='source_meta')",
-        [],
-        |row| row.get(0),
-    )?;
-    let (counter, input) = if logical {
-        ("source_meta", "source_input")
-    } else {
-        ("meta", "input")
-    };
+    let source = super::Source::reading(conn)?;
     let position: Option<String> = conn.query_row(
-        &format!("SELECT value FROM {counter} WHERE key='write_counter'"),
+        &source.sql("SELECT value FROM @source.meta WHERE key='write_counter'"),
         [],
         |row| row.get(0),
     ).optional()?;
@@ -83,7 +72,7 @@ fn source_position(conn: &Connection) -> Result<Option<u64>> {
         });
     }
     let empty: bool = conn.query_row(
-        &format!("SELECT NOT EXISTS(SELECT 1 FROM {input})"),
+        &source.sql("SELECT NOT EXISTS(SELECT 1 FROM @source.input)"),
         [],
         |row| row.get(0),
     )?;
