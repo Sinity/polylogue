@@ -85,12 +85,12 @@ fn stored_counts_match_the_shown_path_and_action_population() {
         serde_json::to_value(stored).unwrap()
     );
     crate::sql_functions::register(&conn).unwrap();
-    for (_, column) in polylogue_model::session_sql::COUNT_FIELDS {
+    for (_, column) in crate::session_sql::COUNT_FIELDS {
         let computed: Option<i64> = conn
             .query_row(
                 &format!(
                     "SELECT {} FROM session s WHERE pk=?1",
-                    polylogue_model::session_sql::compute_count("s", column)
+                    crate::session_sql::compute_count("s", column)
                 ),
                 [pk],
                 |r| r.get(0),

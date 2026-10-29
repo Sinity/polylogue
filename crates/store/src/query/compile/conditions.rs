@@ -635,6 +635,16 @@ impl<'a> Compiler<'a> {
         op: FieldOp<'_>,
         span: Span,
     ) -> Result<String, QueryError> {
+        self.typed_as(def, expr, op, span, def.kind)
+    }
+    pub(super) fn typed_as(
+        &mut self,
+        def: &fields::Field,
+        expr: &str,
+        op: FieldOp<'_>,
+        span: Span,
+        kind: Kind,
+    ) -> Result<String, QueryError> {
         let name = def.name;
         let bad = |value: &str, message: String| QueryError::BadValue {
             field: name.to_owned(),
@@ -650,7 +660,7 @@ impl<'a> Compiler<'a> {
         } else {
             expr
         };
-        match (def.kind, op) {
+        match (kind, op) {
             (_, FieldOp::Match(Value::Any)) => Ok("1".into()),
             (_, FieldOp::Match(Value::Unknown)) => Ok(format!("({expr}) IS NULL")),
             (

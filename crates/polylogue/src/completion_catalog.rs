@@ -1,20 +1,12 @@
-//! The derived completion snapshot, consumed without opening an archive/socket.
-use crate::daemon::warm::Completion;
-use serde::{Deserialize, Serialize};
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
+//! Read-only, on-demand completion over the daemon's derived catalog.
+use polylogue_store::completion::CatalogReader;
+use query_language::{
+    ast::ResultPart,
+    catalog::{Catalog, OutputSource, SourceOutput},
+    complete::{Completion, CompletionKind},
 };
-
-const MAGIC: &[u8; 8] = b"PLCAT001";
-const HEADER: usize = 40;
-
-#[derive(Serialize, Deserialize)]
-struct Metadata {
-    archive: String,
-    position: String,
-    written_at: i64,
-}
+use std::path::{Path, PathBuf};
+pub mod publisher;
 
 pub fn path(root: &Path) -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
@@ -29,90 +21,335 @@ pub fn path(root: &Path) -> PathBuf {
         .join(crate::runtime_dir::archive_key(root))
         .join("catalog")
 }
-
-pub fn publish(root: &Path, position: &str, data: &Completion, now: i64) -> io::Result<()> {
-    write_at(
-        &path(root),
-        &crate::runtime_dir::archive_key(root),
-        position,
-        data,
-        now,
-    )
+pub(super) fn base_catalog() -> Catalog {
+    let origins = polylogue_sources::origin::ORIGINS
+        .iter()
+        .map(|origin| origin.name.to_owned())
+        .collect::<Vec<_>>();
+    polylogue_query::catalog::catalog(&origins, &crate::commands::command_words())
 }
-
-fn write_at(
+pub(crate) fn grammar(text: &str, position: usize) -> Vec<Completion> {
+    if position > text.len() || !text.is_char_boundary(position) {
+        return vec![];
+    }
+    query_language::complete::complete(text, position, &base_catalog())
+}
+/// Completion opens only the supplied derived catalog, never the archive.
+pub(crate) fn complete_file(
     path: &Path,
     archive: &str,
-    position: &str,
-    data: &Completion,
-    now: i64,
-) -> io::Result<()> {
-    let parts = [
-        serde_json::to_vec(&Metadata {
-            archive: archive.into(),
-            position: position.into(),
-            written_at: now,
-        })?,
-        serde_json::to_vec(&data.catalog)?,
-        serde_json::to_vec(&(&data.values, &data.sessions))?,
-    ];
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(MAGIC);
-    let mut offset = HEADER as u64;
-    for part in &parts {
-        bytes.extend_from_slice(&offset.to_le_bytes());
-        offset += part.len() as u64;
+    text: &str,
+    position: usize,
+) -> Vec<Completion> {
+    if position > text.len() || !text.is_char_boundary(position) {
+        return vec![];
     }
-    bytes.extend_from_slice(&offset.to_le_bytes());
-    for part in parts {
-        bytes.extend(part);
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("completion catalog has no parent"))?;
-    fs::create_dir_all(parent)?;
-    polylogue_model::atomic_write::write_atomic(path, &bytes, None)
+    let reader = CatalogReader::open(path, archive).ok().flatten();
+    complete_snapshot(reader.as_ref(), text, position).unwrap_or_else(|_| grammar(text, position))
 }
-
-pub fn read(root: &Path) -> Option<Completion> {
-    read_at(&path(root), &crate::runtime_dir::archive_key(root))
+fn complete_snapshot(
+    reader: Option<&CatalogReader>,
+    text: &str,
+    position: usize,
+) -> polylogue_store::Result<Vec<Completion>> {
+    let Some(reader) = reader else {
+        return Ok(grammar(text, position));
+    };
+    let mut catalog = reader.catalog()?;
+    for source in query_language::complete::requirements(text, position, &catalog).sources {
+        let schema = match &source {
+            OutputSource::Saved { name, .. } => {
+                let definitions = reader.saved(name)?;
+                if definitions.len() == 1 {
+                    definitions
+                        .into_iter()
+                        .next()
+                        .and_then(|definition| definition.schema)
+                } else {
+                    None
+                }
+            }
+            OutputSource::Result { reference, part } => reader
+                .kept(reference.strip_prefix("result:").unwrap_or(reference))?
+                .and_then(|kept| match part {
+                    ResultPart::Rows => kept.rows,
+                    ResultPart::Matches => kept.matches,
+                }),
+        };
+        if let Some(schema) = schema {
+            catalog.source_outputs.push(SourceOutput { source, schema });
+        }
+    }
+    let requirements = query_language::complete::requirements(text, position, &catalog);
+    let mut counts = std::collections::BTreeMap::new();
+    let mut descriptions = std::collections::BTreeMap::new();
+    let mut value_order = std::collections::BTreeMap::new();
+    if let Some(value) = &requirements.value {
+        let short = value.field.strip_prefix("session.").unwrap_or(&value.field);
+        let origin = polylogue_sources::origin::ORIGINS
+            .iter()
+            .find(|origin| origin.name == short);
+        let values = if short == "query" {
+            reader
+                .saved_names(&value.prefix)?
+                .into_iter()
+                .map(|item| {
+                    descriptions.insert(item.name.clone(), item.help);
+                    polylogue_store::completion::ValueCount {
+                        value: item.name,
+                        count: 1,
+                    }
+                })
+                .collect()
+        } else if short == "result" {
+            reader
+                .kept_names(&value.prefix)?
+                .into_iter()
+                .map(|item| {
+                    descriptions.insert(
+                        item.id.clone(),
+                        format!(
+                            "{} · {} · {} rows",
+                            item.name.as_deref().unwrap_or(&item.id),
+                            item.unit.as_deref().unwrap_or("unknown unit"),
+                            item.row_count
+                                .map_or_else(|| "unknown".into(), |count| count.to_string())
+                        ),
+                    );
+                    polylogue_store::completion::ValueCount {
+                        value: item.id,
+                        count: 1,
+                    }
+                })
+                .collect()
+        } else if short == "session" || origin.is_some() {
+            let prefix = origin.map_or_else(
+                || value.prefix.clone(),
+                |origin| format!("{}:{}", origin.name, value.prefix),
+            );
+            reader
+                .sessions(&prefix)?
+                .into_iter()
+                .map(|session| {
+                    let prefix = if origin.is_some() {
+                        session.prefix.split_once(':').unwrap().1
+                    } else {
+                        &session.prefix
+                    };
+                    let value = if prefix.starts_with(&value.prefix) {
+                        prefix.to_owned()
+                    } else if origin.is_some() {
+                        session.native_id.clone()
+                    } else {
+                        session.id.clone()
+                    };
+                    descriptions.insert(value.clone(), session_help(&session));
+                    polylogue_store::completion::ValueCount { value, count: 1 }
+                })
+                .collect()
+        } else {
+            reader.values(short, &value.prefix)?
+        };
+        for (rank, item) in values.iter().enumerate() {
+            counts.insert(item.value.clone(), item.count);
+            value_order.entry(item.value.clone()).or_insert(rank);
+        }
+        fill_values(&mut catalog, &value.field, &values);
+    }
+    let mut candidates = query_language::complete::complete(text, position, &catalog);
+    for candidate in &mut candidates {
+        let value = serde_json::from_str::<String>(&candidate.value)
+            .unwrap_or_else(|_| candidate.value.clone());
+        if let Some(help) = descriptions.get(&value) {
+            candidate.help = help.clone();
+        } else if let Some(count) = counts.get(&value) {
+            candidate.help = format!("{count} occurrences");
+        }
+    }
+    if requirements.value.is_some() {
+        candidates.sort_by_cached_key(|candidate| {
+            value_order
+                .get(
+                    &serde_json::from_str::<String>(&candidate.value)
+                        .unwrap_or_else(|_| candidate.value.clone()),
+                )
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+    }
+    if let Some(reference) = requirements.reference {
+        let prefix = reference
+            .prefix
+            .strip_prefix("session:")
+            .unwrap_or(&reference.prefix);
+        let sessions = reader.sessions(prefix)?;
+        let references = sessions.into_iter().map(|session| {
+            let help = session_help(&session);
+            Completion {
+                value: session.prefix,
+                replace: reference.replace,
+                kind: CompletionKind::Value,
+                help,
+            }
+        });
+        candidates.extend(references);
+        for saved in reader.saved_names(prefix)? {
+            let source = query_language::ast::Source::Saved {
+                name: saved.name,
+                arguments: vec![],
+                condition: None,
+                output: query_language::ast::OutputBinding::Deferred,
+            };
+            if let Some(value) = source_spelling(source, &catalog) {
+                candidates.push(Completion {
+                    value,
+                    replace: reference.replace,
+                    kind: CompletionKind::Value,
+                    help: saved.help,
+                });
+            }
+        }
+        for kept in reader.kept_names(prefix)? {
+            let source = query_language::ast::Source::Result {
+                reference: format!("result:{}", kept.id),
+                part: ResultPart::Rows,
+                condition: None,
+                output: query_language::ast::OutputBinding::Deferred,
+            };
+            if let Some(value) = source_spelling(source, &catalog) {
+                candidates.push(Completion {
+                    value,
+                    replace: reference.replace,
+                    kind: CompletionKind::Value,
+                    help: kept.name.unwrap_or(kept.id),
+                });
+            }
+        }
+    }
+    let written_at = jiff::Timestamp::from_millisecond(reader.metadata.written_at)
         .ok()
-        .flatten()
+        .map(|at| at.to_string());
+    for candidate in &mut candidates {
+        if candidate.kind == CompletionKind::Value {
+            if let Some(written_at) = &written_at {
+                let separator = if candidate.help.is_empty() {
+                    ""
+                } else {
+                    " · "
+                };
+                candidate
+                    .help
+                    .push_str(&format!("{separator}values as of {written_at}"));
+            }
+        }
+        candidate.help = polylogue_render::terminal::escape(&candidate.help);
+    }
+    candidates.retain(|candidate| {
+        !candidate.value.chars().any(char::is_control)
+            && polylogue_render::terminal::escape(&candidate.value) == candidate.value
+    });
+    reader.check()?;
+    Ok(candidates)
 }
-
-fn read_at(path: &Path, archive: &str) -> io::Result<Option<Completion>> {
-    let bytes = fs::read(path)?;
-    if bytes.len() < HEADER || &bytes[..8] != MAGIC {
-        return Ok(None);
-    }
-    let offsets: Vec<usize> = bytes[8..HEADER]
-        .chunks_exact(8)
-        .map(|word| {
-            usize::try_from(u64::from_le_bytes(
-                word.try_into().expect("eight-byte word"),
-            ))
-            .ok()
-        })
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| io::Error::other("completion offsets cannot be represented"))?;
-    if offsets[0] != HEADER
-        || offsets[3] != bytes.len()
-        || offsets.windows(2).any(|pair| pair[0] > pair[1])
-    {
-        return Ok(None);
-    }
-    let metadata: Metadata = serde_json::from_slice(&bytes[offsets[0]..offsets[1]])?;
-    if metadata.archive != archive {
-        return Ok(None);
-    }
-    let catalog = serde_json::from_slice(&bytes[offsets[1]..offsets[2]])?;
-    let (values, sessions) = serde_json::from_slice(&bytes[offsets[2]..offsets[3]])?;
-    Ok(Some(Completion {
+fn source_spelling(source: query_language::ast::Source, catalog: &Catalog) -> Option<String> {
+    query_language::format::format_query(
+        &query_language::ast::Query {
+            source,
+            attach: vec![],
+            stages: vec![],
+        },
         catalog,
-        values,
-        sessions,
-    }))
+    )
+    .ok()
+}
+fn session_help(session: &polylogue_store::completion::Session) -> String {
+    format!(
+        "{} · {}{}{}",
+        session.title,
+        session.origin,
+        session
+            .repo
+            .as_ref()
+            .map(|repo| format!(" · {repo}"))
+            .unwrap_or_default(),
+        session
+            .last_activity
+            .map(|at| format!(" · {at}"))
+            .unwrap_or_default()
+    )
+}
+/// Setting consumers use their command table position, outside the query grammar.
+pub(crate) fn settings_file(
+    path: &Path,
+    archive: &str,
+    key: Option<&str>,
+    prefix: &str,
+) -> Vec<(String, String)> {
+    let Ok(Some(reader)) = CatalogReader::open(path, archive) else {
+        return vec![];
+    };
+    let Ok(settings) = reader.settings(key.unwrap_or(prefix)) else {
+        return vec![];
+    };
+    let values = match key {
+        None => settings
+            .into_iter()
+            .map(|setting| {
+                (
+                    setting.key,
+                    format!("current: {}", setting.value.as_str().unwrap_or("unset")),
+                )
+            })
+            .collect(),
+        Some(key) => settings
+            .into_iter()
+            .filter(|setting| setting.key == key)
+            .flat_map(|setting| {
+                let mut choices = setting.choices;
+                if let Some(value) = setting.value.as_str() {
+                    if !choices.iter().any(|choice| choice == value) {
+                        choices.insert(0, value.into());
+                    }
+                }
+                choices
+                    .into_iter()
+                    .filter(move |value| value.starts_with(prefix))
+                    .map(|value| (value, String::new()))
+            })
+            .collect(),
+    };
+    if reader.check().is_err() {
+        return vec![];
+    }
+    values
 }
 
+fn fill_values(
+    catalog: &mut Catalog,
+    name: &str,
+    values: &[polylogue_store::completion::ValueCount],
+) {
+    for field in catalog
+        .units
+        .iter_mut()
+        .flat_map(|unit| &mut unit.fields)
+        .chain(
+            catalog
+                .source_outputs
+                .iter_mut()
+                .flat_map(|source| &mut source.schema.fields),
+        )
+    {
+        if field.name == name || field.name.strip_prefix("session.") == Some(name) {
+            for value in values {
+                if !field.values.contains(&value.value)
+                    && !value.value.chars().any(char::is_control)
+                {
+                    field.values.push(value.value.clone());
+                }
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests;

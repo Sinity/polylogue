@@ -8,7 +8,7 @@ fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
     let reader = pool.reader().unwrap();
     let request = ask("messages where parser");
     let opts = options(&reader, &request, request.now, 1).unwrap();
-    let program = polylogue_query::compile(request.text, &opts).unwrap();
+    let program = polylogue_store::query::compile(request.text, &opts).unwrap();
     let params = values(&program.params);
     let count_sql = program.count_sql();
     let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
@@ -33,7 +33,7 @@ fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
         "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)",
     );
     let opts = options(&reader, &request, request.now, 1).unwrap();
-    let program = polylogue_query::compile(request.text, &opts).unwrap();
+    let program = polylogue_store::query::compile(request.text, &opts).unwrap();
     let params = values(&program.params);
     let count_sql = program.count_sql();
     let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
@@ -59,7 +59,7 @@ fn count_execution_plans_do_not_change_page_cursor_binding() {
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
     let opts = options(&reader, &request, cursor.now, cursor.seed).unwrap();
-    let mut program = polylogue_query::compile(request.text, &opts).unwrap();
+    let mut program = polylogue_store::query::compile(request.text, &opts).unwrap();
     assert!(
         cursor
             .check(&program, &page::question(&program, &opts, false).unwrap())
@@ -103,7 +103,7 @@ fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
     ] {
         let request = ask(query);
         let opts = options(&reader, &request, request.now, 1).unwrap();
-        let program = polylogue_query::compile(query, &opts).unwrap();
+        let program = polylogue_store::query::compile(query, &opts).unwrap();
         let params = values(&program.params);
         let rows = reader.query(&program.sql, &params).unwrap();
         let (count, without) = reader.query_counts(&program.count_sql(), &params).unwrap();

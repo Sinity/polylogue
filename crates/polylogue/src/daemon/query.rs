@@ -4,7 +4,7 @@
 //! the attachments agree.
 
 use polylogue_model::LogicalDay;
-use polylogue_query::{ColKind, Options, Param, Program, QueryError, Shape};
+use polylogue_store::query::{ColKind, Options, Param, Program, QueryError, Shape};
 use polylogue_store::search::Within;
 use polylogue_store::{Reader, SqlValue};
 
@@ -120,8 +120,8 @@ pub(crate) fn saved_queries(
         "SELECT n.key AS k, n.value AS v, n.id AS id, n.first_note AS first \
          FROM source_note n WHERE n.kind = 'saved_query' \
          AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {} ORDER BY n.first_note",
-        polylogue_query::fields::current_note("n"),
-        polylogue_query::fields::withdrawn_note("n"),
+        polylogue_store::note_sql::current_note("n"),
+        polylogue_store::note_sql::withdrawn_note("n"),
     );
     let mut saved: std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>> =
         Default::default();
@@ -235,7 +235,7 @@ pub(crate) fn options(
         None => logical_day(reader)?,
     };
     Ok(Options {
-        clock: polylogue_query::time::clock(now, day)?,
+        clock: polylogue_store::query::time::clock(now, day)?,
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|o| o.name.to_owned())
@@ -273,7 +273,7 @@ fn chat_pages() -> Vec<polylogue_query::ChatPage> {
 pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let mut opts = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
     opts.page_size = None;
-    let program = polylogue_query::compile(ask.text, &opts)?;
+    let program = polylogue_store::query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     let mut rows = with_similarity(reader, &program, ask.near, || {
         Ok(reader.query(&program.sql, &values(&program.params))?)
@@ -291,7 +291,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "definitions": program.definitions,
     });
     if polylogue_query::parse(ask.text)?.stages.is_empty()
-        && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
+        && let Ok(m) = polylogue_store::query::compile(&format!("{} | matches", ask.text), &opts)
     {
         validate(reader, &m)?;
         let mut matches = with_similarity(reader, &m, ask.near, || {
@@ -325,7 +325,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         opts.clock = cursor.context.clock.clone();
     }
     opts.random_seed = Some(seed);
-    let mut program = polylogue_query::compile(ask.text, &opts)?;
+    let mut program = polylogue_store::query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
     let after = cursor
@@ -342,7 +342,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         seal: &seal,
         context,
     };
-    let day = polylogue_query::time::product_day(&opts.clock);
+    let day = polylogue_store::query::time::product_day(&opts.clock);
     with_similarity(reader, &program, ask.near, || {
         answer(reader, &program, &day, after, &paging, ask.why)
     })
@@ -840,7 +840,7 @@ pub(crate) fn usage_selection(
         fields: &[],
     };
     let opts = options(reader, &ask, now, 0)?;
-    let program = polylogue_query::compile(&text, &opts)?;
+    let program = polylogue_store::query::compile(&text, &opts)?;
     validate(reader, &program)?;
     let question = page::question(&program, &opts, false)?;
     let m = program.measure.as_ref().ok_or_else(|| Failure {
@@ -886,6 +886,6 @@ mod tests;
 pub fn explain(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let options = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
     Ok(
-        json!({"subject": "query", "explanation": polylogue_query::explain::query(ask.text, &options)?}),
+        json!({"subject": "query", "explanation": polylogue_store::query::explain::query(ask.text, &options)?}),
     )
 }

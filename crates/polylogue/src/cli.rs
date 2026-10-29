@@ -86,7 +86,7 @@ pub fn command() -> clap::Command {
             }
         }
     }
-    root
+    crate::config::augment_command(root)
 }
 
 fn subcommand(c: &Command) -> clap::Command {
@@ -95,7 +95,15 @@ fn subcommand(c: &Command) -> clap::Command {
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
     for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-        sub = sub.arg(clap_arg(a));
+        let mut arg = clap_arg(a);
+        if c.name == "setting" && matches!(a.name, "key" | "value") {
+            arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+                completion::Setting {
+                    key: a.name == "key",
+                },
+            ));
+        }
+        sub = sub.arg(arg);
     }
     sub
 }

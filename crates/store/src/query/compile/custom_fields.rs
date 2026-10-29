@@ -1,6 +1,6 @@
 //! Fields compiled by a rule of their own rather than from the field
 //! table's SQL: each needs a subquery, a parameter shape, or a check
-//! against other conditions. A special field in [`crate::fields::FIELDS`]
+//! against other conditions. A special field in [`crate::query::fields::FIELDS`]
 //! names its rule here, so a field without one cannot be declared.
 
 use super::*;
@@ -478,21 +478,11 @@ pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
          WHERE up.d < 1000) SELECT max(d) FROM up)",
         x.s()
     );
-    let def = fields::Field {
-        unit: Unit::Sessions,
-        name: "depth",
-        kind: Kind::Number,
-        values: None,
-        stored_unknown: None,
-        help: "",
-        sql: None,
-        value_kind: None,
-        compile: None,
-    };
+    let def = fields::lookup(Unit::Sessions, "depth").expect("declared depth");
     if x.top {
         c.show("depth", &expr, ColKind::Number, None);
     }
-    c.typed(&def, &expr, x.op, x.span)
+    c.typed_as(def, &expr, x.op, x.span, Kind::Number)
 }
 
 pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {

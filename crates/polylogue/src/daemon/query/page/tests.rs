@@ -4,7 +4,7 @@ use serde_json::json;
 
 fn options() -> Options {
     Options {
-        clock: polylogue_query::time::clock(
+        clock: polylogue_store::query::time::clock(
             1_791_367_200_000,
             LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         )
@@ -33,7 +33,7 @@ fn position() -> ChangePosition {
 fn continuation_authenticates_question_clock_seed_and_read_context() {
     let options = options();
     let text = "since:7d | sort by id";
-    let program = polylogue_query::compile(text, &options).unwrap();
+    let program = polylogue_store::query::compile(text, &options).unwrap();
     assert_eq!(program.resolved_times.len(), 1);
     let question = identity(text, &options).unwrap();
     let seal = CursorSeal::new([7; 32]);
@@ -89,7 +89,7 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
 #[test]
 fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
     let options = options();
-    let program = polylogue_query::compile("sessions", &options).unwrap();
+    let program = polylogue_store::query::compile("sessions", &options).unwrap();
     let question = identity("sessions", &options).unwrap();
     let seal = CursorSeal::new([8; 32]);
     let context = context(question, &position(), (1, 2), &options, &program, 9, false).unwrap();
@@ -133,7 +133,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
 #[test]
 fn definition_order_does_not_retire_the_same_semantic_question() {
     let options = options();
-    let mut program = polylogue_query::compile("sessions", &options).unwrap();
+    let mut program = polylogue_store::query::compile("sessions", &options).unwrap();
     program.definitions = ["a", "b"]
         .map(|name| polylogue_query::Definition {
             name: name.into(),

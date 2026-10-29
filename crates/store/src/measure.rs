@@ -137,7 +137,7 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
            SELECT 1 FROM source_note hn JOIN source_note_target ht ON ht.note_id = hn.id
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
              AND {} )",
-        polylogue_model::note_sql::live_note("hn")
+        crate::note_sql::live_note("hn")
     );
     let n: i64 = reader
         .conn()?
