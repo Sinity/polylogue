@@ -1,6 +1,6 @@
 //! Full product facts exchanged with the confirmed-stream adapter.
 use crate::input_rows::InputRows;
-use crate::user_writes::UserRequest;
+use polylogue_model::user::UserRequest;
 use crate::writer::InputKey;
 use polylogue_model::{
     BackgroundUpdate, BlobHash, DocumentRow, Event, Link, MessageRow, RecordCounts, RepoLookup,
