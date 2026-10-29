@@ -59,7 +59,10 @@ pub(crate) fn run(
                     super::print::diagnostic(
                         error.code.as_deref().unwrap_or("read_output"),
                         &error.message,
-                        error.suggestion.as_deref(),
+                        error
+                            .suggestion
+                            .as_deref()
+                            .and_then(serde_json::Value::as_str),
                         startup.output.stderr_color()
                     )
                 );

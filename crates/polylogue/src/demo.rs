@@ -57,7 +57,7 @@ pub fn tour(
             }
             ExitCode::SUCCESS
         }
-        Err(error) => crate::cli::fail(json, "demo", &error, 1),
+        Err(error) => crate::cli::fail(startup.output, json, "demo", &error, 1),
     }
 }
 
