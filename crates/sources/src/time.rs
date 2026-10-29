@@ -44,6 +44,12 @@ impl SourceTime {
     pub fn evidence(self) -> TimeEvidence {
         self.evidence
     }
+    /// A source-declared interval end, never a guessed rounding boundary.
+    pub fn with_until(mut self, until: Timestamp) -> Option<Self> {
+        self.evidence.precision = Some(Precision::Bounded);
+        self.evidence.until = Some(until);
+        Self::new(self.at, self.evidence).ok()
+    }
     pub fn unix_ms(self) -> i64 {
         self.at.unix_ms()
     }
@@ -55,7 +61,7 @@ impl SourceTime {
         self.evidence.quality = TimeQuality::Captured;
         self
     }
-    /// Only call for a field explicitly defined as a file modification time.
+    /// Only call for a field explicitly defined as source file metadata time.
     pub fn file_mtime(mut self) -> Self {
         self.evidence.quality = TimeQuality::FileMtime;
         self

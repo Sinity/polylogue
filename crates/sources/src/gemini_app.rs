@@ -117,7 +117,7 @@ impl ExportParser for GeminiApp {
                     after: state.last_message(&sid)?,
                     range: None,
                     data: serde_json::json!({
-                        "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response
+                        "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response, "native_time":e.at_text
                     }),
                 }
             });
@@ -143,6 +143,8 @@ impl ExportParser for GeminiApp {
         let user = message(user_id.clone(), &sid, Role::User, e.at, prompt_blocks);
         let mut user = user;
         user.parent = state.last_message(&sid)?;
+        user.attrs
+            .insert("activity_time".into(), Json::String(e.at_text.clone()));
         let mut reply_blocks = Vec::new();
         if !e.response.is_empty() {
             reply_blocks.push(Block::Text {
@@ -160,6 +162,8 @@ impl ExportParser for GeminiApp {
             (!reply_blocks.is_empty()).then(|| {
                 let mut m = message(reply_id.clone(), &sid, Role::Assistant, e.at, reply_blocks);
                 m.parent = Some(user_id.clone());
+                m.attrs
+                    .insert("activity_time".into(), Json::String(e.at_text.clone()));
                 m
             }),
         ]
@@ -396,16 +400,13 @@ fn parse_time(s: &str) -> Option<crate::time::SourceTime> {
         "AM" | "PM" => {}
         _ => return None,
     }
+    // Ambiguous abbreviations need source timezone settings; the host zone
+    // cannot disambiguate them. Keep their raw activity time without an instant.
     let offset_h = match it.next()? {
         "UTC" | "GMT" => 0,
-        "CET" | "BST" | "WEST" => 1,
+        "CET" | "WEST" => 1,
         "CEST" | "EET" => 2,
-        "EEST" | "MSK" => 3,
-        "EST" | "CDT" => -5,
-        "EDT" => -4,
-        "CST" | "MDT" => -6,
-        "MST" | "PDT" => -7,
-        "PST" => -8,
+        "EEST" => 3,
         _ => return None,
     };
     if it.next().is_some() {

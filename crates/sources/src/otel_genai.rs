@@ -100,6 +100,19 @@ fn span(raw: &Json) -> Span<'_> {
     }
 }
 
+impl Span<'_> {
+    fn interval(&self) -> Option<crate::time::SourceTime> {
+        let start = self.start?;
+        Some(
+            self.raw
+                .get("endTimeUnixNano")
+                .and_then(crate::time::epoch_nanos)
+                .and_then(|end| start.with_until(end.timestamp()))
+                .unwrap_or(start),
+        )
+    }
+}
+
 impl ExportParser for OtelGenAi {
     fn scan(
         &mut self,
@@ -173,7 +186,7 @@ impl ExportParser for OtelGenAi {
             sink.out.sessions.push(s);
         }
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(span.start);
+            let (at, time_evidence) = crate::time::parts(span.interval());
             Event {
                 session: Some(sid.clone()),
                 kind: "otel_span".into(),
@@ -328,7 +341,14 @@ fn model_span(
                     (true, Some(a), Some(b)) if b >= a => Some((b - a) / 1_000_000),
                     _ => None,
                 },
-                attrs: Default::default(),
+                attrs: if is_output {
+                    [("otel_span_clock".into(), serde_json::json!({
+                    "basis":"call_start", "startTimeUnixNano":span.raw.get("startTimeUnixNano"),
+                    "endTimeUnixNano":span.raw.get("endTimeUnixNano")
+                }))].into()
+                } else {
+                    Default::default()
+                },
                 production: Default::default(),
             }
         };
@@ -346,7 +366,7 @@ fn model_span(
 /// carried them, as an event on the conversation.
 fn tool_span(span: &Span, sid: &polylogue_model::SessionId, sink: &mut Sink<'_>) {
     sink.out.events.push({
-        let (at, time_evidence) = crate::time::parts(span.start);
+        let (at, time_evidence) = crate::time::parts(span.interval());
         Event {
             session: Some(sid.clone()),
             kind: "tool_execution".into(),

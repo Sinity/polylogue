@@ -137,3 +137,20 @@ fn native_work_evidence_keeps_its_exact_hook_record_range_and_unknowns() {
     );
     assert!(step.output.sessions.is_empty());
 }
+
+#[test]
+fn native_nanosecond_observation_keeps_quality_and_missing_clock_stays_unknown() {
+    use polylogue_model::{Precision, TimeQuality};
+    let input = lines(&[
+        json!({"event_type":"Stop","provider":"codex","session_id":"s","at_ns":"1792400000123456789"}),
+        json!({"event_type":"Stop","provider":"codex","session_id":"s"}),
+    ]);
+    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let event = &step.output.events[0];
+    assert_eq!(event.at.unwrap().unix_ns(), 1792400000123456789);
+    assert_eq!(event.at_quality, TimeQuality::Captured);
+    assert_eq!(event.at_precision, Some(Precision::Instant));
+    assert_eq!(event.data["at_ns"], "1792400000123456789");
+    assert_eq!(step.output.events[1].at, None);
+    assert_eq!(step.output.events[1].at_quality, TimeQuality::Unknown);
+}

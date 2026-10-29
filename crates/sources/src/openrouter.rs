@@ -282,10 +282,14 @@ fn message_order(raw: &serde_json::value::RawValue, key: &str) -> Vec<u8> {
         .get("id")
         .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
         .filter(|id| !id.is_empty());
-    room_order(at, id.as_deref(), key)
+    room_order(
+        at.map(crate::time::SourceTime::timestamp),
+        id.as_deref(),
+        key,
+    )
 }
 
-fn room_order(at: Option<crate::time::SourceTime>, id: Option<&str>, key: &str) -> Vec<u8> {
+fn room_order(at: Option<polylogue_model::Timestamp>, id: Option<&str>, key: &str) -> Vec<u8> {
     let mut order = Vec::new();
     if let Some(time) = at {
         order.push(1);

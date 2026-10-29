@@ -877,7 +877,11 @@ impl ExportParser for Listing {
         if let Some(name) = str_of(f, "name") {
             session.offer_title(name, TitleSource::Generated);
         }
-        if let Some(at) = f.get("createdTime").and_then(time_of) {
+        if let Some(at) = f
+            .get("createdTime")
+            .and_then(time_of)
+            .map(crate::time::SourceTime::file_mtime)
+        {
             session
                 .offer_start(at.timestamp(), at.evidence())
                 .expect("decoded source time is valid");
