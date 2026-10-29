@@ -6,7 +6,7 @@ fn step() -> ParseStep {
     let message = message(
         "hook",
         "session",
-        Role::Harness,
+        Role::System,
         0,
         vec![
             Block::Text {
@@ -75,7 +75,7 @@ fn sparse_field_claims_keep_original_ordinals_instead_of_selected_positions() {
     let mut original = message(
         "sparse-hook",
         "session",
-        Role::Harness,
+        Role::System,
         0,
         (0..4)
             .map(|index| Block::Text {
