@@ -37,11 +37,13 @@ pub fn read(
             1,
         ));
     }
-    frame.query = request
+    let query = request
         .arguments
         .get("target")
         .and_then(Value::as_str)
         .unwrap_or(&page.snapshot.query);
+    let query_display = crate::terminal::json(&Value::String(query.into()), false);
+    frame.query = &query_display[1..query_display.len() - 1];
     frame.navigation = navigation_entries();
     frame.status = currency(&page.snapshot.currency);
     let route = table

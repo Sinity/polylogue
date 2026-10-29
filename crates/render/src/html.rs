@@ -122,7 +122,7 @@ fn markdown(text: &str) -> Markup {
     PreEscaped(output)
 }
 fn ready(call: &ReadyCall) -> Markup {
-    html! { code class="ready-call" { (&call.cli) } }
+    html! { @if let Ok(url) = crate::web::http_url(&call.http) { a class="ready-call" href=(url) { (&call.cli) } } @else { code class="ready-call" { (&call.cli) } } }
 }
 fn edit(edit: &EditView) -> Markup {
     html! { section class="edit" { h3 { (&edit.path) } p { @if edit.applied { "applied" } @else { "failed, may have changed the file" } " · " (edit.failed_edits) " failed edits" } pre { (value_text(&edit.diff)) } } }

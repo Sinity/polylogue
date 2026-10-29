@@ -254,7 +254,7 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
                     show_original: None,
                 },
                 text: "variant".into(),
-                relation: polylogue_model::VariantRelation::Translates,
+                relations: vec![polylogue_model::VariantRelation::Translates],
                 alignment: vec![],
             },
         )
@@ -1208,7 +1208,7 @@ fn variant_marks_only_describe_visible_substitutions() {
                     show_original: None,
                 },
                 text: "not selected".into(),
-                relation: polylogue_model::VariantRelation::Translates,
+                relations: vec![polylogue_model::VariantRelation::Translates],
                 alignment: vec![],
             },
         )
@@ -1420,7 +1420,7 @@ fn text_variant(original: &str, text: &str, alignment: Vec<TextAlignment>) -> Va
             stale: false,
             show_original: None,
         },
-        relation: polylogue_model::VariantRelation::Translates,
+        relations: vec![polylogue_model::VariantRelation::Translates],
         text: text.into(),
         alignment,
     }

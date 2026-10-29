@@ -838,9 +838,14 @@ fn variant_indicator(
             kind: ItemKind::Indicator {
                 indicator: IndicatorKind::Variant,
                 text: format!(
-                    "[variant {} · {} · {}{}]",
+                    "[variant {} · {} · {}{}{}]",
                     variant.mark.key,
-                    variant.relation.as_str(),
+                    variant
+                        .relations
+                        .iter()
+                        .map(|relation| relation.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     variant.mark.reference,
                     if variant.mark.stale { " · stale" } else { "" }
                 ),

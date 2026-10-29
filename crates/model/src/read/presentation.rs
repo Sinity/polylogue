@@ -17,7 +17,8 @@ pub struct TextAlignment {
 #[serde(deny_unknown_fields)]
 pub struct VariantText {
     pub mark: VariantMark,
-    pub relation: VariantRelation,
+    /// Declared relations, in original variant part order.
+    pub relations: Vec<VariantRelation>,
     pub text: String,
     /// Original body ranges in source order. Replacement is emitted at the first
     /// range; subsequent covered ranges are removed. Empty means the key names
@@ -51,6 +52,11 @@ impl PresentationMap {
         }
         if variant.mark.original != original.to_string() {
             return Err(invalid("variant mark and original reference disagree"));
+        }
+        if variant.relations.is_empty() {
+            return Err(invalid(
+                "variant presentation needs declared part relations",
+            ));
         }
         let mut pending: BTreeMap<BodyKey, Vec<Patch>> = BTreeMap::new();
         if variant.alignment.is_empty() {
@@ -154,7 +160,12 @@ impl PresentationMap {
             if !active(variant, options) {
                 continue;
             }
-            let replacement = if variant.relation == VariantRelation::Omits || !patch.first {
+            let replacement = if variant
+                .relations
+                .iter()
+                .all(|relation| *relation == VariantRelation::Omits)
+                || !patch.first
+            {
                 ""
             } else {
                 &variant.text

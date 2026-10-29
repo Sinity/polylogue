@@ -8,7 +8,7 @@ fn variant(original: &str, alignment: Vec<TextAlignment>) -> VariantText {
             stale: false,
             show_original: None,
         },
-        relation: VariantRelation::Translates,
+        relations: vec![VariantRelation::Translates],
         text: "replacement".into(),
         alignment,
     }
@@ -115,4 +115,53 @@ fn utf8_boundaries_are_checked_before_any_replacement() {
             .is_err()
     );
     assert!(map.apply(&source(0), "", &ReadOptions::default()).is_err());
+}
+
+#[test]
+fn mixed_declared_relations_keep_nonempty_rendition_and_all_omits_remove_it() {
+    let key = Reference::parse("block:test:session:message#0").unwrap();
+    let mut mixed = variant(&key.to_string(), vec![]);
+    mixed.relations = vec![VariantRelation::Omits, VariantRelation::Expands];
+    let mut map = PresentationMap::default();
+    map.insert(key.clone(), mixed.clone()).unwrap();
+    assert_eq!(
+        map.apply(
+            &Source::record(key.to_string()),
+            "original",
+            &ReadOptions::default()
+        )
+        .unwrap(),
+        "replacement"
+    );
+    mixed.relations = vec![VariantRelation::Omits];
+    let mut map = PresentationMap::default();
+    map.insert(key.clone(), mixed).unwrap();
+    assert_eq!(
+        map.apply(
+            &Source::record(key.to_string()),
+            "original",
+            &ReadOptions::default()
+        )
+        .unwrap(),
+        ""
+    );
+}
+#[test]
+fn many_exact_body_renditions_use_only_their_derived_body_index() {
+    let mut map = PresentationMap::default();
+    for n in 0..10_000 {
+        let key = Reference::parse(&format!("block:test:session:message#{n}")).unwrap();
+        map.insert(key.clone(), variant(&key.to_string(), vec![]))
+            .unwrap();
+    }
+    assert_eq!(map.1.len(), 10_000);
+    for n in [0, 5_000, 9_999] {
+        let source = Source::record(format!("block:test:session:message#{n}"));
+        assert_eq!(map.for_source(&source).count(), 1);
+        assert_eq!(
+            map.apply(&source, "original", &ReadOptions::default())
+                .unwrap(),
+            "replacement"
+        );
+    }
 }
