@@ -130,6 +130,7 @@ impl PreparedRows {
                 _ => {}
             }
         }
+        super::super::native_hook_fields::validate(output, &self.messages)?;
         Ok(())
     }
 }
