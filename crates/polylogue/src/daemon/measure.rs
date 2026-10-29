@@ -70,15 +70,7 @@ pub static MEASURES: &[Measure] = &[
         paging: None,
         argument: Some("provider:method"),
         metrics: &[],
-        run: |r, x| {
-            json(measure::outlook::outlook(
-                r,
-                &x.selection,
-                x.now,
-                x.metric,
-                &polylogue_store::user_writes::machine_id(),
-            ))
-        },
+        run: |r, x| json(measure::outlook::outlook(r, &x.selection, x.now, x.metric)),
         text: text::outlook,
     },
     Measure {
