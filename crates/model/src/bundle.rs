@@ -39,6 +39,7 @@ pub struct Counts {
     pub links: u64,
     pub authored: u64,
     pub variants: u64,
+    pub variant_parts: u64,
     pub blobs: u64,
 }
 
@@ -133,6 +134,24 @@ pub struct BlobRecord {
     #[serde(rename = "ref")]
     pub reference: String,
     pub file: FileDescriptor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VariantRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub commit: u64,
+    pub variant: crate::Variant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VariantPartRecord {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub commit: u64,
+    pub part: crate::VariantPart,
 }
 
 /// One original source claim carried through a bundle. The receiving
