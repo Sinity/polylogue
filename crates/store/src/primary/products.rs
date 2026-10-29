@@ -36,7 +36,7 @@ pub struct Material {
 #[serde(tag = "product", rename_all = "snake_case")]
 pub enum Product {
     Input {
-        rows: InputRows,
+        rows: Box<InputRows>,
         material: Option<Material>,
     },
     Blob(Material),

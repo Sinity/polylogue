@@ -39,13 +39,12 @@ impl Reader<'_> {
         mut visit: impl FnMut(SessionChange) -> Result<()>,
     ) -> Result<ChangePosition> {
         let position = self.change_position()?;
-        if let Some(after) = after {
-            if after.generation != position.generation
+        if let Some(after) = after
+            && (after.generation != position.generation
                 || after.index > position.index
-                || after.archive > position.archive
-            {
-                return Err(StoreError::Invalid("completion generation changed".into()));
-            }
+                || after.archive > position.archive)
+        {
+            return Err(StoreError::Invalid("completion generation changed".into()));
         }
         let conn = self.conn()?;
         let mut statement=conn.prepare(if after.is_some() {

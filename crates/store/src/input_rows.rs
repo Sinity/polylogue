@@ -214,12 +214,11 @@ impl InputRows {
         {
             return Err(invalid());
         }
-        if let Some(observation) = &self.observation {
-            if observation.machine != receipt.source.machine
-                || observation.path_bytes.as_ref() != Some(&receipt.source.path_bytes)
-            {
-                return Err(invalid());
-            }
+        if let Some(observation) = &self.observation
+            && (observation.machine != receipt.source.machine
+                || observation.path_bytes.as_ref() != Some(&receipt.source.path_bytes))
+        {
+            return Err(invalid());
         }
         if let Some(extent) = &self.extent {
             let start = u64::try_from(extent.offset).map_err(|_| invalid())?;

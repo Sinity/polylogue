@@ -21,14 +21,14 @@ fn input(position: i64, id: &str) -> Confirmed {
         output_index: 0,
         event: format!("event-{id}"),
         change: ConfirmedChange::Live(Box::new(Product::Input {
-            rows: crate::input_rows::InputRows {
+            rows: Box::new(crate::input_rows::InputRows {
                 acquisition: None,
                 input: id.into(),
                 format: "synthetic".into(),
                 revision: None,
                 extent: None,
                 observation: None,
-            },
+            }),
             material: None,
         })),
     }
@@ -252,7 +252,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         output_index: 0,
         event: format!("event-{id}"),
         change: ConfirmedChange::Live(Box::new(Product::Input {
-            rows: crate::input_rows::InputRows {
+            rows: Box::new(crate::input_rows::InputRows {
                 acquisition: None,
                 input: id.into(),
                 format: "synthetic".into(),
@@ -270,7 +270,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
                     blob: hash,
                     blob_offset,
                 }),
-            },
+            }),
             material: Some(material.clone()),
         })),
     };
@@ -379,7 +379,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         output_index: 0,
         event: "input-fact".into(),
         change: ConfirmedChange::Live(Box::new(Product::Input {
-            rows: crate::input_rows::InputRows {
+            rows: Box::new(crate::input_rows::InputRows {
                 acquisition: None,
                 input: "input".into(),
                 format: "synthetic".into(),
@@ -391,7 +391,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                 }),
                 extent: None,
                 observation: None,
-            },
+            }),
             material: None,
         })),
     }];
@@ -527,7 +527,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
         output_index: 0,
         event: "input-fact".into(),
         change: ConfirmedChange::Live(Box::new(Product::Input {
-            rows: crate::input_rows::InputRows {
+            rows: Box::new(crate::input_rows::InputRows {
                 acquisition: None,
                 input: "input".into(),
                 format: "synthetic".into(),
@@ -539,7 +539,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
                 }),
                 extent: None,
                 observation: None,
-            },
+            }),
             material: None,
         })),
     }];

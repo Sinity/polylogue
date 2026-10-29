@@ -259,6 +259,14 @@ pub(crate) fn visit_import_members(
     Ok((through != after).then_some(through))
 }
 
+struct StoredMember {
+    namespace: String,
+    input: String,
+    member: String,
+    source_id: Option<String>,
+    sidecar: Option<String>,
+}
+
 /// The same actual-member projection is used by import refresh and confirmed replay.
 pub(crate) fn project_member(
     conn: &Connection,
@@ -266,10 +274,17 @@ pub(crate) fn project_member(
     source_id: Option<&str>,
     sidecar: Option<&str>,
 ) -> Result<()> {
-    let previous: Option<(String,String,String,Option<String>,Option<String>)> = conn.query_row(
+    let previous: Option<StoredMember> = conn.query_row(
         "SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE observation=?1",
-        [&source.observation], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;
-    if let Some((namespace, input, member, known_id, known_sidecar)) = previous {
+        [&source.observation], |row| Ok(StoredMember { namespace: row.get(0)?, input: row.get(1)?, member: row.get(2)?, source_id: row.get(3)?, sidecar: row.get(4)? })).optional()?;
+    if let Some(StoredMember {
+        namespace,
+        input,
+        member,
+        source_id: known_id,
+        sidecar: known_sidecar,
+    }) = previous
+    {
         if namespace != source.membership.import_id
             || input != source.input
             || member != source.membership.member

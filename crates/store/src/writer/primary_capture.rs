@@ -730,7 +730,10 @@ impl Inner {
                     }
                     writes.push(ProductWrite {
                         machine: rows.observation.as_ref().map(|o| o.machine.clone()),
-                        product: Product::Input { rows, material },
+                        product: Product::Input {
+                            rows: Box::new(rows),
+                            material,
+                        },
                         location: member.anchor.clone(),
                         parents: Vec::new(),
                         output_index: writes.len() as u64,

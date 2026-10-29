@@ -122,13 +122,6 @@ impl Reader<'_> {
         }
         Ok(())
     }
-    pub(crate) fn reference_text_while(
-        &self,
-        reference: &Reference,
-        visit: &mut Visit<'_>,
-    ) -> Result<bool> {
-        self.reference_text(reference, false, visit)
-    }
     fn reference_text(
         &self,
         reference: &Reference,
@@ -249,7 +242,7 @@ impl Reader<'_> {
                         "the block has no recorded textual body",
                     ));
                 }
-                Text {
+                let _ = Text {
                     visit,
                     offsets: TextBodyOffsets::default(),
                     reference: reference.to_string(),

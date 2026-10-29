@@ -88,7 +88,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
             ordinal as i64 + 1,
             &format!("input-{input}"),
             Product::Input {
-                rows: crate::input_rows::InputRows {
+                rows: Box::new(crate::input_rows::InputRows {
                     acquisition: None,
                     input: input.into(),
                     format: "synthetic".into(),
@@ -106,7 +106,7 @@ fn source(input: &str, message: &Message, ordinal: usize, position: i64) -> Vec<
                         blob_offset: 0,
                     }),
                     observation: None,
-                },
+                }),
                 material: Some(Material {
                     id: format!("raw-{input}"),
                     hash,

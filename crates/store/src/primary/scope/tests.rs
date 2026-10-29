@@ -31,14 +31,14 @@ fn input(position: i64, id: &str) -> Confirmed {
         event: format!("event-{id}"),
         output_index: 0,
         change: ConfirmedChange::Live(Box::new(Product::Input {
-            rows: crate::input_rows::InputRows {
+            rows: Box::new(crate::input_rows::InputRows {
                 acquisition: None,
                 input: id.into(),
                 format: "synthetic".into(),
                 revision: None,
                 extent: None,
                 observation: None,
-            },
+            }),
             material: None,
         })),
     }

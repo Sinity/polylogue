@@ -16,10 +16,9 @@ fn source_rows(conn: &Connection, prefix: crate::source::Source) {
     }
 }
 
-fn retained(
-    conn: &Connection,
-    prefix: crate::source::Source,
-) -> (String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>) {
+type RetainedRows = (String, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<Vec<u8>>);
+
+fn retained(conn: &Connection, prefix: crate::source::Source) -> RetainedRows {
     conn.query_row(&prefix.sql("SELECT n.value,r.request,r.outcome,r.effect,d.body,d.signal FROM @source.note n JOIN @source.client_request r ON r.id=n.id JOIN @source.delivery d ON d.id='delivery'"), [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).unwrap()
 }
 
