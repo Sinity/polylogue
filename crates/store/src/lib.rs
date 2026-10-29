@@ -13,6 +13,7 @@ pub mod backfill_jobs;
 pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
+mod container_members;
 pub mod context;
 pub mod coverage;
 pub mod derive;
@@ -25,6 +26,7 @@ pub(crate) mod first_build;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod input_rows;
+pub mod legacy_import;
 mod live;
 pub mod measure;
 pub mod notes;
@@ -51,7 +53,6 @@ pub mod vectors;
 mod versions;
 mod write_lock;
 pub mod writer;
-mod zip_members;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
@@ -62,8 +63,8 @@ pub use read::{
     BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
 };
 pub use writer::{
-    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport, Writer,
-    WriterSender,
+    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
+    Writer, WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]

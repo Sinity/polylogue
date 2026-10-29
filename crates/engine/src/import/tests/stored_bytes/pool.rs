@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn refused_watched_bytes_install_no_file() {
+fn refused_watched_bytes_commit_no_catalogued_extent() {
     for image in [false, true] {
         let home = ClaudeHome::new();
         let path = home.file("pool-stored.jsonl");
-        let decoded = vec![b'A'; polylogue_store::blobs::INLINE_LIMIT + 1024];
+        let decoded = vec![b'A'; 64 << 10];
         let bytes = if image {
             let encoded = "QUFB".repeat(decoded.len() / 3 + 1);
             format!(
@@ -23,10 +23,7 @@ fn refused_watched_bytes_install_no_file() {
         conn.execute_batch(&format!("CREATE TRIGGER reject_pool BEFORE INSERT ON input WHEN NEW.id='{input}' BEGIN SELECT RAISE(ABORT,'synthetic pool first write rejection'); END;")).unwrap();
         let pass = engine.run_pass().unwrap();
         assert!(!pass.errors.is_empty());
-        assert!(
-            !engine.blobs.contains(&raw),
-            "rejected pool bytes have no archive row"
-        );
+        assert_catalogued(&engine, &raw, false);
         assert_eq!(home.count("SELECT count(*) AS n FROM a.blob"), 0);
         conn.execute_batch("DROP TRIGGER reject_pool").unwrap();
         let pass = engine.run_pass().unwrap();
@@ -45,7 +42,7 @@ fn image_payload(letter: char) -> (String, Vec<u8>) {
         'A' => ("QUFB", b"AAA".as_slice()),
         _ => ("QkJC", b"BBB".as_slice()),
     };
-    let count = polylogue_store::blobs::INLINE_LIMIT / 3 + 1024;
+    let count = 32 << 10;
     (word.repeat(count), bytes.repeat(count))
 }
 fn assert_blob(engine: &Engine, hash: polylogue_model::BlobHash, expected: &[u8]) {
@@ -99,33 +96,31 @@ fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider
 
 #[cfg(feature = "faults")]
 #[test]
-fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
+fn failed_uncommitted_bytes_retry_the_current_file_without_preserving_a_stale_tail() {
     use polylogue_store::fault::{self, Action};
     for edited in [false, true] {
+        fault::clear();
         let home = ClaudeHome::new();
         let (encoded, decoded) = image_payload('A');
-        let (next_encoded, _) = image_payload('B');
-        let path = home.file("pending-pool.jsonl");
+        let (next_encoded, next_decoded) = image_payload('B');
+        let path = home.file("interrupted-pool.jsonl");
         let original = image_record(
-            "pending-image",
-            "pending-image",
-            "Original pending image",
+            "original-image",
+            "original-image",
+            "Original image",
             &encoded,
         );
         std::fs::write(&path, &original).unwrap();
         let raw = hashed_blobs::Hash::of(original.as_bytes());
         let image = hashed_blobs::Hash::of(&decoded);
-        let input;
         {
             let (mut engine, _lock) = engine(&home, 1 << 20);
-            input = engine.location_id(&path);
-            fault::arm("import.install", &input, Action::Fail, 0, 1);
+            fault::arm("segment.after_sync", "", Action::Fail, 0, 1);
             assert!(!engine.run_pass().unwrap().errors.is_empty());
-            assert_eq!(
-                home.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
-                1
-            );
-            assert!(!engine.blobs.contains(&raw));
+            assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 0);
+            assert_catalogued(&engine, &raw, false);
+            assert_catalogued(&engine, &image, false);
+            fault::clear();
         }
         if edited {
             std::fs::write(
@@ -133,31 +128,29 @@ fn bytes_left_writing_are_read_again_and_an_edited_file_starts_a_new_chain() {
                 image_record(
                     "edited-image",
                     "edited-image",
-                    "Edited pending image",
+                    "Edited image",
                     &next_encoded,
                 ),
             )
             .unwrap();
         }
         let (mut engine, _lock) = engine(&home, 1 << 20);
-        for _ in 0..2 {
-            let pass = engine.run_pass().unwrap();
-            assert!(pass.errors.is_empty(), "{edited}: {:?}", pass.errors);
-        }
-        assert_eq!(engine.blobs.contains(&raw), !edited);
-        assert!(engine.blobs.contains(&image));
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{edited}: {:?}", pass.errors);
+        assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 1);
+        assert_catalogued(&engine, &raw, !edited);
+        assert_catalogued(&engine, &image, !edited);
         if edited {
-            assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 2);
-            assert_eq!(
-                home.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
-                1
+            assert_blob(
+                &engine,
+                polylogue_model::BlobHash::of(&next_decoded),
+                &next_decoded,
             );
+            assert_eq!(home.texts("edited-image"), ["Edited image"]);
         } else {
-            assert_eq!(
-                home.count("SELECT count(*) AS n FROM a.blob WHERE state='writing'"),
-                0
-            );
             assert_blob(&engine, polylogue_model::BlobHash(image.0), &decoded);
+            assert_eq!(home.texts("original-image"), ["Original image"]);
         }
     }
+    fault::clear();
 }

@@ -165,7 +165,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "edited_at",
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
-    // The model that wrote this message; it overrides the conversation's.
+    // The model that wrote this message.for_kind("message"); it overrides the conversation's.
     ("model", Rule::Read(T::String)),
     (
         "metadata",
@@ -220,7 +220,8 @@ static CONVERSATION_FIELDS: Fields = Fields::new(&[
     ("created_at", Rule::Read(T::StringOrNumber)),
     ("updated_at", Rule::Read(T::StringOrNumber)),
     ("chat_messages", Rule::Read(T::Array)),
-]);
+])
+.for_kind("conversation");
 
 /// One claude.ai conversation object, shared with browser captures.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {

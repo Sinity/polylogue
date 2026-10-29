@@ -23,7 +23,7 @@
 //! same file again adds none.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::ExpectedType as T;
@@ -74,11 +74,26 @@ static FIELDS: Fields = Fields::new(&[
     ("timestamp", Rule::Read(T::StringOrNumber)),
     ("provider", Rule::Read(T::String)),
     ("session_id", Rule::Read(T::String)),
+    ("git_identity", Rule::Kept("native Git snapshot")),
+    (
+        "terminal_identity",
+        Rule::Kept("native terminal adapter identity"),
+    ),
+    (
+        "repository",
+        Rule::Kept("repository named by native Git configuration"),
+    ),
+    ("boot_id", Rule::Kept("the source boot identity")),
+    (
+        "native_unavailable",
+        Rule::Kept("unavailable optional native observations"),
+    ),
     (
         "payload",
         Rule::Kept("the hook's input, kept whole as the event's data"),
     ),
-]);
+])
+.for_kind("record");
 
 /// `PreToolUse` → `hook_pre_tool_use`.
 fn event_kind(event_type: &str) -> String {
@@ -160,7 +175,16 @@ impl Parser for HookSpool {
             Some(other) => serde_json::json!({ "payload": other }),
         };
         if let Json::Object(map) = &mut data {
-            for key in ["event_id", "at_ns", "harness_pid"] {
+            for key in [
+                "event_id",
+                "at_ns",
+                "harness_pid",
+                "git_identity",
+                "terminal_identity",
+                "repository",
+                "boot_id",
+                "native_unavailable",
+            ] {
                 if let Some(v) = value.get(key) {
                     map.insert(key.into(), v.clone());
                 }

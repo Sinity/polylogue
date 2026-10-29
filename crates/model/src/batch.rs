@@ -151,9 +151,6 @@ impl RecordOutcome {
     }
 }
 
-/// How the records of one parse step ended, by record kind. The counts
-/// add up to the records read; the writer refuses a step whose counts do
-/// not.
 /// Derived wire observations contain shape and declared discriminator sets,
 /// never scalar bodies from the input. The writer gives these their receipt time.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -164,11 +161,21 @@ pub struct WireShape {
     pub expected: Vec<String>,
     pub dynamic_map: bool,
     pub known_kinds: Vec<String>,
+    pub unknown_kind_count: u64,
+    pub unused_count: u64,
+    pub table: Option<String>,
+    pub unknown_table_count: u64,
 }
 impl WireShape {
     pub fn merge(&mut self, other: &Self) {
         self.record_kind.clone_from(&other.record_kind);
         self.path.clone_from(&other.path);
+        self.unknown_kind_count += other.unknown_kind_count;
+        self.unused_count += other.unused_count;
+        self.unknown_table_count += other.unknown_table_count;
+        if other.table.is_some() {
+            self.table.clone_from(&other.table);
+        }
         for (kind, count) in &other.types {
             *self.types.entry(kind.clone()).or_default() += count;
         }
@@ -182,6 +189,8 @@ impl WireShape {
     }
 }
 
+/// Outcomes and derived wire observations of one parse step. Outcome counts
+/// sum to its records; the writer refuses a step whose counts do not.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RecordCounts {
     /// Derived observations travel with scratch steps through the writer boundary.

@@ -41,9 +41,8 @@ use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, unpack_block};
 pub use batch::{
-    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
+    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
 };
-pub(crate) use bytes::observation_id;
 use bytes::*;
 use rows::*;
 use search::*;
@@ -398,6 +397,17 @@ impl Writer {
             .as_ref()
             .ok_or(StoreError::WriterGone)?
             .send(Msg::StoreBlob(Box::new((new_blob, file)), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Installs export associations derived from committed source observations.
+    pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Assets(Box::new(staged), reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -942,9 +952,9 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
-            if crate::zip_members::zip_of(b).is_some() {
+            if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
-                    "a ZIP member is stored with its ZIP's group".into(),
+                    "a container member is stored with its container's group".into(),
                 ));
             }
             crate::fault::check("write.input", &b.input.id)?;

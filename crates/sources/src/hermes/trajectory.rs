@@ -63,7 +63,8 @@ static ROOT: Fields = Fields::new(&[
     ("final_metrics", Rule::Read(T::Object)),
     ("continued_trajectory_ref", Rule::Read(T::String)),
     ("extra", Rule::Kept("native trajectory metadata")),
-]);
+])
+.for_kind("root");
 static STEP: Fields = Fields::new(&[
     ("step_id", Rule::Read(T::String)),
     ("timestamp", Rule::Read(T::StringOrNumber)),
@@ -78,7 +79,8 @@ static STEP: Fields = Fields::new(&[
     ("llm_call_count", Rule::Read(T::Number)),
     ("is_copied_context", Rule::Read(T::Boolean)),
     ("extra", Rule::Kept("native step extensions")),
-]);
+])
+.for_kind("step");
 
 fn selected(value: &Json, names: &[&str]) -> Json {
     Json::Object(

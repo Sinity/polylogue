@@ -12,12 +12,39 @@ impl Drop for OwnedChild {
 }
 
 const CHILD: &str = "POLYLOGUE_EXTENT_LIST_SCRATCH_CHILD";
+const SOURCE: &str = "POLYLOGUE_EXTENT_LIST_SOURCE";
 
 #[test]
 fn a_killed_extent_list_owner_leaves_no_named_payload() {
     if let Some(dir) = std::env::var_os(CHILD) {
-        child(Path::new(&dir));
+        child(
+            Path::new(&dir),
+            Path::new(&std::env::var_os(SOURCE).unwrap()),
+        );
         return;
+    }
+    let source = Fixture::new(8 << 20);
+    let bytes: Vec<_> = (0u64..512)
+        .flat_map(|n| blake3::hash(&n.to_le_bytes()).as_bytes().to_vec())
+        .collect();
+    let hash = source.add(0, 256, 0, &bytes);
+    {
+        let tx = source.conn.unchecked_transaction().unwrap();
+        {
+            let mut insert = tx
+                .prepare("INSERT INTO extent VALUES ('input',1,?1,256,?2,?3)")
+                .unwrap();
+            for n in 1u64..32768 {
+                insert
+                    .execute(params![
+                        (n * 256) as i64,
+                        hash.0.as_slice(),
+                        ((n % 64) * 256) as i64
+                    ])
+                    .unwrap();
+            }
+        }
+        tx.commit().unwrap();
     }
     let dir = tempfile::tempdir().unwrap();
     let alias_dir = tempfile::tempdir().unwrap();
@@ -31,6 +58,7 @@ fn a_killed_extent_list_owner_leaves_no_named_payload() {
                 "--nocapture",
             ])
             .env(CHILD, &alias)
+            .env(SOURCE, source._dir.path())
             .env("TMPDIR", &alias)
             .env("SQLITE_TMPDIR", &alias)
             .stdout(Stdio::null())
@@ -75,40 +103,25 @@ fn a_killed_extent_list_owner_leaves_no_named_payload() {
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
-fn child(dir: &Path) {
-    let conn = Connection::open_in_memory().unwrap();
-    crate::schema::ensure_archive(&conn).unwrap();
-    conn.execute(
-        "INSERT INTO input(id,format) VALUES ('input','synthetic')",
-        [],
+fn child(dir: &Path, source: &Path) {
+    let conn = Connection::open_with_flags(
+        source.join("archive.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    conn.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',1,'first',1,8388608,1)", []).unwrap();
-    // Unique incompressible inline new blobs force the actual extents beyond its cache.
-    for n in 0u64..512 {
-        let bytes = (0u64..512)
-            .flat_map(|i| {
-                blake3::hash(&(n * 512 + i).to_le_bytes())
-                    .as_bytes()
-                    .to_vec()
-            })
-            .collect::<Vec<_>>();
-        let hash = BlobHash::of(&bytes);
-        let data = zstd::bulk::compress(&bytes, 1).unwrap();
-        conn.execute("INSERT INTO blob(hash,size,stored_size,place,encoding,state,data) VALUES (?1,16384,?2,'inline','plain','present',?3)", params![hash.0.as_slice(),data.len() as i64,data]).unwrap();
-        conn.execute(
-            "INSERT INTO extent VALUES ('input',1,?1,16384,?2,0)",
-            params![(n * 16384) as i64, hash.0.as_slice()],
-        )
-        .unwrap();
-    }
     let chain = StoredChain::load(&conn, "", "input", 1, 8 << 20).unwrap();
     let locked = chain.extents.as_ref().unwrap().connection();
     assert_eq!(locked.path(), Some(""));
     let pages: i64 = locked
         .query_row("PRAGMA page_count", [], |r| r.get(0))
         .unwrap();
-    assert!(pages > 2048);
+    let page_size: i64 = locked
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .unwrap();
+    assert!(
+        pages * page_size > 1 << 20,
+        "the metadata list must spill beyond its initial cache"
+    );
     assert_eq!(
         locked
             .query_row("PRAGMA cache_size", [], |r| r.get::<_, i64>(0))

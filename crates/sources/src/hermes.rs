@@ -130,7 +130,8 @@ static SESSION_FIELDS: Fields = Fields::new(&[
     ("ended_at", Rule::Read(T::StringOrNumber)),
     ("end_reason", Rule::Read(T::String)),
     ("system_prompt", Rule::Read(T::String)),
-]);
+])
+.for_kind("session");
 
 fn lines(
     reader: &mut dyn Input,
@@ -683,10 +684,13 @@ impl ExportParser for Database {
                 }
             }
             "schema_version" => sink.records.record(table, &RecordOutcome::Used),
-            _ => sink.records.record(
-                table,
-                &RecordOutcome::skipped("Hermes auxiliary row stays in the stored input"),
-            ),
+            _ => {
+                sink.records.unknown_table(table, table, row);
+                sink.records.record(
+                    table,
+                    &RecordOutcome::skipped("Hermes auxiliary row stays in the stored input"),
+                );
+            }
         }
         Ok(())
     }

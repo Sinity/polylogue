@@ -25,7 +25,8 @@ pub(super) static FIELDS: Fields = Fields::new(&[
     ("token_count", Rule::Read(T::Number)),
     ("finish_reason", Rule::Read(T::String)),
     ("_empty_recovery_synthetic", Rule::Read(T::Number)),
-]);
+])
+.for_kind("record");
 
 pub(super) fn active(row: &Json) -> Option<bool> {
     match (

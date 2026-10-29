@@ -104,8 +104,9 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
   ```
 
   - `proc` is the **process identity**: `harness_pid` is the hook's parent (the harness runs the hook directly), `harness_start` the process start time, `boot_id` the kernel's boot ID. PID reuse and reboots never let a new process inherit an old session.
-  - `inherited` records another harness's session variables present in the environment (a Codex run launched from a Claude Code shell). It is launch evidence for delegation, never the child's identity. No other environment variable is read or stored.
+  - `inherited` records another harness's session variables present in the environment (a Codex run launched from a Claude Code shell). It is launch evidence for delegation, never the child's identity. The native terminal adapter variables described below are also recorded when present.
   - Hermes's `conversation_history` is left out of the line, because its transcript is read from `state.db`.
+- **Native work context.** At session start, the hook observes Git's common directory, root commits, current revision and branch, and the repository named in `remote.origin.url`, using one shared 50 ms budget. An unavailable or timed-out observation is recorded as unknown with its reason. A source cwd selects where Git observes these facts; it does not identify the repository. When Kitty supplies its native process and window variables, the hook records that adapter key with host, boot and parent-process identity. Structured task and pull-request references supplied by a harness remain in the payload; prompts, goal prose and shell commands do not supply objective identities.
 - **A hook event belongs to its session and never creates one.** The daemon reads spool files like any growing file; a hook line keeps its identity across re-storage.
 - **Hooks complete transcripts** where the transcript is short of the truth: `PreCompact` gives the pre-compaction context, `PostToolUse` restores a truncated tool result (the order is inline, then sidecar, then hook), `UserPromptSubmit` gives exact paste bodies.
 
@@ -123,6 +124,9 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 - **Original containers are kept whole**, and their members are also stored decoded, addressed as `container!/member`. Members deduplicate across overlapping exports; containers do not.
 - **Importing the same bytes again changes nothing.** A newer export merges by field ([sessions.md](sessions.md#one-conversation-through-several-routes)), so a field only the older export had survives.
 - An encrypted or corrupt member refuses its whole container before anything is stored.
+- Container observations record the container input, encoding kind, member index and exact member-name bytes. Display names are escaped when the original name is not UTF-8. Container membership is independent of explicit import membership.
+- Codex plain and zstd rollout copies use the recorded native thread identity. Captured compressed bytes and decoded member bytes remain separate; re-encoding equal decoded content adds an observation without a logical revision. Appends preserve the existing byte chain.
+- Native Codex local-image references are read before parsing the observed rollout. Relative names require a recorded absolute working directory. A stored coverage manifest records each reference, its source record range, the recorded directory, and collected, missing, unreadable or unresolved status. Available files retain their exact bytes as content-addressed inputs.
 - The answer lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets. `--explain` classifies every member without storing anything.
 
 | Structure | Recognized by | Origin |
@@ -141,6 +145,8 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | Polylogue export bundle | the bundle manifest ([reading.md](reading.md#writing-out)) | the bundle's own records |
 | The predecessor's spools | hook spool NDJSON in every old layout, `browser_llm_session` v1 envelopes, `raw_sessions` blobs | the payload's origin |
 | A live-origin file outside its root | only with `--format NAME`, or when the path keeps the tool's own layout | that origin |
+
+Aider's LLM log contains snapshots of the sent context and the returned response. It has no native session or message IDs: the first recorded request fixes its content-derived session identity, and equal sent prefixes share message IDs. Its unzoned log times stay unknown, with the original strings retained. The paired Markdown is a companion document.
 
 Hand-made Markdown chat dumps are not a structure: a flattened transcript is a degraded form of a conversation that has a real source.
 
@@ -184,3 +190,5 @@ Its figures and verdicts use the shared status format of [command-surface](https
 - **corrupt-member-refuses-container**: a corrupt member refuses its container before anything is stored.
 - **container-streams**: every member of a container far larger than memory streams with bounded memory.
 - **tool-database-keeps-deleted-rows**: a row deleted by the tool after one capture stays in the archive, and no database image or side file is written.
+
+A completed full discovery walk publishes one capture-coverage snapshot per machine. Every declared root is present, including accessible empty roots, absent roots, unavailable roots and roots with unreadable descendants. Entries aggregate file counts, byte counts and newest source mtime by collection class and declared pattern; ignored entries retain their reason. Status reads the last confirmed full-walk snapshot and its observation time. Incremental file events update inputs without replacing that snapshot.

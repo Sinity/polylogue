@@ -163,8 +163,8 @@ impl Reader<'_> {
         // A ZIP is the source of its members, not one of the attachments among them.
         let mut originals =
             std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-        let mut roots=conn.prepare("SELECT DISTINCT c.zip_input,json_extract(o.details_json,'$.import.import_id') FROM source_observation o
-            JOIN source_observation_zip c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
+        let mut roots=conn.prepare("SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id') FROM source_observation o
+            JOIN source_observation_container c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2 AND json_type(o.details_json,'$.import.import_id')='text'")?;
         for row in roots.query_map([after, through], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })? {

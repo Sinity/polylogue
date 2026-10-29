@@ -544,7 +544,7 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     drop(rows);
     drop(q);
     for input in &plan.inputs {
-        tx.execute("DELETE FROM source_observation_zip WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
+        tx.execute("DELETE FROM source_observation_container WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
         tx.execute("DELETE FROM source_observation WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_extent WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_revision WHERE input=?1", [input])?;

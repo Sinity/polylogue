@@ -1,10 +1,9 @@
 use super::*;
-use crate::blobs::Stored;
 use crate::staging::PreparedBatch;
 use crate::writer::{InFlight, InputKey};
 use crate::{Archive, Change, ImportMember, NewBlob, Observation, Writer};
 use polylogue_model::BlobHash;
-use std::sync::{Arc, Barrier};
+use std::sync::Arc;
 
 const ORIGINAL: &[u8] = b"synthetic container byte representation";
 const MEMBER: &[u8] = b"synthetic independently stored member";
@@ -15,7 +14,7 @@ fn stage(
     body: &[u8],
     import_id: &str,
     member: &str,
-    zip: Option<InZip>,
+    zip: Option<InContainer>,
 ) -> PreparedBatch {
     let prepared = archive.prepare_bytes(body).unwrap();
     let batch = Batch {
@@ -31,19 +30,18 @@ fn stage(
             path: format!("/synthetic/{member}"),
             facts: None,
             seen_at_ms: 1,
+            container: zip,
             import: Some(ImportMember {
                 version: 1,
                 import_id: import_id.into(),
                 member: member.into(),
                 format: Some("export-file".into()),
-                zip,
             }),
         }),
         continues: false,
         new_blob: Some(NewBlob {
             hash: prepared.hash(),
             size: prepared.len(),
-            stored: Stored::File { stored_size: 0 },
         }),
         blobs: vec![],
         length: prepared.len(),
@@ -65,9 +63,11 @@ fn linked(archive: &Archive, import_id: &str, duplicates: bool) -> Vec<PreparedB
             MEMBER,
             import_id,
             "first.dat",
-            Some(InZip {
+            Some(InContainer {
                 input: root.clone(),
                 member_index: 0,
+                kind: "zip".into(),
+                path_bytes: b"member".to_vec(),
             }),
         ),
     ];
@@ -77,9 +77,11 @@ fn linked(archive: &Archive, import_id: &str, duplicates: bool) -> Vec<PreparedB
             MEMBER,
             import_id,
             "second.dat",
-            Some(InZip {
+            Some(InContainer {
                 input: root,
                 member_index: 1,
+                kind: "zip".into(),
+                path_bytes: b"member".to_vec(),
             }),
         ));
     }
@@ -91,7 +93,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(archive.blobs().unwrap());
     for import_id in ["one", "two"] {
         let outcomes = writer
             .sender()
@@ -116,10 +118,13 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
         ),
         (2, 2, 2, 2)
     );
-    assert_eq!((count("observation"), count("observation_zip")), (6, 4));
+    assert_eq!(
+        (count("observation"), count("observation_container")),
+        (6, 4)
+    );
     assert_eq!(
         db.query_row(
-            "SELECT count(DISTINCT member_index) FROM observation_zip",
+            "SELECT count(DISTINCT member_index) FROM observation_container",
             [],
             |r| r.get::<_, i64>(0)
         )
@@ -129,14 +134,14 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
 }
 
 #[cfg(feature = "faults")]
-mod pending;
+mod durability;
 
 #[test]
 fn a_container_in_one_import_can_be_a_real_member_in_another() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(crate::blobs::Blobs::open(dir.path(), vec![], 0o600).unwrap());
+    let store = Arc::new(archive.blobs().unwrap());
     let inner = BlobHash::of(ORIGINAL).to_string();
     let outer = b"synthetic outer container representation";
     let outer_id = BlobHash::of(outer).to_string();
@@ -148,9 +153,11 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
             ORIGINAL,
             "outer",
             "file-Native.dat",
-            Some(InZip {
+            Some(InContainer {
                 input: outer_id,
                 member_index: 0,
+                kind: "zip".into(),
+                path_bytes: b"member".to_vec(),
             }),
         ),
         stage(
@@ -158,9 +165,11 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
             MEMBER,
             "inner",
             "first.dat",
-            Some(InZip {
+            Some(InContainer {
                 input: inner,
                 member_index: 0,
+                kind: "zip".into(),
+                path_bytes: b"member".to_vec(),
             }),
         ),
     ];

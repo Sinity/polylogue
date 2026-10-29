@@ -2,13 +2,26 @@ use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
 #[cfg(feature = "faults")]
-mod pending;
+mod commits;
 mod pool;
 #[cfg(feature = "faults")]
 mod watched;
 
+fn assert_catalogued(engine: &Engine, hash: &hashed_blobs::Hash, present: bool) {
+    match engine.blobs.extent(hash) {
+        Ok(extent) => {
+            assert!(present, "unexpected committed blob extent");
+            assert_eq!(extent.hash, *hash);
+        }
+        Err(polylogue_store::StoreError::NotFound(_)) => {
+            assert!(!present, "committed blob missing")
+        }
+        Err(error) => panic!("reading the blob catalog failed: {error}"),
+    }
+}
+
 #[test]
-fn a_refused_import_installs_no_file() {
+fn a_refused_import_commits_no_blob_extent_or_source_rows() {
     for changed in [false, true] {
         let home = ClaudeHome::new();
         let path = home.dir.path().join("manual.jsonl");
@@ -29,10 +42,7 @@ fn a_refused_import_installs_no_file() {
                 )
                 .unwrap();
             assert!(!rejected.pass.errors.is_empty());
-            assert!(
-                !engine.blobs.contains(&hash),
-                "a rejected first import must not write a blob file without an archive row"
-            );
+            assert_catalogued(&engine, &hash, false);
             for table in ["input", "revision", "extent", "blob", "observation"] {
                 assert_eq!(
                     home.count(&format!("SELECT count(*) AS n FROM a.{table}")),
@@ -41,14 +51,13 @@ fn a_refused_import_installs_no_file() {
                 );
             }
         }
-        // A trigger is a table change the archive refuses at open.
         rusqlite::Connection::open(home.root.join("archive.db"))
             .unwrap()
             .execute_batch("DROP TRIGGER reject_first_import")
             .unwrap();
         let (mut engine, _lock) = engine(&home, 64);
         assert!(engine.run_pass().unwrap().errors.is_empty());
-        assert!(!engine.blobs.contains(&hash));
+        assert_catalogued(&engine, &hash, false);
         if changed {
             std::fs::write(
                 &path,
@@ -66,21 +75,23 @@ fn a_refused_import_installs_no_file() {
             )
             .unwrap();
         assert!(retry.pass.errors.is_empty(), "{:?}", retry.pass.errors);
-        assert_eq!(engine.blobs.contains(&hash), !changed);
+        assert_catalogued(&engine, &hash, !changed);
     }
 }
 
 #[test]
-fn equal_inline_bytes_install_no_file_copy() {
+fn equal_small_bytes_share_one_segment_extent_across_inputs() {
     let home = ClaudeHome::new();
-    let original = claude_user("inline-user", "inline-session", "synthetic inline content");
-    home.append("inline-session.jsonl", &original);
-    let path = home.dir.path().join("manual-inline.jsonl");
+    let original = claude_user("small-user", "small-session", "synthetic shared content");
+    home.append("small-session.jsonl", &original);
+    let path = home.dir.path().join("manual-small.jsonl");
     std::fs::write(&path, &original).unwrap();
     let hash = hashed_blobs::Hash::of(original.as_bytes());
     let (mut engine, _lock) = engine(&home, 1024);
     assert!(engine.run_pass().unwrap().errors.is_empty());
-    assert!(!engine.blobs.contains(&hash));
+    let extent = engine.blobs.extent(&hash).unwrap();
+    let segment = home.root.join(&extent.segment);
+    let before = std::fs::metadata(&segment).unwrap().len();
     let report = engine
         .import_with_options(
             &[path],
@@ -91,14 +102,9 @@ fn equal_inline_bytes_install_no_file_copy() {
         )
         .unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
-    assert!(
-        !engine.blobs.contains(&hash),
-        "inline deduplication must discard its private file stage"
-    );
-    assert_eq!(
-        home.count("SELECT count(*) AS n FROM a.blob WHERE place='inline'"),
-        1
-    );
+    assert_eq!(engine.blobs.extent(&hash).unwrap(), extent);
+    assert_eq!(std::fs::metadata(segment).unwrap().len(), before);
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.blob"), 1);
     assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 2);
-    assert_eq!(home.texts("inline-session"), ["synthetic inline content"]);
+    assert_eq!(home.texts("small-session"), ["synthetic shared content"]);
 }

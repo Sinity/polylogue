@@ -44,6 +44,27 @@ pub struct OtelGenAi {
 
 mod stream;
 
+static SPAN_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
+    ("", crate::fields::Rule::Kept("complete native span event")),
+    (
+        "traceId",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "startTimeUnixNano",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::StringOrNumber),
+    ),
+    (
+        "endTimeUnixNano",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::StringOrNumber),
+    ),
+    (
+        "status.code",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
+    ),
+])
+.for_kind("span");
+
 /// One span with its attributes decoded from OTLP `AnyValue`s.
 struct Span<'a> {
     trace: &'a str,
@@ -119,6 +140,9 @@ impl ExportParser for OtelGenAi {
             .get("gen_ai.operation.name")
             .and_then(Json::as_str);
         if op.is_none() && !span.attrs.keys().any(|k| k.starts_with("gen_ai.")) {
+            static UNUSED: crate::fields::Fields =
+                crate::fields::Fields::new(&[]).for_kind("unused");
+            sink.records.fields("span", value, &UNUSED);
             sink.records
                 .record("span", &RecordOutcome::skipped("not a GenAI span"));
             return Ok(());
@@ -153,6 +177,8 @@ impl ExportParser for OtelGenAi {
             range: None,
             data: span.raw.clone(),
         });
+        sink.records
+            .fields(op.unwrap_or("gen_ai"), value, &SPAN_FIELDS);
         match op {
             Some("execute_tool") => tool_span(&span, &sid, sink),
             _ => model_span(&span, conversation, &sid, owners, sink)?,

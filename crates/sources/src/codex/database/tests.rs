@@ -50,3 +50,24 @@ fn rows_become_sessions_links_and_events() {
     assert_eq!(step.counts.skipped.values().sum::<u64>(), 2);
     assert_eq!(step.counts.used.values().sum::<u64>(), 4);
 }
+
+#[test]
+fn unknown_database_table_has_explicit_schema_identity_without_row_values() {
+    let step = crate::parse::run(
+        &Database,
+        &mut NoState::default(),
+        b"{\"t\":\"future_facts\",\"k\":1,\"r\":{\"body\":\"distinctive-private-body\"}}\n",
+        0,
+    )
+    .unwrap();
+    let key = serde_json::to_string(&("row", "future_facts", "")).unwrap();
+    let shape = &step.counts.wire_shapes[&key];
+    assert_eq!(shape.table.as_deref(), Some("future_facts"));
+    assert_eq!(shape.unknown_table_count, 1);
+    assert_eq!(step.counts.unread_fields["future_facts.body"], 1);
+    assert!(
+        !serde_json::to_string(&step.counts.wire_shapes)
+            .unwrap()
+            .contains("distinctive-private-body")
+    );
+}

@@ -13,6 +13,8 @@
 //! next changes, never all at start-up.
 
 pub mod collect;
+mod compressed;
+mod local_files;
 pub mod pool;
 pub mod read;
 pub mod repo_lookup;
@@ -469,6 +471,7 @@ impl Engine {
             facts,
             seen_at_ms: now_ms(),
             import: None,
+            container: None,
         }
     }
 }

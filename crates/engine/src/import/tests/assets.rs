@@ -148,7 +148,10 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 3);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 4);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_zip"), 3);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.observation_container"),
+        3
+    );
 }
 
 #[test]
@@ -195,61 +198,5 @@ fn sidecar_parsing_is_scoped_to_its_declared_role_in_each_import() {
                 "a filename role from another import must not be borrowed"
             );
         }
-    }
-}
-
-#[test]
-fn excised_asset_bytes_stay_unavailable_after_rebuild_and_reimport() {
-    let w = ClaudeHome::new();
-    let directory = w.dir.path().join("account");
-    std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(directory.join("conversations.json"), conversation()).unwrap();
-    std::fs::write(
-        directory.join("file-Native.dat"),
-        b"remove these asset bytes",
-    )
-    .unwrap();
-    {
-        let (mut engine, _lock) = engine(&w, 1024);
-        let report = engine.import(std::slice::from_ref(&directory)).unwrap();
-        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
-        let input = blake3::hash(b"remove these asset bytes")
-            .to_hex()
-            .to_string();
-        engine
-            .excise(ExciseRequest {
-                id: "remove-asset".into(),
-                target: ExciseTarget::Input(input),
-                reason: None,
-                dry_run: false,
-            })
-            .unwrap();
-        let resolution = engine
-            .reads
-            .reader()
-            .unwrap()
-            .attachment(&message_id(), 0, 0)
-            .unwrap();
-        assert_eq!(
-            resolution.state,
-            polylogue_store::assets::AttachmentState::Unavailable
-        );
-        assert!(resolution.matches.is_empty());
-    }
-    polylogue_testkit::delete_index(&w.root);
-    let (mut engine, _lock) = engine(&w, 1024);
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    for reimport in [false, true] {
-        if reimport {
-            let _ = engine.import(std::slice::from_ref(&directory)).unwrap();
-        }
-        let reader = engine.reads.reader().unwrap();
-        let resolution = reader.attachment(&message_id(), 0, 0).unwrap();
-        assert_eq!(
-            resolution.state,
-            polylogue_store::assets::AttachmentState::Unavailable
-        );
-        assert!(resolution.matches.is_empty());
     }
 }

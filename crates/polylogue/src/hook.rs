@@ -106,6 +106,7 @@ pub fn append_to_spool(
     harness: Harness,
     event: &str,
     payload: &Value,
+    native: &Value,
 ) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
@@ -127,6 +128,11 @@ pub fn append_to_spool(
         "provider": harness.origin(),
         "payload": payload,
     });
+    if let Some(native) = native.as_object() {
+        for (key, value) in native {
+            line[key] = value.clone();
+        }
+    }
     if let Some(session) = session_of(harness, &line["payload"]) {
         line["session_id"] = json!(session.native().to_string());
     }
@@ -435,7 +441,8 @@ pub fn run(harness: Harness, event: &str) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-    if let Err(e) = append_to_spool(&hook_spool_dir(), harness, event, &payload) {
+    let native = native::snapshot(event, &payload, &native::Environment::load());
+    if let Err(e) = append_to_spool(&hook_spool_dir(), harness, event, &payload, &native) {
         // The harness must not fail because the spool cannot be written.
         eprintln!(
             "{}",
@@ -456,6 +463,7 @@ pub fn run(harness: Harness, event: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+mod native;
 mod settings;
 pub use settings::{install, settings_path};
 

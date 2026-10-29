@@ -19,6 +19,7 @@ pub(super) fn write_rows(
     counter: i64,
     first_build: Option<&FirstBuild>,
 ) -> Result<u64> {
+    p.counts.check()?;
     p.prepared.validate(&p.output)?;
     let keys = p.prepared.keys.as_deref().ok_or_else(|| {
         StoreError::Invalid("an indexed reading has no resolved natural keys".into())
@@ -33,6 +34,9 @@ pub(super) fn write_rows(
         ));
     }
     let input_pk = keys.get(resolve::Kind::Input, b.input.id.as_bytes())?.pk;
+    if !admit_step(tx, input_pk, chain, b, p)? {
+        return Ok(0);
+    }
     tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
@@ -93,9 +97,8 @@ pub(super) fn write_rows(
         }
         let session_pk = rows.session_pk(&mut sessions, &row.message.session)?;
         let prepared = &p.prepared.messages[i];
-        let position = match p.order_from {
-            Some(from) => ((from + i as u64) as i64, 0),
-            None if p.repeats_whole_conversations => (i as i64, 0),
+        let position = match p.message_position(i)? {
+            Some(order) => (order, 0),
             None => {
                 let next = in_record.entry(row.offset).or_default();
                 *next += 1;
@@ -210,6 +213,51 @@ pub(super) fn write_rows(
     }
     rows.write_parse_state(b, p)?;
     Ok(written)
+}
+
+/// A continuing reading can only extend its committed prefix. Explicit resets
+/// replace a complete reading, including row dumps whose accounting starts later.
+fn admit_step(
+    tx: &Transaction<'_>,
+    input: i64,
+    chain: i64,
+    batch: &Batch,
+    step: &ParseStep,
+) -> Result<bool> {
+    if step.start > step.parsed_upto
+        || step.parsed_upto > batch.length
+        || i64::try_from(batch.length).is_err()
+    {
+        return Err(StoreError::Invalid(
+            "reading range is outside its stored input".into(),
+        ));
+    }
+    if step.reset {
+        return Ok(true);
+    }
+    let previous: Option<(u64, String)> = tx
+        .query_row(
+            "SELECT parsed_upto, reading_version FROM parse_state WHERE input_pk=?1 AND chain=?2",
+            params![input, chain],
+            |row| Ok((row.get::<_, i64>(0)? as u64, row.get(1)?)),
+        )
+        .optional()?;
+    let cursor = previous.as_ref().map_or(0, |(cursor, _)| *cursor);
+    if step.start < cursor
+        && step.parsed_upto <= cursor
+        && previous
+            .as_ref()
+            .is_some_and(|(_, version)| version == &step.reading_version)
+    {
+        return Ok(false);
+    }
+    if step.start != cursor {
+        return Err(StoreError::Invalid(format!(
+            "reading starts at {} after committed position {cursor}",
+            step.start
+        )));
+    }
+    Ok(true)
 }
 
 /// A block's packed body and structured value, as `block` stores them.
@@ -1001,7 +1049,9 @@ impl RowWriter<'_, '_> {
         let used: u64 = a.used.values().sum();
         let skipped: u64 = a.skipped.values().sum();
         let unreadable: u64 = a.unreadable.values().sum();
-        let status = if p.no_parser_yet {
+        let status = if p.at_end && p.parsed_upto < b.length {
+            "waiting"
+        } else if p.no_parser_yet {
             "no_parser_yet"
         } else if p.parsed_upto >= b.length {
             "done"
@@ -1040,11 +1090,7 @@ impl RowWriter<'_, '_> {
             skipped as i64,
             unreadable as i64,
             detail,
-            if p.no_parser_yet {
-                ""
-            } else {
-                p.reading_version.as_str()
-            },
+            p.reading_version.as_str(),
         ])?;
         let groups = [
             ("skipped:", &a.skipped, 1),

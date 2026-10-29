@@ -13,6 +13,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use sinex_model::event_types::work::{GitIdentity, Objective, TerminalIdentity};
 use sinex_model::{MaterialId, Timestamp};
 
 /// One AI session: a conversation or agent run in one tool.
@@ -20,7 +21,7 @@ use sinex_model::{MaterialId, Timestamp};
     Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, sinex_model::EventPayload,
 )]
 #[serde(deny_unknown_fields)]
-#[event(version = 2, type = "polylogue.session", key = ["session"], replace = newer, time = started, quality = intrinsic)]
+#[event(version = 3, type = "polylogue.session", key = ["session"], replace = newer, time = started, quality = intrinsic)]
 pub struct Session {
     /// `<origin>:<native id>`, such as `claude-code:7f3a…`.
     pub session: String,
@@ -31,9 +32,19 @@ pub struct Session {
     pub title: Option<String>,
     /// Working directories in the order the session used them.
     pub cwd: Vec<String>,
-    /// The repository, as the session names it or as its directory resolves.
+    /// The repository explicitly named by source records.
     pub repo: Option<String>,
     pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objectives: Vec<Objective>,
+    pub git_identity: Option<GitIdentity>,
+    pub terminal: Option<TerminalIdentity>,
+    pub boot_id: Option<String>,
+    /// Exact native records contributing attribution facts to this reading.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_sources: Vec<RecordRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_unavailable: Vec<String>,
     /// The tool's version.
     pub tool_version: Option<String>,
     /// How the tool ran it, when not interactively (`bg`).
