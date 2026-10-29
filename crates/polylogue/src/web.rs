@@ -315,7 +315,8 @@ pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     .await
     .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
     cancel.0.take();
-    let answer = crate::protocol::scope_answer(response.answer(), scope.as_ref());
+    let publication = crate::protocol::ReadScopes::single(scope);
+    let answer = crate::protocol::scope_answer(response.answer(), &publication);
     browser_response(answer.into(), &web.daemon.archive.root)
 }
 

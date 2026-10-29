@@ -28,6 +28,8 @@ pub struct Accepted {
     pub working_directory: Option<PathBuf>,
     pub invocation: Option<crate::operation::Invocation>,
     pub admitted_request: Option<crate::daemon::Request>,
+    /// The existing native token captured after classifying the actual request.
+    pub read_scope: Option<polylogue_store::ReadScopeToken>,
 }
 
 impl Accepted {
@@ -50,6 +52,7 @@ pub fn accept(
         working_directory: None,
         invocation: None,
         admitted_request: None,
+        read_scope: None,
     }
 }
 

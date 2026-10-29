@@ -338,7 +338,13 @@ fn scope_reset_after_http_encoding_cannot_activate_the_old_body() {
         command_surface::Answer::ok(serde_json::json!({"stale":"synthetic-old-scope-value"})),
     );
     daemon.daemon.archive.advance_generation_for_test().unwrap();
-    let response = scoped_body_response(&web, status, "application/json", bytes, Some(&scope));
+    let response = scoped_body_response(
+        &web,
+        status,
+        "application/json",
+        bytes,
+        &crate::protocol::ReadScopes::single(Some(scope)),
+    );
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let bytes = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -364,7 +370,13 @@ fn scope_reset_before_polling_an_encoded_http_body_aborts_its_frame() {
         &web,
         command_surface::Answer::ok(serde_json::json!({"stale":"synthetic-old-scope-value"})),
     );
-    let response = scoped_body_response(&web, status, "application/json", bytes, Some(&scope));
+    let response = scoped_body_response(
+        &web,
+        status,
+        "application/json",
+        bytes,
+        &crate::protocol::ReadScopes::single(Some(scope)),
+    );
     daemon.daemon.archive.advance_generation_for_test().unwrap();
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()

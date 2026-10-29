@@ -4,6 +4,8 @@ pub mod caller;
 pub mod complete;
 pub mod import;
 pub mod operations;
+mod scope;
+pub(crate) use scope::{ReadScopes, answer as scope_answer};
 pub mod query;
 pub mod query_aliases;
 pub mod read;
@@ -135,20 +137,6 @@ pub fn kind(code: &str) -> FailureKind {
         .iter()
         .find_map(|(kind, codes)| codes.contains(&code).then_some(*kind))
         .unwrap_or(FailureKind::Io)
-}
-
-/// A revoked read cannot become a final success after its worker returns.
-pub fn scope_answer<T>(
-    answer: Answer<T>,
-    scope: Option<&polylogue_store::read::scope::ReadScopeToken>,
-) -> Answer<T> {
-    if let Some(scope) = scope
-        && let Err(error) = scope.check()
-    {
-        Answer::error(failure(store_code(&error), error.to_string(), None))
-    } else {
-        answer
-    }
 }
 
 /// Every store boundary uses this code before the shared transport mapping.

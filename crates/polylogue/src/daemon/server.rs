@@ -16,7 +16,7 @@ use std::time::Duration;
 fn write_scoped_json(
     output: &mut UnixStream,
     answer: &impl serde::Serialize,
-    scope: Option<&polylogue_store::ReadScopeToken>,
+    scopes: &crate::protocol::ReadScopes,
 ) -> std::io::Result<()> {
     let mut bytes = serde_json::to_vec(answer).map_err(std::io::Error::other)?;
     bytes.push(b'\n');
@@ -25,10 +25,7 @@ fn write_scoped_json(
     let mut offset = 0;
     while offset < bytes.len() {
         let end = bytes.len().min(offset + 64 * 1024);
-        let published = match scope {
-            Some(scope) => scope.with_current(|| Ok(output.write(&bytes[offset..end]))),
-            None => Ok(output.write(&bytes[offset..end])),
-        };
+        let published = scopes.with_current(|| Ok(output.write(&bytes[offset..end])));
         let published = match published {
             Ok(result) => result,
             Err(error) if offset == 0 => {
@@ -81,6 +78,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         }
         if let Some(incoming) = crate::protocol::wire::incoming(&line) {
             let mut read_scope = None;
+            let mut publication = crate::protocol::ReadScopes::default();
             let answer = match incoming {
                 Err(error) => command_surface::Answer::error(crate::protocol::failure(
                     "bad_request",
@@ -162,6 +160,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                             }
                         }
                     }
+                    accepted.read_scope = read_scope.clone();
                     if let Some(command) = command
                         && let crate::commands::Action::Stream { .. } = command.action
                         && let Some(internal) = internal.filter(Request::streaming)
@@ -216,16 +215,19 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         .enable_all()
                         .build()
                         .expect("operation runtime starts");
-                    runtime.block_on(operations.call_as(
+                    let dispatched = runtime.block_on(operations.call_as(
                         request,
                         origin,
                         trusted,
                         Default::default(),
-                    ))
+                    ));
+                    publication =
+                        crate::protocol::ReadScopes::dispatched(&dispatched, read_scope.clone());
+                    dispatched.answer
                 }
             };
-            let answer = crate::protocol::scope_answer(answer, read_scope.as_ref());
-            if write_scoped_json(&mut out, &answer, read_scope.as_ref()).is_err() {
+            let answer = crate::protocol::scope_answer(answer, &publication);
+            if write_scoped_json(&mut out, &answer, &publication).is_err() {
                 return;
             }
             continue;
@@ -306,6 +308,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                 )
             }),
         };
+        let mut publication = crate::protocol::ReadScopes::single(read_scope.clone());
         let response = if let Some((operation, arguments)) = typed {
             let table = operations;
             let request = command_surface::Request {
@@ -324,25 +327,27 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     },
                 ),
             };
+            let mut accepted = accepted.clone();
+            accepted.read_scope = read_scope.clone();
             let scope = accepted.scope();
             let trusted = command_surface::Caller::authenticated(scope, accepted.clone());
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("operation runtime starts");
-            runtime
-                .block_on(table.call_as(
-                    request,
-                    command_surface::Origin::Socket,
-                    trusted,
-                    Default::default(),
-                ))
-                .into()
+            let dispatched = runtime.block_on(table.call_as(
+                request,
+                command_surface::Origin::Socket,
+                trusted,
+                Default::default(),
+            ));
+            publication = crate::protocol::ReadScopes::dispatched(&dispatched, read_scope.clone());
+            dispatched.answer.into()
         } else {
             service::handle_with_caller(request, d, &limit, &accepted.authorship)
         };
-        let answer = crate::protocol::scope_answer(response.answer(), read_scope.as_ref());
-        if write_scoped_json(&mut out, &answer, read_scope.as_ref()).is_err() {
+        let answer = crate::protocol::scope_answer(response.answer(), &publication);
+        if write_scoped_json(&mut out, &answer, &publication).is_err() {
             return;
         }
     }

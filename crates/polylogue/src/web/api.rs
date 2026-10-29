@@ -172,6 +172,7 @@ async fn answer(
             limit.cancellation,
         );
         accepted.admitted_request = admitted_request;
+        accepted.read_scope = read_scope.clone();
         accepted.invocation = Some(
             web.daemon
                 .invocation(&accepted.authorship)
@@ -179,7 +180,7 @@ async fn answer(
         );
         let scope = accepted.scope();
         let trusted = command_surface::Caller::authenticated(scope, accepted);
-        let answer = table
+        let dispatched = table
             .call_as(
                 request.clone(),
                 command_surface::Origin::Http,
@@ -187,7 +188,8 @@ async fn answer(
                 Default::default(),
             )
             .await;
-        let answer = crate::protocol::scope_answer(answer, read_scope.as_ref());
+        let publication = crate::protocol::ReadScopes::dispatched(&dispatched, read_scope.clone());
+        let answer = crate::protocol::scope_answer(dispatched.answer, &publication);
         if c.name == "read"
             && headers
                 .get(header::ACCEPT)
@@ -212,9 +214,7 @@ async fn answer(
                 .and_then(|page| super::pages::reader::read(&page, table, &request))
             {
                 Ok(html) => {
-                    if let Some(scope) = &read_scope
-                        && let Err(error) = scope.check()
-                    {
+                    if let Err(error) = publication.check() {
                         return json_answer(web, crate::daemon::service::store_error(&error));
                     }
                     return scoped_body_response(
@@ -222,7 +222,7 @@ async fn answer(
                         StatusCode::OK,
                         "text/html; charset=utf-8",
                         html.into_bytes(),
-                        read_scope.as_ref(),
+                        &publication,
                     );
                 }
                 Err(error) => {
@@ -234,7 +234,7 @@ async fn answer(
             }
         }
         let (status, bytes) = super::prepare_json_answer(web, answer);
-        return scoped_body_response(web, status, "application/json", bytes, read_scope.as_ref());
+        return scoped_body_response(web, status, "application/json", bytes, &publication);
     }
     match values.and_then(|input| match input {
         Input::Values(values) => build(c, &values, &caller),
@@ -251,7 +251,7 @@ async fn answer(
 struct ScopedBytes {
     bytes: Vec<u8>,
     offset: usize,
-    scope: polylogue_store::ReadScopeToken,
+    scopes: crate::protocol::ReadScopes,
 }
 impl tokio::io::AsyncRead for ScopedBytes {
     fn poll_read(
@@ -260,9 +260,9 @@ impl tokio::io::AsyncRead for ScopedBytes {
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         let this = self.get_mut();
-        let scope = this.scope.clone();
+        let scopes = this.scopes.clone();
         std::task::Poll::Ready(
-            scope
+            scopes
                 .with_current(|| {
                     let end = this
                         .bytes
@@ -283,21 +283,20 @@ fn scoped_body_response(
     status: StatusCode,
     media_type: &'static str,
     bytes: Vec<u8>,
-    scope: Option<&polylogue_store::ReadScopeToken>,
+    scopes: &crate::protocol::ReadScopes,
 ) -> HttpResponse {
     let length = bytes.len();
-    let body = match scope {
-        Some(scope) => {
-            if let Err(error) = scope.check() {
-                return json_answer(web, crate::daemon::service::store_error(&error));
-            }
-            axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(ScopedBytes {
-                bytes,
-                offset: 0,
-                scope: scope.clone(),
-            }))
-        }
-        None => axum::body::Body::from(bytes),
+    if let Err(error) = scopes.check() {
+        return json_answer(web, crate::daemon::service::store_error(&error));
+    }
+    let body = if scopes.has_scope() {
+        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(ScopedBytes {
+            bytes,
+            offset: 0,
+            scopes: scopes.clone(),
+        }))
+    } else {
+        axum::body::Body::from(bytes)
     };
     let mut response = (status, body).into_response();
     response.headers_mut().insert(

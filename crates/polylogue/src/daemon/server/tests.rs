@@ -316,7 +316,12 @@ fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let answer = command_surface::Answer::ok(ResetWhileSerializing(&daemon.daemon.archive));
-    write_scoped_json(&mut output, &answer, Some(&scope)).unwrap();
+    write_scoped_json(
+        &mut output,
+        &answer,
+        &crate::protocol::ReadScopes::single(Some(scope)),
+    )
+    .unwrap();
     let mut line = String::new();
     BufReader::new(input).read_line(&mut line).unwrap();
     assert!(!line.contains("synthetic-old-scope-value"));
