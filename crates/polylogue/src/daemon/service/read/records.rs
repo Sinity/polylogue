@@ -293,7 +293,7 @@ pub(super) fn message_record(
     commit: u64,
     order: u64,
 ) -> Result<Record, Response> {
-    use polylogue_model::{Block, attachment_binding::AttachmentNamespace};
+    use polylogue_model::attachment_binding::AttachmentNamespace;
     let mut injections = reader
         .injection_evidence(&message.id, projection.source_version)
         .map_err(|e| store_error(&e))?;
@@ -303,40 +303,32 @@ pub(super) fn message_record(
             .binary_search(&evidence.block)
             .is_ok()
     });
+    let retained = reader
+        .attachment_binding_claims(&message.id, projection.source_version)
+        .map_err(|e| store_error(&e))?;
     let mut bindings = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (ordinal, block) in projection.block_ordinals.iter().zip(&message.blocks) {
-        let attachments: &[polylogue_model::Attachment] = match block {
-            Block::Image(attachment) | Block::File(attachment) => std::slice::from_ref(attachment),
-            Block::ToolResult { attachments, .. } => attachments,
-            _ => &[],
+    for record in retained {
+        let mut claim = record.claim().clone();
+        if projection
+            .block_ordinals
+            .binary_search(&claim.block)
+            .is_err()
+        {
+            continue;
+        }
+        let actual = record.context();
+        // Original claims and supplied prior exports remain declarations.
+        claim.exported_from = AttachmentNamespace {
+            input: actual.input.clone(),
+            chain: actual.chain,
+            import_id: actual.import_id.clone(),
         };
-        for (index, attachment) in attachments.iter().enumerate() {
-            if attachment.blob.is_some() || attachment.source_id.is_none() {
-                continue;
-            }
-            let contexts = reader
-                .attachment_binding_contexts(&message.id, *ordinal, index as u64)
-                .map_err(|e| store_error(&e))?;
-            for context in contexts.contexts {
-                if context.claim.source_version != projection.source_version {
-                    continue;
-                }
-                let actual = context.selection.context;
-                let mut claim = context.claim;
-                // Original claims and supplied prior exports remain declarations.
-                claim.exported_from = AttachmentNamespace {
-                    input: actual.input,
-                    chain: actual.chain,
-                    import_id: actual.import_id,
-                };
-                claim.validate().map_err(|e| {
-                    store_error(&polylogue_store::StoreError::Invalid(e.to_string()))
-                })?;
-                if seen.insert(claim.clone()) {
-                    bindings.push(claim);
-                }
-            }
+        claim
+            .validate()
+            .map_err(|e| store_error(&polylogue_store::StoreError::Invalid(e.to_string())))?;
+        if seen.insert(claim.clone()) {
+            bindings.push(claim);
         }
     }
     Ok(Record::Message(Box::new(MessageRecord {
