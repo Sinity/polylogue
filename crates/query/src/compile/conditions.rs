@@ -702,6 +702,7 @@ impl<'a> Compiler<'a> {
                     Op::Le => format!("({expr}) < {}", t.end_ms()?),
                     Op::Eq => format!("(({expr}) >= {} AND ({expr}) < {})", t.start_ms(), t.end_ms()?),
                     Op::Ne => format!("(({expr}) < {} OR ({expr}) >= {})", t.start_ms(), t.end_ms()?),
+                    Op::Contains | Op::Prefix => return Err(not_built("this time comparison operator")),
                 })
             }
             (Kind::Time, FieldOp::Between(from, to)) => {
