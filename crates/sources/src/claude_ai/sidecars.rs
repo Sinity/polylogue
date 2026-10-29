@@ -146,7 +146,7 @@ fn time(fields: &BTreeMap<String, Field<'_>>) -> (Option<crate::time::SourceTime
 fn source_time(fields: &Json) -> (Option<crate::time::SourceTime>, bool) {
     for key in ["updated_at", "created_at"] {
         if let Some(value) = fields.get(key).filter(|value| !value.is_null()) {
-            let time = crate::time::rfc3339(&value);
+            let time = crate::time::rfc3339(value);
             return (time, time.is_none());
         }
     }
