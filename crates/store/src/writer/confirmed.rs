@@ -19,7 +19,7 @@ pub(crate) fn apply_confirmed_readings(
             release: Default::default(),
         };
         reading.visit(|step| {
-            write_rows(tx, &batch, step, *chain, counter, None)?;
+            rows::write_confirmed_rows(tx, &batch, step, *chain, counter, None)?;
             Ok(())
         })?;
         rows::prune_sessions(tx, &input.id, *chain)?;
