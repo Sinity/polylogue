@@ -137,6 +137,23 @@ impl RowIdentity {
 }
 
 impl Reader<'_> {
+    /// Bind a query at its declared grain using this Reader's immutable definitions.
+    /// Execution options and the captured clock remain outside semantic identity.
+    pub fn prepare_query_plan(
+        &self,
+        text: &str,
+        options: &Options,
+    ) -> Result<Plan, SelectionError> {
+        self.check()?;
+        let mut options = options.clone();
+        options.saved = self.selection_saved_queries()?;
+        options.kept = self.selection_kept_results()?;
+        Ok(polylogue_query::plan::prepare(
+            text,
+            &options.bindings(),
+            |condition| self.resolve_question_reference(condition, &options),
+        )?)
+    }
     /// Resolve names and references once against this pinned read. Incoming
     /// saved/kept maps are replaced with the authoritative Reader snapshot.
     pub fn prepare_selection<'read>(
@@ -532,20 +549,17 @@ impl Reader<'_> {
     pub fn selection_kept_results(
         &self,
     ) -> Result<BTreeMap<String, polylogue_query::Kept>, SelectionError> {
-        self.query("SELECT id,rows_json FROM source_kept_result", &[])?
-            .into_iter()
-            .map(|row| {
-                let id = row["id"]
-                    .as_str()
-                    .ok_or_else(|| invalid("store", "kept result has no ID"))?
-                    .to_owned();
-                let text = row["rows_json"]
-                    .as_str()
-                    .ok_or_else(|| invalid("store", "kept result has no rows"))?;
-                let kept = serde_json::from_str(text).map_err(StoreError::from)?;
-                Ok((id, kept))
-            })
-            .collect()
+        self.query("SELECT id,json_extract(rows_json,'$.unit') AS unit,json_extract(rows_json,'$.columns') AS columns,json_extract(rows_json,'$.match_columns') AS match_columns,json_type(rows_json,'$.match_columns') AS match_columns_type FROM source_kept_result",&[])?.into_iter().map(|row| {
+            let id=row["id"].as_str().ok_or_else(||invalid("store","kept result has no ID"))?.to_owned();
+            let unit=row["unit"].as_str().ok_or_else(||invalid("store","kept result has no row unit"))?.to_owned();
+            let columns=row["columns"].as_str().ok_or_else(||invalid("store","kept result has no column declaration"))?;
+            let columns=serde_json::from_str(columns).map_err(StoreError::from)?;
+            let match_columns=if row["match_columns_type"].is_null() { Vec::new() } else {
+                let text=row["match_columns"].as_str().ok_or_else(||invalid("store","kept result has invalid match columns"))?;
+                serde_json::from_str(text).map_err(StoreError::from)?
+            };
+            Ok((id,polylogue_query::Kept {unit,columns,match_columns}))
+        }).collect()
     }
 }
 struct VisitGuard<'a> {

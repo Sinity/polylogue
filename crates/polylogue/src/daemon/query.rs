@@ -28,6 +28,16 @@ impl From<polylogue_store::StoreError> for Failure {
     }
 }
 
+impl From<polylogue_store::selection::SelectionError> for Failure {
+    fn from(error: polylogue_store::selection::SelectionError) -> Self {
+        Self {
+            kind: error.kind().to_owned(),
+            message: error.to_string(),
+            detail: error.detail(),
+        }
+    }
+}
+
 impl From<QueryError> for Failure {
     fn from(e: QueryError) -> Self {
         Failure {
@@ -108,83 +118,16 @@ fn with_similarity<T>(
     })
 }
 
-/// The current saved queries by name (`saved_query` notes, newest
-/// revision of each family, not withdrawn), for `query:NAME`. Two families
-/// with one name both stay listed, so the name is refused as ambiguous.
+/// Saved definitions come from the same Store snapshot as selection preparation.
 pub(crate) fn saved_queries(
     reader: &Reader<'_>,
 ) -> Result<std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>>, Failure> {
-    let sql = format!(
-        "SELECT n.key AS k, n.value AS v, n.id AS id, n.first_note AS first \
-         FROM source_note n WHERE n.kind = 'saved_query' \
-         AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {} ORDER BY n.first_note",
-        polylogue_store::note_sql::current_note("n"),
-        polylogue_store::note_sql::withdrawn_note("n"),
-    );
-    let mut saved: std::collections::BTreeMap<String, Vec<polylogue_query::SavedQuery>> =
-        Default::default();
-    for r in reader.query(&sql, &[])? {
-        let (Some(name), Some(text), Some(id), Some(first)) = (
-            r["k"].as_str(),
-            r["v"].as_str(),
-            r["id"].as_str(),
-            r["first"].as_str(),
-        ) else {
-            continue;
-        };
-        saved
-            .entry(name.to_owned())
-            .or_default()
-            .push(polylogue_query::SavedQuery {
-                text: text.to_owned(),
-                revision: id.to_owned(),
-                first_note: first.to_owned(),
-            });
-    }
-    Ok(saved)
+    reader.selection_saved_queries().map_err(Failure::from)
 }
-
-/// Kept results by ID, with the shape of their stored rows, for
-/// `result:<id>`.
 fn kept_results(
     reader: &Reader<'_>,
 ) -> Result<std::collections::BTreeMap<String, polylogue_query::Kept>, Failure> {
-    reader
-        .query(
-            "SELECT id, json_extract(rows_json, '$.unit') AS unit, \
-             json_extract(rows_json, '$.columns') AS columns, \
-             json_extract(rows_json, '$.match_columns') AS match_columns, \
-             json_type(rows_json, '$.match_columns') AS match_columns_type FROM source_kept_result",
-            &[],
-        )?
-        .iter()
-        .map(|r| {
-            let invalid = |field: &str| Failure {
-                kind: "store".into(),
-                message: format!("kept result {} has invalid {field}", r["id"]),
-                detail: None,
-            };
-            let parse = |field: &str| -> Result<Vec<polylogue_query::Column>, Failure> {
-                let text = r[field].as_str().ok_or_else(|| invalid(field))?;
-                serde_json::from_str(text).map_err(|_| invalid(field))
-            };
-            Ok((
-                r["id"].as_str().ok_or_else(|| invalid("id"))?.to_owned(),
-                polylogue_query::Kept {
-                    unit: r["unit"]
-                        .as_str()
-                        .ok_or_else(|| invalid("unit"))?
-                        .to_owned(),
-                    columns: parse("columns")?,
-                    match_columns: if r["match_columns_type"].is_null() {
-                        Vec::new()
-                    } else {
-                        parse("match_columns")?
-                    },
-                },
-            ))
-        })
-        .collect()
+    reader.selection_kept_results().map_err(Failure::from)
 }
 
 pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<Options, Failure> {
@@ -266,7 +209,8 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let position = reader.change_position()?;
     let index_file = reader.index_identity()?;
     let mut opts = options(reader, &ask, 0)?;
-    let question = page::identity(ask.text, &opts)?;
+    let plan = reader.prepare_query_plan(ask.text, &opts)?;
+    let question = plan.question_id();
     let cursor = ask
         .cursor
         .map(|text| page::open(text, &seal, question, &position, index_file, &opts))
@@ -279,7 +223,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         opts.clock = cursor.context.clock.clone();
     }
     opts.random_seed = Some(seed);
-    let mut program = polylogue_store::query::compile(ask.text, &opts)?;
+    let mut program = polylogue_store::query::lower(&plan, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
     let after = cursor
