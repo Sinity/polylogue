@@ -43,7 +43,12 @@ fn dropped_and_foreign_preparations_leave_no_named_parts_or_committed_blobs() {
         Err(StoreError::NotFound(_))
     ));
     drop(prepared);
-    assert_eq!(std::fs::read_dir(archive.parts_dir()).unwrap().count(), 0);
+    assert_eq!(
+        std::fs::read_dir(archive.parts_dir().unwrap())
+            .unwrap()
+            .count(),
+        0
+    );
     let foreign = other.prepare_bytes(body.as_slice()).unwrap();
     assert!(matches!(
         writer.store_bytes(foreign, batch(&hash.to_string(), body.len() as u64)),
@@ -53,7 +58,12 @@ fn dropped_and_foreign_preparations_leave_no_named_parts_or_committed_blobs() {
         store.extent(&hashed_blobs::Hash(hash.0)),
         Err(StoreError::NotFound(_))
     ));
-    assert_eq!(std::fs::read_dir(other.parts_dir()).unwrap().count(), 0);
+    assert_eq!(
+        std::fs::read_dir(other.parts_dir().unwrap())
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 #[test]
