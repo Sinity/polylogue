@@ -200,12 +200,36 @@ fn complete_snapshot(
         });
         candidates.extend(references);
         for saved in reader.saved_names(prefix)? {
-            let source=query_language::ast::Source::Saved{name:saved.name,arguments:vec![],condition:None,output:query_language::ast::OutputBinding::Deferred};
-            if let Some(value)=source_spelling(source,&catalog){candidates.push(Completion{value,replace:reference.replace,kind:CompletionKind::Value,help:saved.help});}
+            let source = query_language::ast::Source::Saved {
+                name: saved.name,
+                arguments: vec![],
+                condition: None,
+                output: query_language::ast::OutputBinding::Deferred,
+            };
+            if let Some(value) = source_spelling(source, &catalog) {
+                candidates.push(Completion {
+                    value,
+                    replace: reference.replace,
+                    kind: CompletionKind::Value,
+                    help: saved.help,
+                });
+            }
         }
         for kept in reader.kept_names(prefix)? {
-            let source=query_language::ast::Source::Result{reference:format!("result:{}",kept.id),part:ResultPart::Rows,condition:None,output:query_language::ast::OutputBinding::Deferred};
-            if let Some(value)=source_spelling(source,&catalog){candidates.push(Completion{value,replace:reference.replace,kind:CompletionKind::Value,help:kept.name.unwrap_or(kept.id)});}
+            let source = query_language::ast::Source::Result {
+                reference: format!("result:{}", kept.id),
+                part: ResultPart::Rows,
+                condition: None,
+                output: query_language::ast::OutputBinding::Deferred,
+            };
+            if let Some(value) = source_spelling(source, &catalog) {
+                candidates.push(Completion {
+                    value,
+                    replace: reference.replace,
+                    kind: CompletionKind::Value,
+                    help: kept.name.unwrap_or(kept.id),
+                });
+            }
         }
     }
     let written_at = jiff::Timestamp::from_millisecond(reader.metadata.written_at)
@@ -233,8 +257,16 @@ fn complete_snapshot(
     reader.check()?;
     Ok(candidates)
 }
-fn source_spelling(source:query_language::ast::Source,catalog:&Catalog)->Option<String> {
-    query_language::format::format_query(&query_language::ast::Query{source,attach:vec![],stages:vec![]},catalog).ok()
+fn source_spelling(source: query_language::ast::Source, catalog: &Catalog) -> Option<String> {
+    query_language::format::format_query(
+        &query_language::ast::Query {
+            source,
+            attach: vec![],
+            stages: vec![],
+        },
+        catalog,
+    )
+    .ok()
 }
 fn session_help(session: &polylogue_store::completion::Session) -> String {
     format!(
@@ -273,7 +305,7 @@ fn settings_file(
     let Ok(settings) = reader.settings(key.unwrap_or(prefix)) else {
         return vec![];
     };
-    let values=match key {
+    let values = match key {
         None => settings
             .into_iter()
             .map(|setting| {
@@ -300,7 +332,9 @@ fn settings_file(
             })
             .collect(),
     };
-    if reader.check().is_err(){return vec![];}
+    if reader.check().is_err() {
+        return vec![];
+    }
     values
 }
 

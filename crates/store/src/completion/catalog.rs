@@ -81,14 +81,14 @@ pub struct Setting {
 
 pub struct CatalogWriter {
     conn: Connection,
-    path:PathBuf,
-    identity:(u64,u64),
+    path: PathBuf,
+    identity: (u64, u64),
 }
 pub struct CatalogReader {
     conn: Connection,
     pub metadata: Metadata,
-    path:PathBuf,
-    identity:(u64,u64),
+    path: PathBuf,
+    identity: (u64, u64),
 }
 
 fn configure(conn: &Connection) -> Result<()> {
@@ -130,8 +130,12 @@ impl CatalogWriter {
         configure(&conn)?;
         conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")?;
         conn.execute_batch(SCHEMA)?;
-        let file=fs::metadata(&temporary)?;
-        let mut writer = Self { conn,path:temporary.clone(),identity:(file.dev(),file.ino()) };
+        let file = fs::metadata(&temporary)?;
+        let mut writer = Self {
+            conn,
+            path: temporary.clone(),
+            identity: (file.dev(), file.ino()),
+        };
         writer.update(metadata, populate)?;
         writer
             .conn
@@ -150,12 +154,16 @@ impl CatalogWriter {
         )?;
         configure(&conn)?;
         conn.execute_batch("PRAGMA synchronous=FULL;")?;
-        let file=fs::metadata(path)?;
-        Ok(Self { conn,path:path.to_owned(),identity:(file.dev(),file.ino()) })
+        let file = fs::metadata(path)?;
+        Ok(Self {
+            conn,
+            path: path.to_owned(),
+            identity: (file.dev(), file.ino()),
+        })
     }
     /// A deleted derived file is rebuilt on the next ordinary publication.
-    pub fn is_current_file(&self)->bool {
-        fs::metadata(&self.path).is_ok_and(|file|(file.dev(),file.ino())==self.identity)
+    pub fn is_current_file(&self) -> bool {
+        fs::metadata(&self.path).is_ok_and(|file| (file.dev(), file.ino()) == self.identity)
     }
     /// The position is committed with every changed section, never beforehand.
     pub fn update(
@@ -319,7 +327,7 @@ impl CatalogReader {
         if !path.is_file() {
             return Ok(None);
         }
-        let before=fs::metadata(path)?;
+        let before = fs::metadata(path)?;
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -341,14 +349,21 @@ impl CatalogReader {
                 .parse()
                 .map_err(|_| StoreError::Invalid("invalid completion time".into()))?,
         };
-        let reader=Self {conn,metadata,path:path.to_owned(),identity:(before.dev(),before.ino())};
+        let reader = Self {
+            conn,
+            metadata,
+            path: path.to_owned(),
+            identity: (before.dev(), before.ino()),
+        };
         reader.check()?;
         Ok(Some(reader))
     }
     /// A revoked or replaced pointer cannot authorize an already-open snapshot.
-    pub fn check(&self)->Result<()> {
-        let current=fs::metadata(&self.path).map_err(|_|StoreError::ScopeChanged)?;
-        if (current.dev(),current.ino())!=self.identity {return Err(StoreError::ScopeChanged);}
+    pub fn check(&self) -> Result<()> {
+        let current = fs::metadata(&self.path).map_err(|_| StoreError::ScopeChanged)?;
+        if (current.dev(), current.ino()) != self.identity {
+            return Err(StoreError::ScopeChanged);
+        }
         Ok(())
     }
     pub fn catalog(&self) -> Result<query_language::catalog::Catalog> {

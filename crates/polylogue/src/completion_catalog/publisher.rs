@@ -103,10 +103,10 @@ pub(super) struct State {
     definitions: BTreeMap<String, completion::Saved>,
     kept: BTreeMap<String, polylogue_query::Kept>,
     clock: Option<polylogue_query::Clock>,
-    requires_confirmed:bool,
+    requires_confirmed: bool,
 }
 impl State {
-    pub(super) fn new(clock: Option<polylogue_query::Clock>, requires_confirmed:bool) -> Self {
+    pub(super) fn new(clock: Option<polylogue_query::Clock>, requires_confirmed: bool) -> Self {
         let origins = polylogue_sources::origin::ORIGINS
             .iter()
             .map(|origin| origin.name.to_owned())
@@ -127,11 +127,21 @@ impl State {
         path: &std::path::Path,
         archive: &str,
     ) -> Result<()> {
-        let token=reader.scope_token()?;
-        if self.writer.as_ref().is_some_and(|writer|!writer.is_current_file()) {
-            self.writer=None;self.position=None;self.definitions.clear();self.kept.clear();
+        let token = reader.scope_token();
+        token.check()?;
+        if self
+            .writer
+            .as_ref()
+            .is_some_and(|writer| !writer.is_current_file())
+        {
+            self.writer = None;
+            self.position = None;
+            self.definitions.clear();
+            self.kept.clear();
         }
-        if self.requires_confirmed && reader.confirmed_checkpoint()?.is_none(){return Ok(());}
+        if self.requires_confirmed && reader.confirmed_checkpoint()?.is_none() {
+            return Ok(());
+        }
         let position = reader.change_position()?;
         if self.position.as_ref() == Some(&position) {
             return Ok(());
@@ -151,8 +161,8 @@ impl State {
             position: position.clone(),
             written_at: polylogue_store::user_writes::now().unix_ms(),
         };
-        let pointer=completion::CatalogPointer::new(path.to_owned());
-        let generation_path=pointer.generation_path(&position.generation);
+        let pointer = completion::CatalogPointer::new(path.to_owned());
+        let generation_path = pointer.generation_path(&position.generation);
         let after = self.position.clone();
         let result = if let Some(mut writer) = self.writer.take() {
             let result = writer.update(&metadata, |writer| {
@@ -170,8 +180,8 @@ impl State {
             })
         };
         result?;
-        pointer.activate(&position.generation,&token)?;
-        self.position=Some(position);
+        pointer.activate(&position.generation, &token)?;
+        self.position = Some(position);
         Ok(())
     }
     fn apply(
