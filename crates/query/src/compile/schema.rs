@@ -69,14 +69,13 @@ fn aggregate(schema: &OutputSchema, aggregate: &Aggregate) -> Result<Vec<Field>,
             | AggregateFunction::Min
             | AggregateFunction::Max
             | AggregateFunction::Percentile(_)
-    ) {
-        if let Some(name) = aggregate.fields.first() {
-            out.push(Field {
-                name: format!("unknown_{}", flat(name)),
-                kind: FieldKind::Number,
-                ..Field::default()
-            });
-        }
+    ) && let Some(name) = aggregate.fields.first()
+    {
+        out.push(Field {
+            name: format!("unknown_{}", flat(name)),
+            kind: FieldKind::Number,
+            ..Field::default()
+        });
     }
     Ok(out)
 }
