@@ -60,7 +60,7 @@ fn primary_selection_uses_the_typed_store_without_a_standalone_archive() {
         .schema_inputs_page(None, None, None, None, 1)
         .unwrap();
     assert_eq!(page.inputs[0].input, "primary-input");
-    assert_eq!(page.unknown_time_inputs, 1);
+    assert_eq!(page.unknown_time_inputs, Some(1));
     assert!(page.next.is_none());
 }
 
@@ -80,12 +80,13 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
         .unwrap();
     assert_eq!(first.inputs[0].input, "a");
     assert_eq!(first.next.as_deref(), Some("a"));
-    assert_eq!(first.unknown_time_inputs, 1);
+    assert_eq!(first.unknown_time_inputs, Some(1));
     let second = reader
         .schema_inputs_page(None, None, None, first.next.as_deref(), 1)
         .unwrap();
     assert_eq!(second.inputs[0].input, "b");
     assert_eq!(second.inputs[0].revision, 2);
+    assert_eq!(second.unknown_time_inputs, None);
     let third = reader
         .schema_inputs_page(None, None, None, second.next.as_deref(), 1)
         .unwrap();
@@ -102,7 +103,7 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
             .collect::<Vec<_>>(),
         ["b"]
     );
-    assert_eq!(since.unknown_time_inputs, 1);
+    assert_eq!(since.unknown_time_inputs, Some(1));
     let missing = reader
         .schema_inputs_page(Some("claude-code"), Some(2), None, None, 1)
         .unwrap();

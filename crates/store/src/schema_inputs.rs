@@ -51,9 +51,9 @@ pub struct SchemaInputsPage {
     /// Inputs present in the origin whose requested revision is absent.
     pub missing_revisions: Vec<String>,
     pub next: Option<String>,
-    /// Whole-selection count, independent of page. With `since_ms`, these
-    /// inputs cannot establish whether they are inside its time bound.
-    pub unknown_time_inputs: u64,
+    /// Whole-selection count on the initial page, absent on continuation.
+    /// With `since_ms`, these inputs cannot establish time-bound membership.
+    pub unknown_time_inputs: Option<u64>,
 }
 impl Reader<'_> {
     /// Select all inputs, or one origin, using receipt observation time.
@@ -79,11 +79,19 @@ impl Reader<'_> {
           FROM source_input i LEFT JOIN source_revision r ON r.input=i.id
             AND r.number=coalesce(?2,(SELECT max(newer.number) FROM source_revision newer WHERE newer.input=i.id))
           WHERE (?1 IS NULL OR i.format=?1))";
-        let unknown: i64 = conn.query_row(
-            &format!("{base} SELECT count(*) FROM selected WHERE observed_at IS NULL"),
-            params![origin, revision],
-            |row| row.get(0),
-        )?;
+        let unknown_time_inputs = if after.is_none() {
+            let count: i64 = conn.query_row(
+                &format!("{base} SELECT count(*) FROM selected WHERE observed_at IS NULL"),
+                params![origin, revision],
+                |row| row.get(0),
+            )?;
+            Some(
+                u64::try_from(count)
+                    .map_err(|_| StoreError::Invalid("negative unknown-time input count".into()))?,
+            )
+        } else {
+            None
+        };
         let limit = i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX);
         let mut statement = conn.prepare_cached(&format!(
             "{base}
@@ -124,8 +132,7 @@ impl Reader<'_> {
             inputs,
             missing_revisions,
             next,
-            unknown_time_inputs: u64::try_from(unknown)
-                .map_err(|_| StoreError::Invalid("negative unknown-time input count".into()))?,
+            unknown_time_inputs,
         })
     }
 }
