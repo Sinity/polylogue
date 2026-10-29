@@ -110,6 +110,9 @@ pub struct ReadOptions {
     pub thinking: Option<Expansion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<Expansion>,
+    /// Head and tail lines of expanded tool output. Zero keeps the complete output.
+    #[serde(default = "output_lines")]
+    pub output_lines: u64,
     #[serde(default)]
     pub inherited: bool,
     #[serde(default)]
@@ -123,6 +126,9 @@ pub struct ReadOptions {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
 }
+fn output_lines() -> u64 {
+    100
+}
 fn enabled() -> bool {
     true
 }
@@ -133,6 +139,7 @@ impl Default for ReadOptions {
             tools: None,
             thinking: None,
             harness: None,
+            output_lines: 100,
             inherited: false,
             branches: false,
             turns: false,
