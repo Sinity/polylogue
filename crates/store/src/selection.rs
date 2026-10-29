@@ -37,6 +37,7 @@ impl SelectionError {
             Self::Store(StoreError::ReadDeadlineExceeded) => "deadline_exceeded",
             Self::Store(StoreError::ReadCancelled) => "cancelled",
             Self::Store(StoreError::ScopeChanged) => "scope_changed",
+            Self::Store(StoreError::NotFound(_)) => "not_found",
             Self::Store(_) => "store",
             Self::Query(error) => error.kind(),
             Self::Language(error) => error.kind.code(),
@@ -258,6 +259,10 @@ impl Reader<'_> {
     ) -> Result<PreparedSelection<'read>, SelectionError> {
         self.with_clock(&options.clock, || {
             self.check()?;
+            polylogue_query::plan::validate_result_outputs(
+                object,
+                &self.selection_kept_results()?,
+            )?;
             let plan = polylogue_query::plan::replay(object, expected_catalog)?;
             let program = crate::query::lower(&plan, options)?;
             self.validate_selection(&program)?;
@@ -331,7 +336,7 @@ impl Reader<'_> {
     where
         E: From<SelectionError>,
     {
-        let mut run = || {
+        let run = || {
             let _visit = VisitGuard {
                 previous: selection.visiting.replace(true),
                 cell: &selection.visiting,
@@ -699,7 +704,7 @@ impl Reader<'_> {
         &self,
     ) -> Result<BTreeMap<String, polylogue_query::Kept>, SelectionError> {
         let conn = self.conn()?;
-        let values = kept_results(conn, crate::source::Source::of(conn)?)?;
+        let values = kept_results(conn, crate::source::Source::Cache)?;
         self.conn()?;
         Ok(values)
     }
@@ -708,7 +713,7 @@ impl Reader<'_> {
 pub(crate) fn kept_results(
     conn: &rusqlite::Connection,
     source: crate::source::Source,
-) -> Result<BTreeMap<String, polylogue_query::Kept>, SelectionError> {
+) -> crate::Result<BTreeMap<String, polylogue_query::Kept>> {
     let sql = source.sql("SELECT id,json_extract(rows_json,'$.unit'),json_extract(rows_json,'$.columns'),json_extract(rows_json,'$.match_columns'),json_type(rows_json,'$.match_columns') FROM @source.kept_result");
     let mut statement = conn.prepare_cached(&sql).map_err(StoreError::from)?;
     let mut rows = statement.query([]).map_err(StoreError::from)?;
