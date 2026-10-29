@@ -46,6 +46,7 @@ pub(super) fn stage(
         )?;
     }
     classify(&mut members, format)?;
+    super::bundle::preflight(&mut members)?;
     Ok(members)
 }
 

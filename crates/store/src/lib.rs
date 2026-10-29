@@ -14,6 +14,8 @@ pub mod backfill_jobs;
 pub mod blobs;
 pub mod chat_actions;
 pub mod check_runs;
+pub mod completion;
+mod admission;
 mod container_members;
 pub mod context;
 pub mod coverage;
@@ -81,6 +83,8 @@ pub enum StoreError {
     Blobs(#[from] hashed_blobs::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Projection(#[from] polylogue_model::bundle::BundleError),
     #[error("archive {path} is held by another process")]
     Locked { path: std::path::PathBuf },
     #[error(

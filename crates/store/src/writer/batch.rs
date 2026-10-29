@@ -40,6 +40,9 @@ pub struct ImportMember {
     pub version: u8,
     pub import_id: String,
     pub member: String,
+    /// Receiver-computed import context, independent of claims in the bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorship: Option<polylogue_model::authorship::Authorship>,
     /// The format chosen for this import, separate from the input's own metadata.
     #[serde(skip)]
     pub format: Option<String>,

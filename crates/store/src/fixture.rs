@@ -106,7 +106,7 @@ impl Fixture {
 
     /// Runs all derivations over the raw rows written so far.
     pub fn derive(&mut self) -> Result<u64> {
-        crate::derive::run(&mut self.index)
+        crate::derive::run(&mut self.index, None)
     }
 
     pub fn reads(&self) -> Result<ReadPool> {

@@ -47,8 +47,8 @@ impl Reader<'_> {
     ) -> Result<AttachmentResolution> {
         let mut resolution = self.attachment(message, block, attachment_index)?;
         let conn = self.conn()?;
-        let (selected,session):(i64,i64)=conn.query_row("SELECT b.pk,m.session_pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND b.idx=?2",
-            params![message.to_string(),block as i64],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        let (selected,session):(i64,i64)=conn.query_row("SELECT b.pk,m.session_pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
+            params![message.to_string(),block.to_string()],|row|Ok((row.get(0)?,row.get(1)?)))?;
         let mut masker = polylogue_model::masking::MessageMasker::default();
         crate::ordered_blocks::visit(conn, session, |mut stored| {
             masker.block(&mut stored.block);
@@ -82,8 +82,8 @@ impl Reader<'_> {
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
         let (pk,version,body):(i64,Vec<u8>,Vec<u8>)=conn.query_row(
-            "SELECT m.pk,ms.version_hash,b.body FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.shown=1 JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND b.idx=?2",
-            params![message.to_string(),i64::try_from(block).map_err(|_|StoreError::Invalid("block index is out of range".into()))?],
+            "SELECT m.pk,ms.version_hash,b.body FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.shown=1 JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
+            params![message.to_string(),block.to_string()],
             |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
         let source = match unpack_block(&body)? {

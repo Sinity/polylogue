@@ -70,6 +70,16 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
     assert_eq!(
         pool.reader().unwrap().chains_behind_index(&[]).unwrap(),
         vec![
+            // Live inputs first, then most recently observed inputs and newest chains.
+            expected("b", 1, 10, true, None, None),
+            expected(
+                "a",
+                2,
+                90,
+                false,
+                Some(("codex-rollout", Some("/home/op/format"))),
+                Some(12)
+            ),
             expected(
                 "a",
                 1,
@@ -79,28 +89,19 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
                 None
             ),
             expected(
-                "a",
-                2,
-                90,
-                false,
-                Some(("codex-rollout", Some("/home/op/format"))),
-                Some(12)
+                "z",
+                1,
+                10,
+                true,
+                Some(("fallback", Some("/home/op/first"))),
+                None
             ),
-            expected("b", 1, 10, true, None, None),
             expected(
                 "c",
                 1,
                 10,
                 true,
                 Some(("export-file", Some("/home/op/export-only"))),
-                None
-            ),
-            expected(
-                "z",
-                1,
-                10,
-                true,
-                Some(("fallback", Some("/home/op/first"))),
                 None
             ),
         ]
@@ -151,6 +152,7 @@ fn history_work(revisions: usize) -> usize {
         .progress_handler(0, None::<fn() -> bool>)
         .unwrap();
     let rows: Vec<_> = (1..=chains)
+        .rev()
         .map(|chain| {
             expected(
                 "synthetic",
@@ -205,7 +207,10 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
             [],
         )
         .unwrap();
-    let behind = reader.chains_behind_index(&[]).unwrap();
+    assert!(reader.chains_behind_index(&[]).unwrap().is_empty());
+    assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
+    let fresh = pool.reader().unwrap();
+    let behind = fresh.chains_behind_index(&[]).unwrap();
     assert_eq!(behind.len(), 1);
     assert_eq!(
         (
@@ -215,5 +220,5 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
         ),
         (40, 140, false)
     );
-    assert!(!reader.input_progress("metadata").unwrap().unwrap().waiting);
+    assert!(!fresh.input_progress("metadata").unwrap().unwrap().waiting);
 }

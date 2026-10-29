@@ -86,3 +86,42 @@ fn previous_messages_are_independent_for_interleaved_conversations() {
         None
     );
 }
+
+#[test]
+fn staged_payloads_share_bytes_across_restartable_orders_and_independent_readers() {
+    let mut items = ExportItems::new().unwrap();
+    items
+        .push_ordered(10..11, vec![2], vec![1], Some("second"), b"second")
+        .unwrap();
+    items
+        .push_ordered(20..21, vec![1], vec![2], Some("first"), b"first")
+        .unwrap();
+    let mut a = items.next_item().unwrap().unwrap();
+    let mut b = items.next_item().unwrap().unwrap();
+    let mut text = String::new();
+    b.reader.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "second");
+    text.clear();
+    a.reader.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "first");
+    items.reset(Order::Alternate).unwrap();
+    let mut first = items.next_item().unwrap().unwrap();
+    text.clear();
+    first.reader.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "second");
+    let mut found = items.source_item("first").unwrap().unwrap();
+    text.clear();
+    found.reader.read_to_string(&mut text).unwrap();
+    assert_eq!(text, "first");
+    items
+        .push_ordered(30..31, vec![3], vec![3], Some("third"), b"third")
+        .unwrap();
+    items.reset(Order::Primary).unwrap();
+    let mut got = Vec::new();
+    while let Some(mut item) = items.next_item().unwrap() {
+        let mut value = String::new();
+        item.reader.read_to_string(&mut value).unwrap();
+        got.push(value);
+    }
+    assert_eq!(got, vec!["first", "second", "third"]);
+}

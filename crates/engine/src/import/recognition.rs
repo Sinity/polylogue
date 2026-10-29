@@ -131,6 +131,19 @@ pub(super) fn declared(
     let mut head = [0; 64];
     let n = file.read(&mut head)?;
     file.rewind()?;
+    if format == Some("polylogue-export") || retired_export(&mut *file)? {
+        file.rewind()?;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "retired polylogue-export input requires explicit private conversion to polylogue-bundle v1",
+        ));
+    }
+    file.rewind()?;
+    if polylogue_sources::polylogue_bundle::manifest(&mut *file).is_ok() {
+        file.rewind()?;
+        return Ok(polylogue_sources::origin::by_name("polylogue-bundle"));
+    }
+    file.rewind()?;
     if let Some(format) = format {
         return Ok(polylogue_sources::origin::by_name(format).filter(|o| {
             o.support == Support::Parsed
@@ -154,10 +167,6 @@ pub(super) fn declared(
         if scanned.is_ok() && recognized && count > 0 {
             return Ok(polylogue_sources::origin::by_name("codex-cloud"));
         }
-    }
-    if polylogue_sources::polylogue_export::recognize_reader(&mut *file)? {
-        file.rewind()?;
-        return Ok(polylogue_sources::origin::by_name("polylogue-export"));
     }
     file.rewind()?;
     let shape = serde_json::from_reader::<_, Shape>(std::io::BufReader::new(&mut *file)).ok();
@@ -226,4 +235,36 @@ pub(super) fn refuse(report: &mut ImportReport, path: &Path, reason: impl Into<S
         reason: reason.into(),
         structures_tried: STRUCTURES.iter().map(|s| (*s).into()).collect(),
     });
+}
+
+// Recognizing a retired discriminator refuses it; it does not decode old data.
+fn retired_export(reader: impl std::io::Read) -> std::io::Result<bool> {
+    struct Header<'a>(&'a mut bool);
+    impl<'de> Visitor<'de> for Header<'_> {
+        type Value = ();
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an input header")
+        }
+        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<(), M::Error> {
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "format" {
+                    *self.0 = map.next_value::<String>()? == "polylogue-export";
+                    return Ok(());
+                }
+                map.next_value::<IgnoredAny>()?;
+            }
+            Ok(())
+        }
+    }
+    let mut retired = false;
+    let result = serde::Deserializer::deserialize_map(
+        &mut serde_json::Deserializer::from_reader(std::io::BufReader::new(reader)),
+        Header(&mut retired),
+    );
+    if let Err(error) = result
+        && error.is_io()
+    {
+        return Err(std::io::Error::other(error));
+    }
+    Ok(retired)
 }

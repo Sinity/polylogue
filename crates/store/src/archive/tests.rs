@@ -253,17 +253,19 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
             }],
             ..Default::default()
         };
-        writer
-            .send(crate::fixture::writer::step(
-                "resume-input",
-                "claude-code",
-                "/synthetic",
-                output,
-                0,
-                1,
-            ))
-            .unwrap();
-        assert!(writer.flush().unwrap().errors.is_empty());
+        let mut batch =
+            crate::fixture::writer::step("resume-input", "claude-code", "/synthetic", output, 0, 1);
+        let mut raw = batch.clone();
+        raw.parse.clear();
+        let bytes = archive.prepare_bytes(&b"r\n"[..]).unwrap();
+        let stored = writer.store_bytes(bytes, raw).unwrap();
+        batch.change = crate::Change::Reparse {
+            chain: stored.chain,
+        };
+        batch.observation = None;
+        writer.send(batch).unwrap();
+        let report = writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
         // Exit without dropping the writer, as a stopped process does.
         std::process::exit(0);
     }
@@ -289,7 +291,18 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     writer.derive().unwrap();
     drop(writer);
     let index = open_read(&archive.index_db()).unwrap();
-    assert!(schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap());
+    assert!(
+        schema::same_schema(
+            &index,
+            &[
+                schema::INDEX,
+                crate::coverage::SCHEMA,
+                crate::variants::SCHEMA,
+                schema::READ_INDEXES
+            ]
+        )
+        .unwrap()
+    );
     assert!(!schema::building(&index).unwrap());
 }
 
@@ -377,7 +390,18 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     for _ in 0..2 {
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         let index = open_read(&archive.index_db()).unwrap();
-        assert!(schema::same_schema(&index, &[schema::INDEX, schema::READ_INDEXES]).unwrap());
+        assert!(
+            schema::same_schema(
+                &index,
+                &[
+                    schema::INDEX,
+                    crate::coverage::SCHEMA,
+                    crate::variants::SCHEMA,
+                    schema::READ_INDEXES
+                ]
+            )
+            .unwrap()
+        );
         assert_eq!(
             index
                 .query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r

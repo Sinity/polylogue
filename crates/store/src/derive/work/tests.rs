@@ -368,7 +368,7 @@ fn orphan_goals_are_removed_even_when_no_sessions_remain() {
             [],
         )
         .unwrap();
-    assert_eq!(crate::derive::run(&mut index).unwrap(), 0);
+    assert_eq!(crate::derive::run(&mut index, None).unwrap(), 0);
     assert_eq!(
         index
             .query_row("SELECT count(*) FROM work_node", [], |r| r.get::<_, i64>(0))

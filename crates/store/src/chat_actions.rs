@@ -315,10 +315,10 @@ pub(crate) fn decide(
     approve: bool,
     by: &str,
     detail: Option<&str>,
-    at: i64,
     seq: i64,
-    request: &str,
+    request: &polylogue_model::user::UserRequest,
 ) -> Result<()> {
+    let at = request.at.unix_ms();
     let source = crate::source::Source::of(tx)?;
     let action = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_chat_action"))?;
     if action.status(at).0 != ChatStatus::AwaitingApproval {
@@ -331,7 +331,7 @@ pub(crate) fn decide(
     };
     add_event(
         tx,
-        request,
+        &request.id,
         id,
         at,
         kind,

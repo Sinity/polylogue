@@ -324,7 +324,7 @@ fn pending_attachment_metadata_is_validated_once_and_reference_survives_missing_
         prepare_with(&conn, &r, &[], &[]),
         Err(StoreError::ChatAction("unknown_attachment"))
     ));
-    let p = prepare_with(&conn, &r, &[], &[blob.clone()]).unwrap();
+    let p = prepare_with(&conn, &r, &[], std::slice::from_ref(&blob)).unwrap();
     commit(&mut conn, &p, 1);
     assert_eq!(count(&conn, "blob"), 0);
     let hash: Vec<u8> = conn
@@ -410,7 +410,7 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
 #[test]
 fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
     let mut conn = cache();
-    let writes = vec![
+    let writes = [
         request("note", 1, UserWrite::AddNote { note: note("text") }),
         request(
             "setting",
@@ -572,7 +572,7 @@ fn subset_restore_keeps_full_chat_history_and_import_provenance() {
     visit(&dest, &mut |record, claims| {
         n += 1;
         assert_eq!(record, &p);
-        assert_eq!(claims, &[current.clone()]);
+        assert_eq!(claims, std::slice::from_ref(&current));
         Ok(())
     })
     .unwrap();
@@ -692,4 +692,210 @@ fn historical_claim_cannot_supply_current_import_observation() {
     let history: ImportHistory = serde_json::from_str(&wire).unwrap();
     assert_eq!(history.observed, vec![current]);
     assert_eq!(history.declared, vec![claimed]);
+}
+
+#[test]
+fn pending_historical_restore_keeps_execution_disabled_after_restart() {
+    let mut source = cache();
+    enqueue(&mut source, "historical", 10);
+    let prepared = known_request(
+        &source,
+        &request(
+            "enqueue-historical",
+            10,
+            UserWrite::ChatEnqueue(chat("historical")),
+        ),
+    )
+    .unwrap()
+    .unwrap();
+    let pending = polylogue_model::authored::PendingAuthored::Restore {
+        prepared: prepared.clone(),
+        claims: vec![],
+        current: ImportAttribution {
+            machine: "import-host".into(),
+            input: "bundle".into(),
+            chain: 1,
+            actor: Author::Operator,
+            at: Timestamp::from_unix_ms(20).unwrap(),
+        },
+    };
+    let restarted: polylogue_model::authored::PendingAuthored =
+        serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+    let destination = cache();
+    let claim = request(
+        "claim",
+        30,
+        UserWrite::ChatClaim {
+            by: "extension".into(),
+        },
+    );
+    assert!(matches!(
+        prepare(&destination, &claim, |visit| visit(&restarted), |_| Ok(())),
+        Err(StoreError::NotFound(_))
+    ));
+    assert_eq!(count(&destination, "chat_action"), 0);
+    assert_eq!(
+        prepare(
+            &destination,
+            &prepared.request,
+            |visit| visit(&restarted),
+            |_| Ok(())
+        )
+        .unwrap(),
+        prepared
+    );
+    let mut conflicting = prepared.request.clone();
+    conflicting.machine = "another-machine".into();
+    assert!(matches!(
+        prepare(
+            &destination,
+            &conflicting,
+            |visit| visit(&restarted),
+            |_| Ok(())
+        ),
+        Err(StoreError::Conflict(_))
+    ));
+}
+
+#[test]
+fn reverse_full_snapshot_restore_keeps_event_order_and_historical_execution() {
+    let mut source = cache();
+    let writes = vec![
+        request("enqueue", 10, UserWrite::ChatEnqueue(chat("chat"))),
+        request("chat-claim", 20, UserWrite::ChatClaim { by: "tab".into() }),
+        request(
+            "start",
+            30,
+            UserWrite::BackfillStart(NewBackfillJob {
+                id: "job".into(),
+                provider: "service".into(),
+                since: None,
+            }),
+        ),
+        request(
+            "job-claim",
+            40,
+            UserWrite::BackfillClaim { by: "tab".into() },
+        ),
+        request(
+            "delivery",
+            50,
+            UserWrite::DeliveredAdvice(Delivery {
+                recipient_kind: "operator".into(),
+                recipient_id: None,
+                sender: "hook".into(),
+                event: "advice".into(),
+                cwd: None,
+                text: "example".into(),
+                refs: vec![],
+                left_out: vec![],
+            }),
+        ),
+        request(
+            "delivery-used",
+            60,
+            UserWrite::DeliveryEvent {
+                delivery: "delivery".into(),
+                what: polylogue_model::DeliveryOutcome::Used,
+                detail: Some("evidence".into()),
+            },
+        ),
+    ];
+    let mut snapshots = Vec::new();
+    for (index, r) in writes.iter().enumerate() {
+        let p = prepare_with(&source, r, &[], &[]).unwrap();
+        commit(&mut source, &p, index as i64 + 1);
+        snapshots.push(p);
+    }
+    let mut forward = cache();
+    let mut reverse = cache();
+    for (destination, order) in [
+        (&mut forward, snapshots.iter().collect::<Vec<_>>()),
+        (&mut reverse, snapshots.iter().rev().collect::<Vec<_>>()),
+    ] {
+        for (index, p) in order.into_iter().enumerate() {
+            let current = ImportAttribution {
+                machine: "import-host".into(),
+                input: format!("bundle-{}", p.request.id),
+                chain: 1,
+                actor: Author::Operator,
+                at: Timestamp::from_unix_ms(100).unwrap(),
+            };
+            let tx = destination.transaction().unwrap();
+            restore(&tx, p, &[], &current, index as i64 + 1).unwrap();
+            tx.commit().unwrap();
+        }
+    }
+    assert_eq!(
+        crate::chat_actions::read(&forward, "source_", "chat").unwrap(),
+        crate::chat_actions::read(&reverse, "source_", "chat").unwrap()
+    );
+    assert_eq!(
+        crate::backfill_jobs::read(&forward, "source_", "job").unwrap(),
+        crate::backfill_jobs::read(&reverse, "source_", "job").unwrap()
+    );
+    for table in ["chat_action_event", "backfill_job_event"] {
+        let rows = |conn: &Connection| {
+            conn.prepare(&format!("SELECT n,request FROM source_{table} ORDER BY n"))
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(rows(&forward), rows(&reverse));
+        assert_eq!(
+            rows(&reverse).iter().map(|row| row.0).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+    let deliveries = |conn: &Connection| {
+        conn.prepare("SELECT what,at,detail,request FROM source_delivery_event ORDER BY at,what")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(deliveries(&forward), deliveries(&reverse));
+    assert_eq!(deliveries(&reverse).len(), 2);
+    assert!(matches!(
+        prepare_with(
+            &reverse,
+            &request(
+                "new-chat-claim",
+                1_000_000,
+                UserWrite::ChatClaim {
+                    by: "new-tab".into()
+                }
+            ),
+            &[],
+            &[]
+        ),
+        Err(StoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        prepare_with(
+            &reverse,
+            &request(
+                "new-job-claim",
+                1_000_000,
+                UserWrite::BackfillClaim {
+                    by: "new-tab".into()
+                }
+            ),
+            &[],
+            &[]
+        ),
+        Err(StoreError::NotFound(_))
+    ));
 }

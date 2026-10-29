@@ -55,7 +55,12 @@ impl RowWriter<'_, '_> {
         self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE id IN (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
         Ok(())
     }
-    pub(super) fn store_link(&self, link: &Link, index: usize) -> Result<()> {
+    pub(super) fn store_link(
+        &self,
+        link: &Link,
+        index: usize,
+        admitted: Option<i64>,
+    ) -> Result<()> {
         let pk = self
             .keys
             .get(resolve::Kind::Link, &resolve::link_key(link)?)?
@@ -70,7 +75,7 @@ impl RowWriter<'_, '_> {
         self.tx
             .prepare_cached("INSERT OR IGNORE INTO link_value(pk,hash,body) VALUES (?1,?2,?3)")?
             .execute(params![value.key.pk, value.hash.as_slice(), value.body])?;
-        self.tx.prepare_cached("INSERT INTO link_source(link_pk,input_pk,chain,value_pk,arrival_rank) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(link_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank")?.execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank])?;
+        self.tx.prepare_cached("INSERT INTO link_source(link_pk,input_pk,chain,value_pk,arrival_rank,admitted) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(link_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,admitted=coalesce(max(link_source.admitted,excluded.admitted),link_source.admitted,excluded.admitted)")?.execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank,admitted])?;
         Ok(())
     }
     pub(super) fn store_event_value(&self, index: usize) -> Result<()> {
@@ -79,11 +84,12 @@ impl RowWriter<'_, '_> {
         self.tx
             .prepare_cached("INSERT OR IGNORE INTO event_value(pk,hash,body) VALUES (?1,?2,?3)")?
             .execute(params![value.key.pk, value.hash.as_slice(), value.body])?;
-        let imported = serde_json::to_string(&source.imported)?;
-        self.tx.prepare_cached("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,seq,source_start,source_end,after_message_id,at,fields,imported_provenance)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
-            ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at,fields=excluded.fields,imported_provenance=excluded.imported_provenance")?
-            .execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank,source.session,source.seq,source.start,source.end,source.after,source.at,source.fields,imported])?;
+        let imported = &source.imported;
+        let admitted = source.admitted.or(self.source_admitted);
+        self.tx.prepare_cached("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,seq,source_start,source_end,after_message_id,at,fields,imported_provenance,admitted)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+            ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at,fields=excluded.fields,imported_provenance=excluded.imported_provenance,admitted=excluded.admitted")?
+            .execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank,source.session,source.seq,source.start,source.end,source.after,source.at,source.fields,imported,admitted])?;
         Ok(())
     }
 }

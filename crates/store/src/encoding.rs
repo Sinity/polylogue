@@ -1,7 +1,9 @@
 //! Encoding of database row bodies. Original-input blob encoding belongs to `blobs`.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Block, Document, DocumentId, Event, Message, MessageId, Timestamp};
+use polylogue_model::{
+    Block, Document, DocumentId, Event, Message, MessageId, Timestamp, bundle::MessageProjection,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::Read;
 use std::sync::LazyLock;
@@ -73,6 +75,7 @@ pub(crate) fn read_time(
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
+    pub(crate) projection: MessageProjection,
     pub(crate) time: Vec<u8>,
     pub(crate) body: Vec<u8>,
     content: PreparedContent,
@@ -132,6 +135,10 @@ impl PreparedMessage {
     pub(crate) fn new(message: &Message) -> Result<Self> {
         RowPacker::new()?.pack_message(message)
     }
+
+    pub(crate) fn projected(message: &Message, projection: &MessageProjection) -> Result<Self> {
+        RowPacker::new()?.pack_projected_message(message, projection)
+    }
 }
 
 pub(crate) fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -184,11 +191,39 @@ impl RowPacker {
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
+        let projection = MessageProjection {
+            source_version: message.content_hash()?,
+            block_count: message.blocks.len() as u64,
+            block_ordinals: (0..message.blocks.len() as u64).collect(),
+        };
+        self.pack_message_value(message, &projection)
+    }
+
+    pub(crate) fn pack_projected_message(
+        &mut self,
+        message: &Message,
+        projection: &MessageProjection,
+    ) -> Result<PreparedMessage> {
+        projection.validate(message.blocks.len())?;
+        if projection.block_count == message.blocks.len() as u64
+            && message.content_hash()? != projection.source_version
+        {
+            return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+        }
+        self.pack_message_value(message, projection)
+    }
+
+    fn pack_message_value(
+        &mut self,
+        message: &Message,
+        projection: &MessageProjection,
+    ) -> Result<PreparedMessage> {
         Ok(PreparedMessage {
             id: message.id.clone(),
+            projection: projection.clone(),
             time: time_bytes(message.at, message.time_evidence())?,
             body: self.pack_version(message, &message.blocks)?,
-            content: self.pack_content(message, &message.blocks, None)?,
+            content: self.pack_content(&message.blocks, projection.source_version.0)?,
         })
     }
 
@@ -205,16 +240,20 @@ impl RowPacker {
             blocks: Vec::new(),
             metadata: document.metadata.clone(),
         };
+        let hash = {
+            let mut sorted = serde_json::to_value(document)?;
+            sorted.sort_all_objects();
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"polylogue-document-v1\0");
+            hasher.update(&serde_json::to_vec(&sorted)?);
+            *hasher.finalize().as_bytes()
+        };
         Ok(PreparedDocument {
             id: document.id.clone(),
             time: time_bytes(document.source_time, document.time_evidence())?,
             body: self.pack_version(document, &document.blocks)?,
             fields: self.pack_json(&fields)?,
-            content: self.pack_content(
-                document,
-                &document.blocks,
-                Some(b"polylogue-document-v1\0"),
-            )?,
+            content: self.pack_content(&document.blocks, hash)?,
         })
     }
 
@@ -238,23 +277,7 @@ impl RowPacker {
         self.pack_json(&value)
     }
 
-    fn pack_content(
-        &mut self,
-        value: &impl Serialize,
-        blocks: &[Block],
-        domain: Option<&[u8]>,
-    ) -> Result<PreparedContent> {
-        // Messages and documents hash in separate domains.
-        let hash = {
-            let mut sorted = serde_json::to_value(value)?;
-            sorted.sort_all_objects();
-            let mut hasher = blake3::Hasher::new();
-            if let Some(domain) = domain {
-                hasher.update(domain);
-            }
-            hasher.update(&serde_json::to_vec(&sorted)?);
-            *hasher.finalize().as_bytes()
-        };
+    fn pack_content(&mut self, blocks: &[Block], hash: [u8; 32]) -> Result<PreparedContent> {
         let mut packed = Vec::with_capacity(blocks.len());
         let mut data = Vec::with_capacity(blocks.len());
         let mut pem = Vec::with_capacity(blocks.len());

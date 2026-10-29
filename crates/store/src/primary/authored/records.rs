@@ -46,7 +46,21 @@ fn relations(conn: &Connection, id: &str, kind: &str) -> Result<Vec<String>> {
 }
 fn note(conn: &Connection, id: &str) -> Result<std::result::Result<NoteRevision, Withdrawal>> {
     let source = Source::of(conn)?;
-    let (first,kind,key,value,who,machine,at,until):(String,String,Option<String>,Option<String>,String,String,i64,Option<i64>)=conn.query_row(&source.sql("SELECT first_note,kind,key,value,author,machine,created_at,valid_until FROM @source.note WHERE id=?1"),[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?)))?;
+    struct NoteRow {
+        first: String,
+        kind: String,
+        key: Option<String>,
+        value: Option<String>,
+        who: String,
+        machine: String,
+        at: i64,
+        until: Option<i64>,
+    }
+    let NoteRow { first, kind, key, value, who, machine, at, until } = conn.query_row(
+        &source.sql("SELECT first_note,kind,key,value,author,machine,created_at,valid_until FROM @source.note WHERE id=?1"),
+        [id],
+        |r| Ok(NoteRow { first: r.get(0)?, kind: r.get(1)?, key: r.get(2)?, value: r.get(3)?, who: r.get(4)?, machine: r.get(5)?, at: r.get(6)?, until: r.get(7)? }),
+    )?;
     if kind == "withdrawal" {
         return Ok(Err(Withdrawal {
             id: id.into(),
@@ -153,7 +167,22 @@ fn delivery_events(
 }
 fn delivery(conn: &Connection, id: &str) -> Result<DeliveryRecord> {
     let source = Source::of(conn)?;
-    let (recipient_kind,recipient_id,sender,event,cwd,at,body,refs,left_out):(String,Option<String>,String,String,Option<String>,i64,Vec<u8>,String,String)=conn.query_row(&source.sql("SELECT recipient_kind,recipient_id,sender,event,cwd,at,body,refs_json,left_out_json FROM @source.delivery WHERE id=?1"),[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?)))?;
+    struct DeliveryRow {
+        recipient_kind: String,
+        recipient_id: Option<String>,
+        sender: String,
+        event: String,
+        cwd: Option<String>,
+        at: i64,
+        body: Vec<u8>,
+        refs: String,
+        left_out: String,
+    }
+    let DeliveryRow { recipient_kind, recipient_id, sender, event, cwd, at, body, refs, left_out } = conn.query_row(
+        &source.sql("SELECT recipient_kind,recipient_id,sender,event,cwd,at,body,refs_json,left_out_json FROM @source.delivery WHERE id=?1"),
+        [id],
+        |r| Ok(DeliveryRow { recipient_kind: r.get(0)?, recipient_id: r.get(1)?, sender: r.get(2)?, event: r.get(3)?, cwd: r.get(4)?, at: r.get(5)?, body: r.get(6)?, refs: r.get(7)?, left_out: r.get(8)? }),
+    )?;
     Ok(DeliveryRecord {
         id: id.into(),
         prepared: polylogue_model::user::Delivery {

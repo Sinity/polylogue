@@ -36,6 +36,7 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
                         &ImportOptions {
                             format: Some("openai-chat".into()),
                             explain: false,
+                            ..Default::default()
                         },
                     )
                     .unwrap();
@@ -100,6 +101,7 @@ fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
             &ImportOptions {
                 format: Some("openai-chat".into()),
                 explain: false,
+                ..Default::default()
             },
         )
         .unwrap();

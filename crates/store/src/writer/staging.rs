@@ -279,6 +279,7 @@ impl Inner {
         }
         crate::fault::check("write.archive_commit", "")?;
         crate::write_lock::commit(tx)?;
+        self.commits.committed();
         self.report.transactions += 1;
         self.report.batches += group.iter().filter(|g| g.batch.parse.is_empty()).count() as u64;
         Ok(stored)

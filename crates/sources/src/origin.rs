@@ -765,12 +765,12 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
-        name: crate::polylogue_export::ORIGIN,
+        name: crate::polylogue_bundle::ORIGIN,
         harness_prefixes: &[],
         modules: modules!(
             crate::export::VERSION,
-            crate::polylogue_export::VERSION,
-            polylogue_model::export::VERSION
+            crate::polylogue_bundle::VERSION,
+            polylogue_model::bundle::VERSION
         ),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -778,8 +778,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         locations: &[],
         capture: Capture::Bytes,
         database: None,
-        recognize: crate::polylogue_export::recognize,
-        open: crate::polylogue_export::open,
+        recognize: crate::polylogue_bundle::recognize,
+        open: crate::polylogue_bundle::open,
         resume: None,
         bare_uuid_ids: false,
         quota: None,

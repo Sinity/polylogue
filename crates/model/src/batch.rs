@@ -27,12 +27,27 @@ pub struct Output {
     /// Canonical fact subsets keep these positions when earlier facts are hidden.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub event_ids: BTreeMap<usize, String>,
+    /// Immutable admission of confirmed event facts, independent of raw source availability.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub event_receipts: BTreeMap<usize, u64>,
+    /// Immutable admissions for session facts before their metadata is merged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub session_receipts: BTreeMap<usize, u64>,
+    /// Immutable admissions of source document readings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub document_receipts: BTreeMap<usize, u64>,
+    /// Immutable admissions of source link facts before their evidence is merged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub link_receipts: BTreeMap<usize, u64>,
     /// Explicit session reading order, indexed by message; byte ranges stay local.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_order: BTreeMap<usize, u64>,
     /// Selected original block positions retain the original source version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_projections: BTreeMap<usize, crate::bundle::MessageProjection>,
+    /// Immutable admission of each confirmed message fact, indexed by message.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_receipts: BTreeMap<usize, u64>,
     /// Upserted by [`Link::key`]; parts one file lacks are filled from
     /// another ([`Link::merge`]).
     pub links: Vec<Link>,

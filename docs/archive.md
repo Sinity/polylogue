@@ -23,6 +23,8 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 - **Every version of a parsed row is stored**, and the shown versions form a total order. A growing file read again adds versions in receipt order.
 - **Reading the same bytes again changes nothing**: a row version's hash is a function of the bytes and the reading version.
+- A sparse message reading keeps the complete source version's hash, its original block count and the original positions of the blocks it carries. Missing blocks are unknown. Compatible observations of one version union their known blocks; a partial observation cannot replace known complete content, and conflicting facts under one source hash are refused.
+- A canonical message's admission is the latest immutable fact admission that contributed to its known blocks. It survives raw-byte archival. Standalone readings without canonical receipts use their source extents' actual admission; unavailable proof stays unknown.
 - **Message IDs are stable across re-parse.** A source without native message IDs gets a fallback ID from the input and record position (`<stem>@<offset>`), stable for the same bytes.
 - Which route's reading of a conversation is shown, field by field, is in [sessions.md](sessions.md#one-conversation-through-several-routes).
 

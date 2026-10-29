@@ -36,6 +36,7 @@ fn stage(
                 import_id: import_id.into(),
                 member: member.into(),
                 format: Some("export-file".into()),
+                authorship: None,
             }),
         }),
         continues: false,

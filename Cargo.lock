@@ -1718,6 +1718,7 @@ dependencies = [
  "blake3",
  "flate2",
  "hashed-blobs",
+ "libc",
  "mimalloc",
  "notify",
  "polylogue-model",

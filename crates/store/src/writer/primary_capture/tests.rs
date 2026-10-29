@@ -255,3 +255,42 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         0
     );
 }
+
+#[test]
+fn import_retry_intent_excludes_its_generated_operation_id() {
+    let mut group = vec![source("bundle", b"source")];
+    group[0].batch.observation.as_mut().unwrap().import = Some(crate::ImportMember {
+        version: 1,
+        import_id: "first-operation".into(),
+        member: "records.jsonl".into(),
+        authorship: Some(polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Script("import-program".into()),
+            via: polylogue_model::authorship::Channel::Import,
+        }),
+        format: Some("polylogue-bundle".into()),
+    });
+    let first = capture_group_identity(&group).unwrap();
+    let member = group[0]
+        .batch
+        .observation
+        .as_mut()
+        .unwrap()
+        .import
+        .as_mut()
+        .unwrap();
+    member.import_id = "retry-operation".into();
+    assert_eq!(capture_group_identity(&group).unwrap(), first);
+    group[0]
+        .batch
+        .observation
+        .as_mut()
+        .unwrap()
+        .import
+        .as_mut()
+        .unwrap()
+        .authorship
+        .as_mut()
+        .unwrap()
+        .author = polylogue_model::Author::Script("other-importer".into());
+    assert_ne!(capture_group_identity(&group).unwrap(), first);
+}
