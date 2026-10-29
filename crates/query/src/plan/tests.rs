@@ -174,3 +174,42 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
     assert_eq!(restored.bindings().kept, bindings.kept);
     assert_eq!(restored.question_id(), plan.question_id());
 }
+
+#[test]
+fn native_addresses_bind_their_row_domain_without_stealing_scoped_fields() {
+    for (text, expected) in [
+        ("event:native-event", "events"),
+        ("document:test:document", "documents"),
+        ("block:test:message#0", "blocks"),
+        ("delivery:receipt", "deliveries"),
+    ] {
+        let plan = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
+        let Source::Unit { unit, .. } = &plan.bound_query().query().source else {
+            panic!("native unit")
+        };
+        assert_eq!(unit, expected);
+        let object = plan.query_object().unwrap();
+        assert_eq!(
+            replay(&object, &catalog_fingerprint())
+                .unwrap()
+                .question_id(),
+            plan.question_id()
+        );
+    }
+    let plan = prepare(
+        "deliveries where event:session_start",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let Source::Unit {
+        unit,
+        condition: Some(condition),
+        ..
+    } = &plan.bound_query().query().source
+    else {
+        panic!("delivery unit")
+    };
+    assert_eq!(unit, "deliveries");
+    assert!(matches!(&condition.kind,ConditionKind::Match{field,..} if field=="event"));
+}

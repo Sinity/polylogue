@@ -76,6 +76,30 @@ fn prepare_inner(
 ) -> Result<Plan, QueryError> {
     let mut catalog = options.catalog();
     let mut query = crate::parse::with_catalog(text, &catalog)?;
+    if let Source::Unit {
+        unit,
+        implicit,
+        condition: Some(condition),
+    } = &mut query.source
+        && *implicit
+    {
+        let literal = match &condition.kind {
+            ConditionKind::Reference { reference } => Some(reference.clone()),
+            ConditionKind::Match {
+                field,
+                value: Value::Scalar { text, .. },
+            } => Some(format!("{field}:{text}")),
+            _ => None,
+        };
+        if let Some(reference) =
+            literal.and_then(|text| polylogue_model::Reference::parse(&text).ok())
+            && let Some(native) = crate::catalog::reference_unit(&reference)
+            && native.name() != catalog.default_unit
+        {
+            *unit = native.name().into();
+            *implicit = false;
+        }
+    }
     let mut definitions = Vec::new();
     let mut frozen = Vec::new();
     let mut identities = BTreeMap::<String, QuestionId>::new();

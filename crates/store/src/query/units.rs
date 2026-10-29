@@ -702,7 +702,7 @@ pub static UNITS: &[UnitSpec] = &[
         defaults: &[
             d(
                 Expr::Template("{r}.kind <> 'withdrawal'"),
-                &["kind", "note"],
+                &["kind", "note", "assertion"],
                 false,
             ),
             d(
@@ -712,13 +712,14 @@ pub static UNITS: &[UnitSpec] = &[
                     "first_note",
                     "withdrawn",
                     "note",
+                    "assertion",
                     "evidence_until",
                 ],
                 false,
             ),
             d(
                 Expr::Fn(not_withdrawn),
-                &["withdrawn", "note", "evidence_until"],
+                &["withdrawn", "note", "assertion", "evidence_until"],
                 false,
             ),
         ],

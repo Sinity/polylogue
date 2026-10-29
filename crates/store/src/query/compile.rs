@@ -514,6 +514,10 @@ fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
     for c in top {
         let f = match &c.kind {
             ConditionKind::Match { field, .. } => field.as_str(),
+            ConditionKind::Reference { reference } => match reference.split_once(':') {
+                Some((field, _)) => field,
+                None => continue,
+            },
             ConditionKind::Compare { operand, .. }
             | ConditionKind::Between { operand, .. }
             | ConditionKind::Since { operand, .. }

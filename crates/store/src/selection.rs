@@ -205,38 +205,25 @@ impl Reader<'_> {
         let mut options = options.clone();
         options.saved = self.selection_saved_queries()?;
         options.kept = self.selection_kept_results()?;
-        let direct_syntax = polylogue_query::parse::with_catalog(target, &options.catalog())
-            .is_ok_and(|query| {
-                query.stages.is_empty()
-                    && query.attach.is_empty()
-                    && matches!(
-                        query.source,
-                        polylogue_query::ast::Source::Unit {
-                            condition: Some(polylogue_query::ast::Condition {
-                                kind: ConditionKind::Match { .. } | ConditionKind::Reference { .. },
-                                ..
-                            }),
-                            ..
-                        }
-                    )
-            });
-        let direct = direct_syntax
-            .then(|| Reference::parse(target))
-            .transpose()
-            .ok()
-            .flatten()
-            .filter(|reference| {
-                matches!(
-                    reference,
-                    Reference::Session(_)
-                        | Reference::Message(_)
-                        | Reference::MessageRange { .. }
-                        | Reference::Block { .. }
-                        | Reference::Document(_)
-                        | Reference::Event(_)
-                        | Reference::Span { .. }
-                )
-            });
+        let parsed = polylogue_query::parse::with_catalog(target, &options.catalog())?;
+        let direct = direct_reference(&parsed)?;
+        let direct = direct
+            .map(|reference| self.bind_direct_reference(reference))
+            .transpose()?;
+        if let Some(reference) = &direct
+            && !matches!(reference, Reference::Span { .. })
+        {
+            let unit = reference_unit(reference).expect("readable native reference");
+            let mut params = Vec::new();
+            let members = membership(unit, reference, &mut params)?
+                .ok_or_else(|| invalid("not_built", "reference has no retained membership"))?;
+            if self
+                .query(&format!("SELECT 1 FROM ({members}) LIMIT 1"), &params)?
+                .is_empty()
+            {
+                return Err(invalid("not_found", "referenced source is unavailable"));
+            }
+        }
         let text = direct
             .as_ref()
             .map(reference_query)
@@ -245,7 +232,11 @@ impl Reader<'_> {
         let mut program = crate::query::compile(&text, &options)?;
         self.validate_selection(&program)?;
         let identity_text = if direct.is_some() {
-            format!("{} where {}", program.unit.name(), target)
+            format!(
+                "{} where {}",
+                program.unit.name(),
+                reference_atom(direct.as_ref().expect("direct reference"))
+            )
         } else {
             target.to_owned()
         };
@@ -280,6 +271,40 @@ impl Reader<'_> {
             self.validate_selection(&program)?;
             self.finish_selection(plan, program, None, options)
         })
+    }
+
+    fn bind_direct_reference(&self, reference: Reference) -> Result<Reference, SelectionError> {
+        if let Reference::Assertion(revision) = &reference {
+            if revision.revision.is_none() {
+                let rows = self.query(
+                    "SELECT id FROM source_note WHERE first_note=?1 ORDER BY id LIMIT 2",
+                    &[SqlValue::Text(revision.root.clone())],
+                )?;
+                match rows.as_slice() {
+                    [row] => {
+                        return Ok(Reference::Assertion(
+                            polylogue_model::RevisionReference::exact(
+                                revision.root.clone(),
+                                row["id"]
+                                    .as_str()
+                                    .ok_or_else(|| {
+                                        invalid("store", "assertion revision has no identity")
+                                    })?
+                                    .into(),
+                            ),
+                        ));
+                    }
+                    [] => return Err(invalid("not_found", "assertion family is unavailable")),
+                    _ => {
+                        return Err(invalid(
+                            "ambiguous",
+                            "assertion family has multiple revisions; name an exact root@revision",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(reference)
     }
 
     fn finish_selection<'read>(
@@ -808,29 +833,78 @@ pub fn sql_value(value: &Value) -> SqlValue {
         other => SqlValue::Text(other.to_string()),
     }
 }
-fn reference_query(reference: &Reference) -> Result<String, SelectionError> {
-    Ok(match reference {
-        Reference::Session(id) => format!(
-            "sessions where session:{}",
-            polylogue_query::quoted(&id.to_string())
-        ),
-        Reference::Message(id)
-        | Reference::Block { message: id, .. }
-        | Reference::MessageRange { first: id, .. } => format!(
-            "messages where message:{}",
-            polylogue_query::quoted(&id.to_string())
-        ),
-        Reference::Document(id) => {
-            format!(
-                "documents where id:{}",
-                polylogue_query::quoted(&id.to_string())
-            )
-        }
-        Reference::Event(id) => format!("events where id:{}", polylogue_query::quoted(id)),
-        Reference::Span { container, .. } => reference_query(container)?,
-        _ => return Err(invalid("invalid_query", "reference has no readable row")),
-    })
+use polylogue_query::catalog::reference_unit;
+
+fn reference_atom(reference: &Reference) -> String {
+    let text = reference.to_string();
+    let (kind, value) = text
+        .split_once(':')
+        .expect("native reference has a namespace");
+    format!("{kind}:{}", polylogue_query::quoted(value))
 }
+fn direct_reference(
+    query: &polylogue_query::ast::Query,
+) -> Result<Option<Reference>, SelectionError> {
+    use polylogue_query::ast::{Source, Value as Scalar};
+    if !query.stages.is_empty() || !query.attach.is_empty() {
+        return Ok(None);
+    }
+    let Source::Unit {
+        implicit,
+        condition: Some(condition),
+        ..
+    } = &query.source
+    else {
+        return Ok(None);
+    };
+    let reference = match &condition.kind {
+        ConditionKind::Reference { reference } => match Reference::parse(reference) {
+            Ok(reference) => reference,
+            Err(
+                polylogue_model::ReferenceError::NoKind(_)
+                | polylogue_model::ReferenceError::UnknownKind(_),
+            ) => return Ok(None),
+            Err(error) => return Err(invalid("invalid_query", error.to_string())),
+        },
+        ConditionKind::Match {
+            field,
+            value: Scalar::Scalar { text, .. },
+        } if matches!(
+            field.as_str(),
+            "session"
+                | "message"
+                | "block"
+                | "document"
+                | "event"
+                | "span"
+                | "assertion"
+                | "delivery"
+        ) =>
+        {
+            Reference::parse(&format!("{field}:{text}"))
+                .map_err(|error| invalid("invalid_query", error.to_string()))?
+        }
+        _ => return Ok(None),
+    };
+    if reference_unit(&reference).is_none() {
+        return Ok(None);
+    }
+    if *implicit {
+        Ok(Some(reference))
+    } else {
+        Ok(None)
+    }
+}
+fn reference_query(reference: &Reference) -> Result<String, SelectionError> {
+    let unit = reference_unit(reference)
+        .ok_or_else(|| invalid("invalid_query", "reference has no readable row"))?;
+    Ok(format!(
+        "{} where {}",
+        unit.name(),
+        reference_atom(reference)
+    ))
+}
+
 fn identity_reference(unit: Unit, values: &[Value]) -> Option<Reference> {
     let text = |at: usize| values.get(at)?.as_str();
     match unit {
@@ -896,89 +970,12 @@ fn membership(
     reference: &Reference,
     params: &mut Vec<SqlValue>,
 ) -> Result<Option<String>, SelectionError> {
-    if let Reference::Span { container, .. } = reference {
-        return membership(unit, container, params);
-    }
-    let mut bind = |value: String| {
-        params.push(SqlValue::Text(value));
-        format!("?{}", params.len())
-    };
-    let messages = match reference {
-        Reference::Message(id) | Reference::Block { message: id, .. } => Some(format!(
-            "SELECT m.pk,m.session_pk FROM message m WHERE m.id={}",
-            bind(id.to_string())
-        )),
-        Reference::MessageRange { first, last } => {
-            let first = bind(first.to_string());
-            let last = bind(last.to_string());
-            Some(format!(
-                "SELECT m.pk,m.session_pk FROM message m JOIN message f ON f.id={first} JOIN message l ON l.id={last} WHERE m.session_pk=f.session_pk AND f.session_pk=l.session_pk AND (m.order_input_id,m.seq,m.record_position,m.id)>=(f.order_input_id,f.seq,f.record_position,f.id) AND (m.order_input_id,m.seq,m.record_position,m.id)<=(l.order_input_id,l.seq,l.record_position,l.id)"
-            ))
-        }
-        _ => None,
-    };
-    Ok(Some(match unit {
-        Unit::Sessions => match reference {
-            Reference::Session(id) => {
-                format!("SELECT pk FROM session WHERE id={}", bind(id.to_string()))
-            }
-            _ => {
-                let Some(messages) = messages else {
-                    return Ok(None);
-                };
-                format!(
-                    "SELECT q.session_pk AS pk FROM ({messages}) q JOIN message m ON m.pk=q.pk WHERE {}",
-                    crate::session_sql::own_messages("m", None)
-                )
-            }
+    Ok(crate::query::references::membership(
+        unit,
+        reference,
+        &mut |value| {
+            params.push(SqlValue::Text(value));
+            format!("?{}", params.len())
         },
-        Unit::Messages => match reference {
-            Reference::Session(id) => format!(
-                "SELECT m.pk FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id={} AND {}",
-                bind(id.to_string()),
-                crate::session_sql::own_messages("m", None)
-            ),
-            _ => {
-                let Some(messages) = messages else {
-                    return Ok(None);
-                };
-                format!("SELECT pk FROM ({messages})")
-            }
-        },
-        Unit::Blocks | Unit::ToolCalls => {
-            let Some(messages) = messages else {
-                return Ok(None);
-            };
-            let extra = if let Reference::Block { n, .. } = reference {
-                let Ok(n) = i64::try_from(*n) else {
-                    return Ok(None);
-                };
-                format!(" AND b.idx={n}")
-            } else {
-                String::new()
-            };
-            if unit == Unit::Blocks {
-                format!(
-                    "SELECT b.pk FROM block b WHERE b.message_pk IN (SELECT pk FROM ({messages})){extra}"
-                )
-            } else {
-                format!(
-                    "SELECT t.pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk WHERE b.message_pk IN (SELECT pk FROM ({messages})){extra}"
-                )
-            }
-        }
-        Unit::Documents => {
-            let Reference::Document(id) = reference else {
-                return Ok(None);
-            };
-            format!("SELECT pk FROM document WHERE id={}", bind(id.to_string()))
-        }
-        Unit::Events => {
-            let Reference::Event(id) = reference else {
-                return Ok(None);
-            };
-            format!("SELECT pk FROM event WHERE id={}", bind(id.clone()))
-        }
-        _ => return Ok(None),
-    }))
+    ))
 }

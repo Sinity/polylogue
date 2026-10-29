@@ -606,4 +606,113 @@ fn selected_assertion_reference_retains_its_actual_family_and_revision() {
             )
         ]
     );
+    let exact = reader
+        .prepare_selection(&format!("assertion:{first}@{first}"), &options)
+        .unwrap();
+    let mut exact_values = vec![];
+    reader
+        .visit_selection::<SelectionError>(&exact, None, None, |row| {
+            exact_values.push(row.values);
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(exact_values, vec![serde_json::json!({"value":"first"})]);
+    assert_eq!(
+        reader
+            .prepare_selection(&format!("assertion:{first}"), &options)
+            .err()
+            .unwrap()
+            .kind(),
+        "ambiguous"
+    );
+    let family = reader
+        .prepare_selection(
+            &format!("notes where assertion:{first} | sort by id"),
+            &options,
+        )
+        .unwrap();
+    assert!(family.direct_reference().is_none());
+    let mut count = 0;
+    reader
+        .visit_selection::<SelectionError>(&family, None, None, |_| {
+            count += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:session",
+            ..Default::default()
+        })
+        .unwrap();
+    for id in ["test:a", "test:b", "test:native with | separator"] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role: "user",
+                    written_by: "human",
+                    prompt_kind: Some("prose"),
+                    text: Some("synthetic"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    fixture.event(session, "synthetic", None).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let options = options();
+    let opaque = reader
+        .prepare_selection("message:\"test:native with | separator\"", &options)
+        .unwrap();
+    assert_eq!(
+        opaque.direct_reference().unwrap().to_string(),
+        "message:test:native with | separator"
+    );
+    let object = opaque.query_object().unwrap();
+    polylogue_query::plan::validate_object(&object).unwrap();
+    let event = reader.prepare_selection("event:e4", &options).unwrap();
+    assert_eq!(
+        event.direct_reference(),
+        Some(&Reference::Event("e4".into()))
+    );
+    assert_eq!(
+        reader
+            .prepare_selection("block:test:a#999", &options)
+            .err()
+            .unwrap()
+            .kind(),
+        "not_found"
+    );
+    let ordinary = reader
+        .prepare_selection(
+            "messages where message:test:a..test:b | sort by id",
+            &options,
+        )
+        .unwrap();
+    assert!(ordinary.direct_reference().is_none());
+    let mut selected = vec![];
+    reader
+        .visit_selection::<SelectionError>(&ordinary, None, None, |row| {
+            selected.push(row.reference.unwrap().to_string());
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(selected, ["message:test:a", "message:test:b"]);
+    let range = reader
+        .prepare_selection("message:test:a..test:b", &options)
+        .unwrap();
+    assert!(matches!(
+        range.direct_reference(),
+        Some(Reference::MessageRange { .. })
+    ));
 }
