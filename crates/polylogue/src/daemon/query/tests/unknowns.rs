@@ -294,7 +294,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     let (selection, _) = usage_selection(
         &reader,
         text,
-        &fixture_clock(OCT1, "UTC", 0),
+        fixture_context(OCT1, "UTC", 0),
         true,
         Some(&near),
     )
@@ -310,7 +310,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
         Some(vec![selected[0]["pk"].as_i64().unwrap()])
     );
     assert_eq!(
-        usage_selection(&reader, text, &fixture_clock(OCT1, "UTC", 0), true, None)
+        usage_selection(&reader, text, fixture_context(OCT1, "UTC", 0), true, None)
             .unwrap_err()
             .kind,
         "embed"
