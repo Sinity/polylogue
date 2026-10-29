@@ -117,7 +117,10 @@ impl Reference {
         };
         let id = |error| ReferenceError::Id(text.into(), error);
         let number = |value: &str| -> Result<u64, ReferenceError> {
-            if value.is_empty() || !value.bytes().all(|v| v.is_ascii_digit()) || (value.len()>1 && value.starts_with('0')) {
+            if value.is_empty()
+                || !value.bytes().all(|v| v.is_ascii_digit())
+                || (value.len() > 1 && value.starts_with('0'))
+            {
                 return Err(invalid("expected a nonnegative integer"));
             }
             value

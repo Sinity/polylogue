@@ -69,6 +69,7 @@ static ORIGIN: OriginSpec = origin(|path| Some(Parse::Lines(Box::new(Together(li
 fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
     let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
     let config = Config {
+        clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
         home: w.home.clone(),
         tool_dirs: Default::default(),
         workers: 2,
