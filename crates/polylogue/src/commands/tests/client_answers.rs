@@ -151,30 +151,6 @@ fn http_answer(web: &Arc<crate::web::Web>, c: &Command, values: &Values) -> Answ
     }
 }
 
-// Unmeasured inferred quota windows move with the clock even for a fixed
-// usage date. Compare their offsets while keeping every other value exact.
-fn relative_quota_clock(answer: &mut Answer) {
-    let Ok(data) = answer else {
-        return;
-    };
-    let quota = &mut data["quota"]["data"];
-    let Some(now) = quota["now"].as_i64() else {
-        return;
-    };
-    for tool in quota["tools"].as_array_mut().into_iter().flatten() {
-        for window in tool["windows"].as_array_mut().into_iter().flatten() {
-            if window["source"] == "inferred" && window["measured_at"].is_null() {
-                for field in ["starts_at", "resets_at"] {
-                    if let Some(time) = window[field].as_i64() {
-                        window[field] = (time - now).into();
-                    }
-                }
-            }
-        }
-    }
-    quota["now"] = 0.into();
-}
-
 #[test]
 fn every_client_answers_the_same_request_identically() {
     let offered: Vec<&str> = COMMANDS
@@ -189,7 +165,10 @@ fn every_client_answers_the_same_request_identically() {
             "the client comparison does not ask `{name}`"
         );
     }
-    let w = test_daemon::start("look at the parser");
+    let w = test_daemon::start_with_clock(
+        "look at the parser",
+        polylogue_model::WallClock::fixed("2026-03-01T12:00:00Z".parse().unwrap()),
+    );
     let web = Arc::new(crate::web::Web {
         daemon: Arc::clone(&w.daemon),
         operations: Arc::clone(w.operations()),
@@ -206,14 +185,9 @@ fn every_client_answers_the_same_request_identically() {
         }
         argv.extend(*args);
         let (c, values) = crate::cli::parse(&argv).unwrap();
-        let mut cli = cli_answer(&w, &argv);
-        let mut mcp = mcp_answer(&w, c, &values);
-        let mut http = http_answer(&web, c, &values);
-        if *name == "cost" {
-            for answer in [&mut cli, &mut mcp, &mut http] {
-                relative_quota_clock(answer);
-            }
-        }
+        let cli = cli_answer(&w, &argv);
+        let mcp = mcp_answer(&w, c, &values);
+        let http = http_answer(&web, c, &values);
         assert_eq!(
             cli,
             mcp,

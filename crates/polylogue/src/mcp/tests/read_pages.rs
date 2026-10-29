@@ -287,10 +287,9 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     let source = "synthetic word ".repeat(10000);
     let daemon = test_daemon::start(&source);
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let output = call(
+    let output = read_without_deadline(
         &archive,
-        "read",
-        args(json!({"target":"session:claude-code:s1","budget":2048})),
+        json!({"target":"session:claude-code:s1","budget":2048}),
     )
     .unwrap();
     let page: ReadPage = serde_json::from_str(&output).unwrap();
@@ -302,7 +301,7 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
         page,
         None,
         Some(22_000),
-        command_surface::Deadline::Default,
+        command_surface::Deadline::None,
     );
     assert!(pages > 1);
     assert!(!items.text().is_empty());
@@ -314,4 +313,55 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     )
     .unwrap_err();
     assert!(error.contains("bad_request"), "{error}");
+}
+
+#[test]
+fn an_omitted_read_deadline_stays_default_in_the_acknowledged_root_and_next_call() {
+    let daemon = test_daemon::start(&"small default read fragment ".repeat(100));
+    let archive = Archive::at(&daemon.daemon.archive.root);
+    let first = call(
+        &archive,
+        "read",
+        args(json!({"target":"session:claude-code:s1","budget":256})),
+    )
+    .unwrap();
+    let page: ReadPage = serde_json::from_str(&first).unwrap();
+    let next = page
+        .document
+        .footer
+        .next
+        .expect("small bounded root has a next call");
+    let envelope = &next.mcp["arguments"];
+    assert!(
+        envelope.get("deadline").is_none(),
+        "default is represented by omission"
+    );
+    let child: crate::protocol::operations::McpArguments<Value> =
+        serde_json::from_value(envelope.clone()).unwrap();
+    assert_eq!(child.deadline, command_surface::Deadline::Default);
+    let crate::protocol::read::Arguments::Resume(resume) =
+        serde_json::from_value(child.arguments).unwrap()
+    else {
+        panic!("compact resume arguments");
+    };
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let root = reader
+        .query_run(&resume.root_run, None)
+        .unwrap()
+        .expect("acknowledged root")
+        .value;
+    let accepted = root
+        .binding
+        .original()
+        .expect("original root")
+        .accepted_request
+        .as_ref()
+        .expect("accepted root envelope");
+    assert!(accepted.get("deadline").is_none());
+    let original: command_surface::RunnableRequest =
+        serde_json::from_value(accepted.clone()).unwrap();
+    assert_eq!(original.deadline, command_surface::Deadline::Default);
+    drop(reader);
+    let continued = execute_ready(&archive, &next).unwrap();
+    assert_eq!(continued.snapshot.query, page.snapshot.query);
 }
