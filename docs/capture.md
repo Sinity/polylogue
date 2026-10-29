@@ -20,6 +20,8 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - The root honours the tool's own home variable where the tool defines one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`); otherwise it is the tool's fixed path under `$HOME`. Polylogue has no setting of its own for any path.
 - Ignoring a tool's credential files is not filtering content: they are account state, not AI work.
 
+Mutable source sampling freezes its source boundary before provider I/O. It binds the current index generation and actual source admission fence, separately from the selected source's observation and pending capture IDs. A later native-ID alias lookup may use only retained facts admitted within that boundary. Acceptance compares the exact resolved source head and pending predecessor; unrelated source commits do not invalidate every sampler. Missing boundary evidence permits private byte custody but cannot establish a fresh source, append coordinates or parser continuation. In primary mode this requires certified coverage of the full scoped projection, including indexed authored records. A raw-input certificate or partial stream checkpoint alone is insufficient.
+
 ### Every file in one class
 
 | Class | Meaning | What happens |

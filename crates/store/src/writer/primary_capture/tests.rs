@@ -293,6 +293,16 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         assert_eq!(snapshot.basis.confirmed, None);
         assert_eq!(snapshot.basis.pending.as_deref(), Some("offline-capture"));
         assert!(snapshot.pending.raw.is_some());
+        assert!(snapshot.basis.boundary.is_none());
+        writer.apply_confirmed(vec![crate::primary::Confirmed {
+            position: 0, output_index: 0, event: String::new(),
+            change: crate::primary::ConfirmedChange::PositionComplete,
+        }]).unwrap();
+        let after_checkpoint = writer.source_snapshot(crate::primary::SourceSelector {
+            origin: "codex".into(), machine: "machine".into(), path_bytes: b"/home/op/offline".to_vec(),
+        }, "synthetic:1").unwrap();
+        assert_eq!(after_checkpoint.basis.status, crate::primary::SourceStatus::MissingEvidence);
+        assert!(after_checkpoint.basis.boundary.is_none());
         let Capture::Input(hydrated) = writer.capture("offline-capture".into()).unwrap() else {
             panic!("the pending source must hydrate its original input facts");
         };

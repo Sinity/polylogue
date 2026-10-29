@@ -57,7 +57,20 @@ pub enum SourceStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct SourceSubject {
+    pub input: String,
+    pub observation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SourceBasis {
+    /// Missing authority permits private custody, not source-coordinate claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<super::SourceBoundary>,
+    /// A native-ID alias resolved strictly within the pre-acquisition cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<SourceSubject>,
     pub source: SourceSelector,
     pub status: SourceStatus,
     pub confirmed: Option<String>,

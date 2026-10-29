@@ -2,6 +2,8 @@
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::OnceLock;
+mod boundary;
+pub use boundary::SourceBoundary;
 mod native;
 
 pub(crate) struct SourceSchema {

@@ -1,3 +1,4 @@
+mod boundaries;
 mod native_paths;
 use super::*;
 
