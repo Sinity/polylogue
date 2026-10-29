@@ -120,6 +120,7 @@ pub fn run(
     run_all(index, Catalog::builtin(), ALL, commits)
 }
 
+#[cfg(test)]
 fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
     run_all(index, catalog, ALL, None)
 }
