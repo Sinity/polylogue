@@ -8,11 +8,12 @@
 //! same ID with other intent is refused as a conflict.
 
 use crate::{Result, StoreError};
-use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
-use polylogue_model::{NewNote, NoteKind, Timestamp};
+use polylogue_model::{Author, NewNote, NoteKind, Timestamp};
 use rusqlite::{OptionalExtension, Transaction, params};
 
-/// A request at the current time on this machine.
+use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
+
+/// Construct trusted request metadata at the I/O boundary.
 pub fn request_now(id: String, write: UserWrite) -> UserRequest {
     UserRequest {
         id,

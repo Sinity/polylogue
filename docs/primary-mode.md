@@ -44,6 +44,27 @@ There is no local ledger of inputs, no local segment log and no send cursor. The
 
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).
 
+### Frozen authored writes
+
+Preparation resolves a user request once against the applied canonical view
+plus this host's durable pending requests, in a private overlay. It retains
+the original request, exact outcome and typed authored effect together. The
+effect carries resolved note families, revisions, targets, attachment references
+and complete chat, backfill and delivery histories. Pending attachment metadata
+comes from verified spool material; it never makes the write visible to reads.
+
+A retry with the same request identity and authored intent reuses that frozen
+record. A changed intent or accepting machine conflicts; a retry timestamp does
+not change the admitted write. Confirmation applies the frozen records directly,
+without selecting another claim or revision base. Event histories merge by their
+original request identities, including when a bundle contains only a later state.
+An unconfirmed request remains `pending`, with no external action authorized.
+
+Historical bundle restoration preserves stored authors and outcomes and records
+the importing channel's computed attribution separately. Imported chat actions
+and backfill jobs retain their historical statuses with execution eligibility
+`historical`; dequeue requires `live`. A new explicit action uses a new identity.
+
 ## Write identity
 
 - A prepared write has a durable identity and immutable contents; a retry reuses both.
