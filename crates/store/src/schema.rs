@@ -132,16 +132,6 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
     ensure(conn, "archive", &[ARCHIVE], ARCHIVE_MIGRATIONS)
 }
 
-/// The tables of `sinex.db`, primary mode's register: the archive's tables
-/// and the Sinex material of each part.
-pub(crate) const SINEX: [&str; 2] = [ARCHIVE, crate::primary::SCHEMA];
-
-/// Creates `sinex.db` in an empty file and brings an older one forward with
-/// the archive's migrations.
-pub fn ensure_sinex(conn: &Connection) -> Result<()> {
-    ensure(conn, "sinex", &SINEX, ARCHIVE_MIGRATIONS)
-}
-
 /// Creates `embeddings.db` in an empty file; refuses one with other tables.
 pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
     ensure(conn, "embeddings", &[EMBEDDINGS], &[])
