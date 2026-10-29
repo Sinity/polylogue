@@ -42,6 +42,7 @@ pub struct Job {
     /// The input's stored length once this job is written.
     pub length: u64,
     pub parser_state: Option<Json>,
+    pub(crate) parser_deferred: bool,
     pub priority: Priority,
     /// Where the bytes come from.
     pub source: Bytes,
@@ -440,7 +441,8 @@ pub(crate) fn run(
     });
     let parse = parser
         .map(|parser| {
-            if job.start > 0 && out.parser_state.is_none() {
+            if job.origin.support == polylogue_sources::Support::Parsed
+                && (job.parser_deferred || job.start > 0 && out.parser_state.is_none()) {
                 out.continuation_missing = true;
                 return Vec::new();
             }

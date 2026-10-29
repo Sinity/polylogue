@@ -535,6 +535,8 @@ impl Engine {
             plan.basis = Some(snapshot.basis);
             return Ok(Some(plan));
         }
+        let source_uncertain =
+            snapshot.basis.status != polylogue_store::primary::SourceStatus::Ready;
         let obs = self.observation(path, Some(now));
         let restored = if let Some(st) = self.inputs.get(path)
             && st.parser_state.is_none()
@@ -640,7 +642,7 @@ impl Engine {
             stored_upto,
             parse_pos,
             storing_started: false,
-            parser_deferred: never_parsed && st.stored > 0,
+            parser_deferred: source_uncertain || never_parsed && st.stored > 0,
             parser_state,
             tail: None,
             span: span(st.origin, path, self.config.chunk),

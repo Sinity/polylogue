@@ -88,6 +88,7 @@ fn job(
         at_end: true,
         length: size,
         parser_state: None,
+        parser_deferred: false,
         priority: crate::pool::Priority::Bulk,
         source: crate::pool::Bytes::File,
     }

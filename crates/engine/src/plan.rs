@@ -176,6 +176,7 @@ impl Plan {
             at_end: end == self.size,
             length,
             parser_state: self.parser_state.take(),
+            parser_deferred: self.parser_deferred,
             priority: self.priority,
             source: self.source.clone(),
         }
