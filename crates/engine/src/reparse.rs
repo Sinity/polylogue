@@ -363,6 +363,13 @@ fn prepare(
                 step.order_from = Some(item.order_from);
                 step.repeats_whole_conversations = item.repeats;
                 step.reading_version = plan.origin.reading_version();
+                if item.done {
+                    step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
+                        step.reading_version.clone(),
+                        step.parsed_upto,
+                        None,
+                    ));
+                }
                 polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
                     reading.push(&mut step)
                 })?;
@@ -377,6 +384,11 @@ fn prepare(
             let _charge = memory.take(bytes);
             *bytes_read += bytes;
             let (batch, done) = pool::run(job, archive, blobs, false);
+            if done.continuation_missing {
+                return Err(EngineError::Parse(
+                    "native parser continuation is unavailable at the admitted cursor".into(),
+                ));
+            }
             if let Some(error) = &done.error {
                 return Err(if error.starts_with("parse ") {
                     EngineError::Parse(error.clone())

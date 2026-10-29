@@ -89,6 +89,7 @@ pub struct Done {
     pub stored: u64,
     pub error: Option<String>,
     pub write_failed: bool,
+    pub continuation_missing: bool,
 }
 
 struct Queue {
@@ -365,6 +366,7 @@ pub(crate) fn run(
         stored: 0,
         error: None,
         write_failed: false,
+        continuation_missing: false,
     };
     let started = std::time::Instant::now();
     let read = match &job.source {
@@ -414,6 +416,10 @@ pub(crate) fn run(
     });
     let parse = parser
         .map(|parser| {
+            if job.start > 0 && out.parser_state.is_none() {
+                out.continuation_missing = true;
+                return Vec::new();
+            }
             // A parser that panics loses only its own input: the panic
             // becomes this input's failure, and every other input is parsed.
             let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -475,6 +481,11 @@ pub(crate) fn run(
                         if prepare { p.prepare(); }
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
+                    }
+                    if let Some(last) = parsed.last_mut()
+                        && !last.no_parser_yet {
+                        last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
+                            last.reading_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
                     }
                     parsed
                 }
