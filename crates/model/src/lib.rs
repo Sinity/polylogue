@@ -23,7 +23,7 @@ mod event;
 pub mod export;
 mod id;
 pub mod injection;
-pub use injection::HookFieldClaim;
+pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
 mod note;
 pub mod price;
