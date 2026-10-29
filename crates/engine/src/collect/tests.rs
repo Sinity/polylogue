@@ -259,7 +259,8 @@ fn a_user_project_inside_claude_home_is_ignored_with_its_reason() {
     let scan = scan_with_coverage(&c);
     assert!(scan.found.is_empty());
     assert_eq!(scan.coverage.iter().map(|row| row.files).sum::<u64>(), 2);
-    assert!(scan.coverage.iter().all(|row|row.class==Class::Ignored && row.pattern=="user project under tool home"));
+    assert!(scan.coverage.iter().all(|row| row.class == Class::Ignored
+        && row.reason.as_deref() == Some("user project under tool home")));
     let changed = std::collections::BTreeSet::from([project]);
     assert!(scan_paths(&c, &changed).0.is_empty());
 }
@@ -275,4 +276,28 @@ fn hidden_directories_need_a_named_location() {
         "brain/*/.system_generated/logs/*.jsonl"
     ));
     assert!(matches_path(Path::new("cache/.nested/file"), "cache/**"));
+}
+
+#[test]
+fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() {
+    use polylogue_model::capture::Accessibility;
+    let home = polylogue_testkit::ClaudeHome::new();
+    let mut config = crate::Config::from_env();
+    config.home = home.home.clone();
+    config.tool_dirs.clear();
+    std::fs::create_dir_all(home.home.join(".codex")).unwrap();
+    // A self-referential symlink is an actual metadata failure even as root.
+    std::os::unix::fs::symlink(".gemini", home.home.join(".gemini")).unwrap();
+    let scan = scan_with_coverage(&config);
+    let root = |name: &str| {
+        scan.roots
+            .iter()
+            .find(|root| root.path_bytes == home.home.join(name).as_os_str().as_encoded_bytes())
+            .unwrap()
+    };
+    assert_eq!(root(".codex").status, Accessibility::Accessible);
+    assert!(root(".codex").entries.is_empty());
+    assert_eq!(root(".gemini").status, Accessibility::Unavailable);
+    assert!(!root(".gemini").unavailable_paths.is_empty());
+    assert_eq!(root(".grok").status, Accessibility::Absent);
 }

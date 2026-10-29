@@ -190,3 +190,5 @@ Its figures and verdicts use the shared status format of [command-surface](https
 - **corrupt-member-refuses-container**: a corrupt member refuses its container before anything is stored.
 - **container-streams**: every member of a container far larger than memory streams with bounded memory.
 - **tool-database-keeps-deleted-rows**: a row deleted by the tool after one capture stays in the archive, and no database image or side file is written.
+
+A completed full discovery walk publishes one capture-coverage snapshot per machine. Every declared root is present, including accessible empty roots, absent roots, unavailable roots and roots with unreadable descendants. Entries aggregate file counts, byte counts and newest source mtime by collection class and declared pattern; ignored entries retain their reason. Status reads the last confirmed full-walk snapshot and its observation time. Incremental file events update inputs without replacing that snapshot.

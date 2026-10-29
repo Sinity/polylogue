@@ -34,13 +34,8 @@ fn collected() -> impl Iterator<Item = &'static OriginSpec> {
     ORIGINS.iter().filter(|o| o.arrival != Arrival::Import)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Class {
-    Collected,
-    Ignored,
-    Unrecognized,
-}
+pub use polylogue_model::capture::Classification as Class;
+use polylogue_model::capture::{Accessibility, Entry, RootCoverage};
 
 /// Aggregated during the discovery walk, without reopening source trees.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -48,6 +43,7 @@ pub struct Coverage {
     pub root: PathBuf,
     pub class: Class,
     pub pattern: String,
+    pub reason: Option<String>,
     pub files: u64,
     pub bytes: u64,
     pub newest_mtime_ms: Option<u64>,
@@ -57,6 +53,7 @@ pub struct Scan {
     pub found: Vec<Found>,
     pub unreadable: Vec<PathBuf>,
     pub coverage: Vec<Coverage>,
+    pub roots: Vec<RootCoverage>,
 }
 
 pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
@@ -284,23 +281,33 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
         found: Vec::new(),
         unreadable: Vec::new(),
         coverage: Vec::new(),
+        roots: Vec::new(),
     };
     let mut rows = BTreeMap::new();
     for (root, tool) in areas {
         let mut files = Vec::new();
-        all_files(&root, &root, &roots, &mut files, &mut scan.unreadable);
+        let before = scan.unreadable.len();
+        let mut status = Accessibility::Accessible;
+        all_files(
+            &root,
+            &root,
+            &roots,
+            &mut files,
+            &mut scan.unreadable,
+            &mut status,
+        );
         for path in files {
             let relative = path.strip_prefix(&root).unwrap_or(&path);
             let ignored = (tool.is_some_and(|tool| tool.name == "claude-code")
                 && user_project(&root, &path))
-            .then_some("user project under tool home")
-            .or_else(|| git_metadata(relative, tool).then_some("git metadata"))
+            .then_some(("**", "user project under tool home"))
+            .or_else(|| git_metadata(relative, tool).then_some((".git/**", "git metadata")))
             .or_else(|| {
                 tool.and_then(|tool| {
                     tool.ignored
                         .iter()
                         .find(|(p, _)| matches_path(relative, p))
-                        .map(|(_, reason)| *reason)
+                        .map(|(pattern, reason)| (*pattern, *reason))
                 })
             });
             let matched = if ignored.is_none() {
@@ -324,14 +331,14 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
             } else {
                 None
             };
-            let (class, pattern) = if let Some(reason) = ignored {
-                (Class::Ignored, reason.to_owned())
+            let (class, pattern, reason) = if let Some((pattern, reason)) = ignored {
+                (Class::Ignored, pattern.to_owned(), Some(reason.to_owned()))
             } else if let Some((origin, pattern)) = matched {
                 scan.found.push(Found {
                     path: path.clone(),
                     origin,
                 });
-                (Class::Collected, pattern.to_owned())
+                (Class::Collected, pattern.to_owned(), None)
             } else {
                 (
                     Class::Unrecognized,
@@ -340,6 +347,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                         relative.parent().unwrap_or(Path::new("")).display(),
                         relative.extension().and_then(|e| e.to_str()).unwrap_or("")
                     ),
+                    None,
                 )
             };
             match fs::metadata(&path) {
@@ -350,6 +358,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                             root: root.clone(),
                             class,
                             pattern,
+                            reason,
                             files: 0,
                             bytes: 0,
                             newest_mtime_ms: None,
@@ -366,12 +375,40 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                 Err(_) => scan.unreadable.push(path),
             }
         }
+        if status == Accessibility::Accessible && scan.unreadable.len() > before {
+            status = Accessibility::Incomplete;
+        }
+        scan.roots.push(RootCoverage {
+            path_bytes: root.as_os_str().as_encoded_bytes().to_vec(),
+            status,
+            entries: Vec::new(),
+            unavailable_paths: scan.unreadable[before..]
+                .iter()
+                .map(|p| p.as_os_str().as_encoded_bytes().to_vec())
+                .collect(),
+        });
     }
     scan.found.sort_by(|a, b| a.path.cmp(&b.path));
     scan.found.dedup_by(|a, b| a.path == b.path);
     scan.unreadable.sort();
     scan.unreadable.dedup();
     scan.coverage = rows.into_values().collect();
+    for row in &scan.coverage {
+        if let Some(root) = scan
+            .roots
+            .iter_mut()
+            .find(|root| root.path_bytes == row.root.as_os_str().as_encoded_bytes())
+        {
+            root.entries.push(Entry {
+                class: row.class,
+                pattern: row.pattern.clone(),
+                reason: row.reason.clone(),
+                files: row.files,
+                bytes: row.bytes,
+                newest_mtime_ms: row.newest_mtime_ms,
+            });
+        }
+    }
     scan
 }
 
@@ -415,6 +452,7 @@ fn all_files(
     roots: &std::collections::BTreeSet<PathBuf>,
     files: &mut Vec<PathBuf>,
     unreadable: &mut Vec<PathBuf>,
+    status: &mut Accessibility,
 ) {
     if path != root && roots.contains(path) {
         return;
@@ -424,10 +462,17 @@ fn all_files(
     } else {
         fs::symlink_metadata(path)
     };
+    if path == root {
+        *status = match &metadata {
+            Ok(_) => Accessibility::Accessible,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Accessibility::Absent,
+            Err(_) => Accessibility::Unavailable,
+        };
+    }
     match metadata {
         Ok(meta) if meta.is_dir() => {
             for child in entries(path, unreadable) {
-                all_files(root, &child, roots, files, unreadable);
+                all_files(root, &child, roots, files, unreadable, status);
             }
         }
         Ok(meta) if meta.is_file() => files.push(path.to_path_buf()),
