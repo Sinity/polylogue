@@ -16,6 +16,8 @@ const ASKED: &[(&str, &[&str])] = &[
     ("query", &["messages where parser"]),
     ("query", &["sessions where"]),
     ("explain", &["syntax"]),
+    ("schema infer", &[]),
+    ("schema unread", &[]),
     ("list", &[]),
     ("read", &["claude-code:s1"]),
     ("outline", &["claude-code:s1"]),
@@ -41,7 +43,7 @@ type Answer = Result<Value, String>;
 
 fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> Answer {
     let (c, values) = crate::cli::parse(argv).unwrap();
-    let Action::Request(build) = c.action else {
+    let (Action::Request(build) | Action::Stream { build, .. }) = c.action else {
         panic!("{} is local", c.name)
     };
     let caller = Caller {

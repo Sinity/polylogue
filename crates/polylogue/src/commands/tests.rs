@@ -71,10 +71,20 @@ fn the_command_line_has_nothing_outside_the_table() {
             assert!(GROUPS.iter().any(|g| g.name == name), "group {name}");
             for leaf in sub.get_subcommands() {
                 let full = format!("{name} {}", leaf.get_name());
-                assert!(command(&full).is_some(), "{full} is not in the table");
+                assert!(
+                    COMMANDS
+                        .iter()
+                        .any(|command| command.cli_words().join(" ") == full),
+                    "{full} is not in the table"
+                );
             }
         } else {
-            assert!(command(name).is_some(), "{name} is not in the table");
+            assert!(
+                COMMANDS
+                    .iter()
+                    .any(|command| command.cli_words().join(" ") == name),
+                "{name} is not in the table"
+            );
         }
     }
     for g in GROUPS {
@@ -312,7 +322,21 @@ fn http_callers_name_their_directory() {
 
 #[test]
 fn mcp_schemas_follow_the_arguments() {
-    let s = schema(command("read").unwrap());
+    let tools = crate::mcp::tools();
+    for command in COMMANDS.iter().filter(|command| command.mcp) {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == command.mcp_name())
+            .unwrap();
+        let expected = command
+            .typed_mcp_schema
+            .map(|schema| schema())
+            .unwrap_or_else(|| Value::Object(schema(command)));
+        assert_eq!(tool["inputSchema"], expected, "{}", command.name);
+        assert_eq!(expected["additionalProperties"], false, "{}", command.name);
+    }
+    let read = command("read").unwrap();
+    let s = read.typed_mcp_schema.unwrap()();
     assert!(s["properties"]["arguments"].is_object());
     assert!(s["properties"]["request_id"].is_object());
     assert!(
@@ -320,7 +344,27 @@ fn mcp_schemas_follow_the_arguments() {
             .unwrap()
             .contains("ResumeArguments")
     );
-    assert_eq!(s["additionalProperties"], false);
+    let resume = &s["$defs"]["ResumeArguments"];
+    assert_eq!(resume["additionalProperties"], false);
+    assert_eq!(
+        resume["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["budget", "cursor", "root_run"])
+    );
+    assert_eq!(
+        resume["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["root_run", "cursor"])
+    );
+    // Legacy rows still declare their durable identity in their flat arguments.
     let s = schema(command("note add").unwrap());
     assert!(s["properties"]["request_id"].is_object());
 }
@@ -414,14 +458,39 @@ fn request_id_is_declared_for_all_write_surfaces() {
     ])
     .unwrap();
     assert_eq!(values.request_id(), "retry-one");
-    for surface in [Surface::Cli, Surface::Mcp, Surface::Http] {
-        assert_eq!(
-            command
-                .args_for(surface)
-                .filter(|a| a.name == "request_id")
-                .count(),
-            1
+    let root = crate::cli::command();
+    assert!(
+        root.get_arguments()
+            .any(|arg| arg.get_id() == "request_id" && arg.is_global_set())
+    );
+    for command in COMMANDS.iter().filter(|command| command.writes) {
+        // CLI identity is global; typed remote identity belongs to the envelope.
+        assert!(
+            !command
+                .args_for(Surface::Cli)
+                .any(|arg| arg.name == "request_id")
         );
+        for surface in [Surface::Mcp, Surface::Http] {
+            assert_eq!(
+                command
+                    .args_for(surface)
+                    .filter(|arg| arg.name == "request_id")
+                    .count(),
+                usize::from(command.register.is_none()),
+                "{} {surface:?}",
+                command.name
+            );
+        }
+        if let Some(schema) = command.typed_mcp_schema {
+            let schema = schema();
+            assert!(schema["properties"]["request_id"].is_object());
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("request_id"))
+            );
+        }
     }
 }
 

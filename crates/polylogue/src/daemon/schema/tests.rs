@@ -215,7 +215,7 @@ fn compressed_containers_and_decoded_revisions_use_their_stored_framing() {
         "container",
         "codex-compressed",
         false,
-        "/absent/session.jsonl.zst",
+        "/absent/rollout-synthetic.jsonl.zst",
         1,
         &compressed,
     );
@@ -223,7 +223,7 @@ fn compressed_containers_and_decoded_revisions_use_their_stored_framing() {
         "native",
         "codex",
         false,
-        "/absent/session.jsonl.zst",
+        "/absent/rollout-synthetic.jsonl.zst",
         1,
         plain,
     );
