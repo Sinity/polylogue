@@ -15,7 +15,7 @@ fn input(position: i64, id: &str) -> Confirmed {
         position,
         output_index: 0,
         event: format!("event-{id}"),
-        change: ConfirmedChange::Live(Product::Input {
+        change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
                 input: id.into(),
                 format: "synthetic".into(),
@@ -24,7 +24,7 @@ fn input(position: i64, id: &str) -> Confirmed {
                 observation: None,
             },
             material: None,
-        }),
+        })),
     }
 }
 fn barrier(position: i64) -> Confirmed {
@@ -139,7 +139,7 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
                 position: 2,
                 output_index: 0,
                 event: "authored".into(),
-                change: ConfirmedChange::Live(Product::Request(prepared)),
+                change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
             },
             barrier(2),
         ],
@@ -237,7 +237,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         position,
         output_index: 0,
         event: format!("event-{id}"),
-        change: ConfirmedChange::Live(Product::Input {
+        change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
                 input: id.into(),
                 format: "synthetic".into(),
@@ -257,7 +257,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
                 }),
             },
             material: Some(material.clone()),
-        }),
+        })),
     };
     apply(
         &mut index,
@@ -362,7 +362,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
         position: 1,
         output_index: 0,
         event: "input-fact".into(),
-        change: ConfirmedChange::Live(Product::Input {
+        change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
                 input: "input".into(),
                 format: "synthetic".into(),
@@ -376,7 +376,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                 observation: None,
             },
             material: None,
-        }),
+        })),
     }];
     changes.extend(
         products
@@ -386,7 +386,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                 position: 1,
                 output_index: index as u64,
                 event: format!("parsed-{index}"),
-                change: ConfirmedChange::Live(product),
+                change: ConfirmedChange::Live(Box::new(product)),
             }),
     );
     changes.push(barrier(1));
@@ -424,7 +424,7 @@ fn later_material_confirmation_and_lifecycle_refresh_original_attachment_facts()
                 position: 2,
                 output_index: 0,
                 event: "blob-fact".into(),
-                change: ConfirmedChange::Live(blob),
+                change: ConfirmedChange::Live(Box::new(blob)),
             },
             barrier(2),
         ],
@@ -505,7 +505,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
         position: 1,
         output_index: 0,
         event: "input-fact".into(),
-        change: ConfirmedChange::Live(Product::Input {
+        change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: crate::input_rows::InputRows {
                 input: "input".into(),
                 format: "synthetic".into(),
@@ -519,7 +519,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
                 observation: None,
             },
             material: None,
-        }),
+        })),
     }];
     changes.extend(
         products
@@ -529,7 +529,7 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
                 position: 1,
                 output_index: index as u64,
                 event: format!("parsed-{index}"),
-                change: ConfirmedChange::Live(product),
+                change: ConfirmedChange::Live(Box::new(product)),
             }),
     );
     changes.push(barrier(1));

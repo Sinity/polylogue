@@ -682,3 +682,6 @@ impl Inner {
         Ok(Some(rows))
     }
 }
+
+#[cfg(test)]
+mod tests;
