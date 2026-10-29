@@ -578,3 +578,5 @@ fn hiding_one_equal_range_event_preserves_the_other_native_identity() {
     expected.sort();
     assert_eq!(actual, expected);
 }
+
+mod receipts;
