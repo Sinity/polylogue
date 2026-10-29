@@ -299,6 +299,7 @@ fn observation_known(
         path: o.path.clone(),
         class: class.to_owned(),
         revision,
+        chain: None,
         length: revision.map(|_| b.length as i64),
         device: f.map(|f| f.device as i64),
         inode: f.map(|f| f.inode as i64),
