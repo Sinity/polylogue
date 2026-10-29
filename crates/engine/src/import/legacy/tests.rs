@@ -55,11 +55,40 @@ fn missing_or_changed_legacy_blob_refuses_the_whole_import_without_archive_rows(
         if missing {
             std::fs::remove_file(path).unwrap();
         } else {
-            std::fs::write(path, b"wrong bytes").unwrap();
+            std::fs::write(path, vec![b'x'; APPEND.len()]).unwrap();
         }
         let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
         let report = engine.import(&[old]).unwrap();
         assert_eq!(report.refused.len(), 1);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
     }
+}
+
+#[test]
+fn predecessor_import_parses_native_sessions_and_rebuilds_after_the_old_archive_is_gone() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    let old = w.dir.path().join("predecessor");
+    fixture(&old);
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+        let report = engine.import(std::slice::from_ref(&old)).unwrap();
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert_eq!(w.texts("legacy"), ["one", "two"]);
+        let id = polylogue_model::BlobHash::of(APPEND).to_string();
+        let reader = engine.reads.reader().unwrap();
+        let progress = reader.input_progress(&id).unwrap().unwrap();
+        assert_eq!(
+            reader
+                .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
+                .unwrap(),
+            APPEND
+        );
+    }
+    std::fs::remove_dir_all(&old).unwrap();
+    polylogue_testkit::delete_index(&w.root);
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert_eq!(w.texts("legacy"), ["one", "two"]);
 }

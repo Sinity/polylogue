@@ -553,7 +553,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         modules: modules!(
             crate::browser_capture::VERSION,
             crate::chatgpt::VERSION,
-            crate::claude_ai::VERSION
+            crate::claude_ai::VERSION,
+            crate::codex_cloud::VERSION,
+            crate::grok::VERSION
         ),
         support: Support::Parsed,
         arrival: Arrival::Spool,

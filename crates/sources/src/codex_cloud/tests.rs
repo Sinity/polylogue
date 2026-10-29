@@ -78,3 +78,35 @@ fn a_cloud_browser_capture_and_codex_export_share_provider_task_and_turn_ids() {
     );
     assert_eq!(captured.output.messages[0].message.text(), "same request");
 }
+
+#[test]
+fn native_capture_accounts_the_payload_once_and_leaves_unused_dom_turns_visible() {
+    let capture = serde_json::json!({"polylogue_capture_kind":"browser_llm_session","schema_version":1,"provenance":{"captured_at":"2026-01-01T00:00:00Z","transport":"native"},"provider_meta":{"adapter":"cloud"},"session":{"provider":"codex-cloud","provider_session_id":"task_e_accounting","turns":[{"role":"user","text":"ignored DOM copy"}]},"raw_provider_payload":{"id":"task_e_accounting","turns":[{"id":"task_e_accounting~usertrn_e_one","role":"user","input_items":[{"content":[{"content_type":"text","text":"native request"}]}]}]}});
+    let step = crate::export::fixture::parse(
+        &mut crate::browser_capture::open(Path::new("capture.json")).unwrap(),
+        &serde_json::to_vec(&capture).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(step.output.messages[0].message.text(), "native request");
+    assert!(
+        !step
+            .counts
+            .unread_fields
+            .keys()
+            .any(|key| key.starts_with("capture.raw_provider_payload.")),
+        "{:?}",
+        step.counts.unread_fields
+    );
+    assert!(
+        step.counts
+            .unread_fields
+            .keys()
+            .any(|key| key.contains("turns") && key.ends_with("text")),
+        "{:?}",
+        step.counts.unread_fields
+    );
+    assert_eq!(
+        step.output.events.last().unwrap().data["provider_meta"]["adapter"],
+        "cloud"
+    );
+}

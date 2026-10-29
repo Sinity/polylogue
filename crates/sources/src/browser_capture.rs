@@ -66,10 +66,41 @@ static CAPTURE_FIELDS: Fields = Fields::new(&[
         "source",
         Rule::Excluded("names the capturing program, always the extension"),
     ),
-    ("provenance", Rule::Read(T::Object)),
-    ("provider_meta", Rule::Read(T::Object)),
+    (
+        "provenance",
+        Rule::Kept("complete browser capture provenance event"),
+    ),
+    ("provenance.captured_at", Rule::Read(T::String)),
+    (
+        "provider_meta",
+        Rule::Kept("complete browser capture provider metadata"),
+    ),
     ("raw_provider_payload", Rule::Read(T::Object)),
     ("session", Rule::Read(T::Object)),
+]);
+
+static NATIVE_SESSION_FIELDS: Fields = Fields::new(&[
+    ("provider", Rule::Read(T::String)),
+    ("attachments", Rule::Read(T::Array)),
+]);
+static TURN_SESSION_FIELDS: Fields = Fields::new(&[
+    ("provider", Rule::Read(T::String)),
+    ("provider_session_id", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("turns", Rule::Read(T::Array)),
+    ("attachments", Rule::Read(T::Array)),
+]);
+static ATTACHMENT_FIELDS: Fields = Fields::new(&[
+    ("content_base64", Rule::Read(T::String)),
+    ("blob", Rule::Read(T::String)),
+    ("size_bytes", Rule::Read(T::Number)),
+    ("provider_attachment_id", Rule::Read(T::String)),
+    ("message_provider_id", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
+    ("mime_type", Rule::Read(T::String)),
+    ("url", Rule::Read(T::String)),
+    ("extracted_content", Rule::Read(T::String)),
+    ("not_fetched", Rule::Read(T::Any)),
 ]);
 
 /// Fields of the extension's normalized turns. Only read when the page
@@ -131,7 +162,6 @@ impl DocumentParser for Capture {
                 );
             }
         };
-        sink.records.fields("capture", &capture, &CAPTURE_FIELDS);
         // `source` names the capturing program (`browser-extension`); the
         // provider whose conversation it is sits in the session.
         let Some(provider) = capture
@@ -155,6 +185,41 @@ impl DocumentParser for Capture {
         let raw = capture
             .get("raw_provider_payload")
             .filter(|r| r.as_object().is_some_and(|o| !o.is_empty()));
+        let native_dispatch = match (origin, raw) {
+            ("chatgpt", Some(raw)) => raw.get("mapping").is_some(),
+            ("claude-ai", Some(raw)) => raw.get("chat_messages").is_some(),
+            ("grok", Some(raw)) => raw.get("responses").is_some(),
+            ("codex-cloud", Some(raw)) => crate::codex_cloud::task_shape(raw),
+            _ => false,
+        };
+        let header = crate::fields::header(
+            &capture,
+            if native_dispatch {
+                &["session", "raw_provider_payload"]
+            } else {
+                &["session"]
+            },
+        );
+        sink.records.fields("capture", &header, &CAPTURE_FIELDS);
+        if let Some(session) = capture.get("session") {
+            let header = crate::fields::header(
+                session,
+                if native_dispatch {
+                    &["attachments"]
+                } else {
+                    &["turns", "attachments"]
+                },
+            );
+            sink.records.fields(
+                "session",
+                &header,
+                if native_dispatch {
+                    &NATIVE_SESSION_FIELDS
+                } else {
+                    &TURN_SESSION_FIELDS
+                },
+            );
+        }
         let first_message = sink.out.messages.len();
         match (origin, raw) {
             ("codex-cloud", Some(raw)) if crate::codex_cloud::task_shape(raw) => {
@@ -405,6 +470,7 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
         .into_iter()
         .flatten()
     {
+        sink.records.fields("attachment", a, &ATTACHMENT_FIELDS);
         let stored = a
             .get("content_base64")
             .and_then(Json::as_str)
