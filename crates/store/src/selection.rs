@@ -250,11 +250,11 @@ impl Reader<'_> {
             .unwrap_or_else(|| target.to_owned());
         let mut program = crate::query::compile(&text, &options)?;
         self.validate_selection(&program)?;
-        let identity_text = if direct.is_some() {
+        let identity_text = if let Some(reference) = &direct {
             format!(
                 "{} where {}",
                 program.unit.name(),
-                reference_atom(direct.as_ref().expect("direct reference"))
+                reference_atom(reference)
             )
         } else {
             target.to_owned()
@@ -293,33 +293,33 @@ impl Reader<'_> {
     }
 
     fn bind_direct_reference(&self, reference: Reference) -> Result<Reference, SelectionError> {
-        if let Reference::Assertion(revision) = &reference {
-            if revision.revision.is_none() {
-                let rows = self.query(
-                    "SELECT id FROM source_note WHERE first_note=?1 ORDER BY id LIMIT 2",
-                    &[SqlValue::Text(revision.root.clone())],
-                )?;
-                match rows.as_slice() {
-                    [row] => {
-                        return Ok(Reference::Assertion(
-                            polylogue_model::RevisionReference::exact(
-                                revision.root.clone(),
-                                row["id"]
-                                    .as_str()
-                                    .ok_or_else(|| {
-                                        invalid("store", "assertion revision has no identity")
-                                    })?
-                                    .into(),
-                            ),
-                        ));
-                    }
-                    [] => return Err(invalid("not_found", "assertion family is unavailable")),
-                    _ => {
-                        return Err(invalid(
-                            "ambiguous",
-                            "assertion family has multiple revisions; name an exact root@revision",
-                        ));
-                    }
+        if let Reference::Assertion(revision) = &reference
+            && revision.revision.is_none()
+        {
+            let rows = self.query(
+                "SELECT id FROM source_note WHERE first_note=?1 ORDER BY id LIMIT 2",
+                &[SqlValue::Text(revision.root.clone())],
+            )?;
+            match rows.as_slice() {
+                [row] => {
+                    return Ok(Reference::Assertion(
+                        polylogue_model::RevisionReference::exact(
+                            revision.root.clone(),
+                            row["id"]
+                                .as_str()
+                                .ok_or_else(|| {
+                                    invalid("store", "assertion revision has no identity")
+                                })?
+                                .into(),
+                        ),
+                    ));
+                }
+                [] => return Err(invalid("not_found", "assertion family is unavailable")),
+                _ => {
+                    return Err(invalid(
+                        "ambiguous",
+                        "assertion family has multiple revisions; name an exact root@revision",
+                    ));
                 }
             }
         }

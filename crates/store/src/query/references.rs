@@ -37,9 +37,7 @@ pub(crate) fn membership(
                 format!("SELECT pk FROM session WHERE id={}", bind(id.to_string()))
             }
             _ => {
-                let Some(messages) = messages else {
-                    return None;
-                };
+                let messages = messages?;
                 format!(
                     "SELECT q.session_pk AS pk FROM ({messages}) q JOIN message m ON m.pk=q.pk WHERE {}",
                     crate::session_sql::own_messages("m", None)
@@ -53,16 +51,12 @@ pub(crate) fn membership(
                 crate::session_sql::own_messages("m", None)
             ),
             _ => {
-                let Some(messages) = messages else {
-                    return None;
-                };
+                let messages = messages?;
                 format!("SELECT pk FROM ({messages})")
             }
         },
         Unit::Blocks | Unit::ToolCalls => {
-            let Some(messages) = messages else {
-                return None;
-            };
+            let messages = messages?;
             let extra = if let Reference::Block { n, .. } = reference {
                 let Ok(n) = i64::try_from(*n) else {
                     return None;

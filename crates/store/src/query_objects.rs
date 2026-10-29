@@ -437,7 +437,9 @@ pub(crate) fn apply_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
     Ok(())
 }
 
-/// A confirmed projection supplies this only when historical coverage proves it.
+/// Fixture coverage states may override this value. Production derives it from
+/// admitted runs and the confirmed projection's historical coverage.
+#[cfg(test)]
 pub(crate) fn set_first_run(
     conn: &Connection,
     question: QuestionId,
