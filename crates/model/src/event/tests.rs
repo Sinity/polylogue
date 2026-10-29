@@ -1,10 +1,11 @@
 use super::*;
 
 #[test]
-fn bound_event_wire_bytes_stay_unchanged_and_unbound_facts_have_no_session() {
+fn unknown_event_time_has_unknown_evidence_and_unbound_facts_have_no_session() {
     let old = r#"{"session":"hermes:native","kind":"observation","data":{"n":7}}"#;
     let event: Event = serde_json::from_str(old).unwrap();
-    assert_eq!(serde_json::to_string(&event).unwrap(), old);
+    assert_eq!(event.time_evidence(), crate::TimeEvidence::UNKNOWN);
+    assert!(event.time_evidence().validate(event.at).is_ok());
     let unbound = Event {
         session: None,
         range: Some((10, 20)),
