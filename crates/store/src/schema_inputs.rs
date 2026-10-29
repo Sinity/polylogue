@@ -43,5 +43,100 @@ impl Reader<'_> {
     }
 }
 
+/// One internal scan page. Pass `next` as `after` unchanged. Pages bound
+/// transfers; callers continue until `next` is absent.
+#[derive(Debug, Clone)]
+pub struct SchemaInputsPage {
+    pub inputs: Vec<InputRevision>,
+    /// Inputs present in the origin whose requested revision is absent,
+    /// retained even when a time bound cannot be evaluated for that revision.
+    pub missing_revisions: Vec<String>,
+    pub next: Option<String>,
+    /// Whole-selection count on the initial page, absent on continuation.
+    /// With `since_ms`, these inputs cannot establish time-bound membership.
+    pub unknown_time_inputs: Option<u64>,
+}
+impl Reader<'_> {
+    /// Select all inputs, or one origin, using receipt observation time.
+    /// Missing times are excluded only when a time bound is requested.
+    pub fn schema_inputs_page(
+        &self,
+        origin: Option<&str>,
+        revision: Option<i64>,
+        since_ms: Option<i64>,
+        after: Option<&str>,
+        page_size: usize,
+    ) -> Result<SchemaInputsPage> {
+        if page_size == 0 {
+            return Err(StoreError::Invalid(
+                "a schema input page must be positive".into(),
+            ));
+        }
+        let conn = self.conn()?;
+        let base = "WITH selected AS (
+          SELECT i.id,i.format,r.number,r.chain,r.length,
+            coalesce((SELECT o.path FROM source_observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1),'') AS path,
+            (SELECT o.seen_at FROM source_observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1) AS observed_at
+          FROM source_input i LEFT JOIN source_revision r ON r.input=i.id
+            AND r.number=coalesce(?2,(SELECT max(newer.number) FROM source_revision newer WHERE newer.input=i.id))
+          WHERE (?1 IS NULL OR i.format=?1))";
+        let unknown_time_inputs = if after.is_none() {
+            let count: i64 = conn.query_row(
+                &format!("{base} SELECT count(*) FROM selected WHERE number IS NOT NULL AND observed_at IS NULL"),
+                params![origin, revision],
+                |row| row.get(0),
+            )?;
+            Some(
+                u64::try_from(count)
+                    .map_err(|_| StoreError::Invalid("negative unknown-time input count".into()))?,
+            )
+        } else {
+            None
+        };
+        let limit = i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX);
+        let mut statement = conn.prepare_cached(&format!(
+            "{base}
+          SELECT id,format,number,chain,length,path FROM selected
+          WHERE (?3 IS NULL OR observed_at>=?3 OR number IS NULL) AND (?4 IS NULL OR id>?4)
+          ORDER BY id LIMIT ?5"
+        ))?;
+        let mut rows = statement.query(params![origin, revision, since_ms, after, limit])?;
+        let mut inputs = Vec::new();
+        let mut missing_revisions = Vec::new();
+        let mut last = None;
+        let mut count = 0;
+        let mut next = None;
+        while let Some(row) = rows.next()? {
+            if count == page_size {
+                next = last;
+                break;
+            }
+            let input: String = row.get(0)?;
+            last = Some(input.clone());
+            count += 1;
+            if let Some(number) = row.get::<_, Option<i64>>(2)? {
+                let length: i64 = row.get(4)?;
+                inputs.push(InputRevision {
+                    input,
+                    format: row.get(1)?,
+                    revision: number,
+                    chain: row.get(3)?,
+                    length: u64::try_from(length)
+                        .map_err(|_| StoreError::Invalid("negative input length".into()))?,
+                    path: row.get(5)?,
+                });
+            } else {
+                missing_revisions.push(input);
+            }
+        }
+        Ok(SchemaInputsPage {
+            inputs,
+            missing_revisions,
+            next,
+            unknown_time_inputs,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests;

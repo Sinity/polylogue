@@ -21,7 +21,8 @@
           0,
           791
         ],
-        "session": "ai-studio:code_execution_prompt"
+        "session": "ai-studio:code_execution_prompt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -39,7 +40,9 @@
           "id": "ai-studio:21:code_execution_prompt#position:1:0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:code_execution_prompt"
+          "session": "ai-studio:code_execution_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -59,7 +62,9 @@
           "session": "ai-studio:code_execution_prompt",
           "attrs": {
             "thinkingBudget": 256
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 149
       },
@@ -83,7 +88,9 @@
           "id": "ai-studio:21:code_execution_prompt#position:1:2",
           "parent": "ai-studio:21:code_execution_prompt#position:1:1",
           "role": "assistant",
-          "session": "ai-studio:code_execution_prompt"
+          "session": "ai-studio:code_execution_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 316
       },
@@ -108,7 +115,9 @@
           "id": "ai-studio:21:code_execution_prompt#position:1:3",
           "parent": "ai-studio:21:code_execution_prompt#position:1:2",
           "role": "assistant",
-          "session": "ai-studio:code_execution_prompt"
+          "session": "ai-studio:code_execution_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 473
       },
@@ -133,7 +142,9 @@
             "input": null,
             "output": 5,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 633
       }
@@ -141,12 +152,15 @@
     "sessions": [
       {
         "id": "ai-studio:code_execution_prompt",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:code_execution_prompt",
         "kind": "main",
-        "started": "2025-02-02T09:00:00Z"
+        "started": "2025-02-02T09:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

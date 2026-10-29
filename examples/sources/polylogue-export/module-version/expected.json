@@ -17,7 +17,8 @@
     "sessions": [
       {
         "id": "claude-code:synthetic",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

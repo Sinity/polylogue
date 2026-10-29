@@ -44,7 +44,9 @@
           1507,
           1697
         ],
-        "session": "claude-code:s4"
+        "session": "claude-code:s4",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "after": "claude-code:p4",
@@ -67,7 +69,8 @@
           1698,
           1833
         ],
-        "session": "claude-code:s4"
+        "session": "claude-code:s4",
+        "at_quality": "unknown"
       },
       {
         "after": "claude-code:p4",
@@ -95,7 +98,9 @@
           1834,
           2078
         ],
-        "session": "claude-code:s4"
+        "session": "claude-code:s4",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [
@@ -124,7 +129,9 @@
           },
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:s4"
+          "session": "claude-code:s4",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -187,7 +194,9 @@
               "type": "tools_changed",
               "cache_missed_input_tokens": 120
             }
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 223
       },
@@ -223,7 +232,9 @@
               "source": "config",
               "reasonType": "mode"
             }
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 905
       },
@@ -248,7 +259,9 @@
           "prompt_kind": "harness",
           "role": "assistant",
           "session": "claude-code:s4",
-          "stop_reason": "stop_sequence"
+          "stop_reason": "stop_sequence",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1180
       }
@@ -259,7 +272,9 @@
         "kind": "main",
         "mode": "bg",
         "started": "2026-09-01T08:00:00Z",
-        "tool_version": "2.2.0"
+        "tool_version": "2.2.0",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

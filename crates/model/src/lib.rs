@@ -29,7 +29,9 @@ mod time;
 mod usage;
 pub mod user;
 mod variant;
-pub use variant::{NewVariant, NewVariantPart, Variant, VariantEffect, VariantKind, VariantPart, VariantRelation};
+pub use variant::{
+    NewVariant, NewVariantPart, Variant, VariantEffect, VariantKind, VariantPart, VariantRelation,
+};
 mod work;
 
 pub use batch::{
@@ -83,3 +85,5 @@ macro_rules! string_schema {
 string_schema!(
     Origin, SessionId, MessageId, DocumentId, BlobHash, Target, Author
 );
+
+pub mod work_products;

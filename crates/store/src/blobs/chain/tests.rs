@@ -57,7 +57,7 @@ impl Fixture {
         let tx = self.conn.unchecked_transaction().unwrap();
         for ((at, length, blob_offset, _), extent) in rows.iter().zip(&group.extents) {
             crate::blobs::insert_extent(&tx, extent).unwrap();
-            tx.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('input',1,?1,?2,?3,?4)",params![*at as i64,*length as i64,extent.hash.0.as_slice(),*blob_offset as i64]).unwrap();
+            tx.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset,commit_seq) VALUES ('input',1,?1,?2,?3,?4,1)",params![*at as i64,*length as i64,extent.hash.0.as_slice(),*blob_offset as i64]).unwrap();
         }
         tx.execute("INSERT INTO segment(name,committed_end) VALUES ('segments/current.hb',?1) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",[group.end as i64]).unwrap();
         tx.commit().unwrap();

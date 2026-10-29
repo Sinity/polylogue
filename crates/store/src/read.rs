@@ -196,6 +196,9 @@ impl ReadPool {
 
     fn connect(&self) -> Result<Connection> {
         let conn = open_read(&self.archive.index_db())?;
+        // Set temp storage before creating views: changing it drops TEMP objects.
+        conn.pragma_update(None, "temp_store", "file")?;
+        conn.pragma_update(Some("temp"), "cache_size", -1024)?;
         if !self.archive.is_primary() {
             let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
             conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;

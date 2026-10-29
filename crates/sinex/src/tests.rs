@@ -122,6 +122,7 @@ fn a_held_part_carries_the_rows_that_place_it() {
         format: "claude-code".into(),
         revision: None,
         extent: Some(Extent {
+            blob_offset: 0,
             chain: 1,
             offset: 40,
             length: 12,

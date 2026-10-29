@@ -6,10 +6,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy)]
-pub enum BlobCatalog { Archive, Projection }
+pub enum BlobCatalog {
+    Archive,
+    Projection,
+}
 impl BlobCatalog {
     fn table(self) -> &'static str {
-        match self { Self::Archive => "blob", Self::Projection => "source_blob" }
+        match self {
+            Self::Archive => "blob",
+            Self::Projection => "source_blob",
+        }
     }
 }
 
@@ -55,9 +61,18 @@ impl Blobs {
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )?);
         }
-        let bytes: Option<Vec<u8>>=slot.as_ref().expect("opened catalog").query_row(
-            &format!("SELECT storage FROM {} WHERE hash=?1",self.layout.table()), [hash.0.as_slice()], |row|row.get(0)).optional()?;
-        bytes.map(|bytes|hashed_blobs::Extent::decode(&bytes).map_err(StoreError::from)).transpose()?
+        let bytes: Option<Vec<u8>> = slot
+            .as_ref()
+            .expect("opened catalog")
+            .query_row(
+                &format!("SELECT storage FROM {} WHERE hash=?1", self.layout.table()),
+                [hash.0.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        bytes
+            .map(|bytes| hashed_blobs::Extent::decode(&bytes).map_err(StoreError::from))
+            .transpose()?
             .ok_or_else(|| StoreError::NotFound(format!("blob {}", BlobHash(hash.0))))
     }
 
@@ -74,7 +89,10 @@ impl Blobs {
     /// Check each committed extent without changing stored bytes.
     pub fn scan(&self) -> Result<Vec<hashed_blobs::Mismatch>> {
         let conn = Connection::open_with_flags(&self.catalog, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let mut statement = conn.prepare(&format!("SELECT storage FROM {} ORDER BY hash",self.layout.table()))?;
+        let mut statement = conn.prepare(&format!(
+            "SELECT storage FROM {} ORDER BY hash",
+            self.layout.table()
+        ))?;
         let mut rows = statement.query([])?;
         let reader = hashed_blobs::Reader::new(&self.root);
         let mut mismatches = Vec::new();

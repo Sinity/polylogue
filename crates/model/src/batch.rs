@@ -30,7 +30,7 @@ pub struct Output {
     /// Explicit session reading order, indexed by message; byte ranges stay local.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_order: BTreeMap<usize, u64>,
-    /// Selected original block positions without redefining a message's source version.
+    /// Selected original block positions retain the original source version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_projections: BTreeMap<usize, crate::bundle::MessageProjection>,
     /// Upserted by [`Link::key`]; parts one file lacks are filled from

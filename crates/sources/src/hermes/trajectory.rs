@@ -197,13 +197,19 @@ impl ExportParser for Trajectory {
                 if let Some(metrics) = facts.fields.get("final_metrics") {
                     data["final_metrics"] = metrics.clone();
                 }
-                output.events.push(Event {
-                    session: None,
-                    kind: "hermes_trajectory".into(),
-                    at: None,
-                    after: None,
-                    range: Some((facts.start, facts.end)),
-                    data,
+                output.events.push({
+                    let (at, time_evidence) = crate::time::parts(None);
+                    Event {
+                        session: None,
+                        kind: "hermes_trajectory".into(),
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        after: None,
+                        range: Some((facts.start, facts.end)),
+                        data,
+                    }
                 });
                 records.record("atif_trajectory", &RecordOutcome::Used);
             } else {
@@ -308,7 +314,11 @@ impl ExportParser for Trajectory {
             .map_err(|e| e.to_string())?,
         );
         let mut document = Document::new(id, DocumentPurpose::Transcript);
-        document.source_time = value.get("timestamp").and_then(crate::time::rfc3339);
+        let (at, evidence) =
+            crate::time::parts(value.get("timestamp").and_then(crate::time::rfc3339));
+        document
+            .set_time(at, evidence)
+            .expect("decoded source time is valid");
         if value.get("timestamp").is_some_and(|v| !v.is_null()) && document.source_time.is_none() {
             limits.push("ATIF RFC3339 time unreadable; time remains unknown");
         }
@@ -370,13 +380,19 @@ impl ExportParser for Trajectory {
             document,
         });
         if !limits.is_empty() {
-            sink.out.events.push(Event {
-                session: None,
-                kind: "hermes_import_diagnostic".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: serde_json::json!({"reason":limits}),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: None,
+                    kind: "hermes_import_diagnostic".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: serde_json::json!({"reason":limits}),
+                }
             });
         }
         let outcome = if limits.is_empty() {

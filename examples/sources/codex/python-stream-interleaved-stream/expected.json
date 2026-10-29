@@ -32,7 +32,9 @@
           "git": {
             "branch": "feature/x"
           }
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {
@@ -43,7 +45,8 @@
           129,
           188
         ],
-        "session": "codex:interleaved-session-1"
+        "session": "codex:interleaved-session-1",
+        "at_quality": "unknown"
       },
       {
         "after": "codex:msg-user-2",
@@ -61,7 +64,9 @@
           1493,
           1638
         ],
-        "session": "codex:interleaved-session-1"
+        "session": "codex:interleaved-session-1",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "after": "codex:msg-user-2",
@@ -75,7 +80,8 @@
           1639,
           1711
         ],
-        "session": "codex:interleaved-session-1"
+        "session": "codex:interleaved-session-1",
+        "at_quality": "unknown"
       },
       {
         "data": {
@@ -88,12 +94,14 @@
           1712,
           1807
         ],
-        "session": "codex:interleaved-session-1"
+        "session": "codex:interleaved-session-1",
+        "at_quality": "unknown"
       },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:interleaved-session-1"
+        "session": "codex:interleaved-session-1",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -111,7 +119,9 @@
           "id": "codex:msg-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 189
       },
@@ -135,7 +145,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "unknown"
         },
         "offset": 389
       },
@@ -156,7 +167,8 @@
           "id": "codex:interleaved-session-1@544",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "unknown"
         },
         "offset": 544
       },
@@ -175,7 +187,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 649
       },
@@ -199,7 +213,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "unknown"
         },
         "offset": 842
       },
@@ -219,7 +234,8 @@
           "id": "codex:interleaved-session-1@995",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "unknown"
         },
         "offset": 995
       },
@@ -238,7 +254,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1109
       },
@@ -255,7 +273,9 @@
           "id": "codex:msg-user-2",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:interleaved-session-1"
+          "session": "codex:interleaved-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 1321
       }
@@ -268,7 +288,9 @@
         "git_branch": "feature/x",
         "id": "codex:interleaved-session-1",
         "kind": "main",
-        "started": "2025-01-15T12:00:00Z"
+        "started": "2025-01-15T12:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

@@ -105,7 +105,11 @@ fn each_invocation_carries_its_own_time_and_process() {
     let [first, second] = &step.output.events[..] else {
         panic!("{:?}", step.output.events)
     };
-    assert_eq!(first.at, second.at, "both fall in one millisecond");
+    assert_ne!(
+        first.at, second.at,
+        "native nanosecond observations remain distinct"
+    );
+    assert_eq!(first.at.unwrap().unix_ms(), second.at.unwrap().unix_ms());
     assert_eq!(first.data["at_ns"], "1792400000123456789");
     assert_eq!(second.data["at_ns"], "1792400000123456790");
     assert_eq!(first.data["harness_pid"], 4242);
@@ -136,4 +140,21 @@ fn native_work_evidence_keeps_its_exact_hook_record_range_and_unknowns() {
         json!(["optional observation unavailable"])
     );
     assert!(step.output.sessions.is_empty());
+}
+
+#[test]
+fn native_nanosecond_observation_keeps_quality_and_missing_clock_stays_unknown() {
+    use polylogue_model::{Precision, TimeQuality};
+    let input = lines(&[
+        json!({"event_type":"Stop","provider":"codex","session_id":"s","at_ns":"1792400000123456789"}),
+        json!({"event_type":"Stop","provider":"codex","session_id":"s"}),
+    ]);
+    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let event = &step.output.events[0];
+    assert_eq!(event.at.unwrap().unix_ns(), 1792400000123456789);
+    assert_eq!(event.at_quality, TimeQuality::Captured);
+    assert_eq!(event.at_precision, Some(Precision::Instant));
+    assert_eq!(event.data["at_ns"], "1792400000123456789");
+    assert_eq!(step.output.events[1].at, None);
+    assert_eq!(step.output.events[1].at_quality, TimeQuality::Unknown);
 }

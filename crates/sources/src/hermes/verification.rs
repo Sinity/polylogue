@@ -92,21 +92,28 @@ impl ExportParser for Verification {
             && value["r"].get(field).is_some_and(|v| !v.is_null())
             && at.is_none()
         {
-            sink.out.events.push(Event {
-                session: None, kind: "hermes_import_diagnostic".into(), at: None, after: None, range: None,
+            sink.out.events.push({ let (at,time_evidence)=crate::time::parts(None); Event {
+                session: None, kind: "hermes_import_diagnostic".into(),
+ at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until, after: None, range: None,
                 data: serde_json::json!({"field":field,"reason":"verification RFC3339 time unreadable; time remains unknown"}),
-            });
+            } });
         }
         // Preserve status, exit code and changed_paths_json as supplied. Missing
         // or future values do not become a tool outcome or an empty path list.
         sink.records.record(table, &RecordOutcome::Used);
-        sink.out.events.push(Event {
-            session: None,
-            kind: kind.into(),
-            at,
-            after: None,
-            range: None,
-            data: value,
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(at);
+            Event {
+                session: None,
+                kind: kind.into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: value,
+            }
         });
         Ok(())
     }

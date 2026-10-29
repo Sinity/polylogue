@@ -4,7 +4,7 @@ use super::*;
 fn every_schema_applies_to_an_empty_database() {
     for (name, create) in [
         ("archive", ensure_archive as fn(&Connection) -> Result<()>),
-        ("sinex", ensure_sinex),
+        ("primary", ensure_primary_index),
         ("index", ensure_index),
         ("embeddings", ensure_embeddings),
     ] {

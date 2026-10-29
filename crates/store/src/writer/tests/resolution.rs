@@ -439,7 +439,10 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
     let tx = index.transaction().unwrap();
     readings[0]
         .3
-        .visit(|step| rows::write_confirmed_rows(&tx, &input, step, 41, 1, None).map(|_| ()))
+        .visit(|step| {
+            rows::write_confirmed_rows(&tx, &input, step, 41, 1, None, Some(&fixture_receipt()))
+                .map(|_| ())
+        })
         .unwrap();
     tx.commit().unwrap();
     let (chain, position): (i64, i64) = index
@@ -629,7 +632,6 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     tx.commit().unwrap();
 }
 
-
 fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
     [
         ("source-a", 1, 0u8, "partial", None, "/first"),
@@ -672,7 +674,9 @@ fn apply_confirmed_readings(
             parse: Vec::new(),
             release: InFlight::default(),
         };
-        reading.visit(|step| write_rows(&tx, &batch, step, *chain, 1, None).map(|_| ()))?;
+        reading.visit(|step| {
+            write_rows(&tx, &batch, step, *chain, 1, None, Some(&fixture_receipt())).map(|_| ())
+        })?;
     }
     tx.commit()?;
     Ok(())
@@ -952,7 +956,16 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
             .unwrap(),
         0
     );
-    rows::write_confirmed_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
+    rows::write_confirmed_rows(
+        &tx,
+        &input,
+        &input.parse[0],
+        1,
+        1,
+        None,
+        Some(&fixture_receipt()),
+    )
+    .unwrap();
     assert_eq!(
         tx.query_row("SELECT parsed_upto FROM parse_state", [], |r| r
             .get::<_, i64>(0))

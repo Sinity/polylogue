@@ -27,7 +27,8 @@
           3,
           1234
         ],
-        "session": "chatgpt:native-occurrences"
+        "session": "chatgpt:native-occurrences",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -55,7 +56,9 @@
           "session": "chatgpt:native-occurrences",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -82,7 +85,9 @@
           "session": "chatgpt:native-occurrences",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -94,7 +99,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic attachment occurrences"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }
