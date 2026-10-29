@@ -27,6 +27,9 @@ pub struct Output {
     /// Canonical fact subsets keep these positions when earlier facts are hidden.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub event_ids: BTreeMap<usize, String>,
+    /// Immutable admission of confirmed event facts, independent of raw source availability.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub event_receipts: BTreeMap<usize, u64>,
     /// Explicit session reading order, indexed by message; byte ranges stay local.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_order: BTreeMap<usize, u64>,
