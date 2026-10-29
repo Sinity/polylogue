@@ -20,7 +20,6 @@ polylogue-testkit = { path = "crates/testkit" }
 query-language = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 credential-masking = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
-query-language = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"] }
