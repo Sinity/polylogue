@@ -1,10 +1,14 @@
 //! Shared logical-day composition for timeline, day and cost clients.
 use super::query::{self, Failure};
-use base64::Engine as _;
 use polylogue_store::{Reader, timeline};
-use query_language::time::{Clock, ClockWire};
-use serde::{Deserialize, Serialize};
+use query_language::cursor::{
+    Continuation, CursorContext, CursorSeal, OrderPosition, SealedCursor,
+};
+use query_language::identity::QuestionId;
+use query_language::time::Clock;
+use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 fn invalid(message: impl Into<String>) -> Failure {
     Failure {
@@ -26,78 +30,187 @@ fn date(text: Option<&str>, clock: &Clock) -> Result<jiff::civil::Date, Failure>
     )
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    clock: ClockWire,
-    context: Value,
-    after: timeline::Position,
+fn cursor_failure(error: query_language::Error) -> Failure {
+    Failure {
+        kind: error.kind.code().into(),
+        message: error.to_string(),
+        detail: serde_json::to_value(error).ok(),
+    }
 }
-
-fn cursor(text: &str) -> Result<Cursor, Failure> {
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text)
-        .map_err(|_| invalid("invalid timeline cursor"))?;
-    serde_json::from_slice(&bytes).map_err(|_| invalid("invalid timeline cursor"))
+fn fingerprint(domain: &str, value: &impl Serialize) -> Result<blake3::Hash, Failure> {
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"polylogue.calendar.cursor-context.v1\0");
+    digest.update(domain.as_bytes());
+    digest.update(b"\0");
+    serde_json::to_writer(&mut digest, value).map_err(|error| invalid(error.to_string()))?;
+    Ok(digest.finalize())
 }
-
-fn clock(text: Option<&str>, owner: &Clock) -> Result<Clock, Failure> {
-    let Some(cursor) = text.map(cursor).transpose()? else {
-        return Ok(owner.clone());
+struct Paging {
+    seal: CursorSeal,
+    context: CursorContext,
+    after: Option<timeline::Position>,
+    resuming: bool,
+}
+fn paging(
+    reader: &Reader<'_>,
+    owner: &Clock,
+    cursor: Option<&str>,
+    semantic: &Value,
+    binding: &Value,
+) -> Result<Paging, Failure> {
+    let question = QuestionId(*fingerprint("question", semantic)?.as_bytes());
+    let binding = fingerprint("binding", binding)?.to_hex().to_string();
+    let position = reader.change_position()?;
+    let file = reader.index_identity()?;
+    let file = format!("{}:{}", file.0, file.1);
+    let seal = CursorSeal::new(reader.cursor_key()?);
+    let continuation = cursor
+        .map(|text| {
+            seal.open(
+                &SealedCursor::from_wire(text),
+                question,
+                |name| {
+                    if name == owner.day.zone_name() {
+                        Ok(owner.day.zone().clone())
+                    } else {
+                        Err(query_language::Error::new(
+                            query_language::ErrorKind::StaleCursor,
+                            "the owner day changed",
+                            0,
+                        ))
+                    }
+                },
+                |context| {
+                    context.clock.day == owner.day
+                        && context.versions.get("domain").map(String::as_str) == Some("calendar-v1")
+                        && context.versions.get("binding") == Some(&binding)
+                        && context.read_positions.get("generation") == Some(&position.generation)
+                        && context.read_positions.get("index_file") == Some(&file)
+                        && context
+                            .read_positions
+                            .get("index")
+                            .and_then(|value| value.parse::<i64>().ok())
+                            .is_some_and(|value| value <= position.index)
+                        && context
+                            .read_positions
+                            .get("archive")
+                            .and_then(|value| value.parse::<i64>().ok())
+                            .is_some_and(|value| value <= position.archive)
+                },
+            )
+        })
+        .transpose()
+        .map_err(cursor_failure)?;
+    let resuming = continuation.is_some();
+    let (context, after) = match continuation {
+        Some(cursor) => {
+            let [position] = cursor.after.values.as_slice() else {
+                return Err(invalid("the calendar cursor position is invalid"));
+            };
+            if cursor.after.row_identity != position.to_string() {
+                return Err(invalid("the calendar cursor row identity is invalid"));
+            }
+            (
+                cursor.context,
+                Some(
+                    serde_json::from_value(position.clone())
+                        .map_err(|error| invalid(error.to_string()))?,
+                ),
+            )
+        }
+        None => (
+            CursorContext {
+                question,
+                clock: owner.clone(),
+                resolved_times: vec![],
+                random_seed: 0,
+                read_positions: BTreeMap::from([
+                    ("generation".into(), position.generation),
+                    ("index_file".into(), file),
+                    ("index".into(), position.index.to_string()),
+                    ("archive".into(), position.archive.to_string()),
+                ]),
+                versions: BTreeMap::from([
+                    ("domain".into(), "calendar-v1".into()),
+                    ("binding".into(), binding),
+                ]),
+            },
+            None,
+        ),
     };
-    if cursor.clock.day != owner.day.wire() {
+    Ok(Paging {
+        seal,
+        context,
+        after,
+        resuming,
+    })
+}
+fn resolved(
+    paging: &mut Paging,
+    values: Vec<query_language::time::ResolvedTime>,
+) -> Result<(), Failure> {
+    if paging.resuming && paging.context.resolved_times != values {
         return Err(Failure {
             kind: "stale_cursor".into(),
-            message: "the configured logical day changed; run without the cursor".into(),
+            message: "the resolved calendar times changed; run without the cursor".into(),
             detail: None,
         });
     }
-    cursor
-        .clock
-        .resolve(owner.day.zone().clone())
-        .map_err(|error| invalid(error.to_string()))
+    paging.context.resolved_times = values;
+    Ok(())
 }
-
+fn resolve(text: &str, clock: &Clock) -> Result<query_language::time::ResolvedTime, Failure> {
+    query_language::time::resolve(text, clock).map_err(cursor_failure)
+}
+fn ranking(paging: &mut Paging, program: &polylogue_store::query::Program) -> Result<(), Failure> {
+    let current = program
+        .near
+        .as_ref()
+        .map(|_| polylogue_store::vectors::writes().to_string());
+    if paging.resuming && paging.context.versions.get("ranking") != current.as_ref() {
+        return Err(Failure {
+            kind: "stale_cursor".into(),
+            message: "the ranking changed; run without the cursor".into(),
+            detail: None,
+        });
+    }
+    if let Some(current) = current {
+        paging.context.versions.insert("ranking".into(), current);
+    }
+    Ok(())
+}
 fn activity(
     reader: &Reader<'_>,
-    clock: &Clock,
     selection: &timeline::Selection<'_>,
-    context: Value,
-    cursor: Option<&str>,
+    paging: &Paging,
     size: Option<u64>,
 ) -> Result<Value, Failure> {
-    let context = json!(
-        blake3::hash(context.to_string().as_bytes())
-            .to_hex()
-            .to_string()
-    );
     let size = size.unwrap_or(50);
     if size == 0 {
         return Err(invalid("page size must be positive"));
     }
-    let cursor: Option<Cursor> = cursor.map(self::cursor).transpose()?;
-    if cursor.as_ref().is_some_and(|c| c.context != context) {
-        return Err(invalid(
-            "cursor belongs to a different selection, logical day or index generation",
-        ));
-    }
     let mut result = timeline::page(
         reader,
-        clock,
+        &paging.context.clock,
         selection,
-        cursor.as_ref().map(|c| &c.after),
+        paging.after.as_ref(),
         size,
     )?;
-    result["next"] = match result.get("after").filter(|a| !a.is_null()) {
+    result["next"] = match result.get("after").filter(|value| !value.is_null()) {
         Some(after) => {
-            let cursor = Cursor {
-                clock: clock.wire(),
-                context,
-                after: serde_json::from_value(after.clone()).map_err(|e| invalid(e.to_string()))?,
+            let continuation = Continuation {
+                context: paging.context.clone(),
+                after: OrderPosition {
+                    values: vec![after.clone()],
+                    row_identity: after.to_string(),
+                },
             };
             json!(
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .encode(serde_json::to_vec(&cursor).map_err(|e| invalid(e.to_string()))?)
+                paging
+                    .seal
+                    .seal(&continuation)
+                    .map_err(cursor_failure)?
+                    .as_str()
             )
         }
         None => Value::Null,
@@ -126,17 +239,17 @@ pub fn timeline(
         cursor,
         page_size: size,
     } = options;
-    let clock = clock(cursor, owner)?;
+    let mut paging = paging(
+        reader,
+        owner,
+        cursor,
+        &json!(["timeline", text, across_years, undated]),
+        &json!(["timeline"]),
+    )?;
+    let clock = paging.context.clock.clone();
     let day = &clock.day;
     let date = date(text, &clock)?;
-    let context = json!([
-        "timeline",
-        date.to_string(),
-        across_years,
-        undated,
-        day,
-        reader.change_position()?.generation
-    ]);
+    resolved(&mut paging, vec![resolve(text.unwrap_or("today"), &clock)?])?;
     let selected = timeline::Selection {
         date: Some(date),
         across_years,
@@ -145,7 +258,7 @@ pub fn timeline(
         model: None,
         unknown_model: false,
     };
-    let activity = activity(reader, &clock, &selected, context, cursor, size)?;
+    let activity = activity(reader, &selected, &paging, size)?;
     let counts = timeline::calendar(reader, &clock, date)?;
     let mut calendar = Vec::new();
     let mut cell = date.first_of_month();
@@ -208,7 +321,23 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Val
         cursor,
         page_size: size,
     } = options;
-    let clock = clock(cursor, owner)?;
+    let (plan, mut query_options) = query::prepare_usage(reader, scope, owner, embeddings)?;
+    let mut paging = paging(
+        reader,
+        owner,
+        cursor,
+        &json!([
+            "cost",
+            plan.question_id(),
+            text,
+            model,
+            undated,
+            unknown_model
+        ]),
+        &json!(["cost", month, embeddings, plan.definitions()]),
+    )?;
+    let clock = paging.context.clock.clone();
+    query_options.clock = clock.clone();
     let day = &clock.day;
     let now = clock.now.as_millisecond();
     if undated && text.is_some() {
@@ -229,24 +358,23 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Val
     if month_bounds.1 <= month_bounds.0 {
         return Err(invalid("calendar month has no representable interval"));
     }
-    let (mut selection, question) =
-        query::usage_selection(reader, scope, &clock, embeddings, near)?;
+    let program = polylogue_store::query::lower(&plan, &query_options)?;
+    let mut times = program.resolved_times.clone();
+    if let Some(date) = chosen {
+        times.push(resolve(&date.to_string(), &clock)?);
+    }
+    times.push(resolve(
+        &format!("{:04}-{:02}", month.year(), month.month()),
+        &clock,
+    )?);
+    resolved(&mut paging, times)?;
+    ranking(&mut paging, &program)?;
+    let mut selection = query::select_usage(reader, &program, near)?;
     selection.undated = undated;
     if let Some((since, until)) = bounds {
         selection.since = Some(since);
         selection.until = Some(until);
     }
-    let context = json!([
-        "cost",
-        scope,
-        text,
-        model,
-        undated,
-        unknown_model,
-        question,
-        day,
-        reader.change_position()?.generation
-    ]);
     let selected = timeline::Selection {
         date: None,
         across_years: false,
@@ -255,7 +383,7 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Val
         model,
         unknown_model,
     };
-    let responses = activity(reader, &clock, &selected, context, cursor, size)?;
+    let responses = activity(reader, &selected, &paging, size)?;
     let (days, days_error) = match timeline::costs_by_day(reader, &clock, month, &selection) {
         Ok(days) => (json!(days), Value::Null),
         Err(error) => (

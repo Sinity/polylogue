@@ -217,10 +217,11 @@ pub fn prepare(
     reader: &Reader<'_>,
     ask: &Ask,
     delivery_id: &str,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
     near: Option<&NearFn<'_>>,
     check_history: &Path,
 ) -> Result<Prepared, StoreError> {
+    let now: Timestamp = clock.now.into();
     match ask {
         Ask::SessionStart {
             cwd,
@@ -232,10 +233,10 @@ pub fn prepare(
             session.as_ref(),
             *source,
             delivery_id,
-            now,
+            clock,
             check_history,
         ),
-        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, now),
+        Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, clock),
         Ask::Recall {
             text, cwd, cursor, ..
         } => recall(
@@ -244,7 +245,7 @@ pub fn prepare(
             cwd.as_deref(),
             cursor.as_deref(),
             delivery_id,
-            now,
+            clock,
             near,
         ),
         Ask::ToolUse {
@@ -262,8 +263,9 @@ fn operator_notes(
     reader: &Reader<'_>,
     targets: Vec<Reference>,
     after_seq: Option<i64>,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
 ) -> Result<Vec<Note>, StoreError> {
+    let now: Timestamp = clock.now.into();
     let kinds = [
         NoteKind::Lesson,
         NoteKind::Handoff,
@@ -280,7 +282,7 @@ fn operator_notes(
     if let Some(after) = after_seq {
         conditions.push_str(&format!(" write_counter:>{after}"));
     }
-    let notes = notes::list(reader, &conditions, now)?;
+    let notes = notes::list(reader, &conditions, clock)?;
     Ok(notes.into_iter().filter(|n| !n.expired_at(now)).collect())
 }
 
@@ -288,12 +290,12 @@ fn operator_notes(
 fn unjudged_agent_notes(
     reader: &Reader<'_>,
     targets: &[Reference],
-    now: Timestamp,
+    clock: &query_language::time::Clock,
 ) -> Result<u64, StoreError> {
     notes::count(
         reader,
         &format!("{} agent:true judged:unknown", notes::about(targets)),
-        now,
+        clock,
     )
 }
 
@@ -435,7 +437,7 @@ fn live_here(
     reader: &Reader<'_>,
     dirs: &[String],
     me: Option<&SessionId>,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
 ) -> Result<Vec<Item>, StoreError> {
     let places: Vec<String> = dirs
         .iter()
@@ -463,8 +465,7 @@ fn live_here(
                 page_size: None,
                 why: false,
                 session: None,
-                now: now.unix_ms(),
-                day: None,
+                clock: clock.clone(),
                 embeddings: false,
                 near: None,
                 fields: &fields,
@@ -616,9 +617,10 @@ fn session_start(
     session: Option<&SessionId>,
     source: StartSource,
     delivery_id: &str,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
     check_history: &Path,
 ) -> Result<Prepared, StoreError> {
+    let now: Timestamp = clock.now.into();
     let dirs = scope_dirs(cwd);
     let here = cwd.display().to_string();
     let mut targets: Vec<Reference> = dirs.iter().map(|d| Reference::Cwd(d.clone())).collect();
@@ -653,7 +655,7 @@ fn session_start(
         reader,
         targets.clone(),
         previous.as_ref().map(|p| p.seq),
-        now,
+        clock,
     )?;
 
     let mut header = format!("Polylogue brief for {here} (delivery {delivery_id})\n");
@@ -698,7 +700,7 @@ fn session_start(
     );
     fit.section(
         "Other agents working here now:",
-        live_here(reader, &dirs, session, now)?,
+        live_here(reader, &dirs, session, clock)?,
         "live sessions",
         "polylogue live",
     );
@@ -816,7 +818,7 @@ fn session_start(
         .collect();
     fit.section("Signal notices:", notices, "notices", "polylogue notices");
 
-    let agent_notes = unjudged_agent_notes(reader, &targets, now)?;
+    let agent_notes = unjudged_agent_notes(reader, &targets, clock)?;
     if agent_notes > 0 {
         fit.left_out.push(LeftOut {
             what: format!("{agent_notes} agent-written notes"),
@@ -854,7 +856,7 @@ fn takeover(
     reader: &Reader<'_>,
     session: &SessionId,
     delivery_id: &str,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
 ) -> Result<Prepared, StoreError> {
     let id = session.to_string();
     let Some(s) = reader.session(session)? else {
@@ -885,7 +887,7 @@ fn takeover(
             "{} agent:false",
             notes::about(&[Reference::Session(session.clone())])
         ),
-        now,
+        clock,
     )?;
     let open_items = reader.open_items(&id)?.unwrap_or_default();
 
@@ -1018,7 +1020,7 @@ fn recall(
     cwd: Option<&Path>,
     cursor: Option<&str>,
     delivery_id: &str,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
     near: Option<&NearFn<'_>>,
 ) -> Result<Prepared, StoreError> {
     let words = search::words(text_in);
@@ -1039,8 +1041,7 @@ fn recall(
                 page_size: Some(RECALL_PAGE),
                 why: false,
                 session: None,
-                now: now.unix_ms(),
-                day: None,
+                clock: clock.clone(),
                 embeddings: similarity,
                 near: if similarity { near } else { None },
                 fields: &[],
@@ -1163,7 +1164,7 @@ fn recall(
         let notes = notes::list(
             reader,
             &notes::about(&[Reference::Session(id.clone())]),
-            now,
+            clock,
         )?;
         for n in notes {
             let body = n.value.as_deref().unwrap_or("").trim();

@@ -20,7 +20,7 @@ impl Default for EncodeOptions {
         Self {
             standalone_html: false,
             model_facing: false,
-            inline_image_bytes: 10 * 1024 * 1024,
+            inline_image_bytes: crate::html::DEFAULT_INLINE_IMAGE_BYTES,
         }
     }
 }
@@ -312,6 +312,7 @@ impl<'a> Encoder<'a> {
                 availability,
                 link,
                 inline_bytes: _,
+                open,
             } => {
                 self.line(&format!(
                     "▣ {} ({}, {}) · supplied by {} · {}",
@@ -329,6 +330,9 @@ impl<'a> Encoder<'a> {
                 ))?;
                 if let Some(link) = link.as_deref().filter(|link| html::safe_url(link)) {
                     self.line(link)?;
+                }
+                if let Some(open) = open {
+                    self.line(&open.cli)?;
                 }
             }
             ItemKind::Other { type_name, data } => {

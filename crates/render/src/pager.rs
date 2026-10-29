@@ -48,6 +48,7 @@ pub struct PageBuilder {
     start: Option<ReadPosition>,
     next: Option<ReadPosition>,
     full: bool,
+    boundaries: Vec<ReadPosition>,
 }
 impl PageBuilder {
     pub fn new(
@@ -71,9 +72,11 @@ impl PageBuilder {
             start,
             next: None,
             full: false,
+            boundaries: vec![],
         })
     }
-    /// `record` and `ordinal` describe the canonical input record, separately
+    /// `record` is the producer's stable transfer identity (a canonical record
+    /// reference or prepared presentation-row identity). `ordinal` is separate
     /// from a paired item's displayed source reference.
     pub fn push_at(
         &mut self,
@@ -104,7 +107,11 @@ impl PageBuilder {
         };
         let encoded = crate::encode::json_bytes(&item)
             .map_err(|e| PageError::Serialization(e.to_string()))?;
-        let cost = estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64;
+        let cost = if matches!(&item.kind,ItemKind::Text {text} if text.is_empty()) {
+            0
+        } else {
+            estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64
+        };
         if from == 0
             && self.items.len() < self.budget.items.get()
             && self.bytes + encoded.len() <= self.budget.bytes.get()
@@ -112,6 +119,11 @@ impl PageBuilder {
         {
             self.bytes += encoded.len();
             self.tokens += cost;
+            self.boundaries.push(ReadPosition {
+                reference: record.into(),
+                item: ordinal,
+                character: from,
+            });
             self.items.push(item);
             self.start = None;
             return Ok(Push::Accepted);
@@ -149,12 +161,21 @@ impl PageBuilder {
                 total: total as u64,
             },
         };
+        let payload_cost = |text: &str| -> Result<u64, PageError> {
+            let encoded = crate::encode::json_bytes(&text)
+                .map_err(|e| PageError::Serialization(e.to_string()))?;
+            Ok(estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64)
+        };
+        let minimum = payload_cost(&text[boundaries[from]..boundaries[from + 1]])?;
+        let token_limit = self.budget.tokens.get().max(minimum);
         let fits = |candidate: &ReadItem| -> Result<bool, PageError> {
             let json = crate::encode::json_bytes(candidate)
-                .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
                 .map_err(|e| PageError::Serialization(e.to_string()))?;
+            let ItemKind::Fragment { text, .. } = &candidate.kind else {
+                unreachable!("fragment candidate")
+            };
             Ok(self.bytes + json.len() <= self.budget.bytes.get()
-                && estimate_tokens(&json) as u64 <= self.budget.tokens.get())
+                && payload_cost(text)? <= token_limit)
         };
         if !fits(&make(from + 1))? {
             return Err(PageError::MetadataTooLarge);
@@ -174,6 +195,11 @@ impl PageBuilder {
             .map_err(|e| PageError::Serialization(e.to_string()))?;
         self.bytes += json.len();
         self.tokens += estimate_tokens(&json) as u64;
+        self.boundaries.push(ReadPosition {
+            reference: record.into(),
+            item: ordinal,
+            character: from as u64,
+        });
         self.items.push(fragment);
         self.start = None;
         if lo < total {
@@ -181,6 +207,89 @@ impl PageBuilder {
             Ok(Push::Full)
         } else {
             Ok(Push::Accepted)
+        }
+    }
+    /// Build follow-ups only for the final boundary. Large footer metadata can
+    /// reduce this page; every retry receives the corresponding unread position.
+    /// The callback seals cursors in the product; the renderer does no I/O.
+    pub fn finish_with(
+        mut self,
+        mut footer: impl FnMut(Option<&ReadPosition>) -> Result<ReadFooter, PageError>,
+    ) -> Result<ReadDocument, PageError> {
+        loop {
+            let mut footer = footer(self.next.as_ref())?;
+            footer.position = self.next.clone();
+            footer.shown = self.items.len() as u64;
+            footer.estimator = Some(TOKEN_ESTIMATOR.into());
+            let document = ReadDocument {
+                header: self.header.clone(),
+                items: self.items.clone(),
+                footer,
+            };
+            let size = crate::encode::json_bytes(&document)
+                .map_err(|e| PageError::Serialization(e.to_string()))?
+                .len();
+            if size <= self.budget.bytes.get() {
+                return Ok(document);
+            }
+            if self.items.len() > 1 {
+                self.items.pop();
+                self.next = self.boundaries.pop();
+                continue;
+            }
+            let Some(item) = self.items.first_mut() else {
+                return Err(PageError::MetadataTooLarge);
+            };
+            let boundary = self
+                .boundaries
+                .first()
+                .expect("accepted item has a boundary");
+            let (encoding, text, from, total) = match &item.kind {
+                ItemKind::Fragment {
+                    encoding,
+                    text,
+                    from,
+                    total,
+                    ..
+                } => (*encoding, text.clone(), *from, *total),
+                ItemKind::Text { text } => (
+                    FragmentEncoding::Text,
+                    text.clone(),
+                    0,
+                    text.chars().count() as u64,
+                ),
+                _ => {
+                    let text = String::from_utf8(
+                        crate::encode::json_bytes(item)
+                            .map_err(|e| PageError::Serialization(e.to_string()))?,
+                    )
+                    .expect("JSON is UTF-8");
+                    let total = text.chars().count() as u64;
+                    (FragmentEncoding::ReadItemJson, text, 0, total)
+                }
+            };
+            let count = text.chars().count();
+            if count <= 1 {
+                return Err(PageError::MetadataTooLarge);
+            }
+            let keep = count.div_ceil(2);
+            let until = from + keep as u64;
+            let end = text
+                .char_indices()
+                .nth(keep)
+                .map_or(text.len(), |(index, _)| index);
+            item.kind = ItemKind::Fragment {
+                encoding,
+                text: text[..end].into(),
+                from,
+                until,
+                total,
+            };
+            self.next = Some(ReadPosition {
+                reference: boundary.reference.clone(),
+                item: boundary.item,
+                character: until,
+            });
         }
     }
     fn stop(&mut self, record: &str, item: u64, character: u64) {

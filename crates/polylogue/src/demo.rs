@@ -35,9 +35,14 @@ struct Tour {
     transcript: String,
 }
 
-pub fn tour(_: &Command, values: &Values, startup:&crate::config::Startup,json: bool) -> ExitCode {
+pub fn tour(
+    _: &Command,
+    values: &Values,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     let directory = values.text("directory").unwrap_or_default();
-    match run(Path::new(&directory),startup) {
+    match run(Path::new(&directory), startup) {
         Ok(tour) => {
             if json {
                 println!(
@@ -56,7 +61,7 @@ pub fn tour(_: &Command, values: &Values, startup:&crate::config::Startup,json: 
     }
 }
 
-fn run(directory: &Path,startup:&crate::config::Startup) -> Result<Tour, String> {
+fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, String> {
     let preparing = Instant::now();
     // Creation is exclusive: a tour never changes an existing directory.
     fs::create_dir(directory).map_err(|e| format!("create a new tour directory: {e}"))?;
@@ -69,26 +74,29 @@ fn run(directory: &Path,startup:&crate::config::Startup) -> Result<Tour, String>
         fs::write(path, bytes).map_err(|e| e.to_string())?;
     }
     let config = Config {
-        clock:startup.clock.clone(),
+        clock: startup.clock.clone(),
         home,
         tool_dirs: Default::default(),
         workers: 2,
         reader_memory_bytes: 64 << 20,
         bytes_in_flight: 64 << 20,
-        machine:startup.engine.machine.clone(),
-        host:startup.engine.host.clone(),
+        machine: startup.engine.machine.clone(),
+        host: startup.engine.host.clone(),
         chunk: 64 << 20,
         rescan_every: Duration::from_secs(60),
         live_every: Duration::from_secs(2),
     };
-    let day=query_language::time::DaySetting::new(jiff::tz::TimeZone::UTC,jiff::civil::Time::constant(0,0,0,0)).map_err(|e|e.to_string())?;
-    let deployment=startup.config.standalone_for_archive(directory.join("archive"),day).map_err(|e|e.to_string())?;
-    let mut runtime = service::start(
-        deployment,
-        config,
-        service::ArchiveMode::Standalone,
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(0, 0, 0, 0),
     )
     .map_err(|e| e.to_string())?;
+    let deployment = startup
+        .config
+        .standalone_for_archive(directory.join("archive"), day)
+        .map_err(|e| e.to_string())?;
+    let mut runtime = service::start(deployment, config, service::ArchiveMode::Standalone)
+        .map_err(|e| e.to_string())?;
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =
             commands::command(command).ok_or_else(|| format!("no command {command}"))?;
@@ -100,9 +108,9 @@ fn run(directory: &Path,startup:&crate::config::Startup) -> Result<Tour, String>
                 .ok_or("arguments must be an object")?
                 .clone(),
         )?;
-        let build=match declaration.action {
-            Action::Request(build)|Action::Stream{build,..}=>build,
-            _=>return Err(format!("{command} must use the daemon")),
+        let build = match declaration.action {
+            Action::Request(build) | Action::Stream { build, .. } => build,
+            _ => return Err(format!("{command} must use the daemon")),
         };
         let request = build(
             declaration,

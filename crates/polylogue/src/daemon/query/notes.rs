@@ -3,17 +3,17 @@
 //! by the same rules everywhere.
 
 use super::{Ask, run};
-use polylogue_model::{Note, Reference, Timestamp};
+use polylogue_model::{Note, Reference};
 use polylogue_store::{Reader, StoreError};
 
 /// Every note `notes where CONDITIONS` lists, newest first.
 pub fn list(
     reader: &Reader<'_>,
     conditions: &str,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
 ) -> Result<Vec<Note>, StoreError> {
     let mut notes = Vec::new();
-    for id in ids(reader, conditions, now)? {
+    for id in ids(reader, conditions, clock)? {
         if let Some(note) = reader.note(&id)? {
             notes.push(note);
         }
@@ -22,8 +22,12 @@ pub fn list(
 }
 
 /// How many notes `notes where CONDITIONS` lists.
-pub fn count(reader: &Reader<'_>, conditions: &str, now: Timestamp) -> Result<u64, StoreError> {
-    let page = page(reader, &text(conditions), None, now)?;
+pub fn count(
+    reader: &Reader<'_>,
+    conditions: &str,
+    clock: &query_language::time::Clock,
+) -> Result<u64, StoreError> {
+    let page = page(reader, &text(conditions), None, clock)?;
     Ok(page["count"].as_u64().unwrap_or(0))
 }
 
@@ -47,12 +51,16 @@ fn text(conditions: &str) -> String {
     }
 }
 
-fn ids(reader: &Reader<'_>, conditions: &str, now: Timestamp) -> Result<Vec<String>, StoreError> {
+fn ids(
+    reader: &Reader<'_>,
+    conditions: &str,
+    clock: &query_language::time::Clock,
+) -> Result<Vec<String>, StoreError> {
     let text = text(conditions);
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let page = page(reader, &text, cursor.as_deref(), now)?;
+        let page = page(reader, &text, cursor.as_deref(), clock)?;
         ids.extend(
             page["rows"]
                 .as_array()
@@ -71,7 +79,7 @@ fn page(
     reader: &Reader<'_>,
     text: &str,
     cursor: Option<&str>,
-    now: Timestamp,
+    clock: &query_language::time::Clock,
 ) -> Result<serde_json::Value, StoreError> {
     run(
         reader,
@@ -81,8 +89,7 @@ fn page(
             page_size: None,
             why: false,
             session: None,
-            now: now.unix_ms(),
-            day: None,
+            clock: clock.clone(),
             embeddings: false,
             near: None,
             fields: &[],

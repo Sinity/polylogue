@@ -37,7 +37,13 @@ pub fn read(
             1,
         ));
     }
-    frame.query = &page.snapshot.query_text;
+    let query = request
+        .arguments
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or(&page.snapshot.query);
+    let query_display = crate::terminal::json(&Value::String(query.into()), false);
+    frame.query = &query_display[1..query_display.len() - 1];
     frame.navigation = navigation_entries();
     frame.status = currency(&page.snapshot.currency);
     let route = table
@@ -49,8 +55,6 @@ pub fn read(
         .http_route;
     let body = html! {
         (currency_notice(&page.snapshot.currency, &frame.command))
-        @for note in &page.snapshot.notes { p class="read-note" { (note) } }
-        @for reason in &page.snapshot.incomplete { p class="read-incomplete" role="status" { (reason) } }
         nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,&route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
         (navigation(page))
         (crate::html::document(&page.document))
@@ -85,7 +89,7 @@ fn follow(call: &ReadyCall, label: &str, next: bool) -> Markup {
 }
 /// Encode the operation's complete HTTP form; no cursor parsing, target
 /// selection or option defaults occur here. Complex fields use JSON.
-pub(crate) fn http_url(call: &HttpCall) -> Result<String, Failure> {
+pub fn http_url(call: &HttpCall) -> Result<String, Failure> {
     if call.method != "GET"
         || !call.path.starts_with('/')
         || call.path.starts_with("//")
@@ -130,9 +134,9 @@ pub(crate) fn http_url(call: &HttpCall) -> Result<String, Failure> {
 fn currency(currency: &IndexCurrency) -> Markup {
     html! { @match currency {
         IndexCurrency::Standalone=>{span data-mode="standalone" {"Standalone archive"}},
-        IndexCurrency::Primary {applied_position,owner_position,owner_position_seconds_ago,reachable,lag_positions,state,error}=>{
+        IndexCurrency::Primary {scope,applied_position,owner_position,owner_position_seconds_ago,reachable,lag_positions,state,error}=>{
             span data-mode="primary" data-state=(match state {CurrencyState::Current=>"current",CurrencyState::Behind=>"behind",CurrencyState::Unknown=>"unknown",CurrencyState::Unavailable=>"unavailable"}) {
-                "Primary: " (format!("{state:?}")) " · applied " (applied_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · owner " (owner_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · observed " (owner_position_seconds_ago.map_or_else(||"age unknown".into(),|age|format!("{age} seconds ago"))) " · reachable " (reachable.map_or_else(||"unknown".into(),|reachable|reachable.to_string())) " · lag " (lag_positions.map_or_else(||"unknown".into(),|lag|lag.to_string())) @if let Some(error)=error {" · " (error)}
+                "Primary: " @if let Some(scope)=scope { (scope) " · " } (format!("{state:?}")) " · applied " (applied_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · owner " (owner_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · observed " (owner_position_seconds_ago.map_or_else(||"age unknown".into(),|age|format!("{age} seconds ago"))) " · reachable " (reachable.map_or_else(||"unknown".into(),|reachable|reachable.to_string())) " · lag " (lag_positions.map_or_else(||"unknown".into(),|lag|lag.to_string())) @if let Some(error)=error {" · " (error)}
             }
         }
     } }

@@ -241,19 +241,24 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
         text: "original".into(),
     }]);
     let mut evidence = ProjectionEvidence::default();
-    evidence.variants.insert(
-        0,
-        VariantText {
-            mark: VariantMark {
-                reference: "variant:test".into(),
-                key: "en".into(),
-                original: "block:test:session:message#0".into(),
-                stale: true,
-                show_original: None,
+    evidence
+        .variants
+        .insert(
+            polylogue_model::Reference::parse("block:test:session:message#0").unwrap(),
+            VariantText {
+                mark: VariantMark {
+                    reference: "variant:test".into(),
+                    key: "en".into(),
+                    original: "block:test:session:message#0".into(),
+                    stale: true,
+                    show_original: None,
+                },
+                text: "variant".into(),
+                relations: vec![polylogue_model::VariantRelation::Translates],
+                alignment: vec![],
             },
-            text: "variant".into(),
-        },
-    );
+        )
+        .unwrap();
     let options = ReadOptions::default();
     let projected = project_record(original.clone(), &options, &evidence)
         .unwrap()
@@ -273,7 +278,7 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
     )
     .unwrap();
     assert!(
-        matches!(&items[1],ReadPart::Item(ReadItem{kind:ItemKind::Text{text},..}) if text=="variant")
+        items.iter().any(|item| matches!(item,ReadPart::Item(ReadItem{kind:ItemKind::Text{text},..}) if text=="variant"))
     );
     assert_eq!(projected, original);
 }
@@ -833,6 +838,7 @@ fn inline_images_need_exact_hash_safe_raster_type_and_size() {
             availability: ValueState::known("present".into()),
             link: Some("blobs/hash".into()),
             inline_bytes: Some(bytes.clone()),
+            open: None,
         },
     };
     assert!(
@@ -1189,19 +1195,24 @@ fn variant_marks_only_describe_visible_substitutions() {
         text: "visible".into(),
     }]);
     let mut evidence = ProjectionEvidence::default();
-    evidence.variants.insert(
-        7,
-        VariantText {
-            mark: VariantMark {
-                reference: "variant:test".into(),
-                key: "en".into(),
-                original: "block:test#7".into(),
-                stale: false,
-                show_original: None,
+    evidence
+        .variants
+        .insert(
+            polylogue_model::Reference::parse("block:test:session:message#7").unwrap(),
+            VariantText {
+                mark: VariantMark {
+                    reference: "variant:test".into(),
+                    key: "en".into(),
+                    original: "block:test:session:message#7".into(),
+                    stale: false,
+                    show_original: None,
+                },
+                text: "not selected".into(),
+                relations: vec![polylogue_model::VariantRelation::Translates],
+                alignment: vec![],
             },
-            text: "not selected".into(),
-        },
-    );
+        )
+        .unwrap();
     let items = layout(record, &ReadOptions::default(), &evidence);
     assert!(matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
 }
@@ -1281,4 +1292,357 @@ fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
     assert!(
         matches!(&items[2],ReadItem{source,kind:ItemKind::Attachment{availability:ValueState::Value{value},..}} if source==&result_source && value=="present")
     );
+}
+
+#[test]
+fn one_token_pages_and_accessible_empty_text_always_make_progress() {
+    let mut limits = budget();
+    limits.tokens = NonZeroU64::new(1).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    assert_eq!(
+        builder.push_at("message:test", 0, text("λ🙂more")).unwrap(),
+        pager::Push::Full
+    );
+    let position = builder.position().unwrap();
+    assert!(position.character > 0);
+    let document = builder.finish(ReadFooter::default()).unwrap();
+    assert!(!document.items.is_empty());
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    assert_eq!(
+        builder.push_at("message:test", 0, text("")).unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(
+        builder.finish(ReadFooter::default()).unwrap().items,
+        vec![text("")]
+    );
+}
+fn large_footer(position: Option<&ReadPosition>) -> Result<ReadFooter, pager::PageError> {
+    let mut footer = ReadFooter {
+        referenced_by: vec![ReferencedBy {
+            reference: "x".repeat(500),
+            role: "evidence".into(),
+            open: None,
+        }],
+        ..Default::default()
+    };
+    footer.next = position.map(|position| ReadyCall {
+        cli: format!(
+            "read {} {} {}",
+            position.reference, position.item, position.character
+        ),
+        mcp: json!({"position":position}),
+        http: HttpCall {
+            method: "GET".into(),
+            path: "/api/v1/read".into(),
+            arguments: json!({"position":position}),
+        },
+    });
+    Ok(footer)
+}
+#[test]
+fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(3).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    for n in 0..3 {
+        assert_eq!(
+            builder
+                .push_at("message:test", n, text(&"a".repeat(100)))
+                .unwrap(),
+            pager::Push::Accepted
+        );
+    }
+    assert_eq!(
+        builder.push_at("message:test", 3, text("next")).unwrap(),
+        pager::Push::Full
+    );
+    let mut attempts = 0;
+    let doc = builder
+        .finish_with(|position| {
+            attempts += 1;
+            large_footer(position)
+        })
+        .unwrap();
+    assert!(attempts > 1);
+    assert!(!doc.items.is_empty());
+    assert!(doc.items.len() < 3);
+    let position = doc.footer.position.as_ref().unwrap();
+    assert_eq!(position.item, doc.items.len() as u64);
+    assert_eq!(
+        doc.footer.next.as_ref().unwrap().mcp["position"],
+        json!(position)
+    );
+    assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
+}
+#[test]
+fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
+    let mut limits = budget();
+    limits.items = NonZeroUsize::new(2).unwrap();
+    let mut builder = pager::PageBuilder::new(header(), limits, None).unwrap();
+    assert_eq!(
+        builder
+            .push_at("message:test", 0, text(&"λ".repeat(300)))
+            .unwrap(),
+        pager::Push::Accepted
+    );
+    assert_eq!(
+        builder
+            .push_at("message:test", 1, text(&"n".repeat(600)))
+            .unwrap(),
+        pager::Push::Full
+    );
+    let doc = builder.finish_with(large_footer).unwrap();
+    let ItemKind::Fragment {
+        text,
+        from,
+        until,
+        total,
+        ..
+    } = &doc.items[0].kind
+    else {
+        panic!()
+    };
+    assert_eq!(*from, 0);
+    assert_eq!(*total, 300);
+    assert_eq!(text.chars().count() as u64, *until);
+    assert_eq!(doc.footer.position.as_ref().unwrap().character, *until);
+    assert_eq!(doc.footer.position.as_ref().unwrap().item, 0);
+    assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
+}
+
+fn text_variant(original: &str, text: &str, alignment: Vec<TextAlignment>) -> VariantText {
+    VariantText {
+        mark: VariantMark {
+            reference: "variant:synthetic@revision".into(),
+            key: "en".into(),
+            original: original.into(),
+            stale: false,
+            show_original: None,
+        },
+        relations: vec![polylogue_model::VariantRelation::Translates],
+        text: text.into(),
+        alignment,
+    }
+}
+#[test]
+fn variants_replace_thinking_and_remote_tool_output_at_their_exact_sources() {
+    let call = Block::ToolCall {
+        call_id: Some("c".into()),
+        tool: Some("test".into()),
+        action: Default::default(),
+        input: json!({}),
+        command: None,
+        path: None,
+        run_by_script: false,
+    };
+    let original = message(vec![
+        Block::Thinking {
+            text: Some("original thinking".into()),
+            redacted: false,
+            signature: Some("opaque".into()),
+        },
+        call.clone(),
+    ]);
+    let call_source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        1,
+        false,
+    );
+    let result_source = Source::block(
+        &MessageId::parse("test:remote:result").unwrap(),
+        &SessionId::parse("test:remote").unwrap(),
+        7,
+        false,
+    );
+    let mut evidence = ProjectionEvidence::default();
+    for (reference, text) in [
+        ("block:test:session:message#0", "translated thinking"),
+        (result_source.reference.as_str(), "translated result"),
+    ] {
+        evidence
+            .variants
+            .insert(
+                polylogue_model::Reference::parse(reference).unwrap(),
+                text_variant(reference, text, vec![]),
+            )
+            .unwrap();
+    }
+    evidence.tool_pairs.insert(
+        1,
+        ToolPair {
+            emit_at: call_source.reference.clone(),
+            call: SourceBlock {
+                source: call_source,
+                block: call,
+            },
+            result: Some(SourceBlock {
+                source: result_source.clone(),
+                block: Block::ToolResult {
+                    call_id: Some("c".into()),
+                    reported_duration_ms: None,
+                    outcome: polylogue_model::ToolOutcome::Ok,
+                    output: Some("original result".into()),
+                    data: None,
+                    attachments: vec![],
+                },
+            }),
+            running: false,
+            duration_ms: Default::default(),
+            error_line: None,
+            child: None,
+            edit: None,
+        },
+    );
+    let options = ReadOptions {
+        thinking: Some(Expansion::Full),
+        tools: Some(Expansion::Full),
+        ..Default::default()
+    };
+    assert_eq!(
+        project_record(original.clone(), &options, &evidence)
+            .unwrap()
+            .unwrap(),
+        original
+    );
+    let items = layout(original, &options, &evidence);
+    assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Thinking { content: ThinkingContent::Text { text }, .. } if text == "translated thinking")));
+    assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Call { call } if call.output.as_deref()==Some("translated result") && call.result_source.as_ref()==Some(&result_source))));
+    let doc = document(items);
+    for format in [
+        Format::Terminal,
+        Format::Markdown,
+        Format::Html,
+        Format::Json,
+        Format::Jsonl,
+    ] {
+        let encoded = encode(&doc, format);
+        assert!(encoded.contains("translated thinking"));
+        assert!(encoded.contains("translated result"));
+        assert!(!encoded.contains("original thinking"));
+        assert!(!encoded.contains("original result"));
+        assert!(encoded.contains("variant"));
+    }
+}
+#[test]
+fn document_overlay_uses_original_body_ordinal_and_byte_boundaries() {
+    let mut doc = polylogue_model::Document::new(
+        polylogue_model::DocumentId::parse("test:document").unwrap(),
+        polylogue_model::DocumentPurpose::Transcript,
+    );
+    doc.blocks = vec![
+        Block::Text {
+            text: "first".into(),
+        },
+        Block::Text {
+            text: "aλz".into()
+        },
+    ];
+    let source = Source {
+        block: Some(1),
+        ..Source::record("document:test:document")
+    };
+    let mut evidence = ProjectionEvidence::default();
+    let reference = polylogue_model::Reference::parse("document:test:document").unwrap();
+    evidence
+        .variants
+        .insert(
+            reference.clone(),
+            text_variant(
+                &reference.to_string(),
+                "replacement",
+                vec![TextAlignment {
+                    source: source.clone(),
+                    start: 1,
+                    end: 3,
+                }],
+            ),
+        )
+        .unwrap();
+    let items = layout(
+        Record::Document(polylogue_model::bundle::DocumentRecord {
+            reference: reference.to_string(),
+            commit: 1,
+            document: doc,
+        }),
+        &ReadOptions::default(),
+        &evidence,
+    );
+    assert!(matches!(&items[0].kind,ItemKind::Text{text} if text=="first"));
+    assert!(
+        items.iter().any(|i| i.source == source
+            && matches!(&i.kind,ItemKind::Text{text} if text=="areplacementz"))
+    );
+}
+
+#[test]
+fn supplied_attachment_action_survives_layout_and_all_encoders() {
+    let source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        9,
+        false,
+    );
+    let action = ReadyCall {
+        cli: "polylogue read --request '{\"target\":\"attachment:synthetic\"}'".into(),
+        mcp: json!({"target":"attachment:synthetic"}),
+        http: HttpCall {
+            method: "GET".into(),
+            path: "/api/v1/read".into(),
+            arguments: json!({"operation":"read","arguments":{"target":"attachment:synthetic"},"request_id":"same","deadline":"default"}),
+        },
+    };
+    let mut evidence = ProjectionEvidence::default();
+    evidence
+        .attachments
+        .entry(source.reference.clone())
+        .or_default()
+        .insert(
+            9,
+            vec![AttachmentEvidence {
+                open: Some(Box::new(action.clone())),
+                ..Default::default()
+            }],
+        );
+    let mut items = vec![];
+    layout::visit_source_block(
+        &SourceBlock {
+            source: source.clone(),
+            block: Block::File(Default::default()),
+        },
+        &ReadOptions::default(),
+        &evidence,
+        |item| {
+            items.push(item);
+            true
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(&items[0].kind,ItemKind::Attachment{open:Some(open),..} if open.as_ref()==&action)
+    );
+    for format in [
+        Format::Terminal,
+        Format::Markdown,
+        Format::Html,
+        Format::Json,
+        Format::Jsonl,
+    ] {
+        let output = encode(&document(items.clone()), format);
+        assert!(
+            output.contains("attachment:synthetic"),
+            "{format}: {output}"
+        );
+        if format == Format::Html {
+            assert!(output.contains("href=\"/api/v1/read?"));
+        }
+    }
+    assert_eq!(
+        html::DEFAULT_INLINE_IMAGE_BYTES,
+        EncodeOptions::default().inline_image_bytes
+    );
+    assert!(html::inline_media_type("image/png"));
+    assert!(!html::inline_media_type("image/svg+xml"));
+    assert!(!html::inline_media_type("text/html"));
 }

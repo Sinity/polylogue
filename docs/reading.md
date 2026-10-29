@@ -134,6 +134,8 @@ A [variant](assertions.md#variants) is transformed content (a translation, trans
 - A variant bound to an older revision than the one shown is marked `stale` and applied only when asked for.
 - Assertions of a translated session show their own variants; originals are not shown on a variant.
 - A summary variant is shown as a variant, never as the session's own text.
+- Presentation mappings use canonical original references. Span offsets resolve against original source text before substitution. Mapped text bodies include prose, recorded thinking and tool-result output; document bodies keep their original block positions. A replacement covering several bodies is emitted once at its first aligned original range; the remaining covered ranges are removed from presentation. Original records, references and source hashes stay unchanged. Overlapping distinct replacements are an ambiguity error. A replacement touching hidden bodies reports coverage instead of crossing the hidden content.
+- Parts for the same original are joined in their declared order with two line feeds. Their declared relations remain visible. An all-`omits` group removes its covered presentation; a mixed group retains its nonempty rendition and is marked partly omitted.
 
 ## Tool calls
 
@@ -169,7 +171,7 @@ A [variant](assertions.md#variants) is transformed content (a translation, trans
 
 [Attachments](sessions.md#attachments) are shown as `▣ name (media type, size)`, with who supplied them when that is not the message's author, and their availability when it is not `present`: `unfetched`, `failed (reason)`, `unavailable at source`.
 
-- An HTML file embeds images as data URIs up to 10 MiB each (a setting) and links larger ones; the web reader uses daemon-served blob links. SVG and HTML attachments are always links, never inline.
+- An HTML file embeds verified raster images as data URIs within a 10 MiB aggregate allowance per prepared record or window (a setting); larger images keep a supplied open action. The web reader uses the same typed operation action to open source attachments. SVG and HTML attachments are always links, never inline.
 - In a bundle written with `--with-blobs`, Markdown links `![name](blobs/<hex>)`; otherwise the plain line.
 - A tool-result attachment is listed under its call.
 - Exact bytes come from `block:<message>#<n> read --to FILE` (a hash-checked atomic write) on the CLI, or as bytes from MCP and HTTP, for every caller.

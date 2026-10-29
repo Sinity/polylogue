@@ -10,11 +10,11 @@ pub mod authorship;
 pub mod batch;
 mod block;
 pub mod bundle;
-pub mod currency;
 pub mod capture;
 pub mod capture_log;
 mod change_position;
 mod clock;
+pub mod currency;
 pub use clock::WallClock;
 pub mod command;
 mod delivery;
@@ -91,5 +91,3 @@ string_schema!(
 );
 
 pub mod work_products;
-
-pub mod currency;

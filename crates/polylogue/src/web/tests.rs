@@ -178,52 +178,39 @@ fn pages_and_api_never_carry_the_archive_path() {
 
 #[test]
 fn the_session_page_escapes_archive_text_and_matches_the_socket() {
+    use polylogue_model::read::{ReadDelivery, ReadOptions, ReadPage};
     let r = reader();
     rt().block_on(async {
-        let req = authed(get("/s/claude-code%3As1"))
-            .body(Body::empty())
-            .unwrap();
-        let (s, _, page) = send(&r, req).await;
-        assert_eq!(s, StatusCode::OK, "{page}");
+        let (status, _, page) = send_html(&r, "/s/claude-code%3As1").await;
+        assert_eq!(status, StatusCode::OK, "{page}");
         assert!(
             page.contains("&lt;script&gt;alert(1)&lt;/script&gt; &amp; the parser"),
             "{page}"
         );
         assert!(!page.contains("<script>alert"));
-        assert!(
-            page.contains("data-cli=\"polylogue read claude-code:s1 --with-parents --view full --budget 8192 --cursor "),
-            "{page}"
-        );
-        // The same read through the API is the socket's answer.
-        let req = authed(get("/api/v1/read?session=claude-code%3As1"))
-            .body(Body::empty())
-            .unwrap();
-        let (s, _, body) = send(&r, req).await;
-        assert_eq!(s, StatusCode::OK);
-        let api: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(page.contains("polylogue read --request"));
+        assert!(page.contains("/assets/shell.js"));
+        let api = read_page(&r, "session:claude-code:s1", &[]).await;
         let Response::Ok { data, .. } = handle(
             Request::Read {
-            slices: true, selection: None,
-                target: crate::daemon::ReadTarget::Session(
-                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-                ),
-                view: "full".into(),
+                target: "session:claude-code:s1".into(),
+                options: ReadOptions::default(),
+                delivery: ReadDelivery::Page,
                 format: "json".into(),
-                with_parents: false,
                 budget: None,
                 cursor: None,
+                with_blobs: false,
             },
             &r.web.daemon,
         ) else {
             panic!("socket read failed")
         };
-        assert_eq!(api, scrubbed(&r.web, data));
-        // An unknown session is a typed not-found, without a local path.
-        let req = authed(get("/s/claude-code%3Anope"))
-            .body(Body::empty())
-            .unwrap();
-        let (s, _, page) = send(&r, req).await;
-        assert_eq!(s, StatusCode::NOT_FOUND);
+        let socket: ReadPage = serde_json::from_value(data).unwrap();
+        assert_eq!(api.document.items, socket.document.items);
+        assert_eq!(api.document.header, socket.document.header);
+        assert_eq!(api.snapshot.read_at, socket.snapshot.read_at);
+        let (status, _, page) = send_html(&r, "/s/claude-code%3Anope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(page.contains("not_found"));
     });
 }
@@ -502,58 +489,40 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
 }
 
 #[test]
-fn session_html_and_json_read_routes_mask_titles_and_message_content() {
+fn session_html_and_json_read_routes_preserve_stored_titles_and_message_content() {
     use std::io::Write;
     let r = reader();
-    let secret = format!("sk-ant-api03-{}-AAAAAAAA", "A".repeat(94));
+    let literal = "AKIAIOSFODNN7EXAMPLE";
     let mut file = std::fs::OpenOptions::new()
         .append(true)
         .open(r.w.home.join(".claude/projects/-p/s1.jsonl"))
         .unwrap();
-    writeln!(file, "{}", serde_json::json!({"type": "custom-title", "sessionId": "s1", "customTitle": format!("Synthetic title {secret}")})).unwrap();
+    writeln!(file,"{}",serde_json::json!({"type":"custom-title","sessionId":"s1","customTitle":format!("Synthetic title {literal}")})).unwrap();
     write!(
         file,
         "{}",
-        polylogue_testkit::claude_user("u2", "s1", &secret)
+        polylogue_testkit::claude_user("u2", "s1", literal)
     )
     .unwrap();
     drop(file);
     r.w.wait_for(|status| {
-        if status["store"]["messages"] != 2 { return false; }
-        let response = handle(Request::Read {
-            slices: true, selection: None, target: crate::daemon::ReadTarget::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap()), view: "full".into(), format: "json".into(), with_parents: false, budget: None, cursor: None }, &r.w.daemon);
-        matches!(response, Response::Ok { data, .. } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
+        status["store"]["messages"] == 2 && status["store"]["search_pending"] == 0
     });
     rt().block_on(async {
-        for path in [
-            "/s/claude-code:s1",
-            "/api/v1/read?session=claude-code%3As1&format=json",
-        ] {
-            let (status, _, body) = send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
-            assert_eq!(status, StatusCode::OK, "{path}: {body}");
-            assert!(body.contains("Synthetic title "));
-            assert!(
-                !body.contains(&secret),
-                "{path} exposed a synthetic credential"
-            );
-            assert!(body.contains("masked"));
-        }
-        let path = format!("/api/v1/read?session=claude-code%3As1&view={secret}");
-        let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(
-            !body.contains(&secret),
-            "argument validation exposed a synthetic credential"
+        let (status, _, html) = send_html(&r, "/s/claude-code:s1").await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains(literal), "{html}");
+        assert!(html.contains("Synthetic title "), "{html}");
+        let page = read_page(&r, "session:claude-code:s1", &[]).await;
+        let payload = serde_json::to_string(&page.document).unwrap();
+        assert!(payload.contains(literal));
+        assert!(payload.contains("Synthetic title "));
+        let invalid = read_url(
+            "session:claude-code:s1",
+            &[("view", "unsupported-synthetic-view")],
         );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"],
-            "bad_request"
-        );
-        let path = format!("/api/v1/read?session=claude-code%3A{secret}");
-        let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(!body.contains(&secret));
-        assert!(body.contains("masked"));
+        let (status, _, body) = send(&r, authed(get(&invalid)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     });
 }
 
@@ -600,13 +569,7 @@ fn cost_uses_public_accounting_and_session_scope() {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{html}");
-        let (status, _, html) = send(
-            &r,
-            authed(get("/s/claude-code:s1"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
+        let (status, _, html) = send_html(&r, "/s/claude-code:s1").await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(
             html.contains("Every selected parent session is here."),
@@ -787,3 +750,54 @@ mod timeline;
 mod cancellation;
 mod day_cost_measurements;
 mod measurement;
+
+fn read_url(target: &str, extra: &[(&str, &str)]) -> String {
+    let encode = polylogue_render::html::encode_path_segment;
+    let mut path = format!("/api/v1/read?target={}", encode(target));
+    for (key, value) in extra {
+        path.push('&');
+        path.push_str(&encode(key));
+        path.push('=');
+        path.push_str(&encode(value));
+    }
+    path
+}
+async fn send_html(r: &Reader, path: &str) -> (StatusCode, HeaderMap, String) {
+    let mut path = path.to_owned();
+    for _ in 0..4 {
+        let reply = send(
+            r,
+            authed(get(&path))
+                .header(header::ACCEPT, "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        if reply.0 == StatusCode::TEMPORARY_REDIRECT || reply.0 == StatusCode::SEE_OTHER {
+            path = reply.1[header::LOCATION].to_str().unwrap().to_owned();
+            assert!(path.starts_with('/') && !path.starts_with("//"));
+        } else {
+            return reply;
+        }
+    }
+    panic!("object URL redirect loop")
+}
+async fn read_page(
+    r: &Reader,
+    target: &str,
+    extra: &[(&str, &str)],
+) -> polylogue_model::read::ReadPage {
+    let path = read_url(target, extra);
+    let (status, _, body) = send(r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    serde_json::from_str(&body).unwrap()
+}
+async fn follow_read(
+    r: &Reader,
+    call: &polylogue_model::read::ReadyCall,
+) -> polylogue_model::read::ReadPage {
+    let path = polylogue_render::web::http_url(&call.http).unwrap();
+    let (status, _, body) = send(r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    serde_json::from_str(&body).unwrap()
+}

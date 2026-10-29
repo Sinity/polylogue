@@ -67,7 +67,10 @@ pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i
         None
     } else if matches!(
         request,
-        Request::Read{delivery:polylogue_model::read::ReadDelivery::Stream,..} | Request::SchemaInfer { .. }
+        Request::Read {
+            delivery: polylogue_model::read::ReadDelivery::Stream,
+            ..
+        } | Request::SchemaInfer { .. }
     ) {
         deadline_ms
     } else {
@@ -139,7 +142,6 @@ pub fn refusal(
     info: &serde_json::Value,
     limit: &ReadLimit,
 ) -> Response {
-
     let kind = crate::protocol::store_code(error);
 
     let query = info["text"]

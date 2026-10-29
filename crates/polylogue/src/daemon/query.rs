@@ -507,11 +507,11 @@ fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), 
                 options,
             )?;
             program.order = vec![
-                polylogue_query::OrderKey {
+                polylogue_store::query::OrderKey {
                     column: "family".into(),
                     descending: false,
                 },
-                polylogue_query::OrderKey {
+                polylogue_store::query::OrderKey {
                     column: "value".into(),
                     descending: false,
                 },
@@ -782,13 +782,12 @@ fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Va
 
 /// Session keys for usage and its response drill-down, from the same compiler
 /// path as a session measure. Presentation limits never limit the population.
-pub(crate) fn usage_selection(
+pub(crate) fn prepare_usage(
     reader: &Reader<'_>,
     text: &str,
     clock: &Clock,
     embeddings: bool,
-    near: Option<&NearFn<'_>>,
-) -> Result<(polylogue_store::measure::Selection, String), Failure> {
+) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
     let text = format!("{text} | measure usage");
     let ask = Ask {
         text: &text,
@@ -798,13 +797,20 @@ pub(crate) fn usage_selection(
         session: None,
         clock: clock.clone(),
         embeddings,
-        near,
+        near: None,
         fields: &[],
     };
     let opts = options(reader, &ask, 0)?;
-    let program = polylogue_store::query::compile(&text, &opts)?;
-    validate(reader, &program)?;
-    let question = page::question(&program, &opts, false)?;
+    let plan = polylogue_query::compile(&text, &opts)?;
+    Ok((plan, opts))
+}
+
+pub(crate) fn select_usage(
+    reader: &Reader<'_>,
+    program: &Program,
+    near: Option<&NearFn<'_>>,
+) -> Result<polylogue_store::measure::Selection, Failure> {
+    validate(reader, program)?;
     let m = program.measure.as_ref().ok_or_else(|| Failure {
         kind: "bad_request".into(),
         message: "cost requires a sessions query".into(),
@@ -826,14 +832,29 @@ pub(crate) fn usage_selection(
             ))
         }
     };
-    let sessions = with_similarity(reader, &program, near, select)?;
-    Ok((
-        polylogue_store::measure::Selection {
-            sessions,
-            ..Default::default()
-        },
-        question,
-    ))
+    let sessions = with_similarity(reader, program, near, select)?;
+    Ok(polylogue_store::measure::Selection {
+        sessions,
+        ..Default::default()
+    })
+}
+
+pub(crate) fn usage_selection(
+    reader: &Reader<'_>,
+    text: &str,
+    clock: &Clock,
+    embeddings: bool,
+    near: Option<&NearFn<'_>>,
+) -> Result<
+    (
+        polylogue_store::measure::Selection,
+        query_language::identity::QuestionId,
+    ),
+    Failure,
+> {
+    let (plan, options) = prepare_usage(reader, text, clock, embeddings)?;
+    let program = polylogue_store::query::lower(&plan, &options)?;
+    Ok((select_usage(reader, &program, near)?, plan.question_id()))
 }
 
 /// Keep declared column metadata and source values as the compiled answer supplies them.

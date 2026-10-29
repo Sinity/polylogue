@@ -2,7 +2,7 @@
 use super::{Failure, present, validate, values};
 use polylogue_model::ChangePosition;
 use polylogue_query::Options;
-use polylogue_store::{Reader,StoreError};
+use polylogue_store::{Reader, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::File;

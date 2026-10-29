@@ -3,7 +3,7 @@ use command_surface::{
     Answer, Deadline, JsonSchema, LatencyClass, Operation, OperationFuture, OperationSpec,
     RequestContext,
 };
-use polylogue_model::{Author, ChangePosition, Timestamp, bundle::ReadSnapshot, read::*};
+use polylogue_model::{ChangePosition, Timestamp, read::*};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -36,9 +36,8 @@ impl Operation for Read {
 }
 fn page() -> ReadPage {
     ReadPage {
-        snapshot: ReadSnapshot {
+        snapshot: ReadPageSnapshot {
             query: format!("query:{}", "a".repeat(64)),
-            query_text: "sessions".into(),
             ran_at: Timestamp::from_unix_ms(0).unwrap(),
             read_at: ChangePosition {
                 generation: "synthetic".into(),
@@ -47,10 +46,6 @@ fn page() -> ReadPage {
             },
             caught_up: false,
             currency: IndexCurrency::primary(Some(4), Some(7), Some(1.), Some(true), None),
-            enabled_variants: vec![],
-            author: Author::Operator,
-            notes: vec![],
-            incomplete: vec![],
         },
         records: vec![],
         document: ReadDocument {

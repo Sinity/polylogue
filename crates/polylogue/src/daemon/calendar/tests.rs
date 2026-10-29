@@ -273,3 +273,70 @@ fn fixture_clock(start: &str, now: i64) -> Clock {
         .unwrap(),
     )
 }
+
+#[test]
+fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = setup(temp.path());
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut owner = fixture_clock("04:00:00", 0);
+    owner.now = "2024-03-30T12:00:00.123456789Z".parse().unwrap();
+    fn request(cursor: Option<&str>) -> Timeline<'_> {
+        Timeline {
+            date: Some("2024-03-30"),
+            across_years: false,
+            undated: false,
+            cursor,
+            page_size: Some(1),
+        }
+    }
+    let first = timeline(&reader, request(None), &owner).unwrap();
+    let cursor = first["activity"]["next"].as_str().unwrap();
+    let mut later = owner.clone();
+    later.now = "2026-10-07T00:00:00Z".parse().unwrap();
+    let context = paging(
+        &reader,
+        &later,
+        Some(cursor),
+        &json!(["timeline", Some("2024-03-30"), false, false]),
+        &json!(["timeline"]),
+    )
+    .unwrap();
+    assert_eq!(
+        context.context.clock.now,
+        "2024-03-30T12:00:00.123456789Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+    );
+    let next = timeline(&reader, request(Some(cursor)), &later).unwrap();
+    assert_eq!(next["activity"]["rows"][0]["id"], "codex:c");
+    let mut changed = owner.clone();
+    changed.day = query_language::time::DaySetting::new(
+        owner.day.zone().clone(),
+        "04:00:00.000000001".parse().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        timeline(&reader, request(Some(cursor)), &changed)
+            .unwrap_err()
+            .kind,
+        "stale_cursor"
+    );
+    let mut damaged = cursor.as_bytes().to_vec();
+    let last = damaged.last_mut().unwrap();
+    *last = if *last == b'0' { b'1' } else { b'0' };
+    let damaged = String::from_utf8(damaged).unwrap();
+    assert!(
+        timeline(&reader, request(Some(&damaged)), &owner)
+            .unwrap_err()
+            .message
+            .contains("seal")
+    );
+    assert!(
+        cost(&reader, options(Some("2024-03-30"), Some(cursor)), &owner)
+            .unwrap_err()
+            .message
+            .contains("question")
+    );
+}
