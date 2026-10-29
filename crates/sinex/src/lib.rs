@@ -304,7 +304,7 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn prepare_request(
         &self,
         request: &polylogue_model::authored::PreparedRequest,
-    ) -> polylogue_store::Result<polylogue_store::UserOutcome> {
+    ) -> polylogue_store::Result<polylogue_model::user::UserOutcome> {
         Ok(self.prepare_request(request)?)
     }
     fn canonical_publisher(&self) -> bool {

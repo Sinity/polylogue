@@ -3,7 +3,7 @@
 use crate::{Error, Result};
 use polylogue_model::{Block, WrittenBy};
 use polylogue_store::primary::products::Product;
-use polylogue_store::user_writes::UserWrite;
+use polylogue_model::user::UserWrite;
 use serde_json::{Value, json};
 
 pub(crate) fn kind(product: &Product) -> &'static str {
@@ -19,6 +19,8 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Repository { .. } => "polylogue.repository",
         Product::ParseProgress { .. } => "polylogue.parse_progress",
         Product::RestoredRequest { .. } => "polylogue.request_restore",
+        Product::Coverage(_) => "polylogue.coverage",
+        Product::WorkSnapshot { .. } => "polylogue.work_snapshot",
         Product::Request(request) => match &request.request.write {
             UserWrite::AddNote { .. }
             | UserWrite::SaveQuery { .. }
@@ -35,7 +37,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
 
 /// Source copies remain separate readings of one natural record. This retains
 /// every source rank and provider attribute when another copy arrives.
-pub(crate) fn key(product: &Product, occurrence: u64) -> Result<String> {
+pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
     let natural = match product {
         Product::Input { rows, .. } => json!([
             rows.input,

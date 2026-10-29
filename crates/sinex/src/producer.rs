@@ -285,7 +285,7 @@ impl Sinex {
             let mut writes = if queue.get(&observation)?.is_some() {
                 let previous: Vec<ProductWrite> =
                     serde_json::from_reader(std::io::BufReader::new(queue.body(&observation)?))?;
-                if !same_named_writes(&previous, writes) {
+                if previous != writes {
                     return Err(Error::Invalid(
                         "named product identity changed immutable facts".into(),
                     ));
@@ -440,7 +440,7 @@ impl Sinex {
     pub(crate) fn prepare_request(
         &self,
         request: &PreparedRequest,
-    ) -> Result<polylogue_store::UserOutcome> {
+    ) -> Result<polylogue_model::user::UserOutcome> {
         let identity = format!("request:{}", request.request.id);
         let queue = self.queue()?;
         let repeat = if queue.get(&identity)?.is_some() {
