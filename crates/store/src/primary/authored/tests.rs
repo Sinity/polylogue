@@ -574,3 +574,22 @@ fn subset_restore_keeps_full_chat_history_and_import_provenance() {
     .unwrap();
     assert_eq!(n, 1);
 }
+
+#[test]
+fn inconsistent_event_delta_is_refused_before_application() {
+    let mut source = cache();
+    enqueue(&mut source, "a", 10);
+    let mut p = prepare_with(
+        &source,
+        &request("claim", 20, UserWrite::ChatClaim { by: "tab".into() }),
+        &[],
+        &[],
+    )
+    .unwrap();
+    p.effect.chats[0].added_events[0].request = "another-request".into();
+    let mut destination = cache();
+    let tx = destination.transaction().unwrap();
+    assert!(matches!(apply(&tx, &p, 1), Err(StoreError::Invalid(_))));
+    tx.commit().unwrap();
+    assert_eq!(count(&destination, "chat_action"), 0);
+}

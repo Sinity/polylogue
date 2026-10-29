@@ -226,6 +226,7 @@ CREATE TABLE delivery_event (
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
+CREATE UNIQUE INDEX delivery_event_request ON delivery_event(delivery,request);
 
 -- Chat actions: turns the operator asks the browser extension to draft or
 -- submit in a chat web page (`browser.actions`). The request is stored once;
@@ -273,6 +274,7 @@ CREATE TABLE chat_action_event (
   PRIMARY KEY (action, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
+CREATE UNIQUE INDEX chat_action_event_request ON chat_action_event(action,request);
 
 -- Exact member names and positions in retained container bytes.
 CREATE TABLE observation_container (
@@ -318,6 +320,7 @@ CREATE TABLE backfill_job_event (
   PRIMARY KEY (job, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX backfill_job_event_commit_seq ON backfill_job_event(commit_seq);
+CREATE UNIQUE INDEX backfill_job_event_request ON backfill_job_event(job,request);
 
 -- How many inputs and revisions the archive holds and the bytes of its present
 -- blobs, kept by the triggers below so that status does not scan the tables.
