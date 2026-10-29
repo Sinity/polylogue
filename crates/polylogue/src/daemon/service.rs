@@ -21,6 +21,7 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
+    pub(crate) callers: crate::protocol::caller::hooks::Registry,
     page_ends: read::page_ends::Cache,
     feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
@@ -1279,6 +1280,9 @@ pub fn start(
     let daemon = Arc::new(Daemon {
         archive,
         reads,
+        callers: crate::protocol::caller::hooks::Registry::new(
+            settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
+        ),
         page_ends: read::page_ends::Cache::default(),
         feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),

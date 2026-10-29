@@ -24,6 +24,7 @@ pub struct Incoming {
     #[serde(flatten)]
     pub request: Request,
     pub deadline_ms: Option<i64>,
+    pub caller: polylogue_model::authorship::CallerEvidence,
 }
 
 #[derive(Serialize)]
@@ -32,6 +33,17 @@ pub struct Outgoing<'a> {
     pub request: &'a Request,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<i64>,
+    pub caller: polylogue_model::authorship::CallerEvidence,
+}
+
+impl<'a> Outgoing<'a> {
+    pub fn new(request: &'a Request, deadline_ms: Option<i64>) -> Self {
+        Self {
+            request,
+            deadline_ms,
+            caller: crate::protocol::caller::evidence(),
+        }
+    }
 }
 
 pub fn deadline(duration: Duration) -> i64 {

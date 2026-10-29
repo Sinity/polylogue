@@ -41,6 +41,15 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
                 continue;
             }
         };
+        let (evidence, channel) = crate::protocol::caller::peer(&out, &incoming.caller)
+            .unwrap_or_else(|_| {
+                (
+                    Default::default(),
+                    polylogue_model::authorship::Channel::Cli,
+                )
+            });
+        let accepted =
+            crate::protocol::caller::accept(&d.callers, &evidence, channel, cancellation.clone());
         let limit = super::execution::limit_for(
             &incoming.request,
             incoming.deadline_ms,
@@ -109,7 +118,8 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>) {
                     },
                 ),
             };
-            let trusted = command_surface::Caller::authenticated("local", cancellation.clone());
+            let scope = accepted.authorship.author.to_string();
+            let trusted = command_surface::Caller::authenticated(scope, accepted.clone());
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()

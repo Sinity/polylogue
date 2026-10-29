@@ -46,6 +46,7 @@ pub const EXIT_DAEMON_REQUIRED: u8 = 6;
 pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 
 fn main() -> ExitCode {
+    protocol::caller::initialize();
     // Chrome runs a native messaging host with the calling extension's
     // origin as its only argument; the host manifest names this binary.
     if std::env::args()

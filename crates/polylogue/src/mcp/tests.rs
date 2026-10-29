@@ -15,6 +15,7 @@ pub(crate) fn call(
         arguments,
         None,
         &tokio_util::sync::CancellationToken::new(),
+        None,
     )
     .and_then(|(text, _, failed)| if failed { Err(text) } else { Ok(text) })
 }

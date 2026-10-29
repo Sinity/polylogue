@@ -83,17 +83,23 @@ fn call_with_limit(
     arguments: serde_json::Map<String, Value>,
     deadline_ms: Option<i64>,
     cancelled: &tokio_util::sync::CancellationToken,
+    tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
     let request = build_request(name, arguments)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let response = runtime.block_on(crate::client::send_ready(
+    let mut caller = crate::protocol::caller::evidence();
+    if tool_call_id.is_some() {
+        caller.tool_call_id = tool_call_id;
+    }
+    let response = runtime.block_on(crate::client::send_ready_as(
         archive,
         &request,
         deadline_ms,
         cancelled,
+        caller,
     ));
     let structured = match &response {
         Ok(response) => serde_json::to_value(response.answer()).expect("answer serializes"),
@@ -131,6 +137,7 @@ enum Reply {
         arguments: serde_json::Map<String, Value>,
         with_result_type: bool,
         deadline_ms: Option<i64>,
+        tool_call_id: Option<String>,
     },
     None,
 }
@@ -262,6 +269,7 @@ impl Session {
                     arguments,
                     with_result_type,
                     deadline_ms: meta["deadline_ms"].as_i64(),
+                    tool_call_id: meta["claudecode/toolUseId"].as_str().map(str::to_owned),
                 }
             }
             _ => invalid(-32601, "Method not found"),
@@ -288,21 +296,28 @@ impl Reply {
                 arguments,
                 with_result_type,
                 deadline_ms,
+                tool_call_id,
             } => {
-                let (text, structured, failed) =
-                    match call_with_limit(archive, &name, arguments, deadline_ms, cancelled) {
-                        Ok(answer) => answer,
-                        Err(text) => {
-                            let answer = command_surface::Answer::<Value>::error(
-                                crate::protocol::failure("bad_request", text.clone(), None),
-                            );
-                            (
-                                text,
-                                serde_json::to_value(answer).expect("failure serializes"),
-                                true,
-                            )
-                        }
-                    };
+                let (text, structured, failed) = match call_with_limit(
+                    archive,
+                    &name,
+                    arguments,
+                    deadline_ms,
+                    cancelled,
+                    tool_call_id,
+                ) {
+                    Ok(answer) => answer,
+                    Err(text) => {
+                        let answer = command_surface::Answer::<Value>::error(
+                            crate::protocol::failure("bad_request", text.clone(), None),
+                        );
+                        (
+                            text,
+                            serde_json::to_value(answer).expect("failure serializes"),
+                            true,
+                        )
+                    }
+                };
                 let mut result = json!({"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": failed});
                 if with_result_type {
                     result["resultType"] = json!("complete");

@@ -173,12 +173,12 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let request = Request::Sql { statement: "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n".into() };
-    let outgoing = crate::daemon::execution::Outgoing {
-        request: &request,
-        deadline_ms: Some(crate::daemon::execution::deadline(Duration::from_millis(
+    let outgoing = crate::daemon::execution::Outgoing::new(
+        &request,
+        Some(crate::daemon::execution::deadline(Duration::from_millis(
             50,
         ))),
-    };
+    );
     serde_json::to_writer(&mut stream, &outgoing).unwrap();
     stream.write_all(b"\n").unwrap();
     let mut input = BufReader::new(stream);
@@ -188,7 +188,7 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
     assert!(matches!(response, Response::Error { kind, .. } if kind == "deadline_exceeded"));
     input
         .get_mut()
-        .write_all(b"{\"op\":\"sql\",\"statement\":\"SELECT 1\"}\n")
+        .write_all(b"{\"caller\":{\"controlling_terminal\":false},\"op\":\"sql\",\"statement\":\"SELECT 1\"}\n")
         .unwrap();
     line.clear();
     input.read_line(&mut line).unwrap();
@@ -205,7 +205,7 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(b"{\"op\":\"sql\",\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}\n").unwrap();
+    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"op\":\"sql\",\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}\n").unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();

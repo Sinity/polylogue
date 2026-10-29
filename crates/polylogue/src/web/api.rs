@@ -94,7 +94,14 @@ async fn answer(
         let request = crate::protocol::operations::request(c, values, request_id, deadline);
         let table = crate::protocol::operations::table(Arc::clone(&web.daemon));
         let limit = super::request_limit();
-        let trusted = command_surface::Caller::authenticated("local", limit.cancellation);
+        let accepted = crate::protocol::caller::accept(
+            &web.daemon.callers,
+            &Default::default(),
+            polylogue_model::authorship::Channel::Web,
+            limit.cancellation,
+        );
+        let scope = accepted.authorship.author.to_string();
+        let trusted = command_surface::Caller::authenticated(scope, accepted);
         let answer = table
             .call_as(
                 request,

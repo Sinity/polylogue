@@ -60,10 +60,7 @@ fn send(
         crate::daemon::execution::remaining(deadline_ms) + std::time::Duration::from_secs(1),
     ))?;
     socket.set_write_timeout(Some(duration))?;
-    let outgoing = crate::daemon::execution::Outgoing {
-        request,
-        deadline_ms,
-    };
+    let outgoing = crate::daemon::execution::Outgoing::new(request, deadline_ms);
     serde_json::to_writer(&mut socket, &outgoing)?;
     socket.write_all(b"\n")?;
     receive(BufReader::new(socket), output, previous.as_deref())

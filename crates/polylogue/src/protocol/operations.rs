@@ -111,8 +111,8 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             }
             let cancellation = context
                 .caller()
-                .identity::<polylogue_store::read::limit::ReadCancellation>()
-                .cloned()
+                .identity::<crate::protocol::caller::Accepted>()
+                .map(|caller| caller.cancellation.clone())
                 .unwrap_or_default();
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
