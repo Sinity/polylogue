@@ -22,7 +22,7 @@ pub const SCHEMA: &str = include_str!("schema/wire_shapes.sql");
 
 /// Product-native confirmation of the reading's source. Sequence is the
 /// standalone archive commit order or the primary confirmed fact order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReadingReceipt {
     pub sequence: i64,
     pub id: Option<String>,
@@ -44,7 +44,7 @@ pub struct Source<'a> {
     pub observation: Option<&'a str>,
     pub observed_at_ms: Option<i64>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Receipt {
     pub sequence: i64,
     pub id: Option<String>,
@@ -69,13 +69,13 @@ impl From<Source<'_>> for Receipt {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TypeObservation {
     pub count: u64,
     pub first: Receipt,
     pub last: Receipt,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Observation {
     pub format: String,
     pub reading_version: String,
@@ -96,7 +96,9 @@ pub struct Observation {
     pub present_in_latest: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageStatus {
     Complete,
@@ -108,7 +110,7 @@ pub enum CoverageStatus {
     Failed,
     Unknown,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Coverage {
     pub format: String,
     pub reading_version: String,
@@ -159,7 +161,7 @@ impl<'a> Scope<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     NewPath,
@@ -168,7 +170,7 @@ pub enum Kind {
     UnknownKind,
     UnknownTable,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Certainty {
     /// Present bytes directly establish a new path or a declaration mismatch.
@@ -177,7 +179,7 @@ pub enum Certainty {
     /// optional field was removed from the provider's format.
     OptionalPresence,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Drift {
     pub kind: Kind,
     pub shape: Observation,
@@ -185,14 +187,14 @@ pub struct Drift {
     pub certainty: Certainty,
     pub compared_with: Vec<Coverage>,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Report {
     pub shapes: Vec<Observation>,
     pub drift: Vec<Drift>,
     pub coverage: Vec<Coverage>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct Reading {
     input: String,
     parsed_upto: u64,
@@ -207,7 +209,7 @@ struct Reading {
     last_end: u64,
     last_hash: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct Shape {
     types: BTreeMap<String, TypeObservation>,
     expected: Vec<String>,
