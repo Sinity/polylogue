@@ -246,6 +246,14 @@ impl Inner {
                 .map(|blob| (blob.hash, blob.size))
                 .unwrap_or_else(|| (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64));
             let captured = CapturedInput {
+                raw_range: batch
+                    .new_blob
+                    .as_ref()
+                    .map(|blob| crate::primary::RawRange {
+                        start: batch.length - blob.size,
+                        end: batch.length,
+                    }),
+                basis: None,
                 input: name,
                 arrival_rank: batch.input.arrival_rank,
                 parsed: batch
@@ -260,6 +268,7 @@ impl Inner {
                 length,
                 group: Some(CaptureGroup {
                     identity: group_id.clone(),
+                    intent: group_id.clone(),
                     ordinal: ordinal as u64,
                     count: group.len() as u64,
                 }),
