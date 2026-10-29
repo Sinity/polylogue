@@ -37,7 +37,6 @@ use polylogue_model::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -158,12 +157,6 @@ pub fn session_id(native: &str) -> Option<SessionId> {
 
 fn message_id(native: &str) -> Option<MessageId> {
     Some(MessageId::new(origin(), NativeId::new(native).ok()?))
-}
-
-fn digest(v: &Json) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    v.to_string().hash(&mut h);
-    h.finish()
 }
 
 pub struct Rollout {

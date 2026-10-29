@@ -200,7 +200,25 @@ static AGENT_MESSAGE: Fields = Fields::new(&[
     }],
 );
 
-static TYPE_ONLY: Fields = Fields::new(&[("type", Read(T::String))]);
+static TYPE_ONLY: Fields = Fields::new(&[("type", Read(T::String))]).shape(
+    &[],
+    &[crate::fields::KnownKinds {
+        path: "type",
+        values: &[
+            "message",
+            "reasoning",
+            "function_call",
+            "custom_tool_call",
+            "local_shell_call",
+            "tool_search_call",
+            "function_call_output",
+            "custom_tool_call_output",
+            "tool_search_output",
+            "web_search_call",
+            "agent_message",
+        ],
+    }],
+);
 
 pub static ITEM_COMPLETED: Fields = Fields::new(&[
     ("type", Read(T::String)),
