@@ -343,16 +343,23 @@ impl Fixture {
                 .query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
                     r.get(0)
                 })?;
+        // Fixture `at` declares a native instant, like MessageFacts::at.
+        let native_at = at.and_then(polylogue_model::Timestamp::from_unix_ms);
+        let evidence = if native_at.is_some() {
+            polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant)
+        } else {
+            polylogue_model::TimeEvidence::UNKNOWN
+        };
         let fields = crate::encoding::pack_json(&polylogue_model::Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
-            at_until: None,
+            at_quality: evidence.quality,
+            at_precision: evidence.precision,
+            at_until: evidence.until,
             session: Some(
                 polylogue_model::SessionId::parse(&session)
                     .map_err(|error| crate::StoreError::Invalid(error.to_string()))?,
             ),
             kind: kind.into(),
-            at: at.and_then(polylogue_model::Timestamp::from_unix_ms),
+            at: native_at,
             after: None,
             range: None,
             data: serde_json::Value::Null,

@@ -120,3 +120,25 @@ fn native_run_namespace_never_falls_back_to_a_provider_origin() {
         "not_built"
     );
 }
+
+#[test]
+fn native_time_predicates_accept_a_declared_fixture_event_instant() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:session",
+            ..Default::default()
+        })
+        .unwrap();
+    fixture.event(session, "synthetic", Some(1000)).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program =
+        crate::query::compile("events where at = 1970-01-01T00:00:01Z", &options()).unwrap();
+    let mut page = reader.query_page(&program, None).unwrap();
+    assert_eq!(page.count, 1);
+    assert_eq!(page.rows.len(), 1);
+    present(&program, &mut page.rows[0]).unwrap();
+    assert_eq!(page.rows[0]["at"], "1970-01-01T00:00:01Z");
+}
