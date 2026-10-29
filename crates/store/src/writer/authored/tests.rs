@@ -127,6 +127,12 @@ impl Producer {
     }
 }
 impl crate::primary::Sinex for Producer {
+    fn raw_acquisition_cursor(
+        &self,
+        _: &crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        Ok(None)
+    }
     fn prepare_input_group(
         &self,
         _: &crate::primary::CapturePlan,

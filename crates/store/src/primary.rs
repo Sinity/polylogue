@@ -67,6 +67,12 @@ pub trait Sinex: Send + Sync {
         after_ordinal: Option<u64>,
         limit: usize,
     ) -> Result<PendingGroupPage>;
+    /// Proves contiguous committed physical ranges in one exact generation.
+    /// This local custody cursor does not acknowledge logical source acceptance.
+    fn raw_acquisition_cursor(
+        &self,
+        generation: &SourceGeneration,
+    ) -> Result<Option<RawAcquisitionCursor>>;
     /// Pins the original encoded body for exact range comparison without network I/O.
     fn capture_body(&self, identity: &str) -> Result<PreparedBody>;
     fn canonical_publisher(&self) -> bool {
