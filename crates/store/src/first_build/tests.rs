@@ -13,7 +13,7 @@ fn index() -> Connection {
 
 fn insert_event(conn: &Connection, id: &str) -> i64 {
     conn.execute(
-        "INSERT INTO event(id, seq, kind, input_pk, data) VALUES (?1, 0, 'note', 1, X'00')",
+        "INSERT INTO event(id, seq, kind, input_pk, data, fields) VALUES (?1, 0, 'note', 1, X'00', X'00')",
         [id],
     )
     .unwrap();

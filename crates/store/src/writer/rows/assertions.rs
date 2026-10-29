@@ -34,7 +34,7 @@ impl RowWriter<'_, '_> {
                 .transpose()?
                 .unwrap_or(0),
         };
-        self.tx.prepare_cached("UPDATE event SET session_pk=?2,seq=?3,after_message_pk=?4,at=?5,input_pk=?6,source_chain=?7,source_start=?8,source_end=?9,data=?10,after_message_id=?11,seq_from_message=?12 WHERE pk=?1")?.execute(params![pk,choice.session,seq,after,choice.at,choice.input,choice.chain,choice.start,choice.end,choice.body,choice.after,choice.seq.is_none()])?;
+        self.tx.prepare_cached("UPDATE event SET session_pk=?2,seq=?3,after_message_pk=?4,at=?5,input_pk=?6,source_chain=?7,source_start=?8,source_end=?9,data=?10,after_message_id=?11,seq_from_message=?12,kind=?13,fields=?14 WHERE pk=?1")?.execute(params![pk,choice.session,seq,after,choice.at,choice.input,choice.chain,choice.start,choice.end,choice.body,choice.after,choice.seq.is_none(),choice.kind,choice.fields])?;
         Ok(())
     }
     pub(super) fn refresh_link(&self, pk: i64) -> Result<()> {
@@ -73,28 +73,17 @@ impl RowWriter<'_, '_> {
         self.tx.prepare_cached("INSERT INTO link_source(link_pk,input_pk,chain,value_pk,arrival_rank) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(link_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank")?.execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank])?;
         Ok(())
     }
-    pub(super) fn store_event_value(
-        &self,
-        pk: i64,
-        event: &Event,
-        _data: &[u8],
-        seq: Option<i64>,
-        index: usize,
-    ) -> Result<()> {
+    pub(super) fn store_event_value(&self, index: usize) -> Result<()> {
         let value = &self.choices.event_values[index];
-        let session = event
-            .session
-            .as_ref()
-            .map(|id| {
-                self.keys
-                    .get(resolve::Kind::Session, id.to_string().as_bytes())
-                    .map(|row| row.pk)
-            })
-            .transpose()?;
+        let (pk, source) = &self.choices.event_sources[index];
         self.tx
             .prepare_cached("INSERT OR IGNORE INTO event_value(pk,hash,body) VALUES (?1,?2,?3)")?
             .execute(params![value.key.pk, value.hash.as_slice(), value.body])?;
-        self.tx.prepare_cached("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,seq,source_start,source_end,after_message_id,at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at")?.execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank,session,seq,event.range.map(|r|r.0 as i64),event.range.map(|r|r.1 as i64),event.after.as_ref().map(ToString::to_string),ms(event.at)])?;
+        let imported = serde_json::to_string(&source.imported)?;
+        self.tx.prepare_cached("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,arrival_rank,session_pk,seq,source_start,source_end,after_message_id,at,fields,imported_provenance)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+            ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,arrival_rank=excluded.arrival_rank,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at,fields=excluded.fields,imported_provenance=excluded.imported_provenance")?
+            .execute(params![pk,self.input_pk,self.chain,value.key.pk,self.rank,source.session,source.seq,source.start,source.end,source.after,source.at,source.fields,imported])?;
         Ok(())
     }
 }

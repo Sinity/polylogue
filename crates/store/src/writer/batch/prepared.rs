@@ -23,6 +23,11 @@ impl PreparedRows {
             if index >= output.events.len() {
                 return Err(StoreError::Invalid("imported identity has no event".into()));
             }
+            if output.events[index].session.is_none() && output.events[index].after.is_some() {
+                return Err(StoreError::Invalid(
+                    "an imported input event cannot follow a message".into(),
+                ));
+            }
             identity
                 .validate()
                 .map_err(|error| StoreError::Invalid(error.to_string()))?;
