@@ -92,6 +92,7 @@ impl Bundle {
     pub fn staging(&self) -> &Path {
         &self.staging
     }
+    pub fn abort(&mut self, message: impl ToString) -> Error { self.error(message) }
     fn error(&mut self, message: impl ToString) -> Error {
         self.failed = true;
         let mut message = message.to_string();
@@ -205,7 +206,7 @@ impl Bundle {
         if complete.footer.next.is_some() {
             return Err(self.error("read completed with a continuation"));
         }
-        self.write_members(&complete).map_err(|e| self.error(e))?;
+        let written = self.write_members(&complete).map_err(|e| self.error(e))?;
         self.items
             .take()
             .expect("open staging")
@@ -263,7 +264,7 @@ impl Bundle {
         }
         Ok(Summary {
             destination: self.destination,
-            counts: complete.counts,
+            counts: written,
             previous: replacing.then_some(self.staging),
         })
     }
@@ -276,7 +277,7 @@ impl Bundle {
             .map(|i| serde_json::from_reader(i.reader).map_err(|e| e.to_string()))
             .transpose()
     }
-    fn write_members(&mut self, complete: &ReadComplete) -> std::result::Result<(), String> {
+    fn write_members(&mut self, complete: &ReadComplete) -> std::result::Result<Counts, String> {
         let mut inventory = File::create(self.staging.join("members.jsonl")).map_err(string)?;
         let mut counts = Counts::default();
         self.items
@@ -419,9 +420,36 @@ impl Bundle {
                 } else {
                     None
                 };
-                let mut header = self.begin.header.clone();
+                let mut header = first
+                    .parts
+                    .iter()
+                    .find_map(|part| {
+                        if let ReadPart::Header(header) = part {
+                            Some(header.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| self.begin.header.clone());
                 header.target = first.record.reference().unwrap_or("").to_owned();
-                if let Record::Session(s) = &first.record {
+                let session_record = if let Some(id) = session_id(&first.record) {
+                    self.items
+                        .as_ref()
+                        .expect("open staging")
+                        .source_item(&format!("session:{id}"))
+                        .map_err(string)?
+                        .map(|item| {
+                            serde_json::from_reader::<_, ReadRecord>(item.reader).map_err(string)
+                        })
+                        .transpose()?
+                } else {
+                    None
+                };
+                if let Some(ReadRecord {
+                    record: Record::Session(s),
+                    ..
+                }) = session_record
+                {
                     header.kind = HeaderKind::Session {
                         session: Box::new(s.session.clone()),
                     };
@@ -559,7 +587,7 @@ impl Bundle {
         primary.sync_all().map_err(string)?;
         validate_inventory(&self.staging)?;
         sync_directories(&self.staging)?;
-        Ok(())
+        Ok(counts)
     }
 }
 fn string(e: impl ToString) -> String {
@@ -574,15 +602,17 @@ fn order_key(record: &Record) -> Vec<u8> {
     key.extend_from_slice(record.reference().unwrap_or("").as_bytes());
     key
 }
-fn group(record: &Record) -> String {
-    let session = match record {
+fn session_id(record: &Record) -> Option<&SessionId> {
+    match record {
         Record::Session(r) => Some(&r.session.id),
         Record::Message(r) => Some(&r.message.session),
         Record::Event(r) => r.event.session.as_ref(),
         Record::Link(r) => Some(&r.link.child),
         _ => None,
-    };
-    session.map(session_path).unwrap_or_else(|| {
+    }
+}
+fn group(record: &Record) -> String {
+    session_id(record).map(session_path).unwrap_or_else(|| {
         format!(
             "_records/{}",
             blake3::hash(record.reference().unwrap_or("").as_bytes()).to_hex()
@@ -604,7 +634,13 @@ fn session_path(id: &SessionId) -> String {
             blake3::hash(id.native().as_str().as_bytes()).to_hex()
         );
     }
-    format!("{}/{name}", id.origin())
+    let origin = id.origin().as_str();
+    let origin = if origin.len() > 180 {
+        format!("~{}", blake3::hash(origin.as_bytes()).to_hex())
+    } else {
+        origin.to_owned()
+    };
+    format!("{origin}/{name}")
 }
 fn increment(counts: &mut Counts, record: &Record) {
     match record {

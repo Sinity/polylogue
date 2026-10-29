@@ -334,4 +334,5 @@ impl Drop for ExportItems {
 }
 
 #[cfg(test)]
+#[path = "export_items/tests.rs"]
 mod tests;
