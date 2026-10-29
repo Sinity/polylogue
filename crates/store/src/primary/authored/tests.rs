@@ -324,7 +324,7 @@ fn pending_attachment_metadata_is_validated_once_and_reference_survives_missing_
         prepare_with(&conn, &r, &[], &[]),
         Err(StoreError::ChatAction("unknown_attachment"))
     ));
-    let p = prepare_with(&conn, &r, &[], &[blob.clone()]).unwrap();
+    let p = prepare_with(&conn, &r, &[], std::slice::from_ref(&blob)).unwrap();
     commit(&mut conn, &p, 1);
     assert_eq!(count(&conn, "blob"), 0);
     let hash: Vec<u8> = conn
@@ -410,7 +410,7 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
 #[test]
 fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
     let mut conn = cache();
-    let writes = vec![
+    let writes = [
         request("note", 1, UserWrite::AddNote { note: note("text") }),
         request(
             "setting",
@@ -572,7 +572,7 @@ fn subset_restore_keeps_full_chat_history_and_import_provenance() {
     visit(&dest, &mut |record, claims| {
         n += 1;
         assert_eq!(record, &p);
-        assert_eq!(claims, &[current.clone()]);
+        assert_eq!(claims, std::slice::from_ref(&current));
         Ok(())
     })
     .unwrap();
