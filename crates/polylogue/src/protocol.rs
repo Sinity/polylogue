@@ -81,13 +81,18 @@ pub fn answer(value: Value) -> Answer<Value> {
             notes: vec!["accepted locally; awaiting Sinex confirmation".into()],
             next: vec![],
         }
-    } else if value["incomplete"].as_bool() == Some(true) {
+    } else if value["incomplete"].as_bool() == Some(true)
+        || value["outcome"].as_str() == Some("incomplete")
+        || value["incomplete"].as_array().is_some_and(|parts| !parts.is_empty())
+    {
         Answer::Degraded {
             value,
             notes: vec![],
             next: vec![],
         }
-    } else if value["empty"].as_bool() == Some(true) {
+    } else if value["empty"].as_bool() == Some(true)
+        || value["outcome"].as_str() == Some("empty")
+    {
         Answer::Empty {
             value,
             notes: vec![],
