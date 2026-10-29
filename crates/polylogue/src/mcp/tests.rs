@@ -15,7 +15,7 @@ pub(crate) fn call(
         if let Some(command) = command.filter(|command| command.register.is_some()) {
             (
                 command.mcp_name(),
-                json!({"arguments":arguments,"request_id":uuid::Uuid::new_v4().to_string()})
+                json!({"arguments":arguments,"request_id":uuid::Uuid::now_v7().to_string()})
                     .as_object()
                     .unwrap()
                     .clone(),
