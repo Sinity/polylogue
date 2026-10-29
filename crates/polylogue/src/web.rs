@@ -358,15 +358,6 @@ fn browser_response(response: Response, root: &std::path::Path) -> Response {
     response
 }
 
-/// A response's data with the archive directory's path taken out.
-pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
-    if let Some(o) = value.as_object_mut() {
-        o.remove("archive");
-    }
-    access::scrub_value(&mut value, &web.daemon.archive.root);
-    value
-}
-
 fn page(html: String) -> HttpResponse {
     Html(html).into_response()
 }

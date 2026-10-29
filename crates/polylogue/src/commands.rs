@@ -34,9 +34,6 @@ pub enum Kind {
     List,
     /// One of these values.
     Choice(&'static [&'static str]),
-    /// A flag that may carry a value (`--agent` or `--agent SESSION`):
-    /// `true` or the text.
-    FlagOrText,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1508,7 +1505,6 @@ impl Values {
                     .map(Value::from)
                     .map_err(|_| format!("`{}`: `{key}` should be a number", command.name))?,
                 Some(Kind::Bool) => Value::Bool(matches!(text.as_str(), "" | "true" | "1")),
-                Some(Kind::FlagOrText) if text.is_empty() || text == "true" => Value::Bool(true),
                 Some(Kind::List) => {
                     let mut list = object
                         .remove(&key)
@@ -1559,7 +1555,6 @@ fn fits(kind: Kind, value: &Value) -> bool {
             .as_array()
             .is_some_and(|a| a.iter().all(Value::is_string)),
         Kind::Choice(choices) => value.as_str().is_some_and(|v| choices.contains(&v)),
-        Kind::FlagOrText => value.is_string() || value.as_bool() == Some(true),
     }
 }
 
@@ -1570,7 +1565,6 @@ fn describe(kind: Kind) -> String {
         Kind::Bool => "true or false".into(),
         Kind::List => "a list of text".into(),
         Kind::Choice(choices) => format!("one of {}", choices.join(", ")),
-        Kind::FlagOrText => "true or text".into(),
     }
 }
 
@@ -1591,7 +1585,6 @@ pub fn schema(command: &Command) -> Map<String, Value> {
             Kind::Bool => json!({ "type": "boolean" }),
             Kind::List => json!({ "type": "array", "items": { "type": "string" } }),
             Kind::Choice(choices) => json!({ "type": "string", "enum": choices }),
-            Kind::FlagOrText => json!({ "type": ["string", "boolean"] }),
             Kind::Text | Kind::Words | Kind::Rest => json!({ "type": "string" }),
         };
         p["description"] = json!(a.help);

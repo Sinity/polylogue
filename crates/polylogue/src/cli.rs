@@ -141,7 +141,6 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::Rest => arg.num_args(1..).trailing_var_arg(true),
         Kind::List if a.positional => arg.num_args(1..),
         Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
-        Kind::FlagOrText => arg.num_args(0..=1),
     };
     if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
         arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
@@ -195,12 +194,6 @@ fn values(c: &Command, m: &ArgMatches) -> Values {
             Kind::List => m
                 .get_many::<String>(a.name)
                 .map(|vs| Value::Array(vs.cloned().map(Value::String).collect())),
-            Kind::FlagOrText => {
-                (m.value_source(a.name) == Some(ValueSource::CommandLine)).then(|| {
-                    m.get_one::<String>(a.name)
-                        .map_or(Value::Bool(true), |s| Value::String(s.clone()))
-                })
-            }
         };
         if let Some(v) = value {
             out.insert(a.name.to_owned(), v);

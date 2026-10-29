@@ -446,7 +446,7 @@ mod client_answers;
 
 #[test]
 fn request_id_is_declared_for_all_write_surfaces() {
-    let (command, values) = crate::cli::parse(&[
+    let (_, values) = crate::cli::parse(&[
         "polylogue",
         "note",
         "add",
