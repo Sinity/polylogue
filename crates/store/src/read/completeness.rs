@@ -8,13 +8,24 @@ use std::ops::ControlFlow;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReadingContract {
-    Expected { origin: String, version: String },
-    Kept { origin: String },
+    Expected {
+        origin: String,
+        version: String,
+    },
+    Kept {
+        origin: String,
+    },
+    /// Captured provider bytes whose declaration intentionally has no parser.
+    RawOnly {
+        origin: String,
+    },
 }
 impl ReadingContract {
     pub fn origin(&self) -> &str {
         match self {
-            Self::Expected { origin, .. } | Self::Kept { origin } => origin,
+            Self::Expected { origin, .. } | Self::Kept { origin } | Self::RawOnly { origin } => {
+                origin
+            }
         }
     }
 }
@@ -58,7 +69,7 @@ pub struct ReadCompleteness {
     pub projection: CompletenessDimension,
     /// Deliberately retained without promising parsed products.
     pub kept_chains: u64,
-    /// An admitted no-parser control is evidence of raw coverage, not parsed completeness.
+    /// Known nonparsed chains, independently of retained raw-byte coverage.
     pub raw_only_chains: u64,
 }
 impl ReadCompleteness {
@@ -108,6 +119,10 @@ impl Reader<'_> {
                 }
                 Some(ReadingContract::Kept { .. }) => {
                     kept_chains += 1;
+                }
+                Some(ReadingContract::RawOnly { .. }) => {
+                    raw_only_chains += 1;
+                    missing.insert(CompletenessReason::KnownRawOnly);
                 }
                 Some(ReadingContract::Expected { version, .. }) => {
                     let progress = &state.plan.progress;

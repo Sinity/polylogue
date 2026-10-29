@@ -44,6 +44,14 @@ mod plan;
 mod reparse;
 mod writes;
 
+/// An origin has a reading only when its declared parser or generic row-dump
+/// reader supplies one. Raw provider bytes have no parser version to invent.
+fn has_reading(origin: &OriginSpec) -> bool {
+    origin.support == Support::Parsed
+        || (origin.support == Support::NoParser
+            && origin.capture == polylogue_sources::Capture::RowDump)
+}
+
 /// One native registry projection is shared by reparse planning and read currency.
 pub fn reading_contracts() -> Vec<polylogue_store::ReadingContract> {
     ORIGINS
@@ -51,6 +59,10 @@ pub fn reading_contracts() -> Vec<polylogue_store::ReadingContract> {
         .map(|origin| {
             if origin.support == Support::Kept {
                 polylogue_store::ReadingContract::Kept {
+                    origin: origin.name.to_owned(),
+                }
+            } else if !has_reading(origin) {
+                polylogue_store::ReadingContract::RawOnly {
                     origin: origin.name.to_owned(),
                 }
             } else {

@@ -553,7 +553,7 @@ pub(crate) fn run(
         .unwrap_or_else(|| {
             out.parsed_upto = job.end;
             out.parser_state = None;
-            if job.origin.support != polylogue_sources::Support::NoParser {
+            if !crate::has_reading(job.origin) || job.origin.support != polylogue_sources::Support::NoParser {
                 return Vec::new();
             }
             let mut step = ParseStep::new(

@@ -48,7 +48,7 @@ Mutable source sampling freezes its source boundary before provider I/O. It bind
 | `ignored` | matched by an ignored entry | not stored; counted with its reason |
 | `unrecognized` | matched by neither | not stored, not parsed; counted per root, directory pattern and extension, and shown in status |
 
-- **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day with parse state `no_parser_yet` ([archive.md](archive.md#parsing)).
+- **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day and reports `no_parser_yet`. Raw-byte origins have no parser-version checkpoint; a generic row-dump reader retains its real reading version and no-parser control ([archive.md](archive.md#parsing)).
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
 - Hidden directories are entered only when a location names them. Symlinked roots resolve once. An unreadable directory is a reported state, never an empty result. A `.git` directory inside a root is ignored with its reason.
 - **The coverage table** `(root, class, pattern or reason, files, bytes, newest mtime)` is computed from the discovery walk the daemon already performs (the start-up walk plus file notifications). It is an index fact, rebuilt with the index; there is no separate scan.
@@ -105,7 +105,7 @@ Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a projecti
 
 **`llm` CLI** (`~/.config/io.datasette.llm/logs.db`, as rows): a session per `conversation_id`, with prompt and response messages, model, tokens and attachments.
 
-**`pi`** (`~/.pi/agent/sessions/**/*.jsonl`): collected, with parse state `no_parser_yet` until a parser exists.
+**`pi`** (`~/.pi/agent/sessions/**/*.jsonl`): collected as raw bytes and reported as `no_parser_yet` until a parser exists, without a fabricated reading version or parser checkpoint.
 
 **Other producers.** Claude Code web runs are their own origin, `claude-code-web`, once a real transcript file exists. Codex Cloud tasks are origin `codex-cloud` with their own ID namespace (`task_e_…`), from `codex.json` in ChatGPT exports and from the extension.
 

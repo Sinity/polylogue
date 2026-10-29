@@ -190,7 +190,7 @@ fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
 }
 
 #[test]
-fn no_parser_capture_keeps_its_reading_version_without_replaying_raw_bytes() {
+fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replaying_them() {
     let home = ClaudeHome::new();
     let dir = home.home.join(".pi/agent/sessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -206,17 +206,59 @@ fn no_parser_capture_keeps_its_reading_version_without_replaying_raw_bytes() {
             assert_eq!(pass.bytes_stored, 0, "{pass:?}");
         }
         let input = engine.location_id(&path);
-        let origin = polylogue_sources::origin::by_name("pi").unwrap();
         let reader = engine.reads.reader().unwrap();
         let progress = reader.input_progress(&input).unwrap().unwrap();
-        assert_eq!(progress.parsed_upto, bytes.len() as u64);
-        let saved = reader
-            .parser_checkpoint(&input, progress.chain, &origin.reading_version())
-            .unwrap()
-            .unwrap();
-        assert_eq!(saved.reading_version, origin.reading_version());
-        assert_eq!(saved.checkpoint, None);
-        let rows=reader.query("SELECT status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",&[polylogue_store::read::SqlValue::Text(input)]).unwrap();
-        assert_eq!(rows[0]["status"], "no_parser_yet");
+        assert_eq!(progress.length, bytes.len() as u64);
+        assert_eq!(progress.parsed_upto, 0);
+        assert!(!progress.parsed);
+        assert!(
+            reader
+                .parser_checkpoint(&input, progress.chain, "")
+                .unwrap()
+                .is_none()
+        );
+        let rows = reader.query("SELECT count(*) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1", &[polylogue_store::read::SqlValue::Text(input)]).unwrap();
+        assert_eq!(rows[0]["n"], 0);
+        let completeness = reader.completeness(&crate::reading_contracts()).unwrap();
+        assert!(
+            matches!(completeness.parsing, polylogue_store::CompletenessDimension::Incomplete(ref reasons) if reasons.contains(&polylogue_store::CompletenessReason::KnownRawOnly))
+        );
+        assert_eq!(completeness.raw_only_chains, 1);
+        assert!(!completeness.caught_up());
     }
+}
+
+#[test]
+fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versions() {
+    use polylogue_store::{CompletenessDimension, ReadingContract};
+    let home = ClaudeHome::new();
+    let (engine, _lock) = crate::import::tests::engine(&home, 1024);
+    let contracts = crate::reading_contracts();
+    let report = engine
+        .reads
+        .reader()
+        .unwrap()
+        .completeness(&contracts)
+        .unwrap();
+    assert_eq!(report.parsing, CompletenessDimension::Complete);
+    assert_eq!(report.raw_only_chains, 0);
+    assert_eq!(report.kept_chains, 0);
+    for name in ["pi", "tool-context"] {
+        assert!(matches!(
+            contracts.iter().find(|contract| contract.origin() == name),
+            Some(ReadingContract::RawOnly { .. })
+        ));
+    }
+    for name in ["llm", "tool-database"] {
+        let origin = polylogue_sources::origin::by_name(name).unwrap();
+        assert!(
+            matches!(contracts.iter().find(|contract| contract.origin()==name), Some(ReadingContract::Expected { version, .. }) if !version.is_empty() && version==&origin.reading_version())
+        );
+    }
+    assert!(matches!(
+        contracts
+            .iter()
+            .find(|contract| contract.origin() == "export-file"),
+        Some(ReadingContract::Kept { .. })
+    ));
 }

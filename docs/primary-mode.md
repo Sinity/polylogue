@@ -144,7 +144,11 @@ Read completeness is evaluated on the pinned Reader snapshot from declared
 native reading contracts, source lengths and parser checkpoints, current
 derivations and pending search work. A parser waiting on a trailing record is
 current only at its recorded observed source length. Intentionally kept sources
-are identified separately from parsed products. Independent source and index
+are identified separately from parsed products. Declared raw-only origins need
+no parser version; their presence reports known nonparsed coverage and keeps
+parsing incomplete. A raw-only declaration for an absent origin does not make
+unrelated reads incomplete. Generic row dumps retain their actual declared
+reading version. Independent source and index
 write counters do not establish completeness. Primary full-projection evidence
 is a separate requirement; scalar stream progress or raw-input coverage alone
 leaves it unknown.

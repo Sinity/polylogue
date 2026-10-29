@@ -581,7 +581,7 @@ impl Engine {
         if st.parser_state.is_none() {
             st.parser_state = restored;
         }
-        let parsed = st.origin.support != Support::Kept;
+        let parsed = has_reading(st.origin);
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
@@ -615,7 +615,13 @@ impl Engine {
             Change::First | Change::Rewritten => (0, 0, None, Priority::Bulk),
             Change::Appended { .. } => (
                 st.stored,
-                if never_parsed { 0 } else { st.parsed_upto },
+                if !parsed {
+                    st.stored
+                } else if never_parsed {
+                    0
+                } else {
+                    st.parsed_upto
+                },
                 st.parser_state.take(),
                 Priority::Live,
             ),
@@ -683,7 +689,8 @@ impl Engine {
                     polylogue_store::ReadingContract::Expected { origin, version } => {
                         Some((origin, version))
                     }
-                    polylogue_store::ReadingContract::Kept { .. } => None,
+                    polylogue_store::ReadingContract::Kept { .. }
+                    | polylogue_store::ReadingContract::RawOnly { .. } => None,
                 })
                 .collect::<Vec<_>>(),
         )?;
@@ -703,7 +710,7 @@ impl Engine {
             let (path, origin) = match &c.imported {
                 Some(imported) => {
                     let Some(origin) = polylogue_sources::origin::by_name(&imported.format)
-                        .filter(|origin| origin.support != Support::Kept)
+                        .filter(|origin| has_reading(origin))
                     else {
                         continue;
                     };
@@ -737,6 +744,9 @@ impl Engine {
                     (path.clone(), st.origin)
                 }
             };
+            if !has_reading(origin) {
+                continue;
+            }
             let tracked = c.current && c.imported.is_none() && watched.get(&c.input) == Some(&path);
             let facts = tracked
                 .then(|| self.inputs.get(&path).and_then(|st| st.facts))
@@ -793,7 +803,7 @@ impl Engine {
         let Some(chain) = st.chain else {
             return Ok(None);
         };
-        if st.origin.support == Support::Kept
+        if !has_reading(st.origin)
             || st.stored == 0
             || !behind
             || st.failed.is_some()
@@ -1181,7 +1191,7 @@ impl Engine {
             if let Some(e) = &d.error {
                 pass.errors.push(e.clone());
             }
-            let parsed = plan.origin.support != Support::Kept;
+            let parsed = has_reading(plan.origin);
             plan.apply(d, parsed);
             if plan.finished() {
                 pass.capture_pending |= plan.pending.is_some();
@@ -1314,8 +1324,12 @@ impl Engine {
                     < KEEP_STATE_NS
             });
             st.facts = plan.facts;
-            st.parsed_upto = plan.parse_pos.min(plan.size);
-            st.parsed = !plan.parser_deferred || st.parsed;
+            st.parsed_upto = if has_reading(plan.origin) {
+                plan.parse_pos.min(plan.size)
+            } else {
+                0
+            };
+            st.parsed = has_reading(plan.origin) && (!plan.parser_deferred || st.parsed);
             st.waiting = plan.waiting;
             st.parser_state = if recent { plan.parser_state } else { None };
             st.tail = plan.tail;

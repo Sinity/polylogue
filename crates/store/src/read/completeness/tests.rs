@@ -135,3 +135,32 @@ fn primary_scalar_zero_is_not_a_full_projection_certificate() {
     );
     assert!(proof.degraded());
 }
+
+#[test]
+fn explicit_raw_only_declaration_requires_no_parser_version_and_never_claims_parsed_coverage() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(root.path()).unwrap();
+    let contracts = [ReadingContract::RawOnly {
+        origin: "unparsed-provider".into(),
+    }];
+    let pool = fixture.reads().unwrap();
+    let empty = pool.reader().unwrap().completeness(&contracts).unwrap();
+    assert_eq!(empty.parsing, CompletenessDimension::Complete);
+    assert_eq!(empty.raw_only_chains, 0);
+    let source = Connection::open(fixture.archive.archive_db()).unwrap();
+    source.execute_batch("INSERT INTO input VALUES('raw-input','unparsed-provider'); INSERT INTO revision VALUES('raw-input',1,'first',1,12,1);").unwrap();
+    let present = pool.reader().unwrap().completeness(&contracts).unwrap();
+    assert_eq!(
+        present.parsing,
+        CompletenessDimension::Incomplete(vec![CompletenessReason::KnownRawOnly])
+    );
+    assert_eq!(present.raw_only_chains, 1);
+    assert_eq!(present.kept_chains, 0);
+    assert!(!present.caught_up());
+    assert!(
+        pool.reader()
+            .unwrap()
+            .completeness(&[expected("unparsed-provider", "")])
+            .is_err()
+    );
+}
