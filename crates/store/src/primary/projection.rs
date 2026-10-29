@@ -427,10 +427,10 @@ fn plan(index: &Connection) -> Result<Plan> {
         let mut current: Option<super::Reading> = None;
         let mut output = polylogue_model::Output::default();
         let mut counts = polylogue_model::RecordCounts::default();
-        let mut length: u64 = index.query_row(
+        let mut length = index.query_row(
             "SELECT coalesce(max(length),0) FROM source_revision WHERE input=?1 AND chain=?2",
             params![input, chain],
-            |row| row.get(0),
+            |row| unsigned_column(row, 0),
         )?;
         let mut query=index.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='parsed' AND input=?1 AND chain=?2 ORDER BY step_start,step_end,reading_version,admitted,source_order,event")?;
         let mut rows = query.query(params![input, chain])?;
@@ -495,7 +495,7 @@ fn plan(index: &Connection) -> Result<Plan> {
     for hash in needed {
         let size=match new_materials.get(&hash) {
             Some(size)=>Some(*size),
-            None=>index.query_row("SELECT m.length FROM source_material m JOIN primary_next f ON f.event=m.event WHERE f.state='live' AND m.hash=?1 LIMIT 1",[&hash.0[..]],|row|row.get::<_,u64>(0)).optional()?,
+            None=>index.query_row("SELECT m.length FROM source_material m JOIN primary_next f ON f.event=m.event WHERE f.state='live' AND m.hash=?1 LIMIT 1",[&hash.0[..]],|row|unsigned_column(row,0)).optional()?,
         };
         out.available.insert(hash, size);
     }
@@ -528,9 +528,19 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
         }
         _ => (None, None, None),
     };
-    tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![material.id,event,input,chain,offset,material.length,&material.hash.0[..]])?;
-    tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],material.length,extent.len,extent.encode()])?;
+    let length = i64::try_from(material.length)
+        .map_err(|_| StoreError::Invalid("material length exceeds the source catalog range".into()))?;
+    let stored = i64::try_from(extent.len)
+        .map_err(|_| StoreError::Invalid("extent length exceeds the source catalog range".into()))?;
+    tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![material.id,event,input,chain,offset,length,&material.hash.0[..]])?;
+    tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],length,stored,extent.encode()])?;
     Ok(())
+}
+
+fn unsigned_column(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(column)?;
+    u64::try_from(value)
+        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
 }
 
 fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
