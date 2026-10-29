@@ -237,7 +237,20 @@ impl Reader<'_> {
 
 /// The same actual-member projection is used by import refresh and confirmed replay.
 pub(crate) fn project_member(conn: &Connection, source: &ObservedMember, source_id: Option<&str>, sidecar: Option<&str>) -> Result<()> {
-    conn.execute("INSERT OR IGNORE INTO import_member VALUES (?1,?2,?3,?4,?5,?6)", params![source.observation,source.membership.import_id,source.input,source.membership.member,source_id,sidecar])?;
+    let previous: Option<(String,String,String,Option<String>,Option<String>)> = conn.query_row(
+        "SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE observation=?1",
+        [&source.observation], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?;
+    if let Some((namespace,input,member,known_id,known_sidecar)) = previous {
+        if namespace != source.membership.import_id || input != source.input || member != source.membership.member
+            || known_id.as_deref().zip(source_id).is_some_and(|(old,new)|old!=new)
+            || known_sidecar.as_deref().zip(sidecar).is_some_and(|(old,new)|old!=new) {
+            return Err(StoreError::Conflict("conflicting identity or classification for one import member".into()));
+        }
+        conn.execute("UPDATE import_member SET source_id=?2,sidecar=?3 WHERE observation=?1",
+            params![source.observation,known_id.as_deref().or(source_id),known_sidecar.as_deref().or(sidecar)])?;
+    } else {
+        conn.execute("INSERT INTO import_member VALUES (?1,?2,?3,?4,?5,?6)", params![source.observation,source.membership.import_id,source.input,source.membership.member,source_id,sidecar])?;
+    }
     Ok(())
 }
 
