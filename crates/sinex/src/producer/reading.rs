@@ -63,7 +63,8 @@ impl Sinex {
                 Ingress::Material {
                     frame: identity.clone(),
                     material: Box::new(MaterialFrame {
-                        id: crate::material_id(&identity),
+                        source: crate::source_reference(),
+                        id: crate::material_id(&self.config.producer, &identity),
                         input: InputRef {
                             kind: "polylogue-reading".into(),
                             locator: root.into(),

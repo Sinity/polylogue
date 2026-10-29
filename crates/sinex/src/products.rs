@@ -19,6 +19,9 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Repository { .. } => "polylogue.repository",
         Product::ParseProgress { .. } => "polylogue.parse_progress",
         Product::RestoredRequest { .. } => "polylogue.request_restore",
+        Product::Query { .. } => "polylogue.query",
+        Product::QueryRun { .. } => "polylogue.query_run",
+        Product::QueryRunOutcome { .. } => "polylogue.query_run_outcome",
         Product::Coverage(_) => "polylogue.coverage",
         Product::WorkSnapshot { .. } => "polylogue.work_snapshot",
         Product::Request(request) => match &request.request.write {
@@ -67,6 +70,9 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
             current.machine,
             current.actor
         ]),
+        Product::Query { object } => json!([object.id]),
+        Product::QueryRun { run } => json!([run.id]),
+        Product::QueryRunOutcome { outcome } => json!([outcome.run]),
         Product::Coverage(coverage) => json!([coverage.machine]),
         Product::WorkSnapshot { snapshot } => {
             json!([snapshot.session_id, snapshot.reducer_version])
@@ -204,6 +210,14 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             }
             value
         }
+        Product::Query { object } => json!({"question": object.id}),
+        Product::QueryRun { run } => json!({
+            "run": run.id, "question": run.question, "at": run.at,
+            "machine": run.machine, "binding_hash": run.binding.hash()?,
+        }),
+        Product::QueryRunOutcome { outcome } => json!({
+            "run": outcome.run, "binding_hash": outcome.binding_hash, "at": outcome.at,
+        }),
         Product::Coverage(_) => json!({}),
         Product::WorkSnapshot { snapshot } => json!({
             "session":snapshot.session_id,"reducer_version":snapshot.reducer_version,"source_position":snapshot.position,
@@ -331,6 +345,9 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.delivery_outcome", "request"),
         ("polylogue.request", "request"),
         ("polylogue.request_restore", "restored_request"),
+        ("polylogue.query", "query"),
+        ("polylogue.query_run", "query_run"),
+        ("polylogue.query_run_outcome", "query_run_outcome"),
         ("polylogue.coverage", "coverage"),
         ("polylogue.work_snapshot", "work_snapshot"),
     ];
@@ -388,10 +405,10 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
-                    version: if *name == "polylogue.work_snapshot" {
-                        4
-                    } else {
-                        3
+                    version: match *product {
+                        "work_snapshot" => 4,
+                        "query" | "query_run" | "query_run_outcome" => 1,
+                        _ => 3,
                     },
                 },
                 declaring_producer: producer.into(),
@@ -405,7 +422,15 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     },
                 }),
                 replace_rule: Some(
-                    if matches!(*product, "request" | "restored_request" | "blob") {
+                    if matches!(
+                        *product,
+                        "request"
+                            | "restored_request"
+                            | "blob"
+                            | "query"
+                            | "query_run"
+                            | "query_run_outcome"
+                    ) {
                         ReplaceRule::SuppressRepeat
                     } else {
                         ReplaceRule::ReplaceWhenNewer

@@ -110,10 +110,10 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
     for declaration in declarations("polylogue") {
         assert_eq!(
             declaration.kind.version,
-            if declaration.kind.name == "polylogue.work_snapshot" {
-                4
-            } else {
-                3
+            match declaration.kind.name.as_str() {
+                "polylogue.work_snapshot" => 4,
+                "polylogue.query" | "polylogue.query_run" | "polylogue.query_run_outcome" => 1,
+                _ => 3,
             }
         );
         assert!(

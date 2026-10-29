@@ -159,11 +159,18 @@ context token is excluded from serialized read answers and debug output.
 ## Degraded primary
 
 When Sinex is unreachable or refuses this producer:
-- reads answer from `index.db`, marked with the stream position they reflect and its lag;
+- status reports the retained index position and its known lag; data reads wait while the current policy and scope basis cannot be verified;
 - capture keeps collecting into the producer client's spool, and the sender retries with the same write identities;
 - an authored write is prepared in the spool and answered with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it;
 - the verdict is `degraded` with the reason `sinex blocked` and the error in plain words, and the shipped `Sinex blocked` rule fires after 10 minutes;
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
+
+An authoritative basis invalidation revokes the current operation and publication
+generation. An unverified basis also fences current data output, while retaining
+the private cache for a later verified continuation. Neither uncertainty nor an
+invalid partial cursor supplies a new policy epoch, scope or zero position. Cache
+replacement follows the existing authoritative scope and replay transition;
+raw custody, pending authored intent and paid embeddings remain durable.
 
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgement; prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
 
@@ -222,3 +229,12 @@ The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, becaus
 - **lifecycle-reaches-index**: on a test Sinex stack, archiving a session's readings removes the session from answers, restoring brings it back, and tombstoning leaves its reference marked tombstoned; a note, judgment and page slot on the session survive a parser-upgrade replay of it, still resolving to the new readings.
 - **user-state-moves**: an archive with assertions, revisions, a withdrawal, a pass, a variant and a page, written out with `read --to DIR` and imported into a fresh archive with the same inputs, gives identical reads; importing twice changes nothing.
 - **mixed-answer-reports-positions**: a mixed query's answer names the position it read in each product and their lag.
+
+Canonical query objects retain the semantic body and frozen dependency closure
+as `polylogue.query` facts. An execution retains its accepted binding in an
+immutable `polylogue.query_run` Begin fact before a continuation call is
+returned. Completion is a separate `polylogue.query_run_outcome` fact under
+the same Run ID. Its phase key cannot replace the Begin body. Named producer
+custody supports immediate exact-hash and unambiguous prefix lookup while
+confirmation is pending; that state is reported as queued. The local index
+changes only from the confirmed stream.

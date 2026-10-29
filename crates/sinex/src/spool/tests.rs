@@ -15,6 +15,76 @@ fn events(identity: &str, value: &str) -> Ingress {
     })).unwrap()
 }
 
+#[test]
+fn named_prefix_lookup_reads_only_matching_operations_and_survives_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let one = format!("query:0123456789ab{}", "1".repeat(52));
+    let two = format!("query:0123456789ab{}", "2".repeat(52));
+    for name in [&one, &two, "bulk:unrelated"] {
+        spool.prepare(events(name, "frozen object")).unwrap();
+    }
+    let unrelated = spool
+        .operation("bulk:unrelated")
+        .unwrap()
+        .join("metadata.json");
+    let original = fs::read(&unrelated).unwrap();
+    fs::write(&unrelated, b"not a queue record").unwrap();
+    let mut found = Vec::new();
+    spool
+        .visit_names("query:0123456789ab", &mut |identity| {
+            found.push(identity.to_owned());
+            Ok(())
+        })
+        .unwrap();
+    found.sort();
+    assert_eq!(found, [one.clone(), two.clone()]);
+    assert!(spool.get("bulk:unrelated").is_err());
+    fs::write(unrelated, original).unwrap();
+    drop(spool);
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let mut restored = Vec::new();
+    spool
+        .visit_names("query:0123456789ab", &mut |identity| {
+            restored.push(identity.to_owned());
+            Ok(())
+        })
+        .unwrap();
+    restored.sort();
+    assert_eq!(restored, found);
+}
+
+#[test]
+fn named_index_bounds_paths_without_limiting_logical_name_length() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    let prefix = format!("query:{}", "x".repeat(8192));
+    let first = format!("{prefix}:one");
+    let second = format!("{prefix}:two");
+    spool.prepare(events(&first, "first")).unwrap();
+    spool.prepare(events(&second, "second")).unwrap();
+    let mut found = Vec::new();
+    spool
+        .visit_names(&first, &mut |identity| {
+            found.push(identity.to_owned());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(found, [first]);
+}
+
+#[test]
+fn a_late_receipt_retires_at_the_already_applied_barrier() {
+    let directory = tempfile::tempdir().unwrap();
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool.prepare(events("late", "value")).unwrap();
+    spool.retire(10).unwrap();
+    assert!(spool.get("late").unwrap().is_some());
+    spool.acknowledge(ack("late", false, Some(8))).unwrap();
+    spool.retire(10).unwrap();
+    assert!(spool.get("late").unwrap().is_none());
+}
+
 fn material(identity: &str, bytes: &[u8]) -> Ingress {
     material_with(
         identity,
@@ -27,7 +97,8 @@ fn material_with(identity: &str, blob: String, length: u64) -> Ingress {
     Ingress::Material {
         frame: identity.into(),
         material: Box::new(sinex_protocol::MaterialFrame {
-            id: crate::material_id(identity),
+            source: crate::source_reference(),
+            id: crate::material_id("polylogue-test", identity),
             input: sinex_model::InputRef {
                 kind: "fixture".into(),
                 locator: identity.into(),
@@ -46,7 +117,7 @@ fn material_with(identity: &str, blob: String, length: u64) -> Ingress {
 
 fn ack(identity: &str, material: bool, position: Option<i64>) -> Acknowledgment {
     serde_json::from_value(serde_json::json!({
-        "number":1, "frame":identity, "material":material.then(||crate::material_id(identity)),"material_extents":[],
+        "number":1, "frame":identity, "material":material.then(||crate::material_id("polylogue-test", identity)),"material_extents":[],
         "admitted":[],"outcome":{},"refusal":null,"commit_seq":position
     })).unwrap()
 }
@@ -604,7 +675,7 @@ fn replay_capture_group_retains_its_material_until_applied() {
         frame: "replacement".into(),
         sequence: Box::new(sinex_protocol::ProducerReplay {
             operation: sinex_model::OperationId(uuid::Uuid::nil()),
-            root: crate::material_id("raw"),
+            root: crate::material_id("polylogue-test", "raw"),
             materials: vec![],
             event_types: None,
             from: None,

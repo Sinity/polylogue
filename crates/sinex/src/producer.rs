@@ -145,7 +145,8 @@ impl Sinex {
         Ok(Ingress::Material {
             frame: identity.into(),
             material: Box::new(MaterialFrame {
-                id: crate::material_id(identity),
+                source: crate::source_reference(),
+                id: crate::material_id(&self.config.producer, identity),
                 input,
                 blob: format!("blake3:{hash}"),
                 length,
@@ -303,7 +304,8 @@ impl Sinex {
                 Ingress::Material {
                     frame: observation.clone(),
                     material: Box::new(MaterialFrame {
-                        id: crate::material_id(&observation),
+                        source: crate::source_reference(),
+                        id: crate::material_id(&self.config.producer, &observation),
                         input: InputRef {
                             kind: "polylogue-observation".into(),
                             locator: identity.into(),
@@ -334,7 +336,8 @@ impl Sinex {
             for write in &mut writes {
                 if write.location.is_none() && write.parents.is_empty() {
                     write.location = Some(SourceLocation {
-                        material: crate::material_id(&observation).to_string(),
+                        material: crate::material_id(&self.config.producer, &observation)
+                            .to_string(),
                         anchor: 0,
                     });
                 }
@@ -345,6 +348,8 @@ impl Sinex {
             {
                 queue.prepare_group(
                     Ingress::Events {
+                        source: Some(crate::source_reference()),
+                        coverage: None,
                         frame: identity.into(),
                         events: crate::products::events(&writes)?,
                         failures: Vec::new(),
@@ -358,6 +363,8 @@ impl Sinex {
             });
         }
         queue.prepare(Ingress::Events {
+            source: Some(crate::source_reference()),
+            coverage: None,
             frame: identity.into(),
             events: crate::products::events(&writes)?,
             failures: Vec::new(),
@@ -429,6 +436,8 @@ impl Sinex {
         );
         queue.prepare_group(
             Ingress::Events {
+                source: Some(crate::source_reference()),
+                coverage: None,
                 frame: identity.clone(),
                 events: crate::products::events(writes)?,
                 failures: Vec::new(),
@@ -464,7 +473,8 @@ impl Sinex {
             Ingress::Material {
                 frame: identity.clone(),
                 material: Box::new(MaterialFrame {
-                    id: crate::material_id(&identity),
+                    source: crate::source_reference(),
+                    id: crate::material_id(&self.config.producer, &identity),
                     input: InputRef {
                         kind: "polylogue".into(),
                         locator: "requests".into(),
@@ -489,6 +499,64 @@ impl Sinex {
         outcome.repeat |= repeat;
         outcome.pending = true;
         Ok(outcome)
+    }
+
+    /// Named custody remains visible through publication until its confirmed
+    /// barrier is applied. Only matching immutable product bodies are hydrated.
+    pub(crate) fn visit_named_products(
+        &self,
+        selector: &polylogue_store::primary::NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> polylogue_store::Result<()>,
+    ) -> Result<()> {
+        use polylogue_store::primary::NamedProductSelector;
+        let queue = self.queue()?;
+        let mut names = std::collections::BTreeSet::new();
+        match selector {
+            NamedProductSelector::Exact(name) => {
+                names.insert(name.clone());
+            }
+            NamedProductSelector::Prefix(prefix) => {
+                queue.visit_names(prefix, &mut |identity| {
+                    let entry = queue.get(identity)?.ok_or_else(|| {
+                        Error::Invalid("named operation disappeared while locked".into())
+                    })?;
+                    let name = entry.logical_name().ok_or_else(|| {
+                        Error::Invalid("named index points to an unnamed operation".into())
+                    })?;
+                    names.insert(name.to_owned());
+                    Ok(())
+                })?;
+            }
+        }
+        for name in names {
+            let observation = format!("{name}:observation");
+            if let Some(entry) = queue.get(&observation)? {
+                if !entry.named {
+                    return Err(Error::Invalid(
+                        "named observation has another operation type".into(),
+                    ));
+                }
+                let writes: Vec<ProductWrite> =
+                    serde_json::from_reader(std::io::BufReader::new(queue.body(&observation)?))?;
+                for write in writes {
+                    visit(&write.product).map_err(Error::Store)?;
+                }
+            } else if let Some(entry) = queue.get(&name)? {
+                if !entry.named {
+                    return Err(Error::Invalid(
+                        "named product has another operation type".into(),
+                    ));
+                }
+                let Ingress::Events { events, .. } = queue.decode_frame(&name)? else {
+                    return Err(Error::Invalid("named product has no event facts".into()));
+                };
+                for event in events {
+                    let product = crate::products::decode(&event.kind.name, event.payload)?;
+                    visit(&product).map_err(Error::Store)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn visit_pending_requests(
@@ -589,7 +657,7 @@ impl Sinex {
             writes.push(ProductWrite {
                 product: Product::Request(request.clone()),
                 location: Some(SourceLocation {
-                    material: crate::material_id(&identity).to_string(),
+                    material: crate::material_id(&self.config.producer, &identity).to_string(),
                     anchor: 0,
                 }),
                 parents: Vec::new(),

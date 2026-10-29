@@ -137,7 +137,7 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         )
         .unwrap();
     let physical = extent(root.path(), bytes);
-    let receipt=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id(&raw.identity),"material_extents":[physical.encode()],"admitted":[],"outcome":{},"refusal":null,"commit_seq":null})).unwrap();
+    let receipt=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[physical.encode()],"admitted":[],"outcome":{},"refusal":null,"commit_seq":null})).unwrap();
     sinex.spool.lock().unwrap().acknowledge(receipt).unwrap();
     let pending = sinex.pending_captures().unwrap();
     let material = pending[0].material.clone().unwrap();
@@ -203,3 +203,5 @@ fn complete_reading_custody_uses_the_encoded_plain_identity_and_survives_restart
     let round_trip: ProductWrite = serde_json::from_reader(&mut reader).unwrap();
     assert_eq!(round_trip, write);
 }
+
+mod named;

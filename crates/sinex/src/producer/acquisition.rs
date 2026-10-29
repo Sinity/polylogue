@@ -8,23 +8,6 @@ use polylogue_store::primary::{
 };
 use std::collections::BTreeMap;
 
-fn visit(
-    queue: &crate::spool::Spool,
-    mut callback: impl FnMut(crate::spool::Prepared) -> Result<()>,
-) -> Result<()> {
-    let mut after = None;
-    loop {
-        let page = queue.pending_after(after, 64)?;
-        if page.is_empty() {
-            return Ok(());
-        }
-        for entry in page {
-            after = Some(entry.order);
-            callback(entry)?;
-        }
-    }
-}
-
 fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result<PendingCapture> {
     let captured = entry
         .capture
@@ -73,21 +56,17 @@ impl Sinex {
         plan.validate()?;
         let queue = self.queue()?;
         let mut heads = BTreeMap::new();
-        visit(&queue, |entry| {
-            if let Some(Capture::Input(input)) = entry.capture.as_ref()
-                && let Some(basis) = &input.basis
-                && plan
-                    .bases
-                    .iter()
-                    .any(|expected| expected.source == basis.source)
-            {
+        for basis in &plan.bases {
+            if let Some(entry) = queue.source_heads(&basis.source, "")?.head {
+                let Some(Capture::Input(input)) = entry.capture.as_ref() else {
+                    return Err(Error::Invalid("pending source head has no input".into()));
+                };
                 heads.insert(
                     basis.source.clone(),
                     (entry.identity.clone(), input.group.clone()),
                 );
             }
-            Ok(())
-        })?;
+        }
         let retry_group = plan
             .bases
             .iter()
@@ -120,6 +99,11 @@ impl Sinex {
                 "acquisition:{}",
                 blake3::hash(&serde_json::to_vec(&(
                     "polylogue-acquisition-1",
+                    &self.config.producer,
+                    plan.bases
+                        .iter()
+                        .map(|basis| &basis.source.machine)
+                        .collect::<std::collections::BTreeSet<_>>(),
                     &plan.intent,
                     bases
                 ))?)
@@ -203,43 +187,39 @@ impl Sinex {
         reading_version: &str,
     ) -> Result<PendingSource> {
         let queue = self.queue()?;
+        let heads = queue.source_heads(source, reading_version)?;
         let mut result = PendingSource::default();
-        let mut control = None;
-        let mut unknown = false;
-        visit(&queue, |entry| {
-            let Some(Capture::Input(input)) = entry.capture.as_ref() else {
-                return Ok(());
-            };
-            let Some(basis) = &input.basis else {
-                unknown = true;
-                return Ok(());
-            };
-            if &basis.source != source {
-                return Ok(());
+        if let Some(head) = heads.head {
+            if let Some(Capture::Input(input)) = &head.capture {
+                result.status = input
+                    .basis
+                    .as_ref()
+                    .map_or(SourceStatus::MissingEvidence, |basis| basis.status);
             }
-            result.status = basis.status;
-            if input.raw_range.is_some() {
-                result.raw = Some(pending(&queue, entry.clone())?);
-            }
-            if entry
-                .control
+            result.head = Some(pending(&queue, head)?);
+        }
+        if let Some(raw) = heads.raw {
+            result.raw = if result
+                .head
                 .as_ref()
-                .is_some_and(|state| state.reading_version == reading_version)
+                .is_some_and(|head| head.identity == raw.identity)
             {
-                control = Some((
-                    entry.identity.clone(),
-                    input.as_ref().clone(),
-                    entry.control.clone().expect("matched control"),
-                ));
-            }
-            result.head = Some(pending(&queue, entry)?);
-            Ok(())
-        })?;
-        if unknown {
+                result.head.clone()
+            } else {
+                Some(pending(&queue, raw)?)
+            };
+        }
+        if heads.unattributed {
             result.status = SourceStatus::MissingEvidence;
         }
-        if let Some((identity, header, index)) = control {
-            let Capture::Input(full) = queue.capture(&identity)? else {
+        if let Some(entry) = heads.control {
+            let Some(Capture::Input(header)) = entry.capture else {
+                return Err(Error::Invalid("parser control has no source header".into()));
+            };
+            let index = entry
+                .control
+                .ok_or_else(|| Error::Invalid("parser control index is missing".into()))?;
+            let Capture::Input(full) = queue.capture(&entry.identity)? else {
                 return Err(Error::Invalid(
                     "parser control has no source capture".into(),
                 ));
@@ -254,8 +234,8 @@ impl Sinex {
                     Error::Invalid("parser control index differs from its immutable capture".into())
                 })?;
             result.continuation = Some(PendingCheckpoint {
-                capture: identity,
-                header,
+                capture: entry.identity,
+                header: *header,
                 checkpoint: checkpoint.clone(),
             });
         }

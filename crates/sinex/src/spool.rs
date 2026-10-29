@@ -10,12 +10,15 @@ use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+mod names;
+mod sources;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Kind {
     Material,
     Events,
+    Signals,
     ReplaySequence,
     RegisterKinds,
     Chunk,
@@ -89,6 +92,8 @@ pub(crate) struct Prepared {
     pub captured: Option<Bytes>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<Control>,
+    #[serde(default)]
+    pub named: bool,
     pub request: bool,
     pub group: Option<Group>,
     #[serde(skip)]
@@ -97,6 +102,20 @@ pub(crate) struct Prepared {
     pub commit_seq: Option<i64>,
     #[serde(skip)]
     pub refused: bool,
+}
+
+impl Prepared {
+    pub(crate) fn logical_name(&self) -> Option<&str> {
+        self.named.then(|| {
+            if self.kind == Kind::Material {
+                self.identity
+                    .strip_suffix(":observation")
+                    .unwrap_or(&self.identity)
+            } else {
+                &self.identity
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +151,8 @@ pub(crate) struct Spool {
     first: Cell<u64>,
     next: Cell<u64>,
     index_dirty: Cell<bool>,
+    last_retired: Cell<Option<i64>>,
+    retirement_dirty: Cell<bool>,
     _lock: File,
 }
 
@@ -166,6 +187,8 @@ impl Spool {
             first: Cell::new(1),
             next: Cell::new(1),
             index_dirty: Cell::new(true),
+            last_retired: Cell::new(None),
+            retirement_dirty: Cell::new(true),
             _lock: lock,
         };
         spool.rebuild_indexes()?;
@@ -436,6 +459,8 @@ impl Spool {
             first: Cell::new(self.next.get()),
             next: Cell::new(self.next.get()),
             index_dirty: Cell::new(true),
+            last_retired: Cell::new(None),
+            retirement_dirty: Cell::new(true),
             _lock: self._lock.try_clone()?,
         };
         staging.rebuild_indexes()?;
@@ -464,7 +489,27 @@ impl Spool {
         fs::rename(temporary.path(), &destination)?;
         sync(&self.root.join("operations"))?;
         boundary("acquisition_published");
-        self.rebuild_indexes()
+        let operations = destination.join("operations");
+        let batch = hash(identity.as_bytes());
+        for entry in fs::read_dir(&operations)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .filter(|name| hex_name(name))
+                .ok_or_else(|| Error::Invalid("invalid acquisition member".into()))?;
+            write_index(&self.index("locations", name), &batch)?;
+        }
+        for entry in fs::read_dir(operations)? {
+            let metadata = read_checked::<Prepared>(&entry?.path().join("metadata.json"))?
+                .ok_or_else(|| {
+                    Error::Invalid("published acquisition member has no metadata".into())
+                })?;
+            self.index_entry(&self.required(&metadata.identity)?)?;
+        }
+        self.next.set(staging.next.get());
+        self.index_dirty.set(false);
+        Ok(())
     }
 
     pub fn capture(&self, identity: &str) -> Result<Capture> {
@@ -591,6 +636,35 @@ impl Spool {
         Ok(entries)
     }
 
+    /// Prefix discovery walks derived names, never parser frame bodies. Exact
+    /// names use `get` and do not need this index.
+    pub fn visit_names(
+        &self,
+        prefix: &str,
+        visit: &mut dyn FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        self.ensure_indexes()?;
+        names::visit(&self.index("names", ""), prefix, &mut |identity| {
+            let prepared = self.required(identity)?;
+            let name = prepared.logical_name().ok_or_else(|| {
+                Error::Invalid("named index points to an unnamed operation".into())
+            })?;
+            if name.starts_with(prefix) {
+                visit(identity)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn source_heads(
+        &self,
+        source: &polylogue_store::primary::SourceSelector,
+        version: &str,
+    ) -> Result<sources::Heads> {
+        self.ensure_indexes()?;
+        sources::get(self, source, version)
+    }
+
     pub fn acknowledge(&self, acknowledgment: Acknowledgment) -> Result<()> {
         let prepared = self.required(&acknowledgment.frame)?;
         validate_ack(&prepared, &acknowledgment)?;
@@ -618,6 +692,7 @@ impl Spool {
         fs::rename(temporary.path(), directory.join("ack"))?;
         sync(&directory)?;
         boundary("ack_published");
+        self.retirement_dirty.set(true);
         Ok(())
     }
 
@@ -626,6 +701,9 @@ impl Spool {
             return invalid("confirmed position is negative");
         }
         self.ensure_indexes()?;
+        if self.last_retired.get() == Some(applied) && !self.retirement_dirty.get() {
+            return Ok(());
+        }
         // Indexes stay unchanged during this pass. Rebuilding after every
         // removed page would turn queue retirement into a quadratic scan.
         let through = self.next.get();
@@ -660,8 +738,10 @@ impl Spool {
             }
             self.remove(&prepared.identity)?;
         }
-        self.index_dirty.set(true);
-        self.ensure_indexes()
+        self.ensure_indexes()?;
+        self.last_retired.set(Some(applied));
+        self.retirement_dirty.set(false);
+        Ok(())
     }
 
     /// Exact identities come from the confirmed tombstone transaction's
@@ -965,6 +1045,7 @@ impl Spool {
             capture,
             captured,
             control: full_capture.and_then(control),
+            named: named(&frame),
             request,
             group,
             acknowledged: false,
@@ -1058,7 +1139,14 @@ impl Spool {
         if index.try_exists()? {
             fs::remove_dir_all(&index)?;
         }
-        for name in ["order", "groups", "members", "locations"] {
+        for name in [
+            "order",
+            "groups",
+            "members",
+            "locations",
+            "names",
+            "pending-source",
+        ] {
             fs::create_dir_all(index.join(name))?;
         }
         let (mut first, mut last) = (u64::MAX, 0);
@@ -1147,6 +1235,10 @@ impl Spool {
     }
 
     fn index_entry(&self, prepared: &Prepared) -> Result<()> {
+        sources::insert(self, prepared)?;
+        if let Some(name) = prepared.logical_name() {
+            names::insert(&self.index("names", ""), name, &prepared.identity)?;
+        }
         let order = self.index("order", &format!("{:020}", prepared.order));
         if read_json::<String>(&order)?.is_some_and(|identity| identity != prepared.identity) {
             return invalid("two pending operations have the same queue order");
@@ -1191,6 +1283,19 @@ fn control(capture: &Capture) -> Option<Control> {
             reading_version: checkpoint.reading_version.clone(),
             parsed_upto: checkpoint.parsed_upto,
         })
+}
+
+fn named(frame: &Ingress) -> bool {
+    match frame {
+        Ingress::Events { .. } => true,
+        Ingress::Material { frame, material } => {
+            matches!(
+                material.parser.as_str(),
+                "polylogue-products" | "polylogue-request-restore"
+            ) && frame.ends_with(":observation")
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn capture_header(capture: &Capture) -> Capture {
@@ -1248,6 +1353,7 @@ fn describe(frame: &Ingress) -> Result<(Kind, Option<Material>, Option<Capture>,
             ),
         ),
         Ingress::Events { .. } => (Kind::Events, None, None, false),
+        Ingress::Signals { .. } => (Kind::Signals, None, None, false),
         Ingress::ReplaySequence { .. } => (Kind::ReplaySequence, None, None, false),
         Ingress::RegisterKinds { .. } => (Kind::RegisterKinds, None, None, false),
         Ingress::Chunk { .. } => (Kind::Chunk, None, None, false),
@@ -1366,6 +1472,10 @@ fn write_checked(path: &Path, value: &impl Serialize) -> Result<()> {
 }
 
 fn write_index(path: &Path, identity: &str) -> Result<()> {
+    write_derived(path, &identity)
+}
+
+fn write_derived(path: &Path, value: &impl Serialize) -> Result<()> {
     // An interrupted derived index is rebuilt before it is read again; only
     // the immutable operation publication needs a durability barrier.
     let file = OpenOptions::new()
@@ -1373,7 +1483,7 @@ fn write_index(path: &Path, identity: &str) -> Result<()> {
         .truncate(true)
         .write(true)
         .open(path)?;
-    serde_json::to_writer(file, identity)?;
+    serde_json::to_writer(file, value)?;
     Ok(())
 }
 

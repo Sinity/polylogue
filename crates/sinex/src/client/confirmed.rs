@@ -68,6 +68,7 @@ impl Client {
     async fn fetch_event(
         &self,
         id: sinex_model::EventId,
+        original_position: i64,
     ) -> Result<sinex_protocol::ConfirmedEvent> {
         let reply: FetchEventReply = self
             .request(
@@ -81,35 +82,33 @@ impl Client {
                 reason,
             });
         }
+        if let Some(erased) = reply.erased {
+            if reply.event.is_some()
+                || erased.event != id
+                || erased.original_commit_seq != original_position
+                || erased.commit_seq <= original_position
+            {
+                return Err(Error::Invalid(
+                    "event erasure differs from its confirmed reference".into(),
+                ));
+            }
+            return Err(Error::Refused {
+                name: format!("event {id}"),
+                reason: format!(
+                    "historical content was erased at position {}; a current projection is required",
+                    erased.commit_seq
+                ),
+            });
+        }
         let event = reply
             .event
             .ok_or_else(|| Error::Invalid("event fetch supplied no event".into()))?;
-        if event.id != id || event.payload.is_none() {
+        if event.id != id || !event.projection.verifies(&event.payload) {
             return Err(Error::Invalid(
-                "event fetch changed identity or withheld complete facts".into(),
+                "event fetch changed identity or projected payload hash".into(),
             ));
         }
         Ok(event)
-    }
-
-    async fn full_event(
-        &self,
-        event: &sinex_protocol::ConfirmedEvent,
-    ) -> Result<sinex_protocol::ConfirmedEvent> {
-        if event.payload.is_some() {
-            return Ok(event.clone());
-        }
-        let fetched = self.fetch_event(event.id).await?;
-        if fetched.commit_seq != event.commit_seq
-            || fetched.kind_version != event.kind_version
-            || fetched.event_type != event.event_type
-            || fetched.record_hash != event.record_hash
-        {
-            return Err(Error::Invalid(
-                "fetched event differs from its confirmed identity".into(),
-            ));
-        }
-        Ok(fetched)
     }
 
     async fn decode_event(
@@ -125,10 +124,9 @@ impl Client {
                     event.event_type, event.kind_version, expected.version
                 )));
             }
-            let event = self.full_event(event).await?;
             ConfirmedChange::Live(Box::new(crate::products::decode(
                 &event.event_type,
-                event.payload.expect("complete event"),
+                event.payload.clone(),
             )?))
         } else {
             ConfirmedChange::Ignored
@@ -176,6 +174,7 @@ impl Client {
                 .request(
                     self.subjects.confirmed_consumer(&self.producer),
                     ConfirmedConsumer {
+                        basis: None,
                         after,
                         cache: cache.into(),
                         status_only: false,
@@ -244,6 +243,7 @@ impl Client {
                 .request(
                     self.subjects.confirmed_consumer(&self.producer),
                     ConfirmedConsumer {
+                        basis: None,
                         after,
                         cache: cache.into(),
                         status_only: true,
@@ -295,7 +295,6 @@ impl Client {
             self.pending.push(message.clone());
             let change: sinex_protocol::Confirmed = serde_json::from_slice(&message.payload)?;
             let confirmed = match change {
-                sinex_protocol::Confirmed::Event(event) => self.decode_event(&event, after).await?,
                 sinex_protocol::Confirmed::EventReference { commit_seq, event } => {
                     if commit_seq <= after {
                         Confirmed {
@@ -305,7 +304,7 @@ impl Client {
                             change: ConfirmedChange::Ignored,
                         }
                     } else {
-                        let fetched = self.fetch_event(event).await?;
+                        let fetched = self.fetch_event(event, commit_seq).await?;
                         if fetched.commit_seq != commit_seq {
                             return Err(Error::Invalid(
                                 "event reference changed its confirmed position".into(),

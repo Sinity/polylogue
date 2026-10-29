@@ -43,6 +43,15 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// This adapter declaration is installed by the owner, never self-registered
+/// from a producer's requested permissions.
+pub(crate) fn source_reference() -> sinex_protocol::SourceRef {
+    sinex_protocol::SourceRef {
+        name: "polylogue".into(),
+        version: 1,
+    }
+}
+
 impl From<Error> for polylogue_store::StoreError {
     fn from(error: Error) -> Self {
         match error {
@@ -337,6 +346,13 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<()> {
         self.visit_pending_blobs(visit)
     }
+    fn visit_named_products(
+        &self,
+        selector: &polylogue_store::primary::NamedProductSelector,
+        visit: &mut dyn FnMut(&polylogue_store::primary::Product) -> polylogue_store::Result<()>,
+    ) -> polylogue_store::Result<()> {
+        Ok(self.visit_named_products(selector, visit)?)
+    }
     fn prepare_named_products(
         &self,
         identity: &str,
@@ -406,9 +422,14 @@ impl polylogue_store::primary::Sinex for Sinex {
 #[cfg(test)]
 mod tests;
 
-/// A prepared material identity is determined by its immutable frame identity.
-fn material_id(frame: &str) -> sinex_model::MaterialId {
-    let hash = blake3::hash(frame.as_bytes());
+/// Source-copy custody is scoped to the authenticated receiving producer.
+fn material_id(producer: &str, frame: &str) -> sinex_model::MaterialId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue-material-1\0");
+    hash.update(&(producer.len() as u64).to_le_bytes());
+    hash.update(producer.as_bytes());
+    hash.update(frame.as_bytes());
+    let hash = hash.finalize();
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&hash.as_bytes()[..16]);
     sinex_model::MaterialId(uuid::Uuid::from_bytes(bytes))
