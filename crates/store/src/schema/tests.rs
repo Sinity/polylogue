@@ -211,7 +211,7 @@ fn migration_keeps_rows_source_bytes_and_paid_embedding_hashes_when_mask_state_r
         .unwrap();
     index.execute_batch("PRAGMA user_version=3;
       INSERT INTO input_ref(pk,id,format) VALUES(1,'synthetic-source','fixture');
-      INSERT INTO session(pk,id,origin,native_id,kind) VALUES(1,'claude-code:migration','claude-code','migration','main');
+      INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:migration','claude-code','migration','main',1);
       INSERT INTO message(pk,id,session_pk,order_input_pk,seq,arrival_rank,role,written_by,prompt_kind,input_pk,cost_nusd,provider_cost_nusd,pem,order_input_id)
       VALUES(1,'claude-code:migration/m',1,1,1,0,'user','human','prose',1,12345,67890,2,'synthetic-source');").unwrap();
     let source = "--secret=synthetic-preserved-value\n\0";

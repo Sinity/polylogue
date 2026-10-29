@@ -6,7 +6,7 @@ use crate::primary::{
     Capture, CaptureGroup, CapturedInput, CapturedReading, Material, PendingCapture, PreparedInput,
     Product, ProductWrite,
 };
-use crate::staging::{Prepared, PreparedBatch, StoredInput};
+use crate::staging::{PreparedBatch, StoredInput};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
 
@@ -71,10 +71,7 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     }
     for blob in batch.new_blob.iter().chain(&batch.blobs) {
         if !item.files.iter().any(|file| {
-            file.owner == archive.root
-                && file.hash() == blob.hash
-                && file.len() == blob.size
-                && matches!(file.file, Prepared::Part { .. })
+            file.owner == archive.root && file.hash() == blob.hash && file.len() == blob.size
         }) {
             return Err(StoreError::Invalid(
                 "primary capture has no matching private source bytes".into(),
@@ -273,10 +270,7 @@ impl Inner {
                     .iter()
                     .find(|file| file.hash() == blob.hash)
                     .expect("validated blob");
-                let Prepared::Part { file, .. } = &file.file else {
-                    unreachable!()
-                };
-                sinex.prepare_blob(blob.hash, blob.size, &mut file.reopen()?)?;
+                sinex.prepare_blob(blob.hash, blob.size, file.body()?)?;
             }
             let prepared = if let Some(blob) = &batch.new_blob {
                 let file = item
@@ -284,12 +278,10 @@ impl Inner {
                     .iter()
                     .find(|file| file.hash() == blob.hash)
                     .expect("validated source");
-                let Prepared::Part { file, .. } = &file.file else {
-                    unreachable!()
-                };
-                sinex.prepare_input(&captured, &mut file.reopen()?)?
+                sinex.prepare_input(&captured, file.body()?)?
             } else {
-                sinex.prepare_input(&captured, &mut metadata_bytes.as_slice())?
+                let metadata = self.location.prepare_bytes(metadata_bytes.as_slice())?;
+                sinex.prepare_input(&captured, metadata.body()?)?
             };
             pending.push(PendingCapture {
                 identity: match &prepared {

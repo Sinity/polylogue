@@ -98,7 +98,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             }
             let build = match command.action {
                 Action::Request(build) | Action::Stream { build, .. } => build,
-                Action::Local(_) => {
+                Action::Local(_) | Action::ConfiguredLocal(_) => {
                     return Answer::error(Failure::new(
                         FailureKind::BadRequest,
                         "command runs locally",
@@ -218,7 +218,7 @@ pub fn build<C: CommandType>(
     match command.action {
         Action::Request(build) | Action::Stream { build, .. } => build(command, &values, caller)
             .map_err(|error| Failure::new(FailureKind::BadRequest, error)),
-        Action::Local(_) => Err(Failure::new(
+        Action::Local(_) | Action::ConfiguredLocal(_) => Err(Failure::new(
             FailureKind::BadRequest,
             "command runs locally",
         )),

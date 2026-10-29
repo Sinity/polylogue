@@ -4,6 +4,11 @@ use crate::primary::{Product, ProductWrite, SourceLocation};
 use polylogue_model::authored::PreparedRequest;
 
 impl Inner {
+    pub(super) fn primary_cache_ready(&self) -> Result<()> {
+        self.location.read_scope.token()?;
+        crate::primary::scope::require_readable(&self.index)
+    }
+
     pub(super) fn apply_confirmed(&mut self, events: &[crate::primary::Confirmed]) -> Result<i64> {
         if !self.location.is_primary() {
             return Err(StoreError::Invalid(
@@ -71,6 +76,7 @@ impl Inner {
     }
 
     pub(super) fn product_writes(&self, products: Vec<Product>) -> Result<Vec<ProductWrite>> {
+        self.primary_cache_ready()?;
         let mut writes = Vec::with_capacity(products.len());
         for (index, product) in products.into_iter().enumerate() {
             let (location, machine) = if let Some(reading) = product.reading() {
@@ -166,6 +172,7 @@ impl Inner {
         length: u64,
         mut source: ChainReading,
     ) -> Result<u64> {
+        self.primary_cache_ready()?;
         let root:Option<String>=self.index.query_row("SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",params![input.id,chain],|row|row.get(0)).optional()?;
         let root = root.ok_or_else(|| {
             StoreError::Invalid("the confirmed source chain has no root material".into())
@@ -220,6 +227,7 @@ impl Inner {
         &mut self,
         request: &polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
+        self.primary_cache_ready()?;
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         if let Some(known) = crate::primary::authored::known_request(&self.index, request)? {
             let mut outcome = known.outcome;
@@ -258,6 +266,7 @@ impl Inner {
         new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
+        self.primary_cache_ready()?;
         let known: Option<i64> = self
             .index
             .query_row(
@@ -282,13 +291,8 @@ impl Inner {
                 "primary blob bytes differ from their declaration".into(),
             ));
         }
-        let crate::staging::Prepared::Part { file, .. } = prepared.file else {
-            return Err(StoreError::Invalid(
-                "local segment preparation reached the primary producer".into(),
-            ));
-        };
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
-        let prepared = sinex.prepare_blob(new_blob.hash, new_blob.size, &mut file.reopen()?)?;
+        let prepared = sinex.prepare_blob(new_blob.hash, new_blob.size, prepared.body()?)?;
         // Captured bytes are durable before their temporary preparation is released.
         if let Err(error) = self
             .drain_primary_captures()

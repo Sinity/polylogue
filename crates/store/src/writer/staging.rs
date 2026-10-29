@@ -95,24 +95,11 @@ impl Inner {
                 return errors(&group, error);
             }
         }
-        let prepared = if self.sinex.is_none() {
-            let prepared = group
-                .iter_mut()
-                .flat_map(|item| item.files.drain(..))
-                .map(|file| match file.file {
-                    crate::staging::Prepared::Local { prepared } => Ok(*prepared),
-                    crate::staging::Prepared::Part { .. } => Err(StoreError::Invalid(
-                        "Sinex bytes reached the segment writer".into(),
-                    )),
-                })
-                .collect::<Result<Vec<_>>>();
-            match prepared {
-                Ok(prepared) => prepared,
-                Err(error) => return errors(&group, error),
-            }
-        } else {
-            Vec::new()
-        };
+        let prepared = group
+            .iter_mut()
+            .flat_map(|item| item.files.drain(..))
+            .map(PreparedBytes::into_prepared)
+            .collect::<Vec<_>>();
         let synced = if self.sinex.is_none() && !prepared.is_empty() {
             if self.segment.is_none() {
                 match crate::blobs::open_writer(&self.archive, &self.location.root) {

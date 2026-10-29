@@ -24,6 +24,7 @@
 //! carries on.
 
 use crate::briefing::{Ask, StartSource};
+use crate::config::Startup;
 use crate::daemon::{Request, Response};
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::SessionId;
@@ -93,9 +94,11 @@ pub const EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
-/// Where hook events go: the hook spool the daemon's loop reads.
-pub fn hook_spool_dir() -> PathBuf {
-    polylogue_engine::Config::from_env().spool_dir(polylogue_sources::hook_spool::ORIGIN)
+/// Terminal adapter facts resolved from the binary's captured environment.
+#[derive(Debug, Clone)]
+pub struct Inputs {
+    pub kitty_pid: Option<u32>,
+    pub kitty_window: Option<String>,
 }
 
 /// Appends one event line to the spool file of the harness process that
@@ -107,6 +110,7 @@ pub fn append_to_spool(
     event: &str,
     payload: &Value,
     native: &Value,
+    startup: &Startup,
 ) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
@@ -120,9 +124,8 @@ pub fn append_to_spool(
                 .is_some_and(|origin| origin.as_str() == harness.origin())
         })
         .unwrap_or_else(std::os::unix::process::parent_id);
-    let ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let at = startup.clock.now();
+    let ns = at.as_nanosecond();
     let mut payload = payload.clone();
     // Hermes sends the whole conversation with every turn; its transcript
     // is read from its own database.
@@ -130,7 +133,7 @@ pub fn append_to_spool(
         extra.remove("conversation_history");
     }
     let mut line = json!({
-        "event_id": uuid::Uuid::now_v7().to_string(),
+        "event_id": request_id(at)?,
         "at_ns": ns.to_string(),
         "event": event,
         "harness_pid": process,
@@ -142,7 +145,7 @@ pub fn append_to_spool(
             line[key] = value.clone();
         }
     }
-    if let Some(session) = session_of(harness, &line["payload"]) {
+    if let Some(session) = session_of(harness, &line["payload"], startup) {
         line["session_id"] = json!(session.native().to_string());
     }
     let mut line = serde_json::to_vec(&line)?;
@@ -157,10 +160,22 @@ pub fn append_to_spool(
     f.write_all(&line)
 }
 
+fn request_id(at: jiff::Timestamp) -> std::io::Result<String> {
+    let ns = at.as_nanosecond();
+    let seconds = u64::try_from(ns.div_euclid(1_000_000_000)).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "hook clock precedes the UUID epoch",
+        )
+    })?;
+    let nanos = u32::try_from(ns.rem_euclid(1_000_000_000)).expect("subseconds fit u32");
+    Ok(uuid::Uuid::new_v7(uuid::Timestamp::from_unix(uuid::NoContext, seconds, nanos)).to_string())
+}
+
 /// Sends one request with a time budget for the whole exchange.
-fn ask_daemon(request: &Request, budget: Duration) -> Option<Response> {
+fn ask_daemon(startup: &Startup, request: &Request, budget: Duration) -> Option<Response> {
     exchange(
-        &Archive::at(&Archive::default_root()).socket(),
+        &Archive::at(&startup.config.archive).socket(),
         request,
         budget,
     )
@@ -171,17 +186,17 @@ fn exchange(socket: &Path, request: &Request, budget: Duration) -> Option<Respon
 }
 
 /// The session a hook payload names, as Polylogue names it.
-fn session_of(harness: Harness, payload: &Value) -> Option<SessionId> {
+fn session_of(harness: Harness, payload: &Value, startup: &Startup) -> Option<SessionId> {
     let id = payload["session_id"].as_str().filter(|id| !id.is_empty())?;
     match harness {
         Harness::Hermes => {
-            let home = std::env::var_os("HOME")?;
-            let state_db = Path::new(&home).join(".hermes/state.db");
-            polylogue_sources::hermes::session_at(
-                &polylogue_store::user_writes::machine_id(),
-                &state_db,
-                id,
-            )
+            let origin = by_name(harness.origin())?;
+            let location = origin
+                .locations
+                .iter()
+                .find(|location| **location == "state.db")?;
+            let state_db = startup.engine.root(origin.root).join(location);
+            polylogue_sources::hermes::session_at(&startup.config.identity.machine, &state_db, id)
         }
         _ => SessionId::parse(&format!("{}:{id}", harness.origin())).ok(),
     }
@@ -262,9 +277,10 @@ fn is_uuid(w: &str) -> bool {
 
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller.
-fn context(ask: Ask) -> Option<(String, String)> {
-    let request_id = polylogue_store::user_writes::new_request_id();
+fn context(startup: &Startup, ask: Ask) -> Option<(String, String)> {
+    let request_id = request_id(startup.clock.now()).ok()?;
     let reply = ask_daemon(
+        startup,
         &Request::Context {
             request_id,
             ask,
@@ -283,8 +299,9 @@ fn context(ask: Ask) -> Option<(String, String)> {
     Some((delivery, text))
 }
 
-fn delivered(delivery: &str, budget: Duration) {
+fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
     let _ = ask_daemon(
+        startup,
         &Request::DeliveryEvent {
             delivery: delivery.to_owned(),
             what: DeliveryOutcome::Delivered,
@@ -319,13 +336,21 @@ fn write_context(stdout: &mut impl Write, harness: Harness, event: &str, text: &
 }
 
 /// The brief for a session starting in the payload's directory.
-fn start(harness: Harness, payload: &Value, source: StartSource) -> Option<(String, String)> {
+fn start(
+    harness: Harness,
+    payload: &Value,
+    source: StartSource,
+    startup: &Startup,
+) -> Option<(String, String)> {
     let cwd = payload["cwd"].as_str().map(PathBuf::from)?;
-    context(Ask::SessionStart {
-        cwd,
-        session: session_of(harness, payload),
-        source,
-    })
+    context(
+        startup,
+        Ask::SessionStart {
+            cwd,
+            session: session_of(harness, payload, startup),
+            source,
+        },
+    )
 }
 
 /// The shell command a pre-tool payload is about to run: Claude Code's
@@ -343,18 +368,26 @@ fn shell_command(payload: &Value) -> Option<String> {
 }
 
 /// Takeover context for each session pasted into a prompt.
-fn takeovers(harness: Harness, payload: &Value, prompt: &str) -> Option<(String, String)> {
-    let me = session_of(harness, payload);
+fn takeovers(
+    harness: Harness,
+    payload: &Value,
+    prompt: &str,
+    startup: &Startup,
+) -> Option<(String, String)> {
+    let me = session_of(harness, payload, startup);
     let mut texts = Vec::new();
     let mut deliveries = Vec::new();
     for id in pasted_session_ids(prompt) {
         if Some(&id) == me.as_ref() {
             continue;
         }
-        if let Some((d, t)) = context(Ask::Takeover {
-            session: id,
-            for_session: me.clone(),
-        }) {
+        if let Some((d, t)) = context(
+            startup,
+            Ask::Takeover {
+                session: id,
+                for_session: me.clone(),
+            },
+        ) {
             deliveries.push(d);
             texts.push(t);
         }
@@ -366,16 +399,22 @@ fn takeovers(harness: Harness, payload: &Value, prompt: &str) -> Option<(String,
 }
 
 /// Session-start and takeover context for an event, with its deliveries.
-pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String, String)> {
+pub fn respond(
+    harness: Harness,
+    event: &str,
+    payload: &Value,
+    startup: &Startup,
+) -> Option<(String, String)> {
     match (harness, event) {
         (Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli, "SessionStart") => start(
             harness,
             payload,
             StartSource::parse(payload["source"].as_str().unwrap_or("startup")),
+            startup,
         ),
         (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit")
         | (Harness::GeminiCli, "BeforeAgent") => {
-            takeovers(harness, payload, payload["prompt"].as_str()?)
+            takeovers(harness, payload, payload["prompt"].as_str()?, startup)
         }
         // Hermes injects context only into a turn's prompt: the first
         // turn's carries the brief, and any turn's the takeovers it asks for.
@@ -383,9 +422,9 @@ pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String
             let extra = &payload["extra"];
             let prompt = extra["user_message"].as_str().unwrap_or("");
             let brief = (extra["is_first_turn"].as_bool() == Some(true))
-                .then(|| start(harness, payload, StartSource::Startup))
+                .then(|| start(harness, payload, StartSource::Startup, startup))
                 .flatten();
-            let takeover = takeovers(harness, payload, prompt);
+            let takeover = takeovers(harness, payload, prompt, startup);
             match (brief, takeover) {
                 (Some((d1, t1)), Some((d2, t2))) => {
                     Some((format!("{d1},{d2}"), format!("{t1}\n\n{t2}")))
@@ -401,6 +440,7 @@ pub fn respond(harness: Harness, event: &str, payload: &Value) -> Option<(String
 fn tool_advice(
     harness: Harness,
     payload: &Value,
+    startup: &Startup,
     mut send: impl FnMut(&Request, Duration) -> Option<Response>,
     output: impl FnOnce(Harness, &str, &str) -> bool,
 ) {
@@ -413,9 +453,12 @@ fn tool_advice(
     let Some(command) = shell_command(payload) else {
         return;
     };
-    let session = session_of(harness, payload);
+    let session = session_of(harness, payload, startup);
+    let Ok(request_id) = request_id(startup.clock.now()) else {
+        return;
+    };
     let request = Request::Context {
-        request_id: polylogue_store::user_writes::new_request_id(),
+        request_id,
         ask: Ask::ToolUse {
             cwd: cwd.clone(),
             session: session.clone(),
@@ -446,12 +489,25 @@ fn tool_advice(
     }
 }
 
-pub fn run(harness: Harness, event: &str) -> ExitCode {
+pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-    let native = native::snapshot(event, &payload, &native::Environment::load());
-    if let Err(e) = append_to_spool(&hook_spool_dir(), harness, event, &payload, &native) {
+    let native = native::snapshot(
+        event,
+        &payload,
+        &native::Environment::observe(&startup.config.identity.host, &startup.hook),
+    );
+    if let Err(e) = append_to_spool(
+        &startup
+            .engine
+            .spool_dir(polylogue_sources::hook_spool::ORIGIN),
+        harness,
+        event,
+        &payload,
+        &native,
+        startup,
+    ) {
         // The harness must not fail because the spool cannot be written.
         eprintln!(
             "{}",
@@ -461,12 +517,18 @@ pub fn run(harness: Harness, event: &str) -> ExitCode {
         );
     }
     if event == "PreToolUse" {
-        tool_advice(harness, &payload, ask_daemon, emit);
-    } else if let Some((deliveries, text)) = respond(harness, event, &payload)
+        tool_advice(
+            harness,
+            &payload,
+            startup,
+            |request, budget| ask_daemon(startup, request, budget),
+            emit,
+        );
+    } else if let Some((deliveries, text)) = respond(harness, event, &payload, startup)
         && emit(harness, event, &text)
     {
         for d in deliveries.split(',') {
-            delivered(d, CONTEXT_BUDGET);
+            delivered(startup, d, CONTEXT_BUDGET);
         }
     }
     ExitCode::SUCCESS

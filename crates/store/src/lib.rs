@@ -66,7 +66,7 @@ pub use context::{
 };
 pub use read::{
     BehindChain, CapturedSession, ImportedAs, KnownInput, ReadPool, Reader, SqlValue, Status,
-    scope::ReadScopeToken,
+    scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use writer::{
     Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,

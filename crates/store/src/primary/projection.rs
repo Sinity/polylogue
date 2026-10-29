@@ -411,6 +411,7 @@ struct ReadingStep {
     receipt: Option<crate::wire_shapes::ReadingReceipt>,
     reset: bool,
     comparison: Option<crate::tool_databases::Comparison>,
+    checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
 }
 #[derive(Default)]
 struct SourceSpans {
@@ -423,6 +424,13 @@ fn finish_step(
     facts: ReadingStep,
     spans: &mut SourceSpans,
 ) -> Result<()> {
+    if let Some(checkpoint) = &facts.checkpoint
+        && !checkpoint.matches(&reading.reading_version, reading.parsed_upto)
+    {
+        return Err(StoreError::Invalid(
+            "parser continuation differs from its confirmed reading cursor".into(),
+        ));
+    }
     if facts.reset {
         spans.missing = false;
     } else if reading.start > spans.through {
@@ -432,6 +440,7 @@ fn finish_step(
     step.receipt = facts.receipt;
     step.reset = facts.reset;
     step.comparison = facts.comparison;
+    step.checkpoint = facts.checkpoint;
     step.source_prefix_missing = spans.missing || step.receipt.is_none();
     spans.through = spans.through.max(reading.parsed_upto);
     file.push_confirmed(&mut step)
@@ -610,11 +619,13 @@ fn plan(index: &Connection) -> Result<Plan> {
                     counts: record_counts,
                     reset,
                     comparison: source_comparison,
+                    checkpoint,
                     ..
                 } => {
                     pending.counts = record_counts;
                     pending.reset = reset;
                     pending.comparison = source_comparison;
+                    pending.checkpoint = checkpoint;
                     pending.receipt = Some(crate::wire_shapes::ReadingReceipt {
                         sequence: row.get(2)?,
                         id: Some(row.get(1)?),

@@ -4,38 +4,43 @@ use std::sync::{Arc, Barrier, mpsc::channel};
 #[test]
 fn overlapping_workers_read_after_the_preceding_commit() {
     let w = test_archive();
+    let first = w
+        .commit_source(
+            batch(
+                "first-route",
+                0,
+                0,
+                vec![row(
+                    1,
+                    text_message("shared", "s", Role::Assistant, "partial", None),
+                )],
+                &["s"],
+            ),
+            &SOURCE_RECORD,
+        )
+        .unwrap();
+    let mut second = batch(
+        "second-route",
+        2,
+        0,
+        vec![row(
+            1,
+            text_message("shared", "s", Role::Assistant, "complete", Some("end_turn")),
+        )],
+        &["s"],
+    );
+    second.input.id = blake3::hash(&SOURCE_RECORD).to_hex().to_string();
+    let second = w.commit_source(second, &SOURCE_RECORD).unwrap();
     let mut lock = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let blocked = lock
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();
     let sender = w.writer.sender().unwrap();
-    sender
-        .send(batch(
-            "first-route",
-            0,
-            0,
-            vec![row(
-                1,
-                text_message("shared", "s", Role::Assistant, "partial", None),
-            )],
-            &["s"],
-        ))
-        .unwrap();
+    sender.send(first).unwrap();
     let (waiting, observed) = channel();
     sender.0.resolver.observe_wait(waiting);
     let next = sender.clone();
-    let thread = std::thread::spawn(move || {
-        next.send(batch(
-            "second-route",
-            2,
-            0,
-            vec![row(
-                1,
-                text_message("shared", "s", Role::Assistant, "complete", Some("end_turn")),
-            )],
-            &["s"],
-        ))
-    });
+    let thread = std::thread::spawn(move || next.send(second));
     observed
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("overlapping worker did not wait for its source snapshot");
@@ -67,6 +72,22 @@ fn overlapping_workers_read_after_the_preceding_commit() {
 #[test]
 fn disjoint_workers_reserve_unique_rows_before_either_commits() {
     let w = test_archive();
+    let readings = [("one", "one", "first"), ("two", "two", "second")]
+        .into_iter()
+        .map(|(input, session, word)| {
+            w.commit_source(
+                batch(
+                    input,
+                    0,
+                    0,
+                    vec![row(1, text_message(input, session, Role::User, word, None))],
+                    &[session],
+                ),
+                &SOURCE_RECORD,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
     let mut lock = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let blocked = lock
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -74,20 +95,13 @@ fn disjoint_workers_reserve_unique_rows_before_either_commits() {
     let start = Arc::new(Barrier::new(3));
     let (sent, queued) = channel();
     let mut threads = Vec::new();
-    for (input, session, word) in [("one", "one", "first"), ("two", "two", "second")] {
+    for reading in readings {
         let sender = w.writer.sender().unwrap();
         let start = Arc::clone(&start);
         let sent = sent.clone();
         threads.push(std::thread::spawn(move || {
             start.wait();
-            let result = sender.send(batch(
-                input,
-                0,
-                0,
-                vec![row(1, text_message(input, session, Role::User, word, None))],
-                &[session],
-            ));
-            sent.send(result).unwrap();
+            sent.send(sender.send(reading)).unwrap();
         }));
     }
     start.wait();
@@ -123,6 +137,22 @@ fn disjoint_workers_reserve_unique_rows_before_either_commits() {
 #[test]
 fn disjoint_workers_share_text_identity_without_waiting_for_a_commit() {
     let w = test_archive();
+    let readings = [("one", "one", "shared text"), ("two", "two", "shared text")]
+        .into_iter()
+        .map(|(input, session, word)| {
+            w.commit_source(
+                batch(
+                    input,
+                    0,
+                    0,
+                    vec![row(1, text_message(input, session, Role::User, word, None))],
+                    &[session],
+                ),
+                &SOURCE_RECORD,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
     let mut lock = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let blocked = lock
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -130,20 +160,13 @@ fn disjoint_workers_share_text_identity_without_waiting_for_a_commit() {
     let start = Arc::new(Barrier::new(3));
     let (sent, queued) = channel();
     let mut threads = Vec::new();
-    for (input, session, word) in [("one", "one", "shared text"), ("two", "two", "shared text")] {
+    for reading in readings {
         let sender = w.writer.sender().unwrap();
         let start = Arc::clone(&start);
         let sent = sent.clone();
         threads.push(std::thread::spawn(move || {
             start.wait();
-            let result = sender.send(batch(
-                input,
-                0,
-                0,
-                vec![row(1, text_message(input, session, Role::User, word, None))],
-                &[session],
-            ));
-            sent.send(result).unwrap();
+            sent.send(sender.send(reading)).unwrap();
         }));
     }
     start.wait();
@@ -201,11 +224,12 @@ fn refused_commit_releases_reservations_for_an_ordinary_retry() {
             &["s"],
         )
     };
+    let reading = w.commit_source(make(), &SOURCE_RECORD).unwrap();
     crate::fault::arm("write.index_commit", "", crate::fault::Action::Fail, 0, 2);
     let results = sender
         .store_group(
             vec![crate::staging::PreparedBatch {
-                batch: make(),
+                batch: reading.clone(),
                 files: Vec::new(),
             }],
             Arc::clone(&blobs),
@@ -216,7 +240,7 @@ fn refused_commit_releases_reservations_for_an_ordinary_retry() {
     let results = sender
         .store_group(
             vec![crate::staging::PreparedBatch {
-                batch: make(),
+                batch: reading.clone(),
                 files: Vec::new(),
             }],
             blobs,
@@ -249,6 +273,7 @@ fn collection_without_a_parser_commits_its_explicit_status() {
     let w = test_archive();
     let mut input = batch("collected", 0, 0, Vec::new(), &[]);
     input.parse[0].no_parser_yet = true;
+    let input = w.commit_source(input, &SOURCE_RECORD).unwrap();
     w.writer.send(input).unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
@@ -270,6 +295,9 @@ fn collection_without_a_parser_commits_its_explicit_status() {
 fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
     let w = test_archive();
     let sender = w.writer.sender().unwrap();
+    let captured = w
+        .commit_source(batch("value-route", 0, 0, Vec::new(), &[]), &SOURCE_RECORD)
+        .unwrap();
     let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
     let snapshot = index.unchecked_transaction().unwrap();
     assert_eq!(
@@ -292,6 +320,8 @@ fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
         range: Some((0, 1)),
         data: data.clone(),
     });
+    input.change = captured.change;
+    input.observation = None;
     sender.send(input).unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
@@ -314,31 +344,43 @@ fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
 fn keys_created_after_the_first_build_are_shared_by_following_routes() {
     let w = test_archive();
     w.writer
-        .send(batch(
-            "initial",
-            0,
-            0,
-            vec![row(
-                1,
-                text_message("initial", "s", Role::User, "initial", None),
-            )],
-            &["s"],
-        ))
+        .send(
+            w.commit_source(
+                batch(
+                    "initial",
+                    0,
+                    0,
+                    vec![row(
+                        1,
+                        text_message("initial", "s", Role::User, "initial", None),
+                    )],
+                    &["s"],
+                ),
+                &SOURCE_RECORD,
+            )
+            .unwrap(),
+        )
         .unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
     for input in ["later-a", "later-b"] {
         w.writer
-            .send(batch(
-                input,
-                0,
-                0,
-                vec![row(
-                    1,
-                    text_message("later", "s", Role::User, "later", None),
-                )],
-                &["s"],
-            ))
+            .send(
+                w.commit_source(
+                    batch(
+                        input,
+                        0,
+                        0,
+                        vec![row(
+                            1,
+                            text_message("later", "s", Role::User, "later", None),
+                        )],
+                        &["s"],
+                    ),
+                    &SOURCE_RECORD,
+                )
+                .unwrap(),
+            )
             .unwrap();
         let report = w.writer.flush().unwrap();
         assert!(report.errors.is_empty(), "{report:?}");
@@ -361,16 +403,22 @@ fn keys_created_after_the_first_build_are_shared_by_following_routes() {
 fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
     let w = test_archive();
     w.writer
-        .send(batch(
-            "observed",
-            0,
-            0,
-            vec![row(
-                1,
-                text_message("same", "s", Role::User, "before", None),
-            )],
-            &["s"],
-        ))
+        .send(
+            w.commit_source(
+                batch(
+                    "observed",
+                    0,
+                    0,
+                    vec![row(
+                        1,
+                        text_message("same", "s", Role::User, "before", None),
+                    )],
+                    &["s"],
+                ),
+                &SOURCE_RECORD,
+            )
+            .unwrap(),
+        )
         .unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
@@ -385,6 +433,8 @@ fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
         &["s"],
     );
     rewritten.change = Change::Rewritten;
+    let (blob, file) = w.archive.prepare_blob(&[b'w'; 100]).unwrap();
+    rewritten.new_blob = Some(blob);
     let results = w
         .writer
         .sender()
@@ -397,7 +447,7 @@ fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
                 },
                 crate::staging::PreparedBatch {
                     batch: rewritten,
-                    files: Vec::new(),
+                    files: file.into_iter().collect(),
                 },
             ],
             Arc::new(w.archive.blobs().unwrap()),
@@ -1111,20 +1161,23 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     event.set_time(at, evidence).unwrap();
     input.parse[0].output.events.push(event.clone());
     let bytes = serde_json::to_vec(&input.parse[0].output).unwrap();
-    commit_event_bytes(&w, input, &bytes);
+    let mut replay = commit_event_bytes(&w, input, &bytes);
     w.writer.derive().unwrap();
     let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     conn.execute_batch("UPDATE message SET at=0;UPDATE session SET started_at=0;UPDATE event SET at=0;UPDATE document_source SET source_time=0;").unwrap();
     let reads = ReadPool::open(&w.archive).unwrap();
     {
         let reader = reads.reader().unwrap();
-        assert_eq!(reader.messages(&sid("s"), false).unwrap(), vec![message]);
-        assert_eq!(reader.session(&sid("s")).unwrap(), Some(session));
+        assert_eq!(
+            reader.messages(&sid("s"), false).unwrap(),
+            vec![message.clone()]
+        );
+        assert_eq!(reader.session(&sid("s")).unwrap(), Some(session.clone()));
         assert_eq!(
             reader.document(&document.id).unwrap(),
             Some(document.clone())
         );
-        assert_eq!(reader.events(&sid("s")).unwrap(), vec![event]);
+        assert_eq!(reader.events(&sid("s")).unwrap(), vec![event.clone()]);
     }
     let mut earlier = document.clone();
     earlier.blocks = vec![Block::Text {
@@ -1146,8 +1199,18 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     commit_event_bytes(&w, other, &bytes);
     assert_eq!(
         reads.reader().unwrap().document(&document.id).unwrap(),
-        Some(document)
+        Some(document.clone())
     );
+    replay.parse[0].reading_version = "precise-reading-rebuilt".into();
+    w.writer.send(replay).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    w.writer.derive().unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(reader.messages(&sid("s"), false).unwrap(), vec![message]);
+    assert_eq!(reader.session(&sid("s")).unwrap(), Some(session));
+    assert_eq!(reader.document(&document.id).unwrap(), Some(document));
+    assert_eq!(reader.events(&sid("s")).unwrap(), vec![event]);
 }
 
 #[test]
@@ -1414,6 +1477,19 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
             .unwrap(),
         None
     );
+    // A historical fold with one unproven contributor cannot borrow the
+    // admission of its other contributor or the current cache transaction.
+    conn.execute("UPDATE session_record SET admitted=NULL WHERE input_pk=(SELECT pk FROM input_ref WHERE id='later-fact-source')",[]).unwrap();
+    conn.execute("UPDATE link_source SET admitted=NULL WHERE input_pk=(SELECT pk FROM input_ref WHERE id='later-fact-source')",[]).unwrap();
+    conn.execute("UPDATE document_source SET admitted=NULL", [])
+        .unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(
+        reader.session_commit(&sid("receipt-session")).unwrap(),
+        None
+    );
+    assert_eq!(reader.link_commit(&link).unwrap(), None);
+    assert_eq!(reader.document_commit(&document.id).unwrap(), None);
     for invalid in [0, u64::MAX] {
         let mut malformed = confirmed.clone();
         malformed.parse[0].output.link_receipts.insert(0, invalid);

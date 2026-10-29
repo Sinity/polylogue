@@ -103,12 +103,14 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                             Ok(internal) if internal.streaming() => {
                                 let limit = request.deadline.duration(crate::protocol::operations::deadlines().get(command.latency))
                                     .map_or_else(|| polylogue_store::read::limit::ReadLimit::without_deadline(cancellation.clone()), |duration| polylogue_store::read::limit::ReadLimit::new(duration, cancellation.clone()));
+                                let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
                                 let produced = limit.scope(|| match limit.check() {
-                                    Ok(()) => crate::protocol::stream::produce(
+                                    Ok(()) => crate::protocol::stream::produce_limited(
                                         &internal,
                                         d,
                                         &accepted.authorship,
                                         &mut out,
+                                        &limit,
                                     )
                                     .expect("stream command owns its request"),
                                     Err(error) => Err(service::store_error(&error)),
@@ -116,6 +118,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                                 if let Err(response) = produced {
                                     let _ = crate::protocol::stream::error(&mut out, &response);
                                 }
+                                let _ = out.set_write_timeout(None);
                                 continue;
                             }
                             Ok(_) => {}
@@ -197,15 +200,24 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
         } else {
             None
         };
+        let _ = out.set_write_timeout(Some(Duration::from_millis(10)));
         let produced = limit.scope(|| {
-            crate::protocol::stream::produce(&request, d, &accepted.authorship, &mut out)
+            crate::protocol::stream::produce_limited(
+                &request,
+                d,
+                &accepted.authorship,
+                &mut out,
+                &limit,
+            )
         });
         if let Some(result) = produced {
             if let Err(response) = result {
                 let _ = crate::protocol::stream::error(&mut out, &response);
             }
+            let _ = out.set_write_timeout(None);
             continue;
         }
+        let _ = out.set_write_timeout(None);
         let typed = match &request {
             Request::Status => Some(("status", serde_json::json!({}))),
             Request::Sql { statement } => Some(("sql", serde_json::json!({"statement":statement}))),

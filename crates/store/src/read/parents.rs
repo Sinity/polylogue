@@ -342,7 +342,6 @@ impl MessageSelection<'_, '_> {
 
     /// Skip source messages before hydrating their blocks. With the start
     /// message's key, a session's own messages before it are not read
-
     /// at all. Returns the key of the last message visited.
     pub fn visit_from(
         &self,
@@ -464,16 +463,6 @@ impl MessageSelection<'_, '_> {
     /// Visits the selected messages `keep` takes, in order, from the own
     /// session's message `from` when given; `keep` sees each key before its
     /// blocks are read.
-    fn visit_kept(
-        &self,
-        from: Option<i64>,
-        skip: usize,
-        keep: impl FnMut(i64) -> bool,
-        mut visit: impl FnMut(Message) -> ControlFlow<()>,
-    ) -> Result<Option<i64>> {
-        self.visit_kept_projection(from, skip, false, keep, |message, _, _| visit(message))
-    }
-
     fn visit_kept_projection(
         &self,
         from: Option<i64>,
