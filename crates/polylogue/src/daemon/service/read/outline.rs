@@ -1,10 +1,10 @@
 //! Metadata outline over the same store message selection.
-use super::super::{Response,error,store_error};
-use polylogue_store::Reader;
-use polylogue_model::SessionId;
-use serde::{Serialize,Deserialize};
+use super::super::{Response, error, store_error};
 use base64::Engine as _;
-const CURSOR_VERSION:u8=6;
+use polylogue_model::SessionId;
+use polylogue_store::Reader;
+use serde::{Deserialize, Serialize};
+const CURSOR_VERSION: u8 = 6;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
@@ -152,5 +152,7 @@ pub(super) fn run(
     } else {
         None
     };
-    super::super::ok(serde_json::json!({"entries":entries,"next":next,"parents":selected.parents()}))
+    super::super::ok(
+        serde_json::json!({"entries":entries,"next":next,"parents":selected.parents()}),
+    )
 }

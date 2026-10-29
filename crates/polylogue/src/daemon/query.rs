@@ -229,7 +229,12 @@ pub fn logical_day(reader: &Reader<'_>) -> Result<LogicalDay, Failure> {
     }
 }
 
-pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Options, Failure> {
+pub(crate) fn options(
+    reader: &Reader<'_>,
+    ask: &Ask<'_>,
+    now: i64,
+    seed: u64,
+) -> Result<Options, Failure> {
     let day = match &ask.day {
         Some(day) => day.clone(),
         None => logical_day(reader)?,

@@ -309,7 +309,6 @@ impl MessageSelection<'_, '_> {
             .map(drop)
     }
 
-
     /// Canonical facts with the full own-session snapshot ordinal, before
     /// inherited prefixes or caller subsets change the visited sequence.
     pub fn visit_with_record_evidence(

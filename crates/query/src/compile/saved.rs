@@ -275,9 +275,9 @@ impl Parameters {
     }
 
     pub(super) fn names(query: &mut Query) -> Result<Vec<String>, QueryError> {
-        let mut collector=Self::new("", &[]);
-        collector.collect_only=true;
-        let mut names=vec![];
+        let mut collector = Self::new("", &[]);
+        collector.collect_only = true;
+        let mut names = vec![];
         collector.query(query, &mut names, 0)?;
         Ok(names)
     }
@@ -425,7 +425,10 @@ impl Parameters {
                     *value = argument.value.clone();
                 }
             }
-            Value::Scalar { text, quoted: false } => {
+            Value::Scalar {
+                text,
+                quoted: false,
+            } => {
                 if let Some(argument) = self.argument(text, used, position)? {
                     *value = argument.value.clone();
                 }
@@ -453,7 +456,9 @@ impl Parameters {
         if !used.iter().any(|u| u == parameter) {
             used.push(parameter.to_owned());
         }
-        if self.collect_only { return Ok(None); }
+        if self.collect_only {
+            return Ok(None);
+        }
         let argument = self
             .arguments
             .iter()

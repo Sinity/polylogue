@@ -18,15 +18,22 @@ pub(super) fn project(
         Ok(Some(record)) => {
             let parts = polylogue_render::layout_record(&record, options, evidence)
                 .map_err(|e| error("read", e))?;
-            Ok(Some(ReadRecord::Canonical { record: Box::new(record), parts }))
+            Ok(Some(ReadRecord::Canonical {
+                record: Box::new(record),
+                parts,
+            }))
         }
         Ok(None) => Ok(None),
-        Err(ReadError::UnsupportedTarget { view, target, accepted_views })
-            if mixed && target.starts_with("document:") =>
-        {
-            if let Some(coverage) = footer.coverage.iter_mut().find(|coverage| {
-                coverage.target == TargetKind::Document && coverage.view == view
-            }) {
+        Err(ReadError::UnsupportedTarget {
+            view,
+            target,
+            accepted_views,
+        }) if mixed && target.starts_with("document:") => {
+            if let Some(coverage) = footer
+                .coverage
+                .iter_mut()
+                .find(|coverage| coverage.target == TargetKind::Document && coverage.view == view)
+            {
                 coverage.omitted += 1;
             } else {
                 footer.coverage.push(Coverage {
@@ -66,15 +73,19 @@ impl<'a> Stream<'a> {
         check: &'a dyn Fn() -> Result<(), Response>,
         begin: &ReadBegin,
     ) -> Result<Self, Response> {
-        let mut stream = Self { output, check, counts: Counts::default(), shown: 0 };
+        let mut stream = Self {
+            output,
+            check,
+            counts: Counts::default(),
+            shown: 0,
+        };
         stream.emit("begin", begin)?;
         Ok(stream)
     }
 
     fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Response> {
         (self.check)()?;
-        crate::protocol::stream::event(self.output, name, payload)
-            .map_err(|e| error("output", e))
+        crate::protocol::stream::event(self.output, name, payload).map_err(|e| error("output", e))
     }
 
     pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Response> {
@@ -93,10 +104,16 @@ impl<'a> Stream<'a> {
                 Record::Variant(_) => self.counts.variants += 1,
                 Record::VariantPart(_) => self.counts.variant_parts += 1,
                 Record::Blob(_) => self.counts.blobs += 1,
-                Record::Manifest(_) => return Err(error("read", "a read cannot emit an embedded manifest")),
+                Record::Manifest(_) => {
+                    return Err(error("read", "a read cannot emit an embedded manifest"));
+                }
             }
         }
-        self.shown += record.parts().iter().filter(|part| matches!(part, ReadPart::Item(_))).count() as u64;
+        self.shown += record
+            .parts()
+            .iter()
+            .filter(|part| matches!(part, ReadPart::Item(_)))
+            .count() as u64;
         Ok(())
     }
 
@@ -107,7 +124,10 @@ impl<'a> Stream<'a> {
     pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<(), Response> {
         footer.shown = self.shown;
         footer.count = ValueState::known(self.shown);
-        let complete = ReadComplete { footer, counts: self.counts };
+        let complete = ReadComplete {
+            footer,
+            counts: self.counts,
+        };
         self.emit("complete", &complete)
     }
 }

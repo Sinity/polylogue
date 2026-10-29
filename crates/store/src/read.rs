@@ -937,7 +937,6 @@ impl Reader<'_> {
                 r.get::<_, Option<i64>>(23)?,
                 r.get::<_, Option<i64>>(24)?,
                 r.get::<_, Option<i64>>("record_order")?,
-
             ))
         })?;
         for row in rows {

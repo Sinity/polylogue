@@ -623,7 +623,7 @@ fn handle_inner(
             page_size,
             cursor.as_deref(),
         ),
-        request @ Request::Read { .. } => read::page(&reader,d,&request,authorship),
+        request @ Request::Read { .. } => read::page(&reader, d, &request, authorship),
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
