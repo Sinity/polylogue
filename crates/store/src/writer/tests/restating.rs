@@ -37,14 +37,10 @@ fn active(w: &TestArchive) -> Vec<Json> {
         .unwrap()
 }
 
-// Out-of-order discoveries become complete readings; each replacement keeps native record order.
+// A complete reparse orders its collected observations by their native source records.
 fn replace_observations(w: &TestArchive, observations: &std::collections::BTreeMap<u64, Batch>) {
     let mut reading = ChainReading::new().unwrap();
-    for at in [0, 100, 200] {
-        let mut b = observations
-            .get(&at)
-            .cloned()
-            .unwrap_or_else(|| batch("a", 0, at, vec![], &[]));
+    for mut b in observations.values().cloned() {
         reading.push(&mut b.parse[0]).unwrap();
     }
     w.writer
@@ -95,10 +91,11 @@ fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
         }
         let mut received = std::collections::BTreeMap::new();
         for (index, b) in observations.into_iter().enumerate() {
-            received.insert(b.parse[0].start, b);
-            replace_observations(&w, &received);
-            w.writer.derive().unwrap();
-            if !reverse {
+            if reverse {
+                received.insert(b.parse[0].start, b);
+            } else {
+                w.writer.send(b).unwrap();
+                w.writer.derive().unwrap();
                 let expected = ["claude-code:a", "claude-code:b", "claude-code:a"][index];
                 assert_eq!(
                     active(&w),
@@ -106,6 +103,10 @@ fn repeated_active_leaf_uses_record_order_in_both_replay_orders() {
                     "observation {index}"
                 );
             }
+        }
+        if reverse {
+            replace_observations(&w, &received);
+            w.writer.derive().unwrap();
         }
         assert_eq!(
             active(&w),
@@ -197,7 +198,14 @@ fn empty_and_nonempty_path_markers_replace_each_other_in_both_replay_orders() {
             }
             let mut received = std::collections::BTreeMap::new();
             for b in observations {
-                received.insert(b.parse[0].start, b);
+                if reverse {
+                    received.insert(b.parse[0].start, b);
+                } else {
+                    w.writer.send(b).unwrap();
+                    w.writer.derive().unwrap();
+                }
+            }
+            if reverse {
                 replace_observations(&w, &received);
                 w.writer.derive().unwrap();
             }
