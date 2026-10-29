@@ -424,3 +424,68 @@ fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
         Some(polylogue_model::settings::Value::Boolean(false))
     );
 }
+
+#[test]
+fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
+    let daemon = crate::test_daemon::start("pinned authored admission");
+    let invocation = daemon
+        .daemon
+        .invocation(&crate::operation::Context::worker_authorship(
+            "pinned-write-fixture",
+        ));
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let selected_scope = reader.scope_token();
+    drop(reader);
+    daemon.daemon.archive.advance_generation_for_test().unwrap();
+    // No active ReadLimit: the queued native token is the authority here.
+    let response = write_from_read(
+        &daemon.daemon,
+        &invocation,
+        "old-generation-write".into(),
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+        selected_scope,
+    );
+    assert!(
+        matches!(response, Response::Error { ref kind, .. } if kind == "scope_changed"),
+        "{response:?}"
+    );
+    let reader = daemon.daemon.reads.reader().unwrap();
+    assert!(
+        reader
+            .user_request("old-generation-write")
+            .unwrap()
+            .is_none()
+    );
+    let current = reader
+        .setting_current("browser.actions", &invocation.machine)
+        .unwrap();
+    assert!(current.authored.is_none());
+    let selected_scope = reader.scope_token();
+    drop(reader);
+    let response = write_from_read(
+        &daemon.daemon,
+        &invocation,
+        "current-generation-write".into(),
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+        selected_scope,
+    );
+    assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    assert!(
+        daemon
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .user_request("current-generation-write")
+            .unwrap()
+            .is_some()
+    );
+}

@@ -219,7 +219,7 @@ fn context(
     sender: Option<String>,
     operation: &Arc<Context>,
 ) -> Response {
-    let prepared = {
+    let (prepared, selected_scope) = {
         let reader = match d.reads.reader() {
             Ok(r) => r,
             Err(e) => return store_error(&e),
@@ -255,7 +255,7 @@ fn context(
             return super::execution::refusal(&error, &info, &limit);
         }
         match result {
-            Ok(p) => p,
+            Ok(p) => (p, reader.scope_token()),
             Err(e) => return store_error(&e),
         }
     };
@@ -292,7 +292,7 @@ fn context(
         {
             return store_error(&error);
         }
-        let result = writes.user(operation.request(request_id, write));
+        let result = writes.user_from_read(operation.request(request_id, write), selected_scope);
         match result {
             Ok(out) => {
                 pending = out.pending;
@@ -322,6 +322,29 @@ fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) 
     match writes.user(invocation.request(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
+    }
+}
+
+/// Carries the selected generation through the writer queue to custody commit.
+fn write_from_read(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    w: UserWrite,
+    selected_scope: polylogue_store::ReadScopeToken,
+) -> Response {
+    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+        && let Err(error) = limit.check()
+    {
+        return store_error(&error);
+    }
+    let writes = match writer(d) {
+        Ok(writes) => writes,
+        Err(response) => return response,
+    };
+    match writes.user_from_read(invocation.request(request_id, w), selected_scope) {
+        Ok(out) => ok(out),
+        Err(error) => store_error(&error),
     }
 }
 
@@ -775,6 +798,7 @@ fn handle_inner(
             text,
             name,
         } => {
+            let selected_scope = reader.scope_token();
             let intended = UserWrite::KeepResult {
                 name: name.clone(),
                 query: text.clone(),
@@ -784,7 +808,7 @@ fn handle_inner(
             match repeated_request(&reader, &request_id, &intended, invocation) {
                 Ok(Some(previous)) => {
                     drop(reader);
-                    return write(d, invocation, request_id, previous);
+                    return write_from_read(d, invocation, request_id, previous, selected_scope);
                 }
                 Err(response) => return response,
                 Ok(None) => {}
@@ -825,7 +849,7 @@ fn handle_inner(
             };
             drop(reader);
             let read_at = serde_json::json!({ "now": kept["now"] }).to_string();
-            write(
+            write_from_read(
                 d,
                 invocation,
                 request_id,
@@ -835,6 +859,7 @@ fn handle_inner(
                     rows_json: kept.to_string(),
                     read_at,
                 },
+                selected_scope,
             )
         }
         Request::Save {
@@ -941,6 +966,7 @@ fn handle_inner(
             query,
             mut note,
         } => {
+            let selected_scope = reader.scope_token();
             let intended = UserWrite::AnnotateQuery {
                 query: query.clone(),
                 note: note.clone(),
@@ -957,7 +983,7 @@ fn handle_inner(
                 Err(response) => return response,
             };
             drop(reader);
-            match write(d, invocation, request_id, resolved) {
+            match write_from_read(d, invocation, request_id, resolved, selected_scope) {
                 Response::Ok { mut data } => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
