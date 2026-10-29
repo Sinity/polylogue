@@ -64,14 +64,27 @@ impl Reader<'_> {
     pub fn visit_links(
         &self,
         id: &SessionId,
+        visit: impl FnMut(Link) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_links_from_ordinal(id, 0, visit)
+    }
+
+    /// Seek within the physical session's canonical link order before decoding.
+    pub fn visit_links_from_ordinal(
+        &self,
+        id: &SessionId,
+        ordinal: u64,
         mut visit: impl FnMut(Link) -> std::ops::ControlFlow<()>,
     ) -> Result<()> {
+        let Ok(ordinal) = i64::try_from(ordinal) else {
+            return Ok(());
+        };
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence
              FROM link WHERE parent_id = ?1 OR child_id = ?1
-             ORDER BY parent_id, child_id, kind, how",
+             ORDER BY parent_id, child_id, kind, how LIMIT -1 OFFSET ?2",
         )?;
-        let rows = stmt.query_map([id.to_string()], |r| {
+        let rows = stmt.query_map(rusqlite::params![id.to_string(), ordinal], |r| {
             Ok((
                 (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
                 r.get::<_, String>(2)?,
