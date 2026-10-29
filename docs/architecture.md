@@ -183,6 +183,14 @@ environment or the system time zone, and no component has a default
 constructor for a setting. A time zone is resolved to a named zone or the
 daemon refuses to start; paths are absolute.
 
+The accepting boundary captures one immutable invocation: actual time, configured
+machine and computed authorship. Pure writes can use it while a primary is offline.
+Operations that evaluate a query or logical day extend that same invocation with
+one canonical evaluation clock and one owner-policy snapshot. Missing primary
+context is unavailable; it does not select a local day. Continuation replay changes
+only the authenticated evaluation clock, preserving the actual invocation time.
+Public provenance contains owner references; bearer tokens remain private.
+
 - **The logical day** is one `DaySetting`, a named zone and a start time
   (default 04:00), with one implementation in the common
   [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md)
@@ -193,7 +201,7 @@ daemon refuses to start; paths are absolute.
   mode, archive path, the logical day, listen address and authentication, the
   optional notification command, the Sinex endpoint. The changeable settings
   catalog holds what any author may change at run time (quiet hours, the
-  interrupt budget, enabled variants, briefing switches), each key with a
+  interrupt budget, enabled variants, fetching linked attachments), each key with a
   type, default and scope; unknown keys are refused. Keys and defaults will
   be listed in the [planned settings reference](reference/README.md#planned-pages); how
   they are loaded is in

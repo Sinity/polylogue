@@ -265,14 +265,36 @@ impl DocumentRead<'_, '_> {
         self.visit_blocks_until(None, visit)
     }
 
+    pub(crate) fn visit_text_blocks(
+        &self,
+        visit: impl FnMut(Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_blocks_selected(None, true, visit)
+    }
+
     fn visit_blocks_until(
         &self,
         end: Option<usize>,
+        visit: impl FnMut(Block) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_blocks_selected(end, false, visit)
+    }
+
+    fn visit_blocks_selected(
+        &self,
+        end: Option<usize>,
+        text_only: bool,
         mut visit: impl FnMut(Block) -> ControlFlow<()>,
     ) -> Result<()> {
         let bound = if end.is_some() { "AND b.idx<?2" } else { "" };
+        let kinds = if text_only {
+            "AND b.kind IN ('text','thinking','tool_result')"
+        } else {
+            ""
+        };
+        let data = if text_only { "NULL" } else { "b.data" };
         let sql = format!(
-            "SELECT b.body,t.body,b.data FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 {bound} ORDER BY b.idx"
+            "SELECT b.body,t.body,{data} FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 {bound} {kinds} ORDER BY b.idx"
         );
         let mut statement = self.reader.conn()?.prepare_cached(&sql)?;
         let mut rows = if let Some(end) = end {

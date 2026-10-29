@@ -322,10 +322,9 @@ fn prepare(
     } = plan.source
     {
         let reads = ReadPool::with_budget(archive, 1, read_memory)?;
-        let stored = match reads.reader()?.stored_chain(&plan.input.id, chain, length) {
-            Ok(stored) => stored,
-            Err(error) => return Err(error.into()),
-        };
+        let stored = reads
+            .reader()?
+            .stored_chain(&plan.input.id, chain, length)?;
         plan.source = if decoded {
             pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
                 stored,

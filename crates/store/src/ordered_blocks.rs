@@ -4,6 +4,29 @@ use crate::encoding::{restore_text, unpack_block, unpack_text};
 use polylogue_model::Block;
 use rusqlite::Connection;
 
+use std::ops::ControlFlow;
+
+pub(crate) fn visit_text(
+    connection: &Connection,
+    session: i64,
+    mut visit: impl FnMut(Block) -> Result<ControlFlow<()>>,
+) -> Result<()> {
+    let mut statement = connection.prepare_cached(
+        "SELECT b.body,t.body FROM message m JOIN block b ON b.message_pk=m.pk LEFT JOIN text t ON t.id=b.text_id WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND b.kind IN ('text','thinking','tool_result') ORDER BY m.order_input_id,m.seq,m.record_position,m.id,b.idx",
+    )?;
+    let mut rows = statement.query([session])?;
+    while let Some(row) = rows.next()? {
+        let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
+        if let Some(text) = row.get::<_, Option<Vec<u8>>>(1)? {
+            restore_text(&mut block, unpack_text(&text)?);
+        }
+        if visit(block)?.is_break() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// One block, decoded with its text.
 pub(crate) fn one(connection: &Connection, block: i64) -> Result<Block> {
     let (body, text): (Vec<u8>, Option<Vec<u8>>) = connection

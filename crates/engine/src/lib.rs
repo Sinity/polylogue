@@ -22,7 +22,7 @@ mod watch;
 
 use databases::Databases;
 use plan::{InputState, Plan};
-use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
+use polylogue_sources::{ORIGINS, OriginSpec, Support};
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -59,6 +59,8 @@ pub enum EngineError {
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// The one wall clock supplied by the binary boundary.
+    pub clock: polylogue_model::WallClock,
     /// The home directory origins' locations are relative to.
     pub home: PathBuf,
     /// Tools' own location variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`)
@@ -144,46 +146,44 @@ impl Config {
         self.root(spec.root).join(dir)
     }
 
-    /// The running machine's settings. `POLYLOGUE_HOME` replaces the home
-    /// directory for tests and measurements.
-    pub fn from_env() -> Self {
-        let read = |p: &str| {
-            std::fs::read_to_string(p)
-                .map(|s| s.trim().to_owned())
-                .unwrap_or_else(|_| "unknown".into())
-        };
-        // With `POLYLOGUE_HOME` (tests, measurements) the tools' own
-        // variables belong to the real home and are not read.
-        let isolated = std::env::var_os("POLYLOGUE_HOME").is_some();
-        let tool_dirs = polylogue_sources::ORIGINS
-            .iter()
-            .filter_map(|o| o.root.env)
-            .filter(|_| !isolated)
-            .filter_map(|var| {
-                let dir = std::env::var_os(var).filter(|d| !d.is_empty())?;
-                Some((var.to_owned(), PathBuf::from(dir)))
-            })
-            .collect();
-        Self {
-            home: std::env::var_os("POLYLOGUE_HOME")
-                .or_else(|| std::env::var_os("HOME"))
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/")),
+    /// Construct from facts captured once by the binary. Location overrides
+    /// are resolved to absolute paths before they cross this boundary.
+    pub fn new(
+        home: PathBuf,
+        tool_dirs: BTreeMap<String, PathBuf>,
+        machine: String,
+        host: String,
+        workers: usize,
+        clock: polylogue_model::WallClock,
+    ) -> Result<Self, EngineError> {
+        if !home.is_absolute() || tool_dirs.values().any(|path| !path.is_absolute()) {
+            return Err(EngineError::Parse(
+                "configured locations must be absolute".into(),
+            ));
+        }
+        if workers == 0 || machine.trim().is_empty() || host.trim().is_empty() {
+            return Err(EngineError::Parse(
+                "resource and host identity inputs must be nonempty".into(),
+            ));
+        }
+        Ok(Self {
+            clock,
+            home,
             tool_dirs,
-            workers: std::thread::available_parallelism().map_or(4, |n| n.get()),
+            workers,
             reader_memory_bytes: 128 << 20,
             bytes_in_flight: 512 << 20,
-            machine: read("/etc/machine-id"),
-            host: read("/proc/sys/kernel/hostname"),
+            machine,
+            host,
             chunk: 64 << 20,
             rescan_every: Duration::from_secs(4 * 3600),
             live_every: Duration::from_secs(2),
-        }
+        })
     }
 }
 
 /// What one pass of the loop found and did, for `status`.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Pass {
     /// Historical effects accepted during ordinary stored-input replay.
     pub authored: UserStateReport,
@@ -214,7 +214,7 @@ pub struct Pass {
 /// change to be read waits until the change shows and the loop is not busy:
 /// rows become visible to readers before the pass that wrote them has
 /// derived from them.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct LoopStatus {
     pub full_scans: u64,
     /// A pass or import is running, or a capture continues
@@ -234,14 +234,14 @@ pub struct ImportOptions {
     pub authorship: Option<polylogue_model::authorship::Authorship>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportRefusal {
     pub path: PathBuf,
     pub reason: String,
     pub structures_tried: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportClassification {
     pub path: PathBuf,
     pub origin: Option<String>,
@@ -249,7 +249,7 @@ pub struct ImportClassification {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportPackage {
     pub path: PathBuf,
     pub sessions: u64,
@@ -257,7 +257,7 @@ pub struct ImportPackage {
     pub assets: u64,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportReport {
     pub packages: Vec<ImportPackage>,
     pub refused: Vec<ImportRefusal>,
@@ -270,8 +270,10 @@ pub struct ImportReport {
     pub pass: Pass,
 }
 
-/// Requests replayed from Polylogue exports.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+/// Historical authored records restored through the frozen import ingress.
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct UserStateReport {
     /// Durably accepted and awaiting the confirmed primary stream.
     pub pending: u64,
@@ -317,12 +319,6 @@ pub struct Engine {
     lookups: repo_lookup::Cache,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
 }
 
 impl Engine {
@@ -442,9 +438,22 @@ impl Engine {
             path: path.display().to_string(),
             path_bytes: path.as_os_str().as_encoded_bytes().to_vec(),
             facts,
-            seen_at_ms: now_ms(),
+            seen_at_ms: self.config.clock.now().as_millisecond(),
             import: None,
             container: None,
         }
     }
+}
+
+#[cfg(test)]
+fn test_config() -> Config {
+    Config::new(
+        PathBuf::from("/synthetic/home"),
+        BTreeMap::new(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        2,
+        polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
+    )
+    .unwrap()
 }

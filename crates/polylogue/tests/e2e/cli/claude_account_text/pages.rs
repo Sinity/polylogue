@@ -36,11 +36,7 @@ fn document_pages_mask_hidden_prefix_and_refuse_cross_content_stale_and_invalid_
     let export =
         polylogue_model::export::Document::new(Vec::new()).with_documents(vec![doc.clone(), other]);
     std::fs::write(&source, export.to_json().unwrap()).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     assert!(imported.status.success(), "{imported:?}");

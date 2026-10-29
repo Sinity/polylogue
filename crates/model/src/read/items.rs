@@ -82,6 +82,7 @@ pub struct ReadyCall {
 pub struct HttpCall {
     pub method: String,
     pub path: String,
+    /// The operation table supplies the complete request envelope, including identity and deadline.
     pub arguments: serde_json::Value,
 }
 
@@ -240,6 +241,8 @@ pub enum ItemKind {
         link: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inline_bytes: Option<Vec<u8>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open: Option<Box<ReadyCall>>,
     },
     Other {
         type_name: String,

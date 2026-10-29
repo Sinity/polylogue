@@ -18,7 +18,7 @@ fn setup() -> (
 }
 
 fn write(writer: &Writer, write: UserWrite) -> Result<polylogue_model::user::UserOutcome> {
-    writer.user(crate::user_writes::request_now(
+    writer.user(crate::fixture::authored::operator_request(
         crate::user_writes::new_request_id(),
         write,
     ))

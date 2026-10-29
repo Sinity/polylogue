@@ -33,6 +33,7 @@ impl ClaudeHome {
     /// Settings that read only this home; `chunk` is the most one job reads.
     pub fn config(&self, chunk: u64) -> Config {
         Config {
+            clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
             home: self.home.clone(),
             tool_dirs: Default::default(),
             workers: 3,

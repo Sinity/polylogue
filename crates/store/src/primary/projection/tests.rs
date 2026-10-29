@@ -120,13 +120,16 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     let request = UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
         id: "setting-request".into(),
         machine: "machine".into(),
         at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
         write: UserWrite::SetSetting {
-            key: "saved-key".into(),
-            value: "saved-value".into(),
-            author: polylogue_model::Author::Operator,
+            key: "browser.actions".into(),
+            value: "on".into(),
             machine: None,
         },
     };
@@ -176,12 +179,12 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
         assert_eq!(
             index
                 .query_row(
-                    "SELECT value FROM source_setting WHERE key='saved-key'",
+                    "SELECT value FROM source_setting WHERE key='browser.actions'",
                     [],
                     |row| row.get::<_, String>(0)
                 )
                 .unwrap(),
-            "saved-value"
+            "on"
         );
     }
     assert!(

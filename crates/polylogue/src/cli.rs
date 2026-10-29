@@ -4,10 +4,12 @@
 
 pub(crate) mod attachment;
 pub mod changes;
+pub(crate) mod completion;
 pub mod local;
 pub mod print;
 pub(crate) mod schema;
 pub(crate) mod staged_file;
+pub(crate) mod write_out;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
 use crate::daemon::{Request, Response};
@@ -15,7 +17,6 @@ use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
 use polylogue_store::Archive;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// The clap command tree: one subcommand per table command, grouped by
@@ -31,16 +32,28 @@ pub fn command() -> clap::Command {
                 .action(ArgAction::SetTrue)
                 .help("Machine-readable output"),
         );
-    root = root.arg(
-        clap::Arg::new("timeout")
-            .long("timeout")
-            .global(true)
-            .value_name("SECONDS")
-            .value_parser(clap::value_parser!(u64).range(1..))
-            .help(
-                "Daemon read timeout in seconds (default: 30, or POLYLOGUE_READ_TIMEOUT_MS; export: none)",
-            ),
-    );
+    root = root
+        .arg(
+            clap::Arg::new("request")
+                .long("request")
+                .global(true)
+                .value_name("JSON")
+                .help("The operation's complete typed argument object"),
+        )
+        .arg(
+            clap::Arg::new("request_id")
+                .long("request-id")
+                .global(true)
+                .value_name("ID")
+                .help("The durable request identity"),
+        )
+        .arg(
+            clap::Arg::new("deadline")
+                .long("deadline")
+                .global(true)
+                .value_name("MS|none")
+                .help("Milliseconds from admission, or none to lift the deadline"),
+        );
     let mut globals: Vec<&str> = Vec::new();
     for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
         if !globals.contains(&a.name) {
@@ -54,6 +67,7 @@ pub fn command() -> clap::Command {
                 for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
                     root = root.arg(clap_arg(a));
                 }
+                root = root.subcommand(subcommand(c).name("find"));
             }
             Cli::Subcommand | Cli::Hidden => {
                 let sub = subcommand(c);
@@ -84,7 +98,7 @@ pub fn command() -> clap::Command {
             }
         }
     }
-    root
+    crate::config::augment_command(root)
 }
 
 fn subcommand(c: &Command) -> clap::Command {
@@ -93,7 +107,15 @@ fn subcommand(c: &Command) -> clap::Command {
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
     for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-        sub = sub.arg(clap_arg(a));
+        let mut arg = clap_arg(a);
+        if c.name == "setting" && matches!(a.name, "key" | "value") {
+            arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+                completion::Setting {
+                    key: a.name == "key",
+                },
+            ));
+        }
+        sub = sub.arg(arg);
     }
     sub
 }
@@ -122,12 +144,18 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::FlagOrText => arg.num_args(0..=1),
     };
     if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
-        arg = arg.add(clap_complete::engine::ArgValueCompleter::new(query_word));
+        arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+            completion::Query,
+        ));
     }
     if let Some(d) = a.default {
         arg = arg.default_value(d);
     }
-    arg.required(a.required && a.default.is_none() && a.kind != Kind::Bool)
+    if a.required && a.default.is_none() && a.kind != Kind::Bool {
+        arg.required_unless_present("request")
+    } else {
+        arg
+    }
 }
 
 /// The table command the matches chose, and the matches holding its
@@ -139,6 +167,9 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
             .find(|c| c.cli == Cli::NoSubcommand)
             .map(|c| (c, matches));
     };
+    if word == "find" {
+        return crate::commands::command("query").map(|command| (command, sub));
+    }
     let (name, leaf) = match sub.subcommand() {
         Some((second, leaf)) => (format!("{word} {second}"), leaf),
         None => (word.to_owned(), sub),
@@ -171,8 +202,10 @@ fn values(c: &Command, m: &ArgMatches) -> Values {
             out.insert(a.name.to_owned(), v);
         }
     }
-    if let Some(seconds) = m.get_one::<u64>("timeout") {
-        out.insert("timeout".into(), Value::from(*seconds));
+    if c.writes
+        && let Some(id) = m.get_one::<String>("request_id")
+    {
+        out.insert("request_id".into(), Value::String(id.clone()));
     }
     Values(out)
 }
@@ -187,34 +220,120 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
     Ok((c, values(c, m)))
 }
 
-pub fn run(matches: &ArgMatches) -> ExitCode {
+pub fn run_local(matches: &ArgMatches) -> Option<ExitCode> {
+    let (command, matches) = chosen(matches)?;
+    let Action::Local(run) = command.action else {
+        return None;
+    };
+    Some(run(
+        command,
+        &values(command, matches),
+        matches.get_flag("json"),
+    ))
+}
+
+pub fn run(
+    matches: &ArgMatches,
+    startup: &crate::config::Startup,
+    cwd: &std::path::Path,
+) -> ExitCode {
     let json = matches.get_flag("json");
     let Some((cmd, m)) = chosen(matches) else {
         return fail(json, "bad_request", "no such command", 2);
     };
-    let values = values(cmd, m);
-    let build = match cmd.action {
-        Action::Local(f) => return f(cmd, &values, json),
-        Action::Request(build) | Action::Stream { build, .. } => build,
-    };
+    let mut values = values(cmd, m);
+    values.0.insert("json".into(), Value::Bool(json));
     let caller = Caller {
         surface: Surface::Cli,
-        cwd: Some(current_dir()),
+        cwd: Some(cwd.to_owned()),
         json,
     };
-    let request = match build(cmd, &values, &caller) {
-        Ok(r) => r,
-        Err(message) => return fail(json, "bad_request", &message, 2),
-    };
-    let timeout = matches
-        .get_one::<u64>("timeout")
-        .copied()
-        .map(std::time::Duration::from_secs);
-    if let Action::Stream { cli, .. } = cmd.action {
-        return cli(&request, timeout);
+    let raw = m.get_one::<String>("request");
+    if raw.is_some()
+        && cmd
+            .args_for(Surface::Cli)
+            .any(|argument| m.value_source(argument.name) == Some(ValueSource::CommandLine))
+    {
+        return fail(
+            json,
+            "bad_request",
+            "--request cannot be mixed with operation arguments",
+            2,
+        );
     }
-    let root = Archive::default_root();
-    let response = match send_with_timeout(&Archive::at(&root), &request, timeout) {
+    let deadline = match m.get_one::<String>("deadline").map(String::as_str) {
+        None => command_surface::Deadline::Default,
+        Some("none") => command_surface::Deadline::None,
+        Some(value) => match value.parse() {
+            Ok(milliseconds) => command_surface::Deadline::Milliseconds(milliseconds),
+            Err(_) => {
+                return fail(
+                    json,
+                    "bad_request",
+                    "deadline must be milliseconds or none",
+                    2,
+                );
+            }
+        },
+    };
+    let request_id = m
+        .get_one::<String>("request_id")
+        .cloned()
+        .unwrap_or_else(|| values.request_id());
+    let request = if let Some(raw) = raw {
+        let Some(build) = cmd.build_typed else {
+            return fail(
+                json,
+                "bad_request",
+                "this operation has no typed argument adapter",
+                2,
+            );
+        };
+        let arguments = match serde_json::from_str::<Value>(raw) {
+            Ok(arguments) => arguments,
+            Err(error) => return fail(json, "bad_request", &error.to_string(), 2),
+        };
+        let request = match build(arguments.clone(), &caller, &request_id) {
+            Ok(request) => request,
+            Err(error) => return fail(json, "bad_request", &error.message, 2),
+        };
+        let Some(object) = arguments.as_object() else {
+            return fail(
+                json,
+                "bad_request",
+                "operation arguments must be an object",
+                2,
+            );
+        };
+        values = match Values::from_json(cmd, Surface::Cli, object.clone()) {
+            Ok(values) => values,
+            Err(error) => return fail(json, "bad_request", &error, 2),
+        };
+        values.0.insert("json".into(), Value::Bool(json));
+        request
+    } else {
+        let build = match cmd.action {
+            Action::Local(run) => return run(cmd, &values, json),
+            Action::ConfiguredLocal(run) => return run(cmd, &values, startup, json),
+            Action::Request(build) | Action::Stream { build, .. } => build,
+        };
+        match build(cmd, &values, &caller) {
+            Ok(request) => request,
+            Err(message) => return fail(json, "bad_request", &message, 2),
+        }
+    };
+    let call = crate::protocol::operations::request(cmd, values.clone(), request_id, deadline);
+    if let Action::Stream { cli, .. } = cmd.action {
+        return cli(&values, &request, startup, &call);
+    }
+    let root = startup.config.archive.clone();
+    let result = if cmd.register.is_some() {
+        crate::client::call_ready(&Archive::at(&root), &call)
+    } else {
+        let timeout = deadline.duration(Some(crate::daemon::execution::timeout()));
+        send_with_timeout(&Archive::at(&root), &request, timeout).map(|response| response.answer())
+    };
+    let answer = match result {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
@@ -237,20 +356,39 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         }
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
+    let outcome_code = answer.exit_code();
+    if json && cmd.output.is_none() {
+        println!(
+            "{}",
+            polylogue_render::terminal::json(
+                &serde_json::to_value(&answer).expect("answer serializes"),
+                false
+            )
+        );
+        return ExitCode::from(outcome_code);
+    }
+    let response: Response = answer.into();
     match response {
         Response::Ok { data, .. } => {
             if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
                 crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
             }
             match cmd.output {
-                Some(output) => output(&values, &data, json),
+                Some(output) => output(&values, &data, startup, json),
                 None => {
                     if json {
-                        println!("{}", polylogue_render::terminal::json(&data, false));
+                        println!(
+                            "{}",
+                            polylogue_render::terminal::json(
+                                &serde_json::to_value(crate::protocol::answer(data.clone()))
+                                    .expect("answer serializes"),
+                                false
+                            )
+                        );
                     } else {
                         print!("{}", (cmd.print)(&data));
                     }
-                    ExitCode::SUCCESS
+                    ExitCode::from(outcome_code)
                 }
             }
         }
@@ -265,33 +403,14 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     }
 }
 
-/// `export`: the document written to `--out`, or to standard output.
-pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
-    let out = values.text("out").map(PathBuf::from);
-    let out = out.as_deref();
-    let text = match data.get("content").and_then(|c| c.as_str()) {
-        Some(content) => content.to_owned(),
-        None => polylogue_render::terminal::json(data, true),
-    };
-    match out {
-        Some(path) => match std::fs::write(path, text.as_bytes()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => fail(json, "io", &format!("{}: {e}", path.display()), 1),
-        },
-        None => {
-            print!("{}", polylogue_render::terminal::stdout_text(&text));
-            ExitCode::SUCCESS
-        }
-    }
-}
-
-fn current_dir() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
-}
-
 /// `continue --exec`: replaces this process with the session's native
 /// resume command; without `--exec`, the plan is printed.
-pub fn resume_output(values: &Values, data: &Value, json: bool) -> ExitCode {
+pub fn resume_output(
+    values: &Values,
+    data: &Value,
+    _startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     if !values.flag("exec") {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
@@ -363,7 +482,7 @@ fn send_with_timeout(
     crate::client::send_when_ready(archive, request, deadline_ms)
 }
 
-fn wait_for_ready<T>(
+pub(crate) fn wait_for_ready<T>(
     archive: &Archive,
     deadline_ms: Option<i64>,
     mut call: impl FnMut() -> std::io::Result<T>,
@@ -407,60 +526,8 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
     }
 }
 
-/// Completions for a query word, from the daemon; none when it
-/// does not answer within a moment, so a shell never hangs on a tab.
-fn query_word(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
-    let Some(word) = current.to_str() else {
-        return Vec::new();
-    };
-    let socket = Archive::at(&Archive::default_root()).socket();
-    let request = Request::Complete {
-        word: word.to_owned(),
-    };
-    let Ok(Response::Ok { data, .. }) =
-        crate::client::send_with_budget(&socket, &request, std::time::Duration::from_millis(500))
-    else {
-        return Vec::new();
-    };
-    completion_candidates(&data)
-}
-
-fn completion_candidates(data: &Value) -> Vec<clap_complete::CompletionCandidate> {
-    data.as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|c| {
-            let value = c["value"].as_str()?;
-            if value.chars().any(char::is_control)
-                || polylogue_render::terminal::escape(value) != value
-            {
-                return None;
-            }
-            let help = c["help"].as_str().filter(|h| !h.is_empty());
-            Some(
-                clap_complete::CompletionCandidate::new(value)
-                    .help(help.map(|h| polylogue_render::terminal::escape(h).into())),
-            )
-        })
-        .collect()
-}
-
 pub(crate) fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
-    if json {
-        println!(
-            "{}",
-            polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message } }),
-                false
-            )
-        );
-    } else {
-        eprintln!(
-            "{}",
-            polylogue_render::terminal::escape(&format!("polylogue: {kind}: {message}"))
-        );
-    }
-    ExitCode::from(code)
+    fail_detail(json, kind, message, None, code)
 }
 
 /// An error with structured detail: printed whole for programs; for a
@@ -470,13 +537,18 @@ fn fail_detail(
     kind: &str,
     message: &str,
     detail: Option<serde_json::Value>,
-    code: u8,
+    _code: u8,
 ) -> ExitCode {
     if json {
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::json!({ "error": { "kind": kind, "message": message, "detail": detail } }),
+                &serde_json::to_value(Response::Error {
+                    kind: kind.into(),
+                    message: message.into(),
+                    detail: detail.clone()
+                })
+                .expect("failure serializes"),
                 false
             )
         );
@@ -492,7 +564,7 @@ fn fail_detail(
             );
         }
     }
-    ExitCode::from(code)
+    ExitCode::from(crate::protocol::kind(kind).exit_code())
 }
 
 #[cfg(test)]

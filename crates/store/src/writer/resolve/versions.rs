@@ -887,7 +887,7 @@ impl Assertions {
                 let previous = previous.event_source(index, pk, values)?;
                 if previous.fields == fields {
                     original.extend(serde_json::from_str::<
-                        Vec<polylogue_model::bundle::EventSourceClaim>,
+                        Vec<polylogue_model::bundle::SourceClaim>,
                     >(&previous.imported)?);
                 }
             }

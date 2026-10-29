@@ -52,12 +52,6 @@ impl BrowserHost {
         })
     }
 
-    /// The running user's: the default archive and the state root its
-    /// daemon's loop reads.
-    pub fn for_user() -> std::io::Result<Self> {
-        Self::at(&Config::from_env(), &Archive::at(&Archive::default_root()))
-    }
-
     /// Asks the daemon. `None` when it does not answer: callers report what
     /// they cannot know as unknown, never as absent.
     pub fn ask(&self, request: &Request) -> Option<Response> {
@@ -70,12 +64,19 @@ impl BrowserHost {
     pub fn actions_setting(&self) -> Option<bool> {
         let request = Request::Setting {
             request_id: None,
-            key: "browser.actions".into(),
+            key: Some("browser.actions".into()),
             value: None,
-            machine: false,
+            machine: None,
         };
         match self.ask(&request) {
-            Some(Response::Ok { data, .. }) => Some(data["value"] == "on"),
+            Some(Response::Ok { data, .. }) => {
+                let current: polylogue_model::settings::Current =
+                    serde_json::from_value(data).ok()?;
+                match current.value {
+                    Some(polylogue_model::settings::Value::Boolean(enabled)) => Some(enabled),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }

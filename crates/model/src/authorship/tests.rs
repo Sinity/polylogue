@@ -43,10 +43,15 @@ fn computed_authorship_preserves_channel_and_observed_identity() {
             .to_string(),
         "agent:gemini-cli"
     );
-    assert_eq!(
-        compute_authorship(Channel::Web, &harness, None).author,
-        Author::Operator
-    );
+    for via in [Channel::Web, Channel::Extension, Channel::Desktop] {
+        assert_eq!(
+            compute_authorship(via, &harness, None),
+            Authorship {
+                author: Author::Operator,
+                via
+            }
+        );
+    }
 }
 #[test]
 fn hook_refinement_requires_the_recorded_parent_and_tool_call() {
@@ -123,4 +128,25 @@ fn conflicting_harness_identity_is_never_promoted_to_operator_or_script() {
         compute_authorship(Channel::Cli, &caller, None).author,
         Author::Unattributed
     );
+}
+
+#[test]
+fn malformed_authorship_is_an_error_without_fallback_attribution() {
+    for text in [
+        "",
+        "agent:",
+        "script:",
+        "person:synthetic",
+        "operator:extra",
+    ] {
+        assert!(Author::parse(text).is_err(), "{text}");
+    }
+    assert!(matches!(
+        Author::parse("agent:"),
+        Err(AuthorError::Id(_, _))
+    ));
+    assert!(matches!(
+        Author::parse("person:synthetic"),
+        Err(AuthorError::Unknown(_))
+    ));
 }
