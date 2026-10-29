@@ -237,7 +237,8 @@ impl Sinex {
     }
 
     pub(crate) fn capture(&self, identity: &str) -> Result<Capture> {
-        self.queue()?.capture(identity)
+        let pinned = self.queue()?.pin_capture(identity)?;
+        pinned.decode()
     }
 
     /// Later A→B→A observations get a new operation; retrying the most recent

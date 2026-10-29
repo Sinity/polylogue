@@ -297,6 +297,14 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
         Ok(self.prepare_blob(hash, length, body)?)
     }
+    fn pending_group_headers(
+        &self,
+        group: &str,
+        after: Option<u64>,
+        limit: usize,
+    ) -> polylogue_store::Result<polylogue_store::primary::PendingGroupPage> {
+        Ok(self.pending_group_headers(group, after, limit)?)
+    }
     fn pending_captures(
         &self,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::PendingCapture>> {

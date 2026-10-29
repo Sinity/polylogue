@@ -36,15 +36,14 @@ fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result
 }
 
 fn semantic(input: &CapturedInput) -> Result<serde_json::Value> {
-    let mut value = serde_json::to_value(input)?;
-    if let Some(observation) = value
-        .pointer_mut("/rows/observation")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        observation.remove("id");
-        observation.remove("seen_at");
-    }
-    Ok(value)
+    // Finalized cache coordinates and observer clocks are frozen by the first
+    // acceptance. Byte identity and complete parser facts still match exactly.
+    Ok(serde_json::json!({
+        "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
+        "index":input.index, "arrival_rank":input.arrival_rank, "parsed":input.parsed,
+        "origin":input.input.origin,
+        "source":input.basis.as_ref().map(|basis| &basis.source),
+    }))
 }
 
 impl Sinex {
@@ -110,8 +109,15 @@ impl Sinex {
                 .to_hex()
             )
         };
+        let staged = queue.stage_acquisition(&identity, &plan.intent, plan.count)?;
+        let expected_heads: BTreeMap<_, _> = heads
+            .into_iter()
+            .map(|(source, (head, _))| (source, head))
+            .collect();
+        drop(queue);
+        let staging = staged.queue();
         let mut ordinal = 0u64;
-        queue.prepare_acquisition(&identity, &plan.intent, plan.count, |staging| {
+        {
             members(&mut |mut input, body| {
                 if ordinal >= plan.count {
                     return Err(polylogue_store::StoreError::Invalid(
@@ -148,8 +154,15 @@ impl Sinex {
                 });
                 let member = format!("{identity}:{ordinal}");
                 ordinal += 1;
-                if staging.get(&member)?.is_some() {
-                    let Capture::Input(original) = staging.capture(&member)? else {
+                let retained = {
+                    let queue = self.queue()?;
+                    queue
+                        .get(&member)?
+                        .map(|_| queue.pin_capture(&member))
+                        .transpose()?
+                };
+                if let Some(retained) = retained {
+                    let Capture::Input(original) = retained.decode()? else {
                         return Err(polylogue_store::StoreError::Invalid(
                             "acquisition retry replaced a source capture".into(),
                         ));
@@ -173,12 +186,45 @@ impl Sinex {
                 )
                 .into());
             }
-            Ok(())
-        })?;
+        }
+        staged.finish()?;
+        let queue = self.queue()?;
+        if plan.mode == CaptureMode::Mutable {
+            for basis in &plan.bases {
+                let current = queue.source_heads(&basis.source, "")?.head;
+                let expected = expected_heads.get(&basis.source);
+                let same_head = current.as_ref().map(|entry| &entry.identity) == expected;
+                let same_group = current.as_ref().is_some_and(|entry| matches!(
+                    &entry.capture, Some(Capture::Input(input)) if input.group.as_ref().is_some_and(|group| group.identity == identity)
+                ));
+                if !same_head && !same_group {
+                    return Err(polylogue_store::StoreError::Conflict(
+                        "source observation changed while acquisition was staged".into(),
+                    )
+                    .into());
+                }
+            }
+        }
+        queue.publish_acquisition(staged)?;
         Ok(PreparedWrite {
             identity,
             pending: true,
         })
+    }
+
+    pub(crate) fn pending_group_headers(
+        &self,
+        group: &str,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<polylogue_store::primary::PendingGroupPage> {
+        let queue = self.queue()?;
+        let (entries, next) = queue.acquisition_headers(group, after, limit)?;
+        let headers = entries
+            .into_iter()
+            .map(|entry| pending(&queue, entry))
+            .collect::<Result<_>>()?;
+        Ok(polylogue_store::primary::PendingGroupPage { headers, next })
     }
 
     pub(crate) fn pending_source(

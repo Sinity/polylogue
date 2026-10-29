@@ -129,6 +129,7 @@ struct Acquisition {
     identity: String,
     intent: String,
     count: u64,
+    order_base: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -154,6 +155,52 @@ pub(crate) struct Spool {
     last_retired: Cell<Option<i64>>,
     retirement_dirty: Cell<bool>,
     _lock: File,
+}
+
+/// Encoded custody is verified and synced privately before publication takes
+/// the shared queue lock. Relative member order grants no source authority.
+pub(crate) struct StagedAcquisition {
+    temporary: tempfile::TempDir,
+    queue: Spool,
+    identity: String,
+    intent: String,
+    count: u64,
+}
+impl StagedAcquisition {
+    pub fn queue(&self) -> &Spool {
+        &self.queue
+    }
+    pub fn finish(&self) -> Result<()> {
+        if self.queue.next.get().checked_sub(1) != Some(self.count) {
+            return invalid("acquisition member count differs from its complete plan");
+        }
+        sync(self.temporary.path())?;
+        Ok(())
+    }
+}
+
+/// A pinned immutable sidecar may be checked after releasing the queue lock.
+pub(crate) struct PinnedCapture {
+    header: Capture,
+    control: Option<Control>,
+    bytes: Option<(File, EncodedBlob)>,
+}
+impl PinnedCapture {
+    pub fn decode(self) -> Result<Capture> {
+        let Some((file, descriptor)) = self.bytes else {
+            return Ok(self.header);
+        };
+        let prepared =
+            hashed_blobs::Prepared::from_encoded(file, descriptor, None, ReadLimits::default())?;
+        let capture: Capture = decode_json(prepared.reader(None, ReadLimits::default())?)?;
+        if capture_header(&capture) != self.header {
+            return invalid("capture sidecar differs from its queue header");
+        }
+        if control(&capture) != self.control {
+            return invalid("parser control differs from its immutable capture index");
+        }
+        Ok(capture)
+    }
 }
 
 impl Spool {
@@ -235,6 +282,27 @@ impl Spool {
             return invalid("spool operation identity differs from its directory");
         }
         let directory = self.operation(identity)?;
+        let operations = directory.parent().expect("operation parent");
+        if operations != self.root.join("operations") {
+            let acquisition: Acquisition = read_checked(
+                &operations
+                    .parent()
+                    .expect("acquisition parent")
+                    .join("acquisition.json"),
+            )?
+            .ok_or_else(|| {
+                Error::Invalid("acquisition member has no accepted publication".into())
+            })?;
+            let base = acquisition
+                .order_base
+                .ok_or_else(|| Error::Invalid("acquisition has no accepted queue order".into()))?;
+            if prepared.order == 0 || prepared.order > acquisition.count {
+                return invalid("acquisition member has an invalid relative order");
+            }
+            prepared.order = base
+                .checked_add(prepared.order)
+                .ok_or_else(|| Error::Invalid("acquisition queue order exhausted".into()))?;
+        }
         let frame = prepared.frame_encoding.descriptor()?;
         if frame.hash.to_string() != prepared.frame_hash
             || frame.decoded_len != prepared.frame_length
@@ -397,86 +465,119 @@ impl Spool {
         )
     }
 
-    /// Stage all acquisition members privately, then expose their existing
-    /// operation records with one directory publication.
-    pub fn prepare_acquisition(
+    pub fn stage_acquisition(
         &self,
         identity: &str,
         intent: &str,
         count: u64,
-        stage: impl FnOnce(&Spool) -> Result<()>,
-    ) -> Result<()> {
-        self.ensure_indexes()?;
-        let destination = self.root.join("operations").join(hash(identity.as_bytes()));
-        if destination.try_exists()? {
-            let acquisition = read_checked::<Acquisition>(&destination.join("acquisition.json"))?
-                .ok_or_else(|| {
-                Error::Invalid("acquisition identity belongs to another operation".into())
-            })?;
-            if acquisition.identity != identity
-                || acquisition.intent != intent
-                || acquisition.count != count
-            {
-                return invalid("acquisition identity changed its immutable membership");
-            }
-            let retained = fs::read_dir(destination.join("operations"))?.try_fold(
-                0u64,
-                |count, entry| -> Result<u64> {
-                    let entry = entry?;
-                    Ok(count + u64::from(entry.file_name().to_str().is_some_and(hex_name)))
-                },
-            )?;
-            if retained != count {
-                return Err(polylogue_store::StoreError::Conflict(
-                    "acquisition members were already applied; refresh the source basis".into(),
-                )
-                .into());
-            }
-            stage(self)?;
-            return Ok(());
-        }
+    ) -> Result<StagedAcquisition> {
         let temporary = tempfile::Builder::new()
             .prefix(&format!(".preparing-{}-", hash(identity.as_bytes())))
             .tempdir_in(self.root.join("operations"))?;
         fs::create_dir(temporary.path().join("operations"))?;
         fs::create_dir(temporary.path().join("retired"))?;
-        let staging = Spool {
+        let queue = Spool {
             root: temporary.path().into(),
-            first: Cell::new(self.next.get()),
-            next: Cell::new(self.next.get()),
+            first: Cell::new(1),
+            next: Cell::new(1),
             index_dirty: Cell::new(true),
             last_retired: Cell::new(None),
             retirement_dirty: Cell::new(true),
             _lock: self._lock.try_clone()?,
         };
-        staging.rebuild_indexes()?;
-        // Rebuilding an empty private directory has no preceding queue order.
-        staging.next.set(self.next.get());
-        stage(&staging)?;
-        let staged = staging
-            .next
-            .get()
-            .checked_sub(self.next.get())
-            .ok_or_else(|| Error::Invalid("acquisition order moved backwards".into()))?;
-        if staged != count {
+        queue.rebuild_indexes()?;
+        Ok(StagedAcquisition {
+            temporary,
+            queue,
+            identity: identity.into(),
+            intent: intent.into(),
+            count,
+        })
+    }
+
+    /// The caller has checked its frozen source basis under the queue lock.
+    /// Only small metadata and the atomic directory publication enter this step.
+    pub fn publish_acquisition(&self, staged: StagedAcquisition) -> Result<()> {
+        self.ensure_indexes()?;
+        let destination = self
+            .root
+            .join("operations")
+            .join(hash(staged.identity.as_bytes()));
+        if destination.try_exists()? {
+            let acquisition = read_checked::<Acquisition>(&destination.join("acquisition.json"))?
+                .ok_or_else(|| {
+                Error::Invalid("acquisition identity belongs to another operation".into())
+            })?;
+            if acquisition.identity != staged.identity
+                || acquisition.intent != staged.intent
+                || acquisition.count != staged.count
+            {
+                return invalid("acquisition identity changed its immutable membership");
+            }
+            for member in fs::read_dir(staged.temporary.path().join("operations"))? {
+                let desired = read_checked::<Prepared>(&member?.path().join("metadata.json"))?
+                    .ok_or_else(|| {
+                        Error::Invalid("staged acquisition member has no metadata".into())
+                    })?;
+                let original = self.get(&desired.identity)?.ok_or_else(|| {
+                    polylogue_store::StoreError::Conflict(
+                        "acquisition members were already applied; refresh the source basis".into(),
+                    )
+                })?;
+                if original.frame_hash != desired.frame_hash
+                    || original.frame_length != desired.frame_length
+                    || original
+                        .body
+                        .as_ref()
+                        .map(|bytes| (&bytes.blob, bytes.length))
+                        != desired
+                            .body
+                            .as_ref()
+                            .map(|bytes| (&bytes.blob, bytes.length))
+                    || original
+                        .captured
+                        .as_ref()
+                        .map(|bytes| (&bytes.blob, bytes.length))
+                        != desired
+                            .captured
+                            .as_ref()
+                            .map(|bytes| (&bytes.blob, bytes.length))
+                {
+                    return invalid("acquisition retry changed immutable custody");
+                }
+            }
+            return Ok(());
+        }
+        if staged.queue.next.get().checked_sub(1) != Some(staged.count) {
             return invalid("acquisition member count differs from its complete plan");
         }
+        let base = self
+            .next
+            .get()
+            .checked_sub(1)
+            .ok_or_else(|| Error::Invalid("invalid acquisition queue start".into()))?;
+        let next = self
+            .next
+            .get()
+            .checked_add(staged.count)
+            .ok_or_else(|| Error::Invalid("producer queue order exhausted".into()))?;
         write_checked(
-            &temporary.path().join("acquisition.json"),
+            &staged.temporary.path().join("acquisition.json"),
             &Acquisition {
-                identity: identity.into(),
-                intent: intent.into(),
-                count,
+                identity: staged.identity.clone(),
+                intent: staged.intent.clone(),
+                count: staged.count,
+                order_base: Some(base),
             },
         )?;
-        sync(temporary.path())?;
+        sync(staged.temporary.path())?;
         boundary("acquisition_synced");
         self.index_dirty.set(true);
-        fs::rename(temporary.path(), &destination)?;
+        fs::rename(staged.temporary.path(), &destination)?;
         sync(&self.root.join("operations"))?;
         boundary("acquisition_published");
         let operations = destination.join("operations");
-        let batch = hash(identity.as_bytes());
+        let batch = hash(staged.identity.as_bytes());
         for entry in fs::read_dir(&operations)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -493,30 +594,48 @@ impl Spool {
                 })?;
             self.index_entry(&self.required(&metadata.identity)?)?;
         }
-        self.next.set(staging.next.get());
+        self.next.set(next);
         self.index_dirty.set(false);
         Ok(())
     }
 
-    pub fn capture(&self, identity: &str) -> Result<Capture> {
+    #[cfg(test)]
+    pub fn prepare_acquisition(
+        &self,
+        identity: &str,
+        intent: &str,
+        count: u64,
+        stage: impl FnOnce(&Spool) -> Result<()>,
+    ) -> Result<()> {
+        let staged = self.stage_acquisition(identity, intent, count)?;
+        stage(staged.queue())?;
+        staged.finish()?;
+        self.publish_acquisition(staged)
+    }
+
+    pub fn pin_capture(&self, identity: &str) -> Result<PinnedCapture> {
         let prepared = self.required(identity)?;
-        if let Some(captured) = prepared.captured {
-            let capture: Capture = decode_json(verified_encoded(
-                &self.operation(identity)?.join("captured.zst"),
-                captured.descriptor()?,
-            )?)?;
-            if prepared.capture.as_ref() != Some(&capture_header(&capture)) {
-                return invalid("capture sidecar differs from its queue header");
-            }
-            if prepared.control != control(&capture) {
-                return invalid("parser control differs from its immutable capture index");
-            }
-            Ok(capture)
-        } else {
-            prepared
-                .capture
-                .ok_or_else(|| Error::Invalid("operation has no captured facts".into()))
-        }
+        let header = prepared
+            .capture
+            .ok_or_else(|| Error::Invalid("operation has no captured facts".into()))?;
+        let bytes = prepared
+            .captured
+            .map(|captured| -> Result<_> {
+                Ok((
+                    regular(&self.operation(identity)?.join("captured.zst"))?,
+                    captured.descriptor()?,
+                ))
+            })
+            .transpose()?;
+        Ok(PinnedCapture {
+            header,
+            control: prepared.control,
+            bytes,
+        })
+    }
+
+    pub fn capture(&self, identity: &str) -> Result<Capture> {
+        self.pin_capture(identity)?.decode()
     }
 
     /// One publication owns the complete immutable capture set. Per-capture
@@ -640,6 +759,55 @@ impl Spool {
             }
             Ok(())
         })
+    }
+
+    pub fn acquisition_headers(
+        &self,
+        group: &str,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<Prepared>, Option<u64>)> {
+        if limit == 0 {
+            return invalid("acquisition page limit is zero");
+        }
+        self.ensure_indexes()?;
+        let directory = self.root.join("operations").join(hash(group.as_bytes()));
+        let Some(acquisition) = read_checked::<Acquisition>(&directory.join("acquisition.json"))?
+        else {
+            return Ok((Vec::new(), None));
+        };
+        if acquisition.identity != group || acquisition.order_base.is_none() {
+            return invalid("acquisition page has another or unpublished group identity");
+        }
+        let mut ordinal = match after {
+            Some(after) => after
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("acquisition cursor overflow".into()))?,
+            None => 0,
+        };
+        if ordinal > acquisition.count {
+            return invalid("acquisition cursor exceeds its membership");
+        }
+        let root = self.index("acquisition-members", &hash(group.as_bytes()));
+        let mut headers = Vec::new();
+        let mut last = None;
+        while ordinal < acquisition.count {
+            if let Some(identity) = read_json::<String>(&root.join(format!("{ordinal:020}")))? {
+                let prepared = self.required(&identity)?;
+                if !matches!(&prepared.capture, Some(Capture::Input(input)) if input.parsed.is_empty()
+                    && input.group.as_ref().is_some_and(|header| header.identity == group && header.ordinal == ordinal && header.count == acquisition.count))
+                {
+                    return invalid("acquisition index differs from its immutable member header");
+                }
+                if headers.len() == limit {
+                    return Ok((headers, last));
+                }
+                headers.push(prepared);
+                last = Some(ordinal);
+            }
+            ordinal += 1;
+        }
+        Ok((headers, None))
     }
 
     pub fn source_heads(
@@ -1132,6 +1300,7 @@ impl Spool {
             "locations",
             "names",
             "pending-source",
+            "acquisition-members",
         ] {
             fs::create_dir_all(index.join(name))?;
         }
@@ -1221,6 +1390,34 @@ impl Spool {
     }
 
     fn index_entry(&self, prepared: &Prepared) -> Result<()> {
+        let path = self.operation(&prepared.identity)?;
+        let parent = path.parent().expect("operation parent");
+        if parent != self.root.join("operations") {
+            let acquisition = read_checked::<Acquisition>(
+                &parent
+                    .parent()
+                    .expect("acquisition parent")
+                    .join("acquisition.json"),
+            )?
+            .ok_or_else(|| Error::Invalid("indexed member has no acquisition".into()))?;
+            let base = acquisition
+                .order_base
+                .ok_or_else(|| Error::Invalid("indexed acquisition has no order".into()))?;
+            let ordinal = prepared
+                .order
+                .checked_sub(base)
+                .and_then(|relative| relative.checked_sub(1))
+                .filter(|ordinal| *ordinal < acquisition.count)
+                .ok_or_else(|| {
+                    Error::Invalid("indexed member has another acquisition order".into())
+                })?;
+            let root = self.index(
+                "acquisition-members",
+                &hash(acquisition.identity.as_bytes()),
+            );
+            fs::create_dir_all(&root)?;
+            write_index(&root.join(format!("{ordinal:020}")), &prepared.identity)?;
+        }
         sources::insert(self, prepared)?;
         if let Some(name) = prepared.logical_name() {
             names::insert(&self.index("names", ""), name, &prepared.identity)?;

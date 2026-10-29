@@ -287,3 +287,172 @@ fn older_control_capture_is_explicit_when_newer_raw_has_no_parser_state() {
             .is_none()
     );
 }
+
+#[test]
+fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let selector = source(b"/home/op/mutable.jsonl");
+    let original_basis = basis(&selector, None);
+    let plan = CapturePlan {
+        intent: "staged-A".into(),
+        bases: vec![original_basis.clone()],
+        count: 1,
+        mode: CaptureMode::Mutable,
+    };
+    let result = sinex.prepare_input_group(&plan, &mut |emit| {
+        assert!(
+            sinex.spool.try_lock().is_ok(),
+            "body staging retained the shared custody lock"
+        );
+        let mut input = capture(b"A", vec![]);
+        input.basis = Some(original_basis.clone());
+        emit(input, body(root.path(), b"A"))?;
+        acquire(
+            &sinex,
+            root.path(),
+            b"B",
+            original_basis.clone(),
+            CaptureMode::Mutable,
+        )?;
+        Ok(())
+    });
+    assert!(matches!(
+        result,
+        Err(Error::Store(polylogue_store::StoreError::Conflict(_)))
+    ));
+    let pending = sinex.pending_captures().unwrap();
+    assert_eq!(pending.len(), 1);
+    let Capture::Input(input) = &pending[0].captured else {
+        panic!("input capture expected")
+    };
+    assert_eq!(input.hash, BlobHash::of(b"B"));
+    assert!(
+        sinex
+            .pending_group_headers("unknown-group", None, 1)
+            .unwrap()
+            .headers
+            .is_empty()
+    );
+}
+
+#[test]
+fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let selector = source(b"/home/op/database");
+    let source_basis = basis(&selector, None);
+    let plan = CapturePlan {
+        intent: "one-provider-transaction".into(),
+        bases: vec![source_basis.clone()],
+        count: 2,
+        mode: CaptureMode::Mutable,
+    };
+    let first = sinex
+        .prepare_input_group(&plan, &mut |emit| {
+            for (ordinal, bytes) in [b"first".as_slice(), b"second".as_slice()]
+                .into_iter()
+                .enumerate()
+            {
+                let mut input = capture(bytes, vec![]);
+                input.index = u32::try_from(ordinal).unwrap();
+                input.basis = Some(source_basis.clone());
+                emit(input, body(root.path(), bytes))?;
+            }
+            sinex.prepare_blob(
+                BlobHash::of(b"independent"),
+                11,
+                body(root.path(), b"independent"),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        sinex
+            .pending_group_headers(&first.identity, None, 0)
+            .is_err()
+    );
+    let page = sinex
+        .pending_group_headers(&first.identity, None, 1)
+        .unwrap();
+    assert_eq!(page.headers.len(), 1);
+    assert_eq!(page.next, Some(0));
+    let Capture::Input(header) = &page.headers[0].captured else {
+        panic!("input capture expected")
+    };
+    assert!(header.parsed.is_empty());
+    assert_eq!(header.group.as_ref().unwrap().ordinal, 0);
+    let next = sinex
+        .pending_group_headers(&first.identity, page.next, 1)
+        .unwrap();
+    assert_eq!(next.headers.len(), 1);
+    assert_eq!(next.next, None);
+    let Capture::Input(header) = &next.headers[0].captured else {
+        panic!("input capture expected")
+    };
+    assert_eq!(header.group.as_ref().unwrap().ordinal, 1);
+    let orders = {
+        let queue = sinex.queue().unwrap();
+        let mut after = None;
+        let mut orders = vec![];
+        loop {
+            let page = queue.pending_after(after, 1).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            after = Some(page[0].order);
+            orders.push(page[0].identity.clone());
+        }
+        orders
+    };
+    assert_eq!(orders.len(), 3);
+    assert_eq!(orders[1], page.headers[0].identity);
+    assert_eq!(orders[2], next.headers[0].identity);
+    drop(sinex);
+    let sinex = client(root.path());
+    let reopened = sinex
+        .pending_group_headers(&first.identity, None, 2)
+        .unwrap();
+    assert_eq!(
+        reopened.headers,
+        vec![page.headers[0].clone(), next.headers[0].clone()]
+    );
+    assert_eq!(reopened.next, None);
+}
+
+#[test]
+fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change() {
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let selector = source(b"/home/op/source");
+    let source_basis = basis(&selector, None);
+    let plan = CapturePlan {
+        intent: "same-validated-intent".into(),
+        bases: vec![source_basis.clone()],
+        count: 1,
+        mode: CaptureMode::Mutable,
+    };
+    let mut first_header = None;
+    let first = sinex
+        .prepare_input_group(&plan, &mut |emit| {
+            let mut input = capture(b"A", vec![]);
+            input.basis = Some(source_basis.clone());
+            first_header = Some(input.clone());
+            emit(input, body(root.path(), b"A"))
+        })
+        .unwrap();
+    sinex
+        .prepare_input_group(&plan, &mut |emit| {
+            let mut input = first_header.clone().unwrap();
+            input.rows.input = "different-tentative-coordinate".into();
+            emit(input, body(root.path(), b"A"))
+        })
+        .unwrap();
+    let retained = sinex
+        .pending_group_headers(&first.identity, None, 1)
+        .unwrap();
+    let Capture::Input(original) = sinex.capture(&retained.headers[0].identity).unwrap() else {
+        panic!("input capture expected")
+    };
+    assert_eq!(original.rows.input, first_header.unwrap().rows.input);
+}
