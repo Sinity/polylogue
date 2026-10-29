@@ -417,7 +417,7 @@ pub struct ReferencedBy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open: Option<ReadyCall>,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadFooter {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -432,19 +432,6 @@ pub struct ReadFooter {
     pub position: Option<ReadPosition>,
     pub shown: u64,
     pub count: ValueState<u64>,
-}
-impl Default for ReadFooter {
-    fn default() -> Self {
-        Self {
-            coverage: vec![],
-            referenced_by: vec![],
-            next: None,
-            previous: None,
-            position: None,
-            shown: 0,
-            count: ValueState::default(),
-        }
-    }
 }
 
 /// Aggregated omission counts stay bounded by the finite target kinds/views.
@@ -481,13 +468,13 @@ pub struct ReadDocument {
 pub enum ReadPart {
     Header(ReadHeader),
     Item(ReadItem),
-    Footer(ReadFooter),
+    Footer(Box<ReadFooter>),
 }
 impl ReadDocument {
     pub fn into_parts(self) -> impl Iterator<Item = ReadPart> {
         std::iter::once(ReadPart::Header(self.header))
             .chain(self.items.into_iter().map(ReadPart::Item))
-            .chain(std::iter::once(ReadPart::Footer(self.footer)))
+            .chain(std::iter::once(ReadPart::Footer(Box::new(self.footer))))
     }
 }
 /// The original ordinal remains meaningful when a view omits earlier blocks.
