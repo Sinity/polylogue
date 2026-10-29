@@ -251,6 +251,9 @@ impl Sinex {
     /// Later A→B→A observations get a new operation; retrying the most recent
     /// observation keeps its original identity without reading large frames.
     pub(crate) fn prepare_products(&self, writes: &[ProductWrite]) -> Result<PreparedWrite> {
+        for write in writes {
+            crate::products::require_source(&write.product)?;
+        }
         let keys = writes
             .iter()
             .map(|write| crate::products::key(&write.product, write.output_index))
@@ -430,6 +433,9 @@ impl Sinex {
         identities: &[String],
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
+        for write in writes {
+            crate::products::require_source(&write.product)?;
+        }
         let queue = self.queue()?;
         if let Some(group) = queue.group_for(identities)? {
             return Ok(PreparedWrite {
@@ -471,6 +477,12 @@ impl Sinex {
         &self,
         request: &PreparedRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
+        if crate::products::signal_content(request) {
+            return Err(Error::Refused {
+                name: request.request.id.clone(),
+                reason: "signal state requires an owner-certified derived request".into(),
+            });
+        }
         let identity = format!("request:{}", request.request.id);
         let queue = self.queue()?;
         let repeat = if queue.get(&identity)?.is_some() {
