@@ -106,6 +106,7 @@ impl<'a> Stream<'a> {
                 Record::Authored(_) => self.counts.authored += 1,
                 Record::Variant(_) => self.counts.variants += 1,
                 Record::VariantPart(_) => self.counts.variant_parts += 1,
+                Record::TextFragment(_) => self.counts.text_fragments += 1,
                 Record::Blob(_) => self.counts.blobs += 1,
                 Record::Manifest(_) => {
                     return Err(error(

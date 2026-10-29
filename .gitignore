@@ -10,6 +10,7 @@ extension/dist/
 
 extension/.cache/
 
-# `cargo xtask link-common`: the patch, the saved lock and the opt-out marker.
+# `cargo xtask link-common`: the patch and saved original workspace locks.
 /.cargo/local.toml
-/.cargo/common-link.*
+/.cargo/common-link.lock
+/.cargo/common-link.fuzz.lock
