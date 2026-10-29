@@ -26,7 +26,8 @@
           "id": "grok-cli:synthetic@0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "grok-cli:synthetic"
+          "session": "grok-cli:synthetic",
+          "at_quality": "unknown"
         },
         "offset": 0
       }
@@ -37,7 +38,8 @@
           "/work/project"
         ],
         "id": "grok-cli:synthetic",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

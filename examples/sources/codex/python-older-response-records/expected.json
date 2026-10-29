@@ -37,12 +37,15 @@
             "branch": "main",
             "repository_url": "https://example.invalid/sample.git"
           }
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:older-response-session"
+        "session": "codex:older-response-session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -59,7 +62,8 @@
           "id": "codex:older-response-session@279",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:older-response-session"
+          "session": "codex:older-response-session",
+          "at_quality": "unknown"
         },
         "offset": 279
       },
@@ -78,7 +82,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:older-response-session"
+          "session": "codex:older-response-session",
+          "at_quality": "unknown"
         },
         "offset": 406
       },
@@ -105,7 +110,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:older-response-session"
+          "session": "codex:older-response-session",
+          "at_quality": "unknown"
         },
         "offset": 578
       },
@@ -125,7 +131,8 @@
           "id": "codex:older-response-session@693",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:older-response-session"
+          "session": "codex:older-response-session",
+          "at_quality": "unknown"
         },
         "offset": 693
       },
@@ -152,7 +159,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:older-response-session"
+          "session": "codex:older-response-session",
+          "at_quality": "unknown"
         },
         "offset": 860
       },
@@ -176,7 +184,8 @@
           "id": "codex:older-response-session@990",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:older-response-session"
+          "session": "codex:older-response-session",
+          "at_quality": "unknown"
         },
         "offset": 990
       },
@@ -194,7 +203,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:older-response-session"
+          "session": "codex:older-response-session",
+          "at_quality": "unknown"
         },
         "offset": 1213
       }
@@ -207,7 +217,9 @@
         "started": "2025-08-01T10:00:00Z",
         "git_commit": "0000000000000000000000000000000000000001",
         "instructions": "Synthetic project instructions.",
-        "repo": "https://example.invalid/sample.git"
+        "repo": "https://example.invalid/sample.git",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

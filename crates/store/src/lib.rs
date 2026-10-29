@@ -49,8 +49,10 @@ pub mod timing;
 pub mod tool_databases;
 pub mod user_state;
 pub mod user_writes;
+pub mod variants;
 pub mod vectors;
 mod versions;
+pub mod wire_shapes;
 mod write_lock;
 pub mod writer;
 

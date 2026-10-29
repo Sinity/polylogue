@@ -227,34 +227,46 @@ impl ExportParser for Cloud {
                 attrs.remove("external_pull_request_id");
             }
             if !attrs.is_empty() {
-                sink.out.events.push(Event {
-                    session: Some(sid.clone()),
-                    kind: "codex_cloud_turn".into(),
-                    at: None,
-                    after: Some(id.clone()),
-                    range: None,
-                    data: Json::Object(attrs.clone()),
+                sink.out.events.push({
+                    let (at, time_evidence) = crate::time::parts(None);
+                    Event {
+                        session: Some(sid.clone()),
+                        kind: "codex_cloud_turn".into(),
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        after: Some(id.clone()),
+                        range: None,
+                        data: Json::Object(attrs.clone()),
+                    }
                 });
             }
             let offset = sink.position();
             sink.out.messages.push(MessageRow {
                 offset,
                 end: offset + 1,
-                message: Message {
-                    id,
-                    session: sid.clone(),
-                    parent,
-                    role,
-                    at: None,
-                    model: None,
-                    prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-                    blocks,
-                    usage: Usage::default(),
-                    stop_reason: None,
-                    reported_cost_usd: None,
-                    duration_ms: None,
-                    production: Default::default(),
-                    attrs,
+                message: {
+                    let (at, time_evidence) = crate::time::parts(None);
+                    Message {
+                        id,
+                        session: sid.clone(),
+                        parent,
+                        role,
+                        at,
+                        at_quality: time_evidence.quality,
+                        at_precision: time_evidence.precision,
+                        at_until: time_evidence.until,
+                        model: None,
+                        prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+                        blocks,
+                        usage: Usage::default(),
+                        stop_reason: None,
+                        reported_cost_usd: None,
+                        duration_ms: None,
+                        production: Default::default(),
+                        attrs,
+                    }
                 },
             });
         }
@@ -263,13 +275,19 @@ impl ExportParser for Cloud {
             metadata.remove(field);
         }
         if !metadata.is_empty() {
-            sink.out.events.push(Event {
-                session: Some(sid.clone()),
-                kind: "codex_cloud_task".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: Json::Object(metadata),
+            sink.out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(sid.clone()),
+                    kind: "codex_cloud_task".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: Json::Object(metadata),
+                }
             });
         }
         sink.out.sessions.push(session);

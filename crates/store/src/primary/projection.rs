@@ -3,9 +3,15 @@ pub(crate) const SCHEMA: &str = "
 CREATE TABLE primary_fact (
  event TEXT PRIMARY KEY, admitted INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
- product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT
+ product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT, session TEXT
 ) STRICT;
 CREATE INDEX primary_fact_chain ON primary_fact(input,chain,admitted,event);
+CREATE INDEX primary_fact_session ON primary_fact(session,kind,state,admitted);
+CREATE TABLE primary_fact_blob (
+ event TEXT NOT NULL REFERENCES primary_fact(event), hash BLOB NOT NULL,
+ PRIMARY KEY(event,hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX primary_fact_blob_hash ON primary_fact_blob(hash);
 CREATE TABLE primary_pending (
  n INTEGER PRIMARY KEY, position INTEGER NOT NULL, event TEXT NOT NULL,
  change TEXT NOT NULL, product BLOB, source_order INTEGER NOT NULL,
@@ -14,9 +20,11 @@ CREATE TABLE primary_pending (
 CREATE INDEX primary_pending_position ON primary_pending(position,n);
 CREATE TABLE primary_complete(position INTEGER PRIMARY KEY) STRICT;
 CREATE TABLE source_material (
- id TEXT PRIMARY KEY, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
- length INTEGER NOT NULL, hash BLOB NOT NULL
+ id TEXT NOT NULL, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
+ length INTEGER NOT NULL, hash BLOB NOT NULL, source_length INTEGER, blob_offset INTEGER NOT NULL,
+ PRIMARY KEY(event,id)
 ) STRICT;
+CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
 ";
 
@@ -123,6 +131,7 @@ struct Fact {
     start: Option<i64>,
     end: Option<i64>,
     version: Option<String>,
+    session: Option<String>,
 }
 impl Fact {
     fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -140,10 +149,11 @@ impl Fact {
             start: row.get(10)?,
             end: row.get(11)?,
             version: row.get(12)?,
+            session: row.get(13)?,
         })
     }
     fn insert(&self, index: &Connection, table: &str) -> Result<()> {
-        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version])?;
+        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session])?;
         Ok(())
     }
     fn product(&self) -> Result<Option<Product>> {
@@ -156,7 +166,10 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Session { facts, .. } => Some(format!("session:{}", facts.id)),
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
-        Product::Request(request) => Some(format!("request:{}", request.id)),
+        Product::Request(request) => Some(format!("request:{}", request.request.id)),
+        Product::RestoredRequest { prepared, .. } => {
+            Some(format!("request:{}", prepared.request.id))
+        }
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         _ => None,
     };
@@ -179,8 +192,9 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
             "input",
         ),
         Product::Blob(_) => (None, None, reference, "blob"),
-        Product::Request(_) => (None, None, reference, "request"),
+        Product::Request(_) | Product::RestoredRequest { .. } => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
+        Product::WorkSnapshot { .. } => (None, None, reference, "derived"),
         _ => unreachable!(),
     }
 }
@@ -229,6 +243,14 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
+                let session = match &product {
+                    Product::Session { facts, .. } => Some(facts.id.to_string()),
+                    Product::Message { facts, .. } => Some(facts.message.session.to_string()),
+                    Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
+                    Product::Background { facts, .. } => Some(facts.session.to_string()),
+                    Product::WorkSnapshot { snapshot } => Some(snapshot.session.id.to_string()),
+                    _ => None,
+                };
                 let reading = product.reading();
                 let start = reading
                     .map(|r| i64::try_from(r.start))
@@ -261,6 +283,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     start,
                     end,
                     version,
+                    session,
                 })
             }
             ConfirmedChange::Archived => old.map(|mut fact| {
@@ -328,7 +351,7 @@ pub(crate) fn material_at(
     let start = i64::try_from(start).map_err(|_| {
         StoreError::Invalid("a source record position exceeds SQLite's signed integer range".into())
     })?;
-    Ok(index.query_row("SELECT id,offset FROM source_material WHERE input=?1 AND chain=?2 AND offset<=?3 AND offset+length>?3 ORDER BY offset DESC LIMIT 1",params![input,chain,start],|row|Ok(super::SourceLocation{material:row.get(0)?,anchor:(start-row.get::<_,i64>(1)?) as u64})).optional()?)
+    Ok(index.query_row("SELECT id,offset,blob_offset FROM source_material WHERE input=?1 AND chain=?2 AND offset<=?3 AND (offset+source_length>?3 OR (source_length=0 AND offset=?3)) ORDER BY offset DESC LIMIT 1",params![input,chain,start],|row|Ok(super::SourceLocation{material:row.get(0)?,anchor:(start-row.get::<_,i64>(1)?+row.get::<_,i64>(2)?) as u64})).optional()?)
 }
 
 struct Plan {
@@ -374,6 +397,31 @@ fn step(
     step
 }
 
+fn finish_step(
+    file: &mut crate::writer::ChainReading,
+    reading: &super::Reading,
+    output: polylogue_model::Output,
+    counts: polylogue_model::RecordCounts,
+    receipt: Option<crate::wire_shapes::ReadingReceipt>,
+    published_reset: bool,
+    comparison: Option<crate::tool_databases::Comparison>,
+    through: &mut u64,
+    missing: &mut bool,
+) -> Result<()> {
+    if published_reset {
+        *missing = false;
+    } else if reading.start > *through {
+        *missing = true;
+    }
+    let mut step = step(reading, output, counts);
+    step.receipt = receipt;
+    step.reset = published_reset;
+    step.comparison = comparison;
+    step.source_prefix_missing = *missing || step.receipt.is_none();
+    *through = (*through).max(reading.parsed_upto);
+    file.push_confirmed(&mut step)
+}
+
 fn plan(index: &Connection) -> Result<Plan> {
     let mut out = Plan {
         readings: Vec::new(),
@@ -399,7 +447,10 @@ fn plan(index: &Connection) -> Result<Plan> {
             if let Product::Input { rows, .. } = &product {
                 out.inputs.insert(rows.input.clone());
             }
-            if matches!(product, Product::Request(_)) {
+            if matches!(
+                product,
+                Product::Request(_) | Product::RestoredRequest { .. }
+            ) {
                 out.requests = true;
             }
             if matches!(product, Product::Coverage(_)) {
@@ -421,18 +472,36 @@ fn plan(index: &Connection) -> Result<Plan> {
     }
     drop(rows);
     drop(q);
+    for hash in &out.materials {
+        let mut query = index.prepare("SELECT f.product FROM primary_fact_blob b JOIN primary_next f ON f.event=b.event WHERE b.hash=?1 AND f.state='live' AND f.kind='parsed'")?;
+        let mut rows = query.query([&hash.0[..]])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(0)?;
+            let product: Product = unpacked(&bytes)?;
+            let reading = product.reading().expect("parsed fact has reading");
+            chains.insert(
+                (reading.input.id.clone(), reading.chain),
+                reading.input.clone(),
+            );
+        }
+    }
     let mut needed = BTreeSet::new();
     for ((input, chain), key) in chains {
         let mut reading_file = crate::writer::ChainReading::new()?;
         let mut current: Option<super::Reading> = None;
         let mut output = polylogue_model::Output::default();
         let mut counts = polylogue_model::RecordCounts::default();
-        let mut length: u64 = index.query_row(
+        let mut receipt = None;
+        let mut published_reset = false;
+        let mut comparison = None;
+        let mut through = 0;
+        let mut missing = false;
+        let mut length = index.query_row(
             "SELECT coalesce(max(length),0) FROM source_revision WHERE input=?1 AND chain=?2",
             params![input, chain],
-            |row| row.get(0),
+            |row| unsigned_column(row, 0),
         )?;
-        let mut query=index.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='parsed' AND input=?1 AND chain=?2 ORDER BY step_start,step_end,reading_version,admitted,source_order,event")?;
+        let mut query=index.prepare("SELECT product,event,admitted FROM primary_next WHERE state='live' AND kind='parsed' AND input=?1 AND chain=?2 ORDER BY step_start,step_end,reading_version,admitted,source_order,event")?;
         let mut rows = query.query(params![input, chain])?;
         while let Some(row) = rows.next()? {
             let bytes: Vec<u8> = row.get(0)?;
@@ -440,17 +509,34 @@ fn plan(index: &Connection) -> Result<Plan> {
             let reading = product.reading().expect("parsed fact has reading").clone();
             if current.as_ref().is_some_and(|old| old != &reading) {
                 let old = current.take().expect("reading exists");
-                reading_file.push(&mut step(
+                finish_step(
+                    &mut reading_file,
                     &old,
                     std::mem::take(&mut output),
                     std::mem::take(&mut counts),
-                ))?;
+                    receipt.take(),
+                    published_reset,
+                    comparison.take(),
+                    &mut through,
+                    &mut missing,
+                )?;
+                published_reset = false;
             }
             current = Some(reading.clone());
             length = length.max(reading.parsed_upto);
             match product {
                 Product::Session { facts, .. } => output.sessions.push(facts),
-                Product::Message { facts, order, .. } => {
+                Product::Message {
+                    facts,
+                    order,
+                    projection,
+                    ..
+                } => {
+                    if let Some(projection) = projection {
+                        output
+                            .message_projections
+                            .insert(output.messages.len(), projection);
+                    }
                     if let Some(order) = order {
                         output.message_order.insert(output.messages.len(), order);
                     }
@@ -462,8 +548,12 @@ fn plan(index: &Connection) -> Result<Plan> {
                     output.documents.push(facts);
                 }
                 Product::Event {
-                    facts, imported, ..
+                    id,
+                    facts,
+                    imported,
+                    ..
                 } => {
+                    output.event_ids.insert(output.events.len(), id);
                     if let Some(imported) = imported {
                         output.imported_events.insert(output.events.len(), imported);
                     }
@@ -474,20 +564,40 @@ fn plan(index: &Connection) -> Result<Plan> {
                 Product::Repository { facts, .. } => output.repo_lookups.push(facts),
                 Product::ParseProgress {
                     counts: record_counts,
+                    reset,
+                    comparison: source_comparison,
                     ..
-                } => counts = record_counts,
+                } => {
+                    counts = record_counts;
+                    published_reset = reset;
+                    comparison = source_comparison;
+                    receipt = Some(crate::wire_shapes::ReadingReceipt {
+                        sequence: row.get(2)?,
+                        id: Some(row.get(1)?),
+                        observation: None,
+                        observed_at_ms: None,
+                    });
+                }
                 _ => unreachable!(),
             }
         }
         if let Some(reading) = current {
-            reading_file.push(&mut step(&reading, output, counts))?;
+            finish_step(
+                &mut reading_file,
+                &reading,
+                output,
+                counts,
+                receipt,
+                published_reset,
+                comparison,
+                &mut through,
+                &mut missing,
+            )?;
         } else {
-            reading_file.push(&mut crate::ParseStep::new(
-                Default::default(),
-                Default::default(),
-                0..0,
-                false,
-            ))?;
+            let mut absent =
+                crate::ParseStep::new(Default::default(), Default::default(), 0..0, false);
+            absent.source_prefix_missing = true;
+            reading_file.push_confirmed(&mut absent)?;
         }
         reading_file.finish()?;
         out.readings.push((key, chain, length, reading_file));
@@ -495,7 +605,7 @@ fn plan(index: &Connection) -> Result<Plan> {
     for hash in needed {
         let size=match new_materials.get(&hash) {
             Some(size)=>Some(*size),
-            None=>index.query_row("SELECT m.length FROM source_material m JOIN primary_next f ON f.event=m.event WHERE f.state='live' AND m.hash=?1 LIMIT 1",[&hash.0[..]],|row|row.get::<_,u64>(0)).optional()?,
+            None=>index.query_row("SELECT m.length FROM source_material m JOIN primary_next f ON f.event=m.event WHERE f.state='live' AND m.hash=?1 LIMIT 1",[&hash.0[..]],|row|unsigned_column(row,0)).optional()?,
         };
         out.available.insert(hash, size);
     }
@@ -507,14 +617,18 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
         return Ok(());
     };
     let extent = descriptor(material)?;
-    let (input, chain, offset) = match product {
+    let (input, chain, offset, source_length, blob_offset) = match product {
         Product::Input { rows, .. } => {
             let source = rows.extent.as_ref().ok_or_else(|| {
                 StoreError::Invalid("material input facts have no source extent".into())
             })?;
             if source.blob != material.hash
                 || source.length < 0
-                || source.length as u64 != material.length
+                || source.offset < 0
+                || source.blob_offset < 0
+                || (source.blob_offset as u64)
+                    .checked_add(source.length as u64)
+                    .is_none_or(|end| end > material.length)
             {
                 return Err(StoreError::Invalid(
                     "input extent differs from its material".into(),
@@ -524,13 +638,26 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
                 Some(rows.input.as_str()),
                 Some(source.chain),
                 Some(source.offset),
+                Some(source.length),
+                source.blob_offset,
             )
         }
-        _ => (None, None, None),
+        _ => (None, None, None, None, 0),
     };
-    tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![material.id,event,input,chain,offset,material.length,&material.hash.0[..]])?;
-    tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],material.length,extent.len,extent.encode()])?;
+    let length = i64::try_from(material.length).map_err(|_| {
+        StoreError::Invalid("material length exceeds the source catalog range".into())
+    })?;
+    let stored = i64::try_from(extent.len).map_err(|_| {
+        StoreError::Invalid("extent length exceeds the source catalog range".into())
+    })?;
+    tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash,source_length,blob_offset) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![material.id,event,input,chain,offset,length,&material.hash.0[..],source_length,blob_offset])?;
+    tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&material.hash.0[..],length,stored,extent.encode()])?;
     Ok(())
+}
+
+fn unsigned_column(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(column)?;
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
 }
 
 fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
@@ -551,7 +678,7 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     drop(rows);
     drop(q);
     for input in &plan.inputs {
-        tx.execute("DELETE FROM source_observation_zip WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
+        tx.execute("DELETE FROM source_observation_container WHERE observation_id IN (SELECT id FROM source_observation WHERE input=?1)",[input])?;
         tx.execute("DELETE FROM source_observation WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_extent WHERE input=?1", [input])?;
         tx.execute("DELETE FROM source_revision WHERE input=?1", [input])?;
@@ -572,11 +699,55 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
-fn requests(_tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
-    if plan.requests {
-        return Err(StoreError::Invalid(
-            "canonical authored effects are not wired".into(),
-        ));
+fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
+    if !plan.requests {
+        return Ok(());
+    }
+    super::authored::clear(tx)?;
+    let mut q=tx.prepare("SELECT product,admitted FROM primary_next WHERE state='live' AND kind='request' ORDER BY admitted,source_order,event")?;
+    let mut rows = q.query([])?;
+    while let Some(row) = rows.next()? {
+        let bytes: Vec<u8> = row.get(0)?;
+        let admitted: i64 = row.get(1)?;
+        match unpacked(&bytes)? {
+            Product::Request(prepared) => super::authored::apply(tx, &prepared, admitted)?,
+            Product::RestoredRequest {
+                prepared,
+                claims,
+                current,
+            } => {
+                super::authored::restore(tx, &prepared, &claims, &current, admitted)?;
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "DELETE FROM primary_fact_blob WHERE event IN (SELECT event FROM primary_candidate)",
+        [],
+    )?;
+    let mut query =
+        tx.prepare("SELECT event,product FROM primary_candidate WHERE product IS NOT NULL")?;
+    let mut rows = query.query([])?;
+    while let Some(row) = rows.next()? {
+        let event: String = row.get(0)?;
+        let bytes: Vec<u8> = row.get(1)?;
+        let product: Product = unpacked(&bytes)?;
+        let mut hashes = BTreeSet::new();
+        match product {
+            Product::Message { facts, .. } => attachments(&facts.message.blocks, &mut hashes),
+            Product::Document { facts, .. } => attachments(&facts.document.blocks, &mut hashes),
+            _ => {}
+        }
+        for hash in hashes {
+            tx.execute(
+                "INSERT INTO primary_fact_blob(event,hash) VALUES (?1,?2)",
+                params![event, &hash.0[..]],
+            )?;
+        }
     }
     Ok(())
 }
@@ -625,6 +796,7 @@ pub(crate) fn apply(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
             [],
         )?;
+        remember_blobs(&tx)?;
         tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;
@@ -634,3 +806,6 @@ pub(crate) fn apply(
         drop(plan);
     }
 }
+
+#[cfg(test)]
+mod tests;

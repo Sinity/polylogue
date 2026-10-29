@@ -170,7 +170,10 @@ fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 5);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 5);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 8);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_container"), 6);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.observation_container"),
+        6
+    );
     assert_eq!(
         w.count("SELECT count(DISTINCT container_input) AS n FROM a.observation_container"),
         2

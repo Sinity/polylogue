@@ -62,6 +62,7 @@ CREATE TABLE extent (
   length        INTEGER NOT NULL,
   blob          BLOB NOT NULL REFERENCES blob(hash),
   blob_offset   INTEGER NOT NULL,
+  commit_seq    INTEGER NOT NULL,
   PRIMARY KEY (input, chain, offset),
   FOREIGN KEY (input, chain) REFERENCES revision(input, number)
 ) STRICT, WITHOUT ROWID;
@@ -86,7 +87,8 @@ CREATE TABLE observation (
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   or 'capture:<id>'
   class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported
-  revision      INTEGER,                 -- the revision produced or confirmed (none for deleted)
+  revision      INTEGER,                 -- exact revision endpoint produced or confirmed
+  chain         INTEGER,                 -- proven prefix only: revision NULL, length is observed bytes
   length        INTEGER,                 -- that revision's length
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER,
@@ -110,7 +112,10 @@ CREATE TABLE client_request (
   id            TEXT PRIMARY KEY,        -- UUIDv7 chosen by the client, once per user action
   content_hash  BLOB NOT NULL,           -- BLAKE3 of the request's sorted-key JSON, without the ID
   created_at    INTEGER NOT NULL,
-  request       BLOB,                    -- the whole request as JSON, zstd; NULL before archive version 3
+  request       BLOB,                    -- the original request as JSON, zstd
+  outcome       BLOB,                    -- the original typed outcome, zstd
+  effect        BLOB,                    -- the immutable typed authored effect, zstd
+  imports       TEXT NOT NULL DEFAULT '{"observed":[],"declared":[]}', -- import evidence and historical claims, JSON
   commit_seq    INTEGER NOT NULL DEFAULT 0  -- the write counter of the transaction that wrote it
 ) STRICT, WITHOUT ROWID;
 
@@ -218,10 +223,12 @@ CREATE TABLE delivery_event (
   what              TEXT NOT NULL CHECK (what IN ('delivered','failed','not_sent','used')),
   at                INTEGER NOT NULL,
   detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
+CREATE UNIQUE INDEX delivery_event_request ON delivery_event(delivery,request);
 
 -- Chat actions: turns the operator asks the browser extension to draft or
 -- submit in a chat web page (`browser.actions`). The request is stored once;
@@ -263,10 +270,12 @@ CREATE TABLE chat_action_event (
   detail            TEXT,
   by                TEXT,                   -- the extension instance holding the claim, or the operator
   receipt_json      TEXT,                   -- the provider's record of the result, as the extension saw it
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
   PRIMARY KEY (action, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
+CREATE UNIQUE INDEX chat_action_event_request ON chat_action_event(action,request);
 
 -- Exact member names and positions in retained container bytes.
 CREATE TABLE observation_container (
@@ -306,10 +315,12 @@ CREATE TABLE backfill_job_event (
   unchanged         INTEGER NOT NULL,       -- already in the archive as the provider has them
   failed            INTEGER NOT NULL,       -- could not be captured
   detail            TEXT,
+  request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
   PRIMARY KEY (job, n)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX backfill_job_event_commit_seq ON backfill_job_event(commit_seq);
+CREATE UNIQUE INDEX backfill_job_event_request ON backfill_job_event(job,request);
 
 -- How many inputs and revisions the archive holds and the bytes of its present
 -- blobs, kept by the triggers below so that status does not scan the tables.

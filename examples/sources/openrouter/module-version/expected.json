@@ -2,7 +2,10 @@
   "counts": {
     "records": 2,
     "skipped": {},
-    "unread_fields": {},
+    "unread_fields": {
+      "room.version": 1,
+      "user.context": 1
+    },
     "unreadable": {},
     "used": {
       "room": 1,
@@ -20,7 +23,8 @@
           0,
           244
         ],
-        "session": "openrouter:prompt"
+        "session": "openrouter:prompt",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -37,7 +41,8 @@
           "id": "openrouter:prompt",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "openrouter:prompt"
+          "session": "openrouter:prompt",
+          "at_quality": "unknown"
         },
         "offset": 59
       }
@@ -45,7 +50,8 @@
     "sessions": [
       {
         "id": "openrouter:prompt",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

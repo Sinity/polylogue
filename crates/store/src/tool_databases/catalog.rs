@@ -1,7 +1,9 @@
 use super::*;
 
 /// The row-dump records whose comparison hashes commit with this step.
-#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct Comparison {
     rows: Vec<(String, String, Option<Vec<u8>>)>,
     schema: Option<Value>,
@@ -15,7 +17,8 @@ impl Comparison {
             let value: Value = serde_json::from_slice(line)
                 .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
             if let Some(schema) = value.get("schema") {
-                out.schema = Some(schema.clone());
+                out.schema =
+                    Some(json!({"schema":schema,"table_metadata":value.get("table_metadata")}));
                 continue;
             }
             let table = value
