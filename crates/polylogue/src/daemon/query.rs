@@ -511,11 +511,11 @@ fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), 
                 options,
             )?;
             program.order = vec![
-                polylogue_query::OrderKey {
+                polylogue_store::query::OrderKey {
                     column: "family".into(),
                     descending: false,
                 },
-                polylogue_query::OrderKey {
+                polylogue_store::query::OrderKey {
                     column: "value".into(),
                     descending: false,
                 },
