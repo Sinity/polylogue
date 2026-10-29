@@ -1116,7 +1116,15 @@ impl Inner {
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
-                    stats.1 += write_rows(&itx, b, p, chain, counter, self.first_build.as_deref())?;
+                    stats.1 += write_rows(
+                        &itx,
+                        b,
+                        p,
+                        chain,
+                        counter,
+                        self.first_build.as_deref(),
+                        None,
+                    )?;
                 }
                 if b.parse.iter().any(|p| p.at_end) {
                     rows::prune_sessions(&itx, &b.input.id, chain)?;

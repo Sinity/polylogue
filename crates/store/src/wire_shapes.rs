@@ -11,6 +11,16 @@ use std::collections::BTreeMap;
 
 pub const SCHEMA: &str = include_str!("schema/wire_shapes.sql");
 
+/// Product-native confirmation of the reading's source. Sequence is the
+/// standalone archive commit order or the primary confirmed fact order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadingReceipt {
+    pub sequence: i64,
+    pub id: Option<String>,
+    pub observation: Option<String>,
+    pub observed_at_ms: Option<i64>,
+}
+
 /// The committed source described by this parse step. Time may be unknown;
 /// receipt order is the authority even when observation clocks disagree.
 #[derive(Clone, Copy, Debug)]

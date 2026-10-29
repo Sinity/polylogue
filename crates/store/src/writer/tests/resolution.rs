@@ -437,10 +437,7 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
         .unwrap();
     assert!(!archive.archive_db().exists());
     let tx = index.transaction().unwrap();
-    readings[0]
-        .3
-        .visit(|step| rows::write_confirmed_rows(&tx, &input, step, 41, 1, None).map(|_| ()))
-        .unwrap();
+    readings[0].3.visit(|step| rows::write_confirmed_rows(&tx, &input, step, 41, 1, None, Some(&fixture_receipt())).map(|_| ())).unwrap();
     tx.commit().unwrap();
     let (chain, position): (i64, i64) = index
         .query_row("SELECT chain,parsed_upto FROM parse_state", [], |row| {
@@ -671,7 +668,9 @@ fn apply_confirmed_readings(
             parse: Vec::new(),
             release: InFlight::default(),
         };
-        reading.visit(|step| write_rows(&tx, &batch, step, *chain, 1, None).map(|_| ()))?;
+        reading.visit(|step| {
+            write_rows(&tx, &batch, step, *chain, 1, None, Some(&fixture_receipt())).map(|_| ())
+        })?;
     }
     tx.commit()?;
     Ok(())

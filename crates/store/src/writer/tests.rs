@@ -19,7 +19,24 @@ fn write_test_rows(
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];
     resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
-    write_rows(tx, &batch, &batch.parse[0], chain, counter, first)
+    write_rows(
+        tx,
+        &batch,
+        &batch.parse[0],
+        chain,
+        counter,
+        first,
+        Some(&fixture_receipt()),
+    )
+}
+
+fn fixture_receipt() -> crate::wire_shapes::ReadingReceipt {
+    crate::wire_shapes::ReadingReceipt {
+        sequence: 1,
+        id: Some("fixture-confirmation".into()),
+        observation: None,
+        observed_at_ms: None,
+    }
 }
 
 struct TestArchive {
