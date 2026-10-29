@@ -202,11 +202,15 @@ fn merge(inputs: &[Input]) -> Session {
     s.tool_version = latest(|f| &f.tool_version);
     s.mode = latest(|f| &f.mode);
     s.repo = latest(|f| &f.repo);
-    if let Some(input)=inputs.iter().filter(|i|i.facts.started.is_some()).min_by_key(|i|i.facts.started) {
-        s.started=input.facts.started;
-        s.started_quality=input.facts.started_quality;
-        s.started_precision=input.facts.started_precision;
-        s.started_until=input.facts.started_until;
+    if let Some(input) = inputs
+        .iter()
+        .filter(|i| i.facts.started.is_some())
+        .min_by_key(|i| i.facts.started)
+    {
+        s.started = input.facts.started;
+        s.started_quality = input.facts.started_quality;
+        s.started_precision = input.facts.started_precision;
+        s.started_until = input.facts.started_until;
     }
     s
 }

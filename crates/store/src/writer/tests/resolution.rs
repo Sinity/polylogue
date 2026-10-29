@@ -981,7 +981,8 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     empty.parse[0].output = Output::default();
     empty.parse[0].counts = counts(0);
     second.writer.send(empty).unwrap();
-    assert!(second.writer.flush().unwrap().errors.is_empty());
+    let report = second.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
     assert_eq!(
         reads
             .reader()
@@ -1085,6 +1086,10 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     input.parse[0].output.sessions[0]
         .set_time(at, evidence)
         .unwrap();
+    input.parse[0].output.sessions[0].git_commit = Some("synthetic-revision".into());
+    input.parse[0].output.sessions[0].model_provider = Some("synthetic-provider".into());
+    input.parse[0].output.sessions[0].instructions =
+        Some("Exact native session instructions".into());
     let session = input.parse[0].output.sessions[0].clone();
     input.parse[0].output.documents.push(DocumentRow {
         offset: 2,
