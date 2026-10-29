@@ -17,6 +17,8 @@ stored_names!(ExecutionEligibility { Live => "live", Historical => "historical" 
 /// Computed from the local bundle ingress and authenticated importing channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ImportAttribution {
+    /// The receiving machine, computed by the import boundary.
+    pub machine: String,
     pub input: String,
     pub chain: i64,
     pub actor: Author,
