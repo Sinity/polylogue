@@ -61,6 +61,8 @@ pub struct ParseStep {
     /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
     pub reading_version: String,
+    #[serde(default)]
+    pub(crate) receipt: Option<crate::wire_shapes::ReadingReceipt>,
     /// The bytes are collected, and their origin has no parser yet.
     #[serde(default)]
     pub no_parser_yet: bool,
@@ -118,6 +120,7 @@ impl ParseStep {
         Self {
             order_from: None,
             reading_version: String::new(),
+            receipt: None,
             no_parser_yet: false,
             reset: range.start == 0,
             repeats_whole_conversations: false,

@@ -572,6 +572,7 @@ impl Inner {
                 chain,
                 counter,
                 self.first_build.as_deref(),
+                None,
             )?;
         }
         if first {

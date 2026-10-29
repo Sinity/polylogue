@@ -17,6 +17,7 @@ pub(super) fn write_rows(
     chain: i64,
     counter: i64,
     first_build: Option<&FirstBuild>,
+    receipt: Option<&crate::wire_shapes::ReadingReceipt>,
 ) -> Result<u64> {
     apply_rows(
         tx,
@@ -27,6 +28,7 @@ pub(super) fn write_rows(
             counter,
             first_build,
             confirmed: false,
+            receipt,
         },
     )
 }
@@ -40,6 +42,7 @@ pub(super) fn write_confirmed_rows(
     chain: i64,
     counter: i64,
     first_build: Option<&FirstBuild>,
+    receipt: Option<&crate::wire_shapes::ReadingReceipt>,
 ) -> Result<u64> {
     apply_rows(
         tx,
@@ -50,6 +53,7 @@ pub(super) fn write_confirmed_rows(
             counter,
             first_build,
             confirmed: true,
+            receipt,
         },
     )
 }
@@ -59,6 +63,7 @@ struct ReadingWrite<'a> {
     counter: i64,
     first_build: Option<&'a FirstBuild>,
     confirmed: bool,
+    receipt: Option<&'a crate::wire_shapes::ReadingReceipt>,
 }
 
 fn apply_rows(
@@ -72,6 +77,7 @@ fn apply_rows(
         counter,
         first_build,
         confirmed,
+        receipt,
     } = context;
     p.counts.check()?;
     p.prepared.validate(&p.output)?;
@@ -245,6 +251,24 @@ fn apply_rows(
         )?
         .execute(params![input_pk, chain, pk])?;
     }
+    let receipt = receipt.or(p.receipt.as_ref()).ok_or_else(|| {
+        StoreError::Invalid("an indexed reading has no committed source receipt".into())
+    })?;
+    crate::wire_shapes::apply(
+        tx,
+        crate::wire_shapes::Source {
+            input_pk,
+            input: &b.input.id,
+            format: &b.input.format,
+            chain,
+            length: b.length,
+            receipt: receipt.sequence,
+            receipt_id: receipt.id.as_deref(),
+            observation: receipt.observation.as_deref(),
+            observed_at_ms: receipt.observed_at_ms,
+        },
+        p,
+    )?;
     rows.write_parse_state(b, p)?;
     Ok(written)
 }
