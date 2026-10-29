@@ -15,9 +15,10 @@ CREATE TABLE primary_pending (
 CREATE INDEX primary_pending_position ON primary_pending(position,n);
 CREATE TABLE primary_complete(position INTEGER PRIMARY KEY) STRICT;
 CREATE TABLE source_material (
- id TEXT PRIMARY KEY, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
- length INTEGER NOT NULL, hash BLOB NOT NULL
+ id TEXT NOT NULL, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
+ length INTEGER NOT NULL, hash BLOB NOT NULL, PRIMARY KEY(event,id)
 ) STRICT;
+CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
 ";
 
