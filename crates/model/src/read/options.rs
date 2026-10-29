@@ -210,3 +210,24 @@ impl ReadOptions {
         Ok(())
     }
 }
+
+/// Logical delivery caps captured before per-page response framing is reserved.
+/// A continuation reuses all caps; an explicit override changes only that page.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct PageBudget {
+    pub items: std::num::NonZeroUsize,
+    pub tokens: std::num::NonZeroU64,
+    pub bytes: std::num::NonZeroUsize,
+}
+impl Default for PageBudget {
+    fn default() -> Self {
+        Self {
+            items: std::num::NonZeroUsize::new(50).unwrap(),
+            tokens: std::num::NonZeroU64::new(4000).unwrap(),
+            bytes: std::num::NonZeroUsize::new(21_000).unwrap(),
+        }
+    }
+}

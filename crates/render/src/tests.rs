@@ -455,8 +455,8 @@ fn model_notice_precedes_every_prose_record() {
     .unwrap();
     assert!(output.starts_with(crate::encode::ARCHIVE_NOTICE.as_bytes()));
 }
-fn budget() -> pager::Budget {
-    pager::Budget {
+fn budget() -> PageBudget {
+    PageBudget {
         items: NonZeroUsize::new(1).unwrap(),
         tokens: NonZeroU64::new(1800).unwrap(),
         bytes: NonZeroUsize::new(1600).unwrap(),
