@@ -27,7 +27,6 @@ pub struct Daemon {
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
-    feeds: feeds::Cache,
     pub(crate) warm: super::warm::Warm,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
@@ -390,7 +389,7 @@ pub(crate) fn change_feed(
         return None;
     };
     Some(accepting(d).and_then(|()| {
-        let mut file = d.feeds.read(d, since.as_deref(), operation)?;
+        let mut file = feeds::read(d, since.as_deref(), operation)?;
         std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
         Ok(())
     }))
@@ -1432,7 +1431,6 @@ pub fn start(
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
-        feeds: feeds::Cache::default(),
         warm: super::warm::Warm::default(),
         writes,
         mode,
