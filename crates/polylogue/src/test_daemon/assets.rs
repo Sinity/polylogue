@@ -16,7 +16,7 @@ pub fn seed_bytes(daemon: &TestDaemon, bytes: &[u8]) -> &'static str {
         serde_json::to_vec(&conversation).unwrap(),
     )
     .unwrap();
-    std::fs::write(source.join("file-Transport.dat"), PAYLOAD).unwrap();
+    std::fs::write(source.join("file-Transport.dat"), bytes).unwrap();
     let names = serde_json::json!({"file-Transport.dat":"-----BEGIN PRIVATE KEY-----synthetic-private-label-----END PRIVATE KEY-----"});
     std::fs::write(
         source.join("conversation_asset_file_names.json"),

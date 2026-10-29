@@ -144,6 +144,11 @@ pub struct MessageRecord {
     pub block_count: u64,
     /// Original source positions aligned to `message.blocks`.
     pub block_ordinals: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub injections: Vec<crate::injection::InjectionEvidence>,
+    /// Attachment provenance is independent of the source message value and hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<crate::attachment_binding::AttachmentBinding>,
     pub message: Message,
 }
 
@@ -348,6 +353,8 @@ pub enum BundleError {
     InvalidQuery,
     #[error("bundle read position is invalid")]
     InvalidPosition,
+    #[error("bundle declares blob records while with_blobs is false")]
+    BlobFlagMismatch,
     #[error("invalid bundle read options: {0}")]
     ReadOptions(String),
     #[error("bundle member path is not a canonical relative path")]
@@ -356,6 +363,10 @@ pub enum BundleError {
     ReferenceMismatch,
     #[error("message projection has invalid original block positions")]
     InvalidBlockSelection,
+    #[error("injection evidence does not match its source message or field")]
+    InvalidInjectionEvidence,
+    #[error("attachment binding does not match its message source slot or provenance")]
+    InvalidAttachmentBinding,
     #[error("complete message content does not match its source version")]
     SourceVersionMismatch,
     #[error("partial message observations conflict at the same source version")]
@@ -465,6 +476,9 @@ impl Manifest {
         {
             return Err(BundleError::InvalidPosition);
         }
+        if self.counts.blobs > 0 && !self.flags.with_blobs {
+            return Err(BundleError::BlobFlagMismatch);
+        }
         self.flags
             .read
             .validate()
@@ -510,6 +524,10 @@ impl MessageRecord {
         }
         self.message.time_evidence().validate(self.message.at)?;
         self.projection().validate(self.message.blocks.len())?;
+        for evidence in &self.injections {
+            evidence.validate_for(&self.message.id, &self.projection())?;
+        }
+        crate::attachment_binding::validate_record(self)?;
         if self.is_complete()
             && self
                 .message

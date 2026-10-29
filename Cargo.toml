@@ -19,8 +19,10 @@ polylogue-query = { path = "crates/query" }
 polylogue-render = { path = "crates/render" }
 polylogue-sinex = { path = "crates/sinex" }
 polylogue-testkit = { path = "crates/testkit" }
+signals = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 query-language = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
+signal-delivery = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 shared-signals = { package = "signals", git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master", default-features = false }
 serde = { version = "1", features = ["derive"] }

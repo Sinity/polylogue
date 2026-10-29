@@ -34,8 +34,11 @@ mod primary;
 mod primary_capture;
 mod query_objects;
 mod source_snapshot;
+mod scoped;
+mod query_objects;
 pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
+mod native_hook_fields;
 mod rows;
 mod search;
 mod staging;
@@ -80,6 +83,17 @@ enum Msg {
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
     SynchronizePrimary(SyncSender<Result<i64>>),
     CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
+    Capture(String, SyncSender<Result<crate::primary::Capture>>),
+    RawAcquisitionCursor(
+        Box<crate::primary::SourceGeneration>,
+        SyncSender<Result<Option<crate::primary::RawAcquisitionCursor>>>,
+    ),
+    PendingGroupHeaders(
+        String,
+        Option<u64>,
+        usize,
+        SyncSender<Result<crate::primary::PendingGroupPage>>,
+    ),
     SourceSnapshot(
         crate::primary::SourceSelector,
         String,
@@ -129,6 +143,7 @@ struct WriterQueue {
 enum UserMsg {
     Request(
         Box<polylogue_model::user::UserRequest>,
+        Option<crate::ReadScopeToken>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
     ),
     QueryObject(
@@ -452,7 +467,25 @@ impl Writer {
         &self,
         request: polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+            None,
+        )
+    }
+
+    /// Writes an action selected by a pinned read. The writer checks that
+    /// read's archive and generation again before committing its effect.
+    pub fn user_from_read(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: crate::ReadScopeToken,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+            Some(scope),
+        )
     }
 
     /// Derives the products of sessions changed since they were last
@@ -500,9 +533,34 @@ impl Writer {
         coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
     }
 
+    /// Hydrates one locally durable acquisition and its complete private facts.
+    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
+        capture_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
+    }
+
     /// Pins one locally durable pending source body without network I/O.
     pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
         capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
+    }
+
+    /// Reads a local custody cursor for one exact provider generation.
+    pub fn raw_acquisition_cursor(
+        &self,
+        generation: crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        raw_acquisition_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, generation)
+    }
+
+    /// Pages original group membership without hydrating parsed facts.
+    pub fn pending_group_headers(
+        &self,
+        group: String,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        pending_group_headers_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?, group, after_ordinal, limit,
+        )
     }
 
     /// Reads confirmed identity and local durable pending source evidence in writer order.
@@ -669,7 +727,16 @@ impl WriterSender {
         &self,
         request: polylogue_model::user::UserRequest,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request)
+        user_via(&self.0, request, None)
+    }
+
+    /// As [`Writer::user_from_read`].
+    pub fn user_from_read(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: crate::ReadScopeToken,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        user_via(&self.0, request, Some(scope))
     }
 
     /// As [`Writer::store_blob`].
@@ -690,9 +757,32 @@ impl WriterSender {
         coverage_via(&self.0, coverage)
     }
 
+    /// As [`Writer::capture`].
+    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
+        capture_via(&self.0, identity)
+    }
+
     /// As [`Writer::capture_body`].
     pub fn capture_body(&self, identity: String) -> Result<crate::primary::PreparedBody> {
         capture_body_via(&self.0, identity)
+    }
+
+    /// As [`Writer::raw_acquisition_cursor`].
+    pub fn raw_acquisition_cursor(
+        &self,
+        generation: crate::primary::SourceGeneration,
+    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        raw_acquisition_cursor_via(&self.0, generation)
+    }
+
+    /// As [`Writer::pending_group_headers`].
+    pub fn pending_group_headers(
+        &self,
+        group: String,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        pending_group_headers_via(&self.0, group, after_ordinal, limit)
     }
 
     /// As [`Writer::source_snapshot`].
@@ -710,9 +800,38 @@ impl WriterSender {
     }
 }
 
+fn capture_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::Capture> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Capture(identity, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
 fn capture_body_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::PreparedBody> {
     let (reply, wait) = sync_channel(1);
     tx.send(Msg::CaptureBody(identity, reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn raw_acquisition_cursor_via(
+    tx: &WriterQueue,
+    generation: crate::primary::SourceGeneration,
+) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::RawAcquisitionCursor(Box::new(generation), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
+}
+
+fn pending_group_headers_via(
+    tx: &WriterQueue,
+    group: String,
+    after_ordinal: Option<u64>,
+    limit: usize,
+) -> Result<crate::primary::PendingGroupPage> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::PendingGroupHeaders(group, after_ordinal, limit, reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -749,9 +868,10 @@ fn derive_via(tx: &WriterQueue) -> Result<u64> {
 fn user_via(
     tx: &WriterQueue,
     request: polylogue_model::user::UserRequest,
+    scope: Option<crate::ReadScopeToken>,
 ) -> Result<polylogue_model::user::UserOutcome> {
     let (reply, wait) = sync_channel(1);
-    tx.send_user(UserMsg::Request(Box::new(request), reply))
+    tx.send_user(UserMsg::Request(Box::new(request), scope, reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -787,8 +907,8 @@ impl Inner {
     fn serve_users(&mut self, users: &Receiver<UserMsg>) {
         while let Ok(message) = users.try_recv() {
             match message {
-                UserMsg::Request(request, reply) => {
-                    let _ = reply.send(self.write_user(&request));
+                UserMsg::Request(request, scope, reply) => {
+                    let _ = reply.send(self.write_user(&request, scope.as_ref()));
                 }
                 UserMsg::QueryObject(object, reply) => {
                     let _ = reply.send(self.write_query_object(&object));
@@ -827,6 +947,9 @@ impl Inner {
         let mut synchronizations = Vec::new();
         let mut snapshots = Vec::new();
         let mut pending_bodies = Vec::new();
+        let mut private_captures = Vec::new();
+        let mut raw_cursors = Vec::new();
+        let mut group_pages = Vec::new();
         let mut restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
@@ -882,6 +1005,18 @@ impl Inner {
                     }
                     Msg::RestoreAuthored(restoration, reply) => {
                         restorations.push((restoration, reply));
+                        false
+                    }
+                    Msg::RawAcquisitionCursor(generation, reply) => {
+                        raw_cursors.push((generation, reply));
+                        false
+                    }
+                    Msg::PendingGroupHeaders(group, after, limit, reply) => {
+                        group_pages.push((group, after, limit, reply));
+                        false
+                    }
+                    Msg::Capture(identity, reply) => {
+                        private_captures.push((identity, reply));
                         false
                     }
                     Msg::CaptureBody(identity, reply) => {
@@ -992,6 +1127,35 @@ impl Inner {
             }
             for (fact, reply) in coverage.drain(..) {
                 let _ = reply.send(self.write_coverage(*fact));
+            }
+            for (generation, reply) in raw_cursors.drain(..) {
+                let result = generation.validate().and_then(|()| {
+                    self.sinex.as_ref().map_or(Ok(None), |sinex| {
+                        sinex.raw_acquisition_cursor(&generation)
+                    })
+                });
+                let _ = reply.send(result);
+            }
+            for (group, after, limit, reply) in group_pages.drain(..) {
+                let result = if group.is_empty() || limit == 0 {
+                    Err(StoreError::Invalid("group identity and positive page limit are required".into()))
+                } else {
+                    self.sinex.as_ref().map_or_else(
+                        || Ok(crate::primary::PendingGroupPage::default()),
+                        |sinex| sinex.pending_group_headers(&group, after, limit),
+                    )
+                };
+                let _ = reply.send(result);
+            }
+            for (identity, reply) in private_captures.drain(..) {
+                let result = self
+                    .sinex
+                    .as_ref()
+                    .ok_or_else(|| {
+                        StoreError::Invalid("private source captures require a primary producer".into())
+                    })
+                    .and_then(|sinex| sinex.capture(&identity));
+                let _ = reply.send(result);
             }
             for (identity, reply) in pending_bodies.drain(..) {
                 let result = self
@@ -1223,11 +1387,13 @@ impl Inner {
     fn write_user(
         &mut self,
         request: &polylogue_model::user::UserRequest,
+        scope: Option<&crate::ReadScopeToken>,
     ) -> Result<polylogue_model::user::UserOutcome> {
         if self.sinex.is_some() {
-            return self.primary_request(request);
+            return self.primary_request(request, scope);
         }
         let tx = self.archive.transaction()?;
+        scoped::require_current(&self.location, scope)?;
         let known: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
             [&request.id],
@@ -1245,6 +1411,7 @@ impl Inner {
             bump_counter(&tx)?
         };
         let outcome = crate::user_writes::apply(&tx, request, seq)?;
+        scoped::require_current(&self.location, scope)?;
         if known {
             tx.rollback()?;
         } else {
@@ -1323,7 +1490,7 @@ impl Inner {
                     )?;
                 }
                 if b.parse.iter().any(|p| p.at_end) {
-                    rows::prune_sessions(&itx, &b.input.id, chain)?;
+                    rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
                 }
             }
             stats.0 += 1;

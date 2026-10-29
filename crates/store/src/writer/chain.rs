@@ -288,6 +288,7 @@ fn gather<'a>(
                 length: reading.length,
                 parse: vec![step],
                 acquisition: None,
+                basis: None,
                 release: InFlight::default(),
             };
             let (step_keys, _) = resolver.gather(&mut [&mut batch], index, index)?;
@@ -308,6 +309,7 @@ fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<(
             step,
             &step.prepared.messages,
             &step.prepared.documents,
+            &step.prepared.fragments,
             &step.prepared.events,
             texts,
             step.prepared.released,
@@ -333,11 +335,12 @@ fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>>
     let mut decoder = zstd::stream::read::Decoder::new(reader.take(size))?;
     let mut bytes = Vec::new();
     decoder.read_to_end(&mut bytes)?;
-    let StoredStep(mut step, messages, documents, events, texts, released, choices) =
+    let StoredStep(mut step, messages, documents, fragments, events, texts, released, choices) =
         crate::encoding::read_json(&bytes)?;
     step.prepared = batch::PreparedRows {
         messages,
         documents,
+        fragments,
         events,
         texts: texts.into_iter().collect(),
         released,
@@ -353,6 +356,7 @@ struct StoredStep(
     ParseStep,
     Vec<PreparedMessage>,
     Vec<PreparedDocument>,
+    crate::fragment::PreparedFragments,
     Vec<(String, Vec<u8>)>,
     Vec<([u8; 32], Vec<u8>)>,
     bool,
@@ -570,6 +574,7 @@ impl Inner {
             length,
             parse: Vec::new(),
             acquisition: None,
+            basis: None,
             release: Default::default(),
         };
         let mut written = 0;
@@ -609,7 +614,7 @@ impl Inner {
                 "a chain replacement has no reading".into(),
             ));
         }
-        rows::prune_sessions(&tx, &batch.input.id, chain)?;
+        rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;

@@ -4,7 +4,8 @@
 use super::{Product, ProductWrite, Sinex};
 use crate::{Result, StoreError};
 use polylogue_model::work_products::{
-    self, NativeEvidence, ReadingSource, SelectedMessage, WorkMessage, WorkSnapshot,
+    self, NativeEvidence, ReadingSource, SelectedBackground, SelectedMessage, WorkMessage,
+    WorkSnapshot,
 };
 use polylogue_model::{Message, Session, SessionId, WrittenBy};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -202,7 +203,11 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
                 chosen.is_some()
             }
             Product::Background { facts, .. } => {
-                backgrounds.push((facts.clone(), event.clone()));
+                backgrounds.push(SelectedBackground {
+                    logical_session: id.clone(),
+                    update: facts.clone(),
+                    event: event.clone(),
+                });
                 true
             }
             Product::Event { facts, .. } => {
@@ -266,12 +271,16 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
                 return Ok(None);
             };
             let event: String = row.get(0)?;
-            let Product::Message { facts, .. } = product(&row.get::<_, Vec<u8>>(1)?)? else {
+            let Product::Message {
+                facts, projection, ..
+            } = product(&row.get::<_, Vec<u8>>(1)?)?
+            else {
                 unreachable!()
             };
             let message = facts.message;
             messages.push(WorkMessage {
                 message: message.id.clone(),
+                physical_session: message.session.clone(),
                 role: message.role,
                 written_by: WrittenBy::of(message.role, message.prompt_kind),
                 prompt_kind: message.prompt_kind,
@@ -289,6 +298,8 @@ fn snapshot(index: &Connection, id: &SessionId, position: i64) -> Result<WorkSna
                         .then_some(value.round() as i64)
                 });
             Ok(Some(SelectedMessage {
+                logical_session: id.clone(),
+                projection,
                 message,
                 event,
                 cost_nusd,

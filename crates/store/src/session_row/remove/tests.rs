@@ -38,7 +38,13 @@ fn many_tool_calls_remove_exact_search_entries_and_keep_another_session() {
         )
         .unwrap();
     }
-    remove(&tx, 1, "claude-code:removed").unwrap();
+    remove(
+        &tx,
+        1,
+        "claude-code:removed",
+        crate::archive::bump_counter(&tx).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         tx.query_row("SELECT count(*) FROM tool_call", [], |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -61,6 +67,7 @@ fn sessions_can_be_removed_while_an_outer_temp_cursor_remains_open() {
         "CREATE TEMP TABLE outer_selection(pk INTEGER); INSERT INTO outer_selection VALUES(1),(2)",
     )
     .unwrap();
+    let counter = crate::archive::bump_counter(&tx).unwrap();
     let mut statement = tx
         .prepare("SELECT pk FROM outer_selection ORDER BY pk")
         .unwrap();
@@ -72,7 +79,7 @@ fn sessions_can_be_removed_while_an_outer_temp_cursor_remains_open() {
         } else {
             "claude-code:survivor"
         };
-        remove(&tx, pk, id).unwrap();
+        remove(&tx, pk, id, counter).unwrap();
     }
     drop(rows);
     drop(statement);

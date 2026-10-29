@@ -41,6 +41,7 @@ impl Stored {
                         machine: "synthetic".into(),
                         host: "synthetic".into(),
                         path: path.into(),
+                        path_bytes: path.as_bytes().to_vec(),
                         facts: None,
                         seen_at_ms: seen,
                         import: None,
@@ -52,6 +53,7 @@ impl Stored {
                     length: bytes.len() as u64,
                     parse: vec![],
                     release: Default::default(),
+                    acquisition: None,
                 },
             )
             .unwrap();

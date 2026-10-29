@@ -725,6 +725,7 @@ fn apply_confirmed_readings(
             length: *length,
             parse: Vec::new(),
             acquisition: None,
+            basis: None,
             release: InFlight::default(),
         };
         reading.visit(|step| {
@@ -1555,4 +1556,47 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
         .unwrap();
     assert_eq!(links, 1);
     assert_eq!(reader.links(&sid("visitor-session")).unwrap().len(), 2);
+    drop(reader);
+    conn.execute(
+        "UPDATE event SET fields=x'00' WHERE pk=(SELECT pk FROM event ORDER BY seq,id LIMIT 1)",
+        [],
+    )
+    .unwrap();
+    // Restore only the second event; the seek must skip the poisoned prefix.
+    let fields: Vec<u8> = conn.query_row("SELECT s.fields FROM event_source s JOIN event e ON e.pk=s.event_pk ORDER BY e.seq,e.id LIMIT 1 OFFSET 1",[],|row|row.get(0)).unwrap();
+    conn.execute("UPDATE event SET fields=?1 WHERE pk=(SELECT pk FROM event ORDER BY seq,id LIMIT 1 OFFSET 1)",[fields]).unwrap();
+    conn.execute(
+        "UPDATE link SET evidence=CAST(x'80' AS TEXT) WHERE child_id=?1",
+        [sid("child-0").to_string()],
+    )
+    .unwrap();
+    let reader = reads.reader().unwrap();
+    let mut events = 0;
+    reader
+        .visit_event_records_from_ordinal(&sid("visitor-session"), 1, |_| {
+            events += 1;
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(events, 1);
+    let mut links = 0;
+    reader
+        .visit_links_from_ordinal(&sid("visitor-session"), 1, |_| {
+            links += 1;
+            ControlFlow::Break(())
+        })
+        .unwrap();
+    assert_eq!(links, 1);
+    for ordinal in [2, u64::MAX] {
+        reader
+            .visit_event_records_from_ordinal(&sid("visitor-session"), ordinal, |_| {
+                panic!("past event end")
+            })
+            .unwrap();
+        reader
+            .visit_links_from_ordinal(&sid("visitor-session"), ordinal, |_| {
+                panic!("past link end")
+            })
+            .unwrap();
+    }
 }

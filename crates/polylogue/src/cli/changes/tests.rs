@@ -284,13 +284,16 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
 fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     let daemon = crate::test_daemon::start("synthetic finite delivery");
     let mut wire = Vec::new();
+    let operation = daemon
+        .daemon
+        .operation_context(&crate::operation::Context::worker_authorship(
+            "finite-feed-fixture",
+        ))
+        .unwrap();
     crate::daemon::service::change_feed(
         &Request::Changes { since: None },
         &daemon.daemon,
-        &polylogue_model::authorship::Authorship {
-            author: polylogue_model::Author::Unattributed,
-            via: polylogue_model::authorship::Channel::Daemon,
-        },
+        &operation,
         &mut wire,
     )
     .unwrap()

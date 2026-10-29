@@ -197,6 +197,9 @@ impl InputRows {
         let Some(receipt) = &self.acquisition else {
             return Ok(());
         };
+        receipt.validate_for(&crate::InputKey {
+            format: self.format.clone(), id: self.input.clone(), arrival_rank: 0,
+        })?;
         let length = receipt.range.length()?;
         let invalid = || {
             crate::StoreError::Invalid(

@@ -6,6 +6,7 @@ mod stored_names;
 
 pub mod assertion;
 pub mod atomic_write;
+pub mod attachment_binding;
 pub mod authored;
 pub mod authorship;
 pub mod batch;
@@ -29,6 +30,7 @@ pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
 mod note;
 pub mod price;
+pub mod query_objects;
 mod quota;
 mod reference;
 pub use reference::{
@@ -100,3 +102,5 @@ string_schema!(
 );
 
 pub mod work_products;
+
+pub mod signal;

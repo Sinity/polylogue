@@ -25,6 +25,7 @@ fn batch(id: &str, length: u64) -> Batch {
         length,
         parse: Vec::new(),
         acquisition: None,
+        basis: None,
         release: Default::default(),
     }
 }

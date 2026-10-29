@@ -1,5 +1,7 @@
 //! Selected text is a partial source observation, never a shortened canonical
 //! Message or Block. Complete-source attestation belongs to the Store reader.
+pub mod seek;
+
 use super::SourceClaim;
 use crate::{BlobHash, Reference, SpanBounds, SpanUnit, authored::ImportAttribution};
 use serde::{Deserialize, Serialize};
@@ -102,7 +104,8 @@ pub enum TextFragmentError {
 type Result<T> = std::result::Result<T, TextFragmentError>;
 
 impl TextSourceVersion {
-    fn validate_container(&self, container: &Reference) -> Result<()> {
+    /// Checks exact version/container metadata without attesting source bytes.
+    pub fn validate_container(&self, container: &Reference) -> Result<()> {
         if Reference::parse(&container.to_string()).ok().as_ref() != Some(container) {
             return Err(TextFragmentError::SourceVersion);
         }

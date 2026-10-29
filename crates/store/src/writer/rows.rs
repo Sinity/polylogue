@@ -196,6 +196,9 @@ fn apply_rows(
             .or(rows.source_admitted);
         crate::documents::write(tx, &source, row, prepared, admitted)?;
     }
+    p.prepared
+        .fragments
+        .apply(tx, input_pk, chain, p.parsed_upto, rows.source_admitted)?;
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
     // Messages one record holds share its offset; their order in the
@@ -222,6 +225,16 @@ fn apply_rows(
         // A kind this step states needs no lookup.
         let main = choices.message_mains[i];
         written += u64::from(rows.write_message(row, session_pk, prepared, position, main)?);
+        super::native_hook_fields::write(
+            tx,
+            super::native_hook_fields::Source {
+                input: &b.input.id,
+                input_pk,
+                chain,
+            },
+            p,
+            i,
+        )?;
         if let Some(at) = ms(row.message.at) {
             let last = activity.entry(session_pk).or_insert(at);
             *last = (*last).max(at);

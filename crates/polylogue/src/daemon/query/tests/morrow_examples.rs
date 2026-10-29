@@ -31,7 +31,7 @@ const GAPS: &[(&str, &str)] = &[
 fn archive_with_notes() -> Morrow {
     use crate::daemon::service::ArchiveMode;
     use crate::daemon::{Request, Response, service};
-    use polylogue_model::{Author, Block, NewNote, NoteKind, Reference};
+    use polylogue_model::{Block, NewNote, NoteKind, Reference};
     use polylogue_testkit::session;
 
     let archive = Morrow::build(Set::Main);

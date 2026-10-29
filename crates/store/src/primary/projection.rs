@@ -176,6 +176,9 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
             Some(format!("request:{}", prepared.request.id))
         }
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
+        Product::Query { object } => Some(format!("query:{}", object.id)),
+        Product::QueryRun { run } => Some(format!("query-run:{}", run.id)),
+        Product::QueryRunOutcome { outcome } => Some(format!("query-run-outcome:{}", outcome.run)),
         _ => None,
     };
     if let Some(reading) = product.reading() {
@@ -199,6 +202,9 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_) | Product::RestoredRequest { .. } => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
+        Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. } => {
+            (None, None, reference, "query")
+        }
         Product::WorkSnapshot { .. } => (None, None, reference, "derived"),
         _ => unreachable!(),
     }
@@ -367,6 +373,7 @@ struct Plan {
     materials: BTreeSet<polylogue_model::BlobHash>,
     available: HashMap<polylogue_model::BlobHash, Option<u64>>,
     requests: bool,
+    queries: bool,
     coverage: bool,
 }
 
@@ -453,6 +460,7 @@ fn plan(index: &Connection) -> Result<Plan> {
         materials: BTreeSet::new(),
         available: HashMap::new(),
         requests: false,
+        queries: false,
         coverage: false,
     };
     let mut chains = BTreeMap::<(String, i64), crate::InputKey>::new();
@@ -476,6 +484,9 @@ fn plan(index: &Connection) -> Result<Plan> {
                 Product::Request(_) | Product::RestoredRequest { .. }
             ) {
                 out.requests = true;
+            }
+            if matches!(product, Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. }) {
+                out.queries = true;
             }
             if matches!(product, Product::Coverage(_)) {
                 out.coverage = true;
@@ -555,8 +566,17 @@ fn plan(index: &Connection) -> Result<Plan> {
                     facts,
                     order,
                     projection,
+                    native_fields,
+                    declared_injections,
                     ..
                 } => {
+                    let ordinal = pending.output.messages.len();
+                    if !native_fields.is_empty() {
+                        pending.output.native_hook_fields.insert(ordinal, native_fields);
+                    }
+                    if !declared_injections.is_empty() {
+                        pending.output.declared_injections.insert(ordinal, declared_injections);
+                    }
                     if let Some(projection) = projection {
                         pending
                             .output
@@ -583,6 +603,10 @@ fn plan(index: &Connection) -> Result<Plan> {
                         .document_receipts
                         .insert(pending.output.documents.len(), admitted);
                     pending.output.documents.push(facts);
+                }
+                Product::Fragment { facts, .. } => {
+                    pending.output.fragment_receipts.insert(pending.output.fragments.len(), admitted);
+                    pending.output.fragments.push(*facts);
                 }
                 Product::Event {
                     id,
@@ -769,6 +793,30 @@ fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
+fn queries(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
+    if !plan.queries {
+        return Ok(());
+    }
+    crate::query_objects::clear(tx)?;
+    let mut query = tx.prepare("SELECT product,admitted,source_order FROM primary_next WHERE state='live' AND kind='query' ORDER BY admitted,source_order,event")?;
+    let mut rows = query.query([])?;
+    while let Some(row) = rows.next()? {
+        let bytes: Vec<u8> = row.get(0)?;
+        match unpacked(&bytes)? {
+            Product::Query { object } => crate::query_objects::apply_object(tx, &object)?,
+            Product::QueryRun { run } => {
+                crate::query_objects::apply_run(tx, &run, row.get(1)?, unsigned_column(row, 2)?)?;
+            }
+            Product::QueryRunOutcome { outcome } => crate::query_objects::apply_run_outcome(tx, &outcome)?,
+            _ => unreachable!(),
+        }
+    }
+    // A filtered live projection cannot establish the first execution in full
+    // history. Keep that claim unknown until complete historical proof exists.
+    tx.execute("UPDATE source_query SET first_run=NULL", [])?;
+    Ok(())
+}
+
 fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     tx.execute(
         "DELETE FROM primary_fact_blob WHERE event IN (SELECT event FROM primary_candidate)",
@@ -825,6 +873,7 @@ pub(crate) fn apply(
         let counter = crate::archive::bump_counter(&tx)?;
         sources(&tx, &plan)?;
         requests(&tx, &plan)?;
+        queries(&tx, &plan)?;
         if plan.coverage {
             crate::coverage::clear(&tx)?;
             let mut q=tx.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='coverage' ORDER BY admitted,source_order,event")?;

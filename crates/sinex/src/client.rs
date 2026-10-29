@@ -47,9 +47,19 @@ impl Client {
         let mut query = query.clone();
         let mut sequences = Vec::new();
         loop {
-            let page: sinex_protocol::ReplayScopePage = self
-                .request(self.subjects.replay_scope(&self.producer), &query)
+            let reply: sinex_protocol::ReplayReply = self
+                .request(
+                    self.subjects.replay_scope(&self.producer),
+                    sinex_protocol::ReplayQuery::Materials {
+                        query: query.clone(),
+                    },
+                )
                 .await?;
+            let sinex_protocol::ReplayReply::Materials { page } = reply else {
+                return Err(Error::Invalid(
+                    "material replay returned another mode".into(),
+                ));
+            };
             sequences.extend(page.sequences);
             match page.next {
                 Some(next) if query.after.is_none_or(|after| next > after) => {
@@ -157,7 +167,31 @@ impl Client {
                 "Sinex acknowledged different kind definitions".into(),
             ));
         }
+        connected.refresh_context().await;
         Ok(connected)
+    }
+
+    async fn refresh_context(&self) {
+        let due = self
+            .health
+            .lock()
+            .map(|health| health.context.refresh_due())
+            .unwrap_or(false);
+        if !due {
+            return;
+        }
+        let result = sinex_transport::replies::request_json::<sinex_protocol::PublicContext>(
+            &self.client,
+            self.subjects.public_context(&self.producer),
+            &self.producer,
+            &sinex_protocol::PublicContextRequest::default(),
+            Duration::from_secs(2),
+        )
+        .await
+        .map_err(|error| error.to_string());
+        if let Ok(mut health) = self.health.lock() {
+            health.context.record(result);
+        }
     }
 
     /// What Sinex recorded under these frame names.
@@ -178,19 +212,6 @@ impl Client {
         .into_iter()
         .map(|ack| (ack.frame.clone(), ack))
         .collect())
-    }
-
-    /// Writes `bytes` (`length` long, named `blob`) to the directory of
-    /// the frame `name`.
-    pub(crate) fn write_bytes(
-        &self,
-        name: &str,
-        blob: &str,
-        length: u64,
-        bytes: impl Read,
-    ) -> Result<()> {
-        frame_bytes::write(&self.store_root, &self.producer, name, blob, length, bytes)
-            .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     /// Sends `frame` and waits for its acknowledgment. A frame too large for
@@ -219,10 +240,10 @@ impl Client {
             }
             for prepared in page {
                 after = Some(prepared.order);
-                if prepared.acknowledged {
+                if prepared.acknowledged || prepared.unresolved {
                     continue;
                 }
-                if !self.publication_allowed(&prepared.identity) {
+                if !self.publication_allowed(&prepared) {
                     continue;
                 }
                 self.publish_prepared(prepared).await?;
@@ -241,26 +262,27 @@ impl Client {
                 .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
             (
                 spool.acknowledgment(&prepared.identity)?,
-                spool.frame(&prepared.identity)?,
+                spool.prepared_frame(&prepared.identity)?,
                 if prepared.body.is_some() {
-                    Some(spool.body(&prepared.identity)?)
+                    Some(spool.prepared_body(&prepared.identity)?)
                 } else {
                     None
                 },
             )
         };
         if let Some(receipt) = receipt {
-            return checked(receipt);
+            return checked(verified_receipt(&prepared, receipt)?);
         }
-        if !self.publication_allowed(&prepared.identity) {
+        if !self.publication_allowed(&prepared) {
             return Err(Error::Refused {
                 name: prepared.identity,
                 reason: "canonical output belongs to another or unknown confirmed read scope"
                     .into(),
             });
         }
-        if let (Some(material), Some(body)) = (&prepared.material, body) {
-            self.write_bytes(&prepared.identity, &material.blob, material.length, body)?;
+        if let Some(body) = body {
+            frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, body)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
         }
         let body = if prepared
             .frame_length
@@ -268,15 +290,17 @@ impl Client {
             <= self.max_message as u64
         {
             let mut bytes = Vec::new();
-            std::io::BufReader::new(frame).read_to_end(&mut bytes)?;
+            std::io::BufReader::new(frame.reader(None, hashed_blobs::ReadLimits::default())?)
+                .read_to_end(&mut bytes)?;
             bytes
         } else {
-            self.write_bytes(
+            frame_bytes::write_prepared(
+                &self.store_root,
+                &self.producer,
                 &prepared.identity,
-                &prepared.frame_hash,
-                prepared.frame_length,
                 frame,
-            )?;
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
             serde_json::to_vec(&Ingress::LargeFrame {
                 frame: prepared.identity.clone(),
                 blob: prepared.frame_hash,
@@ -294,14 +318,13 @@ impl Client {
         checked(acknowledgment)
     }
 
-    fn publication_allowed(&self, identity: &str) -> bool {
-        !identity.starts_with("work-snapshot:")
-            || self.publication_scope.as_ref().is_some_and(|scope| {
-                identity.starts_with(&format!(
-                    "work-snapshot:{}:",
-                    blake3::hash(scope.as_bytes()).to_hex()
-                ))
-            })
+    fn publication_allowed(&self, prepared: &crate::spool::Prepared) -> bool {
+        !prepared.unresolved
+            && (!prepared.canonical
+                || prepared
+                    .canonical_scope
+                    .as_ref()
+                    .is_some_and(|scope| self.publication_scope.as_ref() == Some(scope)))
     }
 
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
@@ -315,6 +338,17 @@ impl Client {
                 "prepared transport changed frame identity".into(),
             ));
         }
+        sinex_transport::producer::transfer_frame(
+            &self.client,
+            &self.subjects,
+            &self.producer,
+            &mut self.acknowledgments,
+            &self.store_root,
+            &frame,
+            ACKNOWLEDGMENT_WAIT,
+        )
+        .await
+        .map_err(|error| Error::Unreachable(error.to_string()))?;
         sinex_transport::producer::submit_frame(
             &self.client,
             &self.subjects,
@@ -326,6 +360,28 @@ impl Client {
         .await
         .map_err(|error| Error::Unreachable(error.to_string()))
     }
+}
+
+/// A LargeFrame envelope names the original logical frame hash. Receipt
+/// adoption needs that identity, independently of the encoded custody layout.
+pub(crate) fn verified_receipt(
+    prepared: &crate::spool::Prepared,
+    receipt: Acknowledgment,
+) -> Result<Acknowledgment> {
+    let frame = Ingress::LargeFrame {
+        frame: prepared.identity.clone(),
+        blob: prepared.frame_hash.clone(),
+        length: prepared.frame_length,
+    };
+    if receipt.frame != prepared.identity {
+        return Err(Error::Invalid(
+            "recorded receipt changed its operation identity".into(),
+        ));
+    }
+    sinex_transport::producer::check_receipt(&frame, receipt).map_err(|error| Error::Refused {
+        name: prepared.identity.clone(),
+        reason: error.to_string(),
+    })
 }
 
 pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> {

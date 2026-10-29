@@ -61,6 +61,9 @@ pub struct DatabaseReader {
 }
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReadReport {
+    /// Created only inside the actual consistent provider read. It is custody
+    /// provenance, never a resumable database revision or data_version.
+    pub snapshot: Option<crate::primary::DatabaseSnapshotToken>,
     pub rows: u64,
     pub gone: u64,
     pub visited: u64,
@@ -288,7 +291,12 @@ fn read_rows(
         serde_json::to_writer(&mut bytes, &json!({"db":db.file_name().map(|n| n.to_string_lossy()), "at_ms":at_ms, "schema":schema, "table_metadata":table_metadata, "source":{"machine":observation.machine,"path":observation.path}})).map_err(std::io::Error::from)?;
         bytes.push(b'\n');
     }
-    let mut done = ReadReport::default();
+    let mut done = ReadReport {
+        snapshot: Some(crate::primary::DatabaseSnapshotToken {
+            nonce: uuid::Uuid::now_v7().to_string(),
+        }),
+        ..Default::default()
+    };
     for table in &tables {
         let quoted = table.name.replace('"', "\"\"");
         let select = if let Some(rowid) = &table.rowid {

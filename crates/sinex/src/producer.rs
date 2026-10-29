@@ -5,12 +5,12 @@ use polylogue_model::{
     authored::{PendingAuthored, PreparedRequest},
 };
 use polylogue_store::primary::{
-    Capture, CapturedInput, Material, PendingCapture, PreparedInput, PreparedWrite, Product,
-    ProductWrite, SourceLocation,
+    Capture, CapturedInput, Material, PendingCapture, PreparedBody, PreparedInput, PreparedWrite,
+    Product, ProductWrite, SourceLocation,
 };
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
-use std::io::Read;
+mod acquisition;
 mod reading;
 
 impl Sinex {
@@ -53,7 +53,18 @@ impl Sinex {
         }
     }
 
-    fn prepared_capture(&self, captured: Capture, bytes: &mut dyn Read) -> Result<PreparedWrite> {
+    fn prepared_capture(&self, captured: Capture, body: PreparedBody) -> Result<PreparedWrite> {
+        let (expected_hash, expected_length) = match &captured {
+            Capture::Input(input) => (input.hash, input.length),
+            Capture::Blob { hash, length } => (*hash, *length),
+        };
+        if body.descriptor.hash.0 != expected_hash.0
+            || body.descriptor.decoded_len != expected_length
+        {
+            return Err(Error::Invalid(
+                "prepared capture descriptor differs from its declared source bytes".into(),
+            ));
+        }
         let mut intent = serde_json::to_value(&captured)?;
         if let Some(observation) = intent
             .pointer_mut("/rows/observation")
@@ -86,7 +97,16 @@ impl Sinex {
         }
         let identity = format!("{desired}{}", uuid::Uuid::now_v7());
         let queue = self.queue()?;
-        let (input, hash, length, parser, part_index, previous_part) = match &captured {
+        let frame = self.capture_frame(&captured, &identity)?;
+        queue.prepare_encoded_capture(frame, body, &captured)?;
+        Ok(PreparedWrite {
+            identity,
+            pending: true,
+        })
+    }
+
+    fn capture_frame(&self, captured: &Capture, identity: &str) -> Result<Ingress> {
+        let (input, hash, length, parser, part_index, previous_part) = match captured {
             Capture::Input(input) => (
                 InputRef {
                     kind: input.input.origin.clone(),
@@ -120,20 +140,19 @@ impl Sinex {
                 None,
             ),
         };
-        let header = crate::spool::capture_header(&captured);
-        let observation = matches!(&captured,Capture::Input(input) if input.rows.extent.is_none());
-        let observation_bytes = if observation {
-            Some(serde_json::to_vec(&header)?)
-        } else {
-            None
-        };
-        let (hash, length) = observation_bytes.as_ref().map_or((hash, length), |bytes| {
-            (BlobHash::of(bytes), bytes.len() as u64)
-        });
-        let frame = Ingress::Material {
-            frame: identity.clone(),
+        let header = crate::spool::capture_header(captured);
+        let observation = matches!(captured,Capture::Input(input) if input.raw_range.is_none());
+        if matches!(captured, Capture::Input(input) if input.raw_range.is_none() && input.rows.extent.is_some())
+        {
+            return Err(Error::Invalid(
+                "provider acquisition has no original raw range".into(),
+            ));
+        }
+        Ok(Ingress::Material {
+            frame: identity.into(),
             material: Box::new(MaterialFrame {
-                id: crate::material_id(&identity),
+                source: crate::source_reference(),
+                id: crate::material_id(&self.config.producer, identity),
                 input,
                 blob: format!("blake3:{hash}"),
                 length,
@@ -158,25 +177,17 @@ impl Sinex {
                     ..Default::default()
                 },
             }),
-        };
-        match observation_bytes {
-            Some(bytes) => queue.prepare_capture(frame, bytes.as_slice(), &captured)?,
-            None => queue.prepare_capture(frame, bytes, &captured)?,
-        };
-        Ok(PreparedWrite {
-            identity,
-            pending: true,
         })
     }
 
     pub(crate) fn prepare_input(
         &self,
         captured: &CapturedInput,
-        bytes: &mut dyn Read,
+        body: PreparedBody,
     ) -> Result<PreparedInput> {
         Ok(PreparedInput::Pending {
             identity: self
-                .prepared_capture(Capture::Input(Box::new(captured.clone())), bytes)?
+                .prepared_capture(Capture::Input(Box::new(captured.clone())), body)?
                 .identity,
         })
     }
@@ -184,9 +195,9 @@ impl Sinex {
         &self,
         hash: BlobHash,
         length: u64,
-        bytes: &mut dyn Read,
+        body: PreparedBody,
     ) -> Result<PreparedWrite> {
-        self.prepared_capture(Capture::Blob { hash, length }, bytes)
+        self.prepared_capture(Capture::Blob { hash, length }, body)
     }
 
     fn capture_material(
@@ -221,6 +232,7 @@ impl Sinex {
     pub(crate) fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         let mut pending = Vec::new();
         self.visit_prepared(|queue,entry|{
+            if entry.unresolved { return Ok(()); }
             let Some(captured)=entry.capture.clone() else {return Ok(());};
             let acknowledged=if entry.refused {None} else {Self::capture_material(queue,&entry)?};
             let anchor=acknowledged.as_ref().map(|material|SourceLocation{material:material.id.clone(),anchor:0});
@@ -232,7 +244,8 @@ impl Sinex {
     }
 
     pub(crate) fn capture(&self, identity: &str) -> Result<Capture> {
-        self.queue()?.capture(identity)
+        let pinned = self.queue()?.pin_capture(identity)?;
+        pinned.decode()
     }
 
     /// Later A→B→A observations get a new operation; retrying the most recent
@@ -276,6 +289,15 @@ impl Sinex {
         identity: &str,
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
+        if writes
+            .iter()
+            .any(|write| crate::products::canonical(&write.product))
+        {
+            return Err(Error::Refused {
+                name: identity.into(),
+                reason: "canonical products require an owner-certified publication".into(),
+            });
+        }
         let queue = self.queue()?;
         let unlocated = writes
             .iter()
@@ -299,7 +321,8 @@ impl Sinex {
                 Ingress::Material {
                     frame: observation.clone(),
                     material: Box::new(MaterialFrame {
-                        id: crate::material_id(&observation),
+                        source: crate::source_reference(),
+                        id: crate::material_id(&self.config.producer, &observation),
                         input: InputRef {
                             kind: "polylogue-observation".into(),
                             locator: identity.into(),
@@ -330,7 +353,8 @@ impl Sinex {
             for write in &mut writes {
                 if write.location.is_none() && write.parents.is_empty() {
                     write.location = Some(SourceLocation {
-                        material: crate::material_id(&observation).to_string(),
+                        material: crate::material_id(&self.config.producer, &observation)
+                            .to_string(),
                         anchor: 0,
                     });
                 }
@@ -341,6 +365,8 @@ impl Sinex {
             {
                 queue.prepare_group(
                     Ingress::Events {
+                        source: Some(crate::source_reference()),
+                        coverage: None,
                         frame: identity.into(),
                         events: crate::products::events(&writes)?,
                         failures: Vec::new(),
@@ -354,6 +380,8 @@ impl Sinex {
             });
         }
         queue.prepare(Ingress::Events {
+            source: Some(crate::source_reference()),
+            coverage: None,
             frame: identity.into(),
             events: crate::products::events(&writes)?,
             failures: Vec::new(),
@@ -425,6 +453,8 @@ impl Sinex {
         );
         queue.prepare_group(
             Ingress::Events {
+                source: Some(crate::source_reference()),
+                coverage: None,
                 frame: identity.clone(),
                 events: crate::products::events(writes)?,
                 failures: Vec::new(),
@@ -460,7 +490,8 @@ impl Sinex {
             Ingress::Material {
                 frame: identity.clone(),
                 material: Box::new(MaterialFrame {
-                    id: crate::material_id(&identity),
+                    source: crate::source_reference(),
+                    id: crate::material_id(&self.config.producer, &identity),
                     input: InputRef {
                         kind: "polylogue".into(),
                         locator: "requests".into(),
@@ -485,6 +516,64 @@ impl Sinex {
         outcome.repeat |= repeat;
         outcome.pending = true;
         Ok(outcome)
+    }
+
+    /// Named custody remains visible through publication until its confirmed
+    /// barrier is applied. Only matching immutable product bodies are hydrated.
+    pub(crate) fn visit_named_products(
+        &self,
+        selector: &polylogue_store::primary::NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> polylogue_store::Result<()>,
+    ) -> Result<()> {
+        use polylogue_store::primary::NamedProductSelector;
+        let queue = self.queue()?;
+        let mut names = std::collections::BTreeSet::new();
+        match selector {
+            NamedProductSelector::Exact(name) => {
+                names.insert(name.clone());
+            }
+            NamedProductSelector::Prefix(prefix) => {
+                queue.visit_names(prefix, &mut |identity| {
+                    let entry = queue.get(identity)?.ok_or_else(|| {
+                        Error::Invalid("named operation disappeared while locked".into())
+                    })?;
+                    let name = entry.logical_name().ok_or_else(|| {
+                        Error::Invalid("named index points to an unnamed operation".into())
+                    })?;
+                    names.insert(name.to_owned());
+                    Ok(())
+                })?;
+            }
+        }
+        for name in names {
+            let observation = format!("{name}:observation");
+            if let Some(entry) = queue.get(&observation)? {
+                if !entry.named {
+                    return Err(Error::Invalid(
+                        "named observation has another operation type".into(),
+                    ));
+                }
+                let writes: Vec<ProductWrite> =
+                    serde_json::from_reader(std::io::BufReader::new(queue.body(&observation)?))?;
+                for write in writes {
+                    visit(&write.product).map_err(Error::Store)?;
+                }
+            } else if let Some(entry) = queue.get(&name)? {
+                if !entry.named {
+                    return Err(Error::Invalid(
+                        "named product has another operation type".into(),
+                    ));
+                }
+                let Ingress::Events { events, .. } = queue.decode_frame(&name)? else {
+                    return Err(Error::Invalid("named product has no event facts".into()));
+                };
+                for event in events {
+                    let product = crate::products::decode(&event.kind.name, event.payload)?;
+                    visit(&product).map_err(Error::Store)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn visit_pending_requests(
@@ -585,7 +674,7 @@ impl Sinex {
             writes.push(ProductWrite {
                 product: Product::Request(request.clone()),
                 location: Some(SourceLocation {
-                    material: crate::material_id(&identity).to_string(),
+                    material: crate::material_id(&self.config.producer, &identity).to_string(),
                     anchor: 0,
                 }),
                 parents: Vec::new(),

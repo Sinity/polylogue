@@ -30,6 +30,16 @@ pub(crate) struct InputState {
     pub(crate) failed: Option<FileFacts>,
     /// Failed immutable chains wait for changed bytes or a restart.
     pub(crate) failed_history: HashMap<i64, FailedChain>,
+    /// A cache of actual SDK working state, separate from confirmed progress.
+    pub(crate) working: Option<WorkingState>,
+}
+
+pub(crate) struct WorkingState {
+    pub(crate) capture: String,
+    pub(crate) group: String,
+    pub(crate) facts: Option<FileFacts>,
+    pub(crate) stored: u64,
+    pub(crate) checkpoint: Option<polylogue_store::primary::PendingCheckpoint>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -59,11 +69,16 @@ pub(crate) struct Plan {
     /// A location the loop keeps watching (not a one-off import).
     pub(crate) tracked: bool,
     pub(crate) failed: bool,
+    pub(crate) parse_failed: bool,
     pub(crate) replace: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     pub(crate) waiting: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
+    pub(crate) basis: Option<polylogue_store::primary::SourceBasis>,
+    /// The latest step has durable private custody but no confirmed visibility.
+    pub(crate) pending: Option<String>,
+    pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
 }
 
 impl Plan {
@@ -84,6 +99,9 @@ impl Plan {
         tracked: bool,
     ) -> Plan {
         Plan {
+            basis: None,
+            pending: None,
+            checkpoint: None,
             span: span(origin, &path, chunk),
             path,
             origin,
@@ -102,6 +120,7 @@ impl Plan {
             priority: Priority::Bulk,
             tracked,
             failed: false,
+            parse_failed: false,
             replace: false,
             waiting: false,
             source,
@@ -144,6 +163,7 @@ impl Plan {
             ),
         };
         Job {
+            acquisition: None,
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),
@@ -156,12 +176,17 @@ impl Plan {
             at_end: end == self.size,
             length,
             parser_state: self.parser_state.take(),
+            parser_deferred: self.parser_deferred,
             priority: self.priority,
             source: self.source.clone(),
         }
     }
 
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
+        self.pending = d.pending.clone();
+        if d.checkpoint.is_some() {
+            self.checkpoint = d.checkpoint.clone();
+        }
         // Parsing can fail after new source bytes were sent to the writer.
         // Its rejected writes reload their checkpoints through the existing
         // write report; a parse failure must still remember the stored prefix.
@@ -178,6 +203,14 @@ impl Plan {
             return;
         }
         if d.error.is_some() {
+            if d.stored > 0 && !d.write_failed {
+                // The parser failed after custody succeeded. Preserve its last
+                // valid cursor while continuing raw acquisition through EOF.
+                self.parse_failed = true;
+                self.parser_deferred = true;
+                self.parser_state = d.parser_state;
+                return;
+            }
             self.failed = true;
             self.parser_state = d.parser_state;
             return;

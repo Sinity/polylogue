@@ -10,6 +10,7 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "tool:codex:thread#call:opaque",
         "document:codex:document",
         "event:origin:event:1",
+        "run:019a2f20-1234-7000-8000-0123456789ab",
         "attachment:blob:1",
         "assertion:root",
         "assertion:root@revision",

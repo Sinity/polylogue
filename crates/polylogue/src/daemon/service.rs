@@ -84,19 +84,6 @@ impl Daemon {
         Ok(Arc::new(context))
     }
 
-    pub(crate) fn query_clock(&self) -> Result<query_language::time::Clock, Response> {
-        let day = self.config.standalone_day().map_err(|_| {
-            error(
-                "not_yet_available",
-                "the primary owner day context has not been obtained",
-            )
-        })?;
-        Ok(query_language::time::Clock::new(
-            self.config.requests.now().into(),
-            day.clone(),
-        ))
-    }
-
     pub(crate) fn ready_call(
         &self,
         request: &command_surface::RunnableRequest,
@@ -321,6 +308,11 @@ fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
 }
 
 fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) -> Response {
+    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+        && let Err(error) = limit.check()
+    {
+        return store_error(&error);
+    }
     let writes = match writer(d) {
         Ok(writes) => writes,
         Err(response) => return response,
@@ -1272,6 +1264,19 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn pause_signals(&mut self) -> std::io::Result<()> {
+        if let Some(stop) = self.signals_stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(worker) = self.signals.take() {
+            worker
+                .join()
+                .map_err(|_| std::io::Error::other("signal worker panicked"))?;
+        }
+        Ok(())
+    }
+
     /// Refuses new requests and wakes readers waiting for a reader slot,
     /// before transports and workers are joined. Readers and writes already
     /// running finish as usual.
@@ -1580,7 +1585,7 @@ pub fn start(
     runtime.signals = Some(
         std::thread::Builder::new()
             .name("polylogue-signals".into())
-            .spawn(move || crate::signals::run(&daemon, &stopped))?,
+            .spawn(move || crate::signals::run(daemon, &stopped))?,
     );
     let (stop, stopped) = channel();
     runtime.counts_stop = Some(stop);

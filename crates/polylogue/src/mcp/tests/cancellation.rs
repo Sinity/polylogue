@@ -14,7 +14,25 @@ fn tool_call(name: &str) -> Value {
         "query" => json!({"query":"sessions"}),
         _ => panic!("no fixture for {name}"),
     };
-    json!({"name":name, "arguments":arguments})
+    let command = crate::commands::command(name).expect("fixture operation");
+    if command.register.is_some() {
+        json!({"name":command.mcp_name(),"arguments":{"arguments":arguments,"request_id":format!("cancel-{name}")}})
+    } else {
+        json!({"name":command.mcp_name(),"arguments":arguments})
+    }
+}
+
+struct PeerCleanup<'a> {
+    socket: UnixStream,
+    lock: Option<&'a std::fs::File>,
+}
+impl Drop for PeerCleanup<'_> {
+    fn drop(&mut self) {
+        if let Some(lock) = self.lock {
+            let _ = lock.unlock();
+        }
+        let _ = self.socket.shutdown(Shutdown::Both);
+    }
 }
 
 fn cancelled_read(disconnect: bool, name: &str) {
@@ -30,6 +48,10 @@ fn cancelled_read(disconnect: bool, name: &str) {
     let mut input = BufReader::new(client.try_clone().unwrap());
     let archive = Archive::at(&daemon.daemon.archive.root);
     std::thread::scope(|scope| {
+        let _cleanup = PeerCleanup {
+            socket: client.try_clone().unwrap(),
+            lock: Some(&lock),
+        };
         let output = server.try_clone().unwrap();
         let service = scope.spawn(|| serve(BufReader::new(server), output, &archive));
         writeln!(client, "{}", super::initialize()).unwrap();
@@ -68,7 +90,7 @@ fn cancelled_read(disconnect: bool, name: &str) {
         let cancelled = limit.cancellation.is_cancelled();
         let slots = daemon.daemon.reads.checked_out();
         // Teardown must also finish when the regression retains its reader.
-        drop(lock);
+        lock.unlock().unwrap();
         client.shutdown(Shutdown::Both).unwrap();
         let _ = service.join().unwrap();
         assert!(started, "MCP {name} never acquired its reader");
@@ -93,38 +115,60 @@ fn mcp_disconnect_interrupts_the_daemon_read() {
 }
 
 #[test]
-fn stdio_tool_metadata_preserves_the_explicit_daemon_deadline() {
+fn stdio_tool_body_preserves_the_explicit_shared_deadline() {
     use std::os::unix::net::UnixListener;
     let directory = tempfile::tempdir().unwrap();
     let archive = Archive::at(directory.path());
     let listener = UnixListener::bind(archive.socket()).unwrap();
-    let deadline = crate::daemon::execution::deadline(Duration::from_secs(60));
+    let deadline = 60_000u64;
+    listener.set_nonblocking(true).unwrap();
     let (mut client, server) = UnixStream::pair().unwrap();
     client
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     let mut input = BufReader::new(client.try_clone().unwrap());
     std::thread::scope(|scope| {
+        let _cleanup = PeerCleanup {
+            socket: client.try_clone().unwrap(),
+            lock: None,
+        };
         let output = server.try_clone().unwrap();
         let service = scope.spawn(|| serve(BufReader::new(server), output, &archive));
         let daemon = scope.spawn(|| {
-            let (mut socket, _) = listener.accept().unwrap();
+            let start = std::time::Instant::now();
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && start.elapsed() < Duration::from_secs(5) =>
+                    {
+                        std::thread::yield_now()
+                    }
+                    Err(error) => panic!("MCP did not forward the request: {error}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut line = String::new();
             BufReader::new(&socket).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["op"], "status");
-            assert_eq!(request["deadline_ms"], deadline);
+            assert_eq!(request["operation"], "status");
+            assert_eq!(request["request_id"], "bounded-forward");
+            assert_eq!(request["deadline"], deadline);
             writeln!(
                 socket,
                 "{}",
-                json!({"result":"ok", "data":{"forwarded":true}})
+                serde_json::to_value(command_surface::Answer::ok(json!({"forwarded":true})))
+                    .unwrap()
             )
             .unwrap();
         });
         writeln!(client, "{}", super::initialize()).unwrap();
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
-        writeln!(client, "{}", json!({"jsonrpc":"2.0", "id":"bounded", "method":"tools/call", "params":{"name":"status", "_meta":{"deadline_ms":deadline}}})).unwrap();
+        writeln!(client, "{}", json!({"jsonrpc":"2.0", "id":"bounded", "method":"tools/call", "params":{"name":"polylogue_status","arguments":{"arguments":{},"request_id":"bounded-forward","deadline":deadline}}})).unwrap();
         line.clear();
         input.read_line(&mut line).unwrap();
         let reply: Value = serde_json::from_str(&line).unwrap();

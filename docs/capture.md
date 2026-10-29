@@ -12,6 +12,18 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - **Databases are captured as rows, not images** ([Tool databases](#tool-databases)).
 - **No size limit on valid input.** Payloads, attachments and export members of any size stream through.
 
+## Acquisition
+
+A mutable source freezes its actual origin, stable machine, exact path bytes and durable predecessor before deciding to skip or reading its body. The predecessor includes accepted private captures. An unchanged poll retries that acquisition; an observed A→B→A sequence retains three acquisitions. An older sample cannot become the third acquisition merely because it finishes after B: its frozen precondition must still match when custody is accepted.
+
+A working raw cursor and parser checkpoint describe accepted bytes separately from confirmed source and parse progress. Pending custody is neither a write failure nor confirmation. A quiet file continues through every chunk while confirmation is unavailable. A parser error stops parser facts at their last valid checkpoint; raw acquisition continues through the validated source end.
+
+Native aliases require the format's structured identity and exact retained-byte evidence from the authoritative source view frozen before acquisition. The resolved subject must still match at acceptance. Unknown legacy path bytes or source-scope coverage cannot prove a fresh input. They permit raw custody while the source relationship remains unknown; display names and tentative chain numbers cannot supply that proof.
+
+One consistent tool-database read transaction is one acquisition group. Its callbacks stage closed encoded parts before any member is accepted, and one atomic publication accepts the completed group. A failed transaction accepts no prefix. Comparison uses the latest accepted journal, including pending captures. Replaying that comparison admits no new raw bytes.
+
+An immutable package's content identity deduplicates within its authenticated receiving producer and stable machine. Another host retains its own acquisition provenance. A sender's author or actor claim never defines the receiving custody identity.
+
 ## Locations
 
 ### Roots, locations and the ignored list
@@ -19,6 +31,8 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - Each origin declares its **root**, a fixed set of **location** patterns, and an **ignored list** with one reason per entry (secret or account state, program files, cache, derived pile, the tool's lock files).
 - The root honours the tool's own home variable where the tool defines one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`); otherwise it is the tool's fixed path under `$HOME`. Polylogue has no setting of its own for any path.
 - Ignoring a tool's credential files is not filtering content: they are account state, not AI work.
+
+Mutable source sampling freezes its source boundary before provider I/O. It binds the current index generation and actual source admission fence, separately from the selected source's observation and pending capture IDs. A later native-ID alias lookup may use only retained facts admitted within that boundary. Acceptance compares the exact resolved source head and pending predecessor; unrelated source commits do not invalidate every sampler. Missing boundary evidence permits private byte custody but cannot establish a fresh source, append coordinates or parser continuation. In primary mode this requires certified coverage of the full scoped projection, including indexed authored records. A raw-input certificate or partial stream checkpoint alone is insufficient.
 
 ### Every file in one class
 

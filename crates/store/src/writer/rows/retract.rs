@@ -7,6 +7,7 @@ impl RowWriter<'_, '_> {
             "CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID",
         )?;
         self.tx.execute("INSERT OR IGNORE INTO temp.reparse_session SELECT input_pk,chain,session_pk FROM parsed WHERE input_pk=?1 AND chain=?2",params![self.input_pk,self.chain])?;
+        crate::fragment::retract(self.tx, self.input_pk, self.chain)?;
         let mut touched = Vec::new();
         for kind in VersionKind::ALL {
             touched.push((kind, kind.retract(self.tx, self.input_pk, self.chain)?));
@@ -20,7 +21,13 @@ impl RowWriter<'_, '_> {
             )?;
         }
         self.tx.execute("UPDATE session SET changed=?3,live_reparse=1 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2)", params![self.input_pk,self.chain,self.counter])?;
-        for table in ["session_record", "parsed", "parse_state", "unused"] {
+        for table in [
+            "session_record",
+            "parsed",
+            "parse_state",
+            "unused",
+            "message_injection_field",
+        ] {
             self.tx
                 .prepare_cached(&format!(
                     "DELETE FROM {table} WHERE input_pk=?1 AND chain=?2"
@@ -37,7 +44,12 @@ impl RowWriter<'_, '_> {
 }
 
 /// Drop sessions whose last statement disappeared, after the replacement rows exist.
-pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> Result<()> {
+pub(crate) fn prune_sessions(
+    tx: &Transaction<'_>,
+    input: &str,
+    chain: i64,
+    counter: i64,
+) -> Result<()> {
     tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID")?;
     let sessions = tx
         .prepare(
@@ -56,7 +68,7 @@ pub(crate) fn prune_sessions(tx: &Transaction<'_>, input: &str, chain: i64) -> R
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (pk, id) in sessions {
-        crate::session_row::remove(tx, pk, &id)?;
+        crate::session_row::remove(tx, pk, &id, counter)?;
     }
     tx.execute("DELETE FROM temp.reparse_session WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1) AND chain=?2", params![input,chain])?;
     Ok(())

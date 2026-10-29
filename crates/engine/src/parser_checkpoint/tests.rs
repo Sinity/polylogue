@@ -66,6 +66,7 @@ fn job(
     size: u64,
 ) -> crate::pool::Job {
     crate::pool::Job {
+        acquisition: None,
         path: path.to_path_buf(),
         origin,
         input: polylogue_store::InputKey {
@@ -87,6 +88,7 @@ fn job(
         at_end: true,
         length: size,
         parser_state: None,
+        parser_deferred: false,
         priority: crate::pool::Priority::Bulk,
         source: crate::pool::Bytes::File,
     }

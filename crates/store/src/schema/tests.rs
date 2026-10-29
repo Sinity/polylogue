@@ -1,3 +1,4 @@
+mod components;
 use super::*;
 
 #[test]
@@ -16,11 +17,11 @@ fn every_schema_applies_to_an_empty_database() {
 
 #[test]
 fn numbered_source_and_index_migrations_keep_the_embedding_baseline() {
-    assert_eq!(ARCHIVE_VERSION, 2);
-    assert_eq!(INDEX_VERSION, 6);
+    assert_eq!(ARCHIVE_VERSION, 4);
+    assert_eq!(INDEX_VERSION, 12);
     for (create, expected) in [
-        (ensure_archive as fn(&Connection) -> Result<()>, 2),
-        (ensure_index, 6),
+        (ensure_archive as fn(&Connection) -> Result<()>, 4),
+        (ensure_index, 12),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();

@@ -17,13 +17,14 @@ pub(crate) fn apply_confirmed_readings(
             length: *length,
             parse: Vec::new(),
             acquisition: None,
+            basis: None,
             release: Default::default(),
         };
         reading.visit(|step| {
             rows::write_confirmed_rows(tx, &batch, step, *chain, counter, None, None)?;
             Ok(())
         })?;
-        rows::prune_sessions(tx, &input.id, *chain)?;
+        rows::prune_sessions(tx, &input.id, *chain, counter)?;
     }
     Ok(())
 }

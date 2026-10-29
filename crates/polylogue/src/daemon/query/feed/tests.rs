@@ -1,6 +1,5 @@
 use super::*;
 use polylogue_store::fixture::{Fixture, SessionFacts};
-use serde_json::json;
 
 fn lines(mut file: File) -> Vec<Value> {
     use std::io::Read;

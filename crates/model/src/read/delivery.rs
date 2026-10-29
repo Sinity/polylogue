@@ -1,6 +1,6 @@
 //! Transfer units for the same selected, projected reading. Directory and file
 //! destinations belong to the client and never cross this boundary.
-use super::{ReadDocument, ReadFooter, ReadHeader, ReadOptions, ReadPart};
+use super::{Format, ReadDocument, ReadFooter, ReadHeader, ReadOptions, ReadPart};
 use crate::bundle::{Counts, ReadSnapshot, Record};
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,8 @@ pub enum ReadDelivery {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadPage {
+    /// Effective output choice from the original acknowledged execution.
+    pub format: Format,
     pub snapshot: ReadPageSnapshot,
     pub records: Vec<Record>,
     pub document: ReadDocument,
@@ -49,6 +51,8 @@ impl From<&ReadSnapshot> for ReadPageSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadBegin {
+    /// Effective output choice from the original acknowledged execution.
+    pub format: Format,
     pub snapshot: ReadSnapshot,
     pub header: ReadHeader,
     pub options: ReadOptions,

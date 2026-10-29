@@ -99,7 +99,7 @@ impl Publisher {
         (self.thread.as_ref().is_some_and(JoinHandle::is_finished)
             && !self.stop.load(Ordering::Acquire)
             && !self.expected_exit.load(Ordering::Acquire))
-            .then_some("completion worker terminated")
+        .then_some("completion worker terminated")
     }
 
     /// Stop and join the exact worker before the runtime records its end.
@@ -109,7 +109,9 @@ impl Publisher {
             let _ = wake.try_send(());
         }
         if let Some(thread) = self.thread.take() {
-            thread.join().map_err(|_| std::io::Error::other("completion worker panicked"))?;
+            thread
+                .join()
+                .map_err(|_| std::io::Error::other("completion worker panicked"))?;
             if !self.expected_exit.load(Ordering::Acquire) {
                 return Err(std::io::Error::other("completion worker terminated"));
             }

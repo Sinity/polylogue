@@ -42,6 +42,20 @@ It is derived from full confirmed reading facts using the selection from the
 same confirmed transaction. Its output intent and input position commit
 together. There is no later scan of the read index to send these products.
 
+Snapshot kind version 5 uses reducer version 3 and requires typed membership
+provenance. Explicit Fork, Spawn, Continuation and Copy facts determine its
+logical root and physical members; every physical member retains its native
+event evidence. The selection version is a closed supported value. The
+membership hash records Polylogue's derivation provenance and grants no owner
+authority. Earlier snapshot versions remain unsupported historical evidence.
+
+An ambiguous or cyclic component has an unavailable routing status keyed by
+its sorted typed physical session IDs. It cannot invent a logical root. A
+previously established root can carry an unavailable snapshot with no computed
+entries and `complete: false`. Resolving a component replaces its routing status
+under the same key, in the same owner batch as the established root snapshots
+and old-root retirements.
+
 A replacement omits retired members atomically. An empty retirement snapshot
 carries the session ID and no copied erased session metadata. Historical
 snapshots remain immutable. Snapshot kinds cannot become reducer inputs.
@@ -140,6 +154,27 @@ an unchanged retry reuses the original capture, while A → B → A records the
 second A as a later observation. Sampling and preparation validate this basis
 under the source's custody owner; observer timestamps do not assign revisions.
 
+A source basis that changes during acquisition leaves the actual bytes and
+private parser facts in durable raw custody with an unresolved-basis receipt.
+That receipt grants no source revision, byte cursor or parser progress. Its
+members remain outside accepted source heads and automatic publication; a
+later observation needs its own actual basis. Exact retries preserve the first
+accepted or unresolved receipt. Conflict custody identity binds the receiving
+producer and frozen observation, so subsequent head changes do not rename it.
+
+An original `raw_range` retains the actual encoded provider body even when
+there is no new logical extent. A metadata-only capture has no raw range and
+keeps its observation JSON as metadata. Neither case may substitute observation
+JSON for provider bytes or invent a whole-blob address for a retained range.
+
+Physical resumption uses a separate raw acquisition cursor built from committed
+body references in one exact provider generation and stream. Its ranges must
+be contiguous and cite their actual predecessor bodies. The cursor can include
+unresolved raw custody, but grants no source revision, parser progress or native
+admission. A changed or unproved generation remains unknown. Group-page
+exhaustion is not provider EOF; total length requires actual end-of-stream
+evidence, including the opened file size for provider bytes.
+
 ## Shared temporal and policy context
 
 Each operation uses one typed Sinex public context snapshot: the logical day,
@@ -150,16 +185,35 @@ perform no settings or timezone I/O. Missing, pending, refused and stale
 contexts remain typed failures. A cached earlier context retains its identity
 and age without becoming a current fallback.
 
+The producer observes this context when connecting and while polling confirmed
+changes. Reading the cached context performs no network request. An operation
+captures its resolved day and public policy together with the settings identity,
+owner revision, owner observation time and local receipt age. The private issued
+context token is excluded from serialized read answers and debug output.
+
 ## Degraded primary
 
 When Sinex is unreachable or refuses this producer:
-- reads answer from `index.db`, marked with the stream position they reflect and its lag;
+- status reports the retained index position and its known lag; data reads wait while the current policy and scope basis cannot be verified;
 - capture keeps collecting into the producer client's spool, and the sender retries with the same write identities;
 - an authored write is prepared in the spool and answered with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it;
 - the verdict is `degraded` with the reason `sinex blocked` and the error in plain words, and the shipped `Sinex blocked` rule fires after 10 minutes;
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
 
+An authoritative basis invalidation revokes the current operation and publication
+generation. An unverified basis also fences current data output, while retaining
+the private cache for a later verified continuation. Neither uncertainty nor an
+invalid partial cursor supplies a new policy epoch, scope or zero position. Cache
+replacement follows the existing authoritative scope and replay transition;
+raw custody, pending authored intent and paid embeddings remain durable.
+
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgement; prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
+
+Read-derived authored actions retain the pinned reader's opaque scope token in
+an internal writer envelope. The serialized writer checks the token's archive
+and generation before the authored transaction or durable producer preparation
+commits. A revoked read returns `scope_changed` without committing its action.
+The token does not supply native parent or coverage evidence.
 
 ## Rebuild and parser upgrades
 
@@ -216,3 +270,12 @@ The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, becaus
 - **lifecycle-reaches-index**: on a test Sinex stack, archiving a session's readings removes the session from answers, restoring brings it back, and tombstoning leaves its reference marked tombstoned; a note, judgment and page slot on the session survive a parser-upgrade replay of it, still resolving to the new readings.
 - **user-state-moves**: an archive with assertions, revisions, a withdrawal, a pass, a variant and a page, written out with `read --to DIR` and imported into a fresh archive with the same inputs, gives identical reads; importing twice changes nothing.
 - **mixed-answer-reports-positions**: a mixed query's answer names the position it read in each product and their lag.
+
+Canonical query objects retain the semantic body and frozen dependency closure
+as `polylogue.query` facts. An execution retains its accepted binding in an
+immutable `polylogue.query_run` Begin fact before a continuation call is
+returned. Completion is a separate `polylogue.query_run_outcome` fact under
+the same Run ID. Its phase key cannot replace the Begin body. Named producer
+custody supports immediate exact-hash and unambiguous prefix lookup while
+confirmation is pending; that state is reported as queued. The local index
+changes only from the confirmed stream.

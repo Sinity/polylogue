@@ -22,6 +22,11 @@ pub mod scope;
 
 mod behind_index;
 mod captured;
+mod native_hook_fields;
+mod fragment;
+pub use fragment::{
+    FragmentAvailability, FragmentClaim, FragmentClaims, FragmentConflict, FragmentSelection,
+};
 mod parser_checkpoint;
 pub use parser_checkpoint::StoredParserCheckpoint;
 mod import_attribution;
@@ -35,6 +40,7 @@ pub use behind_index::{BehindChain, ImportedAs};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod rows;
+mod signals;
 mod source_commit;
 mod source_snapshot;
 use order::RecordOrder;

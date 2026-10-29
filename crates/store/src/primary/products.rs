@@ -49,10 +49,18 @@ pub enum Product {
         facts: Box<MessageRow>,
         order: Option<u64>,
         projection: Option<polylogue_model::bundle::MessageProjection>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        native_fields: Vec<polylogue_model::HookFieldClaim>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        declared_injections: Vec<polylogue_model::injection::InjectionEvidence>,
     },
     Document {
         reading: Reading,
         facts: DocumentRow,
+    },
+    Fragment {
+        reading: Reading,
+        facts: Box<polylogue_model::batch::FragmentRow>,
     },
     Event {
         id: String,
@@ -95,6 +103,9 @@ pub enum Product {
         claims: Vec<polylogue_model::authored::ImportAttribution>,
         current: polylogue_model::authored::ImportAttribution,
     },
+    WorkComponentStatus {
+        status: Box<polylogue_model::work_products::ComponentStatus>,
+    },
     WorkSnapshot {
         snapshot: polylogue_model::work_products::WorkSnapshot,
     },
@@ -107,6 +118,7 @@ impl Product {
             Self::Session { reading, .. }
             | Self::Message { reading, .. }
             | Self::Document { reading, .. }
+            | Self::Fragment { reading, .. }
             | Self::Event { reading, .. }
             | Self::Link { reading, .. }
             | Self::Background { reading, .. }
@@ -120,7 +132,8 @@ impl Product {
             | Self::Request(_)
             | Self::RestoredRequest { .. }
             | Self::Coverage(_)
-            | Self::WorkSnapshot { .. } => None,
+            | Self::WorkSnapshot { .. }
+            | Self::WorkComponentStatus { .. } => None,
         }
     }
 }
@@ -161,6 +174,13 @@ pub struct CapturedInput {
     /// Original acquired interval, independent of tentative source coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_range: Option<super::RawRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<super::SourceGeneration>,
+    /// Actual validated source EOF, independent of group-header exhaustion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_predecessor: Option<String>,
     /// None is legacy unknown evidence, never a freshly observed source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<super::SourceBasis>,
@@ -295,6 +315,8 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
     }));
     let mut message_order = output.message_order;
     let mut message_projections = output.message_projections;
+    let mut native_fields = output.native_hook_fields;
+    let mut declared_injections = output.declared_injections;
     products.extend(
         output
             .messages
@@ -305,11 +327,17 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
                 facts: Box::new(facts),
                 order: message_order.remove(&index),
                 projection: message_projections.remove(&index),
+                native_fields: native_fields.remove(&index).unwrap_or_default(),
+                declared_injections: declared_injections.remove(&index).unwrap_or_default(),
             }),
     );
     products.extend(output.documents.into_iter().map(|facts| Product::Document {
         reading: reading.clone(),
         facts,
+    }));
+    products.extend(output.fragments.into_iter().map(|facts| Product::Fragment {
+        reading: reading.clone(),
+        facts: Box::new(facts),
     }));
     let mut imported_events = output.imported_events;
     products.extend(
