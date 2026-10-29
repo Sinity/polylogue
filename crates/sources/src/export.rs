@@ -422,6 +422,10 @@ pub fn parse_item(
         row.offset = range.start;
         row.end = range.end;
     }
+    for fragment in &mut output.fragments {
+        fragment.offset = range.start;
+        fragment.end = range.end;
+    }
     for event in &mut output.events {
         event.range.get_or_insert((range.start, range.end));
     }
