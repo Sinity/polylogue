@@ -86,7 +86,7 @@ pub fn command() -> clap::Command {
             }
         }
     }
-    root
+    crate::config::augment_command(root)
 }
 
 fn subcommand(c: &Command) -> clap::Command {

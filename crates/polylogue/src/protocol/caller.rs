@@ -103,17 +103,21 @@ struct Identity {
 
 static CALLER: std::sync::OnceLock<CallerEvidence> = std::sync::OnceLock::new();
 
-pub fn initialize() {
-    let _ = CALLER.set(capture());
+pub fn initialize(environment: &crate::config::EnvSnapshot) {
+    let _ = CALLER.set(capture(environment));
 }
 pub fn evidence() -> CallerEvidence {
     CALLER.get().cloned().unwrap_or_default()
 }
 
-fn capture() -> CallerEvidence {
+fn capture(snapshot: &crate::config::EnvSnapshot) -> CallerEvidence {
     let environment = ENVIRONMENT
         .into_iter()
-        .filter_map(|name| std::env::var_os(name).map(|value| (name.to_owned(), value)))
+        .filter_map(|name| {
+            snapshot
+                .get_os(name)
+                .map(|value| (name.to_owned(), value.to_owned()))
+        })
         .collect::<BTreeMap<_, _>>();
     let ancestors = ancestors(std::os::unix::process::parent_id());
     let unit = std::fs::read_to_string("/proc/self/cgroup")
@@ -131,11 +135,26 @@ fn channel(words: &[&str]) -> Channel {
     while let Some(word) = words.next() {
         match *word {
             "--json" => continue,
-            "--deadline" | "--timeout" => {
+            "--deadline" | "--timeout" | "--archive" | "--config" | "--listen"
+            | "--auth-token-file" | "--request" | "--request-id" => {
                 words.next();
                 continue;
             }
-            word if word.starts_with("--deadline=") || word.starts_with("--timeout=") => continue,
+            word if [
+                "--deadline=",
+                "--timeout=",
+                "--archive=",
+                "--config=",
+                "--listen=",
+                "--auth-token-file=",
+                "--request=",
+                "--request-id=",
+            ]
+            .iter()
+            .any(|prefix| word.starts_with(prefix)) =>
+            {
+                continue;
+            }
             "mcp" => return Channel::Mcp,
             "hook" => return Channel::Hook,
             "browser-host" => return Channel::Extension,
