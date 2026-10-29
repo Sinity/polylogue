@@ -48,7 +48,10 @@ return `scope_changed`; streams end with that error and no completion record.
 The same consumer identity replays the history Sinex authorizes. Its position
 remains unknown until a complete confirmed barrier arrives, including an explicit
 zero barrier for an accessible empty store. Raw producer spools, pending authored
-intent and content-addressed paid embeddings survive this cache reset.
+intent and content-addressed paid embeddings survive this cache reset. The owner
+control is saved before clearing the cache; if clearing fails, reopening still
+blocks reads until retry succeeds. Failure to save that control blocks current
+readers and leaves the control unacknowledged; it provides no durable reset record.
 
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is a Cargo feature outside the default build.
 
