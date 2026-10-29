@@ -12,6 +12,7 @@ pub enum ExecutionEligibility {
     Live,
     Historical,
 }
+stored_names!(ExecutionEligibility { Live => "live", Historical => "historical" });
 
 /// Computed from the local bundle ingress and authenticated importing channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
