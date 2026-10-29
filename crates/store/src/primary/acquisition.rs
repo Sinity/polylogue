@@ -51,7 +51,8 @@ impl AcquisitionReceipt {
         generation.validate()?;
         let stream = generation.stream();
         let window = generation.window();
-        if stream.source != self.source || stream.input != *input
+        if stream.source != self.source
+            || stream.input.id != input.id || stream.input.format != input.format
             || self.range.start < window.start || self.range.end > window.end
             || self.raw_total.is_some_and(|end| end != window.end || end != self.range.end)
             || self.raw_predecessor.as_ref().is_some_and(|body| body.is_empty() || self.range.start == window.start)

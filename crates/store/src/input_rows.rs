@@ -198,7 +198,7 @@ impl InputRows {
             return Ok(());
         };
         receipt.validate_for(&crate::InputKey {
-            format: self.format.clone(), id: self.input.clone(),
+            format: self.format.clone(), id: self.input.clone(), arrival_rank: 0,
         })?;
         let length = receipt.range.length()?;
         let invalid = || {

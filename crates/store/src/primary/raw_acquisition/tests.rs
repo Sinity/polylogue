@@ -7,7 +7,7 @@ fn generation() -> SourceGeneration {
                 origin: "synthetic".into(), machine: "receiver".into(),
                 path_bytes: b"/synthetic/input".to_vec(),
             },
-            input: InputKey { format: "synthetic".into(), id: "input".into() },
+            input: InputKey { format: "synthetic".into(), id: "input".into(), arrival_rank: 0 },
             role: RawStreamRole::ProviderBytes, namespace: None,
         },
         observed: FileSnapshot {
@@ -122,4 +122,16 @@ fn provider_window_end_before_opened_file_size_is_not_eof() {
     let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
     proof.push(body(&generation, 0, 10)).unwrap();
     assert!(proof.finish().is_none());
+}
+
+#[test]
+fn scheduling_rank_does_not_rename_a_raw_stream_or_its_durable_wire_key() {
+    let original = generation();
+    let mut imported = original.clone();
+    let SourceGeneration::File { stream, .. } = &mut imported else { unreachable!() };
+    stream.input.arrival_rank = 2;
+    assert_eq!(original, imported);
+    assert_eq!(serde_json::to_vec(&original).unwrap(), serde_json::to_vec(&imported).unwrap());
+    let restored: SourceGeneration = serde_json::from_slice(&serde_json::to_vec(&imported).unwrap()).unwrap();
+    assert_eq!(restored, imported);
 }

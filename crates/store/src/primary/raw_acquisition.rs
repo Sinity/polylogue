@@ -3,15 +3,27 @@ use super::{RawRange, SourceSelector};
 use crate::{InputKey, Result, StoreError};
 use polylogue_model::BlobHash;
 use serde::{Deserialize, Serialize};
+mod input;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RawStream {
     pub source: SourceSelector,
+    #[serde(with = "input")]
+    #[schemars(with = "input::Identity")]
     pub input: InputKey,
     pub role: RawStreamRole,
     pub namespace: Option<String>,
 }
+
+impl PartialEq for RawStream {
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source && self.input.id == other.input.id
+            && self.input.format == other.input.format && self.role == other.role
+            && self.namespace == other.namespace
+    }
+}
+impl Eq for RawStream {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "role", rename_all = "snake_case")]
