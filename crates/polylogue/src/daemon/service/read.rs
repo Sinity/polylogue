@@ -1,7 +1,7 @@
 //! One pinned selection, projected and laid out identically for every delivery.
 use super::{Daemon, Response, error, ok, store_error};
 use crate::daemon::Request;
-use polylogue_model::{BlobHash, RunId, bundle::*, query_objects::*, read::*};
+use polylogue_model::{BlobHash, RunId, query_objects::*, read::*};
 use polylogue_render::pager::{PageBuilder, PageError, Push};
 use polylogue_store::{
     Reader,
@@ -364,7 +364,7 @@ fn prepared<T>(
                     .run
                     .record_hash()
                     .map_err(|e| error("internal", e))?,
-                at: d.config.clock.now().into(),
+                at: d.config.requests.now(),
                 outcome: match &result {
                     Ok(_) => RunOutcome::Ok,
                     Err(Response::Error { kind, .. }) => RunOutcome::Error { kind: kind.clone() },
@@ -519,11 +519,8 @@ fn next_call(
         request_id: format!("read-page-{}", blake3::hash(&identity).to_hex()),
         deadline: execution.deadline.clone(),
     };
-    d.ready_call(&call).map_err(|e| Response::Error {
-        kind: e.kind.code().into(),
-        message: e.message,
-        detail: None,
-    })
+    d.ready_call(&call)
+        .map_err(|error| command_surface::Answer::<serde_json::Value>::error(error).into())
 }
 pub(super) fn page(
     reader: &Reader<'_>,
@@ -620,7 +617,7 @@ pub(super) fn page(
         Err(error) => error,
     }
 }
-pub(super) fn produce(
+pub(crate) fn produce(
     request: &Request,
     d: &Daemon,
     operation: &Arc<crate::operation::Context>,
