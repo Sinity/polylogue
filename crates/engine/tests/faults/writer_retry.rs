@@ -7,7 +7,7 @@ fn exactly_stored(w: &ClaudeHome, file: &str) {
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let known = r
-        .known_input_at("test-machine", &w.file(file).to_string_lossy())
+        .known_input_at("test-machine", w.file(file).as_os_str().as_encoded_bytes())
         .unwrap()
         .unwrap();
     let expected = fs::read(w.file(file)).unwrap();
@@ -58,7 +58,10 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
         let pool = w.reads();
         let r = pool.reader().unwrap();
         let known = r
-            .known_input_at("test-machine", &w.file("target.jsonl").to_string_lossy())
+            .known_input_at(
+                "test-machine",
+                w.file("target.jsonl").as_os_str().as_encoded_bytes(),
+            )
             .unwrap()
             .unwrap();
         drop(r);
