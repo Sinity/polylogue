@@ -83,3 +83,5 @@ macro_rules! string_schema {
 string_schema!(
     Origin, SessionId, MessageId, DocumentId, BlobHash, Target, Author
 );
+
+pub mod work_products;
