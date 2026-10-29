@@ -269,6 +269,32 @@ impl crate::primary::Sinex for OfflineProducer {
     fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
         Ok(())
     }
+    fn pending_group_headers(
+        &self,
+        group: &str,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        if limit == 0 {
+            return Err(StoreError::Invalid("zero group header limit".into()));
+        }
+        let mut headers = self.pending_captures()?;
+        headers.retain(|header| match &header.captured {
+            Capture::Input(input) => input.group.as_ref().is_some_and(|g| {
+                g.identity == group && after.is_none_or(|ordinal| g.ordinal > ordinal)
+            }),
+            _ => false,
+        });
+        for header in &mut headers {
+            if let Capture::Input(input) = &mut header.captured {
+                input.parsed = Vec::new();
+            }
+        }
+        Ok(crate::primary::PendingGroupPage {
+            headers,
+            next: None,
+        })
+    }
     fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         Ok(if self.root.join("capture.json").exists() {
             vec![PendingCapture {
