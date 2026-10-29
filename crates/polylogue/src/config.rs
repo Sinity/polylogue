@@ -549,7 +549,7 @@ impl Startup {
                 "a non-loopback listen address requires an authentication token file".into(),
             ));
         }
-        let (mode, primary_auth) = load_mode(&paths.config.join("polylogue/sinex.toml"))?;
+        let (mode, _primary_auth) = load_mode(&paths.config.join("polylogue/sinex.toml"))?;
         let standalone = matches!(mode, crate::daemon::service::ArchiveMode::Standalone);
         let standalone_day = if standalone {
             let day = file.day.unwrap_or(DayFile {
@@ -614,10 +614,8 @@ impl Startup {
             ),
             standalone_day,
             #[cfg(feature = "sinex")]
-            primary_auth,
+            primary_auth: _primary_auth,
         });
-        #[cfg(not(feature = "sinex"))]
-        let _ = primary_auth;
         Ok(Self {
             config,
             engine,
