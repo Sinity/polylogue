@@ -70,6 +70,7 @@ fn phases() -> Vec<(String, Product)> {
                 original_text: "sessions".into(),
             },
             query_options: QueryExecutionOptions {
+                direct_reference: None,
                 fields: vec![],
                 self_session: None,
                 embeddings: false,
