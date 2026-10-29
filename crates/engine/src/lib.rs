@@ -469,6 +469,7 @@ impl Engine {
             facts,
             seen_at_ms: now_ms(),
             import: None,
+            container: None,
         }
     }
 }

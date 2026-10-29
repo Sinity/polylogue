@@ -145,7 +145,7 @@ fn line_import_keeps_a_partial_tail_without_duplicate_parts_on_retry() {
 }
 
 #[test]
-fn zip_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
+fn container_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
     use std::io::Write;
     let w = polylogue_testkit::ClaudeHome::new();
     let path = w.dir.path().join("export.zip");
@@ -285,6 +285,6 @@ mod replay;
 mod assets;
 mod stored_bytes;
 
-mod zip_members;
+mod container_members;
 
 mod strict;

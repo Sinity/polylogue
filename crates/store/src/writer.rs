@@ -39,7 +39,7 @@ use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, unpack_block};
 pub use batch::{
-    Batch, ImportMember, InFlight, InZip, InputKey, Observation, ParseStep, WriteReport,
+    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
 };
 use bytes::*;
 use rows::*;
@@ -294,8 +294,10 @@ impl Writer {
             .transpose()?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
-        } else {None};
-        let resolver=resolve::Resolver::new(archive,&index,first_build.clone())?;
+        } else {
+            None
+        };
+        let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
         let mut inner = Inner {
             segment,
             archive: archive_conn,
@@ -948,9 +950,9 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
-            if crate::zip_members::zip_of(b).is_some() {
+            if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
-                    "a ZIP member is stored with its ZIP's group".into(),
+                    "a container member is stored with its container's group".into(),
                 ));
             }
             crate::fault::check("write.input", &b.input.id)?;

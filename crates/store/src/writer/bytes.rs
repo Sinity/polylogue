@@ -201,8 +201,8 @@ pub(super) fn observation(
         return Ok(None);
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
-    let zip = match o.import.as_ref().and_then(|member| member.zip.as_ref()) {
-        Some(zip) => Some(crate::zip_members::check(tx, &b.input.id, zip)?),
+    let container = match o.container.as_ref() {
+        Some(zip) => Some(crate::container_members::check(tx, &b.input.id, zip)?),
         None => None,
     };
     let f = o.facts;
@@ -230,6 +230,6 @@ pub(super) fn observation(
                 )
             })
             .transpose()?,
-        zip,
+        container,
     }))
 }

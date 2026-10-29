@@ -141,6 +141,7 @@ fn observed(path: &str, change: Change, length: u64) -> Batch {
             facts: None,
             seen_at_ms: 1,
             import: None,
+            container: None,
         }),
         continues: false,
         new_blob: None,
@@ -339,7 +340,7 @@ fn a_part_sent_by_a_write_that_never_committed_leaves_nothing_after_a_rebuild() 
                     polylogue_version: "synthetic".into(),
                     seen_at: b.observation.unwrap().seen_at_ms,
                     details_json: None,
-                    zip: None,
+                    container: None,
                 }),
             }),
         }

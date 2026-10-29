@@ -97,7 +97,7 @@ fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
             "extent",
             "blob",
             "observation",
-            "observation_zip",
+            "observation_container",
         ] {
             assert_eq!(
                 w.count(&format!("SELECT count(*) AS n FROM a.{table}")),
@@ -140,7 +140,7 @@ fn original_bytes_and_ordinal_preserve_raw_names_separately_from_decoded_project
     let member = container.by_index(0).unwrap();
     assert_eq!(member.name_raw()[0], 0xff);
     assert!(std::str::from_utf8(member.name_raw()).is_err());
-    let names=reader.query("SELECT json_extract(o.details_json,'$.import.member') AS name FROM a.observation_zip c JOIN a.observation o ON o.id=c.observation_id WHERE c.member_index=0",&[]).unwrap();
+    let names=reader.query("SELECT json_extract(o.details_json,'$.import.member') AS name FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id WHERE c.member_index=0",&[]).unwrap();
     assert_eq!(
         names[0]["name"],
         member.name(),
@@ -170,10 +170,10 @@ fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 5);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 5);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 8);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_zip"), 6);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation_container"), 6);
     assert_eq!(
-        w.count("SELECT count(DISTINCT zip_input) AS n FROM a.observation_zip"),
+        w.count("SELECT count(DISTINCT container_input) AS n FROM a.observation_container"),
         2
     );
-    assert_eq!(w.count("SELECT count(DISTINCT json_extract(o.details_json,'$.import.import_id')) AS n FROM a.observation_zip c JOIN a.observation o ON o.id=c.observation_id"),2);
+    assert_eq!(w.count("SELECT count(DISTINCT json_extract(o.details_json,'$.import.import_id')) AS n FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id"),2);
 }

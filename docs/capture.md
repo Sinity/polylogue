@@ -124,6 +124,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 - **Original containers are kept whole**, and their members are also stored decoded, addressed as `container!/member`. Members deduplicate across overlapping exports; containers do not.
 - **Importing the same bytes again changes nothing.** A newer export merges by field ([sessions.md](sessions.md#one-conversation-through-several-routes)), so a field only the older export had survives.
 - An encrypted or corrupt member refuses its whole container before anything is stored.
+- Container observations record the container input, encoding kind, member index and exact member-name bytes. Display names are escaped when the original name is not UTF-8. Container membership is independent of explicit import membership.
 - The answer lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets. `--explain` classifies every member without storing anything.
 
 | Structure | Recognized by | Origin |

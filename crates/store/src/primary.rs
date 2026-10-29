@@ -354,7 +354,7 @@ fn forget_uncommitted(
 ) -> Result<()> {
     if let Some(id) = observation {
         tx.execute(
-            "DELETE FROM observation_zip WHERE observation_id = ?1",
+            "DELETE FROM observation_container WHERE observation_id = ?1",
             [id],
         )?;
         tx.execute("DELETE FROM observation WHERE id = ?1", [id])?;

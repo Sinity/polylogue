@@ -108,12 +108,19 @@ impl Engine {
                             .into_owned()
                     },
                     format: None,
-                    zip: member.parent.and_then(|(parent, member_index)| {
-                        hashes.get(&parent).map(|input| polylogue_store::InZip {
+                });
+                captured.container = member.parent.and_then(|(parent, member_index)| {
+                    hashes
+                        .get(&parent)
+                        .map(|input| polylogue_store::InContainer {
                             input: input.clone(),
                             member_index,
+                            kind: member
+                                .container_kind
+                                .clone()
+                                .unwrap_or_else(|| "container".into()),
+                            path_bytes: member.member_path_bytes.clone().unwrap_or_default(),
                         })
-                    }),
                 });
                 if origin.name == "polylogue-export" {
                     user_states.push((
@@ -197,6 +204,11 @@ impl Engine {
                 captured.prepared.hash().to_string(),
                 captured.prepared.len(),
             );
+            batch
+                .observation
+                .as_mut()
+                .expect("import observation")
+                .container = captured.container;
             batch.new_blob = Some(polylogue_store::NewBlob {
                 hash: captured.prepared.hash(),
                 size: captured.prepared.len(),
@@ -413,6 +425,7 @@ struct Captured {
     #[cfg(test)]
     head: Vec<u8>,
     member: Option<polylogue_store::ImportMember>,
+    container: Option<polylogue_store::InContainer>,
 }
 
 impl Captured {
@@ -420,6 +433,7 @@ impl Captured {
         Ok(Self {
             prepared: archive.prepare_bytes(file)?,
             member: None,
+            container: None,
             #[cfg(test)]
             head: Vec::new(),
         })
@@ -438,6 +452,7 @@ impl Captured {
             prepared,
             head: reader.head,
             member: None,
+            container: None,
         })
     }
 }

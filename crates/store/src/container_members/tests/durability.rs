@@ -26,7 +26,7 @@ fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
             assert_eq!(count, if committed { 2 } else { 0 }, "{point} {table}");
         }
         assert_eq!(
-            db.query_row("SELECT count(*) FROM observation_zip", [], |r| r
+            db.query_row("SELECT count(*) FROM observation_container", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
             i64::from(committed)

@@ -21,6 +21,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             facts: None,
             seen_at_ms: 1,
             import: None,
+            container: None,
         },
     };
     let mut databases = Databases::default();
@@ -115,6 +116,7 @@ fn native_capture_continues_the_input_named_by_its_source_header() {
                         facts: None,
                         seen_at_ms: 1,
                         import: None,
+                        container: None,
                     }),
                     continues: false,
                     new_blob: None,

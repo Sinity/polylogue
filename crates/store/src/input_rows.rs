@@ -58,9 +58,9 @@ pub struct ObservationRow {
     pub polylogue_version: String,
     pub seen_at: i64,
     pub details_json: Option<String>,
-    /// The export ZIP it was read from, and its index there.
+    /// The exact container membership established by this observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zip: Option<(String, i64)>,
+    pub container: Option<crate::InContainer>,
 }
 
 impl InputRows {
@@ -75,7 +75,7 @@ impl InputRows {
         if let Some(r) = &self.revision {
             tx.prepare_cached(
                 "INSERT INTO revision(input, number, produced, chain, length, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(input, number) DO UPDATE SET length = excluded.length",
             )?
             .execute(params![
@@ -124,9 +124,17 @@ impl InputRows {
                 seq,
                 o.details_json,
             ])?;
-            if let Some((zip, index)) = &o.zip {
-                tx.prepare_cached("INSERT OR IGNORE INTO observation_zip VALUES (?1, ?2, ?3)")?
-                    .execute(params![o.id, zip, index])?;
+            if let Some(c) = &o.container {
+                tx.prepare_cached(
+                    "INSERT OR IGNORE INTO observation_container VALUES (?1, ?2, ?3, ?4, ?5)",
+                )?
+                .execute(params![
+                    o.id,
+                    c.input,
+                    c.member_index as i64,
+                    c.kind,
+                    c.path_bytes
+                ])?;
             }
         }
         Ok(())

@@ -9,6 +9,9 @@ pub(super) struct Member {
     pub container: bool,
     pub origin: Option<&'static OriginSpec>,
     pub parent: Option<(usize, u64)>,
+    pub container_kind: Option<String>,
+    pub member_path: Option<String>,
+    pub member_path_bytes: Option<Vec<u8>>,
 }
 
 pub(super) fn stage(
@@ -81,6 +84,9 @@ fn expand(
             container: false,
             origin: None,
             parent,
+            container_kind: None,
+            member_path: None,
+            member_path_bytes: None,
         });
         return Ok(());
     }
@@ -95,7 +101,7 @@ fn expand(
             if member.enclosed_name().is_none() {
                 return Err(std::io::Error::other("container member has an unsafe path"));
             }
-            let name = member.name().to_owned();
+            let name = member.name_raw().to_vec();
             let expected = member.size();
             let mut decoded = tempfile::NamedTempFile::new_in(scratch)?;
             let written = std::io::copy(&mut member, &mut decoded)?;
@@ -141,7 +147,7 @@ fn expand(
             std::io::copy(&mut entry, &mut member)?;
             member.rewind()?;
             children.push((
-                name.to_string_lossy().into_owned(),
+                name.as_os_str().as_encoded_bytes().to_vec(),
                 i as u64,
                 member.into_temp_path(),
             ));
@@ -154,15 +160,33 @@ fn expand(
         container: true,
         origin: Some(polylogue_sources::origin::by_name(KEPT).expect("container origin")),
         parent,
+        container_kind: None,
+        member_path: None,
+        member_path_bytes: None,
     });
+    let kind = if magic[..n].starts_with(ZIP_MAGIC) {
+        "zip"
+    } else if magic[..n].starts_with(&[0x1f, 0x8b]) {
+        "tar+gzip"
+    } else if magic[..n].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        "tar+zstd"
+    } else {
+        "tar"
+    };
     for (name, i, member) in children {
+        let child = out.len();
+        let display = String::from_utf8(name.clone())
+            .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect());
         expand(
-            PathBuf::from(format!("{}!/{name}", path.display())),
+            PathBuf::from(format!("{}!/{display}", path.display())),
             member,
             Some((index, i)),
             scratch,
             out,
         )?;
+        out[child].container_kind = Some(kind.into());
+        out[child].member_path = Some(display);
+        out[child].member_path_bytes = Some(name);
     }
     Ok(())
 }

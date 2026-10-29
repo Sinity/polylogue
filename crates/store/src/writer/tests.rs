@@ -96,6 +96,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             facts: None,
             seen_at_ms: 1,
             import: None,
+            container: None,
         }),
         continues: false,
         new_blob: None,

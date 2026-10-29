@@ -197,3 +197,40 @@ fn aider_requires_its_declared_pair_and_codex_cloud_keeps_its_namespace() {
         "codex-cloud"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_container_names_keep_distinct_original_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("names.tar");
+    let mut tar = tar::Builder::new(std::fs::File::create(&source).unwrap());
+    for (name, bytes) in [
+        (b"conversations.json".to_vec(), CHAT.as_bytes()),
+        (vec![b'a', 0xff], b"one".as_slice()),
+        (vec![b'a', 0xfe], b"two".as_slice()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            PathBuf::from(std::ffi::OsString::from_vec(name)),
+            bytes,
+        )
+        .unwrap();
+    }
+    tar.finish().unwrap();
+    drop(tar);
+    let members = stage(&source, scratch.path(), None).unwrap();
+    assert_eq!(
+        members[2].member_path_bytes.as_deref(),
+        Some([b'a', 0xff].as_slice())
+    );
+    assert_eq!(
+        members[3].member_path_bytes.as_deref(),
+        Some([b'a', 0xfe].as_slice())
+    );
+    assert_ne!(members[2].path, members[3].path);
+}
