@@ -10,7 +10,11 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "assistant.apiBlockIndex": 1,
+      "assistant.isApiErrorMessage": 1,
+      "assistant.message.content[].caller.type": 1
+    }
   },
   "output": {
     "background": [],
@@ -172,7 +176,18 @@
             "thinking_ms": 1200
           },
           "role": "assistant",
-          "session": "claude-code:s4"
+          "session": "claude-code:s4",
+          "attrs": {
+            "quotaLimits": {
+              "status": "allowed",
+              "rateLimitType": "five_hour",
+              "resetsAt": 1790000000
+            },
+            "message.diagnostics.cache_miss_reason": {
+              "type": "tools_changed",
+              "cache_missed_input_tokens": 120
+            }
+          }
         },
         "offset": 223
       },
@@ -201,7 +216,14 @@
           },
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:s4"
+          "session": "claude-code:s4",
+          "attrs": {
+            "permissionDecision": {
+              "decision": "accept",
+              "source": "config",
+              "reasonType": "mode"
+            }
+          }
         },
         "offset": 905
       },

@@ -45,7 +45,9 @@ pub struct ImportMember {
     pub format: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct InContainer {
     pub input: String,
     pub member_index: u64,

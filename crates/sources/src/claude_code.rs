@@ -1311,18 +1311,17 @@ impl Parser for ClaudeCode {
                                     object.insert("message".into(), api);
                                 }
                                 for key in ["uuid", "timestamp", "parentUuid"] {
-                                    if !object.contains_key(key) {
-                                        if let Some(value) = data.get(key) {
-                                            object.insert(key.into(), value.clone());
-                                        }
+                                    if !object.contains_key(key)
+                                        && let Some(value) = data.get(key)
+                                    {
+                                        object.insert(key.into(), value.clone());
                                     }
                                 }
-                                if !object.contains_key("type") {
-                                    if let Some(role) =
+                                if !object.contains_key("type")
+                                    && let Some(role) =
                                         object.get("message").and_then(|m| m.get("role")).cloned()
-                                    {
-                                        object.insert("type".into(), role);
-                                    }
+                                {
+                                    object.insert("type".into(), role);
                                 }
                             }
                             let role = match str_field(&embedded, "type") {

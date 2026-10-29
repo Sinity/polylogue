@@ -19,6 +19,22 @@
     "blobs": [],
     "events": [
       {
+        "session": "codex:interleaved-session-1",
+        "kind": "session_meta",
+        "at": "2025-01-15T12:00:00Z",
+        "range": [
+          0,
+          128
+        ],
+        "data": {
+          "id": "interleaved-session-1",
+          "timestamp": "2025-01-15T12:00:00Z",
+          "git": {
+            "branch": "feature/x"
+          }
+        }
+      },
+      {
         "data": {
           "cwd": "/repo/polylogue"
         },

@@ -9,7 +9,7 @@
 
 use crate::{Result, StoreError};
 use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
-use polylogue_model::{Author, DeliveryOutcome, NewNote, NoteKind, Timestamp};
+use polylogue_model::{NewNote, NoteKind, Timestamp};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use polylogue_model::user::{Delivery, UserOutcome, UserRequest, UserWrite};

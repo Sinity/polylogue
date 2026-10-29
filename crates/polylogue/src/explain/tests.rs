@@ -55,7 +55,7 @@ fn declaration_pages_preserve_every_entry() {
         .filter(|v| v["kind"] == "read_view")
         .map(|v| v["name"].as_str().unwrap())
         .collect();
-    assert_eq!(views, polylogue_render::View::NAMES);
+    assert_eq!(views, polylogue_model::read::View::NAMES);
 }
 
 #[test]

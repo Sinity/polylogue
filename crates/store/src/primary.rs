@@ -8,6 +8,7 @@ pub use products::{
 
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
+use polylogue_model::user::UserOutcome;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -37,14 +38,33 @@ pub trait Sinex: Send + Sync {
     fn prepare_request(
         &self,
         request: &polylogue_model::authored::PreparedRequest,
-    ) -> Result<polylogue_model::user::UserOutcome>;
+    ) -> Result<UserOutcome>;
     fn visit_pending_requests(
         &self,
-        apply: &mut dyn FnMut(&polylogue_model::authored::PreparedRequest) -> Result<()>,
+        visit: &mut dyn FnMut(&polylogue_model::authored::PreparedRequest) -> Result<()>,
     ) -> Result<()>;
     fn visit_pending_blobs(
         &self,
-        apply: &mut dyn FnMut(&crate::NewBlob) -> Result<()>,
+        visit: &mut dyn FnMut(&crate::NewBlob) -> Result<()>,
+    ) -> Result<()>;
+    /// One complete reparse replaces its exact owner-confirmed material scope.
+    fn prepare_reading(
+        &self,
+        root: &str,
+        reading_version: &str,
+        visit: &mut dyn FnMut(&mut dyn FnMut(ProductWrite) -> Result<()>) -> Result<()>,
+    ) -> Result<PreparedWrite>;
+    /// Retry identity comes from the same transaction as the applied position.
+    fn prepare_named_products(
+        &self,
+        identity: &str,
+        products: &[ProductWrite],
+    ) -> Result<PreparedWrite>;
+    fn discard_confirmed(
+        &self,
+        identities: &[String],
+        tombstone_position: i64,
+        applied: i64,
     ) -> Result<()>;
     fn confirmed(&self, after: i64, cache: &str) -> Result<Vec<Confirmed>>;
     fn acknowledge(&self, position: i64) -> Result<()>;

@@ -85,5 +85,7 @@ pub fn check(point: &str, subject: &str) -> crate::Result<()> {
 fn stop_process() {
     // SIGSTOP has no memory preconditions. The test parent owns this process
     // and kills it without running Rust destructors.
-    unsafe { libc::raise(libc::SIGSTOP); }
+    unsafe {
+        libc::raise(libc::SIGSTOP);
+    }
 }

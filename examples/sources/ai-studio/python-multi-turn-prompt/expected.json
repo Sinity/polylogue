@@ -62,7 +62,10 @@
           "id": "ai-studio:17:multi_turn_prompt#position:1:1",
           "parent": "ai-studio:17:multi_turn_prompt#position:1:0",
           "role": "assistant",
-          "session": "ai-studio:multi_turn_prompt"
+          "session": "ai-studio:multi_turn_prompt",
+          "attrs": {
+            "thinkingBudget": 1024
+          }
         },
         "offset": 224
       },
@@ -87,6 +90,14 @@
             "input": null,
             "output": 12,
             "reasoning": null
+          },
+          "attrs": {
+            "safetyRatings": [
+              {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "probability": "NEGLIGIBLE"
+              }
+            ]
           }
         },
         "offset": 387

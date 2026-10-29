@@ -8,7 +8,9 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "user.driveDocument.sizeBytes": 1
+    }
   },
   "output": {
     "background": [],
@@ -119,6 +121,14 @@
             "input": null,
             "output": 10,
             "reasoning": null
+          },
+          "attrs": {
+            "safetyRatings": [
+              {
+                "category": "HARM_CATEGORY_DEROGATORY",
+                "probability": "NEGLIGIBLE"
+              }
+            ]
           }
         },
         "offset": 651

@@ -1,7 +1,10 @@
 use super::*;
-use crate::staging::{PreparedBatch, StoredInput};
+use crate::staging::PreparedBatch;
+#[cfg(feature = "faults")]
+use crate::staging::StoredInput;
 use std::sync::Arc;
 
+#[cfg(feature = "faults")]
 fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Result<StoredInput> {
     let (new_blob, file) = archive.prepare_blob(bytes)?;
     let batch = Batch {
@@ -195,8 +198,14 @@ fn wait_stopped(pid: libc::pid_t) -> i32 {
     // This test owns pid; status is a live, uniquely borrowed output cell.
     loop {
         let result = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
-        if result == pid { return status; }
-        let error=std::io::Error::last_os_error();
-        assert_eq!(error.kind(),std::io::ErrorKind::Interrupted,"waitpid: {error}");
+        if result == pid {
+            return status;
+        }
+        let error = std::io::Error::last_os_error();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::Interrupted,
+            "waitpid: {error}"
+        );
     }
 }

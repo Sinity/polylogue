@@ -86,6 +86,44 @@ impl Records {
         .for_kind("row");
         self.account(kind, row, &ROW, Some(table), true);
     }
+
+    /// The row body has its own table-column scope. Framing leaves are observed
+    /// separately so a new envelope field cannot disappear behind that walk.
+    pub fn unknown_table_row_envelope(&mut self, table: &str, record: &Json) {
+        use crate::fields::{ExpectedType as T, Rule};
+        static ENVELOPE: Fields = Fields::new(&[
+            ("t", Rule::Read(T::String)),
+            ("k", Rule::Read(T::Any)),
+            ("h", Rule::Read(T::String)),
+            ("r", Rule::Read(T::Object)),
+        ])
+        .for_kind("row_envelope");
+        self.account(
+            "row envelope",
+            &crate::fields::header(record, &["r"]),
+            &ENVELOPE,
+            Some(table),
+            false,
+        );
+    }
+
+    /// Producer declarations describe columns, including empty tables. Column
+    /// names and SQL type declarations remain values, never observation paths.
+    pub fn table_metadata(&mut self, table: &str, metadata: &Json) {
+        use crate::fields::{ExpectedType as T, Rule};
+        static METADATA: Fields = Fields::new(&[
+            ("columns", Rule::Read(T::Array)),
+            ("columns[].cid", Rule::Read(T::Number)),
+            ("columns[].name", Rule::Read(T::String)),
+            ("columns[].declared_type", Rule::Read(T::String)),
+            ("columns[].not_null", Rule::Read(T::Boolean)),
+            ("columns[].primary_key", Rule::Read(T::Number)),
+            ("columns[].hidden", Rule::Read(T::Number)),
+            ("without_rowid", Rule::Read(T::Boolean)),
+        ])
+        .for_kind("table_metadata");
+        self.account("table metadata", metadata, &METADATA, Some(table), false);
+    }
     /// A row disappearance carries table identity and framing fields rather
     /// than a replacement sample of that table's columns.
     pub fn unknown_table_gone(&mut self, table: &str, record: &Json) {

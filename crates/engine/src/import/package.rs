@@ -96,9 +96,6 @@ fn expand(
             if !member.is_file() {
                 continue;
             }
-            if member.enclosed_name().is_none() {
-                return Err(std::io::Error::other("container member has an unsafe path"));
-            }
             let name = member.name_raw().to_vec();
             let expected = member.size();
             let mut decoded = tempfile::NamedTempFile::new_in(scratch)?;
@@ -134,13 +131,6 @@ fn expand(
                 continue;
             }
             let name = entry.path()?.into_owned();
-            if name.is_absolute()
-                || name
-                    .components()
-                    .any(|c| matches!(c, std::path::Component::ParentDir))
-            {
-                return Err(std::io::Error::other("container member has an unsafe path"));
-            }
             let mut member = tempfile::NamedTempFile::new_in(scratch)?;
             std::io::copy(&mut entry, &mut member)?;
             member.rewind()?;

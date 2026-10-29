@@ -7,7 +7,11 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "multimodal_text.content.parts[].name": 2,
+      "node.children": 1,
+      "node.children[]": 1
+    }
   },
   "output": {
     "background": [],
@@ -48,7 +52,10 @@
           "id": "chatgpt:duplicate",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "chatgpt:native-occurrences"
+          "session": "chatgpt:native-occurrences",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       },
@@ -72,7 +79,10 @@
           "id": "chatgpt:duplicate",
           "parent": "chatgpt:duplicate",
           "role": "assistant",
-          "session": "chatgpt:native-occurrences"
+          "session": "chatgpt:native-occurrences",
+          "attrs": {
+            "metadata": {}
+          }
         },
         "offset": 3
       }

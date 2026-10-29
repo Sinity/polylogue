@@ -167,16 +167,3 @@ pub(crate) fn require_range(
     }
     Ok(())
 }
-
-pub(crate) fn require_present(
-    conn: &Connection,
-    schema: &str,
-    input: &str,
-    chain: Option<i64>,
-) -> Result<()> {
-    let exists:bool=conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {schema}revision WHERE input=?1 AND (?2 IS NULL OR chain=?2))"),rusqlite::params![input,chain],|r|r.get(0))?;
-    if !exists {
-        return Err(StoreError::NotFound(format!("stored input {input}")));
-    }
-    Ok(())
-}

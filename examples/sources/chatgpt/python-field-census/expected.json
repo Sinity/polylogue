@@ -7,7 +7,12 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "node.children": 1,
+      "node.children[]": 1,
+      "text.end_turn": 1,
+      "text.update_time": 1
+    }
   },
   "output": {
     "background": [],
@@ -16,20 +21,25 @@
       {
         "at": "1970-01-01T00:00:01Z",
         "data": {
+          "title": "Field census",
+          "create_time": 1.0,
+          "update_time": 1.0,
+          "moderation_results": [],
+          "current_node": "node-1",
+          "plugin_ids": [],
+          "conversation_id": "field-census-v1",
+          "conversation_template_id": "synthetic-conversation_template_id",
+          "gizmo_id": "synthetic-gizmo_id",
+          "is_archived": false,
+          "safe_urls": [],
+          "default_model_slug": "synthetic-default_model_slug",
+          "id": "field-census-v1",
           "async_status": "synthetic-async_status",
           "blocked_urls": [],
           "context_scopes": [],
-          "conversation_id": "field-census-v1",
           "conversation_origin": "synthetic-conversation_origin",
-          "conversation_template_id": "synthetic-conversation_template_id",
-          "create_time": 1.0,
-          "current_node": "node-1",
-          "default_model_slug": "synthetic-default_model_slug",
           "disabled_tool_ids": [],
-          "gizmo_id": "synthetic-gizmo_id",
           "gizmo_type": "synthetic-gizmo_type",
-          "id": "field-census-v1",
-          "is_archived": false,
           "is_do_not_remember": false,
           "is_read_only": false,
           "is_starred": false,
@@ -37,15 +47,10 @@
           "is_temporary": false,
           "memory_scope": "synthetic-memory_scope",
           "messages": [],
-          "moderation_results": [],
           "name": "synthetic-name",
           "owner": "synthetic-owner",
-          "plugin_ids": [],
-          "safe_urls": [],
           "shared_conversation_id": "synthetic-shared_conversation_id",
           "sugar_item_id": "synthetic-sugar_item_id",
-          "title": "Field census",
-          "update_time": 1.0,
           "uuid": "synthetic-uuid",
           "voice": "synthetic-voice"
         },
@@ -90,7 +95,63 @@
           },
           "role": "assistant",
           "session": "chatgpt:field-census-v1",
-          "stop_reason": "max_tokens"
+          "stop_reason": "max_tokens",
+          "attrs": {
+            "metadata": {
+              "_cite_metadata": [],
+              "ada_visualizations": [],
+              "aggregate_result": {},
+              "args": {},
+              "async_task_id": "synthetic-async_task_id",
+              "async_task_title": "synthetic-async_task_title",
+              "async_task_type": "synthetic-async_task_type",
+              "attachments": [],
+              "canvas": {},
+              "citations": [],
+              "command": "synthetic-command",
+              "content_references": [],
+              "conversation_context_citation_metadata": [],
+              "dalle": {},
+              "default_model_slug": "synthetic-conversation-default-slug",
+              "durationMs": 1.0,
+              "duration_ms": 1.0,
+              "finish_details": {
+                "type": "max_tokens"
+              },
+              "finished_duration_sec": 1.0,
+              "finished_text": "synthetic-finished_text",
+              "image_results": [],
+              "initial_text": "synthetic-initial_text",
+              "inline_cot_expandable_content": [],
+              "is_visually_hidden_from_conversation": false,
+              "jit_plugin_data": {},
+              "model_effort": "synthetic-model_effort",
+              "name": "synthetic-name",
+              "reasoning_effort": "synthetic-reasoning_effort",
+              "reasoning_end_time": 1.0,
+              "reasoning_start_time": 1.0,
+              "reasoning_title": "synthetic-reasoning_title",
+              "request_id": "synthetic-request_id",
+              "search_display_string": "synthetic-search_display_string",
+              "search_queries": [],
+              "search_result_groups": [],
+              "selected_sources": [],
+              "targeted_reply": {
+                "text": "the earlier line the user quoted"
+              },
+              "targeted_reply_label": "Replying to",
+              "thinking_effort": "synthetic-thinking_effort",
+              "user_context_message_data": {}
+            },
+            "weight": 1.0,
+            "channel": "synthetic-channel",
+            "author.metadata": {
+              "is_system_initiated_conversation": false,
+              "real_author": "synthetic-real_author",
+              "sonicberry_model_id": "synthetic-sonicberry_model_id",
+              "sonicberry_source": "synthetic-sonicberry_source"
+            }
+          }
         },
         "offset": 3
       }

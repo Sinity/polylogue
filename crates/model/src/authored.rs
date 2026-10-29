@@ -33,6 +33,7 @@ pub struct PreparedRequest {
 /// an entity-deduplicated request's identity and original outcome.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AuthoredEffect {
+    pub variants: crate::VariantEffect,
     pub notes: Vec<NoteRevision>,
     pub withdrawals: Vec<Withdrawal>,
     pub settings: Vec<Setting>,
@@ -54,6 +55,7 @@ pub struct Withdrawal {
     pub machine: String,
     pub author: Author,
     pub created_at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub withdraws: Vec<String>,
 }
@@ -69,6 +71,7 @@ pub struct Setting {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct KeptResult {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub query: String,
     pub ran_at: Timestamp,
@@ -77,8 +80,10 @@ pub struct KeptResult {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DeliveryEvent {
+    pub request: String,
     pub what: DeliveryOutcome,
     pub at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

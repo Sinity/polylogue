@@ -23,7 +23,8 @@
         },
         "output_file": "/tmp/task-bg.output",
         "session": "claude-code:claude-normalization-main",
-        "task_id": "task-bg"
+        "task_id": "task-bg",
+        "result_at": "2026-07-01T10:00:09Z"
       }
     ],
     "blobs": [],

@@ -192,14 +192,14 @@ impl Inner {
                 parsed.push(item.batch);
             }
         }
-        if !parsed.is_empty() {
-            if let Err(error) = self.write(parsed.iter()) {
-                let reason = error.to_string();
-                return stored
-                    .into_iter()
-                    .map(|_| Err(StoreError::Invalid(reason.clone())))
-                    .collect();
-            }
+        if !parsed.is_empty()
+            && let Err(error) = self.write(parsed.iter())
+        {
+            let reason = error.to_string();
+            return stored
+                .into_iter()
+                .map(|_| Err(StoreError::Invalid(reason.clone())))
+                .collect();
         }
         stored.into_iter().map(Ok).collect()
     }
@@ -268,7 +268,8 @@ impl Inner {
             let chain = chain
                 .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
             crate::fault::check("import.rows", &b.input.id)?;
-            let already_stored = again || matches!(b.change, Change::Unchanged);
+            let already_stored =
+                again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,

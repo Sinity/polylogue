@@ -24,7 +24,25 @@
       "progress/bash_progress: progress tick; the tool's own result supersedes it": 1,
       "system: system record without a subtype": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "agent-color.color": 1,
+      "agent-color.sessionId": 1,
+      "agent-color.type": 1,
+      "atis-latch.atis": 1,
+      "atis-latch.sessionId": 1,
+      "atis-latch.type": 1,
+      "brand-new-record.sessionId": 1,
+      "brand-new-record.type": 1,
+      "mode.mode": 1,
+      "mode.sessionId": 1,
+      "mode.type": 1,
+      "progress/bash_progress.data.output": 1,
+      "progress/bash_progress.data.type": 1,
+      "progress/bash_progress.sessionId": 1,
+      "progress/bash_progress.type": 1,
+      "system.sessionId": 1,
+      "system.type": 1
+    }
   },
   "output": {
     "background": [
@@ -116,6 +134,23 @@
           720
         ],
         "session": "claude-code:s1"
+      },
+      {
+        "session": "claude-code:s1",
+        "kind": "agent_progress",
+        "range": [
+          721,
+          835
+        ],
+        "data": {
+          "type": "progress",
+          "sessionId": "s1",
+          "parentToolUseID": "toolu_9",
+          "data": {
+            "type": "agent_progress",
+            "agentId": "ab12"
+          }
+        }
       },
       {
         "data": {

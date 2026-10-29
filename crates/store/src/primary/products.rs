@@ -76,6 +76,9 @@ pub enum Product {
         reset: bool,
     },
     Request(PreparedRequest),
+    WorkSnapshot {
+        snapshot: polylogue_model::work_products::WorkSnapshot,
+    },
     Coverage(polylogue_model::capture::Coverage),
 }
 
@@ -90,7 +93,11 @@ impl Product {
             | Self::Background { reading, .. }
             | Self::Repository { reading, .. }
             | Self::ParseProgress { reading, .. } => Some(reading),
-            Self::Input { .. } | Self::Blob(_) | Self::Request(_) | Self::Coverage(_) => None,
+            Self::Input { .. }
+            | Self::Blob(_)
+            | Self::Request(_)
+            | Self::Coverage(_)
+            | Self::WorkSnapshot { .. } => None,
         }
     }
 }

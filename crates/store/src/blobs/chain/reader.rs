@@ -33,9 +33,6 @@ impl Cursor {
     pub fn forward(end: u64) -> Self {
         Self::range(0, end)
     }
-    pub fn forward_range(start: u64, end: u64) -> Self {
-        Self::range(start, end)
-    }
     pub fn range(position: u64, end: u64) -> Self {
         Self {
             position,

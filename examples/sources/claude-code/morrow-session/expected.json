@@ -8,7 +8,16 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "assistant.entrypoint": 6,
+      "assistant.message.stop_sequence": 6,
+      "assistant.message.type": 6,
+      "assistant.userType": 6,
+      "user.entrypoint": 6,
+      "user.promptId": 3,
+      "user.promptSource": 3,
+      "user.userType": 6
+    }
   },
   "output": {
     "background": [],
