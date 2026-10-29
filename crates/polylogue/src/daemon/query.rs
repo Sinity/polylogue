@@ -47,7 +47,7 @@ impl From<QueryError> for Failure {
         Failure {
             kind: e.kind().into(),
             message: e.to_string(),
-            detail: serde_json::to_value(&e).ok(),
+            detail: e.detail(),
         }
     }
 }

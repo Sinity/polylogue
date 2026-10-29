@@ -1324,3 +1324,14 @@ fn fixture_context(
         clock.day,
     ))
 }
+
+#[test]
+fn shared_query_diagnostics_keep_correction_and_byte_position_at_the_operation_boundary() {
+    let error=polylogue_query::parse("repo:"morrow").unwrap_err();
+    let failure=Failure::from(error);
+    assert_eq!(failure.kind,"invalid_query");
+    let shared=crate::protocol::failure(&failure.kind,failure.message,failure.detail.as_ref());
+    assert_eq!(shared.position.unwrap().offset,5);
+    assert_eq!(shared.suggestion.as_deref(),Some(&serde_json::json!("repo:"morrow"")));
+    assert!(polylogue_query::parse("repo:"morrow"").is_ok());
+}

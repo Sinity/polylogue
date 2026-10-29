@@ -120,6 +120,19 @@ impl QueryError {
         }
     }
 
+    /// Structured diagnostics preserve the shared language fields at the
+    /// transport boundary instead of hiding them inside an enum wrapper.
+    pub fn detail(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::Language { error, diagnostic } => {
+                let mut value = serde_json::to_value(error).ok()?;
+                value["diagnostic"] = serde_json::Value::String(diagnostic.clone());
+                Some(value)
+            }
+            _ => serde_json::to_value(self).ok(),
+        }
+    }
+
     /// The corrected query that runs as given, when one could be formed.
     pub fn suggestion(&self) -> Option<&str> {
         match self {
