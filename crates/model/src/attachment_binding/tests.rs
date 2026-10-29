@@ -16,7 +16,9 @@ fn record() -> MessageRecord {
         "source_version":source_version, "block_count":2, "block_ordinals":[0,1],
         "message":message,
         "bindings":[{"source_version":source_version,
-            "namespace":{"input":"message-source","chain":2,"import_id":"original-import"},"block":1,"attachment":0,"source_id":"opaque:source:id","candidates":[{
+            "namespace":{"input":"message-source","chain":2,"import_id":"original-import"},
+            "exported_from":{"input":"current-message-source","chain":4,"import_id":"current-import"},
+            "prior_exports":[{"input":"supplied-prior-source","chain":1,"import_id":"supplied-prior-import"}],"block":1,"attachment":0,"source_id":"opaque:source:id","candidates":[{
             "hash":BlobHash::of(b"actual candidate"),"size":16,"sources":[{
                 "namespace":{"input":"original-message-source","chain":7,"import_id":"historical-import"},
                 "input":"historical-input","chain":3,"source_version":"historical-version",
@@ -73,6 +75,12 @@ fn binding_slots_refuse_other_versions_blocks_indexes_ids_and_blob_overrides() {
         "source_namespace_input",
         "source_namespace_chain",
         "source_namespace_import",
+        "export_input",
+        "export_chain",
+        "export_import",
+        "prior_input",
+        "prior_chain",
+        "prior_import",
     ] {
         let mut value = record();
         match invalid {
@@ -114,6 +122,12 @@ fn binding_slots_refuse_other_versions_blocks_indexes_ids_and_blob_overrides() {
                 .unwrap()
                 .import_id
                 .clear(),
+            "export_input" => value.bindings[0].exported_from.input.clear(),
+            "export_chain" => value.bindings[0].exported_from.chain = 0,
+            "export_import" => value.bindings[0].exported_from.import_id.clear(),
+            "prior_input" => value.bindings[0].prior_exports[0].input.clear(),
+            "prior_chain" => value.bindings[0].prior_exports[0].chain = 0,
+            "prior_import" => value.bindings[0].prior_exports[0].import_id.clear(),
             _ => unreachable!(),
         }
         assert_eq!(
@@ -242,4 +256,50 @@ fn unknown_candidates_keep_their_required_namespace_and_unknown_original_sources
         .unwrap()
         .remove("namespace");
     assert!(serde_json::from_value::<MessageRecord>(raw).is_err());
+}
+
+#[test]
+fn complete_claim_identity_preserves_conflicts_and_supplied_export_contexts() {
+    let original = record();
+    for difference in ["bytes", "export", "prior"] {
+        let mut value = original.clone();
+        let mut another = value.bindings[0].clone();
+        match difference {
+            "bytes" => another.candidates[0].hash = BlobHash::of(b"conflicting claim"),
+            "export" => another.exported_from.import_id = "another-current-import".into(),
+            "prior" => another.prior_exports[0].import_id = "another-supplied-prior".into(),
+            _ => unreachable!(),
+        }
+        value.bindings.push(another);
+        assert!(value.validate().is_ok(), "{difference}");
+        let restored: MessageRecord =
+            serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(restored, value);
+        assert_eq!(restored.bindings.len(), 2);
+        assert_eq!(
+            restored.bindings[0].namespace,
+            restored.bindings[1].namespace
+        );
+        assert_eq!(
+            restored.bindings[0].prior_exports,
+            original.bindings[0].prior_exports
+        );
+        let duplicate = value.bindings[1].clone();
+        value.bindings.push(duplicate);
+        assert_eq!(value.validate(), Err(BundleError::InvalidAttachmentBinding));
+    }
+    let mut unknown = original;
+    unknown.bindings[0].candidates.clear();
+    let mut another = unknown.bindings[0].clone();
+    another.exported_from.import_id = "another-unknown-export".into();
+    unknown.bindings.push(another);
+    assert!(unknown.validate().is_ok());
+    let restored: MessageRecord =
+        serde_json::from_slice(&serde_json::to_vec(&unknown).unwrap()).unwrap();
+    assert_eq!(restored, unknown);
+    assert_eq!(restored.bindings[0].prior_exports.len(), 1);
+    assert_ne!(
+        restored.bindings[0].namespace,
+        restored.bindings[0].exported_from
+    );
 }
