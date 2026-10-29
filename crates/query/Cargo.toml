@@ -14,7 +14,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 jiff.workspace = true
-strsim.workspace = true
 
 [lints]
 workspace = true

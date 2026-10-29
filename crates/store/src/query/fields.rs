@@ -1,10 +1,8 @@
 //! Field expressions and product-specific predicate rules.
 use super::ast::Unit;
+use super::compile::ColumnReference;
 use super::compile::custom_fields::{self as custom, Custom};
-use super::compile::{ColKind, ColumnReference};
-use Kind::*;
 use Unit::*;
-use polylogue_model::{BlockKind, CallOutcome, Role, SessionKind, WrittenBy};
 pub use polylogue_query::fields::{
     Kind, SESSION_OUTCOMES, construct, has_session, names, relation,
 };
