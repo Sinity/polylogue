@@ -194,9 +194,11 @@ fn every_client_answers_the_same_request_identically() {
         port: 8765,
     });
     for (name, args) in ASKED {
+        let command = command(name).unwrap();
+        let words = command.cli_words();
         let mut argv = vec!["polylogue"];
-        if command(name).unwrap().cli != Cli::NoSubcommand {
-            argv.extend(name.split(' '));
+        if command.cli != Cli::NoSubcommand {
+            argv.extend(words.iter().map(String::as_str));
         }
         argv.extend(*args);
         let (c, values) = crate::cli::parse(&argv).unwrap();
