@@ -19,32 +19,26 @@ fn admission(d: &Daemon, request: PolicyRequest) -> Authorization {
     if d.archive.is_primary() {
         return denied();
     }
-    let Ok(clock) = d.query_clock() else {
+    let Ok(context) = operation(d) else {
         return denied();
     };
+    let clock = &context.clock;
     let Ok(reader) = d.reads.reader() else {
         return denied();
     };
-    let Ok(Some(checkpoint)) = reader.signal_checkpoint(d.config.requests.machine()) else {
+    let Ok(Some(checkpoint)) = reader.signal_checkpoint(&context.machine) else {
         return denied();
     };
-    let Ok(settings) = reader.settings_snapshot(d.config.requests.machine()) else {
+    let Ok(attention) = local_attention(&reader, &context) else {
         return denied();
     };
-    let Ok((quiet, _)) = settings.standalone_attention() else {
-        return denied();
-    };
-    let Ok(catalog) = reader.settings_catalog(d.config.requests.machine()) else {
-        return denied();
-    };
-    let Ok(policy_bytes) = serde_json::to_vec(&catalog) else {
-        return denied();
-    };
-    let policy = blake3::hash(&policy_bytes).to_hex().to_string();
+    let policy = attention.identity;
+
     let calendar = DayCalendar::new(clock.day.clone());
     let now = clock.now.as_millisecond();
-    let quiet_until = quiet
-        .and_then(|[from, to]| calendar.quiet_until(now, shared_signals::QuietHours { from, to }));
+    let quiet_until = attention
+        .quiet
+        .and_then(|hours| calendar.quiet_until(now, hours));
     let mut outboxes = BTreeMap::new();
     if reader
         .visit_signals(|value| {
@@ -125,8 +119,11 @@ fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held>
             "notification ownership transfer requires the confirmed producer outbox".into(),
         );
     }
-    let clock = d.query_clock().map_err(Held::from)?;
-    let previous = load(d)?;
+    let context = operation(d)?;
+    let reader = d.reads.reader().map_err(|e| e.to_string())?;
+    let previous = reader
+        .signal_checkpoint(&context.machine)
+        .map_err(|e| e.to_string())?;
     let prior = previous
         .as_ref()
         .map(Checkpoint::identity)
@@ -134,8 +131,16 @@ fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held>
         .map_err(|e| e.to_string())?;
     let mut checkpoint = match previous {
         Some(value) => value,
-        None => initial(d, &clock)?,
+        None => {
+            let attention = if d.archive.is_primary() {
+                None
+            } else {
+                Some(local_attention(&reader, &context)?)
+            };
+            initial(&context, attention.as_ref())?
+        }
     };
+    drop(reader);
     checkpoint.notifications = Some(update.state.clone());
     let events = update
         .receipts
@@ -143,7 +148,7 @@ fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held>
         .cloned()
         .map(|receipt| Event::Desktop { receipt })
         .collect();
-    Ok(persist(d, prior, checkpoint, vec![], events)?.1)
+    Ok(persist(d, &context, prior, checkpoint, vec![], events)?.1)
 }
 
 fn recover(

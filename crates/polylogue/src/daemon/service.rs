@@ -84,19 +84,6 @@ impl Daemon {
         Ok(Arc::new(context))
     }
 
-    pub(crate) fn query_clock(&self) -> Result<query_language::time::Clock, Response> {
-        let day = self.config.standalone_day().map_err(|_| {
-            error(
-                "not_yet_available",
-                "the primary owner day context has not been obtained",
-            )
-        })?;
-        Ok(query_language::time::Clock::new(
-            self.config.requests.now().into(),
-            day.clone(),
-        ))
-    }
-
     pub(crate) fn ready_call(
         &self,
         request: &command_surface::RunnableRequest,

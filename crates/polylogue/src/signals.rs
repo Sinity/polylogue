@@ -67,28 +67,53 @@ fn report(d: &Daemon, hold: Held) {
     }
 }
 
-fn initial(d: &Daemon, clock: &query_language::time::Clock) -> Result<Checkpoint, String> {
-    let calendar = DayCalendar::new(clock.day.clone());
-    let host = if d.archive.is_primary() {
-        None
-    } else {
-        let reader = d.reads.reader().map_err(|e| e.to_string())?;
-        let settings = reader
-            .settings_snapshot(d.config.requests.machine())
-            .map_err(|e| e.to_string())?;
-        let (quiet, budget) = settings.standalone_attention().map_err(|e| e.to_string())?;
-        Some(HostPolicy::new(
+fn operation(d: &Daemon) -> Result<Arc<crate::operation::Context>, Held> {
+    d.operation_context(&crate::operation::Context::worker_authorship(
+        "polylogue-signals",
+    ))
+    .map_err(Held::from)
+}
+struct LocalAttention {
+    quiet: Option<shared_signals::QuietHours>,
+    budget: usize,
+    identity: String,
+}
+fn local_attention(
+    reader: &polylogue_store::Reader<'_>,
+    context: &crate::operation::Context,
+) -> Result<LocalAttention, String> {
+    let catalog = reader
+        .settings_catalog(&context.machine)
+        .map_err(|e| e.to_string())?;
+    let encoded =
+        serde_json::to_vec(&(context.clock.day.wire(), &catalog)).map_err(|e| e.to_string())?;
+    let (quiet, budget) = polylogue_model::settings::Snapshot::new(catalog)
+        .standalone_attention()
+        .map_err(|e| e.to_string())?;
+    Ok(LocalAttention {
+        quiet: quiet.map(|[from, to]| shared_signals::QuietHours { from, to }),
+        budget,
+        identity: blake3::hash(&encoded).to_hex().to_string(),
+    })
+}
+fn initial(
+    context: &crate::operation::Context,
+    attention: Option<&LocalAttention>,
+) -> Result<Checkpoint, String> {
+    let calendar = DayCalendar::new(context.clock.day.clone());
+    let host = attention.map(|a| {
+        HostPolicy::new(
             InterruptBudget {
-                per_hour: budget,
+                per_hour: a.budget,
                 handoffs: vec![],
             },
-            quiet.map(|[from, to]| shared_signals::QuietHours { from, to }),
-        ))
-    };
+            a.quiet,
+        )
+    });
     Ok(Checkpoint {
-        owner: d.config.requests.machine().into(),
+        owner: context.machine.clone(),
         evaluator: Evaluator::new(
-            clock.now.as_millisecond(),
+            context.clock.now.as_millisecond(),
             vec![],
             Policy::default(),
             &calendar,
@@ -114,6 +139,7 @@ fn load(d: &Daemon) -> Result<Option<Checkpoint>, String> {
 /// worker acknowledgements are released only after the request is readable.
 fn persist(
     d: &Daemon,
+    context: &crate::operation::Context,
     prior: Option<polylogue_model::BlobHash>,
     checkpoint: Checkpoint,
     outbox: Vec<Outbox>,
@@ -128,10 +154,7 @@ fn persist(
     };
     let body = serde_json::to_vec(&commit).map_err(|e| e.to_string())?;
     let id = format!("signal:{}", blake3::hash(&body).to_hex());
-    let request = d
-        .config
-        .requests
-        .request(id.clone(), UserWrite::SignalCommit(Box::new(commit)));
+    let request = context.request(id.clone(), UserWrite::SignalCommit(Box::new(commit)));
     let outcome = writes.user(request).map_err(|e| e.to_string())?;
     Ok((id, !outcome.pending))
 }
@@ -142,10 +165,19 @@ struct Tick {
 }
 
 fn tick(d: &Daemon) -> Result<Tick, Held> {
-    let clock = d.query_clock().map_err(Held::from)?;
+    let context = operation(d)?;
+    let clock = &context.clock;
+    let reader = d.reads.reader().map_err(|e| e.to_string())?;
+    let attention = if d.archive.is_primary() {
+        None
+    } else {
+        Some(local_attention(&reader, &context)?)
+    };
     let now = clock.now.as_millisecond();
     let calendar = DayCalendar::new(clock.day.clone());
-    let previous = load(d)?;
+    let previous = reader
+        .signal_checkpoint(&context.machine)
+        .map_err(|e| e.to_string())?;
     let prior = previous
         .as_ref()
         .map(Checkpoint::identity)
@@ -153,7 +185,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
         .map_err(|e| e.to_string())?;
     let mut checkpoint = match previous {
         Some(value) => value,
-        None => initial(d, &clock)?,
+        None => initial(&context, attention.as_ref())?,
     };
     let previous_rules = checkpoint.rules.clone();
     let previous_host = checkpoint.host.clone();
@@ -162,8 +194,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
     if now < checkpoint.evaluator.now() {
         return Err("clock precedes the durable evaluator checkpoint".into());
     }
-    let reader = d.reads.reader().map_err(|e| e.to_string())?;
-    let notes = crate::daemon::query::notes::list(&reader, "kind:signal", &clock)
+    let notes = crate::daemon::query::notes::list(&reader, "kind:signal", &context)
         .map_err(|e| e.to_string())?;
     let mut active = Vec::new();
     let mut unusable = Vec::new();
@@ -208,12 +239,11 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
     }
     checkpoint.rules = active;
     if let Some(host) = &mut checkpoint.host {
-        let settings = reader
-            .settings_snapshot(d.config.requests.machine())
-            .map_err(|e| e.to_string())?;
-        let (quiet, budget) = settings.standalone_attention().map_err(|e| e.to_string())?;
-        host.quiet_hours = quiet.map(|[from, to]| shared_signals::QuietHours { from, to });
-        host.budget.per_hour = budget;
+        let attention = attention
+            .as_ref()
+            .ok_or("primary cannot apply a local attention policy")?;
+        host.quiet_hours = attention.quiet;
+        host.budget.per_hour = attention.budget;
     }
     drop(reader);
     let output = if d.archive.is_primary() {
@@ -330,7 +360,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
             next,
         });
     }
-    let (_, confirmed) = persist(d, prior, checkpoint, outbox, vec![])?;
+    let (_, confirmed) = persist(d, &context, prior, checkpoint, outbox, vec![])?;
     if !confirmed {
         return Err("signal checkpoint is durably pending canonical confirmation".into());
     }

@@ -49,6 +49,10 @@ fn request(id: &str, commit: Commit) -> UserRequest {
     UserRequest {
         id: id.into(),
         machine: "host".into(),
+        authorship: polylogue_model::authorship::Authorship {
+            author: Author::Script("signal-fixture".into()),
+            via: polylogue_model::authorship::Channel::Daemon,
+        },
         at: Timestamp::from_unix_ms(100).unwrap(),
         write: UserWrite::SignalCommit(Box::new(commit)),
     }

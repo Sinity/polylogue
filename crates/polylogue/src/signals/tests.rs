@@ -198,17 +198,21 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
     let unknown_id = unknown.metadata.delivery.id.clone();
     let mut state = NotificationState::default();
     let began = state.begin(unknown.metadata.notice.clone(), Route::Dbus);
-    let clock = fixture.daemon.query_clock().unwrap();
+    let context = operation(&fixture.daemon).unwrap();
+    let reader = fixture.daemon.reads.reader().unwrap();
+    let attention = local_attention(&reader, &context).unwrap();
     let mut checkpoint = load(&fixture.daemon)
         .unwrap()
-        .unwrap_or_else(|| initial(&fixture.daemon, &clock).unwrap());
+        .unwrap_or_else(|| initial(&context, Some(&attention)).unwrap());
     let prior = load(&fixture.daemon)
         .unwrap()
         .map(|c| c.identity().unwrap());
     checkpoint.notifications = Some(state);
+    drop(reader);
     assert!(
         persist(
             &fixture.daemon,
+            &context,
             prior,
             checkpoint,
             vec![ready, unknown],
@@ -310,25 +314,19 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
             kind: polylogue_model::NoteKind::Signal,
             key: None,
             value: Some(json!({"name":"completion-wake","query":"sessions"}).to_string()),
-            author: polylogue_model::Author::Operator,
             targets: vec![],
             relations: vec![],
             revises: None,
             valid_until: None,
         },
     };
+    let context = operation(&fixture.daemon).unwrap();
     fixture
         .daemon
         .writes
         .as_ref()
         .unwrap()
-        .user(
-            fixture
-                .daemon
-                .config
-                .requests
-                .request("cue:rule".into(), write),
-        )
+        .user(context.request("cue:rule".into(), write))
         .unwrap();
     observe(|| {
         fixture.daemon.signals.lock().unwrap()["rules"]
