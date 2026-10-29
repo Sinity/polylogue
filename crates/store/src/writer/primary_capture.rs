@@ -247,6 +247,9 @@ impl Inner {
                 .map(|blob| (blob.hash, blob.size))
                 .unwrap_or_else(|| (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64));
             let captured = CapturedInput {
+                generation: None,
+                raw_total: None,
+                raw_predecessor: None,
                 raw_range: batch
                     .new_blob
                     .as_ref()

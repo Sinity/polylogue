@@ -10,6 +10,11 @@ pub use acquisition::{
 };
 pub mod products;
 pub mod replay;
+pub mod raw_acquisition;
+pub use raw_acquisition::{
+    DatabaseSnapshotToken, FileSnapshot, FileTime, RawAcquisitionCursor, RawAcquisitionProof,
+    RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
+};
 pub use replay::{
     ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeFactContext, NativeKind,
     NativeSource, ProjectionAvailability, ProjectionCoverage, ProjectionIdentity, RawInputCoverage,
