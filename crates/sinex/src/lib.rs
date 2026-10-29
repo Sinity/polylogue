@@ -282,6 +282,12 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::PendingCapture>> {
         Ok(self.pending_captures()?)
     }
+    fn capture(
+        &self,
+        identity: &str,
+    ) -> polylogue_store::Result<polylogue_store::primary::Capture> {
+        Ok(self.capture(identity)?)
+    }
     fn complete_captures(
         &self,
         identities: &[String],
@@ -309,7 +315,7 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(
-            &polylogue_model::authored::PreparedRequest,
+            &polylogue_model::authored::PendingAuthored,
         ) -> polylogue_store::Result<()>,
     ) -> polylogue_store::Result<()> {
         self.visit_pending_requests(visit)
@@ -333,19 +339,34 @@ impl polylogue_store::primary::Sinex for Sinex {
         position: i64,
         applied: i64,
     ) -> polylogue_store::Result<()> {
-        Ok(self
+        let receipts = self.with(async |client| client.recorded(identities).await)?;
+        let queue = self
             .spool
             .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .discard_confirmed(identities, position, applied)?)
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
+        let mut admitted = false;
+        for receipt in receipts.into_values() {
+            if let Some(entry) = queue.get(&receipt.frame)? {
+                admitted |= matches!(
+                    entry.kind,
+                    spool::Kind::Events | spool::Kind::ReplaySequence
+                ) && receipt.refusal.is_none()
+                    && receipt.commit_seq.is_some();
+                queue.acknowledge(receipt)?;
+            }
+        }
+        if admitted {
+            queue.retire(applied)?;
+        } else {
+            queue.discard_confirmed(identities, position, applied)?;
+        }
+        Ok(())
     }
     fn prepare_reading(
         &self,
         root: &str,
         version: &str,
-        visit: &mut dyn FnMut(
-            &mut dyn FnMut(polylogue_store::primary::ProductWrite) -> polylogue_store::Result<()>,
-        ) -> polylogue_store::Result<()>,
+        visit: &mut polylogue_store::primary::ReadingProducts<'_>,
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
         self.prepare_reading(root, version, visit)
     }

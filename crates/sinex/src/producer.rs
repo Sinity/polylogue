@@ -1,6 +1,9 @@
 //! Durable acquisition and product preparation for the primary writer.
 use crate::{Error, Result, Sinex};
-use polylogue_model::{BlobHash, authored::PreparedRequest};
+use polylogue_model::{
+    BlobHash,
+    authored::{PendingAuthored, PreparedRequest},
+};
 use polylogue_store::primary::{
     Capture, CapturedInput, Material, PendingCapture, PreparedInput, PreparedWrite, Product,
     ProductWrite, SourceLocation,
@@ -59,17 +62,30 @@ impl Sinex {
             observation.remove("id");
             observation.remove("seen_at");
         }
-        let identity = format!(
-            "capture:{}",
+        let source = match &captured {
+            Capture::Input(input) => serde_json::to_vec(&input.input)?,
+            Capture::Blob { hash, .. } => serde_json::to_vec(hash)?,
+        };
+        let prefix = format!("capture:{}:", blake3::hash(&source).to_hex());
+        let desired = format!(
+            "{prefix}{}:",
             blake3::hash(&serde_json::to_vec(&intent)?).to_hex()
         );
-        let queue = self.queue()?;
-        if queue.get(&identity)?.is_some() {
+        let mut latest = None;
+        self.visit_prepared(|_, entry| {
+            if entry.identity.starts_with(&prefix) {
+                latest = Some(entry);
+            }
+            Ok(())
+        })?;
+        if let Some(entry) = latest.filter(|entry| entry.identity.starts_with(&desired)) {
             return Ok(PreparedWrite {
-                identity,
+                identity: entry.identity,
                 pending: true,
             });
         }
+        let identity = format!("{desired}{}", uuid::Uuid::now_v7());
+        let queue = self.queue()?;
         let (input, hash, length, parser, part_index, previous_part) = match &captured {
             Capture::Input(input) => (
                 InputRef {
@@ -104,9 +120,10 @@ impl Sinex {
                 None,
             ),
         };
+        let header = crate::spool::capture_header(&captured);
         let observation = matches!(&captured,Capture::Input(input) if input.rows.extent.is_none());
         let observation_bytes = if observation {
-            Some(serde_json::to_vec(&captured)?)
+            Some(serde_json::to_vec(&header)?)
         } else {
             None
         };
@@ -129,7 +146,7 @@ impl Sinex {
                 part_index: if observation { 0 } else { part_index },
                 previous_part: if observation { None } else { previous_part },
                 manifest: Manifest {
-                    details: [("polylogue_capture".into(), serde_json::to_value(&captured)?)]
+                    details: [("polylogue_capture".into(), serde_json::to_value(&header)?)]
                         .into_iter()
                         .collect(),
                     role: if observation {
@@ -143,8 +160,8 @@ impl Sinex {
             }),
         };
         match observation_bytes {
-            Some(bytes) => queue.prepare_material(frame, bytes.as_slice())?,
-            None => queue.prepare_material(frame, bytes)?,
+            Some(bytes) => queue.prepare_capture(frame, bytes.as_slice(), &captured)?,
+            None => queue.prepare_capture(frame, bytes, &captured)?,
         };
         Ok(PreparedWrite {
             identity,
@@ -159,7 +176,7 @@ impl Sinex {
     ) -> Result<PreparedInput> {
         Ok(PreparedInput::Pending {
             identity: self
-                .prepared_capture(Capture::Input(captured.clone()), bytes)?
+                .prepared_capture(Capture::Input(Box::new(captured.clone())), bytes)?
                 .identity,
         })
     }
@@ -205,13 +222,17 @@ impl Sinex {
         let mut pending = Vec::new();
         self.visit_prepared(|queue,entry|{
             let Some(captured)=entry.capture.clone() else {return Ok(());};
-            let acknowledged=Self::capture_material(queue,&entry)?;
+            let acknowledged=if entry.refused {None} else {Self::capture_material(queue,&entry)?};
             let anchor=acknowledged.as_ref().map(|material|SourceLocation{material:material.id.clone(),anchor:0});
             let material=if matches!(&captured,Capture::Input(input) if input.rows.extent.is_none()) {None} else {acknowledged};
             pending.push(PendingCapture{identity:entry.identity,captured,material,anchor});
             Ok(())
         })?;
         Ok(pending)
+    }
+
+    pub(crate) fn capture(&self, identity: &str) -> Result<Capture> {
+        self.queue()?.capture(identity)
     }
 
     /// Later A→B→A observations get a new operation; retrying the most recent
@@ -256,18 +277,23 @@ impl Sinex {
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
         let queue = self.queue()?;
-        if queue.get(identity)?.is_some() {
-            return Ok(PreparedWrite {
-                identity: identity.into(),
-                pending: true,
-            });
-        }
         let unlocated = writes
             .iter()
             .any(|write| write.location.is_none() && write.parents.is_empty());
         if unlocated {
-            let mut writes = writes.to_vec();
             let observation = format!("{identity}:observation");
+            let mut writes = if queue.get(&observation)?.is_some() {
+                let previous: Vec<ProductWrite> =
+                    serde_json::from_reader(std::io::BufReader::new(queue.body(&observation)?))?;
+                if !same_named_writes(&previous, writes) {
+                    return Err(Error::Invalid(
+                        "named product identity changed immutable facts".into(),
+                    ));
+                }
+                previous
+            } else {
+                writes.to_vec()
+            };
             let body = serde_json::to_vec(&writes)?;
             queue.prepare_material(
                 Ingress::Material {
@@ -281,7 +307,14 @@ impl Sinex {
                         },
                         blob: format!("blake3:{}", blake3::hash(&body).to_hex()),
                         length: body.len() as u64,
-                        parser: "polylogue-products".into(),
+                        parser: if writes
+                            .iter()
+                            .any(|write| matches!(write.product, Product::RestoredRequest { .. }))
+                        {
+                            "polylogue-request-restore".into()
+                        } else {
+                            "polylogue-products".into()
+                        },
                         parser_version: 3,
                         part_index: 0,
                         previous_part: None,
@@ -338,11 +371,13 @@ impl Sinex {
                 && entry.acknowledged
                 && !entry.refused
                 && entry.capture.is_none()
-                && !entry.request
                 && queue.capture_group(&entry.identity)?.is_none()
             {
                 if let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)? {
-                    if material.parser == "polylogue-products" {
+                    if matches!(
+                        material.parser.as_str(),
+                        "polylogue-products" | "polylogue-request-restore"
+                    ) {
                         ready.push(entry.identity);
                     }
                 }
@@ -454,13 +489,41 @@ impl Sinex {
 
     pub(crate) fn visit_pending_requests(
         &self,
-        visit: &mut dyn FnMut(&PreparedRequest) -> polylogue_store::Result<()>,
+        visit: &mut dyn FnMut(&PendingAuthored) -> polylogue_store::Result<()>,
     ) -> polylogue_store::Result<()> {
         Ok(self.visit_prepared(|queue, entry| {
             if entry.request {
-                let request =
-                    serde_json::from_reader(std::io::BufReader::new(queue.body(&entry.identity)?))?;
-                visit(&request).map_err(|error| Error::Invalid(error.to_string()))?;
+                let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)?
+                else {
+                    return Err(Error::Invalid("authored intent has no material".into()));
+                };
+                if material.parser == "polylogue-request" {
+                    let prepared: PreparedRequest = serde_json::from_reader(
+                        std::io::BufReader::new(queue.body(&entry.identity)?),
+                    )?;
+                    visit(&PendingAuthored::Live { prepared }).map_err(Error::Store)?;
+                } else if material.parser == "polylogue-request-restore" {
+                    let writes: Vec<ProductWrite> = serde_json::from_reader(
+                        std::io::BufReader::new(queue.body(&entry.identity)?),
+                    )?;
+                    for write in writes {
+                        if let Product::RestoredRequest {
+                            prepared,
+                            claims,
+                            current,
+                        } = write.product
+                        {
+                            visit(&PendingAuthored::Restore {
+                                prepared,
+                                claims,
+                                current,
+                            })
+                            .map_err(Error::Store)?;
+                        }
+                    }
+                } else {
+                    return Err(Error::Invalid("unknown authored material parser".into()));
+                }
             }
             Ok(())
         })?)
@@ -482,6 +545,7 @@ impl Sinex {
         let mut ready = Vec::new();
         self.visit_prepared(|queue, entry| {
             if entry.request
+                && entry.identity.starts_with("request:")
                 && entry.acknowledged
                 && queue.capture_group(&entry.identity)?.is_none()
             {

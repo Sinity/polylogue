@@ -18,6 +18,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Background { .. } => "polylogue.background",
         Product::Repository { .. } => "polylogue.repository",
         Product::ParseProgress { .. } => "polylogue.parse_progress",
+        Product::RestoredRequest { .. } => "polylogue.request_restore",
         Product::Request(request) => match &request.request.write {
             UserWrite::AddNote { .. }
             | UserWrite::SaveQuery { .. }
@@ -52,6 +53,18 @@ pub(crate) fn key(product: &Product, occurrence: u64) -> Result<String> {
         Product::Repository { facts, .. } => json!([facts.path]),
         Product::ParseProgress { reading, .. } => json!([reading.start]),
         Product::Request(request) => json!([request.request.id]),
+        Product::RestoredRequest {
+            prepared,
+            claims,
+            current,
+        } => json!([
+            prepared.request.id,
+            claims,
+            current.input,
+            current.chain,
+            current.machine,
+            current.actor
+        ]),
         Product::Coverage(coverage) => json!([coverage.machine]),
         Product::WorkSnapshot { snapshot } => {
             json!([snapshot.session_id, snapshot.reducer_version])
@@ -108,6 +121,9 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             json!({"session": facts.session, "task": facts.task_id})
         }
         Product::Repository { facts, .. } => json!({"path": facts.path}),
+        Product::RestoredRequest {
+            prepared, current, ..
+        } => json!({"request":prepared.request.id,"at":current.at,"machine":current.machine}),
         Product::Request(prepared) => {
             let request = &prepared.request;
             let mut value =
@@ -312,6 +328,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.delivery", "request"),
         ("polylogue.delivery_outcome", "request"),
         ("polylogue.request", "request"),
+        ("polylogue.request_restore", "restored_request"),
         ("polylogue.coverage", "coverage"),
         ("polylogue.work_snapshot", "work_snapshot"),
     ];
@@ -381,11 +398,13 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         vec!["record_key".into()]
                     },
                 }),
-                replace_rule: Some(if *product == "request" || *product == "blob" {
-                    ReplaceRule::SuppressRepeat
-                } else {
-                    ReplaceRule::ReplaceWhenNewer
-                }),
+                replace_rule: Some(
+                    if matches!(*product, "request" | "restored_request" | "blob") {
+                        ReplaceRule::SuppressRepeat
+                    } else {
+                        ReplaceRule::ReplaceWhenNewer
+                    },
+                ),
                 time_rule: Some(if *product == "work_snapshot" {
                     TimeRule::Unknown
                 } else {
@@ -424,12 +443,18 @@ pub(crate) fn events(
             let mut payload = payload(&write.product, write.output_index)?;
             let mut source = write.location.clone();
             let session = match &write.product {
-                Product::Session { facts, .. } => Some(facts),
-                Product::WorkSnapshot { snapshot } => snapshot.session.as_ref(),
+                Product::Session { facts, .. } => Some((&facts.id, facts.repo.clone())),
+                Product::WorkSnapshot { snapshot } if !snapshot.retired => Some((
+                    &snapshot.session_id,
+                    snapshot
+                        .session
+                        .as_ref()
+                        .and_then(|session| session.repo.clone()),
+                )),
                 _ => None,
             };
-            if let Some(facts) = session {
-                let mut native = crate::native::Native::new(facts.repo.clone());
+            if let Some((session, repo)) = session {
+                let mut native = crate::native::Native::new(repo);
                 if let Product::WorkSnapshot { snapshot } = &write.product {
                     for evidence in &snapshot.native {
                         native.observe(
@@ -448,7 +473,7 @@ pub(crate) fn events(
                 } in writes
                 {
                     if let Product::Event { facts: event, .. } = product
-                        && event.session.as_ref() == Some(&facts.id)
+                        && event.session.as_ref() == Some(session)
                         && let Some(location) = location
                     {
                         native.observe(

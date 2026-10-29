@@ -119,6 +119,7 @@ fn retired_snapshot_keeps_only_session_identity_and_rejects_erased_metadata() {
         session_id: id.clone(),
         session: None,
         retired: true,
+        unavailable: Vec::new(),
         messages: Vec::new(),
         calls: Vec::new(),
         turns: Vec::new(),

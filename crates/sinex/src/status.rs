@@ -28,6 +28,8 @@ pub struct Status {
     pub prepared_materials: u64,
     pub prepared_writes: u64,
     pub prepared_bytes: u64,
+    pub refused_operations: u64,
+    pub last_refusal: Option<String>,
 }
 
 impl Sinex {
@@ -57,11 +59,32 @@ impl Sinex {
                 health.canonical_publisher,
             )
         };
-        let counts = self
+        let queue = self
             .spool
             .lock()
-            .map_err(|_| crate::Error::Invalid("producer spool panicked".into()))?
-            .counts()?;
+            .map_err(|_| crate::Error::Invalid("producer spool panicked".into()))?;
+        let counts = queue.counts()?;
+        let mut after = None;
+        let mut refused_operations = 0;
+        let mut last = None;
+        loop {
+            let page = queue.pending_after(after, 64)?;
+            if page.is_empty() {
+                break;
+            }
+            for entry in page {
+                after = Some(entry.order);
+                if entry.refused {
+                    refused_operations += 1;
+                    last = Some(entry.identity);
+                }
+            }
+        }
+        let last_refusal = last
+            .map(|identity| queue.acknowledgment(&identity))
+            .transpose()?
+            .flatten()
+            .and_then(|ack| ack.refusal);
         Ok(Status {
             endpoint: self.config.nats.clone(),
             family,
@@ -75,6 +98,8 @@ impl Sinex {
             prepared_materials: counts.0,
             prepared_writes: counts.1,
             prepared_bytes: counts.2,
+            refused_operations,
+            last_refusal,
         })
     }
 }

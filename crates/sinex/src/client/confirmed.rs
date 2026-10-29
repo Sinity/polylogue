@@ -126,10 +126,10 @@ impl Client {
                 )));
             }
             let event = self.full_event(event).await?;
-            ConfirmedChange::Live(crate::products::decode(
+            ConfirmedChange::Live(Box::new(crate::products::decode(
                 &event.event_type,
                 event.payload.expect("complete event"),
-            )?)
+            )?))
         } else {
             ConfirmedChange::Ignored
         };
