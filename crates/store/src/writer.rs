@@ -84,7 +84,7 @@ enum Msg {
     CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
     Capture(String, SyncSender<Result<crate::primary::Capture>>),
     RawAcquisitionCursor(
-        Box<crate::primary::SourceGeneration>,
+        Box<crate::primary::RawAcquisitionQuery>,
         SyncSender<Result<Option<crate::primary::RawAcquisitionCursor>>>,
     ),
     PendingGroupHeaders(
@@ -545,9 +545,9 @@ impl Writer {
     /// Reads a local custody cursor for one exact provider generation.
     pub fn raw_acquisition_cursor(
         &self,
-        generation: crate::primary::SourceGeneration,
+        query: crate::primary::RawAcquisitionQuery,
     ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        raw_acquisition_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, generation)
+        raw_acquisition_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, query)
     }
 
     /// Pages original group membership without hydrating parsed facts.
@@ -769,9 +769,9 @@ impl WriterSender {
     /// As [`Writer::raw_acquisition_cursor`].
     pub fn raw_acquisition_cursor(
         &self,
-        generation: crate::primary::SourceGeneration,
+        query: crate::primary::RawAcquisitionQuery,
     ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        raw_acquisition_cursor_via(&self.0, generation)
+        raw_acquisition_cursor_via(&self.0, query)
     }
 
     /// As [`Writer::pending_group_headers`].
@@ -815,10 +815,10 @@ fn capture_body_via(tx: &WriterQueue, identity: String) -> Result<crate::primary
 
 fn raw_acquisition_cursor_via(
     tx: &WriterQueue,
-    generation: crate::primary::SourceGeneration,
+    query: crate::primary::RawAcquisitionQuery,
 ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
     let (reply, wait) = sync_channel(1);
-    tx.send(Msg::RawAcquisitionCursor(Box::new(generation), reply))
+    tx.send(Msg::RawAcquisitionCursor(Box::new(query), reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -1127,10 +1127,10 @@ impl Inner {
             for (fact, reply) in coverage.drain(..) {
                 let _ = reply.send(self.write_coverage(*fact));
             }
-            for (generation, reply) in raw_cursors.drain(..) {
-                let result = generation.validate().and_then(|()| {
+            for (query, reply) in raw_cursors.drain(..) {
+                let result = query.validate().and_then(|()| {
                     self.sinex.as_ref().map_or(Ok(None), |sinex| {
-                        sinex.raw_acquisition_cursor(&generation)
+                        sinex.raw_acquisition_cursor(&query)
                     })
                 });
                 let _ = reply.send(result);

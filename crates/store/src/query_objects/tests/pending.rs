@@ -46,7 +46,7 @@ impl Sinex for PendingProducer {
     }
     fn raw_acquisition_cursor(
         &self,
-        _: &crate::primary::SourceGeneration,
+        _: &crate::primary::RawAcquisitionQuery,
     ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
         Ok(None)
     }

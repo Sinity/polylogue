@@ -121,7 +121,7 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn raw_acquisition_cursor(
         &self,
-        _: &crate::primary::SourceGeneration,
+        _: &crate::primary::RawAcquisitionQuery,
     ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
         Ok(None)
     }
