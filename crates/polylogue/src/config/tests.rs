@@ -247,3 +247,37 @@ fn fixture_configuration_uses_explicit_engine_inputs_and_has_no_external_outlets
     assert!(startup.config.signals.action_commands.is_empty());
     assert!(startup.config.signals.value_targets.is_empty());
 }
+
+#[test]
+fn completion_and_startup_share_declared_archive_selection_without_clock_dependencies() {
+    let root = tempfile::tempdir().unwrap();
+    deployment(
+        root.path(),
+        "archive='file-archive'\n[day]\nzone='Invalid/Zone'\nstart='04:00:00'\n",
+    );
+    let mut inputs = process(root.path());
+    inputs.identity = None;
+    inputs.workers = None;
+    let overrides = Overrides::default();
+    assert_eq!(
+        archive_location(&inputs, &overrides).unwrap(),
+        root.path().join("config/polylogue/file-archive")
+    );
+    assert_eq!(
+        archive_location(
+            &process,
+            &Overrides {
+                archive: Some("chosen".into()),
+                ..Overrides::default()
+            }
+        )
+        .unwrap(),
+        root.path().join("chosen")
+    );
+    deployment(root.path(), "archive='file-archive'\n");
+    let inputs = process(root.path());
+    assert_eq!(
+        archive_location(&inputs, &overrides).unwrap(),
+        Startup::load(&inputs, overrides).unwrap().config.archive
+    );
+}
