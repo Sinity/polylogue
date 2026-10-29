@@ -50,11 +50,23 @@ impl Reader<'_> {
     pub fn prepare_authenticated_run_selection<'read>(
         &'read self,
         cursor: &SealedCursor,
-        question: QuestionId,
+        root_run: &RunId,
         pending: Option<&dyn crate::primary::Sinex>,
         context: RunReplayContext<'_>,
     ) -> Result<(PreparedSelection<'read>, OrderPosition), SelectionError> {
         self.check()?;
+        // The current grant's root lookup supplies the question needed by the
+        // existing seal. Its body is never executed before authentication.
+        let run = self
+            .query_run(root_run, pending)?
+            .ok_or_else(|| {
+                invalid(
+                    "not_yet_available",
+                    "the acknowledged root execution is unavailable",
+                )
+            })?
+            .value;
+        let question = run.question;
         let opened = CursorSeal::new(self.cursor_key()?).open(
             cursor,
             question,
@@ -93,15 +105,12 @@ impl Reader<'_> {
             .map_err(|_| invalid("invalid_cursor", "the cursor root run identity is invalid"))?;
         let expected_hash = polylogue_model::BlobHash::parse(required("read_binding")?)
             .map_err(|_| invalid("invalid_cursor", "the cursor binding hash is invalid"))?;
-        let run = self
-            .query_run(&root, pending)?
-            .ok_or_else(|| {
-                invalid(
-                    "not_yet_available",
-                    "the acknowledged root execution is unavailable",
-                )
-            })?
-            .value;
+        if &root != root_run {
+            return Err(invalid(
+                "invalid_cursor",
+                "the cursor belongs to another root execution",
+            ));
+        }
         crate::query_objects::validate_run(&run)?;
         if run.id != root
             || run.question != question
