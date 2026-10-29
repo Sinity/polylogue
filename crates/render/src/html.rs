@@ -214,5 +214,5 @@ fn inline_image(
 }
 
 fn visible_controls(markup: Markup) -> Markup {
-    PreEscaped(crate::terminal::escape(markup.as_str()))
+    PreEscaped(crate::terminal::escape(&markup.into_string()))
 }
