@@ -103,6 +103,7 @@ impl SourceGeneration {
 pub struct RawBodyRange {
     pub generation: SourceGeneration,
     pub body: String,
+    pub predecessor: Option<String>,
     pub range: RawRange,
     pub hash: BlobHash,
     pub decoded_length: u64,
@@ -135,7 +136,7 @@ pub struct RawAcquisitionProof {
     generation: SourceGeneration,
     range: RawRange,
     total: Option<u64>,
-    last: Option<(RawRange, BlobHash, String)>,
+    last: Option<(RawRange, BlobHash, String, Option<String>)>,
     valid: bool,
 }
 
@@ -154,24 +155,32 @@ impl RawAcquisitionProof {
             || body.known_total.is_some_and(|end| end != self.generation.window().end)
             || self.total.zip(body.known_total).is_some_and(|(a,b)| a != b)
         { self.valid = false; }
-        if let Some((range,hash,_)) = &self.last {
+        if let Some((range, hash, previous_body, predecessor)) = &self.last {
             if *range == body.range && *hash == body.hash {
+                if *predecessor != body.predecessor {
+                    self.valid = false;
+                }
                 if self.valid {
                     self.total = body.known_total.or(self.total);
-                    self.last = Some((body.range,body.hash,body.body));
+                    self.last = Some((body.range, body.hash, body.body, body.predecessor));
                 }
                 return Ok(());
             }
+            if body.predecessor.as_deref() != Some(previous_body.as_str()) {
+                self.valid = false;
+            }
+        } else if body.predecessor.is_some() {
+            self.valid = false;
         }
         if body.range.start != self.range.end { self.valid = false; }
         if !self.valid { return Ok(()); }
         self.range.end = body.range.end;
         self.total = body.known_total.or(self.total);
-        self.last = Some((body.range,body.hash,body.body));
+        self.last = Some((body.range, body.hash, body.body, body.predecessor));
         Ok(())
     }
     pub fn finish(self) -> Option<RawAcquisitionCursor> {
-        let (_,_,last_body) = self.last?;
+        let (_, _, last_body, _) = self.last?;
         self.valid.then_some(RawAcquisitionCursor {
             generation:self.generation,range:self.range,known_total:self.total,last_body,
         })
