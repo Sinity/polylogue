@@ -246,10 +246,10 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         Product::Query { object } => json!({"question": object.id}),
         Product::QueryRun { run } => json!({
             "run": run.id, "question": run.question, "at": run.at,
-            "machine": run.machine, "binding_hash": run.binding.hash()?,
+            "machine": run.machine, "binding_hash": run.binding_hash()?, "run_hash": run.record_hash()?,
         }),
         Product::QueryRunOutcome { outcome } => json!({
-            "run": outcome.run, "binding_hash": outcome.binding_hash, "at": outcome.at,
+            "run": outcome.run, "binding_hash": outcome.binding_hash, "run_hash": outcome.run_hash, "at": outcome.at,
         }),
         Product::Coverage(_) => json!({}),
         Product::WorkComponentStatus { status } => json!({
