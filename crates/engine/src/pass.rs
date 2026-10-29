@@ -855,14 +855,10 @@ impl Engine {
                 decoded = false;
             }
         }
-        let stored = match self
+        let stored = self
             .reads
             .reader()?
-            .stored_chain(&plan.input.id, chain, length)
-        {
-            Ok(stored) => stored,
-            Err(error) => return Err(error.into()),
-        };
+            .stored_chain(&plan.input.id, chain, length)?;
         plan.source = if decoded {
             pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
                 stored,
