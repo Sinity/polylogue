@@ -344,10 +344,12 @@ pub fn derive_with_background(
                     path,
                     run_by_script,
                 } => {
+                    let native_key = call_id
+                        .as_ref()
+                        .map(|id| (message.session.clone(), id.clone()));
                     let call_id = call_id
                         .clone()
                         .unwrap_or_else(|| format!("{}/{index}", message.id));
-                    let key = (message.session.clone(), call_id.clone());
                     let mut call = Derived {
                         facts: ToolCallProduct {
                             call: format!("tool:{}#{call_id}", message.session),
@@ -383,8 +385,9 @@ pub fn derive_with_background(
                         },
                         parents: vec![selected.event.clone()],
                     };
-                    if let Some((id, at, evidence, outcome, duration, event)) =
-                        pending_results.remove(&key)
+                    if let Some((id, at, evidence, outcome, duration, event)) = native_key
+                        .as_ref()
+                        .and_then(|key| pending_results.remove(key))
                     {
                         call.facts.result = Some(id);
                         call.facts.result_at = at;
@@ -394,7 +397,9 @@ pub fn derive_with_background(
                         call.facts.reported_duration_ms = duration;
                         call.parents.push(event);
                     }
-                    by_call.insert(key, calls.len());
+                    if let Some(key) = native_key {
+                        by_call.insert(key, calls.len());
+                    }
                     call_turns.push(active.get(&message.session).map(|(turn, _)| *turn));
                     call_boundaries.push((
                         ordinal,

@@ -134,3 +134,29 @@ fn retired_snapshot_keeps_only_session_identity_and_rejects_erased_metadata() {
         Err("retired snapshot contains source facts")
     );
 }
+
+#[test]
+fn a_generated_local_call_identity_is_not_native_pairing_evidence() {
+    let invocation = message(
+        "unkeyed",
+        "assistant",
+        "model",
+        json!([
+            {"type":"tool_call","tool":"shell","action":"shell","input":{}}
+        ]),
+    );
+    let result = message(
+        "result",
+        "user",
+        "harness",
+        json!([
+            {"type":"tool_result","call_id":"codex:unkeyed/0","outcome":{"kind":"ok"},"output":"unrelated"}
+        ]),
+    );
+    for input in [[invocation.clone(), result.clone()], [result, invocation]] {
+        let (calls, _) = derive(input);
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].facts.result.is_none());
+        assert_eq!(calls[0].parents, ["event-unkeyed"]);
+    }
+}
