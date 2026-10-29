@@ -448,7 +448,6 @@ impl Response {
             },
         }
     }
-
 }
 
 impl From<Response> for command_surface::Answer<serde_json::Value> {
@@ -463,9 +462,7 @@ impl From<command_surface::Answer<serde_json::Value>> for Response {
         match answer {
             Answer::Ok { value, .. }
             | Answer::Empty { value, .. }
-            | Answer::Degraded { value, .. } => Self::Ok {
-                data: value,
-            },
+            | Answer::Degraded { value, .. } => Self::Ok { data: value },
             Answer::Error { error, notes, next } => {
                 let detail = serde_json::json!({
                     "position": error.position,

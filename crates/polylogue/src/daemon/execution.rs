@@ -160,7 +160,7 @@ pub fn refusal(
             "hint": "restrict the query to a shorter time range or one session",
             "retryable": true,
         })),
-    }.masked()
+    }
 }
 
 pub(crate) fn narrower(query: &str) -> Option<String> {

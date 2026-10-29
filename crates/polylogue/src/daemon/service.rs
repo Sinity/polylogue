@@ -45,7 +45,6 @@ pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
         message: message.to_string(),
         detail: None,
     }
-    .masked()
 }
 
 pub(crate) fn store_error(e: &StoreError) -> Response {
@@ -183,7 +182,10 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 pub(crate) fn ok(data: impl serde::Serialize) -> Response {
-    super::request::References::default().response(data)
+    match serde_json::to_value(data) {
+        Ok(data) => Response::Ok { data },
+        Err(cause) => error("internal", cause),
+    }
 }
 
 fn repeated_request(
@@ -259,7 +261,7 @@ pub fn handle_with_caller(
         });
     }
     super::execution::run(request, limit, |request| {
-        handle_inner(request, d, authorship).masked()
+        handle_inner(request, d, authorship)
     })
 }
 

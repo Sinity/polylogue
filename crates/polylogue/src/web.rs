@@ -331,7 +331,18 @@ impl Drop for CancelRead {
 }
 
 fn browser_response(response: Response, root: &std::path::Path) -> Response {
-    let mut response = response.clean(|text| access::scrub(text, root));
+    let mut response = response;
+    match &mut response {
+        Response::Ok { data } => access::scrub_value(data, root),
+        Response::Error {
+            message, detail, ..
+        } => {
+            *message = access::scrub(message, root);
+            if let Some(detail) = detail {
+                access::scrub_value(detail, root);
+            }
+        }
+    }
     if let Response::Ok { data, .. } = &mut response
         && let Some(data) = data.as_object_mut()
     {
@@ -345,9 +356,7 @@ pub fn scrubbed(web: &Web, mut value: serde_json::Value) -> serde_json::Value {
     if let Some(o) = value.as_object_mut() {
         o.remove("archive");
     }
-    polylogue_model::masking::mask_json_values(&mut value, |text| {
-        access::scrub(text, &web.daemon.archive.root)
-    });
+    access::scrub_value(&mut value, &web.daemon.archive.root);
     value
 }
 

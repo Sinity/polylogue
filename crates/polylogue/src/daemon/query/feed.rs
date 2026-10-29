@@ -197,20 +197,5 @@ pub(crate) fn prepare_with(
     Ok(file)
 }
 
-/// Change rows declare references by their typed kind, on both query and feed answers.
-pub(super) fn reference_fields(
-    change: &Value,
-    prefix: &str,
-    data: &Value,
-    references: &mut super::super::request::References,
-) {
-    let path = format!("{prefix}/ref");
-    match change["kind"].as_str() {
-        Some("session" | "removed") => references.field::<polylogue_model::SessionId>(data, path),
-        Some("note") => references.opaque_field(data, path),
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests;
