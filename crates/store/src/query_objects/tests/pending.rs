@@ -124,6 +124,11 @@ fn completed_run_keeps_its_original_scope_in_durable_custody_during_cache_reset(
         },
     );
     expected.replay.scope_fingerprint = Some("original-scope".into());
+    expected
+        .replay
+        .context
+        .versions
+        .insert("scope".into(), "original-scope".into());
     for _ in 0..2 {
         let (archive, _lock) =
             crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes"))

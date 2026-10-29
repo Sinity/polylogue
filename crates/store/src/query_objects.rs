@@ -127,6 +127,30 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
             "a query run's replay context names another question",
         ));
     }
+    for (key, expected) in [
+        ("generation", run.read_at.generation.clone()),
+        ("index", run.read_at.index.to_string()),
+        ("archive", run.read_at.archive.to_string()),
+    ] {
+        if run
+            .replay
+            .context
+            .read_positions
+            .get(key)
+            .is_some_and(|actual| actual != &expected)
+        {
+            return Err(invalid(
+                "a query run's replay context contradicts its read position",
+            ));
+        }
+    }
+    if let Some(scope) = run.replay.context.versions.get("scope")
+        && run.replay.scope_fingerprint.as_ref() != Some(scope)
+    {
+        return Err(invalid(
+            "a query run's replay context contradicts its grant scope",
+        ));
+    }
     if run.exact && run.count.is_none() {
         return Err(invalid("an exact query run requires a known count"));
     }

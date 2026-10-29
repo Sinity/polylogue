@@ -137,6 +137,29 @@ fn every_run_is_recorded_once_with_computed_authorship_and_frozen_context() {
         .unwrap()
         .unwrap();
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
+    let mut contradictory = expected.clone();
+    contradictory.id = "contradictory-context".into();
+    contradictory
+        .replay
+        .context
+        .read_positions
+        .insert("archive".into(), "999".into());
+    assert!(
+        archive
+            .writer
+            .record_query_run(contradictory.clone())
+            .unwrap()
+            .recv()
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        pool.reader()
+            .unwrap()
+            .query_run(&contradictory.id, None)
+            .unwrap()
+            .is_none()
+    );
     let mut conflicting = expected.clone();
     conflicting.count = Some(4);
     assert!(
@@ -347,6 +370,7 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
         let text = "sessions since:7d";
         let selection = reader.prepare_selection(text, &options).unwrap();
         let object = selection.query_object().unwrap();
+        let read_at = reader.change_position().unwrap();
         archive.writer.query_object(object.clone()).unwrap();
         let mut count = 0;
         reader
@@ -358,12 +382,7 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
         assert_eq!(count, 0);
         let context = selection.cursor_context();
         assert!(!context.resolved_times.is_empty());
-        let mut execution = run(
-            &object,
-            "actual-execution",
-            1,
-            reader.change_position().unwrap(),
-        );
+        let mut execution = run(&object, "actual-execution", 1, read_at);
         execution.at = Timestamp::from_unix_ns(options.clock.now.as_nanosecond()).unwrap();
         execution.count = Some(count);
         execution.replay.bound_ast = selection.bound_query().query().clone();
