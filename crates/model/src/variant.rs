@@ -77,3 +77,37 @@ pub struct VariantPart {
     pub relation: VariantRelation,
     pub body: String,
 }
+
+/// Exact authored records carried by preparation and confirmation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VariantEffect {
+    pub variants: Vec<Variant>,
+    pub variant_parts: Vec<VariantPart>,
+}
+
+/// A rendition submitted through the authored write path. Provenance is
+/// computed by the accepting surface before constructing this value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewVariant {
+    pub base: Option<String>,
+    pub source: String,
+    pub source_hash: BlobHash,
+    pub kind: VariantKind,
+    pub from_lang: Option<String>,
+    pub to_lang: Option<String>,
+    pub author: Author,
+    pub via: String,
+    pub method: Option<String>,
+    pub parts: Vec<NewVariantPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewVariantPart {
+    pub of: String,
+    pub of_hash: BlobHash,
+    pub relation: VariantRelation,
+    pub body: String,
+}
