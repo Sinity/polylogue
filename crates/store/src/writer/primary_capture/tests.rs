@@ -99,7 +99,7 @@ impl crate::primary::Sinex for OfflineProducer {
         &self,
         _: &str,
         _: &str,
-        _: &mut dyn FnMut(&mut dyn FnMut(ProductWrite) -> Result<()>) -> Result<()>,
+        _: &mut crate::primary::ReadingProducts<'_>,
     ) -> Result<crate::primary::PreparedWrite> {
         Self::unavailable()
     }
