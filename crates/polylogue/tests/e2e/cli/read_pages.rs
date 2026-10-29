@@ -56,6 +56,12 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
         let out = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(out.status.success(), "{out:?}");
         let page: ReadPage = serde_json::from_value(json(&out)).unwrap();
+        assert!(
+            !page.document.items.is_empty(),
+            "continuation made no item progress"
+        );
+        // Items validates distinct complete items and contiguous, advancing
+        // fragment coordinates; every page consumes the finite source.
         joined.push(&page);
         let Some(next) = page.document.footer.next else {
             complete = true;
@@ -69,8 +75,12 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
     assert_eq!(joined.text(), expected);
     let next = first_next.expect("one-token page must continue");
     let mut invalid = next_arguments(&next);
-    let cursor = invalid.iter().position(|word| word == "--cursor").unwrap() + 1;
-    invalid[cursor] = "broken".into();
+    let request = invalid.iter().position(|word| word == "--request").unwrap() + 1;
+    let mut arguments: serde_json::Value = serde_json::from_str(&invalid[request]).unwrap();
+    assert!(arguments["root_run"].is_string());
+    assert!(arguments["cursor"].is_string());
+    arguments["cursor"] = serde_json::json!("broken");
+    invalid[request] = serde_json::to_string(&arguments).unwrap();
     let invalid = cli(
         &env,
         &invalid.iter().map(String::as_str).collect::<Vec<_>>(),
