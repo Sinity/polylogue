@@ -48,7 +48,7 @@ pub fn read(
         .spec
         .http_route;
     let body = html! {
-        @if page.snapshot.currency.degraded() { (web_shell::values::stale_banner("the primary read position is behind, unknown or unavailable; see the recorded position below")) }
+        (currency_notice(&page.snapshot.currency, &frame.command))
         @for note in &page.snapshot.notes { p class="read-note" { (note) } }
         @for reason in &page.snapshot.incomplete { p class="read-incomplete" role="status" { (reason) } }
         nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,&route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
@@ -197,6 +197,36 @@ fn view_url(request: &RunnableRequest, route: &str, view: View) -> Result<String
     http_url(&HttpCall {
         method: "GET".into(),
         path: route.into(),
-        arguments: Value::Object(args),
+        arguments: serde_json::to_value(RunnableRequest {
+            arguments: Value::Object(args),
+            ..request.clone()
+        })
+        .expect("read invocation serializes"),
     })
+}
+
+fn currency_notice(currency: &IndexCurrency, command: &str) -> Markup {
+    match currency {
+        IndexCurrency::Primary {
+            state: CurrencyState::Behind,
+            ..
+        } => web_shell::values::view_state(
+            "behind",
+            "the primary index is behind its observed owner position",
+            command,
+        ),
+        IndexCurrency::Primary {
+            state: CurrencyState::Unknown,
+            ..
+        } => web_shell::values::view_state("unknown", "primary index currency is unknown", command),
+        IndexCurrency::Primary {
+            state: CurrencyState::Unavailable,
+            ..
+        } => web_shell::values::view_state(
+            "unavailable",
+            "the primary owner observation is unavailable",
+            command,
+        ),
+        _ => html! {},
+    }
 }

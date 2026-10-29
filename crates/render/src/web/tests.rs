@@ -191,26 +191,55 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
     assert!(html.contains("data-state=\"measured\">0</span> own"));
 }
 
+fn url_parameters(url: &str) -> std::collections::BTreeMap<String, String> {
+    fn decode(text: &str) -> String {
+        let mut bytes = vec![];
+        let mut input = text.as_bytes().iter().copied();
+        while let Some(byte) = input.next() {
+            if byte == b'%' {
+                let digits = [input.next().unwrap(), input.next().unwrap()];
+                bytes.push(u8::from_str_radix(std::str::from_utf8(&digits).unwrap(), 16).unwrap());
+            } else {
+                bytes.push(byte);
+            }
+        }
+        String::from_utf8(bytes).unwrap()
+    }
+    url.split_once('?')
+        .unwrap()
+        .1
+        .split('&')
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap();
+            (decode(key), decode(value))
+        })
+        .collect()
+}
 #[test]
-fn view_switches_use_model_option_acceptance_and_drop_the_old_cursor() {
+fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
     let request = RunnableRequest {
         operation: "read".into(),
         arguments: json!({"target":"session:test:session","view":"transcript","tools":"headers","harness":"headers","thinking":"full","inherited":true,"branches":true,"cursor":"sealed-old"}),
         request_id: "synthetic".into(),
-        deadline: Deadline::Default,
+        deadline: Deadline::Milliseconds(1234),
     };
-    let url = view_url(&request, "/api/v1/read", View::Dialogue).unwrap();
-    assert!(url.contains("view=dialogue"));
-    assert!(url.contains("inherited=true"));
-    assert!(url.contains("branches=true"));
-    assert!(!url.contains("tools="));
-    assert!(!url.contains("thinking="));
-    assert!(!url.contains("harness="));
-    assert!(!url.contains("cursor="));
-    let url = view_url(&request, "/api/v1/read", View::Summary).unwrap();
-    assert!(!url.contains("inherited="));
-    assert!(!url.contains("branches="));
-    assert!(url.contains("target=session%3Atest%3Asession"));
+    let fields = url_parameters(&view_url(&request, "/api/v1/read", View::Dialogue).unwrap());
+    let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
+    assert_eq!(args["view"], "dialogue");
+    assert_eq!(args["inherited"], true);
+    assert_eq!(args["branches"], true);
+    for key in ["tools", "thinking", "harness", "cursor"] {
+        assert!(args.get(key).is_none());
+    }
+    assert_eq!(fields["request_id"], "synthetic");
+    assert_eq!(fields["operation"], "read");
+    let deadline: Value = serde_json::from_str(&fields["deadline"]).unwrap();
+    assert_eq!(deadline, serde_json::to_value(request.deadline).unwrap());
+    let fields = url_parameters(&view_url(&request, "/api/v1/read", View::Summary).unwrap());
+    let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
+    assert!(args.get("inherited").is_none());
+    assert!(args.get("branches").is_none());
+    assert_eq!(args["target"], "session:test:session");
 }
 
 #[test]
