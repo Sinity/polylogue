@@ -78,6 +78,12 @@ pub struct Session {
     pub tool_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<Timestamp>,
+    #[serde(default = "crate::time::unknown_quality")]
+    pub started_quality: crate::TimeQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_precision: Option<crate::Precision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_until: Option<Timestamp>,
     /// How the harness ran the session, when not interactively (Claude
     /// Code `bg` for a background session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +91,27 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn time_evidence(&self) -> crate::TimeEvidence {
+        crate::TimeEvidence {
+            quality: self.started_quality,
+            precision: self.started_precision,
+            until: self.started_until,
+        }
+    }
+
+    pub fn set_time(
+        &mut self,
+        at: Option<Timestamp>,
+        evidence: crate::TimeEvidence,
+    ) -> Result<(), crate::TimeEvidenceError> {
+        evidence.validate(at)?;
+        self.started = at;
+        self.started_quality = evidence.quality;
+        self.started_precision = evidence.precision;
+        self.started_until = evidence.until;
+        Ok(())
+    }
+
     pub fn new(id: SessionId, kind: SessionKind) -> Self {
         Self {
             id,
@@ -98,6 +125,9 @@ impl Session {
             repo: None,
             tool_version: None,
             started: None,
+            started_quality: crate::TimeQuality::Unknown,
+            started_precision: None,
+            started_until: None,
             mode: None,
         }
     }
@@ -126,6 +156,9 @@ impl Session {
     pub fn offer_start(&mut self, at: Timestamp) {
         if self.started.is_none_or(|s| at < s) {
             self.started = Some(at);
+            self.started_quality = crate::TimeQuality::Intrinsic;
+            self.started_precision = Some(crate::Precision::Instant);
+            self.started_until = None;
         }
     }
 
