@@ -28,7 +28,7 @@ fn store(archive: &Archive, writer: &polylogue_store::Writer, revision: bool, by
                     facts: None,
                     seen_at_ms: 1,
                     import: None,
-            container: None,
+                    container: None,
                 }),
                 continues: false,
                 new_blob: None,

@@ -269,7 +269,7 @@ impl<'a> Projection<'a> {
             let key = (pk, input, chain);
             if let std::collections::btree_map::Entry::Vacant(slot) = session_facts.entry(key)
                 && let Some(session) = values
-                    .map(|values| values.session(pk,input,chain))
+                    .map(|values| values.session(pk, input, chain))
                     .transpose()?
                     .flatten()
             {
@@ -330,7 +330,7 @@ impl<'a> Projection<'a> {
             if let std::collections::btree_map::Entry::Vacant(slot) =
                 session_facts.entry((session, input, chain))
                 && let Some(facts) = values
-                    .map(|values| values.session(session,input,chain))
+                    .map(|values| values.session(session, input, chain))
                     .transpose()?
                     .flatten()
             {
@@ -839,7 +839,9 @@ impl Assertions {
             let winner = sources
                 .iter()
                 .min_by_key(|s| (s.rank, &s.id, std::cmp::Reverse(s.chain)));
-            let mut choice = winner.map(|source|source.event_source(index,pk,values)).transpose()?;
+            let mut choice = winner
+                .map(|source| source.event_source(index, pk, values))
+                .transpose()?;
             if let Some(choice) = &mut choice
                 && choice.body.is_empty()
             {

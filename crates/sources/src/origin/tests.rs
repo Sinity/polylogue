@@ -71,9 +71,17 @@ fn capture_only_database_reading_tracks_metadata_parser_and_shared_readers() {
         let origin = by_name(name).unwrap();
         assert_eq!(origin.support, Support::NoParser);
         let reading = origin.reading_version();
-        assert!(reading.contains(&format!("crate::row_dump::VERSION={}", crate::row_dump::VERSION)));
+        assert!(reading.contains(&format!(
+            "crate::row_dump::VERSION={}",
+            crate::row_dump::VERSION
+        )));
         assert!(reading.contains(&format!("fields={}", crate::fields::VERSION)));
         assert!(reading.contains(&format!("parse={}", crate::parse::VERSION)));
     }
-    assert!(by_name("tool-context").unwrap().reading_version().is_empty());
+    assert!(
+        by_name("tool-context")
+            .unwrap()
+            .reading_version()
+            .is_empty()
+    );
 }

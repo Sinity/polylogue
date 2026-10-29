@@ -175,7 +175,9 @@ fn apply_rows(
         .execute(params![session_pk, at, counter])?;
     }
     for (i, e) in p.output.events.iter().enumerate() {
-        if let Some(id) = &e.session { rows.session_pk(&mut sessions,id)?; }
+        if let Some(id) = &e.session {
+            rows.session_pk(&mut sessions, id)?;
+        }
         rows.write_event(i)?;
     }
     for (i, l) in p.output.links.iter().enumerate() {
