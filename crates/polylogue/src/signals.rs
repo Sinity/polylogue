@@ -38,7 +38,7 @@ fn held(d: &Daemon, reason: &str) {
 struct Held {
     reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<command_surface::Answer<()>>,
+    detail: Option<Box<command_surface::Answer<()>>>,
 }
 impl From<String> for Held {
     fn from(reason: String) -> Self {
@@ -57,7 +57,7 @@ impl From<crate::daemon::Response> for Held {
     fn from(response: crate::daemon::Response) -> Self {
         Self {
             reason: "owner context is unavailable".into(),
-            detail: Some(response.answer().map(|_| ())),
+            detail: Some(Box::new(response.answer().map(|_| ()))),
         }
     }
 }

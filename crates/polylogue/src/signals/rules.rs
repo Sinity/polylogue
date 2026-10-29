@@ -20,8 +20,10 @@ pub(super) fn active(
     rule.validate(configuration).map_err(|e| e.to_string())?;
     let id = format!("authored:{}", note.first_note);
     let previous = checkpoint.rules.iter().find(|r| r.version.id == id);
-    let revision = if checkpoint.rule_sources.get(&id) == Some(&note.id) && previous.is_some() {
-        previous.expect("active revision checked").version.revision
+    let revision = if let Some(previous) =
+        previous.filter(|_| checkpoint.rule_sources.get(&id) == Some(&note.id))
+    {
+        previous.version.revision
     } else {
         checkpoint
             .rule_revisions

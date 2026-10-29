@@ -92,6 +92,7 @@ impl SignalDeployment {
         }
         Ok(config)
     }
+    #[cfg(test)]
     pub fn identity(&self) -> Result<String, Error> {
         let bytes = serde_json::to_vec(self)
             .map_err(|error| Error::Invalid(format!("signal configuration: {error}")))?;
