@@ -363,10 +363,6 @@ pub fn cost(reader: &Reader<'_>, options: Cost<'_>, owner: &Clock) -> Result<Val
     if let Some(date) = chosen {
         times.push(resolve(&date.to_string(), &clock)?);
     }
-    times.push(resolve(
-        &format!("{:04}-{:02}", month.year(), month.month()),
-        &clock,
-    )?);
     resolved(&mut paging, times)?;
     ranking(&mut paging, &program)?;
     let mut selection = query::select_usage(reader, &program, near)?;

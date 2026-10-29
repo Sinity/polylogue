@@ -323,6 +323,24 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
             .kind,
         "stale_cursor"
     );
+    // The retired unsealed shape must not be accepted as a fallback.
+    let old_binding = json!([
+        "timeline",
+        "2024-03-30",
+        false,
+        false,
+        owner.day,
+        reader.change_position().unwrap().generation
+    ]);
+    let old_binding = blake3::hash(old_binding.to_string().as_bytes())
+        .to_hex()
+        .to_string();
+    let row = &first["activity"]["rows"][0];
+    let unsealed = json!({"clock":later.wire(),"context":old_binding,"after":{"undated":false,"at":row["at"],"kind":row["kind"],"id":row["id"]}});
+    use base64::Engine as _;
+    let unsealed = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&unsealed).unwrap());
+    assert!(timeline(&reader, request(Some(&unsealed)), &owner).is_err());
     let mut damaged = cursor.as_bytes().to_vec();
     let last = damaged.last_mut().unwrap();
     *last = if *last == b'0' { b'1' } else { b'0' };
