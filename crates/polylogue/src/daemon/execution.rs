@@ -139,11 +139,9 @@ pub fn refusal(
     info: &serde_json::Value,
     limit: &ReadLimit,
 ) -> Response {
-    let kind = match error {
-        polylogue_store::StoreError::ReadCancelled => "cancelled",
-        polylogue_store::StoreError::ScopeChanged => "scope_changed",
-        _ => "deadline_exceeded",
-    };
+
+    let kind = crate::protocol::store_code(error);
+
     let query = info["text"]
         .as_str()
         .or_else(|| info["expression"].as_str());

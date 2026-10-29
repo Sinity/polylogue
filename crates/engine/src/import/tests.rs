@@ -108,6 +108,7 @@ pub(crate) fn engine(
 ) -> (Engine, polylogue_store::ArchiveLock) {
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
     let config = Config {
+        clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
         home: w.home.clone(),
         tool_dirs: Default::default(),
         workers: 3,

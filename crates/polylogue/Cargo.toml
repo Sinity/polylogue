@@ -28,6 +28,9 @@ polylogue-engine.workspace = true
 polylogue-query.workspace = true
 query-language.workspace = true
 hashed-blobs.workspace = true
+shared-signals.workspace = true
+toml = "0.9"
+
 jiff.workspace = true
 libc.workspace = true
 polylogue-render.workspace = true

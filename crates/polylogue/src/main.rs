@@ -9,6 +9,7 @@ mod cli;
 mod client;
 mod commands;
 mod completion_catalog;
+mod config;
 mod daemon;
 mod demo;
 mod embeddings;

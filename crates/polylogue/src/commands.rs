@@ -447,7 +447,7 @@ const WRITTEN: &[Command] = &[
         help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            opt("all", Kind::Flag, "Select every origin"),
+            opt("all", Kind::Bool, "Select every origin"),
             opt(
                 "input",
                 Kind::List,
@@ -490,7 +490,7 @@ const WRITTEN: &[Command] = &[
         help: "Show stored wire paths neither read nor kept, with drift and coverage",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            opt("all", Kind::Flag, "Select every origin"),
+            opt("all", Kind::Bool, "Select every origin"),
             Arg {
                 cli_only: true,
                 ..opt(

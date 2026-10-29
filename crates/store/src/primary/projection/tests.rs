@@ -123,8 +123,8 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
         machine: "machine".into(),
         at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
         write: UserWrite::SetSetting {
-            key: "saved-key".into(),
-            value: "saved-value".into(),
+            key: "browser.actions".into(),
+            value: "on".into(),
             author: polylogue_model::Author::Operator,
             machine: None,
         },
@@ -175,12 +175,12 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
         assert_eq!(
             index
                 .query_row(
-                    "SELECT value FROM source_setting WHERE key='saved-key'",
+                    "SELECT value FROM source_setting WHERE key='browser.actions'",
                     [],
                     |row| row.get::<_, String>(0)
                 )
                 .unwrap(),
-            "saved-value"
+            "on"
         );
     }
     assert!(

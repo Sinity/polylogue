@@ -474,11 +474,11 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
 fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held() {
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
-    let mut config = polylogue_engine::Config::from_env();
+    let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
     config.tool_dirs.clear();
     config.workers = 1;
-    let mut runtime = crate::daemon::service::start(
+    let mut runtime = crate::test_daemon::start_runtime(
         &dir.path().join("archive"),
         config,
         crate::daemon::service::ArchiveMode::Standalone,

@@ -40,9 +40,10 @@ impl Engine {
         let dir = self
             .config
             .spool_dir(polylogue_sources::repo_lookup::ORIGIN);
-        let read_at = polylogue_model::Timestamp::from_unix_ms(now_ms())
-            .map(|t| t.to_string())
-            .unwrap_or_default();
+        let read_at =
+            polylogue_model::Timestamp::from_unix_ms(self.config.clock.now().as_millisecond())
+                .map(|t| t.to_string())
+                .unwrap_or_default();
         repo_lookup::refresh(
             repo_lookup::working_directories(&rows),
             &dir,
@@ -155,9 +156,10 @@ impl Engine {
             self.writer.coverage(polylogue_model::capture::Coverage {
                 version: 1,
                 machine: self.config.machine.clone(),
-                observed_at: polylogue_model::Timestamp::from_unix_ms(now_ms()).ok_or_else(
-                    || std::io::Error::other("capture observation time is out of range"),
-                )?,
+                observed_at: polylogue_model::Timestamp::from_unix_ms(
+                    self.config.clock.now().as_millisecond(),
+                )
+                .ok_or_else(|| std::io::Error::other("capture observation time is out of range"))?,
                 roots: scan.roots,
             })?;
             (scan.found, scan.unreadable)
@@ -181,7 +183,7 @@ impl Engine {
             .collect();
         if !discover && self.live_checked.elapsed() >= self.config.live_every {
             self.live_checked = Instant::now();
-            let now_ns = i128::from(now_ms()) * 1_000_000;
+            let now_ns = i128::from(self.config.clock.now().as_millisecond()) * 1_000_000;
             found.extend(collect::scan_spools(&self.config));
             found.extend(
                 self.inputs
@@ -260,7 +262,7 @@ impl Engine {
                     host: self.config.host.clone(),
                     path: path.display().to_string(),
                     facts: None,
-                    seen_at_ms: now_ms(),
+                    seen_at_ms: self.config.clock.now().as_millisecond(),
                     import: None,
                     container: None,
                 }),
@@ -416,7 +418,7 @@ impl Engine {
         pass.unreadable_roots.extend(unreadable);
         self.capture_databases(&found, changes.full, pass)?;
         found.retain(|file| !file.origin.is_row_dump(&file.path));
-        let now_ns = i128::from(now_ms()) * 1_000_000;
+        let now_ns = i128::from(self.config.clock.now().as_millisecond()) * 1_000_000;
         found.extend(collect::scan_spools(&self.config));
         found.extend(
             self.inputs
@@ -1073,9 +1075,10 @@ impl Engine {
                 return;
             }
             st.failed = None;
-            let recent = plan
-                .facts
-                .is_some_and(|f| i128::from(now_ms()) * 1_000_000 - f.mtime_ns < KEEP_STATE_NS);
+            let recent = plan.facts.is_some_and(|f| {
+                i128::from(self.config.clock.now().as_millisecond()) * 1_000_000 - f.mtime_ns
+                    < KEEP_STATE_NS
+            });
             st.facts = plan.facts;
             st.parsed_upto = plan.parse_pos.min(plan.size);
             st.parsed = true;

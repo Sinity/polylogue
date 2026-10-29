@@ -206,7 +206,7 @@ impl crate::primary::Sinex for Producer {
     fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
         Ok(())
     }
-    fn confirmed(&self, after: i64, _: &str) -> Result<Vec<Confirmed>> {
+    fn confirmed(&self, after: i64, _: &str, _: Option<&str>) -> Result<Vec<Confirmed>> {
         if !self.online.load(Ordering::SeqCst) {
             return Self::unavailable();
         }

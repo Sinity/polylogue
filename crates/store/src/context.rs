@@ -329,6 +329,121 @@ impl Reader<'_> {
             .optional()?)
     }
 
+    /// One catalog-checked value. Defaults and primary ownership are resolved
+    /// by the declared catalog, rather than by each consumer.
+    pub fn setting_value(
+        &self,
+        key: &str,
+        machine: &str,
+    ) -> Result<Option<polylogue_model::settings::Value>> {
+        let current = self.setting_current(key, machine)?;
+        if current.owner == "sinex" {
+            return Err(crate::StoreError::Invalid(
+                polylogue_model::settings::Error::SinexOwned(key.into()).to_string(),
+            ));
+        }
+        Ok(current.value)
+    }
+
+    pub fn setting_current(
+        &self,
+        key: &str,
+        machine: &str,
+    ) -> Result<polylogue_model::settings::Current> {
+        use polylogue_model::settings::{self, Owner};
+        use rusqlite::OptionalExtension;
+        let spec = settings::declaration(key)
+            .map_err(|error| crate::StoreError::Invalid(error.to_string()))?;
+        let primary = matches!(
+            crate::source::Source::of(self.conn()?)?,
+            crate::source::Source::Cache
+        );
+        if primary && spec.standalone_only {
+            return Ok(settings::Current {
+                key: key.into(),
+                kind: spec.kind,
+                scope: spec.scope,
+                owner: "sinex".into(),
+                default: None,
+                value: None,
+                authored: None,
+            });
+        }
+        let target = match spec.scope {
+            settings::Scope::Archive => "*",
+            settings::Scope::Host => machine,
+        };
+        let row = self.conn()?.query_row("SELECT id,machine,value,author,set_at FROM source_setting WHERE key=?1 AND machine=?2 ORDER BY set_at DESC,id DESC LIMIT 1", params![key,target], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,i64>(4)?))).optional()?;
+        let owner = if primary {
+            Owner::Primary
+        } else {
+            Owner::Standalone
+        };
+        let value = settings::current(key, row.as_ref().map(|row| row.2.as_str()), owner)
+            .map_err(|error| crate::StoreError::Invalid(error.to_string()))?;
+        let default = spec
+            .default
+            .map(|value| settings::parse(key, value, Owner::Standalone))
+            .transpose()
+            .map_err(|error| crate::StoreError::Invalid(error.to_string()))?;
+        let authored = row
+            .map(
+                |(id, machine, _, author, at)| -> Result<polylogue_model::settings::Authored> {
+                    Ok(settings::Authored {
+                        id,
+                        machine,
+                        author: parse_name(&author).ok_or_else(|| {
+                            crate::StoreError::Invalid("invalid setting author".into())
+                        })?,
+                        at: Timestamp::from_unix_ms(at).ok_or_else(|| {
+                            crate::StoreError::Invalid("invalid setting timestamp".into())
+                        })?,
+                    })
+                },
+            )
+            .transpose()?;
+        Ok(settings::Current {
+            key: key.into(),
+            kind: spec.kind,
+            scope: spec.scope,
+            owner: "polylogue".into(),
+            default,
+            value,
+            authored,
+        })
+    }
+
+    pub fn settings_catalog(
+        &self,
+        machine: &str,
+    ) -> Result<Vec<polylogue_model::settings::Current>> {
+        let mut keys: Vec<String> = polylogue_model::settings::CATALOG
+            .iter()
+            .filter(|spec| !spec.key.ends_with('*'))
+            .map(|spec| spec.key.to_string())
+            .collect();
+        let rows = self
+            .conn()?
+            .prepare("SELECT DISTINCT key FROM source_setting ORDER BY key")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for key in rows {
+            if polylogue_model::settings::declaration(&key).is_ok() && !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        keys.sort();
+        keys.iter()
+            .map(|key| self.setting_current(key, machine))
+            .collect()
+    }
+
+    pub fn settings_snapshot(&self, machine: &str) -> Result<polylogue_model::settings::Snapshot> {
+        Ok(polylogue_model::settings::Snapshot::new(
+            self.settings_catalog(machine)?,
+        ))
+    }
+
     /// What a session did; `None` when there is no such session.
     pub fn session_work(&self, session: &str) -> Result<Option<SessionWork>> {
         use rusqlite::OptionalExtension;

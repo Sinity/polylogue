@@ -102,6 +102,43 @@ pub fn kind(code: &str) -> FailureKind {
         .unwrap_or(FailureKind::Io)
 }
 
+/// A revoked read cannot become a final success after its worker returns.
+pub fn scope_answer<T>(
+    answer: Answer<T>,
+    scope: Option<&polylogue_store::read::scope::ReadScopeToken>,
+) -> Answer<T> {
+    if let Some(scope) = scope
+        && let Err(error) = scope.check()
+    {
+        Answer::error(failure(store_code(&error), error.to_string(), None))
+    } else {
+        answer
+    }
+}
+
+/// Every store boundary uses this code before the shared transport mapping.
+pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
+    use polylogue_store::StoreError;
+    match error {
+        StoreError::ScopeChanged => "scope_changed",
+        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => "conflict",
+        StoreError::Ambiguous { .. } => "ambiguous",
+        StoreError::Projection(issue) => match issue {
+            polylogue_model::bundle::BundleError::ProjectionConflict
+            | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
+            _ => "bad_request",
+        },
+        StoreError::ReadDeadlineExceeded => "deadline_exceeded",
+        StoreError::ReadCancelled => "cancelled",
+        StoreError::ReadPoolClosed => "daemon_stopping",
+        StoreError::NotFound(_) => "not_found",
+        StoreError::Invalid(_) => "bad_request",
+        StoreError::IncompleteParents(_) => "incomplete_parents",
+        StoreError::PrimaryPending { .. } => "degraded",
+        _ => "store",
+    }
+}
+
 pub fn failure(code: &str, message: String, detail: Option<&Value>) -> Failure {
     let mut failure = Failure::new(kind(code), message);
     failure.code = Some(code.to_owned());

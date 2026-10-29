@@ -233,6 +233,9 @@ impl ReadPool {
 
     fn connect(&self) -> Result<Connection> {
         let conn = open_read(&self.archive.index_db())?;
+        if self.archive.is_primary() {
+            crate::primary::scope::require_readable(&conn)?;
+        }
         // Set temp storage before creating views: changing it drops TEMP objects.
         conn.pragma_update(None, "temp_store", "file")?;
         conn.pragma_update(Some("temp"), "cache_size", -1024)?;
@@ -251,6 +254,11 @@ impl ReadPool {
             conn.pragma_update(Some(schema), "mmap_size", 0)?;
         }
         Ok(conn)
+    }
+
+    /// Pins the admission scope without acquiring a SQL reader.
+    pub fn scope_token(&self) -> Result<scope::ReadScopeToken> {
+        self.archive.read_scope.token()
     }
 
     /// Waits for a connection while the pool is full. Reuse the existing Reader
@@ -604,6 +612,10 @@ impl Reader<'_> {
 
     pub fn confirmed_checkpoint(&self) -> Result<Option<i64>> {
         crate::primary::projection::checkpoint(self.conn()?)
+    }
+
+    pub fn confirmed_scope(&self) -> Result<Option<String>> {
+        crate::primary::scope::current(self.conn()?)
     }
 
     pub fn primary_cache_identity(&self) -> Result<String> {
