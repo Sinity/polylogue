@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 mod client;
 mod context;
 pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
+pub use sinex_protocol::PublicInterruptBudget;
 pub mod kinds;
 mod material;
 pub(crate) mod native;
