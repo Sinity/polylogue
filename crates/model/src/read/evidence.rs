@@ -84,12 +84,11 @@ impl ToolPair {
                 ..
             }),
         ) = (&self.call.block, &self.result)
+            && call != result
         {
-            if call != result {
-                return Err(ReadError::InvalidEvidence(
-                    "tool pair call IDs disagree".into(),
-                ));
-            }
+            return Err(ReadError::InvalidEvidence(
+                "tool pair call IDs disagree".into(),
+            ));
         }
         Ok(())
     }

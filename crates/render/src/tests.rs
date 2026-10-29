@@ -853,3 +853,39 @@ fn inline_images_need_exact_hash_safe_raster_type_and_size() {
             .contains("<img")
     );
 }
+
+#[test]
+fn hand_written_format_goldens_agree_on_the_typed_document() {
+    let mut doc = document(vec![
+        text("# kept <text>\nline λ"),
+        ReadItem {
+            source: text("").source,
+            kind: ItemKind::Thinking {
+                words: ValueState::known(0),
+                content: ThinkingContent::Collapsed,
+            },
+        },
+    ]);
+    doc.header.target = "message:test:session:message".into();
+    doc.header.title = ValueState::known("Example".into());
+    doc.header.kind = HeaderKind::Record {
+        record_type: "message".into(),
+    };
+    assert_eq!(
+        encode(&doc, Format::Terminal),
+        include_str!("../tests/goldens/simple.terminal")
+    );
+    assert_eq!(
+        encode(&doc, Format::Markdown),
+        include_str!("../tests/goldens/simple.markdown")
+    );
+    assert_eq!(
+        encode(&doc, Format::Html),
+        include_str!("../tests/goldens/simple.html").trim_end()
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&encode(&doc, Format::Json)).unwrap(),
+        serde_json::from_str::<serde_json::Value>(include_str!("../tests/goldens/simple.json"))
+            .unwrap()
+    );
+}
