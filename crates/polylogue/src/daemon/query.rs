@@ -3,9 +3,10 @@
 //! explain an empty result when asked. Every step reads through one reader, so the count, the page and
 //! the attachments agree.
 
-use polylogue_store::query::{ColKind, Options, Param, Program, QueryError, Shape};
-use polylogue_store::search::Within;
-use polylogue_store::{Reader, SqlValue};
+use polylogue_store::Reader;
+use polylogue_store::query::{Options, Program, QueryError, Shape};
+#[cfg(test)]
+use polylogue_store::{SqlValue, query::ColKind};
 use query_language::time::DaySetting;
 
 use serde_json::{Value, json};
@@ -30,6 +31,9 @@ impl From<polylogue_store::StoreError> for Failure {
 
 impl From<polylogue_store::selection::SelectionError> for Failure {
     fn from(error: polylogue_store::selection::SelectionError) -> Self {
+        if let polylogue_store::selection::SelectionError::Store(error) = error {
+            return Self::from(error);
+        }
         Self {
             kind: error.kind().to_owned(),
             message: error.to_string(),
@@ -63,6 +67,8 @@ pub struct Ask<'a> {
     /// One captured invocation and owner policy for the complete operation.
     pub context: std::sync::Arc<crate::operation::Context>,
     pub embeddings: bool,
+    /// Captured provider/vector basis; never inferred from availability.
+    pub ranking_identity: Option<String>,
     /// For `similar:`: every stored text's similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
     /// The columns to show instead of the unit's defaults.
@@ -78,7 +84,7 @@ pub(crate) fn with_ranking<T>(
     reader: &Reader<'_>,
     warm: &super::warm::Warm,
     config: &crate::config::Config,
-    run: impl FnOnce(bool, &NearFn<'_>) -> T,
+    run: impl FnOnce(bool, Option<String>, &NearFn<'_>) -> T,
 ) -> T {
     let settings = reader.settings_snapshot(config.requests.machine()).ok();
     let provider = settings.as_ref().and_then(|settings| {
@@ -86,12 +92,12 @@ pub(crate) fn with_ranking<T>(
             .ok()
             .flatten()
     });
-    let available = crate::embeddings::ranking_key(reader, provider.as_ref()).is_some();
+    let identity = crate::embeddings::ranking_key(reader, provider.as_ref());
     let near = |text: &str| match &provider {
         Some(provider) => warm.similarity(reader, provider, text),
         None => Err("embeddings are off".into()),
     };
-    run(available, &near)
+    run(identity.is_some(), identity, &near)
 }
 
 fn with_similarity<T>(
@@ -100,22 +106,7 @@ fn with_similarity<T>(
     near: Option<&NearFn<'_>>,
     read: impl FnOnce() -> Result<T, Failure>,
 ) -> Result<T, Failure> {
-    reader.with_clock(&program.clock, || match &program.near {
-        Some(request) => {
-            let near = near.ok_or_else(|| Failure {
-                kind: "embed".into(),
-                message: "semantic search unavailable".into(),
-                detail: None,
-            })?;
-            let similarity = near(&request.text).map_err(|message| Failure {
-                kind: "embed".into(),
-                message,
-                detail: None,
-            })?;
-            reader.with_similarity(similarity, read)
-        }
-        None => read(),
-    })
+    reader.with_query_context(program, near, read)
 }
 
 /// Saved definitions come from the same Store snapshot as selection preparation.
@@ -173,7 +164,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let program = polylogue_store::query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     let mut rows = with_similarity(reader, &program, ask.near, || {
-        Ok(reader.query(&program.sql, &values(&program.params))?)
+        Ok(reader.query_rows(&program)?)
     })?;
     for row in &mut rows {
         present(&program, row)?;
@@ -191,9 +182,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         && let Ok(m) = polylogue_store::query::compile(&format!("{} | matches", ask.text), &opts)
     {
         validate(reader, &m)?;
-        let mut matches = with_similarity(reader, &m, ask.near, || {
-            Ok(reader.query(&m.sql, &values(&m.params))?)
-        })?;
+        let mut matches = with_similarity(reader, &m, ask.near, || Ok(reader.query_rows(&m)?))?;
         for row in &mut matches {
             present(&m, row)?;
         }
@@ -220,11 +209,17 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "catalog".into(),
         polylogue_query::plan::catalog_fingerprint(),
     );
+    if let Some(identity) = &ask.ranking_identity {
+        operation_versions.insert(
+            "ranking_identity".into(),
+            blake3::hash(identity.as_bytes()).to_hex().to_string(),
+        );
+    }
     if let Some(scope) = reader.query_scope_fingerprint()? {
         operation_versions.insert("scope".into(), scope);
     }
     if let Some(cursor) = &cursor {
-        for key in ["operation_context", "catalog", "scope"] {
+        for key in ["operation_context", "catalog", "scope", "ranking_identity"] {
             if cursor.context.versions.get(key) != operation_versions.get(key) {
                 return Err(Failure {
                     kind: "stale_cursor".into(),
@@ -326,17 +321,17 @@ fn answer(
             };
             let data = match measure_paging {
                 super::measure::Paging::Facets => {
-                    let selected =
-                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
-                    let population = reader.query(&m.population_sql, &params)?;
+                    let selected = reader.query_keys(
+                        program,
+                        polylogue_store::query::execute::QueryPopulation::MeasureSelection,
+                    )?;
+                    let population = reader.query_keys(
+                        program,
+                        polylogue_store::query::execute::QueryPopulation::MeasurePopulation,
+                    )?;
                     let scope = polylogue_store::measure::Selection {
-                        sessions: Some(selected.iter().filter_map(|r| r["_pk"].as_i64()).collect()),
-                        population: Some(
-                            population
-                                .iter()
-                                .filter_map(|r| r["_pk"].as_i64())
-                                .collect(),
-                        ),
+                        sessions: Some(selected),
+                        population: Some(population),
                         ..Default::default()
                     };
                     let summary = polylogue_store::measure::facets::summary(reader, &scope)?;
@@ -368,10 +363,12 @@ fn answer(
                     if definition.name == "time" {
                         data = json!({"sessions":data});
                     }
-                    let selected =
-                        reader.query(&format!("SELECT _pk FROM ({})", m.selection_sql), &params)?;
+                    let selected = reader.query_keys(
+                        program,
+                        polylogue_store::query::execute::QueryPopulation::MeasureSelection,
+                    )?;
                     let all = polylogue_store::measure::Selection {
-                        sessions: Some(selected.iter().filter_map(|r| r["_pk"].as_i64()).collect()),
+                        sessions: Some(selected),
                         ..Default::default()
                     };
                     data["pending"] = json!(polylogue_store::measure::time::pending(reader, &all)?);
@@ -393,17 +390,16 @@ fn answer(
         let sessions = if m.everything {
             None
         } else {
-            let rows = reader.query(&format!("SELECT _pk FROM ({})", program.sql), &params)?;
-            Some(rows.iter().filter_map(|r| r["_pk"].as_i64()).collect())
+            Some(reader.query_keys(
+                program,
+                polylogue_store::query::execute::QueryPopulation::Answer,
+            )?)
         };
         let population = if definition.name == "facets" {
-            Some(
-                reader
-                    .query(&m.population_sql, &params)?
-                    .iter()
-                    .filter_map(|r| r["_pk"].as_i64())
-                    .collect(),
-            )
+            Some(reader.query_keys(
+                program,
+                polylogue_store::query::execute::QueryPopulation::MeasurePopulation,
+            )?)
         } else {
             None
         };
@@ -477,33 +473,12 @@ fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), 
         return Ok(());
     };
     let (definition, options) = super::measure::find_checked(&m.what)?;
-    match definition.paging {
-        Some(super::measure::Paging::Sessions) => {
-            program.sql = polylogue_store::measure::comparison::page_query(&program.sql);
-        }
-        Some(super::measure::Paging::Facets) => {
-            program.counts_near = false;
-            program.row_count_sql = None;
-            program.row_membership_sql = None;
-            program.page_size = page_size.unwrap_or(100);
-            program.sql = polylogue_store::measure::facets::query(
-                &m.selection_sql,
-                &m.population_sql,
-                options,
-            )?;
-            program.order = vec![
-                polylogue_store::query::OrderKey {
-                    column: "family".into(),
-                    descending: false,
-                },
-                polylogue_store::query::OrderKey {
-                    column: "value".into(),
-                    descending: false,
-                },
-            ];
-        }
-        None => {}
-    }
+    polylogue_store::query::execute::prepare_measure(
+        program,
+        definition.paging,
+        options,
+        page_size,
+    )?;
     Ok(())
 }
 
@@ -514,28 +489,12 @@ fn read_page(
     after: &Option<Vec<Value>>,
     paging: &page::Paging<'_>,
 ) -> Result<(Vec<Value>, u64, Option<String>, u64), Failure> {
-    let params = values(&program.params);
-    polylogue_store::read::limit::ReadLimit::set_stage("count");
-    let (count, without) = reader.query_counts(&program.count_sql(), &params)?;
-    let page_size = program.page_size.max(1);
-    let mut page_params = params;
-    if let Some(after) = after {
-        page_params.extend(after.iter().map(key_value));
-    }
-    // One row past the page says whether another page follows.
-    page_params.push(SqlValue::Int(
-        i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX),
-    ));
-    polylogue_store::read::limit::ReadLimit::set_stage("page");
-    let mut rows = reader.query(&program.page_sql(after.is_some()), &page_params)?;
-    let more = rows.len() as u64 > page_size;
-    rows.truncate(usize::try_from(page_size).unwrap_or(usize::MAX));
-    let next = match rows.last() {
-        Some(last) if more => Some(page::after_row(program, last, paging)?),
+    let page = reader.query_page(program, after.as_deref())?;
+    let next = match page.rows.last() {
+        Some(last) if page.more => Some(page::after_row(program, last, paging)?),
         _ => None,
     };
-
-    Ok((rows, count, next, without))
+    Ok((page.rows, page.count, next, page.without))
 }
 
 /// What one read transaction read: the index generation and the
@@ -547,223 +506,16 @@ fn read_at(reader: &Reader<'_>) -> Result<Value, Failure> {
     )
 }
 
-/// An order-key value from a cursor, bound as the type it was read as.
-fn key_value(value: &Value) -> SqlValue {
-    match value {
-        Value::Null => SqlValue::Null,
-        Value::Bool(b) => SqlValue::Int(i64::from(*b)),
-        Value::Number(n) => n.as_i64().map_or_else(
-            || SqlValue::Real(n.as_f64().unwrap_or_default()),
-            SqlValue::Int,
-        ),
-        Value::String(s) => SqlValue::Text(s.clone()),
-        other => SqlValue::Text(other.to_string()),
-    }
-}
+pub(crate) use polylogue_store::selection::values;
 
-pub(crate) fn values(params: &[Param]) -> Vec<SqlValue> {
-    params
-        .iter()
-        .map(|p| match p {
-            Param::Int(n) => SqlValue::Int(*n),
-            Param::Real(f) => SqlValue::Real(*f),
-            Param::Text(s) => SqlValue::Text(s.clone()),
-        })
-        .collect()
-}
-
-/// Every execution path validates its compiled references before reading rows.
+/// Validation shares the Store authority with prepared reads and paging.
 fn validate(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
-    let position = reader.change_position()?;
-    for expected in &program.change_generations {
-        if expected != &position.generation {
-            return Err(Failure {
-                kind: "resync_required".into(),
-                message: "the index generation changed; read the current state again".into(),
-                detail: Some(
-                    json!({"generation": position.generation, "reason": "generation_changed"}),
-                ),
-            });
-        }
-    }
-    check_ids(reader, program)
+    Ok(reader.validate_selection(program)?)
 }
 
-/// A pasted ID is a reference only when it names exactly one session.
-fn check_ids(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
-    for check in &program.id_checks {
-        let found = reader.query(&check.sql, &values(&check.params))?;
-        let ids: Vec<String> = found
-            .iter()
-            .filter_map(|r| r["id"].as_str().map(str::to_owned))
-            .collect();
-        match ids.len() {
-            1 => {}
-            0 => {
-                return Err(Failure {
-                    kind: "not_found".into(),
-                    message: format!("no session or message has an ID starting {:?}", check.word),
-                    detail: Some(json!({ "word": check.word })),
-                });
-            }
-            _ => {
-                return Err(Failure {
-                    kind: "ambiguous".into(),
-                    message: format!("{:?} starts several IDs: {}", check.word, ids.join(", ")),
-                    detail: Some(json!({ "word": check.word, "ids": ids })),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-/// One snippet per row when text terms ranked the rows.
-fn snippets(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Result<(), Failure> {
-    if !program.ranked {
-        return Ok(());
-    }
-    let fts: Vec<String> = program
-        .text_terms
-        .iter()
-        .filter_map(|t| polylogue_model::text::fts_phrase(t))
-        .collect();
-    if fts.is_empty() {
-        return Ok(());
-    }
-    let fts = fts.join(" AND ");
-    let scope: fn(i64) -> Within = match program.unit {
-        polylogue_query::ast::Unit::Sessions => Within::Session,
-        polylogue_query::ast::Unit::Messages => Within::Message,
-        _ => return Ok(()),
-    };
-    let (indices, scopes): (Vec<_>, Vec<_>) = rows
-        .iter()
-        .enumerate()
-        .filter_map(|(index, row)| row["_pk"].as_i64().map(|pk| (index, scope(pk))))
-        .unzip();
-    for (index, snippet) in
-        indices
-            .into_iter()
-            .zip(reader.snippets(&fts, &scopes, &program.text_terms)?)
-    {
-        if let Some(snippet) = snippet {
-            rows[index]["snippet"] = serde_json::to_value(snippet).unwrap_or(Value::Null);
-        }
-    }
-    Ok(())
-}
-
-fn attach(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Result<(), Failure> {
-    for a in &program.attach {
-        for row in rows.iter_mut() {
-            let Some(pk) = row["_pk"].as_i64() else {
-                continue;
-            };
-            let mut params = values(&a.params);
-            params.push(SqlValue::Int(pk));
-            let mut children = reader.query(&a.sql, &params)?;
-            if let Some(n) = a.first {
-                children.truncate(usize::try_from(n).unwrap_or(usize::MAX));
-            }
-            if let Some(n) = a.last {
-                let n = usize::try_from(n).unwrap_or(usize::MAX);
-                let skip = children.len().saturating_sub(n);
-                children.drain(..skip);
-            }
-            for c in &mut children {
-                for col in &a.columns {
-                    shape_value(col.kind, &mut c[col.name.as_str()])?;
-                }
-            }
-            row[a.name.as_str()] = Value::Array(children);
-        }
-    }
-    Ok(())
-}
-
-/// Times as RFC 3339, booleans as booleans. Columns starting with `_`
-/// (the row key and order keys) are the reader's own.
-fn present(program: &Program, row: &mut Value) -> Result<(), Failure> {
-    if let Some(obj) = row.as_object_mut() {
-        obj.retain(|name, _| !name.starts_with('_'));
-    }
-    for col in &program.columns {
-        shape_value(col.kind, &mut row[col.name.as_str()])?;
-    }
-    Ok(())
-}
-
-fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
-    match kind {
-        ColKind::Json => {
-            if let Some(text) = v.as_str() {
-                *v = serde_json::from_str(text).map_err(|_| Failure {
-                    kind: "store".into(),
-                    message: "invalid stored JSON value".into(),
-                    detail: None,
-                })?;
-            }
-        }
-        ColKind::Ids => {
-            if v.is_null() {
-                return Ok(());
-            }
-            let selection: Value = if let Some(text) = v.as_str() {
-                serde_json::from_str(text).map_err(|e| Failure {
-                    kind: "store".into(),
-                    message: format!("invalid stored selection: {e}"),
-                    detail: None,
-                })?
-            } else {
-                v.take()
-            };
-            if selection.is_null() {
-                *v = Value::Null;
-                return Ok(());
-            }
-            if !selection.as_array().is_some_and(|ids| {
-                ids.iter()
-                    .all(|id| id.as_str().is_some_and(|id| !id.is_empty()))
-            }) {
-                return Err(Failure {
-                    kind: "store".into(),
-                    message: "a stored selection must be an array of IDs".into(),
-                    detail: None,
-                });
-            }
-            *v = selection;
-        }
-        ColKind::Time => {
-            if let Some(ms) = v.as_i64() {
-                *v = polylogue_model::Timestamp::from_unix_ms(ms)
-                    .map_or(Value::Null, |t| Value::String(t.to_string()));
-            }
-        }
-        ColKind::Bool => {
-            if let Some(n) = v.as_i64() {
-                *v = Value::Bool(n != 0);
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// Each top-level condition counted alone against the rows the defaults
-/// keep: `repo:other → 0 of 5`.
-fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Value, Failure> {
-    let count = |sql: &str| -> Result<u64, Failure> {
-        let r = reader.query(sql, params)?;
-        Ok(r.first().and_then(|r| r["count(*)"].as_u64()).unwrap_or(0))
-    };
-    let of = count(&program.why_of)?;
-    let mut out = vec![];
-    for w in &program.why {
-        out.push(json!({ "clause": w.clause, "matches": count(&w.sql)?, "of": of }));
-    }
-    Ok(Value::Array(out))
-}
+#[cfg(test)]
+pub(crate) use polylogue_store::query::execute::shape_value;
+pub(crate) use polylogue_store::query::execute::{attach, present, snippets, why};
 
 /// Session keys for usage and its response drill-down, from the same compiler
 /// path as a session measure. Presentation limits never limit the population.
@@ -772,6 +524,7 @@ pub(crate) fn prepare_usage(
     text: &str,
     context: std::sync::Arc<crate::operation::Context>,
     embeddings: bool,
+    ranking_identity: Option<String>,
 ) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
     let text = format!("{text} | measure usage");
     let ask = Ask {
@@ -782,6 +535,7 @@ pub(crate) fn prepare_usage(
         session: None,
         context,
         embeddings,
+        ranking_identity,
         near: None,
         fields: &[],
     };
@@ -802,20 +556,14 @@ pub(crate) fn select_usage(
         detail: None,
     })?;
     let select = || -> Result<Option<Vec<i64>>, Failure> {
-        if m.everything {
-            Ok(None)
+        Ok(if m.everything {
+            None
         } else {
-            Ok(Some(
-                reader
-                    .query(
-                        &format!("SELECT _pk FROM ({})", program.sql),
-                        &values(&program.params),
-                    )?
-                    .iter()
-                    .filter_map(|r| r["_pk"].as_i64())
-                    .collect(),
-            ))
-        }
+            Some(reader.query_keys(
+                program,
+                polylogue_store::query::execute::QueryPopulation::Answer,
+            )?)
+        })
     };
     let sessions = with_similarity(reader, program, near, select)?;
     Ok(polylogue_store::measure::Selection {
@@ -829,6 +577,7 @@ pub(crate) fn usage_selection(
     text: &str,
     context: std::sync::Arc<crate::operation::Context>,
     embeddings: bool,
+    ranking_identity: Option<String>,
     near: Option<&NearFn<'_>>,
 ) -> Result<
     (
@@ -837,7 +586,7 @@ pub(crate) fn usage_selection(
     ),
     Failure,
 > {
-    let (plan, options) = prepare_usage(reader, text, context, embeddings)?;
+    let (plan, options) = prepare_usage(reader, text, context, embeddings, ranking_identity)?;
     let program = polylogue_store::query::lower(&plan, &options)?;
     Ok((select_usage(reader, &program, near)?, plan.question_id()))
 }

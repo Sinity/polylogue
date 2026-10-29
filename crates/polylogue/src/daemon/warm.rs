@@ -6,10 +6,6 @@
 //! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values.
-//! - **Answers**: recent query pages, by request and read position. A page
-//!   continuing a cursor is fixed by the cursor's clock and is good until
-//!   the next write; a first page also reads the clock (`since:2h`, live
-//!   states), so it is good for [`FIRST_PAGE_FOR`] at most.
 //! - **Archive counts** for `status`: counted by a worker of their own when
 //!   the daemon starts and whenever a `status` finds them older than its
 //!   read, while `status` answers from memory (no counts until the first
@@ -26,18 +22,13 @@
 use crate::embeddings::Provider;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{self, Loaded, Similarity};
-use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long a first page is answered again from memory.
-pub const FIRST_PAGE_FOR: Duration = Duration::from_secs(5);
 /// Recent `similar:` texts whose query vectors are kept.
 const QUERY_VECTORS: usize = 256;
-/// Recent answers kept.
-const ANSWERS: usize = 128;
 /// A count this quick is repeated inside the `status` request.
 const QUICK_COUNT: Duration = Duration::from_millis(50);
 
@@ -76,20 +67,9 @@ impl<V: Clone> Recent<V> {
     }
 }
 
-#[derive(Clone)]
-struct Answer {
-    position: String,
-    made: Instant,
-    /// A first page, which read the clock.
-    clocked: bool,
-    value: Value,
-}
-
 /// Hits and misses since the daemon started, for `status`.
 #[derive(Default)]
 struct Counts {
-    answers_reused: AtomicU64,
-    answers_computed: AtomicU64,
     vector_loads: AtomicU64,
     query_vectors_reused: AtomicU64,
 }
@@ -111,7 +91,6 @@ pub struct Warm {
     recount: std::sync::Condvar,
     recount_wanted: std::sync::atomic::AtomicBool,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
-    answers: Mutex<Recent<Answer>>,
     counts: Counts,
 }
 
@@ -125,7 +104,6 @@ impl Default for Warm {
             // The first count starts with the daemon.
             recount_wanted: std::sync::atomic::AtomicBool::new(true),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
-            answers: Mutex::new(Recent::new(ANSWERS)),
             counts: Counts::default(),
         }
     }
@@ -212,34 +190,6 @@ impl Warm {
             .similarity(&query)
             .map(Arc::new)
             .map_err(|e| e.to_string())
-    }
-
-    /// A recent answer to the same request at the same read position.
-    pub fn answer(&self, request: &str, position: &str) -> Option<Value> {
-        let found = self.answers.lock().ok()?.get(request)?;
-        let fresh =
-            found.position == position && (!found.clocked || found.made.elapsed() < FIRST_PAGE_FOR);
-        if fresh {
-            self.counts.answers_reused.fetch_add(1, Ordering::Relaxed);
-            Some(found.value)
-        } else {
-            None
-        }
-    }
-
-    pub fn keep_answer(&self, request: String, position: String, clocked: bool, value: &Value) {
-        self.counts.answers_computed.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut answers) = self.answers.lock() {
-            answers.put(
-                request,
-                Answer {
-                    position,
-                    made: Instant::now(),
-                    clocked,
-                    value: value.clone(),
-                },
-            );
-        }
     }
 
     /// The archive counts for `status`. When the last count was quick
@@ -364,9 +314,6 @@ impl Warm {
         if let Ok(mut q) = self.query_vectors.lock() {
             q.clear();
         }
-        if let Ok(mut a) = self.answers.lock() {
-            a.clear();
-        }
         if let Ok(mut c) = self.archive_counts.lock() {
             *c = None;
         }
@@ -386,8 +333,6 @@ impl Warm {
             vectors,
             vector_loads: self.counts.vector_loads.load(Ordering::Relaxed),
             query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),
-            answers_reused: self.counts.answers_reused.load(Ordering::Relaxed),
-            answers_computed: self.counts.answers_computed.load(Ordering::Relaxed),
         }
     }
 }

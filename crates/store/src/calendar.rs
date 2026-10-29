@@ -47,11 +47,19 @@ pub fn day_label(day: &DaySetting, ms: i64) -> Result<String> {
 }
 pub fn week_label(day: &DaySetting, ms: i64) -> Result<String> {
     let week = date(day, ms)?.iso_week_date();
-    Ok(format!("{:04}-W{:02}", week.year(), week.week()))
+    Ok(format!("{}-W{:02}", year_label(week.year()), week.week()))
 }
 pub fn month_label(day: &DaySetting, ms: i64) -> Result<String> {
     let date = date(day, ms)?;
-    Ok(format!("{:04}-{:02}", date.year(), date.month()))
+    Ok(format!("{}-{:02}", year_label(date.year()), date.month()))
+}
+
+fn year_label(year: i16) -> String {
+    if year < 0 {
+        format!("-{:04}", year.unsigned_abs())
+    } else {
+        format!("{year:04}")
+    }
 }
 
 #[cfg(test)]

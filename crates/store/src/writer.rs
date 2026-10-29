@@ -32,6 +32,7 @@ mod chain;
 mod confirmed;
 mod primary;
 mod primary_capture;
+mod query_objects;
 mod source_snapshot;
 mod scoped;
 mod query_objects;

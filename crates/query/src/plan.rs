@@ -10,19 +10,6 @@ use std::collections::BTreeMap;
 mod objects;
 pub use objects::{catalog_fingerprint, replay, validate_object};
 
-fn native_catalog() -> Catalog {
-    crate::catalog::catalog(&[], &[])
-}
-
-/// A supported native declaration version, independent of transport vocabulary.
-/// This belongs in execution bindings, never in semantic question identity.
-pub fn catalog_fingerprint() -> String {
-    // Catalog has no arbitrary JSON maps; derived struct serialization has stable
-    // field order even when serde_json's preserve_order feature is enabled.
-    let bytes = serde_json::to_vec(&native_catalog()).expect("native catalog is serializable");
-    blake3::hash(&bytes).to_hex().to_string()
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct ResolvedDefinition {
     pub name: String,
@@ -120,12 +107,14 @@ fn prepare_inner(
         },
         &mut |_| Ok(()),
     )?;
+    canonical_references(&mut query)?;
     let bound =
         query_language::bind::bind(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
     query = bound.query().clone();
     walk(&mut query, &mut |_| Ok(()), &mut |condition| {
         resolve(&mut condition.kind)
     })?;
+    canonical_references(&mut query)?;
     let original =
         query_language::bind::bind(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
     let mut identity = original.query().clone();
@@ -318,6 +307,35 @@ fn visit_condition(
         _ => {}
     }
     Ok(())
+}
+
+fn canonical_references(query: &mut Query) -> Result<(), QueryError> {
+    walk(query, &mut |_| Ok(()), &mut |condition| {
+        let text = match &condition.kind {
+            ConditionKind::Reference { reference } => reference.clone(),
+            ConditionKind::Match {
+                field,
+                value: Value::Scalar { text, .. },
+            } => format!("{field}:{text}"),
+            _ => return Ok(()),
+        };
+        let Some(reference) = polylogue_model::Reference::parse(&text)
+            .ok()
+            .filter(|reference| crate::catalog::reference_unit(reference).is_some())
+        else {
+            return Ok(());
+        };
+        let text = reference.to_string();
+        let (kind, value) = text.split_once(':').expect("native reference namespace");
+        condition.kind = ConditionKind::Match {
+            field: kind.into(),
+            value: Value::Scalar {
+                text: value.into(),
+                quoted: true,
+            },
+        };
+        Ok(())
+    })
 }
 
 #[cfg(test)]

@@ -270,7 +270,7 @@ pub fn daily(
     })
 }
 
-/// Human prompts by weekday (Monday first) and hour of the operator's day.
+/// Human prompts by logical weekday (Monday first) and civil clock hour.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Rhythm {
     pub zone: Option<String>,
@@ -293,7 +293,11 @@ pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &DaySetting) -> R
             continue;
         };
         let local = ts.to_zoned(zone.clone());
-        let wd = local.weekday().to_monday_zero_offset() as usize;
+        let wd = day
+            .logical_day(ts)
+            .map_err(|error| crate::StoreError::Invalid(error.to_string()))?
+            .weekday()
+            .to_monday_zero_offset() as usize;
         grid[wd][local.hour() as usize] += 1;
         prompts += 1;
     }

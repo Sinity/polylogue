@@ -879,7 +879,7 @@ impl<'a> Compiler<'a> {
         // OR and NOT keep the outer defaults: only top-level ANDs expand.
         let bound = self.saved_defaults(scope, top)?;
         let named = named_fields(&bound, scope.unit);
-        let reference = bound.iter().any(|c| self.is_reference(c));
+        let reference = bound.iter().any(|c| self.is_reference(c, scope.unit));
         Ok(units::spec(scope.unit)
             .defaults
             .iter()
