@@ -8,7 +8,7 @@
 //! every waiting entry before it returns.
 //!
 //! The indexes are contentless: a hit is a `text.id`, and its snippet is
-//! selected from raw stored text, then masked in source context before cutting.
+//! selected and cut from stored text.
 //! Text is folded the same way when
 //! indexed and when searched ([`polylogue_model::text`]): the tokenizer
 //! folds case and accents, and letters with a stroke are folded first, so
@@ -19,7 +19,6 @@ use polylogue_model::text::{key, tokens};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
-use std::ops::ControlFlow;
 
 /// The words of `text` as the index splits them: runs of letters and
 /// digits, lowercased, letters with a stroke folded as the index folds
@@ -66,10 +65,7 @@ struct Hit {
 }
 
 impl Reader<'_> {
-    /// Keep raw FTS selection, then mask chosen source blocks before cutting.
-    /// A chosen block is masked alone when masking reaches it with no PEM
-    /// block open; otherwise its session's prefix is masked once, through
-    /// its last such hit.
+    /// Cut the chosen source blocks around the raw FTS matches.
     pub fn snippets(
         &self,
         fts: &str,
@@ -119,51 +115,19 @@ impl Reader<'_> {
             }
             Ok(())
         };
-        for (session, mut pending) in sessions {
-            // Masking runs over a session's blocks in order, and the only
-            // state it carries across a block boundary is an open PEM block.
-            // A hit block reached with none open masks the same alone; the
-            // others are masked after reading their session from its start.
-            let alone = crate::ordered_blocks::masked_alone(
-                self.conn()?,
-                session,
-                &pending.keys().copied().collect(),
-            )?;
-            for block_pk in alone {
-                let Some(indices) = pending.remove(&block_pk) else {
-                    continue;
-                };
-                let mut block = crate::ordered_blocks::one(self.conn()?, block_pk)?;
-                polylogue_model::masking::MessageMasker::default().block(&mut block);
+        for (_, pending) in sessions {
+            for (block_pk, indices) in pending {
+                let block = crate::ordered_blocks::one(self.conn()?, block_pk)?;
                 cut_from(&block, indices, &mut snippets)?;
             }
-            if pending.is_empty() {
-                continue;
-            }
-            let mut masker = polylogue_model::masking::MessageMasker::default();
-            crate::ordered_blocks::visit(self.conn()?, session, |mut source| {
-                masker.block(&mut source.block);
-                if let Some(indices) = pending.remove(&source.pk) {
-                    cut_from(&source.block, indices, &mut snippets)?;
-                }
-                Ok(if pending.is_empty() {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                })
-            })?;
-            if !pending.is_empty() {
-                return Err(StoreError::Invalid(
-                    "selected snippet blocks are absent from this read".into(),
-                ));
-            }
         }
+
         Ok(snippets)
     }
 
     /// The best-ranked text matching `fts` (an FTS5 expression) within
     /// `within`: prose first, then tool output when no prose matches.
-    /// Selection stays raw; decoding and source masking happen after the batch.
+    /// Selection stays raw; chosen blocks are decoded after the batch.
     fn snippet_hit(&self, fts: &str, within: Within) -> Result<Option<Hit>> {
         let (scope, pk) = match within {
             Within::Session(pk) => (

@@ -679,8 +679,10 @@ const WRITTEN: &[Command] = &[
         print: print::read, mcp: true, http: true,
         ..CLI
     }),
-    Command {
+    typed_command!(AttachmentCommand, crate::protocol::attachment::Arguments, crate::protocol::attachment::Answer, {
         name: "attachment",
+        reason: "Retrieve the checked stored bytes behind an attachment descriptor",
+        latency: command_surface::LatencyClass::Read,
         help: "Read a bounded range of the stored bytes for a message attachment",
         args: &[
             pos("message", Kind::Text, "The message ID"),
@@ -711,7 +713,7 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         http: true,
         ..CLI
-    },
+    }),
     Command {
         name: "note read",
         help: "Read one exact note revision, including an older or withdrawn revision",
