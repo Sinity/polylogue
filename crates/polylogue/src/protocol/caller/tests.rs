@@ -18,7 +18,13 @@ fn nearest_harness_ancestor_selects_the_identity_that_actually_launched_the_clie
         (17, Origin::new("codex").unwrap()),
         (12, Origin::new("claude-code").unwrap()),
     ];
-    let caller = select(&env, &ancestors, true, Some("shell.scope".into()));
+    let caller = select(
+        "synthetic-machine",
+        &env,
+        &ancestors,
+        true,
+        Some("shell.scope".into()),
+    );
     assert_eq!(caller.session.unwrap().to_string(), "codex:inner");
     assert_eq!(caller.harness_pid, Some(17));
     assert_eq!(caller.tool_call_id.as_deref(), Some("call-one"));
@@ -27,6 +33,7 @@ fn nearest_harness_ancestor_selects_the_identity_that_actually_launched_the_clie
 #[test]
 fn known_harness_without_session_remains_an_agent_identity() {
     let caller = select(
+        "synthetic-machine",
         &BTreeMap::new(),
         &[(17, Origin::new("gemini-cli").unwrap())],
         true,
@@ -77,7 +84,13 @@ fn conflicting_environment_identities_without_a_harness_ancestor_stay_unattribut
         ("CLAUDE_CODE_SESSION_ID", "one"),
         ("CODEX_THREAD_ID", "two"),
     ]);
-    let caller = select(&env, &[], true, Some("shell.scope".into()));
+    let caller = select(
+        "synthetic-machine",
+        &env,
+        &[],
+        true,
+        Some("shell.scope".into()),
+    );
     assert!(caller.controlling_terminal);
     assert!(caller.ambiguous_harness);
     assert_eq!(
