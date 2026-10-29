@@ -246,7 +246,7 @@ CREATE TABLE variant (
   from_lang   TEXT, to_lang TEXT,  -- BCP 47
   author      TEXT NOT NULL, via TEXT NOT NULL,
   method      TEXT,                -- free text or a reference: model, prompt, rubric used
-  machine     TEXT NOT NULL, created_at INTEGER NOT NULL, commit_seq INTEGER NOT NULL
+  machine     TEXT NOT NULL, created_at TEXT NOT NULL, commit_seq INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE variant_part (
@@ -259,6 +259,8 @@ CREATE TABLE variant_part (
   PRIMARY KEY (variant, n)
 ) STRICT, WITHOUT ROWID;
 ```
+
+`created_at` stores the full RFC 3339 timestamp, including submillisecond precision; the local write counter is never part of record identity.
 
 Revisions use `base`; withdrawal is an ordinary `withdrawal` that `withdraws variant:<root>[@<rev>]`; currency follows the rule under Currency with `base` in place of `revises`. Finer alignment inside one part is expressed by span references in assertions about the part.
 

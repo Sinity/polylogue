@@ -167,3 +167,32 @@ fn variant_text_is_a_separate_derived_index_and_tracks_canonical_lifecycle() {
         0
     );
 }
+
+#[test]
+fn variant_restoration_is_exact_idempotent_and_refuses_changed_facts() {
+    let mut original = archive();
+    let mut request = request("first", None, "Original");
+    request.at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap();
+    write_request(&mut original, &request, 1);
+    let effect = capture(&original, &request, 1).unwrap();
+    assert_eq!(effect.variants[0].created_at, request.at);
+    let restored = archive();
+    apply(&restored, &effect, 10).unwrap();
+    apply(&restored, &effect, 11).unwrap();
+    let mut expected = effect.variants[0].clone();
+    expected.commit_seq = 10;
+    assert_eq!(rows::get(&restored, "first").unwrap(), Some(expected));
+    let mut changed = effect.clone();
+    changed.variant_parts[0].body = "Changed".into();
+    assert!(matches!(
+        apply(&restored, &changed, 12),
+        Err(StoreError::Conflict(_))
+    ));
+    let mut body = String::new();
+    rows::parts(&restored, "first", |part| {
+        body = part.body;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(body, "Original");
+}

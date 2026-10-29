@@ -11,7 +11,7 @@ CREATE TABLE variant (
   via TEXT NOT NULL,
   method TEXT,
   machine TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
   commit_seq INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX variant_root ON variant(root);
