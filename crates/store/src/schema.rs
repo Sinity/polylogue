@@ -27,6 +27,7 @@ pub(crate) const INDEX_MIGRATIONS: &[&str] = &[
     include_str!("schema/index_2.sql"),
     include_str!("schema/index_3.sql"),
     include_str!("schema/index_4.sql"),
+    include_str!("schema/index_5.sql"),
 ];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[];
 

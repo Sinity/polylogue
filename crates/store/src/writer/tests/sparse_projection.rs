@@ -510,6 +510,7 @@ fn sparse_index_migration_keeps_native_versions_and_infers_dense_positions() {
         ALTER TABLE session_record DROP COLUMN admitted; ALTER TABLE document_source DROP COLUMN admitted;
         ALTER TABLE event_source DROP COLUMN admitted; ALTER TABLE link_source DROP COLUMN admitted;
         ALTER TABLE parse_state DROP COLUMN commit_seq;
+        ALTER TABLE parse_state DROP COLUMN checkpoint;
         ALTER TABLE message ADD COLUMN pem INTEGER NOT NULL DEFAULT 0;
         CREATE INDEX message_pem ON message(session_pk) WHERE pem <> 0;
         PRAGMA user_version=1;").unwrap();

@@ -1046,7 +1046,7 @@ impl Inner {
                 "prepared bytes do not match the new blob".into(),
             ));
         }
-        let prepared = file.into_prepared();
+        let prepared = file.into_prepared()?;
         if self.segment.is_none() {
             self.segment = Some(crate::blobs::open_writer(
                 &self.archive,
@@ -1054,7 +1054,7 @@ impl Inner {
             )?);
         }
         let writer = self.segment.as_mut().expect("opened segment writer");
-        let pending = match writer.append_group(vec![prepared], |_| Ok(None)) {
+        let pending = match writer.append_group(std::iter::once(Ok(prepared)), |_| Ok(None)) {
             Ok(pending) => pending,
             Err(error) => {
                 self.segment.take();

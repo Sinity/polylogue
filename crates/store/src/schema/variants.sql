@@ -11,7 +11,7 @@ CREATE TABLE variant (
   via TEXT NOT NULL,
   method TEXT,
   machine TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
   commit_seq INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX variant_root ON variant(root);
@@ -26,3 +26,22 @@ CREATE TABLE variant_part (
   body BLOB NOT NULL,
   PRIMARY KEY(variant,n)
 ) STRICT, WITHOUT ROWID;
+
+CREATE INDEX variant_part_source ON variant_part(variant,of,n);
+
+-- Observed ingress is computed locally; declared claims retain sender history.
+CREATE TABLE variant_import (
+  ref TEXT NOT NULL,
+  variant TEXT NOT NULL REFERENCES variant(id),
+  observed INTEGER NOT NULL CHECK(observed IN (0,1)),
+  input TEXT NOT NULL,
+  chain INTEGER NOT NULL,
+  machine TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  at TEXT NOT NULL,
+  commit_seq INTEGER NOT NULL,
+  PRIMARY KEY(ref,input,chain,machine,actor,observed,at)
+) STRICT, WITHOUT ROWID;
+CREATE UNIQUE INDEX variant_import_observed
+  ON variant_import(ref,input,chain,machine,actor) WHERE observed=1;
+CREATE INDEX variant_import_variant ON variant_import(variant);

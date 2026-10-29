@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn punctuation_splits_words_instead_of_failing() {
     assert_eq!(
-        words("/realm/project/polylogue: cargo-nextest!"),
-        ["realm", "project", "polylogue", "cargo", "nextest"]
+        words("/workspace/project/polylogue: cargo-nextest!"),
+        ["workspace", "project", "polylogue", "cargo", "nextest"]
     );
     assert!(words("--- !!").is_empty());
 }

@@ -1,5 +1,4 @@
 use super::*;
-use polylogue_model::Author;
 
 #[test]
 fn request_ids_are_uuid_v7() {
@@ -12,7 +11,7 @@ fn request_ids_are_uuid_v7() {
 #[test]
 fn search_requests_with_resolved_content_hashes_conflict_without_changing_data() {
     let w = crate::fixture::writer::WriterArchive::new();
-    let kept = crate::user_writes::request_now(
+    let kept = crate::fixture::authored::operator_request(
         "kept".into(),
         UserWrite::KeepResult {
             name: Some("example".into()),
@@ -21,14 +20,13 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             read_at: "{\"now\":1}".into(),
         },
     );
-    let saved = crate::user_writes::request_now(
+    let saved = crate::fixture::authored::operator_request(
         "saved".into(),
         UserWrite::AddNote {
             note: NewNote {
                 kind: NoteKind::SavedQuery,
                 key: Some("example".into()),
                 value: Some("sessions".into()),
-                author: Author::Operator,
                 targets: vec![],
                 relations: vec![],
                 revises: None,
@@ -84,13 +82,16 @@ fn typed_setting_catalog_refuses_bad_writes_without_recording_a_request() {
         ("bad-type", "signal.interrupts_per_hour", "many"),
     ] {
         let request = UserRequest {
+            authorship: polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
             id: id.into(),
             machine: "synthetic-machine".into(),
             at: Timestamp::from_unix_ms(1).unwrap(),
             write: UserWrite::SetSetting {
                 key: key.into(),
                 value: value.into(),
-                author: Author::Operator,
                 machine: None,
             },
         };
@@ -106,13 +107,16 @@ fn typed_setting_catalog_refuses_bad_writes_without_recording_a_request() {
 fn typed_setting_answer_and_snapshot_share_defaults_scope_and_authored_value() {
     let w = crate::fixture::writer::WriterArchive::new();
     let request = UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
         id: "setting-on".into(),
         machine: "synthetic-machine".into(),
         at: Timestamp::from_unix_ms(123).unwrap(),
         write: UserWrite::SetSetting {
             key: "browser.actions".into(),
             value: "on".into(),
-            author: Author::Operator,
             machine: None,
         },
     };
@@ -141,13 +145,16 @@ fn typed_setting_answer_and_snapshot_share_defaults_scope_and_authored_value() {
 fn host_settings_default_to_the_accepting_machine_and_do_not_leak_to_other_hosts() {
     let w = crate::fixture::writer::WriterArchive::new();
     let request = UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
         id: "host-attention".into(),
         machine: "host-a".into(),
         at: Timestamp::from_unix_ms(123).unwrap(),
         write: UserWrite::SetSetting {
             key: "signal.interrupts_per_hour".into(),
             value: "7".into(),
-            author: Author::Operator,
             machine: None,
         },
     };

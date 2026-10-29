@@ -18,12 +18,12 @@ CREATE TABLE assertion (
   root        TEXT NOT NULL,     -- the first revision of this assertion; equals id for a first revision
   kind        TEXT NOT NULL,     -- closed list, see Kinds
   key         TEXT,              -- meaning per kind
-  value       TEXT,              -- text, or JSON checked against the kind's shape
+  value       TEXT,              -- JSON checked against the kind's shape; text is a JSON string
   author      TEXT NOT NULL,     -- computed, see Authorship
   via         TEXT NOT NULL,     -- mcp | cli | web | extension | hook | markup | import | daemon
   machine     TEXT NOT NULL,
-  created_at  INTEGER NOT NULL,  -- the writer's clock: display, age and as-of reads; never revision order
-  valid_until INTEGER,           -- optional; after it the assertion is shown as expired and left out of briefs
+  created_at  TEXT NOT NULL,     -- RFC3339 with full precision: display, age and as-of reads; never revision order
+  valid_until TEXT,              -- optional RFC3339 expiry; shown as expired and left out of briefs
   commit_seq  INTEGER NOT NULL   -- this archive's write counter: change feed and send order only
 ) STRICT;
 
@@ -31,7 +31,7 @@ CREATE TABLE assertion_link (
   assertion   TEXT NOT NULL REFERENCES assertion(id),
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
-  seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
+  seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; NULL for a waiting target
   PRIMARY KEY (assertion, role, ref)
 ) STRICT;
 CREATE INDEX assertion_link_ref ON assertion_link(ref, role);
@@ -42,6 +42,15 @@ CREATE INDEX assertion_root     ON assertion(root);
 - **One link table.** Target, evidence, scope, origin and every relation are the same fact: this assertion points at that reference, in this role.
 - **Nothing computed is stored.** Currency, conflicts, withdrawal, judgment state, target state and work-item state are computed when read, so they can never disagree with the links they come from.
 - **Nothing expires by itself.** `valid_until` changes how an assertion is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
+
+A waiting link's original `seen_hash = NULL` stays immutable. Its later binding
+is a separate typed fact naming the exact target version and text hash, with
+the authoritative admission and availability evidence that makes that version
+readable. Primary mode publishes the binding through its existing confirmed
+product path. Imported declared bindings remain provenance claims, separate
+from a newly observed canonical binding; a claimed earlier timestamp never
+overwrites one. Reads use the binding alongside the original link. Replaying
+the original unbound assertion neither changes nor conflicts with it.
 
 ## Kinds
 
@@ -54,7 +63,6 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `highlight` | colour name | optional text | many | a `span:` | `::highlight` |
 | `title` | — | text | one per about | a session | `::title` |
 | `outcome` | — | `solved`, `partial` or `abandoned` | one per about | a session | `::outcome` |
-| `hidden` | — | optional reason | one per about | a session | — |
 | `claim` | optional label | text, optional `check` (see Checked claims) | many | anything | `::claim` |
 | `finding` | optional label | text | many | anything; `derived_from` the `result:` or `query:` it rests on | `::finding` |
 | `decision` | optional label | text, optional `{alternatives, constraints, reverse_if}` | many | anything | `::decision` |
@@ -74,7 +82,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `setting` | setting name | the setting's value ([operations.md](operations.md#configuration)) | one per name | — | — |
 
 - **Marks.** Starring, pinning and other marks are tags. "Pin" stays the word for a mark; a page slot that shows an exact revision is `fixed` ([pages.md](pages.md#layouts)).
-- **`hidden`** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the ordinary `assert` and `withdraw` verbs.
+- **The `hidden` tag** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the ordinary `assert` and `withdraw` verbs.
 - **A summary is a variant,** not a kind (see Variants). A pass is the one way to group bulk annotation.
 
 ## Links
@@ -107,7 +115,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 
 **Exact references hold.** Judgments, questions, `fixed` slots, kept results and deliveries store `assertion:X@R`. A new revision never moves them, and a judgment of R says nothing about R+1.
 
-**Cardinality is enforced at write** from the kind declaration. Writing a single-valued kind (`title`, `outcome`, `hidden`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged".
+**Cardinality is enforced at write** from the kind declaration. Writing a single-valued kind (`title`, `outcome`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged".
 
 ## Authorship
 
@@ -122,7 +130,7 @@ Every authored record in Polylogue (assertions, variants, withdrawals, judgments
   - `agent`, when the agent channel or a historical record establishes an agent but neither its harness nor its session is known;
   - `script:<unit>`, a named non-interactive program, named by its cgroup unit (a systemd unit or a scope);
   - `unattributed`, when there is no evidence either way.
-- **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `hook`, `markup`, `import` or `daemon`. There is no evidence blob and no confidence score.
+- **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `desktop`, `hook`, `markup`, `import` or `daemon`. There is no evidence blob and no confidence score.
 
 **No surface accepts an author from the caller.** A request that names an author is refused as `invalid`. A `--session` option or `session` argument names a subject or a recipient, never the author.
 
@@ -136,6 +144,7 @@ The client process gathers its identity and sends it as `caller` in the request 
 | **CLI**, the second channel | Harness identities come from the environment (`CLAUDE_CODE_SESSION_ID` with `CLAUDE_PID`; `CODEX_THREAD_ID` with `CODEX_TOOL_CALL_ID`; `HERMES_SESSION_ID`; `GEMINI_CLI=1`, which has no session). With several present, the nearest harness ancestor in the process tree wins; with several and no harness ancestor, `unattributed`. A Claude identity is refined to a subagent when the spool holds exactly one open `PreToolUse` Bash event from that `CLAUDE_PID` whose command runs `polylogue`; otherwise the main session stands, which is correct as the root of the work. With no harness identity, a controlling terminal gives `operator`; no terminal gives `script:<unit>` when the process's cgroup names a unit, else `unattributed`. |
 | **Web UI and HTTP API** | `operator`, `via: web`, with no inspection of the browser. The web UI is the operator's channel; agents are directed to MCP. |
 | **Browser extension** | `operator`, `via: extension`, for acts in the extension's own UI. Acts it performs for a request (a chat send, a backfill) carry the requester's author from the request record ([extension.md](extension.md#authorship-from-the-extension)). |
+| **Desktop notifications** | `operator`, `via: desktop`, for acts reported by the trusted desktop notification adapter; a rule cannot supply this channel. |
 | **Hooks** | records a hook writes for a session are `agent:<that session>` or `daemon`, never `operator` |
 | **Markup** | the author of the message the marker is in (see Markup) |
 | **Import of user state** | each record keeps its stored author |
@@ -169,7 +178,7 @@ Authorship is for honest attribution, not a security boundary: all agents run as
 **Target state.** Each `about` and `evidence` link is shown in one of four states:
 - **current**: the target exists and its text hash equals `seen_hash`;
 - **changed since**: the hash differs (a better version merged, a re-parse produced different text), shown as "the text has changed since this was written";
-- **waiting**: well formed, not stored yet, its session live or incomplete; it attaches on arrival with no rewrite and fills `seen_hash` then;
+- **waiting**: well formed, not stored yet, its session live or incomplete; it attaches through a canonical binding when its exact source text becomes available, without rewriting the original link;
 - **missing**: the session is complete and the ID never appeared; `status` counts these.
 
 **Work-item state** is computed from links, never from text:
@@ -240,13 +249,13 @@ CREATE TABLE variant (
   id          TEXT PRIMARY KEY,
   root        TEXT NOT NULL,       -- first revision of this rendition
   base        TEXT,                -- the revision this one revises (same root); NULL for a first revision
-  source      TEXT NOT NULL,       -- exact reference: session, message, range, block, span, assertion@rev, page@rev, variant@rev
+  source      TEXT NOT NULL,       -- exact reference: session, message, range, block, document, span, assertion@rev, page@rev, variant@rev
   source_hash BLOB NOT NULL,       -- BLAKE3 of the source text at that revision
   kind        TEXT NOT NULL,       -- translation | transliteration | simplification | summary
   from_lang   TEXT, to_lang TEXT,  -- BCP 47
   author      TEXT NOT NULL, via TEXT NOT NULL,
   method      TEXT,                -- free text or a reference: model, prompt, rubric used
-  machine     TEXT NOT NULL, created_at INTEGER NOT NULL, commit_seq INTEGER NOT NULL
+  machine     TEXT NOT NULL, created_at TEXT NOT NULL, commit_seq INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE variant_part (
@@ -260,9 +269,12 @@ CREATE TABLE variant_part (
 ) STRICT, WITHOUT ROWID;
 ```
 
+`created_at` stores the full RFC 3339 timestamp, including submillisecond precision; the local write counter is never part of record identity. Import history is attached to each exact rendition and part: the original author and machine stay on the rendition, locally observed ingress records its computed actor, and sender claims remain declared history. A retry preserves the first admitted observed timestamp, even after a clock rollback.
+
 Revisions use `base`; withdrawal is an ordinary `withdrawal` that `withdraws variant:<root>[@<rev>]`; currency follows the rule under Currency with `base` in place of `revises`. Finer alignment inside one part is expressed by span references in assertions about the part.
 
 - **Hierarchical.** A variant whose source is a session consists of parts, one per rendered block, each naming its original block in `of`; its messages are the groups of parts by their original message. A message variant is the same at message grain. A summary is one or more parts whose `of` is what the producing agent chose (the session, a range of messages, a block), with relation `summarizes`; the agent declares that mapping when it writes the variant. Reading `variant:V` renders the original's structure with parts swapped in; unmapped children show "untranslated" and `omits` parts show "omitted".
+- **Several parts for one child.** Several parts may name the same exact `of` reference, for example an expansion. They render in ascending `n`, with two LF characters between their bodies, using the same separator as the recorded variant-text stream. The rendered group names the exact variant revision and original child; a single-part rendering may name the exact part. Distinct current rendition roots remain an ambiguity rather than being concatenated. A group is rendered as omitted only when every part declares `omits`; a mixed group keeps its content and shows a partial-omission indication. Declared relations are retained per part, rather than selecting one relation as a winner.
 - **Bound to its source revision.** Revisions and variants are separate dimensions: a page can exist in Polish and English, each with its own revisions. Correcting a rendition writes a revision with the same source. When the source changes (`source_hash` or an `of_hash` differs), the variant shows "rendition of an earlier text"; translating again is a new variant.
 - **Assertions get variants too.** The source may be `assertion:X@R`. An agent translating an annotated session writes one session variant plus one variant per assertion it renders, each pointing back at its original. On a variant view, assertions about the variant itself are shown; for an assertion about an original child, its current variant in the view's language is shown when one exists, otherwise a count with a link ("2 notes in the original"). The original's text is never shown as if it were about the variant.
 - **Variants never count** as support, votes or judgment.
@@ -344,7 +356,7 @@ Performance rules: currency, conflict and withdrawn state are computed by indexe
 - **kinds-round-trip**: every kind writes and reads back its key, value and links through the daemon, the `assertions` unit and `read assertion:`; a malformed value and an unknown kind are refused with the shape error (property test over generated assertions).
 - **links-by-role**: an assertion with `about`, `evidence`, `scope` and `origin` links reads back each in its role, and `kv:` matches only `about` links at the unit's grain.
 - **highlight-changed-since**: a `highlight` on a `span:` written from the web reader and one from `::highlight` both read back on the message; after a better version of the message merges, both show "changed since".
-- **waiting-target-attaches**: a reference written before its message is stored attaches on arrival with no rewrite and fills `seen_hash`; on a completed session whose ID never appears, it counts as missing.
+- **waiting-target-attaches**: a reference written before its message is stored attaches with a separate canonical binding while preserving its original unbound link; on a completed session whose ID never appears, it counts as missing.
 - **stale-base-refused**: two revisions of one base through the daemon: the second is refused `stale`, naming the first. The law runs standalone and in primary mode against a test Sinex with the first revision still unconfirmed; the memory adapter's `create` then `str_replace` on the unconfirmed `create` succeeds, and a second `str_replace` on the old base is refused.
 - **concurrent-revisions-conflict**: the same two revisions written on two archives and imported into one give a conflict; `conflict:true` matches; a single-valued read matches neither; a revision of both resolves it.
 - **withdraw-and-restore**: with R1←R2, withdrawing R2 makes R1 current; withdrawing that withdrawal makes R2 current; withdrawing the root hides the family except under `withdrawn:*`.

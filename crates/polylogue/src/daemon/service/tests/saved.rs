@@ -16,7 +16,6 @@ fn save(id: &str, name: &str, text: &str) -> Request {
         request_id: id.into(),
         name: name.into(),
         text: text.into(),
-        author: Author::Operator,
     }
 }
 
@@ -113,7 +112,6 @@ fn watch(id: &str, query: &str, hold: Option<&str>) -> Request {
         name: Some("my watch".into()),
         hold: hold.map(str::to_owned),
         notify: false,
-        author: Author::Operator,
     }
 }
 
@@ -151,4 +149,54 @@ fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
         },
     );
     assert_eq!(ok(&d, query("result:quoted-pipe.matches"))["count"], 1);
+}
+
+#[test]
+fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id() {
+    use polylogue_model::Author;
+    use polylogue_model::authorship::{Authorship, Channel};
+    let d = test_daemon::start("first prompt");
+    let caller = Authorship {
+        author: Author::AgentOrigin(polylogue_model::Origin::new("codex").unwrap()),
+        via: Channel::Mcp,
+    };
+    let limit = crate::daemon::execution::limit(None, Default::default());
+    let call = |authorship: &Authorship| {
+        handle_with_caller(
+            save("caller-request", "caller-query", "sessions"),
+            &d.daemon,
+            &limit,
+            authorship,
+        )
+    };
+    assert!(matches!(call(&caller), Response::Ok { .. }));
+    let reads = d.daemon.reads.reader().unwrap();
+    let original = reads.user_request("caller-request").unwrap().unwrap();
+    assert_eq!(original.authorship, caller);
+    assert_eq!(
+        reads.note("caller-request").unwrap().unwrap().author,
+        caller.author
+    );
+    drop(reads);
+    let Response::Ok { data } = call(&caller) else {
+        panic!("retry failed")
+    };
+    assert_eq!(data["repeat"], true);
+    for changed in [
+        Authorship {
+            author: Author::Operator,
+            via: caller.via,
+        },
+        Authorship {
+            author: caller.author.clone(),
+            via: Channel::Cli,
+        },
+    ] {
+        assert!(matches!(call(&changed), Response::Error { kind, .. } if kind == "conflict"));
+    }
+    let reads = d.daemon.reads.reader().unwrap();
+    assert_eq!(
+        reads.user_request("caller-request").unwrap(),
+        Some(original)
+    );
 }

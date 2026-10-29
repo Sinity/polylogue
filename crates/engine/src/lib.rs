@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 mod collectors;
 mod databases;
 mod import;
+mod parser_checkpoint;
 mod pass;
 mod plan;
 mod reparse;

@@ -11,7 +11,7 @@ fn verify(
     member: &package::Member,
     file: &polylogue_model::bundle::FileDescriptor,
 ) -> std::io::Result<()> {
-    let mut source = std::fs::File::open(&member.bytes)?;
+    let mut source = member.bytes.reader().map_err(std::io::Error::other)?;
     let mut hash = blake3::Hasher::new();
     let mut bytes = [0; 65536];
     let mut size = 0u64;
@@ -102,7 +102,9 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                 .is_some_and(|origin| origin.name == "polylogue-bundle")
         })
         .filter_map(|(index, member)| {
-            std::fs::File::open(&member.bytes)
+            member
+                .bytes
+                .reader()
                 .ok()
                 .and_then(|file| polylogue_sources::polylogue_bundle::manifest(file).ok())
                 .map(|_| index)
@@ -132,9 +134,12 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
             .parent()
             .unwrap_or(Path::new(""))
             .to_path_buf();
-        let manifest = polylogue_sources::polylogue_bundle::manifest(std::fs::File::open(
-            &members[primary].bytes,
-        )?)
+        let manifest = polylogue_sources::polylogue_bundle::manifest(
+            members[primary]
+                .bytes
+                .reader()
+                .map_err(std::io::Error::other)?,
+        )
         .map_err(invalid)?;
         let mut records = vec![primary];
         let mut listed = BTreeSet::from([primary]);
@@ -145,8 +150,12 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
             verify(&members[inventory_index], inventory)?;
             listed.insert(inventory_index);
             members[inventory_index].origin = polylogue_sources::origin::by_name(KEPT);
-            let input =
-                std::io::BufReader::new(std::fs::File::open(&members[inventory_index].bytes)?);
+            let input = std::io::BufReader::new(
+                members[inventory_index]
+                    .bytes
+                    .reader()
+                    .map_err(std::io::Error::other)?,
+            );
             for entry in serde_json::Deserializer::from_reader(input).into_iter::<InventoryRecord>()
             {
                 let entry = entry.map_err(std::io::Error::other)?;
@@ -175,7 +184,12 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
             polylogue_store::export_items::ExportItems::new().map_err(std::io::Error::other)?;
         for index in records {
             let mut first = index == primary;
-            let mut reader = std::io::BufReader::new(std::fs::File::open(&members[index].bytes)?);
+            let mut reader = std::io::BufReader::new(
+                members[index]
+                    .bytes
+                    .reader()
+                    .map_err(std::io::Error::other)?,
+            );
             polylogue_sources::polylogue_bundle::visit(&mut reader, |range, record, _| {
                 if first {
                     first = false;

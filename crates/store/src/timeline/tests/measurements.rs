@@ -64,25 +64,24 @@ fn million_message_measurements() {
     let baseline = {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
-        dates(&r, &day).unwrap();
         // The reviewed page queries, before per-source ranges and time indexes.
         let source = "SELECT m.at, 'message' AS kind,m.id FROM message m UNION ALL SELECT e.at,'event',e.id FROM event e UNION ALL SELECT n.created_at,'note',n.id FROM a.note n";
         let (since, until) = crate::calendar::range(&day.day, date).unwrap();
         let (month_since, month_until) = crate::calendar::month(&day.day, date).unwrap();
         let page_sql = format!(
-            "WITH activity AS ({source}),dated AS (SELECT *,pl_timeline_date(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND at >= {since} AND at < {until} AND date='2024-03-31' ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
+            "WITH activity AS ({source}),dated AS (SELECT *,pl_day(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND at >= {since} AND at < {until} AND date='2024-03-31' ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
         );
         let years_sql = format!(
-            "WITH activity AS ({source}),dated AS (SELECT *,pl_timeline_date(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND substr(date,-5)='03-31' AND at < {until} ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
+            "WITH activity AS ({source}),dated AS (SELECT *,pl_day(at) AS date FROM activity) SELECT at,kind,id,date FROM dated WHERE date IS NOT NULL AND substr(date,-5)='03-31' AND at < {until} ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51"
         );
         let calendar_sql = format!(
-            "WITH activity AS ({source}) SELECT pl_timeline_date(at) AS date,count(*) AS records FROM activity WHERE at >= {month_since} AND at < {month_until} GROUP BY date ORDER BY date"
+            "WITH activity AS ({source}) SELECT pl_day(at) AS date,count(*) AS records FROM activity WHERE at >= {month_since} AND at < {month_until} GROUP BY date ORDER BY date"
         );
         let cost_sql = format!(
-            "WITH activity AS (SELECT m.at,'message' AS kind,m.id FROM message m WHERE {}),dated AS (SELECT *,pl_timeline_date(at) AS date FROM activity) SELECT at,kind,id,date FROM dated ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51",
+            "WITH activity AS (SELECT m.at,'message' AS kind,m.id FROM message m WHERE {}),dated AS (SELECT *,pl_day(at) AS date FROM activity) SELECT at,kind,id,date FROM dated ORDER BY date IS NULL,CASE WHEN date IS NULL THEN 0 ELSE at END,kind,id LIMIT 51",
             "m.role='assistant' AND m.written_by='model' AND coalesce(json_extract(m.attrs_json,'$.production.response_boundary_unknown'),0)=0 AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown')"
         );
-        json!({"day":sample("before day",||r.query(&page_sql,&[]).unwrap().len()),"across_years":sample("before across years",||r.query(&years_sql,&[]).unwrap().len()),"calendar":sample("before calendar",||r.query(&calendar_sql,&[]).unwrap().len()),"cost_page":sample("before cost page",||r.query(&cost_sql,&[]).unwrap().len()),"plans":{"day":r.query(&format!("EXPLAIN QUERY PLAN {page_sql}"),&[]).unwrap(),"cost_page":r.query(&format!("EXPLAIN QUERY PLAN {cost_sql}"),&[]).unwrap()}})
+        r.with_clock(&day,||json!({"day":sample("before day",||r.query(&page_sql,&[]).unwrap().len()),"across_years":sample("before across years",||r.query(&years_sql,&[]).unwrap().len()),"calendar":sample("before calendar",||r.query(&calendar_sql,&[]).unwrap().len()),"cost_page":sample("before cost page",||r.query(&cost_sql,&[]).unwrap().len()),"plans":{"day":r.query(&format!("EXPLAIN QUERY PLAN {page_sql}"),&[]).unwrap(),"cost_page":r.query(&format!("EXPLAIN QUERY PLAN {cost_sql}"),&[]).unwrap()}}))
     };
     let late_session = crate::measure::Selection {
         sessions: Some(vec![session + 999]),

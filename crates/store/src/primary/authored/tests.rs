@@ -15,6 +15,10 @@ fn cache() -> Connection {
 }
 fn request(id: &str, at: i64, write: UserWrite) -> UserRequest {
     UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
         id: id.into(),
         machine: "machine-a".into(),
         at: Timestamp::from_unix_ms(at).unwrap(),
@@ -26,9 +30,6 @@ fn note(value: &str) -> NewNote {
         kind: NoteKind::Note,
         key: None,
         value: Some(value.into()),
-        author: Author::Agent(Some(
-            polylogue_model::SessionId::parse("codex:session-a").unwrap(),
-        )),
         targets: vec![Reference::parse("repo:example").unwrap()],
         relations: vec![],
         revises: None,
@@ -107,13 +108,16 @@ fn enqueue(conn: &mut Connection, id: &str, at: i64) {
 #[test]
 fn prepared_effect_is_private_and_preserves_full_note_provenance() {
     let mut conn = cache();
-    let r = request(
+    let mut r = request(
         "note-a",
         10,
         UserWrite::AddNote {
             note: note("first"),
         },
     );
+    r.authorship.author = Author::Agent(Some(
+        polylogue_model::SessionId::parse("codex:session-a").unwrap(),
+    ));
     let p = prepare_with(&conn, &r, &[], &[]).unwrap();
     assert_eq!(count(&conn, "note"), 0);
     assert_eq!(count(&conn, "client_request"), 0);
@@ -268,6 +272,23 @@ fn duplicate_and_conflicting_retries_preserve_original_effect_and_outcome() {
         prepare_with(&conn, &retry, std::slice::from_ref(&p), &[]).unwrap(),
         p
     );
+    for authorship in [
+        polylogue_model::authorship::Authorship {
+            author: Author::Unattributed,
+            via: r.authorship.via,
+        },
+        polylogue_model::authorship::Authorship {
+            author: r.authorship.author.clone(),
+            via: polylogue_model::authorship::Channel::Mcp,
+        },
+    ] {
+        let mut changed = retry.clone();
+        changed.authorship = authorship;
+        assert!(matches!(
+            prepare_with(&conn, &changed, std::slice::from_ref(&p), &[]),
+            Err(StoreError::Conflict(_))
+        ));
+    }
     commit(&mut conn, &p, 2);
     commit(&mut conn, &p, 3);
     assert_eq!(prepare_with(&conn, &retry, &[], &[]).unwrap(), p);
@@ -418,7 +439,6 @@ fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
             UserWrite::SetSetting {
                 key: "browser.actions".into(),
                 value: "on".into(),
-                author: Author::Operator,
                 machine: None,
             },
         ),

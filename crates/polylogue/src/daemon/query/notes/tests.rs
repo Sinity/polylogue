@@ -4,28 +4,36 @@ use crate::daemon::{Request, Response};
 use crate::test_daemon;
 use polylogue_model::{Author, NewNote, NoteKind, SessionId};
 
-fn add(w: &test_daemon::TestDaemon, id: &str, note: NewNote) {
-    let response = handle(
+fn add(w: &test_daemon::TestDaemon, id: &str, authored: (Author, NewNote)) {
+    let limit = crate::daemon::execution::limit(None, Default::default());
+    let response = crate::daemon::service::handle_with_caller(
         Request::AddNote {
             request_id: id.into(),
-            note,
+            note: authored.1,
         },
         &w.daemon,
+        &limit,
+        &polylogue_model::authorship::Authorship {
+            author: authored.0,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
     );
     assert!(matches!(response, Response::Ok { .. }), "{response:?}");
 }
 
-fn note(author: Author, target: &str, value: &str) -> NewNote {
-    NewNote {
-        kind: NoteKind::Lesson,
-        key: None,
-        value: Some(value.into()),
+fn note(author: Author, target: &str, value: &str) -> (Author, NewNote) {
+    (
         author,
-        targets: vec![Reference::parse(target).unwrap()],
-        relations: vec![],
-        revises: None,
-        valid_until: None,
-    }
+        NewNote {
+            kind: NoteKind::Lesson,
+            key: None,
+            value: Some(value.into()),
+            targets: vec![Reference::parse(target).unwrap()],
+            relations: vec![],
+            revises: None,
+            valid_until: None,
+        },
+    )
 }
 
 fn values(notes: &[Note]) -> Vec<&str> {
@@ -43,7 +51,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
         note(Author::Operator, "repo:morrow", "run nextest"),
     );
     let mut revised = note(Author::Operator, "repo:morrow", "run cargo nextest");
-    revised.revises = Some(first.into());
+    revised.1.revises = Some(first.into());
     add(&w, "018f0000-0000-7000-8000-000000000002", revised);
     let agent = Author::Agent(Some(SessionId::parse("codex:x").unwrap()));
     add(
@@ -73,7 +81,6 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
         Request::Withdraw {
             request_id: "018f0000-0000-7000-8000-000000000005".into(),
             note: first.into(),
-            author: Author::Operator,
             reason: Some("superseded".into()),
         },
         &w.daemon,

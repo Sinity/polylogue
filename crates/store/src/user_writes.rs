@@ -13,33 +13,6 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 
-/// Construct trusted request metadata at the I/O boundary.
-pub fn request_now(id: String, write: UserWrite) -> UserRequest {
-    UserRequest {
-        id,
-        machine: machine_id(),
-        at: now(),
-        write,
-    }
-}
-
-pub fn now() -> Timestamp {
-    let ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    Timestamp::from_unix_ns(i128::try_from(ns).unwrap_or(0))
-        .unwrap_or_else(|| Timestamp::from_unix_ms(0).expect("the epoch is a valid timestamp"))
-}
-
-/// `/etc/machine-id`, or `unknown` where there is none.
-pub fn machine_id() -> String {
-    std::fs::read_to_string("/etc/machine-id")
-        .map(|s| s.trim().to_owned())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into())
-}
-
 /// A new UUIDv7 for a request.
 pub fn new_request_id() -> String {
     uuid::Uuid::now_v7().to_string()
@@ -110,16 +83,12 @@ pub(crate) fn apply_using(
             resolved.revises = heads.into_iter().next();
             add_note(tx, r, &resolved, seq)
         }
-        UserWrite::Withdraw {
-            note,
-            author,
-            reason,
-        } => {
+        UserWrite::Withdraw { note, reason } => {
             let first_note = first_note_of(tx, note)?;
             tx.execute(
                 &source.sql("INSERT INTO @source.note(id, first_note, kind, value, author, machine, created_at, commit_seq)
                  VALUES (?1, ?1, 'withdrawal', ?2, ?3, ?4, ?5, ?6)"),
-                params![r.id, reason, author.to_string(), r.machine, at, seq],
+                params![r.id, reason, r.authorship.author.to_string(), r.machine, at, seq],
             )?;
             tx.execute(
                 &source.sql("INSERT INTO @source.note_relation(note_id, kind, other) VALUES (?1, 'withdraws', ?2)"),
@@ -288,7 +257,6 @@ pub(crate) fn apply_using(
         UserWrite::SetSetting {
             key,
             value,
-            author,
             machine,
         } => {
             let owner = if matches!(source, crate::source::Source::Cache) {
@@ -309,7 +277,7 @@ pub(crate) fn apply_using(
                     target_machine.as_deref().unwrap_or("*"),
                     key,
                     value,
-                    author.to_string(),
+                    r.authorship.author.to_string(),
                     at,
                     seq
                 ],
@@ -372,7 +340,7 @@ fn add_note(
             note.kind.as_str(),
             note.key,
             note.value,
-            note.author.to_string(),
+            r.authorship.author.to_string(),
             r.machine,
             r.at.unix_ms(),
             note.valid_until.map(Timestamp::unix_ms),

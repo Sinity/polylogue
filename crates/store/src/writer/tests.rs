@@ -8,6 +8,7 @@ mod extent_checkpoint;
 mod input_events;
 mod resolution;
 mod sparse_projection;
+mod tool_durations;
 
 fn write_test_rows(
     tx: &Transaction<'_>,
@@ -970,12 +971,11 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     sender
         .0
         .send_user((
-            Box::new(crate::user_writes::request_now(
+            Box::new(crate::fixture::authored::operator_request(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
                     key: "browser.actions".into(),
                     value: "on".into(),
-                    author: polylogue_model::Author::Operator,
                     machine: None,
                 },
             )),
@@ -1205,12 +1205,11 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     let user = std::thread::spawn({
         let sender = sender.clone();
         move || {
-            sender.user(crate::user_writes::request_now(
+            sender.user(crate::fixture::authored::operator_request(
                 crate::user_writes::new_request_id(),
                 polylogue_model::user::UserWrite::SetSetting {
                     key: "browser.actions".into(),
                     value: "on".into(),
-                    author: polylogue_model::Author::Operator,
                     machine: None,
                 },
             ))

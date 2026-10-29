@@ -4,7 +4,7 @@ use super::{Caller, Command, LIVE, NOTICES, Values};
 use crate::briefing::{Ask, StartSource};
 use crate::browser::actions::{ChatFile, ChatRequest};
 use crate::daemon::Request;
-use polylogue_model::{Author, NewNote, NoteKind, Reference};
+use polylogue_model::{NewNote, NoteKind, Reference};
 use std::path::PathBuf;
 
 type Built = Result<Request, String>;
@@ -167,27 +167,14 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
     })
 }
 
-/// The author: over MCP always the calling agent; elsewhere the operator
-/// unless `agent` is given.
-pub fn note_add(_: &Command, v: &Values, caller: &Caller) -> Built {
-    let session = || match v.0.get("agent").and_then(|a| a.as_str()) {
-        Some(s) => polylogue_model::SessionId::parse(s)
-            .map(Some)
-            .map_err(|e| e.to_string()),
-        None => Ok(None),
-    };
-    let author = if caller.surface == super::Surface::Mcp || v.0.contains_key("agent") {
-        Author::Agent(session()?)
-    } else {
-        Author::Operator
-    };
+/// Build write intent; the accepting transport supplies its authorship.
+pub fn note_add(_: &Command, v: &Values, _: &Caller) -> Built {
     noted(
         v,
         NewNote {
             kind: note_kind(&v.text("kind").unwrap_or_else(|| "note".into()))?,
             key: v.text("key"),
             value: v.text("body"),
-            author,
             targets: targets(&v.list("targets"))?,
             relations: v
                 .text("relations")
@@ -258,7 +245,6 @@ pub fn note_tag(_: &Command, v: &Values, _: &Caller) -> Built {
             kind: NoteKind::Tag,
             key: v.text("tag"),
             value: v.text("value"),
-            author: Author::Operator,
             targets: targets(&v.list("targets"))?,
             relations: vec![],
             revises: None,
@@ -271,7 +257,6 @@ pub fn note_withdraw(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Withdraw {
         request_id: v.request_id(),
         note: v.text("note").unwrap_or_default(),
-        author: Author::Operator,
         reason: v.text("reason"),
     })
 }
@@ -416,33 +401,23 @@ pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {
     ))
 }
 
-/// `save NAME QUERY`. Over MCP the author is the calling agent.
-pub fn save(_: &Command, v: &Values, caller: &Caller) -> Built {
+/// `save NAME QUERY`.
+pub fn save(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Save {
         request_id: v.request_id(),
         name: v.text("name").unwrap_or_default(),
         text: v.text("query").unwrap_or_default(),
-        author: if caller.surface == super::Surface::Mcp {
-            Author::Agent(None)
-        } else {
-            Author::Operator
-        },
     })
 }
 
-/// `watch QUERY`. Over MCP the author is the calling agent.
-pub fn watch(_: &Command, v: &Values, caller: &Caller) -> Built {
+/// `watch QUERY`.
+pub fn watch(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(Request::Watch {
         request_id: v.request_id(),
         query: v.text("query").unwrap_or_default(),
         name: v.text("name"),
         hold: v.text("for"),
         notify: v.flag("notify"),
-        author: if caller.surface == super::Surface::Mcp {
-            Author::Agent(None)
-        } else {
-            Author::Operator
-        },
     })
 }
 
