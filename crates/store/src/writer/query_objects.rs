@@ -132,6 +132,16 @@ impl Inner {
     pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<QueryCustody> {
         crate::query_objects::validate_run(run)?;
         if let Some(sinex) = &self.sinex {
+            match self.primary_cache_ready() {
+                Ok(()) => {
+                    if crate::query_objects::known_run(&self.index, run)? {
+                        return Ok(QueryCustody::Canonical);
+                    }
+                }
+                Err(StoreError::ScopeChanged) => {}
+                Err(error) => return Err(error),
+            }
+
             sinex.prepare_named_products(
                 &format!("query-run:{}", run.id),
                 &[crate::primary::ProductWrite {
@@ -185,6 +195,16 @@ impl Inner {
     ) -> Result<QueryCustody> {
         crate::query_objects::validate_run_outcome(outcome)?;
         if let Some(sinex) = &self.sinex {
+            match self.primary_cache_ready() {
+                Ok(()) => {
+                    if crate::query_objects::known_run_outcome(&self.index, outcome)? {
+                        return Ok(QueryCustody::Canonical);
+                    }
+                }
+                Err(StoreError::ScopeChanged) => {}
+                Err(error) => return Err(error),
+            }
+
             sinex.prepare_named_products(
                 &format!("query-run-outcome:{}", outcome.run),
                 &[crate::primary::ProductWrite {

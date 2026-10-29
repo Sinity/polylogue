@@ -201,6 +201,46 @@ pub(crate) fn known_object(conn: &Connection, object: &QueryObject) -> Result<bo
     Ok(true)
 }
 
+pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
+    let source = Source::of(conn)?;
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            &source.sql("SELECT run FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
+            [run.id.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(bytes) = bytes else {
+        return Ok(false);
+    };
+    let existing: QueryRun = crate::encoding::unpack_json(&bytes)?;
+    if existing != *run {
+        return Err(StoreError::Conflict(format!("run:{}", run.id)));
+    }
+    Ok(true)
+}
+
+pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) -> Result<bool> {
+    let source = Source::of(conn)?;
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            &source.sql(
+                "SELECT completion FROM @source.query_run WHERE id=?1 AND completion IS NOT NULL",
+            ),
+            [outcome.run.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(bytes) = bytes else {
+        return Ok(false);
+    };
+    let existing: QueryRunOutcome = crate::encoding::unpack_json(&bytes)?;
+    if existing != *outcome {
+        return Err(StoreError::Conflict(format!("run outcome:{}", outcome.run)));
+    }
+    Ok(true)
+}
+
 fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
     Ok(crate::encoding::pack_bytes(&serde_json::to_vec(value)?)?)
 }
