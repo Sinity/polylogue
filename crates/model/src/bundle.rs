@@ -202,7 +202,7 @@ pub struct AuthoredRecord {
 /// A stream starts with exactly one manifest. All remaining values are
 /// independently staged and validated before the receiving archive writes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "record", content = "data", rename_all = "snake_case")]
+#[serde(tag = "record", content = "data", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Record {
     Manifest(Box<Manifest>),
     Session(SessionRecord),
