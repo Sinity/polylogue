@@ -87,8 +87,7 @@ pub(crate) fn validate_result_bindings(
     if result_outputs.is_empty() {
         return Ok(());
     }
-    let kept =
-        crate::selection::kept_results(conn, source).map_err(|error| invalid(error.to_string()))?;
+    let kept = crate::selection::kept_results(conn, source)?;
     let actual = polylogue_query::Bindings {
         kept,
         ..Default::default()

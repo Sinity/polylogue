@@ -83,6 +83,9 @@ impl PreparedSelection<'_> {
     pub fn plan(&self) -> &Plan {
         &self.plan
     }
+    pub fn direct_reference(&self) -> Option<&Reference> {
+        self.direct.as_ref()
+    }
     pub fn question_id(&self) -> QuestionId {
         self.plan.question_id()
     }
@@ -110,6 +113,11 @@ pub struct SelectionFactKey {
     pub values: Vec<Value>,
 }
 
+impl SelectionFactKey {
+    pub fn reference(&self) -> Option<Reference> {
+        identity_reference(self.unit, &self.values)
+    }
+}
 #[derive(Debug, Clone)]
 pub struct SelectionRow {
     pub reference: Option<Reference>,
@@ -804,29 +812,34 @@ fn reference_query(reference: &Reference) -> Result<String, SelectionError> {
         _ => return Err(invalid("invalid_query", "reference has no readable row")),
     })
 }
+fn identity_reference(unit: Unit, values: &[Value]) -> Option<Reference> {
+    let text = |at: usize| values.get(at)?.as_str();
+    match unit {
+        Unit::Sessions => SessionId::parse(text(0)?).ok().map(Reference::Session),
+        Unit::Messages => MessageId::parse(text(0)?).ok().map(Reference::Message),
+        Unit::Documents => DocumentId::parse(text(0)?).ok().map(Reference::Document),
+        Unit::Events => Some(Reference::Event(text(0)?.to_owned())),
+        Unit::Blocks | Unit::ToolCalls => Some(Reference::Block {
+            message: MessageId::parse(text(0)?).ok()?,
+            n: values.get(1)?.as_u64()?,
+        }),
+        _ => None,
+    }
+}
 fn row_reference(program: &Program, row: &Value) -> Option<Reference> {
     if program.shape != Shape::Rows {
         return None;
     }
-    let string = |key: &str| row[key].as_str();
-    let native = |index: usize| row[format!("_identity{index}")].as_str();
-    match program.unit {
-        Unit::Sessions => SessionId::parse(native(0).or_else(|| string("id"))?)
-            .ok()
-            .map(Reference::Session),
-        Unit::Messages => MessageId::parse(native(0).or_else(|| string("id"))?)
-            .ok()
-            .map(Reference::Message),
-        Unit::Documents => DocumentId::parse(native(0).or_else(|| string("id"))?)
-            .ok()
-            .map(Reference::Document),
-        Unit::Events => Some(Reference::Event(native(0).or_else(|| string("id"))?.into())),
-        Unit::Blocks | Unit::ToolCalls => Some(Reference::Block {
-            message: MessageId::parse(native(0).or_else(|| string("message"))?).ok()?,
-            n: row["_identity1"].as_u64().or_else(|| row["idx"].as_u64())?,
-        }),
-        _ => None,
-    }
+    let RowBasis::Native { unit, columns } = &program.row_basis else {
+        return None;
+    };
+    identity_reference(
+        *unit,
+        &columns
+            .iter()
+            .map(|name| row[name].clone())
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn aggregate_values(program: &Program, row: &Value) -> BTreeMap<String, Option<f64>> {
