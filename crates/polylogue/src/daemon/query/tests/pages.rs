@@ -1,6 +1,117 @@
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
+#[test]
+fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
+    let w = morrow();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let request = ask("messages where parser");
+    let opts = options(&reader, &request, request.now, 1).unwrap();
+    let program = polylogue_query::compile(request.text, &opts).unwrap();
+    let params = values(&program.params);
+    let count_sql = program.count_sql();
+    let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
+    let rows = reader.query(&program.sql, &params).unwrap();
+    assert!(!rows.is_empty());
+    assert_eq!(count, rows.len() as u64);
+    assert_eq!(without, 0);
+    // A row count needs selection, never the answer's presentation order.
+    // Inspect SQLite's executable operations rather than timing a tiny fixture.
+    let operations = reader
+        .query(&format!("EXPLAIN {count_sql}"), &params)
+        .unwrap();
+    assert!(operations.iter().all(|op| op["opcode"] != "SorterOpen"));
+}
+
+#[test]
+fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
+    let w = morrow();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let request = ask(
+        "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)",
+    );
+    let opts = options(&reader, &request, request.now, 1).unwrap();
+    let program = polylogue_query::compile(request.text, &opts).unwrap();
+    let params = values(&program.params);
+    let count_sql = program.count_sql();
+    let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
+    let rows = reader.query(&program.sql, &params).unwrap();
+    assert!(!rows.is_empty());
+    assert_eq!(count, rows.len() as u64);
+    assert_eq!(without, 0);
+    let operations = reader
+        .query(&format!("EXPLAIN {count_sql}"), &params)
+        .unwrap();
+    assert!(operations.iter().all(|op| op["opcode"] != "SorterOpen"));
+}
+
+#[test]
+fn count_execution_plans_do_not_change_page_cursor_binding() {
+    let w = morrow();
+    let mut request = ask("messages where parser");
+    request.page_size = Some(1);
+    let first = run_q(&w, request).unwrap();
+    let mut request = ask("messages where parser");
+    request.page_size = Some(1);
+    let cursor = Cursor::decode(first["next"].as_str().unwrap()).unwrap();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let opts = options(&reader, &request, cursor.now, cursor.seed).unwrap();
+    let mut program = polylogue_query::compile(request.text, &opts).unwrap();
+    assert!(
+        cursor
+            .check(&program, &page::question(&program, &opts, false).unwrap())
+            .is_ok()
+    );
+    program.row_count_sql = None;
+    program.row_membership_sql = None;
+    assert!(
+        cursor
+            .check(&program, &page::question(&program, &opts, false).unwrap())
+            .is_ok()
+    );
+    program.sql = format!("SELECT * FROM ({}) WHERE 0", program.sql);
+    assert!(
+        cursor
+            .check(&program, &page::question(&program, &opts, false).unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
+    let w = morrow();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for query in [
+        "messages where parser",
+        "messages where parser | limit 2",
+        "messages where parser | offset 1",
+        "messages where parser | sort by id | limit 2 | offset 1",
+        "messages | sort by id | limit 2 | where written_by:human",
+        "messages where parser | distinct",
+        "messages where parser | group by written_by | count",
+        "sessions where exists tool_call(action:shell) | matches | limit 2",
+        "messages where parser | union (messages where done)",
+        "messages where parser | union (messages where done) | limit 2",
+        "messages where parser | union (messages where done | limit 2)",
+        "messages where parser | union (messages where done | union (messages where chrono))",
+        "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)",
+        "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow) | limit 2",
+    ] {
+        let request = ask(query);
+        let opts = options(&reader, &request, request.now, 1).unwrap();
+        let program = polylogue_query::compile(query, &opts).unwrap();
+        let params = values(&program.params);
+        let rows = reader.query(&program.sql, &params).unwrap();
+        let (count, without) = reader.query_counts(&program.count_sql(), &params).unwrap();
+        assert_eq!(count, rows.len() as u64, "{query}");
+        assert_eq!(without, 0, "{query}");
+    }
+}
+
 fn page(home: &ClaudeHome, cursor: Option<&str>) -> Result<Value, Failure> {
     let pool = home.reads();
     let reader = pool.reader().unwrap();
