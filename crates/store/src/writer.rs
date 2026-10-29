@@ -35,7 +35,6 @@ mod primary_capture;
 mod query_objects;
 mod source_snapshot;
 mod scoped;
-mod query_objects;
 pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
 mod native_hook_fields;
