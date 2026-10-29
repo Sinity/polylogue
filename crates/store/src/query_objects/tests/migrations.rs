@@ -80,7 +80,14 @@ fn confirmed_query_components_rebuild_out_of_order_and_keep_unknown_first_run_ho
     };
     let later = run(&object, "later", 1, read_at.clone());
     let mut earlier = run(&object, "earlier", 10_000, read_at);
-    earlier.binding.replay.context.clock.now = "2026-10-29T12:00:00.123456789Z".parse().unwrap();
+    earlier
+        .binding
+        .original_mut()
+        .unwrap()
+        .replay
+        .context
+        .clock
+        .now = "2026-10-29T12:00:00.123456789Z".parse().unwrap();
     let tx = conn.transaction().unwrap();
     let completed = outcome(&earlier, u64::MAX);
     apply_run_outcome(&tx, &completed).unwrap();
@@ -98,6 +105,8 @@ fn confirmed_query_components_rebuild_out_of_order_and_keep_unknown_first_run_ho
     let mut conflicting = earlier.clone();
     conflicting
         .binding
+        .original_mut()
+        .unwrap()
         .query_options
         .fields
         .push("forged".into());

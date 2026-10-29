@@ -160,6 +160,7 @@ impl Engine {
         self.writer.store_bytes(
             prepared,
             Batch {
+                required_disposition: None,
                 input: plan.input.clone(),
                 change: plan.change.clone(),
                 observation: Some(
@@ -261,6 +262,7 @@ impl Engine {
         }
         parse.prepare();
         let batch = Batch {
+            required_disposition: None,
             input: plan.input.clone(),
             change: plan.change.clone(),
             observation: None,

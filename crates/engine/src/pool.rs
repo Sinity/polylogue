@@ -566,6 +566,7 @@ pub(crate) fn run(
     }
     out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     let batch = Batch {
+        required_disposition: None,
         input: job.input,
         change: job.change,
         observation: job.observation,

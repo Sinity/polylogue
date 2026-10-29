@@ -53,6 +53,8 @@ pub enum Product {
         native_fields: Vec<polylogue_model::HookFieldClaim>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         declared_injections: Vec<polylogue_model::injection::InjectionEvidence>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        declared_attachment_bindings: Vec<polylogue_model::attachment_binding::AttachmentBinding>,
     },
     Document {
         reading: Reading,
@@ -317,6 +319,7 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
     let mut message_projections = output.message_projections;
     let mut native_fields = output.native_hook_fields;
     let mut declared_injections = output.declared_injections;
+    let mut declared_attachment_bindings = output.declared_attachment_bindings;
     products.extend(
         output
             .messages
@@ -329,6 +332,9 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
                 projection: message_projections.remove(&index),
                 native_fields: native_fields.remove(&index).unwrap_or_default(),
                 declared_injections: declared_injections.remove(&index).unwrap_or_default(),
+                declared_attachment_bindings: declared_attachment_bindings
+                    .remove(&index)
+                    .unwrap_or_default(),
             }),
     );
     products.extend(output.documents.into_iter().map(|facts| Product::Document {

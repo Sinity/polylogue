@@ -21,13 +21,15 @@ pub struct ImportedAs {
     pub path: Option<String>,
 }
 
-impl Reader<'_> {
-    /// Every chain of every input whose index is behind its stored bytes,
-    /// by input and chain. A chain that ends in an incomplete record the
-    /// parser is waiting on is not behind.
-    pub fn chains_behind_index(&self, versions: &[(String, String)]) -> Result<Vec<BehindChain>> {
-        let mut stmt = self.conn()?.prepare(
-            "WITH inputs AS MATERIALIZED (
+/// The existing lag planner and completeness proof read this same row stream.
+pub(super) struct ChainState {
+    pub plan: BehindChain,
+    pub origin: String,
+    pub version: Option<String>,
+    pub status: Option<String>,
+}
+
+const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
                 SELECT input, max(number) AS number, max(produced = 'imported') AS imported
                 FROM source_revision GROUP BY input
             ), chains AS (
@@ -48,7 +50,7 @@ impl Reader<'_> {
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.detail = CAST(c.length AS TEXT), 0), p.reading_version
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.detail = CAST(c.length AS TEXT), 0), p.reading_version, p.status
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN source_revision l ON l.input = c.input AND l.number = s.number
@@ -57,48 +59,75 @@ impl Reader<'_> {
             LEFT JOIN source_observation o ON o.rowid = fp.observation
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
-            WHERE c.length > 0
+            WHERE (?2 OR (c.length > 0
               AND (p.input_pk IS NULL
                 OR (NOT COALESCE(p.status = 'waiting' AND p.detail = CAST(c.length AS TEXT), 0) AND p.parsed_upto < c.length)
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
-                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version))
-            ORDER BY 5,(SELECT max(o.seen_at) FROM source_observation o WHERE o.input=c.input) DESC,c.input,c.chain DESC",
-        )?;
-        let versions_json = serde_json::to_string(versions)?;
-        Ok(stmt
-            .query_map([versions_json], |r| {
-                let imported: bool = r.get(4)?;
-                Ok(BehindChain {
-                    input: r.get(0)?,
-                    current: r.get(3)?,
-                    imported: imported
-                        .then(|| -> rusqlite::Result<_> {
-                            Ok(ImportedAs {
-                                format: r.get(5)?,
-                                path: r.get(6)?,
-                            })
-                        })
-                        .transpose()?,
-                    reading_changed: {
-                        let format: String = r.get(5)?;
-                        let previous: Option<String> = r.get(10)?;
-                        versions
-                            .iter()
-                            .find(|(name, _)| name == &format)
-                            .is_some_and(|(_, version)| previous.as_ref() != Some(version))
-                    },
+                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version))))
+            ORDER BY 5,(SELECT max(o.seen_at) FROM source_observation o WHERE o.input=c.input) DESC,c.input,c.chain DESC"#;
+
+impl Reader<'_> {
+    /// Every chain whose index is behind its stored bytes. Waiting at the exact
+    /// recorded source length is current for that reading version.
+    pub fn chains_behind_index(&self, versions: &[(String, String)]) -> Result<Vec<BehindChain>> {
+        let mut chains = Vec::new();
+        self.visit_chains_behind_index(versions, &mut |chain| {
+            chains.push(chain);
+            Ok(std::ops::ControlFlow::Continue(()))
+        })?;
+        Ok(chains)
+    }
+
+    /// Streams lagging chains without collecting the source backlog.
+    pub fn visit_chains_behind_index(
+        &self,
+        versions: &[(String, String)],
+        visit: &mut dyn FnMut(BehindChain) -> Result<std::ops::ControlFlow<()>>,
+    ) -> Result<()> {
+        self.visit_chain_states(versions, false, &mut |state| visit(state.plan))
+    }
+
+    pub(super) fn visit_chain_states(
+        &self,
+        versions: &[(String, String)],
+        all: bool,
+        visit: &mut dyn FnMut(ChainState) -> Result<std::ops::ControlFlow<()>>,
+    ) -> Result<()> {
+        let token = self.scope_token();
+        let mut statement = self.conn()?.prepare(CHAIN_STATES)?;
+        let mut rows = statement.query(params![serde_json::to_string(versions)?, all])?;
+        while let Some(row) = rows.next()? {
+            token.check()?;
+            let imported: bool = row.get(4)?;
+            let origin: String = row.get(5)?;
+            let version: Option<String> = row.get(10)?;
+            let reading_changed = versions.iter().find(|(name, _)| name == &origin)
+                .is_some_and(|(_, expected)| version.as_ref() != Some(expected));
+            let state = ChainState {
+                plan: BehindChain {
+                    input: row.get(0)?,
+                    current: row.get(3)?,
+                    imported: if imported {
+                        Some(ImportedAs { format: origin.clone(), path: row.get(6)? })
+                    } else { None },
+                    reading_changed,
                     progress: ChainProgress {
-                        chain: r.get(1)?,
-                        length: r.get::<_, i64>(2)? as u64,
-                        parsed_upto: r.get::<_, i64>(7)? as u64,
-                        parsed: r.get(8)?,
-                        waiting: r.get(9)?,
+                        chain: row.get(1)?,
+                        length: row.get::<_, i64>(2)? as u64,
+                        parsed_upto: row.get::<_, i64>(7)? as u64,
+                        parsed: row.get(8)?,
+                        waiting: row.get(9)?,
                         arrival_rank: if imported { 2 } else { 0 },
                     },
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
+                },
+                origin,
+                version,
+                status: row.get(11)?,
+            };
+            if visit(state)?.is_break() { break; }
+        }
+        token.check()
     }
 }
 

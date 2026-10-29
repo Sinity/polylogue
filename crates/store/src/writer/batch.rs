@@ -176,6 +176,9 @@ pub struct Batch {
     /// Actual source precondition sampled before provider IO. It has no
     /// authority to assign the resulting native chain or revision.
     pub basis: Option<crate::primary::SourceBasis>,
+    /// Restricts this new acquisition to physical custody; it cannot request
+    /// source acceptance or promote a previously unresolved receipt.
+    pub required_disposition: Option<crate::primary::CaptureDisposition>,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The

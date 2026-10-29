@@ -273,6 +273,7 @@ impl<'a> InputWriter<'a> {
             )
         });
         let batch = Batch {
+            required_disposition: None,
             input: self.source.input.clone(),
             change: if !self.exists {
                 Change::First

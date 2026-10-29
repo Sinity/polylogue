@@ -132,6 +132,18 @@ impl Inner {
     pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<QueryCustody> {
         crate::query_objects::validate_run(run)?;
         if let Some(sinex) = &self.sinex {
+            if matches!(
+                &run.binding,
+                polylogue_model::query_objects::RunBinding::Continuation { .. }
+            ) {
+                self.primary_cache_ready()?;
+                crate::query_objects::validate_root_reference(
+                    &self.index,
+                    run,
+                    Some(sinex.as_ref()),
+                )?;
+            }
+
             match self.primary_cache_ready() {
                 Ok(()) => {
                     if crate::query_objects::known_run(&self.index, run)? {
@@ -176,6 +188,7 @@ impl Inner {
             }
             return Ok(QueryCustody::Queued);
         }
+        crate::query_objects::validate_root_reference(&self.archive, run, None)?;
         let tx = self.archive.transaction()?;
         let sequence = bump_counter(&tx)?;
         let before = tx.total_changes();

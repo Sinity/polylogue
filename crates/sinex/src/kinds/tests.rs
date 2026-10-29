@@ -21,7 +21,7 @@ fn reading(input: &str, start: u64) -> Reading {
     }
 }
 fn message(input: &str, start: u64) -> Product {
-    Product::Message {native_fields:Vec::new(),declared_injections:Vec::new(),reading:reading(input,start),order:Some(6),projection:None,facts:Box::new(serde_json::from_value(json!({"offset":50,"end":100,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"nested":{"citation":["source"]}},"production":{"phase":"final","server_tool_use":{"web_search_requests":0}},"blocks":[{"type":"tool_result","call_id":"native","outcome":{"kind":"ok"},"output":"done","reported_duration_ms":17}]}})).unwrap())}
+    Product::Message {native_fields:Vec::new(),declared_injections:Vec::new(),declared_attachment_bindings:Vec::new(),reading:reading(input,start),order:Some(6),projection:None,facts:Box::new(serde_json::from_value(json!({"offset":50,"end":100,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"nested":{"citation":["source"]}},"production":{"phase":"final","server_tool_use":{"web_search_requests":0}},"blocks":[{"type":"tool_result","call_id":"native","outcome":{"kind":"ok"},"output":"done","reported_duration_ms":17}]}})).unwrap())}
 }
 
 #[test]
@@ -121,7 +121,15 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
             declaration.kind.version,
             match declaration.kind.name.as_str() {
                 "polylogue.work_snapshot" => 5,
-                "polylogue.message" => 4,
+                "polylogue.input_observation"
+                | "polylogue.message"
+                | "polylogue.note"
+                | "polylogue.setting"
+                | "polylogue.kept_result"
+                | "polylogue.delivery"
+                | "polylogue.delivery_outcome"
+                | "polylogue.request"
+                | "polylogue.request_restore" => 4,
                 "polylogue.fragment" => 1,
                 "polylogue.query"
                 | "polylogue.query_run"

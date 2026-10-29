@@ -21,6 +21,8 @@ pub mod limit;
 pub mod scope;
 
 mod behind_index;
+mod completeness;
+pub use completeness::{CompletenessDimension, CompletenessReason, ReadCompleteness, ReadingContract};
 mod captured;
 mod native_hook_fields;
 mod fragment;

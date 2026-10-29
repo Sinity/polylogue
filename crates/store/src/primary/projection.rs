@@ -485,7 +485,10 @@ fn plan(index: &Connection) -> Result<Plan> {
             ) {
                 out.requests = true;
             }
-            if matches!(product, Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. }) {
+            if matches!(
+                product,
+                Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. }
+            ) {
                 out.queries = true;
             }
             if matches!(product, Product::Coverage(_)) {
@@ -568,14 +571,27 @@ fn plan(index: &Connection) -> Result<Plan> {
                     projection,
                     native_fields,
                     declared_injections,
+                    declared_attachment_bindings,
                     ..
                 } => {
                     let ordinal = pending.output.messages.len();
                     if !native_fields.is_empty() {
-                        pending.output.native_hook_fields.insert(ordinal, native_fields);
+                        pending
+                            .output
+                            .native_hook_fields
+                            .insert(ordinal, native_fields);
                     }
                     if !declared_injections.is_empty() {
-                        pending.output.declared_injections.insert(ordinal, declared_injections);
+                        pending
+                            .output
+                            .declared_injections
+                            .insert(ordinal, declared_injections);
+                    }
+                    if !declared_attachment_bindings.is_empty() {
+                        pending
+                            .output
+                            .declared_attachment_bindings
+                            .insert(ordinal, declared_attachment_bindings);
                     }
                     if let Some(projection) = projection {
                         pending
@@ -605,7 +621,10 @@ fn plan(index: &Connection) -> Result<Plan> {
                     pending.output.documents.push(facts);
                 }
                 Product::Fragment { facts, .. } => {
-                    pending.output.fragment_receipts.insert(pending.output.fragments.len(), admitted);
+                    pending
+                        .output
+                        .fragment_receipts
+                        .insert(pending.output.fragments.len(), admitted);
                     pending.output.fragments.push(*facts);
                 }
                 Product::Event {
@@ -807,7 +826,9 @@ fn queries(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
             Product::QueryRun { run } => {
                 crate::query_objects::apply_run(tx, &run, row.get(1)?, unsigned_column(row, 2)?)?;
             }
-            Product::QueryRunOutcome { outcome } => crate::query_objects::apply_run_outcome(tx, &outcome)?,
+            Product::QueryRunOutcome { outcome } => {
+                crate::query_objects::apply_run_outcome(tx, &outcome)?
+            }
             _ => unreachable!(),
         }
     }
