@@ -1,4 +1,5 @@
 use super::*;
+use crate::primary::PreparedInput;
 
 fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
     PreparedBatch {
@@ -125,12 +126,6 @@ impl crate::primary::Sinex for OfflineProducer {
                 pending: true,
             },
         })
-    }
-    fn raw_acquisition_cursor(
-        &self,
-        _: &crate::primary::RawAcquisitionQuery,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        Ok(None)
     }
     fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
         let path = self.root.join("source");

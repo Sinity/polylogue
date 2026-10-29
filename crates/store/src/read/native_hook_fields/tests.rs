@@ -68,6 +68,9 @@ fn capture(
         },
         hash: BlobHash::of(&bytes),
         observed_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+        generation: None,
+        raw_total: None,
+        raw_predecessor: None,
     });
     let mut raw = batch.clone();
     raw.parse.clear();
@@ -122,6 +125,8 @@ fn exact_native_field_is_retained_as_unknown_without_authenticated_owner_and_sur
     let mut reading = crate::writer::ChainReading::new().unwrap();
     reading.push(&mut step).unwrap();
     w.writer
+        .sender()
+        .unwrap()
         .replace_chain(input, chain, length, reading)
         .unwrap();
     assert_eq!(

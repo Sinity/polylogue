@@ -29,7 +29,7 @@ impl Sinex for PendingProducer {
         &self,
         _: &crate::primary::CapturePlan,
         _: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<PreparedWrite> {
+    ) -> Result<crate::primary::CaptureReceipt> {
         Self::unavailable()
     }
     fn pending_source(

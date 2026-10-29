@@ -147,12 +147,6 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<crate::primary::PendingSource> {
         Ok(Default::default())
     }
-    fn raw_acquisition_cursor(
-        &self,
-        _: &crate::primary::RawAcquisitionQuery,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        Ok(None)
-    }
     fn capture_body(&self, _: &str) -> Result<crate::primary::PreparedBody> {
         Self::unavailable()
     }

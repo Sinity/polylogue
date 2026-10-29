@@ -213,7 +213,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             ExecutionPresentation::Read {
                 options: Default::default(),
                 delivery: Default::default(),
-                format: Default::default(),
+                format: polylogue_model::read::Format::Markdown,
                 page_budget: Some(Default::default()),
                 direct_source: None,
             },
@@ -248,8 +248,12 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
         .unwrap();
     assert_eq!(replay.direct_reference(), direct.direct_reference());
     let mut forged = run.clone();
-    forged.binding.query_options.direct_reference =
-        Some(Reference::Message(MessageId::parse("test:a").unwrap()));
+    forged
+        .binding
+        .original_mut()
+        .unwrap()
+        .query_options
+        .direct_reference = Some(Reference::Message(MessageId::parse("test:a").unwrap()));
     assert_eq!(
         reader
             .prepare_query_run_selection(&object, &forged, &options.clock, None, None)
@@ -259,7 +263,12 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
         "conflict"
     );
     let mut old_scope = run;
-    old_scope.binding.replay.scope_fingerprint = Some("another-grant".into());
+    old_scope
+        .binding
+        .original_mut()
+        .unwrap()
+        .replay
+        .scope_fingerprint = Some("another-grant".into());
     assert_eq!(
         reader
             .prepare_query_run_selection(&object, &old_scope, &options.clock, None, None)
