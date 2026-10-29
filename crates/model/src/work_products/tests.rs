@@ -6,7 +6,7 @@ fn message(id: &str, role: &str, kind: &str, blocks: serde_json::Value) -> Selec
         event: format!("event-{id}"),
         cost_nusd: None,
         message: serde_json::from_value(json!({
-            "id": id, "session": "codex:morrow", "role": role,
+            "id": format!("codex:{id}"), "session": "codex:morrow", "role": role,
             "prompt_kind": kind, "blocks": blocks
         }))
         .unwrap(),
@@ -37,7 +37,7 @@ fn model_authored_prompt_is_not_an_answer_and_unknown_usage_stays_unknown() {
     ]);
     assert_eq!(
         turns[0].facts.answer.as_ref().map(ToString::to_string),
-        Some("answer".into())
+        Some("codex:answer".into())
     );
     assert_eq!(turns[0].facts.cost_unknown, 1);
     assert_eq!(turns[0].facts.input_unknown, 1);
@@ -72,7 +72,7 @@ fn later_known_model_response_and_explicit_background_notice_complete_calls() {
         Some("passed_without_result")
     );
     let update = crate::BackgroundUpdate {
-        session: "codex:morrow".into(),
+        session: SessionId::parse("codex:morrow").unwrap(),
         task_id: "task-1".into(),
         call_id: Some("call-1".into()),
         outcome: ToolOutcome::Ok,
