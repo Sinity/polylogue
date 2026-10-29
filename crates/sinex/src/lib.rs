@@ -3,7 +3,7 @@
 //! read index. Captures and authored writes remain in the producer spool
 //! through outages and retries, under their original identities.
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 mod client;
@@ -171,7 +171,7 @@ impl Sinex {
             spool,
             runtime,
             client: Mutex::new(None),
-            host: host.into(),
+            host: host.to_owned(),
         })
     }
 
@@ -362,9 +362,18 @@ impl polylogue_store::primary::Sinex for Sinex {
         &self,
         after: i64,
         cache: &str,
+        scope: Option<&str>,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        self.resume_publication();
-        Ok(self.with(async |client| client.confirmed(after, cache).await)?)
+        let page = self.with(async |client| client.confirmed(after, cache, scope).await)?;
+        if !page.iter().any(|item| {
+            matches!(
+                item.change,
+                polylogue_store::primary::ConfirmedChange::ScopeReset { .. }
+            )
+        }) {
+            self.resume_publication();
+        }
+        Ok(page)
     }
     fn acknowledge(&self, position: i64) -> polylogue_store::Result<()> {
         Ok(self.with(async |client| client.acknowledge(position).await)?)

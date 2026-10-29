@@ -21,6 +21,8 @@ pub enum IndexCurrency {
     Standalone,
     Primary {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         applied_position: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_position: Option<i64>,
@@ -60,6 +62,7 @@ impl IndexCurrency {
             _ => CurrencyState::Unknown,
         };
         Self::Primary {
+            scope: None,
             applied_position,
             owner_position,
             owner_position_seconds_ago: age,
@@ -77,6 +80,18 @@ impl IndexCurrency {
                 ..
             }
         )
+    }
+    pub fn with_scope(mut self, applied_scope: Option<String>) -> Self {
+        if let Self::Primary { scope, .. } = &mut self {
+            *scope = applied_scope;
+        }
+        self
+    }
+    pub fn scope(&self) -> Option<&str> {
+        match self {
+            Self::Standalone => None,
+            Self::Primary { scope, .. } => scope.as_deref(),
+        }
     }
 }
 

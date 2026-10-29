@@ -27,6 +27,8 @@ pub(crate) struct Client {
     pub(crate) store_root: PathBuf,
     acknowledgments: async_nats::Subscriber,
     consumer_cache: Option<String>,
+    consumer_scope: Option<String>,
+    publication_scope: Option<String>,
     health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     consumer: Option<async_nats::jetstream::consumer::PullConsumer>,
     pending: Vec<async_nats::jetstream::Message>,
@@ -129,6 +131,8 @@ impl Client {
             store_root: config.store.clone(),
             acknowledgments,
             consumer_cache: None,
+            consumer_scope: None,
+            publication_scope: None,
             health,
             consumer: None,
             pending: Vec::new(),
@@ -218,6 +222,9 @@ impl Client {
                 if prepared.acknowledged {
                     continue;
                 }
+                if !self.publication_allowed(&prepared.identity) {
+                    continue;
+                }
                 self.publish_prepared(prepared).await?;
             }
         }
@@ -244,6 +251,13 @@ impl Client {
         };
         if let Some(receipt) = receipt {
             return checked(receipt);
+        }
+        if !self.publication_allowed(&prepared.identity) {
+            return Err(Error::Refused {
+                name: prepared.identity,
+                reason: "canonical output belongs to another or unknown confirmed read scope"
+                    .into(),
+            });
         }
         if let (Some(material), Some(body)) = (&prepared.material, body) {
             self.write_bytes(&prepared.identity, &material.blob, material.length, body)?;
@@ -278,6 +292,16 @@ impl Client {
             health.last_ack = Some(std::time::Instant::now());
         }
         checked(acknowledgment)
+    }
+
+    fn publication_allowed(&self, identity: &str) -> bool {
+        !identity.starts_with("work-snapshot:")
+            || self.publication_scope.as_ref().is_some_and(|scope| {
+                identity.starts_with(&format!(
+                    "work-snapshot:{}:",
+                    blake3::hash(scope.as_bytes()).to_hex()
+                ))
+            })
     }
 
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted

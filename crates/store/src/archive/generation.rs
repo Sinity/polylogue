@@ -24,6 +24,16 @@ fn cursor_key() -> Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+pub(crate) fn rotate(index: &Connection) -> Result<()> {
+    for (key, value) in [
+        ("generation", uuid::Uuid::now_v7().to_string()),
+        ("cursor_key", cursor_key()?),
+    ] {
+        index.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, &value])?;
+    }
+    Ok(())
+}
+
 pub(super) fn open(archive: &super::Archive) -> Result<()> {
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     let index = super::open_write(&archive.index_db(), cache::SETUP)?;

@@ -1,4 +1,4 @@
-use crate::{Config, Mode, Sinex};
+use crate::{Authentication, Config, Mode, Sinex};
 use polylogue_model::{BlobHash, Output, RecordCounts};
 use polylogue_store::primary::{
     Capture, CapturedInput, CapturedReading, Product, ProductWrite, SourceLocation,
@@ -6,14 +6,18 @@ use polylogue_store::primary::{
 use serde_json::json;
 
 fn client(root: &std::path::Path) -> Sinex {
-    Sinex::open(&Config {
-        mode: Mode::Primary,
-        nats: "nats://127.0.0.1:1".into(),
-        password_file: None,
-        subject_root: "offline".into(),
-        producer: "polylogue-test".into(),
-        store: root.into(),
-    })
+    Sinex::open(
+        &Config {
+            mode: Mode::Primary,
+            nats: "nats://127.0.0.1:1".into(),
+            password_file: None,
+            subject_root: "offline".into(),
+            producer: "polylogue-test".into(),
+            store: root.into(),
+        },
+        &Authentication::Anonymous,
+        "fixture-host",
+    )
     .unwrap()
 }
 fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInput {

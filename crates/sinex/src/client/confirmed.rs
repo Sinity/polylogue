@@ -141,8 +141,13 @@ impl Client {
         })
     }
 
-    pub(crate) async fn confirmed(&mut self, after: i64, cache: &str) -> Result<Vec<Confirmed>> {
-        let result = self.confirmed_page(after, cache).await;
+    pub(crate) async fn confirmed(
+        &mut self,
+        after: i64,
+        cache: &str,
+        scope: Option<&str>,
+    ) -> Result<Vec<Confirmed>> {
+        let result = self.confirmed_page(after, cache, scope).await;
         if result.is_err() {
             for message in &self.pending {
                 let _ = message
@@ -154,7 +159,12 @@ impl Client {
         result
     }
 
-    async fn confirmed_page(&mut self, after: i64, cache: &str) -> Result<Vec<Confirmed>> {
+    async fn confirmed_page(
+        &mut self,
+        after: i64,
+        cache: &str,
+        scope: Option<&str>,
+    ) -> Result<Vec<Confirmed>> {
         if !self.pending.is_empty() {
             return Err(Error::Invalid(
                 "the previous confirmed page has not been committed locally".into(),
@@ -191,6 +201,14 @@ impl Client {
             if let Ok(mut health) = self.health.lock() {
                 health.owner_position = reply.position;
                 health.position_observed = Some(std::time::Instant::now());
+                health.owner_scope = Some(reply.scope.clone());
+            }
+            if scope != Some(reply.scope.as_str()) {
+                self.consumer = None;
+                self.consumer_cache = None;
+                self.consumer_scope = Some(reply.scope.clone());
+                self.publication_scope = None;
+                return Ok(scope_reset(reply.scope));
             }
             self.consumer = Some(
                 jetstream::new(self.client.clone())
@@ -201,6 +219,18 @@ impl Client {
                     })?,
             );
             self.consumer_cache = Some(cache.into());
+            self.consumer_scope = Some(reply.scope);
+        }
+        if self.consumer_scope.as_deref() != scope {
+            self.publication_scope = None;
+            // The first request carried the old cache's position. Reprovision
+            // from the cleared checkpoint before pulling, even if this grant
+            // scope had a consumer during an earlier configuration.
+            self.consumer = None;
+            self.consumer_cache = None;
+            return Ok(scope_reset(
+                self.consumer_scope.clone().expect("provisioned scope"),
+            ));
         }
         let refresh = self
             .health
@@ -228,11 +258,25 @@ impl Client {
             if let Some(reason) = reply.gap {
                 return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
             }
+            if reply.scope.is_empty() {
+                return Err(Error::Invalid(
+                    "Sinex supplied an absent confirmed scope".into(),
+                ));
+            }
             if let Ok(mut health) = self.health.lock() {
                 health.owner_position = reply.position;
                 health.position_observed = Some(std::time::Instant::now());
+                health.owner_scope = Some(reply.scope.clone());
+            }
+            if self.consumer_scope.as_deref() != Some(reply.scope.as_str()) {
+                self.consumer = None;
+                self.consumer_cache = None;
+                self.consumer_scope = Some(reply.scope.clone());
+                self.publication_scope = None;
+                return Ok(scope_reset(reply.scope));
             }
         }
+        self.publication_scope = self.consumer_scope.clone();
         let mut messages = self
             .consumer
             .as_ref()
@@ -339,4 +383,13 @@ impl Client {
             .retire(position)?;
         Ok(())
     }
+}
+
+fn scope_reset(scope: String) -> Vec<Confirmed> {
+    vec![Confirmed {
+        position: 0,
+        event: String::new(),
+        output_index: 0,
+        change: ConfirmedChange::ScopeReset { scope },
+    }]
 }
