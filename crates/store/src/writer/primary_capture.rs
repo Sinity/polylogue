@@ -23,6 +23,11 @@ fn failed(count: usize, error: StoreError) -> Vec<Result<StoredInput>> {
                 StoreError::PrimaryPending { identity } => StoreError::PrimaryPending {
                     identity: identity.clone(),
                 },
+                StoreError::UnresolvedBasisConflict { custody } => {
+                    StoreError::UnresolvedBasisConflict {
+                        custody: custody.clone(),
+                    }
+                }
                 _ => StoreError::Invalid(reason.clone()),
             })
         })
@@ -72,8 +77,32 @@ fn material_reader(archive: &Archive, material: &Material) -> Result<hashed_blob
     Ok(hashed_blobs::Reader::new(archive.byte_root()?).open(&[extent], None)?)
 }
 
+// The acquired body may be retained without creating a logical source extent.
+// A receipt identifies the physical preparation, never a whole-chain blob guess.
+fn acquired_body(item: &PreparedBatch) -> Result<Option<&crate::staging::PreparedBytes>> {
+    let batch = &item.batch;
+    let expected = if let Some(receipt) = &batch.acquisition {
+        Some((receipt.hash, receipt.range.length()?))
+    } else {
+        batch.new_blob.as_ref().map(|blob| (blob.hash, blob.size))
+    };
+    expected
+        .map(|(hash, length)| {
+            item.files
+                .iter()
+                .find(|file| file.hash() == hash && file.len() == length)
+                .ok_or_else(|| {
+                    StoreError::Invalid(
+                        "acquired provider body has no matching private encoding".into(),
+                    )
+                })
+        })
+        .transpose()
+}
+
 fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     let batch = &item.batch;
+    acquired_body(item)?;
     if batch.input.id.is_empty() || i64::try_from(batch.length).is_err() {
         return Err(StoreError::Invalid("invalid primary capture input".into()));
     }
@@ -255,10 +284,18 @@ impl Inner {
             },
         };
         plan.validate()?;
-        // Provider-output blobs have their own durable capture before the group
-        // callback holds the SDK custody lock.
+        // Provider-output blobs have their own durable capture. Group callbacks
+        // stage encodings outside the SDK lock; publication rechecks the basis.
         for item in group {
             for blob in &item.batch.blobs {
+                // The acquired provider body belongs to this atomic group, even
+                // when it creates no logical extent. Generic blob replay must
+                // not publish bytes from an unresolved acquisition separately.
+                if item.batch.acquisition.as_ref().is_some_and(|receipt| {
+                    receipt.hash == blob.hash && receipt.range.length().ok() == Some(blob.size)
+                }) {
+                    continue;
+                }
                 let file = item
                     .files
                     .iter()
@@ -324,20 +361,22 @@ impl Inner {
                 let (index, previous_material) =
                     self.capture_predecessor(&batch.input.id, chain, &pending)?;
                 let metadata_bytes = serde_json::to_vec(&rows)?;
-                let (hash, length) = batch
-                    .new_blob
-                    .as_ref()
-                    .map(|blob| (blob.hash, blob.size))
+                let raw_body = acquired_body(item)?;
+                let (hash, length) = raw_body
+                    .map(|body| (body.hash(), body.len()))
                     .unwrap_or_else(|| {
                         (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64)
                     });
                 let captured = CapturedInput {
                     raw_range: batch
-                        .new_blob
+                        .acquisition
                         .as_ref()
-                        .map(|blob| crate::primary::RawRange {
-                            start: batch.length - blob.size,
-                            end: batch.length,
+                        .map(|receipt| receipt.range)
+                        .or_else(|| {
+                            raw_body.map(|body| crate::primary::RawRange {
+                                start: batch.length - body.len(),
+                                end: batch.length,
+                            })
                         }),
                     basis: Some(bases[&self.capture_source_selector(batch, &pending)?].clone()),
                     input: name,
@@ -359,12 +398,8 @@ impl Inner {
                         count: group.len() as u64,
                     }),
                 };
-                let body = if let Some(blob) = &batch.new_blob {
-                    item.files
-                        .iter()
-                        .find(|file| file.hash() == blob.hash)
-                        .expect("validated source")
-                        .body()?
+                let body = if let Some(body) = raw_body {
+                    body.body()?
                 } else {
                     self.location
                         .prepare_bytes(metadata_bytes.as_slice())?
@@ -377,7 +412,15 @@ impl Inner {
             }
             Ok(())
         };
-        let prepared = sinex.prepare_input_group(&plan, &mut members)?;
+        let prepared = match sinex.prepare_input_group(&plan, &mut members)? {
+            crate::primary::CaptureReceipt::Accepted { write } => write,
+            crate::primary::CaptureReceipt::UnresolvedBasisConflict { custody } => {
+                return Ok(failed(
+                    group.len(),
+                    StoreError::UnresolvedBasisConflict { custody },
+                ));
+            }
+        };
         match self.drain_primary_captures() {
             Ok(()) | Err(StoreError::Sinex(_)) => {}
             Err(error) => return Err(error),

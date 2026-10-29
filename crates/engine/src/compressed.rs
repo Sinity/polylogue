@@ -181,11 +181,16 @@ impl Engine {
                 stream = decoded(&source, compressed)?;
             }
         }
-        let prepared = if same || historical.is_some() {
-            None
-        } else {
-            Some(self.archive.prepare_bytes(stream)?)
-        };
+        // Equal logical content still has a real acquired body. Retain its
+        // encoding through the immutable Accepted/Unresolved disposition.
+        let prepared = Some(
+            self.archive
+                .prepare_bytes(if same || historical.is_some() {
+                    decoded(&source, compressed)?
+                } else {
+                    stream
+                })?,
+        );
         let id = if let Some(id) = native_id {
             id
         } else {
@@ -219,38 +224,6 @@ impl Engine {
                     0
                 }
         };
-        let observed_receipt = if same || historical.is_some() {
-            let mut stream = decoded(&source, compressed)?;
-            let mut hash = blake3::Hasher::new();
-            let mut observed_length = 0u64;
-            let mut buffer = [0; 65536];
-            loop {
-                let read = stream.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                hash.update(&buffer[..read]);
-                observed_length += read as u64;
-            }
-            if observed_length != length
-                || FileFacts::of(&source.metadata()?) != facts
-                || FileFacts::of(&std::fs::metadata(path)?) != facts
-            {
-                return Err(std::io::Error::other(
-                    "source changed during equal rollout observation",
-                )
-                .into());
-            }
-            Some(context.finish(
-                polylogue_store::primary::RawRange {
-                    start: 0,
-                    end: length,
-                },
-                polylogue_model::BlobHash(*hash.finalize().as_bytes()),
-            ))
-        } else {
-            None
-        };
         let added = if same || historical.is_some() {
             0
         } else {
@@ -276,7 +249,8 @@ impl Engine {
                 },
                 self.observation(path, Some(facts)),
                 raw_length,
-                (!exists).then_some(raw.clone()),
+                Some(raw.clone()),
+                exists,
                 raw_context.as_ref().expect("compressed acquisition"),
             ));
             group.last_mut().expect("raw container").batch.acquisition = Some(
@@ -325,20 +299,10 @@ impl Engine {
             change,
             observation,
             length,
-            if same || historical.is_some() {
-                None
-            } else {
-                prepared
-            },
+            prepared,
+            same || historical.is_some(),
             &context,
         ));
-        if let Some(receipt) = observed_receipt {
-            group
-                .last_mut()
-                .expect("transcript batch")
-                .batch
-                .acquisition = Some(receipt);
-        }
         self.writer
             .sender()?
             .store_group(group, Arc::clone(&self.blobs))?
@@ -379,6 +343,7 @@ impl Engine {
         observation: Observation,
         length: u64,
         bytes: Option<PreparedBytes>,
+        body_only: bool,
         context: &crate::acquisition::AcquisitionContext,
     ) -> PreparedBatch {
         let acquisition = bytes.as_ref().map(|bytes| {
@@ -405,11 +370,21 @@ impl Engine {
                 observation: Some(observation),
                 continues: false,
                 length,
-                new_blob: bytes.as_ref().map(|bytes| polylogue_store::NewBlob {
-                    hash: bytes.hash(),
-                    size: bytes.len(),
+                new_blob: bytes.as_ref().filter(|_| !body_only).map(|bytes| {
+                    polylogue_store::NewBlob {
+                        hash: bytes.hash(),
+                        size: bytes.len(),
+                    }
                 }),
-                blobs: Vec::new(),
+                blobs: bytes
+                    .as_ref()
+                    .filter(|_| body_only)
+                    .map(|bytes| polylogue_store::NewBlob {
+                        hash: bytes.hash(),
+                        size: bytes.len(),
+                    })
+                    .into_iter()
+                    .collect(),
                 parse: Vec::new(),
                 acquisition,
                 basis: context.basis.clone(),

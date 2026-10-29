@@ -151,6 +151,8 @@ pub enum StoreError {
     /// Sinex could not be reached, or refused what was sent (primary mode).
     #[error("capture {identity} is durable and waiting for Sinex confirmation")]
     PrimaryPending { identity: String },
+    #[error("acquisition {custody:?} retained raw bytes after a source basis conflict")]
+    UnresolvedBasisConflict { custody: primary::RawCustodyReceipt },
     #[error("Sinex: {0}")]
     Sinex(String),
     #[error("{0}")]

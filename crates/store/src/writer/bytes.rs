@@ -95,12 +95,16 @@ fn input_rows_at(
     {
         if b.continues
             || b.new_blob.is_some()
-            || !b.blobs.is_empty()
+            || b.blobs.iter().any(|blob| {
+                !b.acquisition.as_ref().is_some_and(|receipt| {
+                    receipt.hash == blob.hash && receipt.range.length().ok() == Some(blob.size)
+                })
+            })
             || !b.parse.is_empty()
             || b.observation.is_none()
         {
             return Err(StoreError::Invalid(
-                "a recorded revision observation carries only its source facts".into(),
+                "a recorded revision observation cannot create logical source extents or parsed facts".into(),
             ));
         }
         let source = crate::source::Source::of(tx)?;
