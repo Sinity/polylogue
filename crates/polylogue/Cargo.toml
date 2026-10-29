@@ -13,7 +13,6 @@ sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
 command-surface.workspace = true
-shlex = "2"
 schemars = "1"
 rustix = { workspace = true, features = ["event"] }
 mimalloc.workspace = true

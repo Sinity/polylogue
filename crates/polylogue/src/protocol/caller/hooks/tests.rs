@@ -138,6 +138,8 @@ fn a_quoted_reference_to_the_program_does_not_claim_a_cli_tool_call() {
     assert!(!runs_polylogue("echo 'polylogue status'"));
     assert!(runs_polylogue("env LANG=C polylogue status"));
     assert!(runs_polylogue("/tools/polylogue status"));
+    assert!(runs_polylogue("true; env -C /work polylogue status"));
+    assert!(!runs_polylogue("echo 'literal;' polylogue status"));
 }
 
 #[test]

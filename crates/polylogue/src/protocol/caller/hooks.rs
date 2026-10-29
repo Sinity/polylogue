@@ -173,29 +173,9 @@ impl Cursor {
     }
 }
 fn runs_polylogue(command: &str) -> bool {
-    let Some(words) = shlex::split(command) else {
-        return false;
-    };
-    let mut program = true;
-    for word in words {
-        if matches!(word.as_str(), ";" | "&&" | "||" | "|") {
-            program = true;
-            continue;
-        }
-        if program && (word == "env" || word.contains('=')) {
-            continue;
-        }
-        if program {
-            if std::path::Path::new(&word)
-                .file_name()
-                .is_some_and(|name| name == "polylogue")
-            {
-                return true;
-            }
-            program = false;
-        }
-    }
-    false
+    polylogue_model::command::effective_stages(command)
+        .iter()
+        .any(|stage| stage.program == "polylogue")
 }
 
 #[cfg(test)]
