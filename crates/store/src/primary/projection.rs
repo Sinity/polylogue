@@ -311,12 +311,12 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                         ));
                     }
                 }
-                if let Some(old) = &old {
-                    if old.native != native {
-                        return Err(StoreError::Invalid(
-                            "a fact changed its original owner context".into(),
-                        ));
-                    }
+                if let Some(old) = &old
+                    && old.native != native
+                {
+                    return Err(StoreError::Invalid(
+                        "a fact changed its original owner context".into(),
+                    ));
                 }
                 let (input, chain, reference, kind) = metadata(&product);
                 let reference = super::derived::reference(&product)?.or(reference);

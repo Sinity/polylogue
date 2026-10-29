@@ -98,16 +98,15 @@ pub(super) fn validate_context(context: &NativeFactContext, epoch: Option<i64>) 
     Ok(())
 }
 fn validate_raw(coverage: &RawInputCoverage, position: i64, epoch: i64, scope: &str) -> Result<()> {
-    if let RawInputCoverage::Complete { proof } = coverage {
-        if proof.stamp.is_empty()
+    if let RawInputCoverage::Complete { proof } = coverage
+        && (proof.stamp.is_empty()
             || proof.position != position
             || proof.policy_epoch != epoch
-            || proof.scope != scope
-        {
-            return Err(invalid(
-                "raw-input proof differs from its owner replay basis",
-            ));
-        }
+            || proof.scope != scope)
+    {
+        return Err(invalid(
+            "raw-input proof differs from its owner replay basis",
+        ));
     }
     Ok(())
 }

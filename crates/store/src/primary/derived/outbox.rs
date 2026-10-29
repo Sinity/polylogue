@@ -14,6 +14,13 @@ CREATE TABLE primary_derived_parent (
 CREATE TABLE primary_work_dirty (session TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;
 ";
 
+struct StoredIntent {
+    body: Vec<u8>,
+    proof: Option<Vec<u8>>,
+    cancelled_at: Option<i64>,
+    revoked: bool,
+}
+
 /// The caller validates domain witnesses in this same transaction. Missing
 /// proof retains custody only. Restaging an identical body with a proof requires
 /// the caller to validate it again against that proof's current native basis.
@@ -42,31 +49,37 @@ pub fn stage_products(
             ));
         }
     }
-    if let Some(proof) = proof {
-        if proof.position < 0
+    if let Some(proof) = proof
+        && (proof.position < 0
             || proof.policy_epoch < 0
             || proof.scope.is_empty()
-            || proof.stamp.is_empty()
-        {
-            return Err(StoreError::Invalid(
-                "canonical custody needs an actual owner publication proof".into(),
-            ));
-        }
+            || proof.stamp.is_empty())
+    {
+        return Err(StoreError::Invalid(
+            "canonical custody needs an actual owner publication proof".into(),
+        ));
     }
     let body = pack(&writes)?;
     let offered_proof = proof.map(pack).transpose()?;
-    let old: Option<(Vec<u8>, Option<Vec<u8>>, Option<i64>, bool)> = tx
+    let old: Option<StoredIntent> = tx
         .query_row(
             "SELECT body,proof,cancelled_at,revoked FROM primary_derived WHERE identity=?1",
             [identity],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok(StoredIntent {
+                    body: row.get(0)?,
+                    proof: row.get(1)?,
+                    cancelled_at: row.get(2)?,
+                    revoked: row.get(3)?,
+                })
+            },
         )
         .optional()?;
-    if let Some((old_body, old_proof, cancelled, revoked)) = old {
-        if revoked {
+    if let Some(old) = old {
+        if old.revoked {
             return Err(StoreError::Conflict(identity.into()));
         }
-        let same_proof = match (old_proof.as_deref(), proof) {
+        let same_proof = match (old.proof.as_deref(), proof) {
             (Some(bytes), Some(offered)) => {
                 let old: RawInputProof = crate::encoding::unpack_json(bytes)?;
                 old.position == offered.position
@@ -75,10 +88,10 @@ pub fn stage_products(
             }
             _ => true,
         };
-        if old_body != body || cancelled.is_some() || !same_proof {
+        if old.body != body || old.cancelled_at.is_some() || !same_proof {
             return Err(StoreError::Conflict(identity.into()));
         }
-        if old_proof.is_none() && offered_proof.is_some() {
+        if old.proof.is_none() && offered_proof.is_some() {
             tx.execute(
                 "UPDATE primary_derived SET proof=?2 WHERE identity=?1",
                 params![identity, offered_proof],
@@ -140,7 +153,7 @@ pub(crate) fn publish(index: &Connection, sinex: &dyn Sinex, state: &ReplayState
     while let Some(row) = rows.next()? {
         let identity: String = row.get(0)?;
         if let Some(position) = row.get::<_, Option<i64>>(3)? {
-            sinex.discard_confirmed(&[identity.clone()], position, applied)?;
+            sinex.discard_confirmed(std::slice::from_ref(&identity), position, applied)?;
             discarded.push(identity);
             continue;
         }
