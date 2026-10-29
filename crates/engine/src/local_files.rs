@@ -134,13 +134,36 @@ impl Engine {
                     change: Change::First,
                     observation: Some(observation),
                     continues: false,
-                    new_blob: None,
+                    new_blob: Some(polylogue_store::NewBlob {
+                        hash: prepared.hash(),
+                        size: prepared.len(),
+                    }),
                     blobs: Vec::new(),
                     length: prepared.len(),
-                    parse: Vec::new(),
+                    parse: {
+                        let mut step = polylogue_store::ParseStep::new(
+                            polylogue_model::Output::default(),
+                            polylogue_model::RecordCounts::default(),
+                            0..prepared.len(),
+                            true,
+                        );
+                        step.no_parser_yet = true;
+                        step.reading_version = origin.reading_version();
+                        vec![step]
+                    },
                     release: Default::default(),
                 };
-                self.writer.store_bytes(prepared, batch)?;
+                self.writer
+                    .sender()?
+                    .store_group(
+                        vec![polylogue_store::staging::PreparedBatch {
+                            batch,
+                            files: vec![prepared],
+                        }],
+                        Arc::clone(&self.blobs),
+                    )?
+                    .pop()
+                    .expect("coverage result")?;
             }
         }
         Ok(())

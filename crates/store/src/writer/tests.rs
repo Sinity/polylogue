@@ -47,7 +47,6 @@ fn sid(n: &str) -> SessionId {
 
 fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&str>) -> Message {
     Message {
-        attrs: Default::default(),
         id: MessageId::parse(&format!("claude-code:{id}")).unwrap(),
         session: sid(session),
         parent: None,

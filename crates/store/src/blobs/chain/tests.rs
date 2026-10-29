@@ -19,7 +19,11 @@ impl Fixture {
         )
         .unwrap();
         conn.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',1,'first',1,?1,1)", [length as i64]).unwrap();
-        let store = Arc::new(crate::blobs::Blobs::new(dir.path().to_owned(), catalog));
+        let store = Arc::new(crate::blobs::Blobs::new(
+            dir.path().to_owned(),
+            catalog,
+            crate::blobs::BlobCatalog::Archive,
+        ));
         Self {
             conn,
             store,
