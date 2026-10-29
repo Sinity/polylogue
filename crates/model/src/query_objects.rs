@@ -18,6 +18,7 @@ pub struct QueryObject {
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
     pub identity_ast: Query,
+    pub origins: Vec<String>,
     pub catalog: Catalog,
     pub catalog_fingerprint: String,
     pub source_outputs: Vec<SourceOutput>,
