@@ -281,3 +281,29 @@ fn completion_and_startup_share_declared_archive_selection_without_clock_depende
         Startup::load(&inputs, overrides).unwrap().config.archive
     );
 }
+
+#[test]
+fn synthetic_archive_gets_an_explicit_day_without_operator_outlets() {
+    let root = tempfile::tempdir().unwrap();
+    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let day = DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(6, 0, 1, 0),
+    )
+    .unwrap();
+    let separate = startup
+        .config
+        .standalone_for_archive(root.path().join("sample"), day.clone())
+        .unwrap();
+    assert_eq!(separate.archive, root.path().join("sample"));
+    assert_eq!(separate.standalone_day().unwrap(), &day);
+    assert!(separate.notification_bus_address.is_none());
+    assert!(separate.signals.action_commands.is_empty());
+    assert!(
+        startup
+            .config
+            .standalone_for_archive("relative".into(), day)
+            .is_err()
+    );
+    assert_ne!(startup.config.archive, separate.archive);
+}
