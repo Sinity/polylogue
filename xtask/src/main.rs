@@ -21,9 +21,8 @@ const FORMATTED: &[&str] = &[
 ];
 
 /// The feature set default test builds use, with the Sinex client excluded.
-/// `test`, `scenarios` and `check` build the same artifacts and
-/// each reuses what the others built. Package selection narrows which tests
-/// run, never what is built.
+/// `test`, `scenarios` and `check` reuse these feature-enabled artifacts.
+/// Native package selection limits which test targets Cargo builds.
 const TEST_FEATURES: &str = "polylogue-engine/faults,polylogue-store/faults";
 
 #[derive(Parser)]
@@ -47,7 +46,7 @@ enum Cli {
         #[arg(long, conflicts_with_all = ["changed", "args"])]
         no_run: bool,
         /// Further `cargo nextest run` arguments: `-p` packages and `-E`
-        /// filtersets (both select which tests run), names and runner flags.
+        /// filtersets, names and runner flags. Packages limit the build too.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -284,20 +283,25 @@ fn nextest(args: Vec<String>) -> Nextest {
     }
 }
 
-/// `cargo nextest run` arguments for the shared test build that run the
-/// tests `args` select. `-p` packages and `-E` filtersets become one
-/// filterset, intersected with `required` (a changed-package selection, or
-/// the scenarios' own). Feature flags are refused: each mode shares one build.
+/// Native Cargo package selection with nextest filters intersected with
+/// `required` (a changed-package selection, or the scenarios' own).
+/// Feature flags are refused so each mode keeps its fault-enabled build.
 fn test_arguments(
     args: &[String],
     required: Option<String>,
     mut sinex: bool,
 ) -> Result<Vec<String>, String> {
     let mut packages = Vec::new();
+    let mut workspace = false;
     let mut filtersets = Vec::new();
     let mut rest = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
+        if arg == "--" {
+            rest.push(arg.clone());
+            rest.extend(args.cloned());
+            break;
+        }
         let mut value = |flag: &str| {
             args.next()
                 .cloned()
@@ -306,7 +310,7 @@ fn test_arguments(
         match arg.as_str() {
             "-p" | "--package" => packages.push(value(arg)?),
             "-E" | "--filterset" | "--filter-expr" => filtersets.push(value(arg)?),
-            "--workspace" | "--all" => {}
+            "--workspace" | "--all" => workspace = true,
             "-F" | "--features" | "--all-features" | "--no-default-features" => {
                 return Err(format!(
                     "{arg}: tests always build with {TEST_FEATURES}; select tests with -p, -E or names"
@@ -314,13 +318,13 @@ fn test_arguments(
             }
             _ => {
                 if let Some(package) = arg.strip_prefix("--package=").or(arg.strip_prefix("-p")) {
-                    packages.push(package.to_owned());
+                    packages.push(package.strip_prefix('=').unwrap_or(package).to_owned());
                 } else if let Some(filterset) = arg
                     .strip_prefix("--filterset=")
                     .or(arg.strip_prefix("--filter-expr="))
                     .or(arg.strip_prefix("-E"))
                 {
-                    filtersets.push(filterset.to_owned());
+                    filtersets.push(filterset.strip_prefix('=').unwrap_or(filterset).to_owned());
                 } else if arg.starts_with("--features=") || arg.starts_with("-F") {
                     return Err(format!(
                         "{arg}: tests always build with {TEST_FEATURES}; select tests with -p, -E or names"
@@ -342,32 +346,31 @@ fn test_arguments(
     };
     let terms: Vec<String> = [
         required,
-        (!packages.is_empty()).then(|| {
-            either(
-                packages
-                    .into_iter()
-                    .map(|package| format!("package(={package})"))
-                    .collect(),
-            )
-        }),
         (!filtersets.is_empty()).then(|| either(filtersets)),
     ]
     .into_iter()
     .flatten()
     .collect();
-    let mut arguments = [
-        "--locked",
-        "--workspace",
-        "--features",
-        if sinex {
-            "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults"
-        } else {
-            TEST_FEATURES
-        },
-    ]
-    .map(String::from)
-    .to_vec();
-    if !sinex {
+    let mut arguments = vec!["--locked".into()];
+    workspace |= packages.is_empty();
+    if workspace {
+        arguments.push("--workspace".into());
+    }
+    for package in packages {
+        arguments.extend(["-p".into(), package]);
+    }
+    arguments.extend(
+        [
+            "--features",
+            if sinex {
+                "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults"
+            } else {
+                TEST_FEATURES
+            },
+        ]
+        .map(String::from),
+    );
+    if workspace && !sinex {
         arguments.extend(["--exclude".into(), "polylogue-sinex".into()]);
     }
     if !terms.is_empty() {

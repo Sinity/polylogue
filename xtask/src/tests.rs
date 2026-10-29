@@ -40,7 +40,7 @@ fn arguments(args: &[&str], required: Option<&str>) -> Result<Vec<String>, Strin
 }
 
 #[test]
-fn every_test_selection_builds_the_whole_workspace_with_one_feature_set() {
+fn package_selection_limits_the_build_with_the_required_fault_features() {
     let build = [
         "--locked",
         "--workspace",
@@ -62,14 +62,15 @@ fn every_test_selection_builds_the_whole_workspace_with_one_feature_set() {
         )
         .unwrap(),
         [
-            &build[..],
-            &[
-                "-E",
-                "((package(=polylogue-store)) | (package(=polylogue-engine)))",
-                "rows"
-            ]
+            "--locked",
+            "-p",
+            "polylogue-store",
+            "-p",
+            "polylogue-engine",
+            "--features",
+            TEST_FEATURES,
+            "rows",
         ]
-        .concat()
     );
 }
 
@@ -88,12 +89,214 @@ fn packages_filtersets_and_a_required_selection_intersect() {
     )
     .unwrap();
     assert_eq!(
-        selected[6..],
+        selected,
         [
+            "--locked",
+            "-p",
+            "polylogue-store",
+            "--features",
+            TEST_FEATURES,
             "-E",
-            "(rdeps(=polylogue-model)) & ((package(=polylogue-store))) & ((test(a)) | (test(b)))",
+            "(rdeps(=polylogue-model)) & ((test(a)) | (test(b)))",
             "--no-capture"
         ]
+    );
+}
+
+#[test]
+fn native_scopes_and_literal_test_arguments_keep_their_meaning() {
+    for flag in [
+        "-ppolylogue-store",
+        "-p=polylogue-store",
+        "--package=polylogue-store",
+    ] {
+        assert_eq!(
+            arguments(&[flag], None).unwrap(),
+            [
+                "--locked",
+                "-p",
+                "polylogue-store",
+                "--features",
+                TEST_FEATURES
+            ]
+        );
+    }
+    assert_eq!(
+        arguments(
+            &[
+                "--workspace",
+                "-p",
+                "polylogue-store",
+                "--exclude",
+                "polylogue-engine"
+            ],
+            None
+        )
+        .unwrap(),
+        [
+            "--locked",
+            "--workspace",
+            "-p",
+            "polylogue-store",
+            "--features",
+            TEST_FEATURES,
+            "--exclude",
+            "polylogue-sinex",
+            "--exclude",
+            "polylogue-engine"
+        ]
+    );
+    assert_eq!(
+        arguments(&["-E=test(rows)", "--", "-p", "--features"], None).unwrap(),
+        [
+            "--locked",
+            "--workspace",
+            "--features",
+            TEST_FEATURES,
+            "--exclude",
+            "polylogue-sinex",
+            "-E",
+            "((test(rows)))",
+            "--",
+            "-p",
+            "--features"
+        ]
+    );
+}
+
+#[test]
+fn package_selection_reaches_the_real_runner_before_unrelated_compilation() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path();
+    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
+    for (name, manifest, source) in [
+        (
+            "polylogue-store",
+            "[features]\nfaults=[]\n[dependencies]\nhelper={path='../helper'}\n",
+            "#[test] fn selected_read() { assert!(cfg!(feature=\"faults\")); assert_eq!(helper::value(),42); }\n#[test] fn selected_write() { assert!(cfg!(feature=\"faults\")); }\n#[test] #[ignore] fn selected_ignored() {}\n",
+        ),
+        (
+            "polylogue-engine",
+            "[features]\nfaults=[]\n",
+            "#[cfg(test)] compile_error!(\"unrelated engine tests must not build\");\n",
+        ),
+        (
+            "polylogue-sinex",
+            "",
+            "#[test] fn primary_mode_selected() {}\n",
+        ),
+        ("polylogue", "[features]\nsinex=[]\n", ""),
+        (
+            "helper",
+            "",
+            "pub fn value() -> u32 { 42 }\n#[test] fn helper_test() {}\n",
+        ),
+    ] {
+        fs::create_dir_all(root.join(name).join("src")).unwrap();
+        fs::write(
+            root.join(name).join("Cargo.toml"),
+            format!("[package]\nname='{name}'\nversion='0.1.0'\nedition='2024'\n{manifest}"),
+        )
+        .unwrap();
+        fs::write(root.join(name).join("src/lib.rs"), source).unwrap();
+    }
+    let lock = devkit::cargo_command()
+        .args(["generate-lockfile", "--offline"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        lock.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    let execute = |args: &[&str], required: Option<&str>| {
+        let mut run = Run::unrecorded("selection-fixture", "test", &[]);
+        run.root = root.into();
+        let mut options = nextest(arguments(args, required).unwrap());
+        options.env.push((
+            "CARGO_TARGET_DIR".into(),
+            root.join("build").display().to_string(),
+        ));
+        let result = run.nextest("test", &options);
+        (run, result)
+    };
+    let outcomes = |run: &Run| {
+        let mut results: Vec<_> = run
+            .tests
+            .iter()
+            .map(|test| (test.name.clone(), test.status.as_str().to_owned()))
+            .collect();
+        results.sort();
+        results
+    };
+    let expected = |pairs: &[(&str, &str)]| {
+        pairs
+            .iter()
+            .map(|(name, status)| ((*name).to_owned(), (*status).to_owned()))
+            .collect::<Vec<_>>()
+    };
+    let selected = expected(&[
+        ("selected_ignored", "ignored"),
+        ("selected_read", "passed"),
+        ("selected_write", "passed"),
+    ]);
+    // Full checks still compile every standalone test, including the planted error.
+    let (run, result) = execute(&[], None);
+    assert!(result.is_err());
+    assert!(run.diagnostics.iter().any(|diagnostic| {
+        diagnostic.package == "polylogue-engine"
+            && diagnostic
+                .text
+                .contains("unrelated engine tests must not build")
+    }));
+    assert!(run.tests.is_empty());
+    // This calls the same argument conversion and shared runner as `xtask test -p`.
+    // Before native package forwarding, the unrelated test compile error prevents it.
+    let (run, result) = execute(&["-p", "polylogue-store"], None);
+    result.unwrap();
+    assert_eq!(outcomes(&run), selected);
+    assert!(
+        run.tests
+            .iter()
+            .all(|test| test.binary == "polylogue-store")
+    );
+    let (run, result) = execute(&["--exclude", "polylogue-engine"], None);
+    result.unwrap();
+    let mut included = expected(&[("helper_test", "passed")]);
+    included.extend(selected);
+    assert_eq!(outcomes(&run), included);
+    let (run, result) = execute(&["--package=polylogue-sinex"], None);
+    result.unwrap();
+    assert_eq!(
+        outcomes(&run),
+        expected(&[("primary_mode_selected", "passed")])
+    );
+
+    fs::write(root.join(".gitignore"), "/build/\n/target/\n").unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "baseline"]);
+    fs::write(
+        root.join("helper/src/lib.rs"),
+        "pub fn value() -> u32 { 40 + 2 }\n#[test] fn helper_test() {}\n",
+    )
+    .unwrap();
+    let selection = devkit::select::changed(root, "HEAD").unwrap();
+    assert_eq!(selection, Selection::Packages(vec!["helper".into()]));
+    let filter = selection.filterset().unwrap();
+    let (run, result) = execute(
+        &["-ppolylogue-store", "-E", "test(selected_read)"],
+        Some(&filter),
+    );
+    result.unwrap();
+    assert_eq!(
+        outcomes(&run),
+        expected(&[
+            ("selected_ignored", "ignored"),
+            ("selected_read", "passed"),
+            ("selected_write", "filtered")
+        ])
     );
 }
 
