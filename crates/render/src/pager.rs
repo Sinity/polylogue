@@ -104,7 +104,7 @@ impl PageBuilder {
         };
         let encoded =
             serde_json::to_vec(&item).map_err(|e| PageError::Serialization(e.to_string()))?;
-        let cost = estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8"));
+        let cost = estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64;
         if from == 0
             && self.items.len() < self.budget.items.get()
             && self.bytes + encoded.len() <= self.budget.bytes.get()
@@ -153,7 +153,7 @@ impl PageBuilder {
             let json = serde_json::to_string(candidate)
                 .map_err(|e| PageError::Serialization(e.to_string()))?;
             Ok(self.bytes + json.len() <= self.budget.bytes.get()
-                && estimate_tokens(&json) <= self.budget.tokens.get())
+                && estimate_tokens(&json) as u64 <= self.budget.tokens.get())
         };
         if !fits(&make(from + 1))? {
             return Err(PageError::MetadataTooLarge);
@@ -171,7 +171,7 @@ impl PageBuilder {
         let json = serde_json::to_string(&fragment)
             .map_err(|e| PageError::Serialization(e.to_string()))?;
         self.bytes += json.len();
-        self.tokens += estimate_tokens(&json);
+        self.tokens += estimate_tokens(&json) as u64;
         self.items.push(fragment);
         self.start = None;
         if lo < total {

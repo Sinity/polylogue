@@ -127,7 +127,7 @@ fn edit(edit: &EditView) -> Markup {
 fn card(card: &Card) -> Markup {
     html! { section class="read-card" { @match card {
         Card::Fields { title,figures } => { h3 { (title) } dl { @for figure in figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } },
-        Card::Session { session,open } => { h3 { "session:" (&session.id) " · " (session.title.as_deref().unwrap_or("title unknown")) } details { summary { "Session fields" } pre { (serde_json::to_string_pretty(session).expect("session serializes")) } } @if let Some(call)=open { (ready(call)) } },
+        Card::Session { session,open } => { h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } details { summary { "Session fields" } pre { (serde_json::to_string_pretty(session).expect("session serializes")) } } @if let Some(call)=open { (ready(call)) } },
         Card::LinkNode { reference,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call)) } },
         Card::LinkEdge { from,to,relation,how,cross_link } => { p { code { (from) } " → " code { (to) } " · " (relation) @if let Some(how)=how { " (" (how) ")" } @if *cross_link { " · cross-link" } } },
         Card::Change { edit:e } => { (edit(e)) },

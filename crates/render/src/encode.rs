@@ -390,7 +390,7 @@ impl<'a> Encoder<'a> {
                 self.line(&format!(
                     "session:{} · {}",
                     session.id,
-                    session.title.as_deref().unwrap_or("title unknown")
+                    session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")
                 ))?;
                 self.literal(&serde_json::to_string_pretty(session)?, "json")?;
                 if let Some(open) = open {

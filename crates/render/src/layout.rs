@@ -313,6 +313,7 @@ fn block_items(
     evidence: &ProjectionEvidence,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> Result<bool, ReadError> {
+    if !options.view.block_kinds().contains(&block.kind()) { return Ok(true); }
     let kind = match block {
         Block::Text { text } => {
             let text = evidence
