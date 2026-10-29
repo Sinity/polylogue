@@ -28,6 +28,8 @@ mod attachments;
 mod batch;
 mod bytes;
 mod chain;
+mod confirmed;
+pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
 mod rows;
 mod search;

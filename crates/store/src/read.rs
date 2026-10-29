@@ -197,7 +197,7 @@ impl ReadPool {
             crate::source::views(&conn)?;
         }
         crate::sql_views::create(&conn)?;
-        for schema in if self.archive.is_primary() {
+        for &schema in if self.archive.is_primary() {
             &["main"][..]
         } else {
             &["main", "a"][..]
@@ -537,6 +537,14 @@ impl Reader<'_> {
             }
         }
         Ok(conn)
+    }
+
+    pub fn confirmed_position(&self) -> Result<i64> {
+        crate::primary::projection::position(self.conn()?)
+    }
+
+    pub fn primary_cache_identity(&self) -> Result<String> {
+        crate::primary::cache_identity(self.conn()?)
     }
 
     /// The index file this reader's read transaction started on.
@@ -933,7 +941,7 @@ impl Reader<'_> {
         chain: i64,
         range: std::ops::Range<u64>,
     ) -> Result<()> {
-        crate::staging::require_range(self.conn()?, "a.", input, chain, range)
+        crate::staging::require_range(self.conn()?, "source_", input, chain, range)
     }
 
     /// The stored bytes of an input's revision chain, for parsing them
@@ -945,7 +953,7 @@ impl Reader<'_> {
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
         self.check_bytes_present(input, chain, 0..length)?;
-        crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
+        crate::blobs::StoredChain::load(self.conn()?, "source_", input, chain, length)
     }
 
     /// Reads only the extents a range covers, with their integrity checks.
@@ -958,7 +966,7 @@ impl Reader<'_> {
         store: &crate::blobs::Blobs,
     ) -> Result<Vec<u8>> {
         self.check_bytes_present(input, chain, start..end)?;
-        crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
+        crate::blobs::StoredChain::load_range(self.conn()?, "source_", input, chain, start, end)?
             .read_range(store, start, end)
     }
 
@@ -984,7 +992,7 @@ impl Reader<'_> {
     }
 
     /// Existing content, with no writable handle or directory setup.
-    pub fn blob_reader(&self) -> crate::blobs::Blobs {
+    pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
         self.pool.archive.blob_reader()
     }
 

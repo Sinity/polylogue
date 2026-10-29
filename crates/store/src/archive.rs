@@ -38,6 +38,7 @@ pub struct Archive {
     /// In primary mode, Sinex's store root: its content store holds the
     /// inputs' bytes, and the register is a cache of what Sinex holds.
     sinex_store: Option<PathBuf>,
+    primary: bool,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -47,34 +48,38 @@ pub struct ArchiveLock {
 }
 
 impl Archive {
-    /// The register of inputs and of what people and agents wrote. In
-    /// standalone mode it is `archive.db`, the archive's record; in primary
-    /// mode it is `sinex.db`, a copy of what Sinex holds, written only after
-    /// Sinex acknowledged it and rebuilt from Sinex when missing.
+    /// Where source rows are read: the standalone ledger or the primary index cache.
     pub fn archive_db(&self) -> PathBuf {
-        match self.sinex_store {
-            None => self.root.join("archive.db"),
-            Some(_) => self.root.join("sinex.db"),
+        if self.is_primary() {
+            self.index_db()
+        } else {
+            self.root.join("archive.db")
         }
     }
 
     /// Whether Sinex holds the archive.
     pub fn is_primary(&self) -> bool {
-        self.sinex_store.is_some()
+        self.primary
     }
 
     /// Resolve content hashes in Polylogue's committed catalog and read the
     /// immutable segment extents with the shared reader.
     pub fn blobs(&self) -> Result<crate::blobs::Blobs> {
-        Ok(self.blob_reader())
+        self.blob_reader()
     }
 
-    pub fn blob_reader(&self) -> crate::blobs::Blobs {
-        let root = self.sinex_store.as_ref().unwrap_or(&self.root);
-        let (catalog,layout)=if self.is_primary() {
-            (self.index_db(),crate::blobs::BlobCatalog::Projection)
-        } else {(self.archive_db(),crate::blobs::BlobCatalog::Archive)};
-        crate::blobs::Blobs::new(root.clone(), catalog, layout)
+    pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
+        let root = self.byte_root()?;
+        let (catalog, layout) = if self.is_primary() {
+            (self.index_db(), crate::blobs::BlobCatalog::Projection)
+        } else {
+            (self.archive_db(), crate::blobs::BlobCatalog::Archive)
+        };
+        Ok(crate::blobs::Blobs::new(
+            root.to_path_buf(),
+            catalog,
+            layout,
+        ))
     }
 
     pub fn index_db(&self) -> PathBuf {
@@ -99,6 +104,7 @@ impl Archive {
         Self {
             root: root.to_path_buf(),
             sinex_store: None,
+            primary: false,
         }
     }
 
@@ -108,6 +114,29 @@ impl Archive {
         Self {
             root: root.to_path_buf(),
             sinex_store: Some(store.to_path_buf()),
+            primary: true,
+        }
+    }
+
+    /// The primary cache remains readable when configuration cannot name its byte owner.
+    pub fn open_primary_cache(root: &Path) -> Result<(Self, ArchiveLock)> {
+        let lock = Self::lock(root)?;
+        let archive = Self {
+            root: root.to_path_buf(),
+            sinex_store: None,
+            primary: true,
+        };
+        archive.finish_open()?;
+        Ok((archive, lock))
+    }
+
+    pub(crate) fn byte_root(&self) -> Result<&Path> {
+        if self.is_primary() {
+            self.sinex_store
+                .as_deref()
+                .ok_or_else(|| StoreError::Sinex("the primary byte owner is unavailable".into()))
+        } else {
+            Ok(&self.root)
         }
     }
 
@@ -153,50 +182,26 @@ impl Archive {
         Ok((archive, lock))
     }
 
-    /// Opens the archive at `root` held by Sinex (primary mode), whose
-    /// store root is `store`. A missing register, or one no migration brings
-    /// to this build's tables, is rebuilt from what Sinex holds. The index
-    /// resumes from its committed positions; there is no local blob store.
-    pub fn open_primary(
-        root: &Path,
-        store: &Path,
-        sinex: &dyn crate::primary::Sinex,
-    ) -> Result<(Self, ArchiveLock)> {
+    /// Opens the single primary cache. Only the confirmed consumer fills it.
+    pub fn open_primary(root: &Path, store: &Path) -> Result<(Self, ArchiveLock)> {
         let lock = Self::lock(root)?;
         let archive = Self::on_sinex(root, store);
-        clear_directory(&archive.parts_dir())?;
-        // The register is a copy of what Sinex holds: one no migration
-        // brings to this build's tables is rebuilt, not refused.
-        if archive.archive_db().exists() {
-            let register = open_write(&archive.archive_db(), cache::SETUP)?;
-            let migrated = schema::ensure_sinex(&register);
-            drop(register);
-            match migrated {
-                Ok(()) => {}
-                Err(StoreError::NewerSchema { .. } | StoreError::NoMigration { .. }) => {
-                    remove_database(&archive.archive_db())?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        if !archive.archive_db().exists() {
-            let building = root.join("sinex.db.building");
-            remove_database(&building)?;
-            let mut a = open_write(&building, cache::SETUP)?;
-            schema::ensure_sinex(&a)?;
-            crate::primary::load(&mut a, sinex, &hashed_blobs::Reader::new(store))?;
-            drop(a);
-            fs::rename(&building, archive.archive_db())?;
-            File::open(root)?.sync_all()?;
-        }
         archive.finish_open()?;
         Ok((archive, lock))
     }
 
     /// Where input bytes wait, in primary mode, until the writer sends them
     /// to Sinex; emptied when the archive opens.
-    pub fn parts_dir(&self) -> PathBuf {
-        self.root.join("parts")
+    pub fn parts_dir(&self) -> Result<PathBuf> {
+        if self.is_primary() {
+            Ok(self.byte_root()?.join("polylogue-prepared").join(
+                blake3::hash(self.root.as_os_str().as_encoded_bytes())
+                    .to_hex()
+                    .to_string(),
+            ))
+        } else {
+            Ok(self.root.join("parts"))
+        }
     }
 
     fn lock(root: &Path) -> Result<ArchiveLock> {
@@ -237,27 +242,18 @@ impl Archive {
     /// resume an interrupted build; incompatible indexes require an explicit
     /// schema change rather than removing already indexed rows.
     pub(crate) fn prepare_index(&self) -> Result<()> {
-        let archive = open_read(&self.archive_db())?;
-        let _write = crate::write_lock::hold(&archive)?;
-        let index = open_write(&self.index_db(), cache::SETUP)?;
-        schema::ensure_index(&index)?;
+        if self.is_primary() {
+            let index = open_write(&self.index_db(), cache::SETUP)?;
+            schema::ensure_primary_index(&index)?;
+        } else {
+            let archive = open_read(&self.archive_db())?;
+            let _write = crate::write_lock::hold(&archive)?;
+            let index = open_write(&self.index_db(), cache::SETUP)?;
+            schema::ensure_index(&index)?;
+        }
         crate::fault::check("index.after_creation", "")?;
         Ok(())
     }
-}
-
-/// Removes a regenerable primary-mode register and its journal files.
-fn remove_database(path: &Path) -> Result<()> {
-    for suffix in ["", "-wal", "-shm"] {
-        let mut name = path.as_os_str().to_owned();
-        name.push(suffix);
-        match fs::remove_file(&name) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Ok(())
 }
 
 /// Deletes every file in `dir`. Blob files are written there before they

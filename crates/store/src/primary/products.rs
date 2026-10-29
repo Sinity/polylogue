@@ -54,6 +54,7 @@ pub enum Product {
     Event {
         reading: Reading,
         facts: Event,
+        imported: Option<polylogue_model::bundle::ImportedEventIdentity>,
     },
     Link {
         reading: Reading,
@@ -186,10 +187,18 @@ pub fn parse(input: &InputKey, chain: i64, step: &crate::ParseStep) -> crate::Re
         reading: reading.clone(),
         facts,
     }));
-    products.extend(output.events.into_iter().map(|facts| Product::Event {
-        reading: reading.clone(),
-        facts,
-    }));
+    let mut imported_events = output.imported_events;
+    products.extend(
+        output
+            .events
+            .into_iter()
+            .enumerate()
+            .map(|(index, facts)| Product::Event {
+                reading: reading.clone(),
+                facts,
+                imported: imported_events.remove(&index),
+            }),
+    );
     products.extend(output.links.into_iter().map(|facts| Product::Link {
         reading: reading.clone(),
         facts,
