@@ -33,6 +33,7 @@ mod confirmed;
 mod primary;
 mod primary_capture;
 mod source_snapshot;
+mod query_objects;
 pub(crate) use confirmed::apply_confirmed_readings;
 pub(crate) mod resolve;
 mod rows;
@@ -126,10 +127,24 @@ struct WriterQueue {
     commits: crate::completion::CommitEvents,
 }
 
-type UserMsg = (
-    Box<polylogue_model::user::UserRequest>,
-    SyncSender<Result<polylogue_model::user::UserOutcome>>,
-);
+enum UserMsg {
+    Request(
+        Box<polylogue_model::user::UserRequest>,
+        SyncSender<Result<polylogue_model::user::UserOutcome>>,
+    ),
+    QueryObject(
+        Box<polylogue_model::query_objects::QueryObject>,
+        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+    ),
+    QueryRun(
+        Box<polylogue_model::query_objects::QueryRun>,
+        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+    ),
+    QueryRunOutcome(
+        Box<polylogue_model::query_objects::QueryRunOutcome>,
+        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+    ),
+}
 
 /// User writes waiting before their senders block.
 const USER_QUEUE: usize = 64;
@@ -754,7 +769,7 @@ fn user_via(
     request: polylogue_model::user::UserRequest,
 ) -> Result<polylogue_model::user::UserOutcome> {
     let (reply, wait) = sync_channel(1);
-    tx.send_user((Box::new(request), reply))
+    tx.send_user(UserMsg::Request(Box::new(request), reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -788,8 +803,33 @@ struct Inner {
 impl Inner {
     /// Writes every waiting user request, each answered once committed.
     fn serve_users(&mut self, users: &Receiver<UserMsg>) {
-        while let Ok((request, reply)) = users.try_recv() {
-            let _ = reply.send(self.write_user(&request));
+        while let Ok(message) = users.try_recv() {
+            match message {
+                UserMsg::Request(request, reply) => {
+                    let _ = reply.send(self.write_user(&request));
+                }
+                UserMsg::QueryObject(object, reply) => {
+                    let _ = reply.send(self.write_query_object(&object));
+                }
+                UserMsg::QueryRun(run, reply) => {
+                    let result = self.write_query_run(&run);
+                    if let Err(error) = &result {
+                        self.report
+                            .errors
+                            .push(format!("query run {}: {error}", run.id));
+                    }
+                    let _ = reply.send(result);
+                }
+                UserMsg::QueryRunOutcome(outcome, reply) => {
+                    let result = self.write_query_run_outcome(&outcome);
+                    if let Err(error) = &result {
+                        self.report
+                            .errors
+                            .push(format!("query run outcome {}: {error}", outcome.run));
+                    }
+                    let _ = reply.send(result);
+                }
+            }
         }
     }
 

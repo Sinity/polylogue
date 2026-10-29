@@ -31,6 +31,13 @@ use serde::{Deserialize, Serialize};
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
 pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
 
+/// Logical names of immutable intents in the existing producer custody store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedProductSelector {
+    Exact(String),
+    Prefix(String),
+}
+
 /// A locally pinned encoded body. Its optional path is a same-host custody
 /// optimization; the file and descriptor determine the bytes.
 pub struct PreparedBody {
@@ -78,6 +85,12 @@ pub trait Sinex: Send + Sync {
         &self,
         request: &polylogue_model::authored::PreparedRequest,
     ) -> Result<UserOutcome>;
+    /// Existing named intents, including published but unapplied frames.
+    fn visit_named_products(
+        &self,
+        selector: &NamedProductSelector,
+        visit: &mut dyn FnMut(&Product) -> Result<()>,
+    ) -> Result<()>;
     fn visit_pending_requests(
         &self,
         visit: &mut dyn FnMut(&polylogue_model::authored::PendingAuthored) -> Result<()>,

@@ -80,6 +80,15 @@ pub enum Product {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     },
+    Query {
+        object: Box<polylogue_model::query_objects::QueryObject>,
+    },
+    QueryRun {
+        run: Box<polylogue_model::query_objects::QueryRun>,
+    },
+    QueryRunOutcome {
+        outcome: Box<polylogue_model::query_objects::QueryRunOutcome>,
+    },
     Request(PreparedRequest),
     RestoredRequest {
         prepared: PreparedRequest,
@@ -105,6 +114,9 @@ impl Product {
             | Self::ParseProgress { reading, .. } => Some(reading),
             Self::Input { .. }
             | Self::Blob(_)
+            | Self::Query { .. }
+            | Self::QueryRun { .. }
+            | Self::QueryRunOutcome { .. }
             | Self::Request(_)
             | Self::RestoredRequest { .. }
             | Self::Coverage(_)

@@ -280,7 +280,9 @@ impl MessageSelection<'_, '_> {
         &self.parents
     }
 
-    pub(super) fn require_complete(&self) -> Result<()> {
+    /// Require the complete requested parent history before using its metadata
+    /// as a strict content or evidence binding. No record bodies are loaded.
+    pub fn require_complete(&self) -> Result<()> {
         match self.parents.issues.first() {
             Some(issue) => Err(StoreError::IncompleteParents(issue.clone())),
             None => Ok(()),

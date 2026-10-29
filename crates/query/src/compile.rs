@@ -2,8 +2,8 @@
 use crate::{QueryError, ast::*};
 use query_language::time::Clock;
 use serde::{Deserialize, Serialize};
-mod saved;
-mod schema;
+pub(crate) mod saved;
+pub(crate) mod schema;
 pub(crate) mod source;
 /// What compiling needs besides the text.
 #[derive(Debug, Clone)]
