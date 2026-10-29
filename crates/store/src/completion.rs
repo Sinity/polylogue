@@ -49,3 +49,6 @@ pub use catalog::{
 
 mod projection;
 pub use projection::{DefinitionChange, NativeKept, NativeSaved, SessionChange};
+
+mod custody;
+pub use custody::CatalogPointer;

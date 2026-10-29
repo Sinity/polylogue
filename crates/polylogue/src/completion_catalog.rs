@@ -230,6 +230,7 @@ fn complete_snapshot(
         !candidate.value.chars().any(char::is_control)
             && polylogue_render::terminal::escape(&candidate.value) == candidate.value
     });
+    reader.check()?;
     Ok(candidates)
 }
 fn source_spelling(source:query_language::ast::Source,catalog:&Catalog)->Option<String> {
@@ -272,7 +273,7 @@ fn settings_file(
     let Ok(settings) = reader.settings(key.unwrap_or(prefix)) else {
         return vec![];
     };
-    match key {
+    let values=match key {
         None => settings
             .into_iter()
             .map(|setting| {
@@ -298,7 +299,9 @@ fn settings_file(
                     .map(|value| (value, String::new()))
             })
             .collect(),
-    }
+    };
+    if reader.check().is_err(){return vec![];}
+    values
 }
 
 fn fill_values(

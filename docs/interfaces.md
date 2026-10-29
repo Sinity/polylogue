@@ -172,8 +172,9 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
-- **Format:** a private derived SQLite file with a versioned metadata row, indexed section tables and memory-mapped pages. Completion opens it read-only and loads the active source schemas, field values or session prefixes requested by the shared grammar. A catalog of another format version is ignored, leaving grammar-only completion.
+- **Format:** a canonical pointer to a private generation-specific derived SQLite file with a versioned metadata row, indexed section tables and memory-mapped pages. Completion opens it read-only and loads the active source schemas, field values or session prefixes requested by the shared grammar. A catalog of another format version is ignored, leaving grammar-only completion.
 - **Freshness:** a startup snapshot is written to a private temporary file, synced and renamed. The daemon subscribes to committed index changes before that snapshot, then applies indexed deltas in atomic catalog transactions that commit the published position with their rows, at most every 2 s while writes continue. Idle publishers wait for commit notifications. Candidates may trail by that interval; query answers never do.
+- Access-scope changes and index generation changes revoke the pointer synchronously through the archive's scope guard. A publisher can activate a generation only under that same guard; a completion lookup checks its pointer again before returning. Primary caches remain unavailable until an actual confirmed barrier is known, including a known empty barrier.
 - It is derived and harmless to delete.
 
 ### Registration

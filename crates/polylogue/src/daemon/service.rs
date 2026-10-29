@@ -290,12 +290,10 @@ fn handle_inner(
                 "completion position must be a UTF-8 byte boundary within the query",
             );
         }
-        return ok(crate::completion_catalog::complete_file(
-            &d.completion_path,
-            &crate::runtime_dir::archive_key(&d.archive.root),
-            text,
-            *position,
-        ));
+        let token=match d.archive.scope_token(){Ok(token)=>token,Err(error)=>return store_error(&error)};
+        let candidates=crate::completion_catalog::complete_file(&d.completion_path,&crate::runtime_dir::archive_key(&d.archive.root),text,*position);
+        if let Err(error)=token.check(){return store_error(&error);}
+        return ok(candidates);
     }
     if let Request::SchemaInfer { selection } = request {
         return super::schema::infer(d, selection);
@@ -1088,6 +1086,7 @@ pub struct Runtime {
     counts_stop: Option<Sender<()>>,
     counts: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
+    completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
@@ -1140,6 +1139,7 @@ impl Runtime {
         }
         self.daemon.page_ends.clear();
         self.daemon.reads.close();
+        self.completion_scope.take();
         self.lock.take();
         failure.map_or(Ok(()), Err)
     }
@@ -1237,6 +1237,8 @@ pub(crate) fn start_with_catalog(
     completion_path: std::path::PathBuf,
 ) -> std::io::Result<Runtime> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
+    let pointer=polylogue_store::completion::CatalogPointer::new(completion_path.clone());
+    let completion_scope=Archive::register_scope_invalidator(root,move||pointer.invalidate()).map_err(|error|to_io(&error))?;
     let settings = config.clone();
     let (archive, lock, mode, engine) = match mode {
         ArchiveMode::Standalone => {
@@ -1329,6 +1331,7 @@ pub(crate) fn start_with_catalog(
         counts_stop: None,
         counts: None,
         completion: None,
+        completion_scope: Some(completion_scope),
         engine: None,
         lock: Some(lock),
     };
@@ -1349,11 +1352,13 @@ pub(crate) fn start_with_catalog(
     } else {
         None
     };
+    if !runtime.daemon.mode.blocked() {
     runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
         Arc::clone(&runtime.daemon),
         completion_commits,
         completion_clock,
     )?);
+    }
     let Some(mut engine) = engine.take() else {
         return Ok(runtime);
     };

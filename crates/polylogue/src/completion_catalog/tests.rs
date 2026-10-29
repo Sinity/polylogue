@@ -181,7 +181,7 @@ fn real_writer_deltas_publish_source_values_and_native_first_prompt() {
     let mut archive = WriterArchive::new();
     let subscription = archive.writer.sender().unwrap().completion_commits();
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let mut state = publisher::State::new(None);
+    let mut state = publisher::State::new(None,false);
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -316,7 +316,7 @@ fn unavailable_kept_schema_does_not_prevent_other_vocabulary_publication() {
         .kept_result("missing-shape", "sessions", "{}")
         .unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(None);
+    let mut publisher = publisher::State::new(None,false);
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -336,4 +336,13 @@ fn saved_and_kept_names_are_runnable_source_suggestions_at_the_first_word() {
     let directory=tempfile::tempdir().unwrap();let path=directory.path().join("catalog");populated(&path);
     assert!(rendered(&path,"by-").contains(&"query:by-action".into()));
     assert!(rendered(&path,"Kept").contains(&"result:kept-id".into()));
+}
+
+#[test]
+fn primary_unknown_checkpoint_does_not_activate_an_empty_catalog() {
+    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("catalog");
+    let fixture=polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
+    let reads=fixture.reads().unwrap();let mut publisher=publisher::State::new(None,true);
+    publisher.refresh(&reads.reader().unwrap(),&path,"synthetic").unwrap();
+    assert!(!path.exists());
 }
