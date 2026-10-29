@@ -342,3 +342,59 @@ fn package_preflight_keeps_only_encoded_members_and_releases_refused_or_dropped_
     assert!(stage(&broken, &archive, None).is_err());
     assert_eq!(std::fs::read_dir(&parts).unwrap().count(), 0);
 }
+
+#[test]
+#[allow(unsafe_code)]
+fn descriptor_window_child() {
+    if std::env::var_os("POLYLOGUE_PACKAGE_FD_CHILD").is_none() {
+        return;
+    }
+    // This resource limit applies only to the synthetic child process.
+    let limit = libc::rlimit {
+        rlim_cur: 128,
+        rlim_max: 128,
+    };
+    assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+    let home = polylogue_testkit::ClaudeHome::new();
+    let source = home.dir.path().join("many.zip");
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
+    zip.start_file(
+        "conversations.json",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(CHAT.as_bytes()).unwrap();
+    for index in 0..512 {
+        zip.start_file(
+            format!("asset-{index}.txt"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        write!(zip, "synthetic asset {index}").unwrap();
+    }
+    zip.finish().unwrap();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
+    let report = engine.import(&[source]).unwrap();
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    assert_eq!(report.imported.len(), 514);
+}
+
+#[test]
+fn package_import_respects_a_bounded_descriptor_window() {
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "import::package::tests::descriptor_window_child",
+            "--nocapture",
+        ])
+        .env("POLYLOGUE_PACKAGE_FD_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "descriptor child failed: {}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

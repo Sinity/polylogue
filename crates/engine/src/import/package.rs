@@ -102,6 +102,7 @@ fn expand(
                 continue;
             }
             let name = member.name_raw().to_vec();
+            let display = member.name().to_owned();
             let expected = member.size();
             let decoded = archive
                 .prepare_bytes(&mut member)
@@ -111,7 +112,7 @@ fn expand(
                     "container member length differs from declaration",
                 ));
             }
-            children.push((name, i as u64, decoded));
+            children.push((name, i as u64, decoded, Some(display)));
         }
     } else {
         let decoded: Box<dyn Read + '_> = if magic[..n].starts_with(&[0x1f, 0x8b]) {
@@ -135,6 +136,7 @@ fn expand(
                 name.as_os_str().as_encoded_bytes().to_vec(),
                 i as u64,
                 member,
+                None,
             ));
         }
         // A tar iterator stops at its end marker before the compression
@@ -161,10 +163,12 @@ fn expand(
     } else {
         "tar"
     };
-    for (name, i, member) in children {
+    for (name, i, member, display) in children {
         let child = out.len();
-        let display = String::from_utf8(name.clone())
-            .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect());
+        let display = display.unwrap_or_else(|| {
+            String::from_utf8(name.clone())
+                .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect())
+        });
         expand(
             PathBuf::from(format!("{}!/{display}", path.display())),
             member,
