@@ -112,15 +112,30 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
             destination.to_str().unwrap(),
         ],
     );
-    assert!(matches!(delivered.status.code(), Some(0 | 5)), "{delivered:?}");
+    assert!(
+        matches!(delivered.status.code(), Some(0 | 5)),
+        "{delivered:?}"
+    );
     let records = std::fs::read_to_string(destination.join("records.jsonl")).unwrap();
     let mut values = records
         .lines()
         .map(|line| serde_json::from_str::<polylogue_model::bundle::Record>(line).unwrap());
-    let Some(polylogue_model::bundle::Record::Manifest(manifest)) = values.next() else { panic!("manifest must lead the bundle"); };
+    let Some(polylogue_model::bundle::Record::Manifest(manifest)) = values.next() else {
+        panic!("manifest must lead the bundle");
+    };
     manifest.validate().unwrap();
-    eprintln!("bundle snapshot: positions={:?}, caught_up={}, currency={:?}, incomplete={:?}, coverage={:?}", manifest.read_at, manifest.caught_up, manifest.currency, manifest.incomplete, manifest.coverage);
-    let degraded = !manifest.caught_up || manifest.currency.degraded() || !manifest.incomplete.is_empty() || !manifest.coverage.is_empty();
+    eprintln!(
+        "bundle snapshot: positions={:?}, caught_up={}, currency={:?}, incomplete={:?}, coverage={:?}",
+        manifest.read_at,
+        manifest.caught_up,
+        manifest.currency,
+        manifest.incomplete,
+        manifest.coverage
+    );
+    let degraded = !manifest.caught_up
+        || manifest.currency.degraded()
+        || !manifest.incomplete.is_empty()
+        || !manifest.coverage.is_empty();
     assert_eq!(delivered.status.code(), Some(if degraded { 5 } else { 0 }));
 
     let mut messages = 0;
