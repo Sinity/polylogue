@@ -165,14 +165,14 @@ fn comments_and_spacing_in_the_declarations_do_not_change_the_schema() {
 #[test]
 fn read_indexes_are_added_in_place_and_survive_reopen() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(INDEX).unwrap();
+    base_index(&conn).unwrap();
     set_version(&conn, INDEX_VERSION).unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     assert!(same_index_schema(&conn).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
-    base.execute_batch(INDEX).unwrap();
+    base_index(&base).unwrap();
     let base = shape(&base).unwrap();
     let read_indexes: Vec<_> = shape(&conn)
         .unwrap()
@@ -185,9 +185,9 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
         assert!(same_index_schema(&conn).unwrap(), "missing {name}");
         ensure_index(&conn).unwrap();
-        assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+        assert!(same_schema(&conn, &[INDEX, crate::coverage::SCHEMA, READ_INDEXES]).unwrap());
     }
-    assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+    assert!(same_schema(&conn, &[INDEX, crate::coverage::SCHEMA, READ_INDEXES]).unwrap());
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
