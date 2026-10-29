@@ -18,12 +18,12 @@ CREATE TABLE assertion (
   root        TEXT NOT NULL,     -- the first revision of this assertion; equals id for a first revision
   kind        TEXT NOT NULL,     -- closed list, see Kinds
   key         TEXT,              -- meaning per kind
-  value       TEXT,              -- text, or JSON checked against the kind's shape
+  value       TEXT,              -- JSON checked against the kind's shape; text is a JSON string
   author      TEXT NOT NULL,     -- computed, see Authorship
   via         TEXT NOT NULL,     -- mcp | cli | web | extension | hook | markup | import | daemon
   machine     TEXT NOT NULL,
-  created_at  INTEGER NOT NULL,  -- the writer's clock: display, age and as-of reads; never revision order
-  valid_until INTEGER,           -- optional; after it the assertion is shown as expired and left out of briefs
+  created_at  TEXT NOT NULL,     -- RFC3339 with full precision: display, age and as-of reads; never revision order
+  valid_until TEXT,              -- optional RFC3339 expiry; shown as expired and left out of briefs
   commit_seq  INTEGER NOT NULL   -- this archive's write counter: change feed and send order only
 ) STRICT;
 
@@ -54,7 +54,6 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `highlight` | colour name | optional text | many | a `span:` | `::highlight` |
 | `title` | — | text | one per about | a session | `::title` |
 | `outcome` | — | `solved`, `partial` or `abandoned` | one per about | a session | `::outcome` |
-| `hidden` | — | optional reason | one per about | a session | — |
 | `claim` | optional label | text, optional `check` (see Checked claims) | many | anything | `::claim` |
 | `finding` | optional label | text | many | anything; `derived_from` the `result:` or `query:` it rests on | `::finding` |
 | `decision` | optional label | text, optional `{alternatives, constraints, reverse_if}` | many | anything | `::decision` |
@@ -74,7 +73,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `setting` | setting name | the setting's value ([operations.md](operations.md#configuration)) | one per name | — | — |
 
 - **Marks.** Starring, pinning and other marks are tags. "Pin" stays the word for a mark; a page slot that shows an exact revision is `fixed` ([pages.md](pages.md#layouts)).
-- **`hidden`** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the ordinary `assert` and `withdraw` verbs.
+- **The `hidden` tag** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the ordinary `assert` and `withdraw` verbs.
 - **A summary is a variant,** not a kind (see Variants). A pass is the one way to group bulk annotation.
 
 ## Links
@@ -107,7 +106,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 
 **Exact references hold.** Judgments, questions, `fixed` slots, kept results and deliveries store `assertion:X@R`. A new revision never moves them, and a judgment of R says nothing about R+1.
 
-**Cardinality is enforced at write** from the kind declaration. Writing a single-valued kind (`title`, `outcome`, `hidden`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged".
+**Cardinality is enforced at write** from the kind declaration. Writing a single-valued kind (`title`, `outcome`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged".
 
 ## Authorship
 
