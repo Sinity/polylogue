@@ -1187,9 +1187,14 @@ impl Engine {
                 }
                 _ => None,
             });
-            if let Some(state) = self.inputs.get_mut(&plan.path) {
+            // An exact accepted retry can return an older immutable receipt.
+            // Only its still-current header may update the sampler's working
+            // state; a newer accepted source observation remains untouched.
+            if let Some(capture) = capture
+                && let Some(state) = self.inputs.get_mut(&plan.path)
+            {
                 state.failed = if plan.parse_failed { plan.facts } else { None };
-                state.working = capture.map(|capture| crate::plan::WorkingState {
+                state.working = Some(crate::plan::WorkingState {
                     capture,
                     group: group.clone(),
                     facts: plan.facts,
