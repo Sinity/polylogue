@@ -46,7 +46,18 @@ fn stage_record(
     let Some(reference) = record.reference() else {
         return Err("a bundle contains a second manifest".into());
     };
-    let key = format!("{}:{}", record.commit().unwrap_or(0), reference);
+    let mut key = format!("{}:{}", record.commit().unwrap_or(0), reference);
+    if let Record::TextFragment(fragment) = &record {
+        // A span is shared by source versions and independent declarations.
+        // Keep conflicting totals/provenance as claims for the Store reader;
+        // selected-text identity alone must not replace or veto either claim.
+        let raw = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
+        key.push_str(&format!(
+            ":{}:{}",
+            fragment.fragment.content_key(),
+            polylogue_model::BlobHash::of(&raw)
+        ));
+    }
     if let Some(previous) = items.source_item(&key).map_err(|error| error.to_string())? {
         let previous: Record =
             serde_json::from_reader(previous.reader).map_err(|error| error.to_string())?;
@@ -87,6 +98,7 @@ fn count(counts: &mut Counts, record: &Record) {
         Record::Authored(_) => counts.authored += 1,
         Record::Variant(_) => counts.variants += 1,
         Record::VariantPart(_) => counts.variant_parts += 1,
+        Record::TextFragment(_) => counts.text_fragments += 1,
         Record::Blob(_) => counts.blobs += 1,
         Record::Manifest(_) => {}
     }
@@ -243,3 +255,6 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
