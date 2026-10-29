@@ -47,7 +47,7 @@ fn plain_moved_compressed_and_reencoded_rollouts_share_native_input_without_extr
     let p = e.run_pass().unwrap();
     assert!(p.errors.is_empty(), "{p:?}");
     assert_eq!(
-        captured(&e, &blake3::hash(&encoded).to_hex().to_string()),
+        captured(&e, blake3::hash(&encoded).to_hex().as_ref()),
         encoded
     );
     let encoded2 = zstd::stream::encode_all(bytes.as_bytes(), 9).unwrap();
