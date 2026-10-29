@@ -50,6 +50,29 @@ fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> st
 }
 
 impl Engine {
+    /// Source positions cannot advance before attachment observations. This
+    /// ordinary plan path also resumes a capture interrupted after byte commit.
+    pub(crate) fn observe_local_references(
+        &mut self,
+        plan: &crate::plan::Plan,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        if plan.origin.name != "codex" || plan.input.arrival_rank >= 2 {
+            return Ok(());
+        }
+        let Change::Reparse { chain } = plan.change else {
+            return Ok(());
+        };
+        let reader = self.reads.reader()?;
+        let stored = reader.stored_chain(&plan.input.id, chain, plan.size)?;
+        drop(reader);
+        self.capture_local_files(
+            std::io::BufReader::new(stored.reader(Arc::clone(&self.blobs))),
+            &plan.input.id,
+            pass,
+        )
+    }
+
     pub(crate) fn capture_local_files(
         &mut self,
         mut source: impl BufRead,

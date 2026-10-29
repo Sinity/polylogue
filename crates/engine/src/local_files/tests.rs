@@ -77,3 +77,53 @@ fn every_reference_after_four_thousand_is_still_reported() {
         .unwrap();
     assert_eq!(bytes.iter().filter(|b| **b == b'\n').count(), 4097);
 }
+
+#[test]
+fn ordinary_reopen_observes_local_references_after_raw_commit_before_parse() {
+    for remove_source in [false, true] {
+        let w = ClaudeHome::new();
+        let dir = w.home.join(".codex/sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let image = w.dir.path().join("retained.png");
+        std::fs::write(&image, b"image after commit boundary").unwrap();
+        let row = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"capture pending attachment","local_images":[image]}});
+        let path = dir.join("rollout-crash.jsonl");
+        std::fs::write(&path,format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"interrupted-native\"}}}}\n{row}\n")).unwrap();
+        {
+            let (mut e, _lock) = engine(&w, 64);
+            let found = crate::collect::Found {
+                path: path.clone(),
+                origin: polylogue_sources::origin::by_name("codex").unwrap(),
+            };
+            let plan = e
+                .capture_rollout(
+                    &found,
+                    FileFacts::of(&std::fs::metadata(&path).unwrap()),
+                    &mut Pass::default(),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(plan.input.id, "codex:rollout:interrupted-native");
+            assert_eq!(
+                w.count("SELECT count(*) AS n FROM a.input WHERE format='codex-local-file'"),
+                0
+            );
+        }
+        if remove_source {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let (mut e, _lock) = engine(&w, 64);
+        let p = e.run_pass().unwrap();
+        assert!(p.errors.is_empty(), "{p:?}");
+        let id = blake3::hash(b"image after commit boundary")
+            .to_hex()
+            .to_string();
+        let r = e.reads.reader().unwrap();
+        let progress = r.input_progress(&id).unwrap().unwrap();
+        assert_eq!(
+            r.stored_range(&id, progress.chain, 0, progress.length, &e.blobs)
+                .unwrap(),
+            b"image after commit boundary"
+        );
+    }
+}

@@ -817,6 +817,13 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
+            if let Err(error) = self.observe_local_references(&plan, pass) {
+                pass.errors
+                    .push(format!("local references {}: {error}", plan.path.display()));
+                plan.failed = true;
+                self.finish_plan(plan);
+                continue;
+            }
             let store_first = matches!(plan.source, pool::Bytes::File)
                 && plan.parse_pos == 0
                 && plan.stored_upto > 0

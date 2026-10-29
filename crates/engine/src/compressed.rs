@@ -195,16 +195,6 @@ impl Engine {
             .expect("transcript result");
         pass.bytes_read += facts.size;
         pass.bytes_stored += raw_added + added;
-        // Local references observe the exact committed transcript, including when
-        // the source changes again during attachment capture.
-        let reader = self.reads.reader()?;
-        let chain = reader.stored_chain(&id, stored.chain, stored.length)?;
-        drop(reader);
-        self.capture_local_files(
-            BufReader::new(chain.reader(Arc::clone(&self.blobs))),
-            &id,
-            pass,
-        )?;
         self.inputs.insert(
             path.clone(),
             InputState {
