@@ -119,6 +119,7 @@ Every authored record in Polylogue (assertions, variants, withdrawals, judgments
   - `operator`;
   - `agent:<session>`, the most specific session known, for example `claude-code:agent-a7f3a2c1000000003` for a Claude subagent or `codex:<thread>`;
   - `agent:<origin>`, when the harness is known and its session is not, for example `agent:gemini-cli`;
+  - `agent`, when the agent channel or a historical record establishes an agent but neither its harness nor its session is known;
   - `script:<unit>`, a named non-interactive program, named by its cgroup unit (a systemd unit or a scope);
   - `unattributed`, when there is no evidence either way.
 - **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `hook`, `markup`, `import` or `daemon`. There is no evidence blob and no confidence score.
