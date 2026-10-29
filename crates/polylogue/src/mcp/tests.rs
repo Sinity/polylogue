@@ -51,14 +51,11 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     let text = call(
         &archive,
         "read",
-        args(json!({"session": "claude-code:s1", "format": "markdown"})),
+        args(json!({"target": "session:claude-code:s1", "format": "markdown"})),
     )
     .unwrap();
-    let read: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert!(
-        read["content"].as_str().unwrap().contains("walrus"),
-        "{text}"
-    );
+    let read: polylogue_model::read::ReadPage = serde_json::from_str(&text).unwrap();
+    assert!(read_pages::body(&read).contains("walrus"), "{text}");
 
     let text = call(&archive, "query", args(json!({"query": "walrus"}))).unwrap();
     assert!(text.contains("claude-code:s1"), "{text}");
@@ -66,7 +63,7 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     let e = call(
         &archive,
         "read",
-        args(json!({"session": "claude-code:s1", "pages": 1})),
+        args(json!({"target": "session:claude-code:s1", "pages": 1})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (bad_request)"), "{e}");
@@ -80,7 +77,7 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     let e = call(
         &archive,
         "read",
-        args(json!({"session": "claude-code:nope"})),
+        args(json!({"target": "session:claude-code:nope"})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (not_found)"), "{e}");
@@ -370,4 +367,29 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
         .unwrap();
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     assert!(tool["inputSchema"]["properties"].get("arguments").is_some());
+}
+
+#[test]
+fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    let (text, structured, failed) = call_with_limit(
+        &archive,
+        "polylogue_read",
+        args(json!({
+            "arguments":{"target":"session:claude-code:synthetic", "author":"invented"},
+            "request_id":"invalid-admission-witness"
+        })),
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+    assert!(failed);
+    assert!(text.starts_with("error (bad_request)"), "{text}");
+    let answer: command_surface::Answer<Value> = serde_json::from_value(structured).unwrap();
+    let command_surface::Answer::Error { error, .. } = answer else {
+        panic!("canonical admission error");
+    };
+    assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
 }
