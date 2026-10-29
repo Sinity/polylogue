@@ -34,7 +34,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
 
 /// Source copies remain separate readings of one natural record. This retains
 /// every source rank and provider attribute when another copy arrives.
-pub(crate) fn key(product: &Product, occurrence: usize) -> Result<String> {
+pub(crate) fn key(product: &Product, occurrence: u64) -> Result<String> {
     let natural = match product {
         Product::Input { rows, .. } => json!([
             rows.input,
@@ -61,7 +61,7 @@ pub(crate) fn key(product: &Product, occurrence: usize) -> Result<String> {
     };
     let source = product
         .reading()
-        .map(|reading| json!([reading.input.id, reading.chain, reading.start]));
+        .map(|reading| json!([reading.input.id, reading.chain]));
     Ok(
         blake3::hash(&serde_json::to_vec(&(kind(product), source, natural))?)
             .to_hex()
@@ -71,7 +71,7 @@ pub(crate) fn key(product: &Product, occurrence: usize) -> Result<String> {
 
 /// The full fact is authoritative; the common fields let Sinex join AI work
 /// to its other domains without understanding Polylogue's internal model.
-pub(crate) fn payload(product: &Product, occurrence: usize) -> Result<Value> {
+pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
     let mut payload = match product {
         Product::Session { facts, .. } => json!({
             "session": facts.id, "origin": facts.id.origin().as_str(), "kind": facts.kind,
@@ -192,13 +192,13 @@ pub(crate) fn payload(product: &Product, occurrence: usize) -> Result<Value> {
         Product::ParseProgress { reading, .. } => json!({"input": reading.input.id}),
     };
     payload["record_key"] = key(product, occurrence)?.into();
-    payload["facts"] = serde_json::to_value(product)?;
+    payload["record"] = serde_json::to_value(product)?;
     Ok(payload)
 }
 
 pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
     let product: Product =
-        serde_json::from_value(payload.get("facts").cloned().ok_or_else(|| {
+        serde_json::from_value(payload.get("record").cloned().ok_or_else(|| {
             Error::Invalid(format!("confirmed {event_type} has no complete facts"))
         })?)?;
     if kind(&product) != event_type {
@@ -207,6 +207,46 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
         )));
     }
     Ok(product)
+}
+
+fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
+    fn references(value: &Value, found: &mut std::collections::BTreeSet<String>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(reference) = object
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .and_then(|reference| reference.strip_prefix("#/$defs/"))
+                {
+                    found.insert(reference.into());
+                }
+                for value in object.values() {
+                    references(value, found);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    references(value, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut pending = std::collections::BTreeSet::new();
+    references(root, &mut pending);
+    let mut retained = serde_json::Map::new();
+    while let Some(name) = pending.pop_first() {
+        if retained.contains_key(&name) {
+            continue;
+        }
+        let definition = definitions
+            .get(&name)
+            .expect("generated schema reference exists")
+            .clone();
+        references(&definition, &mut pending);
+        retained.insert(name, definition);
+    }
+    Value::Object(retained)
 }
 
 /// Kind declarations validate the complete serde domain model. The outer
@@ -248,12 +288,13 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 .expect("tagged product variants");
             variants.retain(|variant| variant["properties"]["product"]["const"] == *product);
             assert_eq!(variants.len(), 1, "one complete product schema per kind");
+            let definitions = reachable_definitions(&facts, &definitions);
             let schema = json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object", "properties": {
-                    "record_key": {"type":"string", "minLength":1}, "facts":facts,
+                    "record_key": {"type":"string", "minLength":1}, "record":facts,
                 },
-                "required":["record_key","facts"], "$defs":definitions,
+                "required":["record_key","record"], "$defs":definitions,
             });
             KindDeclaration {
                 kind: KindRef {
@@ -275,13 +316,15 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     fields: vec!["at".into(), "started".into()],
                     quality: TimeQuality::Intrinsic,
                 }),
-                field_hints: ["facts", "text", "value", "targets", "query", "rows", "refs"]
-                    .into_iter()
-                    .map(|field| FieldHint {
-                        field: format!("/{field}"),
-                        class: Class::Guarded,
-                    })
-                    .collect(),
+                field_hints: [
+                    "record", "text", "value", "targets", "query", "rows", "refs",
+                ]
+                .into_iter()
+                .map(|field| FieldHint {
+                    field: format!("/{field}"),
+                    class: Class::Guarded,
+                })
+                .collect(),
                 removed_rule: Some(RemovedRule::Never),
                 keep_known: Vec::new(),
                 owned_blobs: Vec::new(),
@@ -300,7 +343,7 @@ pub(crate) fn events(
     writes
         .iter()
         .map(|write| {
-            let mut payload = payload(&write.product, write.output_index as usize)?;
+            let mut payload = payload(&write.product, write.output_index)?;
             let mut source = write.location.clone();
             if let Product::Session { facts, .. } = &write.product {
                 let mut native = crate::native::Native::new(facts.repo.clone());

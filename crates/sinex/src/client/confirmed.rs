@@ -1,13 +1,14 @@
 //! Grant-checked payload reads and one durable confirmed-stream subscription.
 use super::Client;
 use crate::{Error, Result};
-use async_nats::jetstream::{self, consumer};
+use async_nats::jetstream;
 use base64::Engine;
 use futures_util::StreamExt;
 use polylogue_store::primary::{Confirmed, ConfirmedChange};
 use serde::de::DeserializeOwned;
 use sinex_protocol::{
-    FetchEvent, FetchEventReply, FetchPayload, FetchPayloadReply, PayloadReference,
+    ConfirmedConsumer, ConfirmedConsumerReply, FetchEvent, FetchEventReply, FetchMaterial,
+    FetchMaterialReply, FetchPayload, FetchPayloadReply, FetchRange, PayloadReference,
 };
 use std::io::{Seek, Write};
 use std::time::Duration;
@@ -29,26 +30,37 @@ impl Client {
     /// A referenced value is transferred in bounded units and checked before
     /// any of it reaches the read index. A privacy change invalidates the hash.
     async fn fetch_json<T: DeserializeOwned>(&self, reference: &PayloadReference) -> Result<T> {
+        self.transfer(reference.length, &reference.hash, async |offset, length| {
+            self.request(
+                self.subjects.fetch_payload(&self.producer),
+                FetchPayload {
+                    event: reference.event,
+                    offset,
+                    length,
+                    hash: reference.hash.clone(),
+                },
+            )
+            .await
+        })
+        .await
+    }
+
+    async fn transfer<T: DeserializeOwned>(
+        &self,
+        total: u64,
+        hash: &str,
+        mut fetch: impl AsyncFnMut(u64, u64) -> Result<FetchPayloadReply>,
+    ) -> Result<T> {
         let mut file = tempfile::tempfile()?;
         let mut digest = blake3::Hasher::new();
         let mut offset = 0u64;
-        while offset < reference.length {
-            let length = (reference.length - offset)
-                .min((self.max_message.saturating_sub(4096) * 3 / 4).max(1) as u64);
-            let reply: FetchPayloadReply = self
-                .request(
-                    self.subjects.fetch_payload(&self.producer),
-                    FetchPayload {
-                        event: reference.event,
-                        offset,
-                        length,
-                        hash: reference.hash.clone(),
-                    },
-                )
-                .await?;
+        while offset < total {
+            let length =
+                (total - offset).min((self.max_message.saturating_sub(4096) * 3 / 4).max(1) as u64);
+            let reply = fetch(offset, length).await?;
             if let Some(reason) = reply.refusal {
                 return Err(Error::Refused {
-                    name: format!("payload {}", reference.event),
+                    name: "payload transfer".into(),
                     reason,
                 });
             }
@@ -56,10 +68,10 @@ impl Client {
                 .decode(reply.data)
                 .map_err(|error| Error::Invalid(format!("payload transfer: {error}")))?;
             if reply.offset != offset
-                || reply.total != reference.length
-                || reply.hash != reference.hash
+                || reply.total != total
+                || reply.hash != hash
                 || bytes.is_empty()
-                || bytes.len() as u64 > reference.length - offset
+                || bytes.len() as u64 > total - offset
             {
                 return Err(Error::Invalid(
                     "payload transfer changed its range or identity".into(),
@@ -69,7 +81,7 @@ impl Client {
             digest.update(&bytes);
             offset += bytes.len() as u64;
         }
-        if reference.hash != format!("blake3:{}", digest.finalize().to_hex()) {
+        if hash != format!("blake3:{}", digest.finalize().to_hex()) {
             return Err(Error::Invalid(
                 "payload transfer failed its digest check".into(),
             ));
@@ -82,26 +94,91 @@ impl Client {
         Ok(value)
     }
 
-    async fn full_event(
+    pub(crate) async fn fetch_material(
         &self,
-        event: &sinex_protocol::ConfirmedEvent,
-    ) -> Result<sinex_protocol::ConfirmedEvent> {
-        if event.payload.is_some() {
-            return Ok(event.clone());
+        material: sinex_model::MaterialId,
+    ) -> Result<FetchMaterialReply> {
+        let mut reply: FetchMaterialReply = self
+            .request(
+                self.subjects.fetch_material(&self.producer),
+                FetchMaterial {
+                    material,
+                    range: None,
+                },
+            )
+            .await?;
+        if let Some(reference) = reply.material_ref.clone() {
+            reply = self
+                .transfer(reference.length, &reference.hash, async |offset, length| {
+                    let reply: FetchMaterialReply = self
+                        .request(
+                            self.subjects.fetch_material(&self.producer),
+                            FetchMaterial {
+                                material,
+                                range: Some(FetchRange {
+                                    offset,
+                                    length,
+                                    hash: reference.hash.clone(),
+                                }),
+                            },
+                        )
+                        .await?;
+                    if let Some(reason) = reply.refusal {
+                        return Err(Error::Refused {
+                            name: format!("material {material}"),
+                            reason,
+                        });
+                    }
+                    reply
+                        .transfer
+                        .ok_or_else(|| Error::Invalid("material transfer supplied no bytes".into()))
+                })
+                .await?;
         }
+        if let Some(reason) = &reply.refusal {
+            return Err(Error::Refused {
+                name: format!("material {material}"),
+                reason: reason.clone(),
+            });
+        }
+        let metadata = reply
+            .material
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("material fetch supplied no material".into()))?;
+        if metadata.id != material {
+            return Err(Error::Invalid("material fetch changed its identity".into()));
+        }
+        let hash = metadata
+            .blob
+            .strip_prefix("blake3:")
+            .and_then(|hash| polylogue_model::BlobHash::parse(hash).ok())
+            .ok_or_else(|| Error::Invalid("material has no BLAKE3 digest".into()))?;
+        crate::material::validate(&polylogue_store::primary::Material {
+            id: material.to_string(),
+            hash,
+            length: metadata.length,
+            extents: reply.extents.clone(),
+        })?;
+        Ok(reply)
+    }
+
+    async fn fetch_event(
+        &self,
+        id: sinex_model::EventId,
+    ) -> Result<sinex_protocol::ConfirmedEvent> {
         let reply: FetchEventReply = self
             .request(
                 self.subjects.fetch_event(&self.producer),
-                FetchEvent { event: event.id },
+                FetchEvent { event: id },
             )
             .await?;
         if let Some(reason) = reply.refusal {
             return Err(Error::Refused {
-                name: format!("event {}", event.id),
+                name: format!("event {id}"),
                 reason,
             });
         }
-        let mut fetched = if let Some(reference) = &reply.event_ref {
+        let mut event = if let Some(reference) = &reply.event_ref {
             self.fetch_json::<sinex_protocol::ConfirmedEvent>(reference)
                 .await?
         } else {
@@ -110,25 +187,73 @@ impl Client {
                 .ok_or_else(|| Error::Invalid("event fetch supplied no event".into()))?
         };
         if let Some(reference) = &reply.payload_ref {
-            fetched.payload = Some(self.fetch_json(reference).await?);
-            fetched.withheld = None;
+            event.payload = Some(self.fetch_json(reference).await?);
+            event.withheld = None;
         }
-        if fetched.id != event.id
-            || fetched.commit_seq != event.commit_seq
+        if event.id != id || event.payload.is_none() {
+            return Err(Error::Invalid(
+                "event fetch changed identity or withheld complete facts".into(),
+            ));
+        }
+        Ok(event)
+    }
+
+    async fn full_event(
+        &self,
+        event: &sinex_protocol::ConfirmedEvent,
+    ) -> Result<sinex_protocol::ConfirmedEvent> {
+        if event.payload.is_some() {
+            return Ok(event.clone());
+        }
+        let fetched = self.fetch_event(event.id).await?;
+        if fetched.commit_seq != event.commit_seq
             || fetched.kind_version != event.kind_version
             || fetched.event_type != event.event_type
             || fetched.record_hash != event.record_hash
-            || fetched.payload.is_none()
         {
             return Err(Error::Invalid(
-                "fetched event differs from its confirmed identity or has withheld facts".into(),
+                "fetched event differs from its confirmed identity".into(),
             ));
         }
         Ok(fetched)
     }
 
-    pub(crate) async fn confirmed(&mut self, after: i64) -> Result<Vec<Confirmed>> {
-        let result = self.confirmed_page(after).await;
+    async fn decode_event(
+        &self,
+        event: &sinex_protocol::ConfirmedEvent,
+        after: i64,
+    ) -> Result<Confirmed> {
+        let change = if event.commit_seq > after
+            && event.event_type.starts_with("polylogue.")
+            && !matches!(
+                event.event_type.as_str(),
+                "polylogue.tool_call" | "polylogue.turn"
+            ) {
+            let expected = crate::kinds::kind_reference(&event.event_type)?;
+            if expected.version != event.kind_version {
+                return Err(Error::Invalid(format!(
+                    "unsupported confirmed {} version {}, expected {}",
+                    event.event_type, event.kind_version, expected.version
+                )));
+            }
+            let event = self.full_event(event).await?;
+            ConfirmedChange::Live(crate::products::decode(
+                &event.event_type,
+                event.payload.expect("complete event"),
+            )?)
+        } else {
+            ConfirmedChange::Ignored
+        };
+        Ok(Confirmed {
+            position: event.commit_seq,
+            event: event.id.to_string(),
+            output_index: event.output_index,
+            change,
+        })
+    }
+
+    pub(crate) async fn confirmed(&mut self, after: i64, cache: &str) -> Result<Vec<Confirmed>> {
+        let result = self.confirmed_page(after, cache).await;
         if result.is_err() {
             for message in &self.pending {
                 let _ = message
@@ -140,60 +265,84 @@ impl Client {
         result
     }
 
-    async fn confirmed_page(&mut self, after: i64) -> Result<Vec<Confirmed>> {
+    async fn confirmed_page(&mut self, after: i64, cache: &str) -> Result<Vec<Confirmed>> {
         if !self.pending.is_empty() {
             return Err(Error::Invalid(
                 "the previous confirmed page has not been committed locally".into(),
             ));
         }
-        if self.consumer.is_none() {
-            let stream = jetstream::new(self.client.clone())
-                .get_stream(self.subjects.confirmed_stream())
-                .await
-                .map_err(|error| Error::Unreachable(format!("confirmed stream: {error}")))?;
-            // A missing index starts from the retained history even if the
-            // server remembers an older copy's acknowledged subscription.
-            if after == 0 {
-                match stream
-                    .get_consumer::<consumer::pull::Config>(&self.consumer_name)
-                    .await
-                {
-                    Ok(_) => {
-                        stream
-                            .delete_consumer(&self.consumer_name)
-                            .await
-                            .map_err(|error| {
-                                Error::Unreachable(format!("reset confirmed subscription: {error}"))
-                            })?;
-                    }
-                    Err(error) if matches!(error.kind(),jetstream::stream::ConsumerErrorKind::JetStream(error) if error.error_code()==jetstream::errors::ErrorCode::CONSUMER_NOT_FOUND || error.error_code()==jetstream::errors::ErrorCode::CONSUMER_DOES_NOT_EXIST) =>
-                        {}
-                    Err(error) => {
-                        return Err(Error::Unreachable(format!(
-                            "confirmed subscription: {error}"
-                        )));
-                    }
-                }
+        if self.consumer.is_none() || self.consumer_cache.as_deref() != Some(cache) {
+            let reply: ConfirmedConsumerReply = self
+                .request(
+                    self.subjects.confirmed_consumer(&self.producer),
+                    ConfirmedConsumer {
+                        after,
+                        cache: cache.into(),
+                        status_only: false,
+                    },
+                )
+                .await?;
+            if let Some(reason) = reply.gap {
+                return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
+            }
+            if let Some(reason) = reply.refusal {
+                return Err(Error::Refused {
+                    name: "confirmed subscription".into(),
+                    reason,
+                });
+            }
+            if reply.stream != self.subjects.confirmed_stream()
+                || reply.consumer.is_empty()
+                || reply.scope.is_empty()
+            {
+                return Err(Error::Invalid(
+                    "Sinex supplied another consumer identity or an absent scope".into(),
+                ));
+            }
+            if let Ok(mut health) = self.health.lock() {
+                health.owner_position = reply.position;
+                health.position_observed = Some(std::time::Instant::now());
             }
             self.consumer = Some(
-                stream
-                    .get_or_create_consumer(
-                        &self.consumer_name,
-                        consumer::pull::Config {
-                            durable_name: Some(self.consumer_name.clone()),
-                            deliver_policy: consumer::DeliverPolicy::All,
-                            ack_policy: consumer::AckPolicy::Explicit,
-                            max_deliver: -1,
-                            ack_wait: Duration::from_secs(120),
-                            filter_subject: self.subjects.confirmed_all(),
-                            ..Default::default()
-                        },
-                    )
+                jetstream::new(self.client.clone())
+                    .get_consumer_from_stream(reply.consumer, reply.stream)
                     .await
                     .map_err(|error| {
                         Error::Unreachable(format!("confirmed subscription: {error}"))
                     })?,
             );
+            self.consumer_cache = Some(cache.into());
+        }
+        let refresh = self
+            .health
+            .lock()
+            .map_err(|_| Error::Invalid("producer health panicked".into()))?
+            .position_observed
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(1));
+        if refresh {
+            let reply: ConfirmedConsumerReply = self
+                .request(
+                    self.subjects.confirmed_consumer(&self.producer),
+                    ConfirmedConsumer {
+                        after,
+                        cache: cache.into(),
+                        status_only: true,
+                    },
+                )
+                .await?;
+            if let Some(reason) = reply.refusal {
+                return Err(Error::Refused {
+                    name: "confirmed status".into(),
+                    reason,
+                });
+            }
+            if let Some(reason) = reply.gap {
+                return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
+            }
+            if let Ok(mut health) = self.health.lock() {
+                health.owner_position = reply.position;
+                health.position_observed = Some(std::time::Instant::now());
+            }
         }
         let mut messages = self
             .consumer
@@ -212,36 +361,35 @@ impl Client {
             self.pending.push(message.clone());
             let change: sinex_protocol::Confirmed = serde_json::from_slice(&message.payload)?;
             let confirmed = match change {
-                sinex_protocol::Confirmed::Event(event) => {
-                    let position = event.commit_seq;
-                    let id = event.id.to_string();
-                    let change = if event.event_type.starts_with("polylogue.")
-                        && !matches!(
-                            event.event_type.as_str(),
-                            "polylogue.tool_call" | "polylogue.turn"
-                        ) {
-                        let event = self.full_event(&event).await?;
-                        ConfirmedChange::Live(crate::products::decode(
-                            &event.event_type,
-                            event.payload.expect("complete event"),
-                        )?)
+                sinex_protocol::Confirmed::Event(event) => self.decode_event(&event, after).await?,
+                sinex_protocol::Confirmed::EventReference { commit_seq, event } => {
+                    if commit_seq <= after {
+                        Confirmed {
+                            position: commit_seq,
+                            event: event.to_string(),
+                            output_index: 0,
+                            change: ConfirmedChange::Ignored,
+                        }
                     } else {
-                        ConfirmedChange::Ignored
-                    };
-                    Confirmed {
-                        position,
-                        event: id,
-                        change,
+                        let fetched = self.fetch_event(event).await?;
+                        if fetched.commit_seq != commit_seq {
+                            return Err(Error::Invalid(
+                                "event reference changed its confirmed position".into(),
+                            ));
+                        }
+                        self.decode_event(&fetched, after).await?
                     }
                 }
                 sinex_protocol::Confirmed::Archived(change) => Confirmed {
                     position: change.archived_seq,
                     event: change.event.to_string(),
+                    output_index: 0,
                     change: ConfirmedChange::Archived,
                 },
                 sinex_protocol::Confirmed::Unhidden(change) => Confirmed {
                     position: change.unhidden_seq,
                     event: change.event.to_string(),
+                    output_index: 0,
                     change: ConfirmedChange::Restored,
                 },
                 sinex_protocol::Confirmed::Excised {
@@ -253,6 +401,7 @@ impl Client {
                         ))
                     })?,
                     event: event.to_string(),
+                    output_index: 0,
                     change: ConfirmedChange::Tombstoned,
                 },
                 sinex_protocol::Confirmed::Gap { reason } => {
@@ -261,20 +410,22 @@ impl Client {
                 sinex_protocol::Confirmed::PositionComplete { commit_seq } => Confirmed {
                     position: commit_seq,
                     event: String::new(),
+                    output_index: 0,
                     change: ConfirmedChange::PositionComplete,
                 },
             };
-            // Replaying a retained stream after NATS loss uses the saved
-            // product position, independent of the stream's new sequences.
-            if confirmed.position <= after {
-                message
-                    .ack()
-                    .await
-                    .map_err(|error| Error::Unreachable(error.to_string()))?;
-                self.pending.pop();
-            } else {
-                page.push(confirmed);
-            }
+            page.push(
+                if confirmed.position <= after
+                    && !matches!(confirmed.change, ConfirmedChange::PositionComplete)
+                {
+                    Confirmed {
+                        change: ConfirmedChange::Ignored,
+                        ..confirmed
+                    }
+                } else {
+                    confirmed
+                },
+            );
         }
         Ok(page)
     }

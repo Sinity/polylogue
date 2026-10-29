@@ -15,6 +15,8 @@ mod products;
 mod replay;
 pub use replay::Replay;
 mod spool;
+mod status;
+pub use status::Status;
 
 use client::Client;
 
@@ -153,7 +155,7 @@ impl Config {
 /// writer thread and the loop. One frame is in flight at a time.
 pub struct Sinex {
     config: Config,
-    consumer_name: String,
+    health: Arc<Mutex<status::Health>>,
     spool: Arc<Mutex<spool::Spool>>,
     runtime: tokio::runtime::Runtime,
     /// `None` only while dropping.
@@ -165,7 +167,7 @@ pub struct Sinex {
 impl Sinex {
     /// Opens the durable producer spool before making any network connection.
     /// Capture can prepare writes while Sinex is unavailable.
-    pub fn open(config: &Config, root: &Path) -> Result<Self> {
+    pub fn open(config: &Config) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -178,11 +180,7 @@ impl Sinex {
             .unwrap_or_default();
         Ok(Self {
             config: config.clone(),
-            consumer_name: format!(
-                "outside-{}-{}",
-                config.producer,
-                blake3::hash(root.as_os_str().as_encoded_bytes()).to_hex()
-            ),
+            health: Arc::new(Mutex::new(status::Health::default())),
             spool,
             runtime,
             client: Mutex::new(None),
@@ -191,8 +189,8 @@ impl Sinex {
     }
 
     /// Opens this producer and requires Sinex to answer immediately.
-    pub fn connect(config: &Config, root: &Path) -> Result<Self> {
-        let sinex = Self::open(config, root)?;
+    pub fn connect(config: &Config) -> Result<Self> {
+        let sinex = Self::open(config)?;
         sinex.with(async |_client| Ok(()))?;
         Ok(sinex)
     }
@@ -204,15 +202,29 @@ impl Sinex {
             .lock()
             .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
         if client.is_none() {
-            *client = Some(self.runtime.block_on(Client::connect(
+            let connected = self.runtime.block_on(Client::connect(
                 &self.config,
                 Arc::clone(&self.spool),
-                self.consumer_name.clone(),
-            ))?);
+                Arc::clone(&self.health),
+            ));
+            match connected {
+                Ok(connected) => *client = Some(connected),
+                Err(error) => {
+                    if let Ok(mut health) = self.health.lock() {
+                        health.reachable = Some(!matches!(error, Error::Unreachable(_)));
+                        health.error = Some(error.to_string());
+                    }
+                    return Err(error);
+                }
+            }
         }
         let result = self
             .runtime
             .block_on(work(client.as_mut().expect("connected client")));
+        if let Ok(mut health) = self.health.lock() {
+            health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
+            health.error = result.as_ref().err().map(ToString::to_string);
+        }
         if matches!(result, Err(Error::Unreachable(_))) {
             // The immutable spool keeps every unacknowledged frame. A fresh
             // connection retries those identities after the next successful hello.
@@ -292,10 +304,11 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn confirmed(
         &self,
         after: i64,
+        cache: &str,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
         Ok(self.with(async |client| {
             client.retry_prepared().await?;
-            client.confirmed(after).await
+            client.confirmed(after, cache).await
         })?)
     }
     fn acknowledge(&self, position: i64) -> polylogue_store::Result<()> {

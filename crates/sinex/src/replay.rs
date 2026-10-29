@@ -62,7 +62,8 @@ impl Replay<'_> {
                     .blob
                     .strip_prefix("blake3:")
                     .ok_or_else(|| Error::Invalid("invalid material digest".into()))?;
-                let extents = crate::material::decode_extents(&material.extents)?;
+                let fetched = client.fetch_material(material.id).await?;
+                let extents = crate::material::decode_extents(&fetched.extents)?;
                 if extents.is_empty()
                     || extents.iter().try_fold(0u64, |length, extent| {
                         length.checked_add(extent.decoded_len)
@@ -86,7 +87,7 @@ impl Replay<'_> {
                 event_types: scope.event_types,
                 from: scope.from,
                 until: scope.until,
-                declarations: crate::kinds::declarations(client.producer())
+                declarations: crate::kinds::declarations(client.family())
                     .iter()
                     .map(|d| DeclarationHash {
                         kind: d.kind.clone(),

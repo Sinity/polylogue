@@ -26,18 +26,20 @@ pub(crate) struct Client {
     client: async_nats::Client,
     subjects: Subjects,
     producer: String,
+    family: String,
     max_message: usize,
     pub(crate) store_root: PathBuf,
     acknowledgments: async_nats::Subscriber,
-    consumer_name: String,
+    consumer_cache: Option<String>,
+    health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     consumer: Option<async_nats::jetstream::consumer::PullConsumer>,
     pending: Vec<async_nats::jetstream::Message>,
     spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
 }
 
 impl Client {
-    pub(crate) fn producer(&self) -> &str {
-        &self.producer
+    pub(crate) fn family(&self) -> &str {
+        &self.family
     }
 
     pub(crate) async fn replay_scope(
@@ -62,8 +64,9 @@ impl Client {
     pub(crate) async fn connect(
         config: &Config,
         spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
-        consumer_name: String,
+        health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
     ) -> Result<Self> {
+        let subjects = Subjects::new(config.subject_root.clone());
         let options = match config.credentials()? {
             Some((user, password)) => {
                 async_nats::ConnectOptions::with_user_and_password(user, password)
@@ -71,10 +74,10 @@ impl Client {
             None => async_nats::ConnectOptions::new(),
         };
         let client = options
+            .custom_inbox_prefix(subjects.inbox_prefix(&config.producer))
             .connect(config.nats.as_str())
             .await
             .map_err(|e| Error::Unreachable(format!("NATS at {}: {e}", config.nats)))?;
-        let subjects = Subjects::new(config.subject_root.clone());
         let acknowledgments = client
             .subscribe(subjects.ack(&config.producer))
             .await
@@ -97,20 +100,33 @@ impl Client {
                 reason,
             });
         }
+        let family = welcome
+            .family
+            .filter(|family| family == "polylogue")
+            .ok_or_else(|| Error::Refused {
+                name: "connect".into(),
+                reason: "this identity has no configured Polylogue write family".into(),
+            })?;
+        if let Ok(mut health) = health.lock() {
+            health.family = Some(family.clone());
+            health.canonical_publisher = welcome.canonical_publisher;
+        }
         let max_message = client.server_info().max_payload;
         let mut connected = Self {
             client,
             subjects,
             producer: config.producer.clone(),
+            family: family.clone(),
             max_message,
             store_root: config.store.clone(),
             acknowledgments,
-            consumer_name,
+            consumer_cache: None,
+            health,
             consumer: None,
             pending: Vec::new(),
             spool,
         };
-        let declarations = crate::kinds::declarations(&config.producer);
+        let declarations = crate::kinds::declarations(&family);
         let hashes: Vec<_> = declarations
             .iter()
             .map(|d| (d.kind.clone(), d.definition_hash()))
@@ -121,9 +137,6 @@ impl Client {
             frame: name.clone(),
             declarations,
         };
-        let bytes = serde_json::to_vec(&registration)?;
-        let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
-        connected.write_bytes(&name, &blob, bytes.len() as u64, bytes.as_slice())?;
         let ack = connected.send(registration).await?;
         let registered: Vec<(sinex_model::KindRef, String)> =
             serde_json::from_value(ack.outcome["registered_kinds"].clone())?;
@@ -181,79 +194,86 @@ impl Client {
             .lock()
             .map_err(|_| Error::Invalid("producer spool panicked".into()))?
             .prepare(frame)?;
-        if let Some(acknowledgment) = prepared.acknowledgment {
-            return checked(acknowledgment);
+        self.publish_prepared(prepared).await
+    }
+
+    /// Resume original immutable operations in bounded preparation-order pages.
+    pub(crate) async fn retry_prepared(&mut self) -> Result<()> {
+        let mut after = None;
+        loop {
+            let page = self
+                .spool
+                .lock()
+                .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+                .pending_after(after, 64)?;
+            if page.is_empty() {
+                return Ok(());
+            }
+            for prepared in page {
+                after = Some(prepared.order);
+                if prepared.acknowledged && !prepared.refused {
+                    continue;
+                }
+                self.publish_prepared(prepared).await?;
+            }
         }
-        let acknowledgment = self.send_prepared(prepared.frame).await?;
+    }
+
+    async fn publish_prepared(
+        &mut self,
+        prepared: crate::spool::Prepared,
+    ) -> Result<Acknowledgment> {
+        let (receipt, frame, body) = {
+            let spool = self
+                .spool
+                .lock()
+                .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
+            (
+                spool.acknowledgment(&prepared.identity)?,
+                spool.frame(&prepared.identity)?,
+                if prepared.body.is_some() {
+                    Some(spool.body(&prepared.identity)?)
+                } else {
+                    None
+                },
+            )
+        };
+        if let Some(receipt) = receipt {
+            return checked(receipt);
+        }
+        if let (Some(material), Some(body)) = (&prepared.material, body) {
+            self.write_bytes(&prepared.identity, &material.blob, material.length, body)?;
+        }
+        let body = if prepared
+            .frame_length
+            .saturating_add(MESSAGE_OVERHEAD as u64)
+            <= self.max_message as u64
+        {
+            let mut bytes = Vec::new();
+            std::io::BufReader::new(frame).read_to_end(&mut bytes)?;
+            bytes
+        } else {
+            self.write_bytes(
+                &prepared.identity,
+                &prepared.frame_hash,
+                prepared.frame_length,
+                frame,
+            )?;
+            serde_json::to_vec(&Ingress::LargeFrame {
+                frame: prepared.identity.clone(),
+                blob: prepared.frame_hash,
+                length: prepared.frame_length,
+            })?
+        };
+        let acknowledgment = self.transmit(&prepared.identity, body).await?;
         self.spool
             .lock()
             .map_err(|_| Error::Invalid("producer spool panicked".into()))?
             .acknowledge(acknowledgment.clone())?;
+        if let Ok(mut health) = self.health.lock() {
+            health.last_ack = Some(std::time::Instant::now());
+        }
         checked(acknowledgment)
-    }
-
-    /// Resume every original frame after reconnect, in preparation order.
-    pub(crate) async fn retry_prepared(&mut self) -> Result<()> {
-        let prepared = self
-            .spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .prepared()?;
-        for prepared in prepared {
-            if prepared.acknowledgment.is_some() {
-                continue;
-            }
-            let acknowledgment = self.send_prepared(prepared.frame).await?;
-            let refused = acknowledgment.refusal.clone();
-            let frame = acknowledgment.frame.clone();
-            self.spool
-                .lock()
-                .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-                .acknowledge(acknowledgment)?;
-            if let Some(reason) = refused {
-                return Err(Error::Refused {
-                    name: frame,
-                    reason,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    async fn send_prepared(&mut self, frame: Ingress) -> Result<Acknowledgment> {
-        if let Ingress::Material { material, .. } = &frame {
-            let bytes = {
-                let spool = self
-                    .spool
-                    .lock()
-                    .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
-                if spool
-                    .get(frame.frame())?
-                    .is_some_and(|prepared| prepared.body)
-                {
-                    Some(spool.body(frame.frame())?)
-                } else {
-                    None
-                }
-            };
-            if let Some(bytes) = bytes {
-                self.write_bytes(frame.frame(), &material.blob, material.length, bytes)?;
-            }
-        }
-        let body = serde_json::to_vec(&frame)?;
-        if body.len().saturating_add(MESSAGE_OVERHEAD) <= self.max_message {
-            return self.transmit(frame.frame(), body).await;
-        }
-        let name = frame.frame().to_owned();
-        let blob = format!("blake3:{}", blake3::hash(&body).to_hex());
-        let length = body.len() as u64;
-        self.write_bytes(&name, &blob, length, body.as_slice())?;
-        let indirect = serde_json::to_vec(&Ingress::LargeFrame {
-            frame: name.clone(),
-            blob,
-            length,
-        })?;
-        self.transmit(&name, indirect).await
     }
 
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
