@@ -214,3 +214,246 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
     assert!(quiet.errors.is_empty(), "{quiet:?}");
     assert_eq!(assert_complete(&sdk, &archive, &path, b""), 1);
 }
+
+fn acquired_file(
+    home: &ClaudeHome,
+    archive: &Archive,
+    writer: &polylogue_store::Writer,
+    path: &Path,
+    route: polylogue_store::primary::AcquisitionRoute,
+) -> polylogue_store::staging::PreparedBatch {
+    use polylogue_store::primary::{
+        AcquisitionReceipt, AcquisitionRoute, FileSnapshot, FileTime, RawStream, RawStreamRole,
+    };
+    use std::os::unix::fs::MetadataExt;
+    let source = selector(path);
+    let basis = writer.source_snapshot(source.clone(), "").unwrap().basis;
+    let mut file = std::fs::File::open(path).unwrap();
+    let metadata = file.metadata().unwrap();
+    let facts = polylogue_store::FileFacts::of(&metadata);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    assert_eq!(
+        facts,
+        polylogue_store::FileFacts::of(&file.metadata().unwrap())
+    );
+    assert_eq!(
+        facts,
+        polylogue_store::FileFacts::of(&std::fs::metadata(path).unwrap())
+    );
+    let prepared = archive.prepare_bytes(bytes.as_slice()).unwrap();
+    let hash = prepared.hash();
+    let size = prepared.len();
+    let imported = route == AcquisitionRoute::ExplicitImport;
+    let input = polylogue_store::InputKey {
+        id: if imported {
+            hash.to_string()
+        } else {
+            path.file_stem().unwrap().to_str().unwrap().into()
+        },
+        format: source.origin.clone(),
+        arrival_rank: if imported { 2 } else { 0 },
+    };
+    let range = RawRange {
+        start: 0,
+        end: size,
+    };
+    let generation = (!imported).then(|| SourceGeneration::File {
+        stream: RawStream {
+            source: source.clone(),
+            input: input.clone(),
+            role: RawStreamRole::ProviderBytes,
+            namespace: None,
+        },
+        observed: FileSnapshot {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.size(),
+            modified: FileTime {
+                seconds: metadata.mtime(),
+                nanos: metadata.mtime_nsec().try_into().unwrap(),
+            },
+            changed: FileTime {
+                seconds: metadata.ctime(),
+                nanos: metadata.ctime_nsec().try_into().unwrap(),
+            },
+        },
+        window: range,
+    });
+    let clock = home.config(CHUNK).clock;
+    let at = clock.now();
+    polylogue_store::staging::PreparedBatch {
+        batch: polylogue_store::Batch {
+            input,
+            change: polylogue_store::Change::First,
+            observation: Some(polylogue_store::Observation {
+                machine: source.machine.clone(),
+                host: "test".into(),
+                path: path.display().to_string(),
+                path_bytes: source.path_bytes.clone(),
+                facts: Some(facts),
+                seen_at_ms: at.as_millisecond(),
+                import: imported.then(|| polylogue_store::ImportMember {
+                    version: 1,
+                    import_id: "synthetic-package".into(),
+                    member: path.file_name().unwrap().to_str().unwrap().into(),
+                    authorship: Some(polylogue_model::authorship::Authorship {
+                        author: polylogue_model::Author::Script("package-fixture".into()),
+                        via: polylogue_model::authorship::Channel::Import,
+                    }),
+                    format: Some("claude-code".into()),
+                }),
+                container: None,
+            }),
+            continues: false,
+            new_blob: Some(polylogue_store::NewBlob { hash, size }),
+            blobs: Vec::new(),
+            length: size,
+            parse: Vec::new(),
+            release: Default::default(),
+            acquisition: Some(AcquisitionReceipt {
+                version: AcquisitionReceipt::VERSION,
+                route,
+                source,
+                range,
+                hash,
+                observed_at: at.into(),
+                generation,
+                raw_total: (!imported).then_some(size),
+                raw_predecessor: None,
+            }),
+            basis: Some(basis),
+            required_disposition: None,
+        },
+        files: vec![prepared],
+    }
+}
+
+#[test]
+fn a_raw_only_file_does_not_freeze_an_independent_file_in_the_same_writer_flush() {
+    use polylogue_store::primary::{AcquisitionRoute, CaptureDisposition};
+    let home = ClaudeHome::new();
+    home.append(
+        "file-a.jsonl",
+        &polylogue_testkit::claude_user("a", "boundary-a", "A"),
+    );
+    home.append(
+        "file-b.jsonl",
+        &polylogue_testkit::claude_user("b", "boundary-b", "B"),
+    );
+    let store = home.dir.path().join("sdk");
+    let sdk = Arc::new(client(&store));
+    let (archive, _lock) = Archive::open_primary(&home.root, &store).unwrap();
+    let writer = polylogue_store::Writer::start_on_sinex(&archive, sdk.clone()).unwrap();
+    let mut a = acquired_file(
+        &home,
+        &archive,
+        &writer,
+        &home.file("file-a.jsonl"),
+        AcquisitionRoute::NativeCapture,
+    );
+    let b = acquired_file(
+        &home,
+        &archive,
+        &writer,
+        &home.file("file-b.jsonl"),
+        AcquisitionRoute::NativeCapture,
+    );
+    a.batch.required_disposition = Some(CaptureDisposition::UnresolvedBasisConflict);
+    let results = writer
+        .sender()
+        .unwrap()
+        .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    let Err(polylogue_store::StoreError::UnresolvedBasisConflict { custody }) = &results[0] else {
+        panic!("A must retain raw-only custody: {results:?}")
+    };
+    assert_eq!(custody.count, 1);
+    assert!(matches!(
+        &results[1],
+        Err(polylogue_store::StoreError::PrimaryPending { .. })
+    ));
+    assert!(
+        sdk.pending_source(&selector(&home.file("file-a.jsonl")), "")
+            .unwrap()
+            .head
+            .is_none()
+    );
+    assert!(
+        sdk.pending_source(&selector(&home.file("file-b.jsonl")), "")
+            .unwrap()
+            .raw
+            .is_some()
+    );
+    let page = sdk
+        .pending_group_headers(&custody.identity, None, 32)
+        .unwrap();
+    assert_eq!(
+        page.disposition,
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
+    assert_eq!(page.headers.len(), 1);
+}
+
+#[test]
+fn an_explicit_package_keeps_its_member_custody_atomic() {
+    use polylogue_store::primary::{AcquisitionRoute, CaptureDisposition};
+    let home = ClaudeHome::new();
+    home.append(
+        "package-a.jsonl",
+        &polylogue_testkit::claude_user("a", "package-a", "A"),
+    );
+    home.append(
+        "package-b.jsonl",
+        &polylogue_testkit::claude_user("b", "package-b", "B"),
+    );
+    let store = home.dir.path().join("sdk");
+    let sdk = Arc::new(client(&store));
+    let (archive, _lock) = Archive::open_primary(&home.root, &store).unwrap();
+    let writer = polylogue_store::Writer::start_on_sinex(&archive, sdk.clone()).unwrap();
+    let mut a = acquired_file(
+        &home,
+        &archive,
+        &writer,
+        &home.file("package-a.jsonl"),
+        AcquisitionRoute::ExplicitImport,
+    );
+    let b = acquired_file(
+        &home,
+        &archive,
+        &writer,
+        &home.file("package-b.jsonl"),
+        AcquisitionRoute::ExplicitImport,
+    );
+    a.batch.required_disposition = Some(CaptureDisposition::UnresolvedBasisConflict);
+    let results = writer
+        .sender()
+        .unwrap()
+        .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    let receipts: Vec<_> = results
+        .into_iter()
+        .map(|result| match result {
+            Err(polylogue_store::StoreError::UnresolvedBasisConflict { custody }) => custody,
+            other => panic!("a package must retain every member together: {other:?}"),
+        })
+        .collect();
+    assert_eq!(receipts[0], receipts[1]);
+    assert_eq!(receipts[0].count, 2);
+    let page = sdk
+        .pending_group_headers(&receipts[0].identity, None, 32)
+        .unwrap();
+    assert_eq!(
+        page.disposition,
+        Some(CaptureDisposition::UnresolvedBasisConflict)
+    );
+    assert_eq!(page.headers.len(), 2);
+    assert!(
+        sdk.pending_source(&selector(&home.file("package-b.jsonl")), "")
+            .unwrap()
+            .head
+            .is_none()
+    );
+}

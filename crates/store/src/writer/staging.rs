@@ -12,6 +12,36 @@ pub(super) type WaitingGroup = (
     SyncSender<Vec<Result<StoredInput>>>,
 );
 
+// A package or one consistent database read is one logical acquisition.
+// A physical pool flush may contain several independent file samples.
+pub(super) fn atomic_acquisition(items: &[PreparedBatch]) -> bool {
+    items.iter().any(|item| {
+        crate::container_members::container_of(&item.batch).is_some()
+            || item
+                .batch
+                .observation
+                .as_ref()
+                .is_some_and(|observation| observation.import.is_some())
+            || item.batch.acquisition.as_ref().is_some_and(|receipt| {
+                receipt.route == crate::primary::AcquisitionRoute::ExplicitImport
+                    || matches!(
+                        receipt.generation,
+                        Some(crate::primary::SourceGeneration::Database { .. })
+                    )
+            })
+    })
+}
+
+pub(super) fn independent_files(items: &[PreparedBatch]) -> bool {
+    items.len() > 1
+        && !atomic_acquisition(items)
+        && items.iter().any(|item| {
+            item.batch.acquisition.as_ref().is_some_and(|receipt| {
+                receipt.route == crate::primary::AcquisitionRoute::NativeCapture
+            })
+        })
+}
+
 impl Inner {
     /// Stores one import's bytes: a batch with an observation and no
     /// parsed rows.
@@ -49,15 +79,13 @@ impl Inner {
 
     /// Stores the groups that were waiting together, so their files and
     /// rows share syncs and commits ([`Self::store_group`]), and answers
-    /// each. A group with a container member is stored alone: a failure keeps the
-    /// container's group whole, which would fail the others with it.
+    /// each. Logical package and database groups retain the caller's boundary.
+    /// Primary custody also preserves each caller group before file samples
+    /// receive their separate acquisition dispositions.
     pub(super) fn store_groups(&mut self, groups: Vec<WaitingGroup>) {
-        let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) =
-            groups.into_iter().partition(|(items, _, _)| {
-                items
-                    .iter()
-                    .any(|item| crate::container_members::container_of(&item.batch).is_some())
-            });
+        let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) = groups
+            .into_iter()
+            .partition(|(items, _, _)| self.sinex.is_some() || atomic_acquisition(items));
         for (items, store, reply) in alone {
             let _ = reply.send(self.store_group(items, store));
         }

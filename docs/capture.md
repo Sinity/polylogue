@@ -24,6 +24,8 @@ A stale source precondition retains the complete group's actual encoded bodies a
 
 Native aliases require the format's structured identity and exact retained-byte evidence from the authoritative source view frozen before acquisition. The resolved subject must still match at acceptance. Unknown legacy path bytes or source-scope coverage cannot prove a fresh input. They permit raw custody while the source relationship remains unknown; display names and tentative chain numbers cannot supply that proof.
 
+Independent sampled files have independent logical receipts and dispositions. A shared physical writer flush cannot make one stale file freeze a valid file. A container or explicit package retains its complete member group.
+
 One consistent tool-database read transaction is one acquisition group. Its callbacks stage closed encoded parts before any member is accepted, and one atomic publication accepts the completed group. A failed transaction accepts no prefix. Comparison uses the latest accepted journal, including pending captures. Replaying that comparison admits no new raw bytes.
 
 An immutable package's content identity deduplicates within its authenticated receiving producer and stable machine. Another host retains its own acquisition provenance. A sender's author or actor claim never defines the receiving custody identity.
