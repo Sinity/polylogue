@@ -8,7 +8,7 @@
 //! rollouts, which are parsed; they stay in the stored export.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use super::{items::str_field, session_id};
 use crate::lines::Record;
@@ -76,6 +76,93 @@ fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
     str_field(row, field).and_then(session_id)
 }
 
+static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(&[
+    (
+        "t",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "r",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
+    ),
+    (
+        "k",
+        crate::fields::Rule::Excluded("row key is redundant with the consumed native row ID"),
+    ),
+    (
+        "h",
+        crate::fields::Rule::Excluded("capture row hash is not consumed by native row decoding"),
+    ),
+])
+.for_kind("row_envelope");
+static THREAD_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
+    (
+        "id",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "name",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "title",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "first_user_message",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "agent_nickname",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "cwd",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "git_branch",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "cli_version",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "thread_source",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "source",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "created_at_ms",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
+    ),
+    (
+        "created_at",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::Number),
+    ),
+])
+.for_kind("thread");
+static EDGE_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[
+    (
+        "parent_thread_id",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+    (
+        "child_thread_id",
+        crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+    ),
+])
+.for_kind("spawn_edge");
+static EVENT_FIELDS: crate::fields::Fields = crate::fields::Fields::new(&[(
+    "",
+    crate::fields::Rule::Kept("complete native row in the event data"),
+)])
+.for_kind("thread_event");
+
 impl Parser for Database {
     type ParserState = NoState;
 
@@ -111,8 +198,10 @@ impl Parser for Database {
             );
         }
         let row = v.get("r").unwrap_or(&Json::Null);
+        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_ENVELOPE);
         match table {
             "threads" => {
+                records.fields("threads", row, &THREAD_FIELDS);
                 let Some(id) = row_session(row, "id") else {
                     return RecordOutcome::unreadable("thread row without an ID");
                 };
@@ -159,6 +248,7 @@ impl Parser for Database {
                 RecordOutcome::Used
             }
             "thread_spawn_edges" => {
+                records.fields("thread_spawn_edges", row, &EDGE_FIELDS);
                 let (Some(parent), Some(child)) = (
                     row_session(row, "parent_thread_id"),
                     row_session(row, "child_thread_id"),
@@ -176,6 +266,7 @@ impl Parser for Database {
                 RecordOutcome::Used
             }
             "thread_goals" | "stage1_outputs" => {
+                records.fields(table, row, &EVENT_FIELDS);
                 let Some(session) = row_session(row, "thread_id") else {
                     return RecordOutcome::unreadable("row without a thread ID");
                 };

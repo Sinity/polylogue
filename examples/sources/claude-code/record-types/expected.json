@@ -86,7 +86,9 @@
           208,
           362
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "at": "2026-03-01T12:00:01Z",
@@ -106,7 +108,9 @@
           363,
           541
         ],
-        "session": "claude-code:s1"
+        "session": "claude-code:s1",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {
@@ -204,7 +208,9 @@
         "title": {
           "source": "custom",
           "text": "Build fix"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

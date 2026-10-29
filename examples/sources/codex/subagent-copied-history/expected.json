@@ -83,7 +83,9 @@
           "agent_nickname": "Volta",
           "agent_path": "/root/check",
           "subagent_history_start_ordinal": 6
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:06Z",
@@ -95,7 +97,9 @@
           1615,
           1743
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "data": {},
@@ -128,7 +132,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-0000000000aa"
+          "session": "codex:019a0000-0000-7000-8000-0000000000aa",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1217
       },
@@ -153,7 +159,9 @@
           "id": "codex:amsg_1",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1744
       },
@@ -172,7 +180,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1976
       }
@@ -193,7 +203,9 @@
         "tool_version": "0.160.0",
         "git_commit": "abc",
         "model_provider": "openai",
-        "instructions": "You are a coding agent."
+        "instructions": "You are a coding agent.",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

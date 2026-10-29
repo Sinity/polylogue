@@ -31,7 +31,9 @@
           3,
           2417
         ],
-        "session": "chatgpt:neutral-empty-native"
+        "session": "chatgpt:neutral-empty-native",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "chatgpt:tool-message",
@@ -62,7 +64,9 @@
           "session": "chatgpt:neutral-empty-native",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -84,7 +88,9 @@
               ],
               "reasoning_status": "in_progress"
             }
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -138,7 +144,9 @@
               ],
               "reasoning_status": "in_progress"
             }
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       }
@@ -151,7 +159,9 @@
         "title": {
           "source": "generated",
           "text": "Neutral empty native messages"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

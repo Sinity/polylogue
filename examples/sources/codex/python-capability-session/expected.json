@@ -24,7 +24,9 @@
         "data": {
           "id": "origin-matrix-codex",
           "timestamp": "2026-08-01T10:00:00Z"
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {},
@@ -47,7 +49,9 @@
           "id": "codex:matrix-user",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:origin-matrix-codex"
+          "session": "codex:origin-matrix-codex",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 98
       },
@@ -66,7 +70,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:origin-matrix-codex"
+          "session": "codex:origin-matrix-codex",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 287
       }
@@ -75,7 +81,9 @@
       {
         "id": "codex:origin-matrix-codex",
         "kind": "main",
-        "started": "2026-08-01T10:00:00Z"
+        "started": "2026-08-01T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

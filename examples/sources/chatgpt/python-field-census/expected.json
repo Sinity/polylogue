@@ -59,7 +59,9 @@
           3,
           3623
         ],
-        "session": "chatgpt:field-census-v1"
+        "session": "chatgpt:field-census-v1",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "chatgpt:node-1",
@@ -151,7 +153,9 @@
               "sonicberry_model_id": "synthetic-sonicberry_model_id",
               "sonicberry_source": "synthetic-sonicberry_source"
             }
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       }
@@ -164,7 +168,9 @@
         "title": {
           "source": "generated",
           "text": "Field census"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

@@ -27,7 +27,12 @@
           "id": "gemini-app:synthetic#1785185970000-prompt",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "gemini-app:synthetic"
+          "session": "gemini-app:synthetic",
+          "at_quality": "intrinsic",
+          "at_precision": "second",
+          "attrs": {
+            "activity_time": "Jul 27, 2026, 10:59:30 PM CEST"
+          }
         },
         "offset": 12
       },
@@ -44,7 +49,12 @@
           "id": "gemini-app:synthetic#1785185970000-response",
           "parent": "gemini-app:synthetic#1785185970000-prompt",
           "role": "assistant",
-          "session": "gemini-app:synthetic"
+          "session": "gemini-app:synthetic",
+          "at_quality": "intrinsic",
+          "at_precision": "second",
+          "attrs": {
+            "activity_time": "Jul 27, 2026, 10:59:30 PM CEST"
+          }
         },
         "offset": 12
       }
@@ -53,7 +63,9 @@
       {
         "id": "gemini-app:synthetic",
         "kind": "main",
-        "started": "2026-07-27T20:59:30Z"
+        "started": "2026-07-27T20:59:30Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

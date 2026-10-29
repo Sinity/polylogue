@@ -39,7 +39,9 @@
           "id": "ai-studio:17:text_only_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:text_only_session"
+          "session": "ai-studio:text_only_session",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -64,7 +66,9 @@
             "input": null,
             "output": 8,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 183
       }
@@ -77,7 +81,9 @@
       {
         "id": "ai-studio:text_only_session",
         "kind": "main",
-        "started": "2025-02-01T10:00:05Z"
+        "started": "2025-02-01T10:00:05Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

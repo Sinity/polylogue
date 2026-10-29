@@ -49,7 +49,9 @@
             "branch": "main",
             "commit_hash": "abc"
           }
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "data": {},
@@ -80,7 +82,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 381
       },
@@ -103,7 +107,9 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@573",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 573
       },
@@ -129,7 +135,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 833
       },
@@ -151,7 +159,9 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@1064",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1064
       }
@@ -168,7 +178,9 @@
         "tool_version": "0.160.0",
         "git_commit": "abc",
         "model_provider": "openai",
-        "instructions": "You are a coding agent."
+        "instructions": "You are a coding agent.",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

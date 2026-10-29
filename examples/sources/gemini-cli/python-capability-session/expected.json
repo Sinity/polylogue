@@ -38,7 +38,9 @@
           "id": "gemini-cli:user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "gemini-cli:origin-matrix-gemini-cli"
+          "session": "gemini-cli:origin-matrix-gemini-cli",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 254
       },
@@ -56,7 +58,9 @@
           "model": "gemini-matrix",
           "parent": "gemini-cli:user-1",
           "role": "assistant",
-          "session": "gemini-cli:origin-matrix-gemini-cli"
+          "session": "gemini-cli:origin-matrix-gemini-cli",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 403
       }
@@ -69,7 +73,9 @@
         "title": {
           "source": "summary",
           "text": "Origin capability matrix"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

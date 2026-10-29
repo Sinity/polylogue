@@ -71,7 +71,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -132,7 +134,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -184,7 +188,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -218,7 +224,9 @@
                 }
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }

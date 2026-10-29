@@ -63,7 +63,9 @@
             "branch": "main",
             "commit_hash": "abc"
           }
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:02Z",
@@ -83,7 +85,9 @@
           381,
           631
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "codex:019a0000-0000-7000-8000-000000000001@1081",
@@ -98,7 +102,9 @@
           1268,
           1418
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:09Z",
@@ -126,7 +132,9 @@
           1853,
           2193
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:09Z",
@@ -151,7 +159,9 @@
           1853,
           2193
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:09Z",
@@ -174,7 +184,9 @@
           1853,
           2193
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:14Z",
@@ -202,7 +214,9 @@
           3433,
           3773
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:14Z",
@@ -227,7 +241,9 @@
           3433,
           3773
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "codex:019a0000-0000-7000-8000-000000000001@3212",
@@ -243,7 +259,9 @@
           3774,
           3967
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "data": {},
@@ -265,7 +283,9 @@
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@632",
           "role": "system",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 632
       },
@@ -282,7 +302,9 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@848",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 848
       },
@@ -299,7 +321,9 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@1081",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1081
       },
@@ -321,7 +345,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1419
       },
@@ -349,7 +375,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1631
       },
@@ -375,7 +403,9 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@2752",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2752
       },
@@ -397,7 +427,9 @@
             "phase": "final_answer"
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3212
       }
@@ -414,7 +446,9 @@
         "tool_version": "0.160.0",
         "git_commit": "abc",
         "model_provider": "openai",
-        "instructions": "You are a coding agent."
+        "instructions": "You are a coding agent.",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

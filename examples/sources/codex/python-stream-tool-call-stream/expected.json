@@ -28,7 +28,9 @@
           "id": "tool-call-session-1",
           "timestamp": "2025-01-15T11:00:00Z",
           "instructions": "Use tools."
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {
@@ -64,7 +66,9 @@
           "id": "codex:msg-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:tool-call-session-1"
+          "session": "codex:tool-call-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 126
       },
@@ -128,7 +132,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-call-session-1"
+          "session": "codex:tool-call-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 586
       }
@@ -138,7 +144,9 @@
         "id": "codex:tool-call-session-1",
         "kind": "main",
         "started": "2025-01-15T11:00:00Z",
-        "instructions": "Use tools."
+        "instructions": "Use tools.",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

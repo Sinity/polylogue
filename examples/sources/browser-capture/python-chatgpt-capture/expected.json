@@ -69,7 +69,9 @@
           0,
           10211
         ],
-        "session": "chatgpt:chatgpt-fixture-conversation"
+        "session": "chatgpt:chatgpt-fixture-conversation",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "chatgpt:answer-active-message",
@@ -111,7 +113,9 @@
           0,
           10211
         ],
-        "session": "chatgpt:chatgpt-fixture-conversation"
+        "session": "chatgpt:chatgpt-fixture-conversation",
+        "at_quality": "captured",
+        "at_precision": "second"
       }
     ],
     "links": [],
@@ -133,7 +137,9 @@
           ],
           "id": "chatgpt:context-message",
           "role": "system",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -181,7 +187,9 @@
           "parent": "chatgpt:context-message",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -210,7 +218,9 @@
             "effort": "standard"
           },
           "role": "assistant",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -241,7 +251,9 @@
             "effort": "extended"
           },
           "role": "assistant",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -277,7 +289,9 @@
             "effort": "extended"
           },
           "role": "assistant",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -307,7 +321,9 @@
           "parent": "chatgpt:tool-call-message",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -341,7 +357,9 @@
             "effort": "extended"
           },
           "role": "assistant",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -389,7 +407,9 @@
             "effort": "extended"
           },
           "role": "assistant",
-          "session": "chatgpt:chatgpt-fixture-conversation"
+          "session": "chatgpt:chatgpt-fixture-conversation",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       }
@@ -402,7 +422,9 @@
         "title": {
           "source": "generated",
           "text": "Privacy-safe ChatGPT native fixture"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

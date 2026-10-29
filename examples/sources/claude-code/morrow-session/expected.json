@@ -38,7 +38,9 @@
           "id": "claude-code:c1000000-0000-4000-8000-000000000001",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       },
@@ -102,7 +104,9 @@
             "output": 1500,
             "reasoning": null,
             "service_tier": "standard"
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 619
       },
@@ -140,7 +144,9 @@
           "parent": "claude-code:c1000000-0000-4000-8000-000000000002",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1974
       },
@@ -177,7 +183,9 @@
             "output": 1500,
             "reasoning": null,
             "service_tier": "standard"
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2778
       },
@@ -204,7 +212,9 @@
           "parent": "claude-code:c1000000-0000-4000-8000-000000000004",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3619
       },
@@ -234,7 +244,9 @@
             "output": 1500,
             "reasoning": null,
             "service_tier": "standard"
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 4293
       },
@@ -252,7 +264,9 @@
           "parent": "claude-code:c1000000-0000-4000-8000-000000000006",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 5110
       },
@@ -299,7 +313,9 @@
             "output": 1500,
             "reasoning": null,
             "service_tier": "standard"
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 5630
       },
@@ -329,7 +345,9 @@
           "parent": "claude-code:c1000000-0000-4000-8000-000000000008",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 6583
       },
@@ -359,7 +377,9 @@
             "output": 1500,
             "reasoning": null,
             "service_tier": "standard"
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 7229
       },
@@ -377,7 +397,9 @@
           "parent": "claude-code:c1000000-0000-4000-8000-000000000010",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 8058
       },
@@ -407,7 +429,9 @@
             "output": 1500,
             "reasoning": null,
             "service_tier": "standard"
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 8558
       }
@@ -425,7 +449,9 @@
           "source": "generated",
           "text": "Project skeleton"
         },
-        "tool_version": "2.1.220"
+        "tool_version": "2.1.220",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

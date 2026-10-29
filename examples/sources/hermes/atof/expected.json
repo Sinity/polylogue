@@ -34,7 +34,9 @@
         "range": [
           0,
           282
-        ]
+        ],
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "at": "2026-01-02T03:04:06Z",
@@ -60,7 +62,9 @@
         "range": [
           282,
           601
-        ]
+        ],
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {

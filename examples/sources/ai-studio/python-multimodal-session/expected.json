@@ -53,7 +53,9 @@
           "id": "ai-studio:18:multimodal_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:multimodal_session"
+          "session": "ai-studio:multimodal_session",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -74,7 +76,9 @@
           "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:multimodal_session"
+          "session": "ai-studio:multimodal_session",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 321
       },
@@ -96,7 +100,9 @@
           "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-2",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:multimodal_session"
+          "session": "ai-studio:multimodal_session",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 504
       },
@@ -129,7 +135,9 @@
                 "probability": "NEGLIGIBLE"
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 651
       }
@@ -142,7 +150,9 @@
       {
         "id": "ai-studio:multimodal_session",
         "kind": "main",
-        "started": "2025-02-01T12:00:02Z"
+        "started": "2025-02-01T12:00:02Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

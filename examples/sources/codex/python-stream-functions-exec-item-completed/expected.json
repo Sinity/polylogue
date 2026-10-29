@@ -31,7 +31,9 @@
           "id": "codex-item-completed",
           "timestamp": "2026-09-02T10:00:00Z",
           "cwd": "/repo"
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {},
@@ -464,7 +466,9 @@
         ],
         "id": "codex:codex-item-completed",
         "kind": "main",
-        "started": "2026-09-02T10:00:00Z"
+        "started": "2026-09-02T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

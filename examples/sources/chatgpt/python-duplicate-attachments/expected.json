@@ -55,7 +55,9 @@
           "session": "chatgpt:native-occurrences",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -82,7 +84,9 @@
           "session": "chatgpt:native-occurrences",
           "attrs": {
             "metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }

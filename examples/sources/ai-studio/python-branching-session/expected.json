@@ -41,7 +41,9 @@
           "id": "ai-studio:17:branching_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:branching_session"
+          "session": "ai-studio:branching_session",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -69,7 +71,9 @@
             "branchParent": {
               "id": "chunk-user-1"
             }
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 170
       },
@@ -101,7 +105,9 @@
             "branchParent": {
               "id": "chunk-user-1"
             }
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 468
       },
@@ -124,7 +130,9 @@
           "parent": "ai-studio:17:branching_session#id:18:chunk-model-edit-2",
           "role": "assistant",
           "session": "ai-studio:branching_session",
-          "stop_reason": "OTHER"
+          "stop_reason": "OTHER",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 961
       }
@@ -137,7 +145,9 @@
       {
         "id": "ai-studio:branching_session",
         "kind": "main",
-        "started": "2025-02-01T13:00:02Z"
+        "started": "2025-02-01T13:00:02Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

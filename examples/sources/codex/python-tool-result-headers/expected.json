@@ -29,7 +29,9 @@
           "id": "tool-result-headers",
           "timestamp": "2026-09-02T10:00:00.000Z",
           "cwd": "/workspace/sample"
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "data": {},
@@ -52,7 +54,9 @@
           "id": "codex:tool-result-headers@167",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 167
       },
@@ -77,7 +81,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 345
       },
@@ -99,7 +105,9 @@
           "id": "codex:tool-result-headers@532",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 532
       },
@@ -124,7 +132,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 840
       },
@@ -150,7 +160,9 @@
           "id": "codex:tool-result-headers@1042",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1042
       },
@@ -175,7 +187,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1353
       },
@@ -197,7 +211,9 @@
           "id": "codex:tool-result-headers@1552",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1552
       },
@@ -222,7 +238,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1831
       },
@@ -245,7 +263,9 @@
           "id": "codex:tool-result-headers@2030",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2030
       },
@@ -267,7 +287,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2326
       },
@@ -293,7 +315,9 @@
           "id": "codex:tool-result-headers@2518",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2518
       },
@@ -318,7 +342,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2740
       },
@@ -340,7 +366,9 @@
           "id": "codex:tool-result-headers@2943",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2943
       },
@@ -363,7 +391,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3177
       },
@@ -394,7 +424,9 @@
           "id": "codex:tool-result-headers@3343",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3343
       },
@@ -417,7 +449,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3608
       },
@@ -448,7 +482,9 @@
           "id": "codex:tool-result-headers@3789",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3789
       },
@@ -473,7 +509,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 4062
       },
@@ -499,7 +537,9 @@
           "id": "codex:tool-result-headers@4266",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 4266
       },
@@ -522,7 +562,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 4472
       },
@@ -549,7 +591,9 @@
           "id": "codex:tool-result-headers@4642",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 4642
       },
@@ -568,7 +612,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:tool-result-headers"
+          "session": "codex:tool-result-headers",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 4903
       }
@@ -580,7 +626,9 @@
         ],
         "id": "codex:tool-result-headers",
         "kind": "main",
-        "started": "2026-09-02T10:00:00Z"
+        "started": "2026-09-02T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

@@ -30,7 +30,9 @@
             "commit_hash": "deadbeef"
           },
           "instructions": "You are helpful."
-        }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "data": {
@@ -66,7 +68,9 @@
           "id": "codex:msg-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:text-only-session-1"
+          "session": "codex:text-only-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 181
       },
@@ -85,7 +89,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:text-only-session-1"
+          "session": "codex:text-only-session-1",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 376
       }
@@ -97,7 +103,9 @@
         "kind": "main",
         "started": "2025-01-15T10:00:00Z",
         "git_commit": "deadbeef",
-        "instructions": "You are helpful."
+        "instructions": "You are helpful.",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

@@ -51,7 +51,9 @@
           3,
           6715
         ],
-        "session": "chatgpt:chatgpt-fixture-conversation"
+        "session": "chatgpt:chatgpt-fixture-conversation",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "chatgpt:answer-active-message",
@@ -83,7 +85,9 @@
             "metadata": {},
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -131,7 +135,9 @@
             },
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -160,7 +166,9 @@
             },
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -191,7 +199,9 @@
             },
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -227,7 +237,9 @@
             },
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -257,7 +269,9 @@
             },
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -291,7 +305,9 @@
             },
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       },
@@ -331,7 +347,9 @@
             },
             "weight": 1.0,
             "author.metadata": {}
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3
       }
@@ -344,7 +362,9 @@
         "title": {
           "source": "generated",
           "text": "Privacy-safe ChatGPT native fixture"
-        }
+        },
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

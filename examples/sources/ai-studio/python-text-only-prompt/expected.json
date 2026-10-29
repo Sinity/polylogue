@@ -39,7 +39,9 @@
           "id": "ai-studio:16:text_only_prompt#position:1:0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:text_only_prompt"
+          "session": "ai-studio:text_only_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -64,7 +66,9 @@
             "input": null,
             "output": 8,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 157
       },
@@ -82,7 +86,9 @@
           "parent": "ai-studio:16:text_only_prompt#position:1:1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:text_only_prompt"
+          "session": "ai-studio:text_only_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 326
       },
@@ -107,7 +113,9 @@
             "input": null,
             "output": 2,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 429
       }
@@ -120,7 +128,9 @@
       {
         "id": "ai-studio:text_only_prompt",
         "kind": "main",
-        "started": "2025-02-01T08:00:00Z"
+        "started": "2025-02-01T08:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

@@ -124,7 +124,9 @@
             "input": 4,
             "output": null,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -453,7 +455,9 @@
       {
         "id": "ai-studio:current_export",
         "kind": "main",
-        "started": "2026-01-05T09:00:00Z"
+        "started": "2026-01-05T09:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

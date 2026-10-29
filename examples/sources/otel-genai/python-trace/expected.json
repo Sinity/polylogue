@@ -123,7 +123,10 @@
           1571,
           3265
         ],
-        "session": "otel-genai:conversation-demo-7"
+        "session": "otel-genai:conversation-demo-7",
+        "at_quality": "intrinsic",
+        "at_precision": "bounded",
+        "at_until": "2025-01-01T00:00:03Z"
       },
       {
         "at": "2025-01-01T00:00:02Z",
@@ -194,7 +197,10 @@
           395,
           1557
         ],
-        "session": "otel-genai:conversation-demo-7"
+        "session": "otel-genai:conversation-demo-7",
+        "at_quality": "intrinsic",
+        "at_precision": "bounded",
+        "at_until": "2025-01-01T00:00:02.1Z"
       },
       {
         "at": "2025-01-01T00:00:02Z",
@@ -212,7 +218,10 @@
           395,
           1557
         ],
-        "session": "otel-genai:conversation-demo-7"
+        "session": "otel-genai:conversation-demo-7",
+        "at_quality": "intrinsic",
+        "at_precision": "bounded",
+        "at_until": "2025-01-01T00:00:02.1Z"
       },
       {
         "at": "2025-01-01T00:00:04Z",
@@ -265,7 +274,9 @@
           3279,
           4165
         ],
-        "session": "otel-genai:conversation-demo-7"
+        "session": "otel-genai:conversation-demo-7",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2025-01-01T00:00:04Z",
@@ -281,7 +292,9 @@
           3279,
           4165
         ],
-        "session": "otel-genai:conversation-demo-7"
+        "session": "otel-genai:conversation-demo-7",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       }
     ],
     "links": [],
@@ -324,6 +337,15 @@
             "input": 18,
             "output": 6,
             "reasoning": null
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "instant",
+          "attrs": {
+            "otel_span_clock": {
+              "basis": "call_start",
+              "startTimeUnixNano": "1735689601000000000",
+              "endTimeUnixNano": "1735689603000000000"
+            }
           }
         },
         "offset": 1571
@@ -333,7 +355,9 @@
       {
         "id": "otel-genai:conversation-demo-7",
         "kind": "main",
-        "started": "2025-01-01T00:00:01Z"
+        "started": "2025-01-01T00:00:01Z",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

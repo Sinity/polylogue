@@ -45,7 +45,9 @@
           "id": "ai-studio:17:multi_turn_prompt#position:1:0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:multi_turn_prompt"
+          "session": "ai-studio:multi_turn_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -65,7 +67,9 @@
           "session": "ai-studio:multi_turn_prompt",
           "attrs": {
             "thinkingBudget": 1024
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 224
       },
@@ -98,7 +102,9 @@
                 "probability": "NEGLIGIBLE"
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 387
       },
@@ -116,7 +122,9 @@
           "parent": "ai-studio:17:multi_turn_prompt#position:1:2",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:multi_turn_prompt"
+          "session": "ai-studio:multi_turn_prompt",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 681
       },
@@ -141,7 +149,9 @@
             "input": null,
             "output": 9,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 783
       }
@@ -154,7 +164,9 @@
       {
         "id": "ai-studio:multi_turn_prompt",
         "kind": "main",
-        "started": "2025-02-03T10:00:00Z"
+        "started": "2025-02-03T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

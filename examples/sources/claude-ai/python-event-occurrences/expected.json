@@ -42,7 +42,9 @@
           3,
           987
         ],
-        "session": "claude-ai:event-occurrences"
+        "session": "claude-ai:event-occurrences",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "at": "2026-01-01T00:02:00Z",
@@ -58,7 +60,9 @@
           3,
           987
         ],
-        "session": "claude-ai:event-occurrences"
+        "session": "claude-ai:event-occurrences",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [],
@@ -89,7 +93,9 @@
                 "text": "first summary"
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -119,7 +125,9 @@
                 "text": "second summary"
               }
             ]
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }

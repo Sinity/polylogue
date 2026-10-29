@@ -41,7 +41,9 @@
           "id": "claude-design:message-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-design:origin-matrix-claude-design"
+          "session": "claude-design:origin-matrix-claude-design",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 0
       }

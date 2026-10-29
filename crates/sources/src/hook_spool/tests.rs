@@ -105,7 +105,11 @@ fn each_invocation_carries_its_own_time_and_process() {
     let [first, second] = &step.output.events[..] else {
         panic!("{:?}", step.output.events)
     };
-    assert_eq!(first.at, second.at, "both fall in one millisecond");
+    assert_ne!(
+        first.at, second.at,
+        "native nanosecond observations remain distinct"
+    );
+    assert_eq!(first.at.unwrap().unix_ms(), second.at.unwrap().unix_ms());
     assert_eq!(first.data["at_ns"], "1792400000123456789");
     assert_eq!(second.data["at_ns"], "1792400000123456790");
     assert_eq!(first.data["harness_pid"], 4242);
