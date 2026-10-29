@@ -4,7 +4,7 @@ use super::*;
 
 fn opts(saved: &[(&str, &str)]) -> Options {
     Options {
-        clock: crate::time::clock(
+        clock: crate::query::time::clock(
             1_790_000_000_000,
             polylogue_model::LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         )
@@ -222,8 +222,11 @@ fn every_stored_value_can_be_queried() {
             c(&format!("{query}{name}"));
         }
         let (unit, field) = query.trim_end_matches(':').split_once(" where ").unwrap();
-        let unit = crate::ast::Unit::from_name(unit).unwrap();
-        let offered = crate::fields::lookup(unit, field).unwrap().values.unwrap();
+        let unit = crate::query::ast::Unit::from_name(unit).unwrap();
+        let offered = crate::query::fields::lookup(unit, field)
+            .unwrap()
+            .values
+            .unwrap();
         assert_eq!(offered, *names, "{query}");
     }
     for k in LinkKind::ALL {

@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-query"
-description = "The query language: parse, check against the field table, compile to SQL"
+description = "Typed query catalog, shared syntax binding and validated plans"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 jiff.workspace = true
-strsim.workspace = true
 
 [lints]
 workspace = true

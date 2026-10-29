@@ -293,10 +293,14 @@ fn raise_open_file_limit() {
     }
 }
 
-pub fn serve(startup:&crate::config::Startup) -> std::io::Result<()> {
+pub fn serve(startup: &crate::config::Startup) -> std::io::Result<()> {
     raise_open_file_limit();
-    let root=&startup.config.archive;
-    let runtime=service::start(Arc::clone(&startup.config),startup.engine.clone(),startup.mode.clone())?;
+    let root = &startup.config.archive;
+    let runtime = service::start(
+        Arc::clone(&startup.config),
+        startup.engine.clone(),
+        startup.mode.clone(),
+    )?;
     let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;
     eprintln!(
         "polylogue: serving {} on {}",

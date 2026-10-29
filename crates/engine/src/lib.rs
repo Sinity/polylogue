@@ -270,7 +270,9 @@ pub struct ImportReport {
 }
 
 /// Historical authored records restored through the frozen import ingress.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct UserStateReport {
     /// Durably accepted and awaiting the confirmed primary stream.
     pub pending: u64,

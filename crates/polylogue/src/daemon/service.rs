@@ -22,6 +22,7 @@ pub struct Daemon {
     pub(crate) config: Arc<crate::config::Config>,
     pub archive: Archive,
     pub reads: ReadPool,
+    pub(crate) completion_path: std::path::PathBuf,
     pub(crate) callers: crate::protocol::caller::hooks::Registry,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
@@ -156,7 +157,6 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::PrimaryPending { identity } => ok(serde_json::json!({
             "identity": identity, "pending": true,
         })),
-
 
         StoreError::IncompleteParents(issue) => Response::Error {
             kind: "incomplete_parents".into(),
@@ -375,6 +375,28 @@ fn handle_inner(
     if d.mode.blocked() && !request.read_only() {
         return d.mode.write_refusal();
     }
+    if let Request::Complete { text, position } = &request {
+        if *position > text.len() || !text.is_char_boundary(*position) {
+            return error(
+                "bad_request",
+                "completion position must be a UTF-8 byte boundary within the query",
+            );
+        }
+        let token = match d.archive.scope_token() {
+            Ok(token) => token,
+            Err(error) => return store_error(&error),
+        };
+        let candidates = crate::completion_catalog::complete_file(
+            &d.completion_path,
+            &crate::runtime_dir::archive_key(&d.archive.root),
+            text,
+            *position,
+        );
+        if let Err(error) = token.check() {
+            return store_error(&error);
+        }
+        return ok(candidates);
+    }
     if let Request::SchemaInfer { selection } = request {
         return super::schema::infer(d, selection);
     }
@@ -566,31 +588,8 @@ fn handle_inner(
                 }
             })
         }
-        Request::Complete { text, position } => {
-            if position > text.len() || !text.is_char_boundary(position) {
-                return self::error(
-                    "bad_request",
-                    "completion position must be a UTF-8 byte boundary within the query",
-                );
-            }
-            let read_position = match reader.change_position() {
-                Ok(p) => p.to_string(),
-                Err(e) => return store_error(&e),
-            };
-            match d.warm.completion(&reader, &read_position) {
-                Ok(data) => {
-                    if let Err(error) = crate::completion_catalog::publish(
-                        &d.archive.root,
-                        &read_position,
-                        &data,
-                        now_ms(),
-                    ) {
-                        return self::error("completion_catalog", error);
-                    }
-                    ok(super::warm::complete_at(&data, &text, position))
-                }
-                Err(error) => self::error("store", error),
-            }
+        Request::Complete { .. } => {
+            unreachable!("completion is handled before opening an archive reader")
         }
 
         Request::Sql { statement } => match reader.query(&statement, &[]) {
@@ -829,7 +828,7 @@ fn handle_inner(
             };
             drop(reader);
             match write(d, request_id, resolved) {
-                Response::Ok {mut data} => {
+                Response::Ok { mut data } => {
                     let committed = d.reads.reader().and_then(|reader| {
                         reader.note(data["id"].as_str().expect("write result ID"))
                     });
@@ -1081,6 +1080,8 @@ pub struct Runtime {
     signals: Option<JoinHandle<()>>,
     counts_stop: Option<Sender<()>>,
     counts: Option<JoinHandle<()>>,
+    completion: Option<crate::completion_catalog::publisher::Publisher>,
+    completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
@@ -1097,6 +1098,7 @@ impl Runtime {
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        self.completion.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }
@@ -1130,6 +1132,7 @@ impl Runtime {
             }
         }
         self.daemon.reads.close();
+        self.completion_scope.take();
         self.lock.take();
         failure.map_or(Ok(()), Err)
     }
@@ -1222,13 +1225,17 @@ pub fn start(
     mode: ArchiveMode,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
+    let completion_path = deployment.paths.completion_catalog(root);
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
+    let pointer = polylogue_store::completion::CatalogPointer::new(completion_path.clone());
+    let invalidate = move || pointer.invalidate();
     let settings = config.clone();
-    let (archive, lock, mode, engine) = match mode {
+    let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
+            let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
+                .map_err(std::io::Error::other)?;
             let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
-            (archive, lock, ModeState::Standalone, Some(engine))
+            (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Blocked {
@@ -1236,19 +1243,25 @@ pub fn start(
             path,
             error,
         } => {
-            let (archive, lock) =
-                Archive::open_primary_cache(root).map_err(std::io::Error::other)?;
+            let (archive, lock, scope) =
+                Archive::open_primary_cache_with_invalidator(root, invalidate)
+                    .map_err(std::io::Error::other)?;
             let state = ModeState::Blocked {
                 configured,
                 path,
                 error,
             };
-            (archive, lock, state, None)
+            (archive, lock, state, None, scope)
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Primary { config: sinex, .. } => {
-            let (archive, lock, connection) =
-                crate::sinex::open(root, &sinex, &deployment.primary_auth, &settings.host)?;
+            let (archive, lock, scope) =
+                Archive::open_primary_with_invalidator(root, &sinex.store, invalidate)
+                    .map_err(std::io::Error::other)?;
+            let connection = Arc::new(
+                polylogue_sinex::Sinex::open(&sinex, &deployment.primary_auth, &settings.host)
+                    .map_err(std::io::Error::other)?,
+            );
             let engine = Engine::on_sinex(config, archive.clone(), connection.clone())
                 .map_err(|error| to_io(&error))?;
             (
@@ -1256,6 +1269,7 @@ pub fn start(
                 lock,
                 ModeState::Primary { connection },
                 Some(engine),
+                scope,
             )
         }
     };
@@ -1285,6 +1299,7 @@ pub fn start(
         operations: std::sync::OnceLock::new(),
         archive,
         reads,
+        completion_path,
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
@@ -1313,9 +1328,23 @@ pub fn start(
         signals: None,
         counts_stop: None,
         counts: None,
+        completion: None,
+        completion_scope: Some(completion_scope),
         engine: None,
         lock: Some(lock),
     };
+    // Subscribe before the initial snapshot or starting the ingest loop.
+    let completion_commits = runtime
+        .daemon
+        .writes
+        .as_ref()
+        .map(WriterSender::completion_commits);
+    if !runtime.daemon.mode.blocked() {
+        runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
+            Arc::clone(&runtime.daemon),
+            completion_commits,
+        )?);
+    }
     let Some(mut engine) = engine.take() else {
         return Ok(runtime);
     };

@@ -603,6 +603,22 @@ impl<'a> Compiler<'a> {
                 "{} AS _near",
                 self.near_rank.as_deref().unwrap_or("1")
             ));
+            if !distinct {
+                for (index, expression) in units::spec(unit).identity.iter().enumerate() {
+                    select.push(format!(
+                        "{} AS _identity{index}",
+                        scope.a.expand(expression)
+                    ));
+                }
+                if let Some(first_seen) = fields::sql(
+                    unit,
+                    "first_seen",
+                    &scope.a,
+                    self.opts.clock.now.as_millisecond(),
+                ) {
+                    select.push(format!("{first_seen} AS _first_seen"));
+                }
+            }
             let (sql, keys) = if distinct {
                 // Distinct rows are identified by their values alone.
                 let keys: Vec<OrderKey> = columns
@@ -712,7 +728,34 @@ impl<'a> Compiler<'a> {
                 polylogue_model::derived::CLUSTER_GAP_MS / 60_000
             ));
         }
+        let row_basis = match shape {
+            Shape::Rows if distinct => RowBasis::Distinct {
+                columns: columns.iter().map(|c| c.name.clone()).collect(),
+            },
+            Shape::Rows => RowBasis::Native {
+                unit,
+                columns: units::spec(unit)
+                    .identity
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("_identity{i}"))
+                    .collect(),
+            },
+            Shape::Groups => RowBasis::Group {
+                columns: group
+                    .as_ref()
+                    .into_iter()
+                    .flatten()
+                    .map(|(name, _, _)| name.clone())
+                    .collect(),
+            },
+            Shape::Summary => RowBasis::Summary,
+            Shape::Matches => RowBasis::Unknown {
+                reason: "match tuple identity is not projected".into(),
+            },
+        };
         Ok(Program {
+            row_basis,
             query: self.text.to_owned(),
             unit,
             shape,

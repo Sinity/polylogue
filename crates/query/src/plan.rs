@@ -1,5 +1,5 @@
 //! A bound question retains its source references instead of replacing identity with a plan hash.
-use crate::{Options, QueryError, ast::*};
+use crate::{Bindings, QueryError, ast::*};
 use query_language::{
     bind::BoundQuery,
     catalog::{Catalog, OutputSource, SourceOutput},
@@ -18,12 +18,20 @@ pub struct ResolvedDefinition {
 #[derive(Clone, Debug)]
 pub struct Plan {
     original: BoundQuery,
+    expanded: BoundQuery,
+    text: String,
     identity: Query,
     catalog: Catalog,
     definitions: Vec<ResolvedDefinition>,
     question_id: QuestionId,
 }
 impl Plan {
+    pub fn expanded_query(&self) -> &BoundQuery {
+        &self.expanded
+    }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
     pub fn bound_query(&self) -> &BoundQuery {
         &self.original
     }
@@ -44,14 +52,14 @@ impl Plan {
 /// Product reference resolution is explicit and happens against the caller's pinned read.
 pub fn prepare(
     text: &str,
-    options: &Options,
+    options: &Bindings,
     mut resolve: impl FnMut(&mut ConditionKind) -> Result<(), QueryError>,
 ) -> Result<Plan, QueryError> {
     prepare_inner(text, options, &mut resolve, &mut Vec::new())
 }
 fn prepare_inner(
     text: &str,
-    options: &Options,
+    options: &Bindings,
     resolve: &mut impl FnMut(&mut ConditionKind) -> Result<(), QueryError>,
     stack: &mut Vec<String>,
 ) -> Result<Plan, QueryError> {
@@ -176,7 +184,14 @@ fn prepare_inner(
     )?;
     let question_id = query_language::identity::question_id(&identity, &catalog, &BTreeMap::new())
         .map_err(|e| QueryError::language(e, text))?;
+    let rendered = query_language::format::format_query(original.query(), &catalog)
+        .map_err(|e| QueryError::language(e, text))?;
+    let (expanded, _) = crate::compile::source::expand(&rendered, options)?;
+    let expanded = query_language::bind::bind(&expanded, &catalog)
+        .map_err(|e| QueryError::language(e, text))?;
     Ok(Plan {
+        expanded,
+        text: text.to_owned(),
         original,
         identity,
         catalog,
