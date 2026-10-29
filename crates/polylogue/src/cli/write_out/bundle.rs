@@ -32,6 +32,7 @@ pub struct Bundle {
     items: Option<ExportItems>,
     received: Counts,
     failed: bool,
+    frames: u64,
 }
 impl Bundle {
     pub fn new(
@@ -87,6 +88,7 @@ impl Bundle {
             items: Some(items),
             received: Counts::default(),
             failed: false,
+            frames: 0,
         })
     }
     pub fn staging(&self) -> &Path {
@@ -108,28 +110,43 @@ impl Bundle {
             staging: self.staging.clone(),
         }
     }
-    pub fn push(&mut self, mut item: ReadRecord) -> Result<()> {
+    pub fn push(&mut self, item: ReadRecord) -> Result<()> {
         if self.failed {
             return Err(self.error("bundle delivery already failed"));
         }
-        if let Err(e) = item.record.validate() {
-            return Err(self.error(e));
-        }
-        if matches!(item.record, Record::Manifest(_)) {
+        self.frames += 1;
+        let (mut record, mut parts) = match item {
+            ReadRecord::Canonical { record, parts } => (*record, parts),
+            presentation @ ReadRecord::Presentation { .. } => {
+                if presentation.parts().is_empty() {
+                    return Err(self.error("empty presentation transfer"));
+                }
+                return self.stage(&presentation, None);
+            }
+        };
+        record.validate().map_err(|e| self.error(e))?;
+        if matches!(record, Record::Manifest(_)) {
             return Err(self.error("manifest inside record stream"));
         }
-        increment(&mut self.received, &item.record);
-        let reference = item.record.reference().expect("non-manifest").to_owned();
-        let old = self
+        increment(&mut self.received, &record);
+        let reference = record.reference().expect("non-manifest").to_owned();
+        let previous = self
             .items
             .as_ref()
             .expect("open staging")
             .source_item(&reference)
             .map_err(|e| self.error(e))?;
-        if let Some(old) = old {
+        if let Some(previous) = previous {
             let previous: ReadRecord =
-                serde_json::from_reader(old.reader).map_err(|e| self.error(e))?;
-            match (&mut item.record, &previous.record) {
+                serde_json::from_reader(previous.reader).map_err(|e| self.error(e))?;
+            let ReadRecord::Canonical {
+                record: previous,
+                parts: previous_parts,
+            } = previous
+            else {
+                return Err(self.error("canonical staging identity names presentation"));
+            };
+            match (&mut record, &*previous) {
                 (Record::Message(new), Record::Message(old))
                     if new.commit == old.commit && new.order == old.order =>
                 {
@@ -144,41 +161,47 @@ impl Bundle {
                     new.source_version = projection.source_version;
                     new.block_count = projection.block_count;
                     new.block_ordinals = projection.block_ordinals;
-                    // Repeated content cannot add a second rendering of the same item.
-                    let mut parts = previous.parts;
-                    for part in item.parts {
-                        if !parts.contains(&part) {
-                            parts.push(part);
+                    let mut merged = previous_parts;
+                    for part in parts {
+                        if !merged.contains(&part) {
+                            merged.push(part);
                         }
                     }
-                    parts.sort_by_key(|part| match part {
+                    merged.sort_by_key(|part| match part {
                         ReadPart::Header(_) => (0, 0),
                         ReadPart::Item(item) => (1, item.source.block.unwrap_or(0)),
                         ReadPart::Footer(_) => (2, 0),
                     });
-                    item.parts = parts;
+                    parts = merged;
                 }
-                (new, old) if *new == *old && item.parts == previous.parts => {
-                    return Ok(());
-                }
+                (new, old) if *new == *old && parts == previous_parts => return Ok(()),
                 _ => return Err(self.error("conflicting duplicate bundle reference")),
             }
         }
-        let bytes = serde_json::to_vec(&item).map_err(|e| self.error(e))?;
-        let key = order_key(&item.record);
-        let mut alternate = group(&item.record).into_bytes();
+        self.stage(
+            &ReadRecord::Canonical {
+                record: Box::new(record),
+                parts,
+            },
+            Some(&reference),
+        )
+    }
+    fn stage(&mut self, item: &ReadRecord, reference: Option<&str>) -> Result<()> {
+        let bytes = serde_json::to_vec(item).map_err(|e| self.error(e))?;
+        let key = if let Some(record) = item.record() {
+            order_key(record)
+        } else {
+            let mut key = u64::MAX.to_be_bytes().to_vec();
+            key.extend_from_slice(&self.frames.to_be_bytes());
+            key
+        };
+        let mut alternate = group(item).into_bytes();
         alternate.push(0);
         alternate.extend_from_slice(&key);
         self.items
             .as_mut()
             .expect("open staging")
-            .push_ordered(
-                0..bytes.len() as u64,
-                key,
-                alternate,
-                Some(&reference),
-                &bytes,
-            )
+            .push_ordered(0..bytes.len() as u64, key, alternate, reference, &bytes)
             .map_err(|e| self.error(e))
     }
     /// Chunks are contiguous per hash; each descriptor is checked at finish.
@@ -288,8 +311,10 @@ impl Bundle {
             .reset(Order::Primary)
             .map_err(string)?;
         while let Some(item) = self.next()? {
-            increment(&mut counts, &item.record);
-            if let Record::Blob(blob) = &item.record {
+            if let Some(record) = item.record() {
+                increment(&mut counts, record);
+            }
+            if let Some(Record::Blob(blob)) = item.record() {
                 if !self.with_blobs {
                     return Err("blob descriptor without with_blobs".into());
                 }
@@ -351,7 +376,9 @@ impl Bundle {
                 .reset(Order::Primary)
                 .map_err(string)?;
             while let Some(item) = self.next()? {
-                line(&mut records, &item.record)?;
+                if let Some(record) = item.record() {
+                    line(&mut records, record)?;
+                }
             }
             records.sync_all().map_err(string)?;
             if self.format != Format::Jsonl {
@@ -395,7 +422,11 @@ impl Bundle {
                     .map_err(string)?;
             }
             while let Some(first) = pending.take() {
-                let name = group(&first.record);
+                if self.format == Format::Json && first.record().is_none() {
+                    pending = self.next()?;
+                    continue;
+                }
+                let name = group(&first);
                 let records_path = format!("{name}.json");
                 let absolute = self.staging.join(&records_path);
                 fs::create_dir_all(absolute.parent().expect("member parent")).map_err(string)?;
@@ -423,7 +454,7 @@ impl Bundle {
                     None
                 };
                 let mut header = first
-                    .parts
+                    .parts()
                     .iter()
                     .find_map(|part| {
                         if let ReadPart::Header(header) = part {
@@ -433,8 +464,8 @@ impl Bundle {
                         }
                     })
                     .unwrap_or_else(|| self.begin.header.clone());
-                header.target = first.record.reference().unwrap_or("").to_owned();
-                let session_record = if let Some(id) = session_id(&first.record) {
+                header.target = reference(&first).to_owned();
+                let session_record = if let Some(id) = first.record().and_then(session_id) {
                     self.items
                         .as_ref()
                         .expect("open staging")
@@ -447,10 +478,8 @@ impl Bundle {
                 } else {
                     None
                 };
-                if let Some(ReadRecord {
-                    record: Record::Session(s),
-                    ..
-                }) = session_record
+                if let Some(Record::Session(s)) =
+                    session_record.as_ref().and_then(ReadRecord::record)
                 {
                     header.kind = HeaderKind::Session {
                         session: Box::new(s.session.clone()),
@@ -485,23 +514,23 @@ impl Bundle {
                 let mut current = Some(first);
                 let mut separator = false;
                 while let Some(item) = current.take() {
-                    if let Some(file) = &mut file {
+                    if let (Some(file), Some(record)) = (&mut file, item.record()) {
                         if separator {
                             file.write_all(b",").map_err(string)?;
                         }
-                        serde_json::to_writer(file, &item.record).map_err(string)?;
+                        serde_json::to_writer(file, record).map_err(string)?;
                     }
-                    separator = true;
+                    separator |= item.record().is_some();
                     if let Some(encoder) = &mut encoder {
-                        for part in item.parts {
+                        for part in item.parts() {
                             if let ReadPart::Item(item) = part {
-                                encoder.push(&item).map_err(string)?;
+                                encoder.push(item).map_err(string)?;
                             }
                         }
                     }
                     let next = self.next()?;
                     match next {
-                        Some(next) if group(&next.record) == name => current = Some(next),
+                        Some(next) if group(&next) == name => current = Some(next),
                         other => pending = other,
                     }
                 }
@@ -583,7 +612,9 @@ impl Bundle {
                 .reset(Order::Primary)
                 .map_err(string)?;
             while let Some(item) = self.next()? {
-                line(&mut primary, &item.record)?;
+                if let Some(record) = item.record() {
+                    line(&mut primary, record)?;
+                }
             }
         }
         primary.sync_all().map_err(string)?;
@@ -613,11 +644,35 @@ fn session_id(record: &Record) -> Option<&SessionId> {
         _ => None,
     }
 }
-fn group(record: &Record) -> String {
-    session_id(record).map(session_path).unwrap_or_else(|| {
+fn reference(item: &ReadRecord) -> &str {
+    if let Some(record) = item.record() {
+        return record.reference().unwrap_or("");
+    }
+    item.parts()
+        .iter()
+        .find_map(|part| {
+            if let ReadPart::Item(item) = part {
+                Some(item.source.reference.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("presentation")
+}
+fn group(item: &ReadRecord) -> String {
+    let session = item.record().and_then(session_id).or_else(|| {
+        item.parts().iter().find_map(|part| {
+            if let ReadPart::Item(item) = part {
+                item.source.source_session.as_ref()
+            } else {
+                None
+            }
+        })
+    });
+    session.map(session_path).unwrap_or_else(|| {
         format!(
             "_records/{}",
-            blake3::hash(record.reference().unwrap_or("").as_bytes()).to_hex()
+            blake3::hash(reference(item).as_bytes()).to_hex()
         )
     })
 }

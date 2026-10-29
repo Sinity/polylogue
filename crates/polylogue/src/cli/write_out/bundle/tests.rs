@@ -34,12 +34,12 @@ fn session(native: &str) -> ReadRecord {
     let session =
         serde_json::from_value(serde_json::json!({"id":format!("codex:{native}"),"kind":"main"}))
             .unwrap();
-    ReadRecord {
-        record: Record::Session(SessionRecord {
+    ReadRecord::Canonical {
+        record: Box::new(Record::Session(SessionRecord {
             reference: format!("session:codex:{native}"),
             commit: 1,
             session,
-        }),
+        })),
         parts: vec![ReadPart::Item(ReadItem {
             source: Source::record(format!("session:codex:{native}")),
             kind: ItemKind::Text {
@@ -128,7 +128,10 @@ fn final_count_failure_and_disconnect_preserve_previous_bundle_and_staging() {
             .reader,
     )
     .unwrap();
-    assert_eq!(recovered.record.reference(), Some("session:codex:new"));
+    assert_eq!(
+        recovered.record().unwrap().reference(),
+        Some("session:codex:new")
+    );
     drop(retained);
     assert_eq!(
         fs::read(destination.join("manifest.json")).unwrap(),
@@ -189,15 +192,15 @@ fn blob_hash_failure_never_publishes_and_chunk_offsets_are_checked() {
     let mut sink = Bundle::new(&destination, begin(), Format::Json, true).unwrap();
     let hash = BlobHash::of(b"correct");
     sink.blob_chunk(hash, 0, b"wrong").unwrap();
-    sink.push(ReadRecord {
-        record: Record::Blob(BlobRecord {
+    sink.push(ReadRecord::Canonical {
+        record: Box::new(Record::Blob(BlobRecord {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {
                 path: format!("blobs/{hash}"),
                 hash,
                 size: 7,
             },
-        }),
+        })),
         parts: vec![],
     })
     .unwrap();
@@ -227,7 +230,9 @@ fn duplicate_frames_deduplicate_content_and_conflicts_poison_delivery() {
     let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
     sink.push(session("one")).unwrap();
     let mut changed = session("one");
-    if let Record::Session(record) = &mut changed.record {
+    if let ReadRecord::Canonical { record, .. } = &mut changed
+        && let Record::Session(record) = &mut **record
+    {
         record.commit = 2;
     }
     assert!(sink.push(changed).is_err());
@@ -265,8 +270,8 @@ fn sparse_records_union_and_later_partial_does_not_downgrade_content() {
     let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
     sink.push(session("session")).unwrap();
     for record in [second, first.clone(), full.clone(), first] {
-        sink.push(ReadRecord {
-            record: Record::Message(Box::new(record)),
+        sink.push(ReadRecord::Canonical {
+            record: Box::new(Record::Message(Box::new(record))),
             parts: vec![],
         })
         .unwrap();
@@ -296,15 +301,15 @@ fn valid_blob_chunks_are_pinned_and_unclaimed_bytes_refuse_publication() {
     let mut sink = Bundle::new(&destination, begin(), Format::Jsonl, true).unwrap();
     sink.blob_chunk(hash, 0, b"com").unwrap();
     sink.blob_chunk(hash, 3, b"plete").unwrap();
-    sink.push(ReadRecord {
-        record: Record::Blob(BlobRecord {
+    sink.push(ReadRecord::Canonical {
+        record: Box::new(Record::Blob(BlobRecord {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {
                 path: format!("blobs/{hash}"),
                 hash,
                 size: 8,
             },
-        }),
+        })),
         parts: vec![],
     })
     .unwrap();
@@ -341,4 +346,54 @@ fn injected_member_write_failure_retains_previous_destination() {
     assert_eq!(error.staging, staging);
     assert!(destination.join("codex/old.json").exists());
     assert!(!destination.join("codex/new.json").exists());
+}
+
+#[test]
+fn presentation_omissions_render_without_canonical_payload_or_counts() {
+    for format in [Format::Json, Format::Jsonl, Format::Markdown, Format::Html] {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("bundle");
+        let mut sink = Bundle::new(&destination, begin(), format, false).unwrap();
+        sink.push(ReadRecord::Presentation {
+            parts: vec![ReadPart::Item(ReadItem {
+                source: Source::record("document:omitted"),
+                kind: ItemKind::Omission {
+                    count: ValueState::known(1),
+                    unit: "document".into(),
+                    why: "view excludes document content".into(),
+                    continue_call: None,
+                },
+            })],
+        })
+        .unwrap();
+        let summary = sink.finish(complete(0)).unwrap();
+        assert_eq!(summary.counts, Counts::default());
+        assert_eq!(manifest(&destination).counts, Counts::default());
+        if matches!(format, Format::Markdown | Format::Html) {
+            let path = format!(
+                "_records/{}.{}",
+                blake3::hash(b"document:omitted").to_hex(),
+                if format == Format::Html { "html" } else { "md" }
+            );
+            assert!(
+                fs::read_to_string(destination.join(path))
+                    .unwrap()
+                    .contains("view excludes document content")
+            );
+            assert!(
+                fs::read(destination.join("records.jsonl"))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        if format == Format::Jsonl {
+            let records: Vec<Record> = serde_json::Deserializer::from_reader(
+                File::open(destination.join("records.jsonl")).unwrap(),
+            )
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+            assert_eq!(records.len(), 1);
+        }
+    }
 }
