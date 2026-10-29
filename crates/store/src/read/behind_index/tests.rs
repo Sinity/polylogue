@@ -60,8 +60,8 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
             "INSERT INTO input_ref(id) VALUES ('a');
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,2,'parsing',12 FROM input_ref WHERE id='a';
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
-         SELECT pk,3,'waiting',2 FROM input_ref WHERE id='a';
+         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,detail)
+         SELECT pk,3,'waiting',2,'30' FROM input_ref WHERE id='a';
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,5,'done',50 FROM input_ref WHERE id='a';",
         )
@@ -174,4 +174,46 @@ fn behind_chains_work_scales_with_revision_and_observation_history() {
         large <= small * 6,
         "128 revisions: {small} VM steps; 512 revisions: {large}"
     );
+}
+
+#[test]
+fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive
+        .execute_batch(
+            "INSERT INTO input VALUES ('metadata','no-parser');
+        INSERT INTO revision VALUES ('metadata',1,'first',1,100,1);",
+        )
+        .unwrap();
+    let index = Connection::open(fixture.archive.index_db()).unwrap();
+    index
+        .execute_batch(
+            "INSERT INTO input_ref(id) VALUES ('metadata');
+        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,detail,reading_version)
+        SELECT pk,1,'waiting',40,'100','metadata=1' FROM input_ref;",
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(reader.chains_behind_index(&[]).unwrap().is_empty());
+    assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
+    archive
+        .execute(
+            "INSERT INTO revision VALUES ('metadata',2,'appended',1,140,2)",
+            [],
+        )
+        .unwrap();
+    let behind = reader.chains_behind_index(&[]).unwrap();
+    assert_eq!(behind.len(), 1);
+    assert_eq!(
+        (
+            behind[0].progress.parsed_upto,
+            behind[0].progress.length,
+            behind[0].progress.waiting
+        ),
+        (40, 140, false)
+    );
+    assert!(!reader.input_progress("metadata").unwrap().unwrap().waiting);
 }

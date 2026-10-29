@@ -1159,7 +1159,7 @@ impl Reader<'_> {
         let row = self
             .conn()?
             .prepare_cached(
-                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status = 'waiting', 0), r.chain
+                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status = 'waiting' AND p.detail = CAST(r.length AS TEXT), 0), r.chain
              FROM a.revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain

@@ -87,6 +87,8 @@ fn new_messages_do_not_read_a_previous_source() {
     // With caching disabled, authorization sees every statement execution.
     conn.set_prepared_statement_cache_capacity(0);
     let tx = conn.transaction().unwrap();
+    let prefix = batch("input1", 0, 0, Vec::new(), &[]);
+    write_test_rows(&tx, &prefix, &prefix.parse[0], 1, 0, Some(&first_build)).unwrap();
     let observed = Arc::new(AtomicU64::new(0));
     let count = observed.clone();
     tx.authorizer(Some(move |context: AuthContext<'_>| {
