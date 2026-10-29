@@ -99,6 +99,7 @@ pub(crate) fn write(
         source,
         polylogue_model::Reference::Session(_)
             | polylogue_model::Reference::Message(_)
+            | polylogue_model::Reference::Document(_)
             | polylogue_model::Reference::MessageRange { .. }
             | polylogue_model::Reference::Block { .. }
             | polylogue_model::Reference::Span { .. }
@@ -265,6 +266,25 @@ impl Reader<'_> {
         visit: impl FnMut(VariantPart) -> Result<()>,
     ) -> Result<()> {
         rows::parts_for(self.conn()?, id, source_reference, visit)
+    }
+    /// Stream only parts addressed to this message/document or its exact children.
+    /// Original references are grouped in lexical order, each group's n ascending.
+    pub fn visit_variant_parts_in(
+        &self,
+        id: &str,
+        record: &polylogue_model::Reference,
+        visit: impl FnMut(VariantPart) -> Result<()>,
+    ) -> Result<()> {
+        rows::parts_in(self.conn()?, id, record, visit)
+    }
+    /// Distinct captured-text rendition sources within one message/document.
+    /// This visits metadata only; currentness and preference use selected_variant.
+    pub fn visit_variant_sources_in(
+        &self,
+        record: &polylogue_model::Reference,
+        visit: impl FnMut(polylogue_model::Reference) -> Result<()>,
+    ) -> Result<()> {
+        rows::sources_in(self.conn()?, record, visit)
     }
     pub fn current_variants(&self, root: &str) -> Result<Vec<Variant>> {
         heads(self.conn()?, root)

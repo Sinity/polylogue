@@ -248,7 +248,7 @@ CREATE TABLE variant (
   id          TEXT PRIMARY KEY,
   root        TEXT NOT NULL,       -- first revision of this rendition
   base        TEXT,                -- the revision this one revises (same root); NULL for a first revision
-  source      TEXT NOT NULL,       -- exact reference: session, message, range, block, span, assertion@rev, page@rev, variant@rev
+  source      TEXT NOT NULL,       -- exact reference: session, message, range, block, document, span, assertion@rev, page@rev, variant@rev
   source_hash BLOB NOT NULL,       -- BLAKE3 of the source text at that revision
   kind        TEXT NOT NULL,       -- translation | transliteration | simplification | summary
   from_lang   TEXT, to_lang TEXT,  -- BCP 47
