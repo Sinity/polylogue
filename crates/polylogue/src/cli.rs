@@ -280,6 +280,7 @@ pub fn run(
         .get_one::<String>("request_id")
         .cloned()
         .unwrap_or_else(|| values.request_id());
+    let mut literal_arguments = None;
     let request = if let Some(raw) = raw {
         let Some(build) = cmd.build_typed else {
             return fail(
@@ -305,11 +306,11 @@ pub fn run(
                 2,
             );
         };
-        values = match Values::from_json(cmd, Surface::Cli, object.clone()) {
-            Ok(values) => values,
-            Err(error) => return fail(json, "bad_request", &error, 2),
-        };
+        // The typed adapter validated the arguments. Output options may read
+        // them, but the accepted envelope retains exactly what the caller sent.
+        values = Values(object.clone().into_iter().collect());
         values.0.insert("json".into(), Value::Bool(json));
+        literal_arguments = Some(arguments);
         request
     } else {
         let build = match cmd.action {
@@ -322,7 +323,15 @@ pub fn run(
             Err(message) => return fail(json, "bad_request", &message, 2),
         }
     };
-    let call = crate::protocol::operations::request(cmd, values.clone(), request_id, deadline);
+    let call = match literal_arguments {
+        Some(arguments) => command_surface::Request {
+            operation: cmd.name.into(),
+            arguments,
+            request_id,
+            deadline,
+        },
+        None => crate::protocol::operations::request(cmd, values.clone(), request_id, deadline),
+    };
     if let Action::Stream { cli, .. } = cmd.action {
         return cli(&values, &request, startup, &call);
     }
