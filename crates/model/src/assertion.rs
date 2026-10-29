@@ -3,46 +3,6 @@
 use crate::{Author, BlobHash, Json, Reference, Timestamp, authorship::Channel};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AssertionKind {
-    Note,
-    Tag,
-    Highlight,
-    Title,
-    Outcome,
-    Claim,
-    Finding,
-    Decision,
-    Lesson,
-    Question,
-    Goal,
-    Problem,
-    Blocker,
-    Handoff,
-    Correction,
-    Forecast,
-    Judgment,
-    Comparison,
-    Rubric,
-    Pass,
-    Annotation,
-    Memory,
-    Method,
-    SavedQuery,
-    Signal,
-    Page,
-    Slot,
-    Member,
-    Role,
-    Ping,
-    Withdrawal,
-    Setting,
-}
-stored_names!(AssertionKind {
-    Note=>"note",Tag=>"tag",Highlight=>"highlight",Title=>"title",Outcome=>"outcome",Claim=>"claim",Finding=>"finding",Decision=>"decision",Lesson=>"lesson",Question=>"question",Goal=>"goal",Problem=>"problem",Blocker=>"blocker",Handoff=>"handoff",Correction=>"correction",Forecast=>"forecast",Judgment=>"judgment",Comparison=>"comparison",Rubric=>"rubric",Pass=>"pass",Annotation=>"annotation",Memory=>"memory",Method=>"method",SavedQuery=>"saved_query",Signal=>"signal",Page=>"page",Slot=>"slot",Member=>"member",Role=>"role",Ping=>"ping",Withdrawal=>"withdrawal",Setting=>"setting"
-});
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cardinality {
     Many,
@@ -94,173 +54,53 @@ pub struct KindSpec {
     pub markup: bool,
     pub briefs: bool,
 }
-impl AssertionKind {
-    pub fn spec(self) -> KindSpec {
-        use Cardinality::*;
-        let (value, cardinality, about, key_required, markup, briefs) = match self {
-            Self::Note => (ValueShape::Text, Many, About::Anything, false, true, true),
-            Self::Tag => (ValueShape::Tag, Tag, About::Anything, true, true, true),
-            Self::Highlight => (
-                ValueShape::OptionalText,
-                Many,
-                About::Span,
-                true,
-                true,
-                false,
-            ),
-            Self::Title => (
-                ValueShape::Text,
-                OnePerAbout,
-                About::Session,
-                false,
-                true,
-                false,
-            ),
-            Self::Outcome => (
-                ValueShape::Outcome,
-                OnePerAbout,
-                About::Session,
-                false,
-                true,
-                true,
-            ),
-            Self::Claim => (ValueShape::Claim, Many, About::Anything, false, true, true),
-            Self::Decision => (
-                ValueShape::Decision,
-                Many,
-                About::Anything,
-                false,
-                true,
-                true,
-            ),
-            Self::Finding
-            | Self::Lesson
-            | Self::Question
-            | Self::Goal
-            | Self::Problem
-            | Self::Blocker
-            | Self::Handoff
-            | Self::Correction => (ValueShape::Text, Many, About::Anything, false, true, true),
-            Self::Forecast => (
-                ValueShape::Forecast,
-                Many,
-                About::Anything,
-                true,
-                true,
-                true,
-            ),
-            Self::Judgment => (
-                ValueShape::Judgment,
-                Many,
-                About::ExactAssertion,
-                true,
-                false,
-                false,
-            ),
-            Self::Comparison => (
-                ValueShape::Comparison,
-                Many,
-                About::Several,
-                true,
-                false,
-                false,
-            ),
-            Self::Rubric => (
-                ValueShape::Rubric,
-                OnePerName,
-                About::None,
-                true,
-                false,
-                false,
-            ),
-            Self::Pass => (ValueShape::Pass, Many, About::None, false, false, false),
-            Self::Annotation => (
-                ValueShape::Annotation,
-                Annotation,
-                About::Anything,
-                true,
-                true,
-                false,
-            ),
-            Self::Memory => (
-                ValueShape::Text,
-                OnePerScopeKey,
-                About::None,
-                true,
-                false,
-                true,
-            ),
-            Self::Method => (
-                ValueShape::Method,
-                OnePerName,
-                About::None,
-                true,
-                false,
-                true,
-            ),
-            Self::SavedQuery => (
-                ValueShape::SavedQuery,
-                OnePerName,
-                About::None,
-                true,
-                false,
-                false,
-            ),
-            Self::Signal => (
-                ValueShape::Signal,
-                OnePerName,
-                About::None,
-                true,
-                false,
-                false,
-            ),
-            Self::Page => (
-                ValueShape::Page,
-                OnePerName,
-                About::None,
-                true,
-                false,
-                false,
-            ),
-            Self::Slot => (ValueShape::Slot, Many, About::Anything, false, false, false),
-            Self::Member => (
-                ValueShape::Member,
-                Many,
-                About::Anything,
-                false,
-                false,
-                false,
-            ),
-            Self::Role => (ValueShape::Role, Many, About::Anything, false, false, false),
-            Self::Ping => (ValueShape::Ping, Many, About::Anything, false, false, false),
-            Self::Withdrawal => (
-                ValueShape::OptionalText,
-                Many,
-                About::None,
-                false,
-                false,
-                false,
-            ),
-            Self::Setting => (
-                ValueShape::Setting,
-                OnePerName,
-                About::None,
-                true,
-                false,
-                false,
-            ),
-        };
-        KindSpec {
-            value,
-            cardinality,
-            about,
-            key_required,
-            markup,
-            briefs,
+macro_rules! assertion_kinds {
+    ($($kind:ident => ($name:literal,$value:ident,$cardinality:ident,$about:ident,$key:literal,$markup:literal,$briefs:literal)),+ $(,)?) => {
+        #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash,Serialize,Deserialize,schemars::JsonSchema)]
+        #[serde(rename_all="snake_case")]
+        pub enum AssertionKind {$($kind),+}
+        stored_names!(AssertionKind {$($kind=>$name),+});
+        impl AssertionKind {
+            pub fn spec(self)->KindSpec {match self {$(
+                Self::$kind=>KindSpec {value:ValueShape::$value,cardinality:Cardinality::$cardinality,about:About::$about,key_required:$key,markup:$markup,briefs:$briefs}
+            ),+}}
         }
-    }
+    };
 }
-
+assertion_kinds! {
+    Note => ("note",Text,Many,Anything,false,true,true),
+    Tag => ("tag",Tag,Tag,Anything,true,true,true),
+    Highlight => ("highlight",OptionalText,Many,Span,true,true,false),
+    Title => ("title",Text,OnePerAbout,Session,false,true,false),
+    Outcome => ("outcome",Outcome,OnePerAbout,Session,false,true,true),
+    Claim => ("claim",Claim,Many,Anything,false,true,true),
+    Finding => ("finding",Claim,Many,Anything,false,true,true),
+    Decision => ("decision",Decision,Many,Anything,false,true,true),
+    Lesson => ("lesson",Text,Many,Anything,false,true,true),
+    Question => ("question",Claim,Many,Anything,false,true,true),
+    Goal => ("goal",Text,Many,Anything,false,true,true),
+    Problem => ("problem",Text,Many,Anything,false,true,true),
+    Blocker => ("blocker",Text,Many,Anything,false,true,true),
+    Handoff => ("handoff",Text,Many,Anything,false,true,true),
+    Correction => ("correction",Text,Many,Anything,false,true,true),
+    Forecast => ("forecast",Forecast,Many,Anything,true,true,true),
+    Judgment => ("judgment",Judgment,Many,ExactAssertion,true,false,false),
+    Comparison => ("comparison",Comparison,Many,Several,true,false,false),
+    Rubric => ("rubric",Rubric,OnePerName,None,true,false,false),
+    Pass => ("pass",Pass,Many,None,false,false,false),
+    Annotation => ("annotation",Annotation,Annotation,Anything,true,true,false),
+    Memory => ("memory",Text,OnePerScopeKey,None,true,false,true),
+    Method => ("method",Method,OnePerName,None,true,false,true),
+    SavedQuery => ("saved_query",SavedQuery,OnePerName,None,true,false,false),
+    Signal => ("signal",Signal,OnePerName,None,true,false,false),
+    Page => ("page",Page,OnePerName,None,true,false,false),
+    Slot => ("slot",Slot,Many,Anything,false,false,false),
+    Member => ("member",Member,Many,Anything,true,false,false),
+    Role => ("role",Role,OnePerName,None,true,false,false),
+    Ping => ("ping",Ping,Many,Session,false,false,false),
+    Withdrawal => ("withdrawal",OptionalText,Many,None,false,false,false),
+    Setting => ("setting",Setting,OnePerName,None,true,false,false),
+}
 #[derive(
     Debug,
     Clone,
