@@ -36,6 +36,19 @@ fn native_seek_coordinates_preserve_actual_ordinals_and_explicit_separator_posit
     let mut bad = seek;
     bad.end.byte = 3;
     assert!(bad.validate(&container, &coverage).is_err());
+    let reversed = NativeSpanSeek {
+        start: NativeTextPosition {
+            piece: NativeTextPiece::Body { body: after },
+            byte: 0,
+        },
+        end: seek.start,
+    };
+    assert!(reversed.validate(&container, &coverage).is_err());
+    let reversed_separator = NativeSpanSeek {
+        start: seek.end,
+        end: seek.start,
+    };
+    assert!(reversed_separator.validate(&container, &coverage).is_err());
     assert!(
         seek.validate(
             &Reference::parse("block:codex:example#7").unwrap(),
