@@ -508,6 +508,7 @@ pub(crate) fn run(
                 job.at_end,
             );
             step.no_parser_yet = true;
+            step.reading_version = job.origin.reading_version();
             if prepare {
                 step.prepare();
             }

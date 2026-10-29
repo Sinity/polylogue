@@ -186,3 +186,35 @@ fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
     assert_eq!(last.parsed_upto, bytes.len() as u64);
     assert!(last.matches(&origin.reading_version(), bytes.len() as u64));
 }
+
+#[test]
+fn no_parser_capture_keeps_its_reading_version_without_replaying_raw_bytes() {
+    let home = ClaudeHome::new();
+    let dir = home.home.join(".pi/agent/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("native.jsonl");
+    let bytes = b"{\"id\":\"synthetic-native\",\"content\":\"captured raw\"}\n";
+    std::fs::write(&path, bytes).unwrap();
+    for attempt in 0..3 {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        if attempt > 0 {
+            assert_eq!(pass.bytes_read, 0, "{pass:?}");
+            assert_eq!(pass.bytes_stored, 0, "{pass:?}");
+        }
+        let input = engine.location_id(&path);
+        let origin = polylogue_sources::origin::by_name("pi").unwrap();
+        let reader = engine.reads.reader().unwrap();
+        let progress = reader.input_progress(&input).unwrap().unwrap();
+        assert_eq!(progress.parsed_upto, bytes.len() as u64);
+        let saved = reader
+            .parser_checkpoint(&input, progress.chain, &origin.reading_version())
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.reading_version, origin.reading_version());
+        assert_eq!(saved.checkpoint, None);
+        let rows=reader.query("SELECT status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",&[serde_json::json!(input)]).unwrap();
+        assert_eq!(rows[0]["status"], "no_parser_yet");
+    }
+}
