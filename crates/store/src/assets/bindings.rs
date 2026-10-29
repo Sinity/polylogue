@@ -136,7 +136,7 @@ impl AttachmentBindingRecord {
             claim: self.claim.clone(),
         }
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         self.claim
             .validate()
             .map_err(|_| invalid("invalid attachment claim"))?;
@@ -504,6 +504,16 @@ fn binding_body(conn: &Connection, selection: &BindingSelection) -> Result<Optio
         .optional()?)
 }
 
+pub(crate) fn known(conn: &Connection, record: &AttachmentBindingRecord) -> Result<bool> {
+    record.validate()?;
+    let Some(body) = binding_body(conn, &record.selection())? else { return Ok(false); };
+    let existing: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
+    if existing != *record {
+        return Err(StoreError::Conflict("different attachment binding facts under one source context".into()));
+    }
+    Ok(true)
+}
+
 pub(crate) fn project(
     index: &Connection,
     catalog: &Connection,
@@ -512,16 +522,7 @@ pub(crate) fn project(
     record.validate()?;
     let selection = record.selection();
     let body = serde_json::to_vec(record)?;
-    let old = binding_body(index, &selection)?;
-    if let Some(old) = old {
-        let existing: AttachmentBindingRecord = crate::encoding::unpack_json(&old)?;
-        if existing != *record {
-            return Err(StoreError::Conflict(
-                "different attachment binding facts under one source context".into(),
-            ));
-        }
-        return Ok(());
-    }
+    if known(index, record)? { return Ok(()); }
     // Source/member absence is an unavailable association, not a reason to
     // discard canonical claims or certify a different member by its hash.
     let (catalog, prefix) = if matches!(
@@ -610,6 +611,14 @@ impl Reader<'_> {
         record.validate()?;
         if record.selection() != *selection {
             return Err(invalid("attachment projection key differs from its fact"));
+        }
+        if matches!(crate::source::Source::of(conn)?, crate::source::Source::Cache) {
+            // Canonical serialization preserves the witness, but receiving
+            // authority requires authenticated original admission context.
+            return Ok(Some(BindingResolution {
+                selection: selection.clone(), claim: record.claim,
+                state: AttachmentState::Unknown, members: Vec::new(),
+            }));
         }
         let mut members = Vec::new();
         let mut seen = BTreeSet::new();

@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod attachments;
+mod assets;
 mod authored;
 mod batch;
 mod bytes;
@@ -1117,7 +1118,7 @@ impl Inner {
             }
             for (staged, reply) in assets.drain(..) {
                 let before = self.index.total_changes();
-                let result = crate::assets::install(&mut self.index, &self.archive, *staged);
+                let result = self.install_assets(*staged);
                 if result.is_ok() && self.index.total_changes() != before {
                     self.commits.committed();
                 }

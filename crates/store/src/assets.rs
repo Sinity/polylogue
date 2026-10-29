@@ -316,6 +316,10 @@ pub(crate) fn install(
     mut staged: ExportItems,
 ) -> Result<()> {
     crate::fault::check("assets.install", "")?;
+    let catalog_prefix = match crate::source::Source::of(archive)? {
+        crate::source::Source::Cache => "source_",
+        crate::source::Source::Ledger => "",
+    };
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     while let Some(item) = staged.next_item()? {
         match serde_json::from_reader(item.reader)? {
@@ -357,7 +361,7 @@ pub(crate) fn install(
                 source_version: recorded,
                 error,
             } => {
-                if asset_source(archive, "", &input)?
+                if asset_source(archive, catalog_prefix, &input)?
                     .as_ref()
                     .map(|source| source.version.as_str())
                     != Some(recorded.as_str())

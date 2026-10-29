@@ -1,5 +1,5 @@
 //! The primary cache applies complete confirmed positions, never producer acknowledgments.
-pub(crate) const SCHEMA: &str = "
+pub(crate) const SCHEMA: &str = concat!("
 CREATE TABLE primary_fact (
  event TEXT PRIMARY KEY, admitted INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
@@ -26,7 +26,8 @@ CREATE TABLE source_material (
 ) STRICT;
 CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
-";
+", include_str!("projection/reference_index.sql"));
+pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_index.sql");
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
 use crate::{Result, StoreError};
@@ -168,6 +169,7 @@ impl Fact {
 
 fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, &'static str) {
     let reference = match product {
+        Product::AttachmentBinding { record } => Some(format!("attachment-binding:{}", record.context().message)),
         Product::Session { facts, .. } => Some(format!("session:{}", facts.id)),
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
@@ -198,6 +200,9 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
                 .or_else(|| rows.revision.as_ref().map(|r| r.chain)),
             reference,
             "input",
+        ),
+        Product::AttachmentBinding { record } => (
+            Some(record.context().input.clone()), Some(record.context().chain), reference, "attachment_binding",
         ),
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_) | Product::RestoredRequest { .. } => (None, None, reference, "request"),
@@ -374,6 +379,7 @@ struct Plan {
     available: HashMap<polylogue_model::BlobHash, Option<u64>>,
     requests: bool,
     queries: bool,
+    binding_messages: BTreeSet<String>,
     coverage: bool,
 }
 
@@ -461,6 +467,7 @@ fn plan(index: &Connection) -> Result<Plan> {
         available: HashMap::new(),
         requests: false,
         queries: false,
+        binding_messages: BTreeSet::new(),
         coverage: false,
     };
     let mut chains = BTreeMap::<(String, i64), crate::InputKey>::new();
@@ -475,6 +482,9 @@ fn plan(index: &Connection) -> Result<Plan> {
                     (reading.input.id.clone(), reading.chain),
                     reading.input.clone(),
                 );
+            }
+            if let Product::AttachmentBinding { record } = &product {
+                out.binding_messages.insert(record.context().message.to_string());
             }
             if let Product::Input { rows, .. } = &product {
                 out.inputs.insert(rows.input.clone());
@@ -768,6 +778,31 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
+fn members(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
+    for input in &plan.inputs {
+        crate::assets::visit_import_members(tx, "source_", 0, Some(input), |member| {
+            crate::assets::project_member(tx, &member, None, None)
+        })?;
+    }
+    Ok(())
+}
+
+fn bindings(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
+    for message in &plan.binding_messages {
+        tx.execute("DELETE FROM attachment_binding WHERE message=?1", [message])?;
+        let reference = format!("attachment-binding:{message}");
+        let mut query = tx.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='attachment_binding' AND reference=?1 ORDER BY admitted,source_order,event")?;
+        let mut rows = query.query([reference])?;
+        while let Some(row) = rows.next()? {
+            let bytes: Vec<u8> = row.get(0)?;
+            if let Product::AttachmentBinding { record } = unpacked(&bytes)? {
+                crate::assets::bindings::project(tx, tx, &record)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     if !plan.requests {
         return Ok(());
@@ -872,6 +907,7 @@ pub(crate) fn apply(
         let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = crate::archive::bump_counter(&tx)?;
         sources(&tx, &plan)?;
+        members(&tx, &plan)?;
         requests(&tx, &plan)?;
         queries(&tx, &plan)?;
         if plan.coverage {
@@ -886,6 +922,7 @@ pub(crate) fn apply(
             }
         }
         crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
+        bindings(&tx, &plan)?;
         crate::variants::project(&tx)?;
         tx.execute(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",

@@ -41,6 +41,7 @@ struct IndexMigration {
 #[derive(Clone, Copy)]
 enum IndexTarget {
     Index(&'static str),
+    IndexAndPrimary(&'static str, &'static str),
     PrimarySource(&'static str),
 }
 const INDEX_MIGRATIONS: &[IndexMigration] = &[
@@ -53,7 +54,9 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
         include_str!("schema/variant_3.sql"), "\n", include_str!("schema/index_8.sql")
     )) },
     IndexMigration { version: 9, target: IndexTarget::Index(include_str!("schema/index_9.sql")) },
-    IndexMigration { version: 10, target: IndexTarget::Index(include_str!("schema/attachment_bindings.sql")) },
+    IndexMigration { version: 10, target: IndexTarget::IndexAndPrimary(
+        include_str!("schema/attachment_bindings.sql"), crate::primary::projection::REFERENCE_INDEX
+    ) },
     IndexMigration { version: 11, target: IndexTarget::PrimarySource(include_str!("schema/index_11.sql")) },
     IndexMigration { version: 12, target: IndexTarget::Index(include_str!("schema/index_12.sql")) },
 ];
@@ -139,6 +142,10 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         for step in INDEX_MIGRATIONS.iter().filter(|step| step.version > found) {
             match step.target {
                 IndexTarget::Index(sql) => tx.execute_batch(sql)?,
+                IndexTarget::IndexAndPrimary(sql, primary_sql) => {
+                    tx.execute_batch(sql)?;
+                    if primary { tx.execute_batch(primary_sql)?; }
+                }
                 IndexTarget::PrimarySource(sql) if primary => {
                     tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
                 }
