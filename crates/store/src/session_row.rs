@@ -83,4 +83,4 @@ fn decode_name<T: serde::de::DeserializeOwned>(s: &str, column: usize) -> rusqli
 }
 
 mod remove;
-pub(crate) use remove::remove_with_references;
+pub(crate) use remove::remove;

@@ -298,6 +298,7 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
 /// An event's id includes its message anchor: identical state recorded at
 /// different messages is distinct. Physical ranges do not change the fact's
 /// identity when another input supplies it.
+#[cfg(test)]
 pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
     let (id, data) = event_bytes(e)?;
     Ok((id, pack_bytes(&data)?))

@@ -40,13 +40,13 @@ pub(super) fn remember(
         )
     {
         for attachment in attachments(block) {
-            if let Some(hash) = attachment.blob {
-                if let std::collections::hash_map::Entry::Vacant(slot) = known.entry(hash) {
-                    slot.insert(match pending.get(&hash) {
-                        Some(size) => Some(*size),
-                        None => size(archive, hash)?,
-                    });
-                }
+            if let Some(hash) = attachment.blob
+                && let std::collections::hash_map::Entry::Vacant(slot) = known.entry(hash)
+            {
+                slot.insert(match pending.get(&hash) {
+                    Some(size) => Some(*size),
+                    None => size(archive, hash)?,
+                });
             }
         }
     }

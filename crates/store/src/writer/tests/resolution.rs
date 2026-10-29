@@ -614,3 +614,42 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     assert!(write_test_rows(&tx, &invalid, &invalid.parse[0], 1, 2, None).is_err());
     tx.commit().unwrap();
 }
+
+#[test]
+fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = crate::archive::open_write(&dir.path().join("index.db"), 1).unwrap();
+    crate::schema::create_index(&index).unwrap();
+    let tx = index.transaction().unwrap();
+    let mut input = batch(
+        "confirmed-subset",
+        0,
+        100,
+        vec![row(
+            120,
+            text_message("live", "s", Role::User, "retained fact", None),
+        )],
+        &["s"],
+    );
+    resolve::prepare_index(&tx, &mut input, 1, false).unwrap();
+    assert!(write_rows(&tx, &input, &input.parse[0], 1, 1, None).is_err());
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM message", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    rows::write_confirmed_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
+    assert_eq!(
+        tx.query_row("SELECT parsed_upto FROM parse_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        200
+    );
+    assert_eq!(
+        tx.query_row("SELECT source_start FROM message", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        120
+    );
+    tx.commit().unwrap();
+}
