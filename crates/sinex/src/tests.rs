@@ -1,7 +1,7 @@
 use crate::parts::{REGISTER, held};
 use crate::register::request_event;
 use polylogue_model::user::{UserRequest, UserWrite};
-use polylogue_model::{Author, NewNote, NoteKind, Target, Timestamp};
+use polylogue_model::{Author, NewNote, NoteKind, Reference, Timestamp};
 use polylogue_store::input_rows::{Extent, InputRows};
 use polylogue_store::primary::{Held, RegisterChange};
 use sinex_model::{InputRef, MaterialId};
@@ -68,7 +68,10 @@ fn a_note_request_becomes_a_note_event_in_its_family() {
             key: None,
             value: Some("synthetic".into()),
             author: Author::Operator,
-            targets: vec![Target::Note("earlier".into())],
+            targets: vec![Reference::Assertion(polylogue_model::RevisionReference {
+                root: "earlier".into(),
+                revision: None,
+            })],
             relations: vec![],
             revises: Some("earlier".into()),
             valid_until: None,

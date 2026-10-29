@@ -269,14 +269,14 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
 
 #[test]
 fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions() {
-    use polylogue_model::{Author, NewNote, NoteKind, Target};
+    use polylogue_model::{Author, NewNote, NoteKind, Reference};
     let r = reader();
     let note = NewNote {
         kind: NoteKind::Note,
         key: None,
         value: Some("older exact note <text>".into()),
         author: Author::Operator,
-        targets: vec![Target::Session(
+        targets: vec![Reference::Session(
             polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
         )],
         relations: vec![],

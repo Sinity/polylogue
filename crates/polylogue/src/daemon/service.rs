@@ -790,7 +790,12 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 key: Some(if accepted { "accepted" } else { "rejected" }.into()),
                 value: reason,
                 author: Author::Operator,
-                targets: vec![polylogue_model::Target::Note(found.id)],
+                targets: vec![polylogue_model::Reference::Assertion(
+                    polylogue_model::RevisionReference {
+                        root: found.first_note,
+                        revision: Some(found.id),
+                    },
+                )],
                 relations: vec![],
                 revises: None,
                 valid_until: None,
@@ -914,8 +919,8 @@ fn query_targets(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     query: &str,
-) -> Result<Vec<polylogue_model::Target>, Response> {
-    use polylogue_model::Target;
+) -> Result<Vec<polylogue_model::Reference>, Response> {
+    use polylogue_model::Reference;
     super::query::with_ranking(reader, &d.warm, |embeddings, near| {
         let now = now_ms();
         let mut targets = Vec::new();
@@ -956,15 +961,18 @@ fn query_targets(
                 };
                 let target = match unit {
                     "sessions" => polylogue_model::SessionId::parse(id)
-                        .map(Target::Session)
+                        .map(Reference::Session)
                         .ok(),
                     "messages" => polylogue_model::MessageId::parse(id)
-                        .map(Target::Message)
+                        .map(Reference::Message)
                         .ok(),
                     "documents" => polylogue_model::DocumentId::parse(id)
-                        .map(Target::Document)
+                        .map(Reference::Document)
                         .ok(),
-                    _ => Some(Target::Note(id.to_owned())),
+                    _ => Some(Reference::Assertion(polylogue_model::RevisionReference {
+                        root: id.to_owned(),
+                        revision: None,
+                    })),
                 };
                 if let Some(target) = target
                     && seen.insert(target.clone())

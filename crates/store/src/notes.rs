@@ -3,7 +3,7 @@
 //! ([`crate::user_writes`]).
 
 use crate::{Reader, Result, StoreError};
-use polylogue_model::{Author, Note, NoteKind, Relation, Target, Timestamp};
+use polylogue_model::{Author, Note, NoteKind, Reference, Relation, Timestamp};
 
 impl Reader<'_> {
     /// One note by ID, whatever its revision state.
@@ -57,7 +57,7 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
             .map(|target| {
-                Target::parse(&target)
+                Reference::parse(&target)
                     .map_err(|_| StoreError::Invalid("the note has an unsupported target".into()))
             })
             .collect::<Result<Vec<_>>>()?;
