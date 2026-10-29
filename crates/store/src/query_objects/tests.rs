@@ -267,3 +267,52 @@ fn composition_edges_are_read_from_the_canonical_source() {
 mod migrations;
 
 mod pending;
+
+#[test]
+fn result_output_schemas_require_the_canonical_kept_columns() {
+    let archive = WriterArchive::new();
+    let columns = vec![polylogue_query::Column {
+        name: "title".into(),
+        kind: polylogue_query::ColKind::Text,
+        reference: None,
+    }];
+    archive.writer.user(polylogue_model::user::UserRequest {
+        id: "kept".into(), machine: "synthetic-machine".into(), at: Timestamp::from_unix_ms(1).unwrap(),
+        write: polylogue_model::user::UserWrite::KeepResult {
+            name: None, query: "sessions | select title".into(), read_at: "synthetic-read".into(),
+            rows_json: serde_json::json!({"unit":"sessions","columns":columns,"rows":[{"title":"synthetic"}]}).to_string(),
+        },
+    }).unwrap();
+    let mut bindings = polylogue_query::Bindings::default();
+    bindings.kept.insert(
+        "kept".into(),
+        polylogue_query::Kept {
+            unit: "sessions".into(),
+            columns: columns.clone(),
+            match_columns: vec![],
+        },
+    );
+    let actual = polylogue_query::plan::prepare("result:kept", &bindings, |_| Ok(()))
+        .unwrap()
+        .query_object()
+        .unwrap();
+    bindings.kept.get_mut("kept").unwrap().columns[0].name = "invented".into();
+    let forged = polylogue_query::plan::prepare("result:kept", &bindings, |_| Ok(()))
+        .unwrap()
+        .query_object()
+        .unwrap();
+    assert_eq!(forged.id, actual.id);
+    assert!(archive.writer.query_object(forged.clone()).is_err());
+    archive.writer.query_object(actual.clone()).unwrap();
+    assert!(archive.writer.query_object(forged).is_err());
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query_object(&actual.id.to_string(), None)
+            .unwrap()
+            .unwrap()
+            .value,
+        actual
+    );
+}
