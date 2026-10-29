@@ -26,6 +26,7 @@ CREATE TABLE session (
   derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
                                             --   title is NULL, never exported as recorded
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
+  started_time      BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   started_at        INTEGER,                -- from the messages and events the session counts as its own
   last_activity_at  INTEGER,
   cwd               TEXT,
@@ -87,6 +88,7 @@ CREATE TABLE message (
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command
   model             TEXT,
+  at_time           BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   at                INTEGER,                -- provider time
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- input the stored (shown) version came from
@@ -307,6 +309,7 @@ CREATE TABLE event (
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
   source_start      INTEGER,
   source_end        INTEGER,
+  fields            BLOB NOT NULL,          -- canonical Event without its shared data payload
   data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
@@ -541,6 +544,7 @@ CREATE TABLE document_source (
   source_end INTEGER NOT NULL,
   arrival_rank INTEGER NOT NULL,
   source_time INTEGER,
+  time BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   version_hash BLOB NOT NULL REFERENCES document_version(version_hash),
   shown INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(document_pk,input_pk,chain)
@@ -649,6 +653,8 @@ CREATE TABLE event_source (
   source_end INTEGER,
   after_message_id TEXT,
   at INTEGER,
+  fields BLOB NOT NULL,
+  imported_provenance TEXT NOT NULL CHECK(json_valid(imported_provenance)),
   PRIMARY KEY(event_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX event_source_input ON event_source(input_pk, chain);

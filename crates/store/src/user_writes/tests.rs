@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_model::Author;
 
 #[test]
 fn request_ids_are_uuid_v7() {

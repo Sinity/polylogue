@@ -26,7 +26,8 @@
           0,
           88
         ],
-        "session": "claude-code:synthetic"
+        "session": "claude-code:synthetic",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

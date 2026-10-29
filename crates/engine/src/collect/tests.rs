@@ -301,3 +301,55 @@ fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() 
     assert!(!root(".gemini").unavailable_paths.is_empty());
     assert_eq!(root(".grok").status, Accessibility::Absent);
 }
+
+#[test]
+fn unknown_directories_share_a_bounded_bucket_and_links_are_explicitly_ignored() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let mut config = crate::Config::from_env();
+    config.home = home.home.clone();
+    config.tool_dirs.clear();
+    let root = home.home.join(".codex");
+    std::fs::create_dir_all(root.join("sessions")).unwrap();
+    for i in 0..20 {
+        let path = root.join(format!("unknown-{i}/file.dat"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"unknown").unwrap();
+    }
+    let external = home.dir.path().join("external");
+    std::fs::create_dir(&external).unwrap();
+    std::fs::write(external.join("rollout-outside.jsonl"), b"{}\n").unwrap();
+    let directory_link = root.join("sessions/linked");
+    let file_link = root.join("sessions/rollout-linked.jsonl");
+    std::os::unix::fs::symlink(&external, &directory_link).unwrap();
+    std::os::unix::fs::symlink(external.join("rollout-outside.jsonl"), &file_link).unwrap();
+    let scan = scan_with_coverage(&config);
+    let unknown = scan
+        .coverage
+        .iter()
+        .filter(|row| row.root == root && row.class == Class::Unrecognized)
+        .collect::<Vec<_>>();
+    assert_eq!(unknown.len(), 1);
+    assert_eq!(unknown[0].files, 20);
+    assert_eq!(unknown[0].bytes, 140);
+    let ignored = scan
+        .coverage
+        .iter()
+        .filter(|row| {
+            row.root == root
+                && row.class == Class::Ignored
+                && row.reason.as_deref() == Some("symbolic link is not followed")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ignored.len(), 1);
+    assert_eq!(ignored[0].files, 2);
+    assert!(
+        scan.found
+            .iter()
+            .all(|f| !f.path.starts_with(&directory_link) && f.path != file_link)
+    );
+    let (found, _) = scan_paths(
+        &config,
+        &std::collections::BTreeSet::from([directory_link, file_link]),
+    );
+    assert!(found.is_empty());
+}

@@ -17,12 +17,56 @@
     "skipped": {
       "event_msg/agent_message: mirrors a response item, which is stored": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "event_msg/agent_message.ordinal": 1,
+      "event_msg/agent_message.payload.message": 1,
+      "event_msg/agent_message.payload.phase": 1,
+      "event_msg/agent_message.payload.type": 1,
+      "event_msg/agent_message.timestamp": 1,
+      "event_msg/agent_message.type": 1,
+      "event_msg/item_completed.completed_at_ms": 1,
+      "event_msg/item_completed.item.process_id": 1,
+      "event_msg/item_completed.item.source": 1,
+      "event_msg/item_completed.thread_id": 1,
+      "event_msg/item_completed.turn_id": 1,
+      "event_msg/task_complete.ordinal": 1,
+      "event_msg/task_started.ordinal": 1,
+      "event_msg/token_count.ordinal": 2,
+      "session_meta.ordinal": 1,
+      "turn_context.ordinal": 1
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "kind": "session_meta",
+        "at": "2026-03-01T10:00:01Z",
+        "range": [
+          0,
+          380
+        ],
+        "data": {
+          "id": "019a0000-0000-7000-8000-000000000001",
+          "timestamp": "2026-03-01T10:00:00.000Z",
+          "cwd": "/work/repo",
+          "originator": "codex_cli_rs",
+          "cli_version": "0.160.0",
+          "source": "cli",
+          "model_provider": "openai",
+          "base_instructions": {
+            "text": "You are a coding agent."
+          },
+          "git": {
+            "branch": "main",
+            "commit_hash": "abc"
+          }
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
+      },
       {
         "at": "2026-03-01T10:00:02Z",
         "data": {
@@ -41,7 +85,9 @@
           381,
           631
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "codex:019a0000-0000-7000-8000-000000000001@1081",
@@ -56,7 +102,9 @@
           1268,
           1418
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:09Z",
@@ -84,7 +132,9 @@
           1853,
           2193
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:09Z",
@@ -109,7 +159,9 @@
           1853,
           2193
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:09Z",
@@ -132,7 +184,9 @@
           1853,
           2193
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:14Z",
@@ -160,7 +214,9 @@
           3433,
           3773
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "at": "2026-03-01T10:00:14Z",
@@ -185,7 +241,9 @@
           3433,
           3773
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "after": "codex:019a0000-0000-7000-8000-000000000001@3212",
@@ -201,12 +259,15 @@
           3774,
           3967
         ],
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
       },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:019a0000-0000-7000-8000-000000000001"
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -223,7 +284,9 @@
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@632",
           "role": "system",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 632
       },
@@ -240,7 +303,9 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@848",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 848
       },
@@ -257,7 +322,9 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@1081",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1081
       },
@@ -268,7 +335,8 @@
           "blocks": [
             {
               "text": "Check the build.",
-              "type": "thinking"
+              "type": "thinking",
+              "signature": "gAAAA"
             }
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@1419",
@@ -278,7 +346,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1419
       },
@@ -306,7 +376,9 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 1631
       },
@@ -317,9 +389,6 @@
           "blocks": [
             {
               "call_id": "call_b",
-              "data": {
-                "duration_ms": 3250
-              },
               "outcome": {
                 "kind": "error",
                 "reason": {
@@ -328,13 +397,16 @@
                 }
               },
               "output": "Chunk ID: 1a\nWall time: 3.25 seconds\nProcess exited with code 101\nOriginal token count: 9\nOutput:\nerror[E0425]: cannot find value `x`",
-              "type": "tool_result"
+              "type": "tool_result",
+              "reported_duration_ms": 3250
             }
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@2752",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 2752
       },
@@ -352,10 +424,13 @@
           "model": "gpt-6.1-sol",
           "production": {
             "effort": "medium",
-            "response_boundary_unknown": true
+            "response_boundary_unknown": true,
+            "phase": "final_answer"
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001"
+          "session": "codex:019a0000-0000-7000-8000-000000000001",
+          "at_quality": "intrinsic",
+          "at_precision": "instant"
         },
         "offset": 3212
       }
@@ -369,7 +444,12 @@
         "id": "codex:019a0000-0000-7000-8000-000000000001",
         "kind": "main",
         "started": "2026-03-01T10:00:00Z",
-        "tool_version": "0.160.0"
+        "tool_version": "0.160.0",
+        "git_commit": "abc",
+        "model_provider": "openai",
+        "instructions": "You are a coding agent.",
+        "started_quality": "intrinsic",
+        "started_precision": "instant"
       }
     ]
   }

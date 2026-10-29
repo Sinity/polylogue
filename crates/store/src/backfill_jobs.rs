@@ -10,7 +10,6 @@
 //! the reported position.
 
 use crate::{Reader, Result, StoreError};
-use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use polylogue_model::user::{

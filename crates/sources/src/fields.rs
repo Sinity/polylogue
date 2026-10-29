@@ -309,8 +309,8 @@ pub fn attributes(value: &Json, fields: &Fields) -> serde_json::Map<String, Json
             if path.is_empty() {
                 return Some((String::new(), current.clone()));
             }
-            if path.starts_with('/') {
-                for part in path[1..].split('/') {
+            if let Some(path) = path.strip_prefix('/') {
+                for part in path.split('/') {
                     if matches!(part, "[]" | "*") {
                         return None;
                     }

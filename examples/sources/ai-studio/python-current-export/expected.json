@@ -10,7 +10,9 @@
     "skipped": {
       "user: empty chunk": 1
     },
-    "unread_fields": {}
+    "unread_fields": {
+      "user.youtubeVideo.url": 1
+    }
   },
   "output": {
     "background": [],
@@ -60,7 +62,30 @@
           0,
           3410
         ],
-        "session": "ai-studio:current_export"
+        "session": "ai-studio:current_export",
+        "at_quality": "unknown"
+      },
+      {
+        "session": "ai-studio:current_export",
+        "kind": "prompt_metadata",
+        "range": [
+          0,
+          3410
+        ],
+        "data": {
+          "chunkedPrompt.pendingInputs": [
+            {
+              "role": "user",
+              "text": ""
+            }
+          ],
+          "citations": [
+            {
+              "uri": "https://example.invalid/synthetic-citation"
+            }
+          ]
+        },
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -76,7 +101,8 @@
           ],
           "id": "ai-studio:14:current_export#system:0:",
           "role": "system",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "at_quality": "unknown"
         },
         "offset": 0
       },
@@ -101,7 +127,9 @@
             "input": 4,
             "output": null,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -126,7 +154,14 @@
             "input": null,
             "output": null,
             "reasoning": 3
-          }
+          },
+          "attrs": {
+            "thoughtSignatures": [
+              "synthetic-signature"
+            ],
+            "thinkingBudget": 2048
+          },
+          "at_quality": "unknown"
         },
         "offset": 170
       },
@@ -151,7 +186,16 @@
             "input": null,
             "output": 3,
             "reasoning": null
-          }
+          },
+          "attrs": {
+            "safetyRatings": [
+              {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "probability": "NEGLIGIBLE"
+              }
+            ]
+          },
+          "at_quality": "unknown"
         },
         "offset": 395
       },
@@ -169,7 +213,8 @@
           "parent": "ai-studio:14:current_export#position:1:2",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "at_quality": "unknown"
         },
         "offset": 700
       },
@@ -187,7 +232,8 @@
           "parent": "ai-studio:14:current_export#position:1:3",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "at_quality": "unknown"
         },
         "offset": 814
       },
@@ -205,7 +251,8 @@
           "parent": "ai-studio:14:current_export#position:1:4",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "at_quality": "unknown"
         },
         "offset": 922
       },
@@ -223,7 +270,8 @@
           "parent": "ai-studio:14:current_export#position:1:5",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "at_quality": "unknown"
         },
         "offset": 1030
       },
@@ -243,7 +291,8 @@
           "parent": "ai-studio:14:current_export#position:1:6",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "at_quality": "unknown"
         },
         "offset": 1316
       },
@@ -263,7 +312,8 @@
           "parent": "ai-studio:14:current_export#position:1:8",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "at_quality": "unknown"
         },
         "offset": 1440
       },
@@ -294,7 +344,8 @@
             "input": null,
             "output": 5,
             "reasoning": null
-          }
+          },
+          "at_quality": "unknown"
         },
         "offset": 1564
       },
@@ -326,7 +377,8 @@
             "input": null,
             "output": 2,
             "reasoning": null
-          }
+          },
+          "at_quality": "unknown"
         },
         "offset": 1698
       },
@@ -351,7 +403,13 @@
             "input": null,
             "output": 3,
             "reasoning": null
-          }
+          },
+          "attrs": {
+            "grounding": {
+              "groundingChunks": []
+            }
+          },
+          "at_quality": "unknown"
         },
         "offset": 1835
       },
@@ -370,7 +428,8 @@
           "parent": "ai-studio:14:current_export#position:2:12",
           "role": "assistant",
           "session": "ai-studio:current_export",
-          "stop_reason": "OTHER"
+          "stop_reason": "OTHER",
+          "at_quality": "unknown"
         },
         "offset": 2009
       },
@@ -387,7 +446,19 @@
           "parent": "ai-studio:14:current_export#position:2:13",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:current_export"
+          "session": "ai-studio:current_export",
+          "attrs": {
+            "isEdited": true,
+            "branchChildren": [
+              {
+                "id": "synthetic-branch-child"
+              }
+            ],
+            "branchParent": {
+              "id": "synthetic-branch-parent"
+            }
+          },
+          "at_quality": "unknown"
         },
         "offset": 2119
       }
@@ -395,12 +466,15 @@
     "sessions": [
       {
         "id": "ai-studio:current_export",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:current_export",
         "kind": "main",
-        "started": "2026-01-05T09:00:00Z"
+        "started": "2026-01-05T09:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

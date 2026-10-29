@@ -1,73 +1,112 @@
 //! Selected events keep the local input they were read from. Citations in an
 //! exported file name the sender's inputs and never decide local ones.
 use crate::{Reader, Result, StoreError};
+use polylogue_model::bundle::{EventSourceClaim, ImportedEventIdentity, InputEventRecord};
 use polylogue_model::export::EventExport;
-use polylogue_model::{Event, MessageId, SessionId, Timestamp};
+use polylogue_model::{Event, SessionId};
 use rusqlite::OptionalExtension;
 
-struct Stored {
-    id: String,
-    input: String,
-    source: String,
-    chain: i64,
-    start: Option<i64>,
-    end: Option<i64>,
-    session: Option<String>,
-    kind: String,
-    at: Option<i64>,
-    after: Option<String>,
-    data: Vec<u8>,
+pub(crate) fn canonical_event(fields: &[u8], data: &[u8]) -> Result<Event> {
+    let mut event: Event = crate::encoding::unpack_json(fields)?;
+    event.data = crate::encoding::unpack_json(data)?;
+    Ok(event)
 }
+
 impl Reader<'_> {
-    pub fn event_export(&self, id: &str) -> Result<Option<EventExport>> {
-        let row=self.conn()?.query_row("SELECT e.id,i.id,i.format,e.source_chain,e.source_start,e.source_end,s.id,e.kind,e.at,m.id,e.data
-            FROM event e JOIN input_ref i ON i.pk=e.input_pk
-            LEFT JOIN session s ON s.pk=e.session_pk LEFT JOIN message m ON m.pk=e.after_message_pk
-            WHERE e.id=?1",[id],|r|Ok(Stored {
-                id:r.get(0)?,input:r.get(1)?,source:r.get(2)?,chain:r.get(3)?,start:r.get(4)?,end:r.get(5)?,
-                session:r.get(6)?,kind:r.get(7)?,at:r.get(8)?,after:r.get(9)?,data:r.get(10)?,
-            })).optional()?;
-        row.map(|r| {
-            let coordinate = |v: Option<i64>| {
-                v.map(|n| {
-                    u64::try_from(n)
-                        .map_err(|_| StoreError::Invalid("invalid event source coordinate".into()))
-                })
-                .transpose()
-            };
-            let start = coordinate(r.start)?;
-            let end = coordinate(r.end)?;
-            let event = Event {
-                session: r
-                    .session
-                    .map(|s| {
-                        SessionId::parse(&s)
-                            .map_err(|_| StoreError::Invalid("invalid stored event session".into()))
-                    })
-                    .transpose()?,
-                kind: r.kind,
-                at: r.at.and_then(Timestamp::from_unix_ms),
-                after: r
-                    .after
-                    .map(|s| {
-                        MessageId::parse(&s)
-                            .map_err(|_| StoreError::Invalid("invalid stored event anchor".into()))
-                    })
-                    .transpose()?,
-                range: start.zip(end),
-                data: crate::encoding::unpack_json(&r.data)?,
-            };
-            Ok(EventExport {
-                id: r.id,
-                input: r.input,
-                source: r.source,
-                source_chain: r.chain,
-                source_start: start,
-                source_end: end,
-                event,
+    /// The canonical selected event, with all retained claims and its actual local source.
+    pub fn event_record(&self, id: &str) -> Result<Option<InputEventRecord>> {
+        let stored: Option<(i64, Vec<u8>, Vec<u8>)> = self
+            .conn()?
+            .query_row("SELECT pk,fields,data FROM event WHERE id=?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
-        })
-        .transpose()
+            .optional()?;
+        let Some((pk, fields, data)) = stored else {
+            return Ok(None);
+        };
+        let event = canonical_event(&fields, &data)?;
+        let mut sources = Vec::new();
+        let mut statement = self.conn()?.prepare_cached(
+            "SELECT i.id,i.format,s.chain,s.source_start,s.source_end,s.imported_provenance
+             FROM event_source s JOIN event e ON e.pk=s.event_pk
+             JOIN event_source selected ON selected.event_pk=e.pk AND selected.input_pk=e.input_pk AND selected.chain=e.source_chain
+             JOIN input_ref i ON i.pk=s.input_pk
+             WHERE s.event_pk=?1 AND s.value_pk=selected.value_pk AND s.fields=selected.fields ORDER BY i.id,s.chain")?;
+        let rows = statement.query_map([pk], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?;
+        for row in rows {
+            let (input, source, source_chain, start, end, original) = row?;
+            let coordinate = |value: Option<i64>| {
+                value
+                    .map(|value| {
+                        u64::try_from(value).map_err(|_| {
+                            StoreError::Invalid("negative event source coordinate".into())
+                        })
+                    })
+                    .transpose()
+            };
+            sources.push(EventSourceClaim {
+                input,
+                source,
+                source_chain,
+                source_start: coordinate(start)?,
+                source_end: coordinate(end)?,
+            });
+            sources.extend(serde_json::from_str::<Vec<EventSourceClaim>>(&original)?);
+        }
+        let mut identity = ImportedEventIdentity {
+            id: id.to_owned(),
+            sources,
+        };
+        identity.canonicalize();
+        identity
+            .validate()
+            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        Ok(Some(InputEventRecord {
+            reference: format!("event:{id}"),
+            commit: u64::try_from(self.change_position()?.index)
+                .map_err(|_| StoreError::Invalid("negative event commit".into()))?,
+            identity,
+            event,
+        }))
+    }
+
+    /// Events in the session's reading order, preserving identities and claims.
+    pub fn event_records(&self, session: &SessionId) -> Result<Vec<InputEventRecord>> {
+        let ids = self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.seq,e.id")?
+            .query_map([session.to_string()],|row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        ids.into_iter()
+            .map(|id| {
+                self.event_record(&id)?
+                    .ok_or_else(|| StoreError::Invalid("selected event disappeared".into()))
+            })
+            .collect()
+    }
+
+    pub fn event_export(&self, id: &str) -> Result<Option<EventExport>> {
+        let Some(record) = self.event_record(id)? else {
+            return Ok(None);
+        };
+        let local: (String,String,i64,Option<i64>,Option<i64>) = self.conn()?.query_row(
+            "SELECT i.id,i.format,e.source_chain,e.source_start,e.source_end FROM event e JOIN input_ref i ON i.pk=e.input_pk WHERE e.id=?1",
+            [id],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+        Ok(Some(EventExport {
+            id: id.to_owned(),
+            input: local.0,
+            source: local.1,
+            source_chain: local.2,
+            source_start: local.3.map(|n| n as u64),
+            source_end: local.4.map(|n| n as u64),
+            event: record.event,
+        }))
     }
 
     pub fn event_sources(&self, id: &str) -> Result<Vec<polylogue_model::Json>> {

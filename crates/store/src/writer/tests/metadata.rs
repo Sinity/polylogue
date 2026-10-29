@@ -29,12 +29,11 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
             vec![row(130, text_message("b", "s", Role::User, "new", None))],
             &["s"],
         );
-        w.writer.send(next.clone()).unwrap();
-        let report = w.writer.flush().unwrap();
         assert!(
-            !report.errors.is_empty(),
+            w.writer.send(next.clone()).is_err(),
             "malformed stored facts must refuse, not become absent: {corrupt}"
         );
+        assert!(w.writer.flush().unwrap().errors.is_empty());
         assert_eq!(
             conn.query_row("SELECT facts FROM session_record", [], |r| r
                 .get::<_, String>(0))

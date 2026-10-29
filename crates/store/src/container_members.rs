@@ -5,8 +5,9 @@ pub(crate) fn container_of(batch: &Batch) -> Option<&InContainer> {
     batch.observation.as_ref()?.container.as_ref()
 }
 pub(crate) fn require_original(conn: &Connection, input: &str) -> Result<()> {
+    let source = crate::source::Source::of(conn)?;
     let stored: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1)",
+        &source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1)"),
         [input],
         |r| r.get(0),
     )?;

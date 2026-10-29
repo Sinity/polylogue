@@ -61,7 +61,9 @@ original request identities, including when a bundle contains only a later state
 An unconfirmed request remains `pending`, with no external action authorized.
 
 Historical bundle restoration preserves stored authors and outcomes and records
-the importing channel's computed attribution separately. Imported chat actions
+the importing channel's computed attribution separately from historical claims.
+Repeated ingress is identified by input, chain, receiving machine and importing
+actor, retaining its first observed time. Imported chat actions
 and backfill jobs retain their historical statuses with execution eligibility
 `historical`; dequeue requires `live`. A new explicit action uses a new identity.
 

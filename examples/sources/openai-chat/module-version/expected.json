@@ -28,7 +28,8 @@
           "id": "openai-chat:chat#0",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "openai-chat:chat"
+          "session": "openai-chat:chat",
+          "at_quality": "unknown"
         },
         "offset": 1
       },
@@ -44,7 +45,8 @@
           "id": "openai-chat:chat#1",
           "parent": "openai-chat:chat#0",
           "role": "assistant",
-          "session": "openai-chat:chat"
+          "session": "openai-chat:chat",
+          "at_quality": "unknown"
         },
         "offset": 45
       }
@@ -52,7 +54,8 @@
     "sessions": [
       {
         "id": "openai-chat:chat",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

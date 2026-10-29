@@ -6,7 +6,7 @@ use crate::{Record, RecordOutcome, Records};
 use polylogue_model::Json;
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 pub fn open() -> Parse {
     Parse::Lines(Box::new(RowDump))
@@ -20,6 +20,7 @@ static HEADER: Fields = Fields::new(&[
     ("db", Rule::Read(T::String)),
     ("at_ms", Rule::Read(T::Number)),
     ("schema", Rule::Read(T::Object)),
+    ("table_metadata", Rule::Read(T::Object)),
 ])
 .for_kind("schema_header");
 static INVALID: Fields = Fields::new(&[]).for_kind("record");
@@ -47,16 +48,28 @@ impl Parser for RowDump {
         if let Some(schema) = value.get("schema") {
             records.fields(
                 "schema",
-                &crate::fields::header(value, &["schema"]),
+                &crate::fields::header(value, &["schema", "table_metadata"]),
                 &HEADER,
             );
-            let Some(tables) = schema.as_object() else {
-                return RecordOutcome::unreadable("row-dump schema is not an object");
-            };
-            for (table, definition) in tables {
-                records.unknown_table_schema(table, definition);
+            let mut invalid = None;
+            if let Some(tables) = schema.as_object() {
+                for (table, definition) in tables {
+                    records.unknown_table_schema(table, definition);
+                }
+            } else {
+                invalid = Some("row-dump schema is not an object");
             }
-            return RecordOutcome::Used;
+            if let Some(metadata) = value.get("table_metadata") {
+                if let Some(tables) = metadata.as_object() {
+                    for (table, metadata) in tables {
+                        records.table_metadata(table, metadata);
+                    }
+                } else {
+                    records.fields("table metadata", metadata, &INVALID);
+                    invalid.get_or_insert("row-dump table metadata is not an object");
+                }
+            }
+            return invalid.map_or(RecordOutcome::Used, RecordOutcome::unreadable);
         }
         let Some(table) = value.get("t").and_then(Json::as_str) else {
             records.fields("row", value, &INVALID);
@@ -74,6 +87,7 @@ impl Parser for RowDump {
             records.fields("row", value, &INVALID);
             return RecordOutcome::unreadable("row-dump record has no row object");
         };
+        records.unknown_table_row_envelope(table, value);
         records.unknown_table("row", table, row);
         RecordOutcome::skipped("tool table has no domain parser")
     }

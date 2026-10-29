@@ -5,6 +5,7 @@
 mod stored_names;
 
 pub mod atomic_write;
+pub mod authored;
 pub mod batch;
 mod block;
 pub mod bundle;
@@ -22,6 +23,7 @@ mod message;
 mod note;
 pub mod price;
 mod quota;
+pub mod read;
 mod session;
 mod time;
 mod usage;
@@ -83,7 +85,5 @@ macro_rules! string_schema {
 string_schema!(
     Origin, SessionId, MessageId, DocumentId, BlobHash, Target, Author
 );
-
-pub mod authored;
 
 pub mod work_products;

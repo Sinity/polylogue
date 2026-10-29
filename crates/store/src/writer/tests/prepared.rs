@@ -167,6 +167,9 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             data: serde_json::json!({"opaque":[null, "Ω"]}),
         });
         let event = Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
             session: Some(sid("s")),
             kind: "notice".into(),
             at: None,
@@ -238,8 +241,8 @@ fn misaligned_prepared_rows_refuse_before_writing() {
             b.parse[0].prepared.messages[0].blocks.clear();
         }
         b.parse[0].prepare();
-        w.writer.send(b).unwrap();
-        assert!(!w.writer.flush().unwrap().errors.is_empty());
+        assert!(w.writer.send(b).is_err());
+        assert!(w.writer.flush().unwrap().errors.is_empty());
         let pool = ReadPool::open(&w.archive).unwrap();
         assert_eq!(
             pool.reader()
@@ -281,6 +284,9 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             });
             let mut b = batch("input1", 0, 0, vec![row(1, message)], &["s"]);
             b.parse[0].output.events.push(Event {
+                at_quality: polylogue_model::TimeQuality::Unknown,
+                at_precision: None,
+                at_until: None,
                 session: Some(sid("s")),
                 kind: kind.into(),
                 at: Timestamp::from_unix_ms(2_000),
@@ -350,6 +356,9 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
         document,
     });
     batch.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
         session: Some(sid("s")),
         kind: "native".into(),
         at: None,
@@ -362,10 +371,20 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
     assert_ne!(batch.parse[0].output, original);
     assert_eq!(batch.parse[0].complete_output().unwrap(), original);
     let products = crate::primary::products::parse(&batch.input, 41, &batch.parse[0]).unwrap();
+    let captured = crate::primary::CapturedReading::from_step(&batch.parse[0]).unwrap();
+    let bytes = serde_json::to_vec(&captured).unwrap();
+    let captured: crate::primary::CapturedReading = serde_json::from_slice(&bytes).unwrap();
+    let mut replay = captured.into_step();
+    assert_eq!(replay.output, original);
+    replay.prepare();
+    assert_eq!(
+        crate::primary::products::parse(&batch.input, 41, &replay).unwrap(),
+        products
+    );
     let restored = products
         .iter()
         .find_map(|p| match p {
-            crate::primary::Product::Message { reading, facts } => Some((reading, facts)),
+            crate::primary::Product::Message { reading, facts, .. } => Some((reading, facts)),
             _ => None,
         })
         .unwrap();

@@ -29,6 +29,14 @@ impl ChainReading {
         })
     }
     pub fn push(&mut self, step: &mut ParseStep) -> Result<()> {
+        self.push_inner(step, false)
+    }
+
+    pub(crate) fn push_confirmed(&mut self, step: &mut ParseStep) -> Result<()> {
+        self.push_inner(step, true)
+    }
+
+    fn push_inner(&mut self, step: &mut ParseStep, confirmed: bool) -> Result<()> {
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
                 "a chain reading needs complete parsed values".into(),
@@ -40,7 +48,7 @@ impl ChainReading {
             ));
         }
         step.counts.check()?;
-        step.reset = self.first;
+        step.reset = self.first || (confirmed && step.reset);
         step.prepare();
         write_step(
             self.file.as_mut().ok_or_else(|| {
@@ -59,6 +67,19 @@ impl ChainReading {
     }
     pub fn decoded(&mut self, batch: crate::staging::PreparedBatch) {
         self.decoded.push(batch);
+    }
+
+    /// Complete source facts are read without resolving local cache keys first.
+    pub(crate) fn visit_source(
+        &mut self,
+        mut apply: impl FnMut(&ParseStep) -> Result<()>,
+    ) -> Result<()> {
+        self.finish()?;
+        let mut input = BufReader::new(std::fs::File::open(&self.path)?);
+        while let Some(step) = read_step(&mut input)? {
+            apply(&step)?;
+        }
+        Ok(())
     }
 
     /// Prepared steps keep the shared position lease alive until all readings
@@ -344,6 +365,7 @@ struct History<'a> {
     documents: BTreeMap<Vec<u8>, Location>,
     assertions: std::cell::RefCell<BTreeMap<(resolve::Kind, i64), Location>>,
     sessions: std::cell::RefCell<BTreeMap<(i64, i64, i64), Location>>,
+    event_sources: std::cell::RefCell<BTreeMap<(i64, i64, i64), Location>>,
     available: Cow<'a, HashMap<BlobHash, Option<u64>>>,
 }
 impl<'a> History<'a> {
@@ -354,6 +376,7 @@ impl<'a> History<'a> {
             documents: BTreeMap::new(),
             assertions: std::cell::RefCell::new(BTreeMap::new()),
             sessions: std::cell::RefCell::new(BTreeMap::new()),
+            event_sources: std::cell::RefCell::new(BTreeMap::new()),
             available: match source {
                 ReadingLookup::Archive(_) => Cow::Owned(HashMap::new()),
                 ReadingLookup::Confirmed(available) => Cow::Borrowed(available),
@@ -370,6 +393,11 @@ impl<'a> History<'a> {
         if let Some(choices) = &step.prepared.choices {
             for pk in choices.sessions.keys() {
                 self.sessions
+                    .borrow_mut()
+                    .insert((*pk, input, chain), location);
+            }
+            for (pk, _) in &choices.event_sources {
+                self.event_sources
                     .borrow_mut()
                     .insert((*pk, input, chain), location);
             }
@@ -402,6 +430,29 @@ impl resolve::versions::ValueSource for History<'_> {
             .prepared
             .choices
             .and_then(|mut choices| choices.sessions.remove(&pk)))
+    }
+    fn event_source(
+        &self,
+        pk: i64,
+        input: i64,
+        chain: i64,
+    ) -> Result<Option<resolve::versions::EventChoice>> {
+        let Some(location) = self
+            .event_sources
+            .borrow()
+            .get(&(pk, input, chain))
+            .copied()
+        else {
+            return Ok(None);
+        };
+        Ok(self.step(location)?.prepared.choices.and_then(|choices| {
+            choices
+                .event_sources
+                .into_iter()
+                .rev()
+                .find(|(event, _)| *event == pk)
+                .map(|(_, source)| source)
+        }))
     }
     fn assertion(&self, kind: resolve::Kind, pk: i64) -> Result<Option<Vec<u8>>> {
         let Some(location) = self.assertions.borrow().get(&(kind, pk)).copied() else {
@@ -460,6 +511,18 @@ impl Inner {
         length: u64,
         mut reading: ChainReading,
     ) -> Result<u64> {
+        if self.sinex.is_some() {
+            if !reading.decoded.is_empty() {
+                let store = Arc::new(self.location.blobs()?);
+                for result in self.store_group(std::mem::take(&mut reading.decoded), store) {
+                    match result {
+                        Ok(_) | Err(StoreError::PrimaryPending { .. }) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            return self.primary_reading(input, chain, length, reading);
+        }
         let exists: bool = self.archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
             params![input.id, chain, length as i64],
@@ -510,6 +573,12 @@ impl Inner {
                 ));
             }
             first = false;
+            let receipt = crate::source::Source::reading_receipt(
+                &tx,
+                &batch.input.id,
+                chain,
+                step.parsed_upto,
+            )?;
             written += write_rows(
                 &tx,
                 &batch,
@@ -517,6 +586,7 @@ impl Inner {
                 chain,
                 counter,
                 self.first_build.as_deref(),
+                Some(&receipt),
             )?;
         }
         if first {

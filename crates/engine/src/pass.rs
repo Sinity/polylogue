@@ -148,7 +148,16 @@ impl Engine {
             errors.extend(self.refresh_lookups().err());
         }
         let (mut found, unreadable) = if discover {
-            collect::scan(&self.config)
+            let scan = collect::scan_with_coverage(&self.config);
+            self.writer.coverage(polylogue_model::capture::Coverage {
+                version: 1,
+                machine: self.config.machine.clone(),
+                observed_at: polylogue_model::Timestamp::from_unix_ms(now_ms()).ok_or_else(
+                    || std::io::Error::other("capture observation time is out of range"),
+                )?,
+                roots: scan.roots,
+            })?;
+            (scan.found, scan.unreadable)
         } else {
             collect::scan_paths(&self.config, paths)
         };
@@ -313,8 +322,15 @@ impl Engine {
             let now = FileFacts::of(&meta);
             if compressed::is_rollout(&f) {
                 match self.capture_rollout(&f, now, pass) {
-                    Ok(Some(plan)) if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) => {
-                        plans.push(plan)
+                    Ok(Some(plan)) => {
+                        if let Some(previous) = plans
+                            .iter_mut()
+                            .find(|p: &&mut Plan| p.input.id == plan.input.id)
+                        {
+                            *previous = plan;
+                        } else {
+                            plans.push(plan);
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => pass
@@ -429,11 +445,16 @@ impl Engine {
             let now = FileFacts::of(&meta);
             if compressed::is_rollout(f) {
                 match self.capture_rollout(f, now, pass) {
-                    Ok(Some(mut plan))
-                        if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) =>
-                    {
+                    Ok(Some(mut plan)) => {
                         plan.priority = Priority::Live;
-                        plans.push(plan);
+                        if let Some(previous) = plans
+                            .iter_mut()
+                            .find(|p: &&mut Plan| p.input.id == plan.input.id)
+                        {
+                            *previous = plan;
+                        } else {
+                            plans.push(plan);
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => pass
@@ -525,7 +546,7 @@ impl Engine {
                 }
             }
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
-            Change::Reparse { .. } => unreachable!(),
+            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
         };
         // A document is parsed whole: any change parses it from its start.
         let (parse_pos, parser_state) = if whole(st.origin, path) {

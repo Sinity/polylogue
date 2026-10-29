@@ -7,7 +7,11 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "multimodal_text.content.parts[].name": 2,
+      "node.children": 1,
+      "node.children[]": 1
+    }
   },
   "output": {
     "background": [],
@@ -23,7 +27,8 @@
           3,
           1234
         ],
-        "session": "chatgpt:native-occurrences"
+        "session": "chatgpt:native-occurrences",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -48,7 +53,12 @@
           "id": "chatgpt:duplicate",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "chatgpt:native-occurrences"
+          "session": "chatgpt:native-occurrences",
+          "attrs": {
+            "metadata": {}
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -72,7 +82,12 @@
           "id": "chatgpt:duplicate",
           "parent": "chatgpt:duplicate",
           "role": "assistant",
-          "session": "chatgpt:native-occurrences"
+          "session": "chatgpt:native-occurrences",
+          "attrs": {
+            "metadata": {}
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -84,7 +99,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic attachment occurrences"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

@@ -1,3 +1,4 @@
+mod coverage;
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 use std::io::Read;

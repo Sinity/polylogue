@@ -486,6 +486,7 @@ fn historical_restore_preserves_history_but_cannot_authorize_execution() {
     .unwrap();
     let mut destination = cache();
     let attribution = ImportAttribution {
+        machine: "machine-import".into(),
         input: "bundle-input".into(),
         chain: 1,
         actor: Author::Operator,
@@ -550,6 +551,7 @@ fn subset_restore_keeps_full_chat_history_and_import_provenance() {
     )
     .unwrap();
     let current = ImportAttribution {
+        machine: "machine-import".into(),
         input: "bundle".into(),
         chain: 4,
         actor: Author::Operator,
@@ -592,4 +594,100 @@ fn inconsistent_event_delta_is_refused_before_application() {
     assert!(matches!(apply(&tx, &p, 1), Err(StoreError::Invalid(_))));
     tx.commit().unwrap();
     assert_eq!(count(&destination, "chat_action"), 0);
+}
+
+#[test]
+fn repeated_import_unions_real_ingress_without_changing_frozen_state() {
+    let source = cache();
+    let p = prepare_with(
+        &source,
+        &request(
+            "note",
+            1,
+            UserWrite::AddNote {
+                note: note("example"),
+            },
+        ),
+        &[],
+        &[],
+    )
+    .unwrap();
+    let mut conn = cache();
+    let first = ImportAttribution {
+        machine: "host-a".into(),
+        input: "bundle".into(),
+        chain: 1,
+        actor: Author::Operator,
+        at: Timestamp::from_unix_ms(20).unwrap(),
+    };
+    let tx = conn.transaction().unwrap();
+    restore(&tx, &p, &[], &first, 1).unwrap();
+    tx.commit().unwrap();
+    let mut retry = first.clone();
+    retry.at = Timestamp::from_unix_ms(30).unwrap();
+    let tx = conn.transaction().unwrap();
+    assert!(restore(&tx, &p, &[], &retry, 2).unwrap().repeat);
+    tx.commit().unwrap();
+    let mut second = retry;
+    second.machine = "host-b".into();
+    let tx = conn.transaction().unwrap();
+    assert!(restore(&tx, &p, &[], &second, 3).unwrap().repeat);
+    tx.commit().unwrap();
+    assert_eq!(count(&conn, "note"), 1);
+    visit(&conn, &mut |record, imports| {
+        assert_eq!(record, &p);
+        assert_eq!(imports, &[first.clone(), second.clone()]);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT commit_seq FROM source_client_request WHERE id='note'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn historical_claim_cannot_supply_current_import_observation() {
+    let source = cache();
+    let p = prepare_with(
+        &source,
+        &request(
+            "note",
+            1,
+            UserWrite::AddNote {
+                note: note("example"),
+            },
+        ),
+        &[],
+        &[],
+    )
+    .unwrap();
+    let current = ImportAttribution {
+        machine: "host".into(),
+        input: "bundle".into(),
+        chain: 1,
+        actor: Author::Operator,
+        at: Timestamp::from_unix_ms(20).unwrap(),
+    };
+    let mut claimed = current.clone();
+    claimed.at = Timestamp::from_unix_ms(2).unwrap();
+    let mut conn = cache();
+    let tx = conn.transaction().unwrap();
+    restore(&tx, &p, std::slice::from_ref(&claimed), &current, 1).unwrap();
+    tx.commit().unwrap();
+    let wire: String = conn
+        .query_row(
+            "SELECT imports FROM source_client_request WHERE id='note'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let history: ImportHistory = serde_json::from_str(&wire).unwrap();
+    assert_eq!(history.observed, vec![current]);
+    assert_eq!(history.declared, vec![claimed]);
 }

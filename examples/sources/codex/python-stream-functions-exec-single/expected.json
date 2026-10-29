@@ -15,9 +15,26 @@
     "blobs": [],
     "events": [
       {
+        "session": "codex:codex-functions-exec-single",
+        "kind": "session_meta",
+        "at": "2026-07-15T10:00:00Z",
+        "range": [
+          0,
+          119
+        ],
+        "data": {
+          "id": "codex-functions-exec-single",
+          "timestamp": "2026-07-15T10:00:00Z",
+          "cwd": "/repo"
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "second"
+      },
+      {
         "data": {},
         "kind": "response_boundaries_unknown",
-        "session": "codex:codex-functions-exec-single"
+        "session": "codex:codex-functions-exec-single",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -40,7 +57,8 @@
             "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:codex-functions-exec-single"
+          "session": "codex:codex-functions-exec-single",
+          "at_quality": "unknown"
         },
         "offset": 120
       },
@@ -54,13 +72,24 @@
                 "kind": "ok"
               },
               "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\n{\"exit_code\":0,\"output\":\"clean\",\"bytes_written\":5}",
-              "type": "tool_result"
+              "type": "tool_result",
+              "data": [
+                {
+                  "type": "input_text",
+                  "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "{\"exit_code\":0,\"output\":\"clean\",\"bytes_written\":5}"
+                }
+              ]
             }
           ],
           "id": "codex:ctco-single",
           "prompt_kind": "harness",
           "role": "user",
-          "session": "codex:codex-functions-exec-single"
+          "session": "codex:codex-functions-exec-single",
+          "at_quality": "unknown"
         },
         "offset": 381
       }
@@ -72,7 +101,9 @@
         ],
         "id": "codex:codex-functions-exec-single",
         "kind": "main",
-        "started": "2026-07-15T10:00:00Z"
+        "started": "2026-07-15T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

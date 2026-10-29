@@ -116,3 +116,74 @@ fn a_large_compressed_record_has_no_decoded_size_cap() {
         header.as_bytes()
     );
 }
+
+#[test]
+fn a_proven_stale_alias_observes_its_old_revision_without_regressing_the_native_input() {
+    let w = ClaudeHome::new();
+    let sessions = w.home.join(".codex/sessions");
+    let archived = w.home.join(".codex/archived_sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::create_dir_all(&archived).unwrap();
+    let path = sessions.join("rollout-live.jsonl");
+    let original = rollout("alias-native");
+    std::fs::write(&path, &original).unwrap();
+    let (mut e, lock) = engine(&w, 64);
+    assert!(e.run_pass().unwrap().errors.is_empty());
+    let extra=b"{\"type\":\"response_item\",\"payload\":{\"id\":\"m2\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"newer native tail\"}]}}\n";
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(extra)
+        .unwrap();
+    assert!(e.run_pass().unwrap().errors.is_empty());
+    let copy = archived.join("rollout-stale.jsonl.zst");
+    std::fs::write(
+        &copy,
+        zstd::stream::encode_all(original.as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:alias-native'"),
+        2
+    );
+    let rows=e.reads.reader().unwrap().query("SELECT revision,length FROM a.observation WHERE input='codex:rollout:alias-native' ORDER BY rowid DESC LIMIT 1",&[]).unwrap();
+    assert_eq!(rows[0]["revision"], 1);
+    assert_eq!(rows[0]["length"], original.len() as u64);
+    std::fs::write(
+        &copy,
+        zstd::stream::encode_all(original.as_bytes(), 9).unwrap(),
+    )
+    .unwrap();
+    drop(e);
+    drop(lock);
+    let (mut e, _lock) = engine(&w, 64);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:alias-native'"),
+        2
+    );
+    let id = polylogue_model::SessionId::parse("codex:alias-native").unwrap();
+    assert_eq!(
+        e.reads
+            .reader()
+            .unwrap()
+            .messages(&id, false)
+            .unwrap()
+            .iter()
+            .map(polylogue_model::Message::text)
+            .collect::<Vec<_>>(),
+        ["independent payload", "newer native tail"]
+    );
+    std::fs::write(
+        &path,
+        original.replace("independent payload", "genuine divergent rewrite"),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:alias-native'"),2);
+}
