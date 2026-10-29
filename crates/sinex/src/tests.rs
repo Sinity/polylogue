@@ -88,7 +88,7 @@ fn capture_retries_keep_identity_but_a_b_a_is_three_observations() {
         b"A".as_slice(),
     ] {
         sinex
-            .prepare_input(&capture(bytes, Vec::new()), &mut bytes.as_ref())
+            .prepare_input(&capture(bytes, Vec::new()), &mut &bytes[..])
             .unwrap();
     }
     let pending = sinex.pending_captures().unwrap();

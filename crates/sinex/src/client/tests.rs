@@ -7,6 +7,7 @@ fn server() -> devkit::nats::Server {
     let config = Subjects::new("auth").authorization(
         ("daemon", "synthetic-daemon-password"),
         &[("polylogue", PASSWORD)],
+        &[],
     );
     devkit::nats::Server::start_with(&devkit::nats::Options { config }).unwrap()
 }
