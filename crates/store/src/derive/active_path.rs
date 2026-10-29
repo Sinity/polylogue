@@ -20,7 +20,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     finish: None,
 };
 
-fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+pub(super) fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     tx.prepare_cached(
         "WITH RECURSIVE
            observations AS (
