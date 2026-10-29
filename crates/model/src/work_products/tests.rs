@@ -109,3 +109,27 @@ fn human_bursts_commands_and_overflow_keep_explicit_meaning() {
     assert!(turns[1].facts.slash_command);
     assert!(turns[1].facts.abandoned);
 }
+
+#[test]
+fn retired_snapshot_keeps_only_session_identity_and_rejects_erased_metadata() {
+    let id = SessionId::parse("codex:retired").unwrap();
+    let mut snapshot = WorkSnapshot {
+        reducer_version: VERSION,
+        position: 9,
+        session_id: id.clone(),
+        session: None,
+        retired: true,
+        unavailable: Vec::new(),
+        messages: Vec::new(),
+        calls: Vec::new(),
+        turns: Vec::new(),
+        sources: Vec::new(),
+        native: Vec::new(),
+    };
+    assert!(snapshot.validate().is_ok());
+    snapshot.session = Some(crate::Session::new(id, crate::SessionKind::Main));
+    assert_eq!(
+        snapshot.validate(),
+        Err("retired snapshot contains source facts")
+    );
+}

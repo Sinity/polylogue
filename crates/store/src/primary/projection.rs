@@ -248,7 +248,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
                     Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
                     Product::Background { facts, .. } => Some(facts.session.to_string()),
-                    Product::WorkSnapshot { snapshot } => Some(snapshot.session.id.to_string()),
+                    Product::WorkSnapshot { snapshot } => Some(snapshot.session_id.to_string()),
                     _ => None,
                 };
                 let reading = product.reading();

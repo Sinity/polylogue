@@ -19,8 +19,10 @@ pub struct ToolCallProduct {
     pub command: Option<String>,
     pub path: Option<String>,
     pub at: Option<Timestamp>,
+    pub at_evidence: crate::TimeEvidence,
     pub result: Option<MessageId>,
     pub result_at: Option<Timestamp>,
+    pub result_at_evidence: crate::TimeEvidence,
     pub outcome: ToolOutcome,
     pub outcome_reason: Option<String>,
     pub reported_duration_ms: Option<u64>,
@@ -35,7 +37,9 @@ pub struct TurnProduct {
     pub turn: MessageId,
     pub session: SessionId,
     pub start: Option<Timestamp>,
+    pub start_evidence: crate::TimeEvidence,
     pub end: Option<Timestamp>,
+    pub end_evidence: crate::TimeEvidence,
     pub prompts: Vec<MessageId>,
     pub answer: Option<MessageId>,
     pub slash_command: bool,
@@ -58,6 +62,7 @@ pub struct WorkMessage {
     pub written_by: WrittenBy,
     pub prompt_kind: Option<PromptKind>,
     pub at: Option<Timestamp>,
+    pub at_evidence: crate::TimeEvidence,
     pub source_event: String,
 }
 
@@ -69,6 +74,7 @@ pub struct ReadingSource {
     pub start: u64,
     pub end: u64,
     pub selected: bool,
+    pub projection: Option<crate::bundle::MessageProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -85,12 +91,52 @@ pub struct NativeEvidence {
 pub struct WorkSnapshot {
     pub reducer_version: u32,
     pub position: i64,
-    pub session: crate::Session,
+    pub session_id: SessionId,
+    pub session: Option<crate::Session>,
+    pub retired: bool,
+    pub unavailable: Vec<String>,
     pub messages: Vec<WorkMessage>,
     pub calls: Vec<ToolCallProduct>,
     pub turns: Vec<TurnProduct>,
     pub sources: Vec<ReadingSource>,
     pub native: Vec<NativeEvidence>,
+}
+
+impl WorkSnapshot {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.position < 0 {
+            return Err("snapshot position is negative");
+        }
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.id != self.session_id)
+        {
+            return Err("snapshot session metadata has another identity");
+        }
+        if self.retired
+            && (self.session.is_some()
+                || !self.messages.is_empty()
+                || !self.calls.is_empty()
+                || !self.turns.is_empty()
+                || !self.native.is_empty()
+                || !self.sources.is_empty())
+        {
+            return Err("retired snapshot contains source facts");
+        }
+        if self
+            .calls
+            .iter()
+            .any(|call| call.session != self.session_id)
+            || self
+                .turns
+                .iter()
+                .any(|turn| turn.session != self.session_id)
+        {
+            return Err("snapshot member belongs to another session");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,7 +206,9 @@ impl Turn {
                 turn: message.id.clone(),
                 session: message.session.clone(),
                 start: None,
+                start_evidence: crate::TimeEvidence::UNKNOWN,
                 end: None,
+                end_evidence: crate::TimeEvidence::UNKNOWN,
                 prompts: Vec::new(),
                 answer: None,
                 slash_command: message.prompt_kind == Some(PromptKind::Command),
@@ -181,8 +229,14 @@ impl Turn {
     fn push(&mut self, message: &SelectedMessage) {
         let m = &message.message;
         if let Some(at) = m.at {
-            self.product.start = Some(self.product.start.map_or(at, |old| old.min(at)));
-            self.product.end = Some(self.product.end.map_or(at, |old| old.max(at)));
+            if self.product.start.is_none_or(|old| at < old) {
+                self.product.start = Some(at);
+                self.product.start_evidence = m.time_evidence();
+            }
+            if self.product.end.is_none_or(|old| at > old) {
+                self.product.end = Some(at);
+                self.product.end_evidence = m.time_evidence();
+            }
         }
         match WrittenBy::of(m.role, m.prompt_kind) {
             WrittenBy::Human => self.product.prompts.push(m.id.clone()),
@@ -238,6 +292,7 @@ pub fn derive_with_background(
         (
             MessageId,
             Option<Timestamp>,
+            crate::TimeEvidence,
             ToolOutcome,
             Option<u64>,
             String,
@@ -301,8 +356,10 @@ pub fn derive_with_background(
                             command: command.clone(),
                             path: path.clone(),
                             at: message.at,
+                            at_evidence: message.time_evidence(),
                             result: None,
                             result_at: None,
+                            result_at_evidence: crate::TimeEvidence::UNKNOWN,
                             outcome: ToolOutcome::NoResult,
                             outcome_reason: Some("no_result".into()),
                             reported_duration_ms: None,
@@ -324,9 +381,12 @@ pub fn derive_with_background(
                         },
                         parents: vec![selected.event.clone()],
                     };
-                    if let Some((id, at, outcome, duration, event)) = pending_results.remove(&key) {
+                    if let Some((id, at, evidence, outcome, duration, event)) =
+                        pending_results.remove(&key)
+                    {
                         call.facts.result = Some(id);
                         call.facts.result_at = at;
+                        call.facts.result_at_evidence = evidence;
                         call.facts.outcome = outcome;
                         call.facts.outcome_reason = None;
                         call.facts.reported_duration_ms = duration;
@@ -351,6 +411,7 @@ pub fn derive_with_background(
                         let call = &mut calls[*index];
                         call.facts.result = Some(message.id.clone());
                         call.facts.result_at = message.at;
+                        call.facts.result_at_evidence = message.time_evidence();
                         call.facts.outcome = outcome.clone();
                         call.facts.outcome_reason = None;
                         call.facts.reported_duration_ms = *reported_duration_ms;
@@ -361,6 +422,7 @@ pub fn derive_with_background(
                             (
                                 message.id.clone(),
                                 message.at,
+                                message.time_evidence(),
                                 outcome.clone(),
                                 *reported_duration_ms,
                                 selected.event.clone(),
@@ -381,7 +443,10 @@ pub fn derive_with_background(
             let call = &mut calls[*index];
             call.facts.outcome = update.outcome;
             call.facts.outcome_reason = None;
-            call.facts.result_at = update.result_at.or(call.facts.result_at);
+            if update.result_at.is_some() {
+                call.facts.result_at = update.result_at;
+                call.facts.result_at_evidence = crate::TimeEvidence::UNKNOWN;
+            }
             call.facts.reported_duration_ms = update
                 .reported_duration_ms
                 .or(call.facts.reported_duration_ms);
