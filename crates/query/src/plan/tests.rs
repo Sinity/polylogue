@@ -176,12 +176,12 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
 }
 
 #[test]
-fn native_addresses_bind_their_row_domain_without_stealing_scoped_fields() {
+fn native_addresses_bind_in_explicit_row_domains_without_stealing_scoped_fields() {
     for (text, expected) in [
-        ("event:native-event", "events"),
-        ("document:test:document", "documents"),
-        ("block:test:message#0", "blocks"),
-        ("delivery:receipt", "deliveries"),
+        ("events where event:native-event", "events"),
+        ("documents where document:test:document", "documents"),
+        ("blocks where block:test:message#0", "blocks"),
+        ("deliveries where delivery:receipt", "deliveries"),
     ] {
         let plan = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
         let Source::Unit { unit, .. } = &plan.bound_query().query().source else {

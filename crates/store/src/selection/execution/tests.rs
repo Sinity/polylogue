@@ -193,7 +193,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
         .prepare_selection("message:test:a..test:b", &options)
         .unwrap();
     let semantic = reader
-        .prepare_query_selection("message:test:a..test:b", &options)
+        .prepare_query_selection("messages where message:test:a..test:b", &options)
         .unwrap();
     assert_eq!(direct.question_id(), semantic.question_id());
     let binding = direct

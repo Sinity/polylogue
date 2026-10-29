@@ -709,7 +709,7 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
         .unwrap();
     assert_eq!(selected, ["message:test:a", "message:test:b"]);
     let semantic = reader
-        .prepare_query_selection("message:test:a..test:b", &options)
+        .prepare_query_selection("messages where message:test:a..test:b", &options)
         .unwrap();
     assert!(semantic.direct_reference().is_none());
     let mut semantic_count = 0;
