@@ -36,7 +36,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
         .set_modified(std::time::UNIX_EPOCH)
         .unwrap();
     let now = FileFacts::of(&std::fs::metadata(&path).unwrap());
-    let plan = engine.plan(&path, now, false).unwrap().unwrap();
+    let plan = engine.plan(&path, now).unwrap().unwrap();
     assert_eq!(plan.change, Change::Rewritten);
     let aside = home.dir.path().join("held-source");
     std::fs::rename(&path, &aside).unwrap();
