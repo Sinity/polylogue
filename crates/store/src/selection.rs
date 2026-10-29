@@ -144,6 +144,15 @@ impl Reader<'_> {
         target: &str,
         options: &Options,
     ) -> Result<PreparedSelection<'read>, SelectionError> {
+        self.with_clock(&options.clock, || {
+            self.prepare_selection_scoped(target, options)
+        })
+    }
+    fn prepare_selection_scoped<'read>(
+        &'read self,
+        target: &str,
+        options: &Options,
+    ) -> Result<PreparedSelection<'read>, SelectionError> {
         self.check()?;
         let scope = self.scope_token();
         scope.check()?;
@@ -341,18 +350,29 @@ impl Reader<'_> {
                 Err(VisitError::Selection(e)) => Err(E::from(e)),
             }
         };
-        if let Some(request) = &selection.program.near {
-            let near =
-                near.ok_or_else(|| E::from(invalid("embed", "semantic search unavailable")))?;
-            let similarity = near(&request.text).map_err(|e| E::from(invalid("embed", e)))?;
-            self.with_similarity(similarity, run)
-        } else {
-            run()
-        }
+        self.with_clock(&selection.program.clock, || {
+            if let Some(request) = &selection.program.near {
+                let near =
+                    near.ok_or_else(|| E::from(invalid("embed", "semantic search unavailable")))?;
+                let similarity = near(&request.text).map_err(|e| E::from(invalid("embed", e)))?;
+                self.with_similarity(similarity, run)
+            } else {
+                run()
+            }
+        })
     }
     /// Membership uses the already-prepared selection, including its stages.
     /// Ranked membership is evaluated inside the visit callback's shared ranking scope.
     pub fn selection_contains(
+        &self,
+        selection: &PreparedSelection<'_>,
+        reference: &Reference,
+    ) -> Result<bool, SelectionError> {
+        self.with_clock(&selection.program.clock, || {
+            self.selection_contains_scoped(selection, reference)
+        })
+    }
+    fn selection_contains_scoped(
         &self,
         selection: &PreparedSelection<'_>,
         reference: &Reference,

@@ -35,13 +35,12 @@ impl Cache {
                 let file = tempfile::NamedTempFile::new_in(d.archive.staging_dir())
                     .map_err(|e| error("io", e))?;
                 let output = file.reopen().map_err(|e| error("io", e))?;
-                super::super::query::feed::prepare_with(&reader, since, now_ms(), output).map_err(
-                    |f| Response::Error {
+                super::super::query::feed::prepare_with(&reader, since, &d.query_clock()?, output)
+                    .map_err(|f| Response::Error {
                         kind: f.kind,
                         message: f.message,
                         detail: f.detail,
-                    },
-                )?;
+                    })?;
                 Ok(file)
             })
             .as_ref()

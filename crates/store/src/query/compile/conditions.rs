@@ -538,45 +538,9 @@ impl<'a> Compiler<'a> {
     }
 
     pub(super) fn unknown_field(&self, field: &str, unit: Unit, span: Span) -> QueryError {
-        let lower = field.to_ascii_lowercase();
-        let mut pool: Vec<&str> = fields::names(unit).collect();
-        if fields::has_session(unit) {
-            pool.extend(fields::names(Unit::Sessions));
-        }
-        let mut scored: Vec<(usize, &str)> = pool
-            .into_iter()
-            .map(|n| (strsim::damerau_levenshtein(&lower, n), n))
-            .filter(|(d, n)| *d <= 2.max(n.len() / 4))
-            .collect();
-        scored.sort();
-        scored.dedup_by(|a, b| a.1 == b.1);
-        // Only the nearest names: one typing mistake beats two.
-        let best = scored.first().map_or(0, |(d, _)| *d);
-        let similar: Vec<String> = scored
-            .iter()
-            .filter(|(d, _)| *d == best)
-            .take(3)
-            .map(|(_, n)| (*n).to_owned())
-            .collect();
-        let suggestion = match similar.as_slice() {
-            [one] => Some(format!(
-                "{}{}{}",
-                &self.text[..span.start],
-                one,
-                &self.text[span.start + field.len()..]
-            )),
-            _ => None,
-        };
-        QueryError::UnknownField {
-            field: field.to_owned(),
-            unit: unit.name().to_owned(),
-            position: span.start,
-            similar,
-            suggestion,
-        }
+        unknown_field(self.text, field, unit, span)
     }
 
-    /// A condition on a field of a related row.
     pub(super) fn related(
         &mut self,
         prefix: &str,
@@ -874,5 +838,44 @@ fn search_word(text: &str, mode: TextMode) -> Result<String, QueryError> {
         TextMode::Prefix => Ok(format!("{text}*")),
         TextMode::Word | TextMode::Phrase => Ok(text.to_owned()),
         TextMode::Approximate => Err(not_built("approximate text search")),
+    }
+}
+
+pub(super) fn unknown_field(text: &str, field: &str, unit: Unit, span: Span) -> QueryError {
+    let lower = field.to_ascii_lowercase();
+    let mut pool: Vec<&str> = fields::names(unit).collect();
+    if fields::has_session(unit) {
+        pool.extend(fields::names(Unit::Sessions));
+    }
+    let mut scored: Vec<(usize, &str)> = pool
+        .into_iter()
+        .map(|n| (strsim::damerau_levenshtein(&lower, n), n))
+        .filter(|(d, n)| *d <= 2.max(n.len() / 4))
+        .collect();
+    scored.sort();
+    scored.dedup_by(|a, b| a.1 == b.1);
+    // Only the nearest names: one typing mistake beats two.
+    let best = scored.first().map_or(0, |(d, _)| *d);
+    let similar: Vec<String> = scored
+        .iter()
+        .filter(|(d, _)| *d == best)
+        .take(3)
+        .map(|(_, n)| (*n).to_owned())
+        .collect();
+    let suggestion = match similar.as_slice() {
+        [one] => Some(format!(
+            "{}{}{}",
+            &text[..span.start],
+            one,
+            &text[span.start + field.len()..]
+        )),
+        _ => None,
+    };
+    QueryError::UnknownField {
+        field: field.to_owned(),
+        unit: unit.name().to_owned(),
+        position: span.start,
+        similar,
+        suggestion,
     }
 }

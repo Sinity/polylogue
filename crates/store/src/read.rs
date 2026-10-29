@@ -105,6 +105,7 @@ pub struct Reader<'a> {
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
+    calendar: crate::sql_functions::CalendarContext,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -325,6 +326,7 @@ impl ReadPool {
             scope,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
+            calendar: crate::sql_functions::CalendarContext::new(),
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
@@ -352,6 +354,7 @@ impl ReadPool {
             conn.progress_handler(1000, Some(move || scope.check().is_err()))?;
         }
         reader.scope.check()?;
+        crate::sql_functions::register_calendar(&conn, &reader.calendar)?;
         conn.execute_batch("BEGIN")?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
@@ -1413,3 +1416,11 @@ impl Reader<'_> {
 
 #[cfg(test)]
 mod tests;
+
+impl Reader<'_> {
+    /// Execute against one owner-supplied calendar, restoring any enclosing
+    /// query's calendar even when the callback unwinds.
+    pub fn with_clock<T>(&self, clock: &query_language::time::Clock, f: impl FnOnce() -> T) -> T {
+        self.calendar.with_clock(clock, f)
+    }
+}

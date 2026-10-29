@@ -43,6 +43,19 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    pub(crate) fn query_clock(&self) -> Result<query_language::time::Clock, Response> {
+        let day = self.config.standalone_day().map_err(|_| {
+            error(
+                "not_yet_available",
+                "the primary owner day context has not been obtained",
+            )
+        })?;
+        Ok(query_language::time::Clock::new(
+            self.config.requests.now().into(),
+            day.clone(),
+        ))
+    }
+
     pub(crate) fn ready_call(
         &self,
         request: &command_surface::RunnableRequest,
@@ -172,30 +185,32 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
 /// before handing it out: prepared is recorded first, delivered is a
 /// separate event the client reports.
 fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) -> Response {
-    if matches!(ask, Ask::SessionStart { .. }) {
-        let off = d
-            .reads
-            .reader()
-            .and_then(|r| r.setting("briefing.session_start", &machine_id()))
-            .is_ok_and(|v| v.as_deref() == Some("off"));
-        if off {
-            return ok(serde_json::json!({ "off": true, "empty": true }));
-        }
-    }
     let prepared = {
         let reader = match d.reads.reader() {
             Ok(r) => r,
             Err(e) => return store_error(&e),
         };
-        let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
-            .ok()
-            .flatten();
+        let settings = match reader.settings_snapshot(d.config.requests.machine()) {
+            Ok(settings) => settings,
+            Err(error) => return store_error(&error),
+        };
+        let provider =
+            crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
+                .ok()
+                .flatten();
         let near = |q: &str| match &provider {
             Some(p) => d.warm.similarity(&reader, p, q),
             None => Err("embeddings are off".into()),
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        let result = briefing::prepare(&reader, ask, &request_id, user_writes::now(), near);
+        let result = briefing::prepare(
+            &reader,
+            ask,
+            &request_id,
+            d.config.requests.now(),
+            near,
+            &d.config.paths.check_history,
+        );
         if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
             && let Err(error) = limit.check()
         {
@@ -411,6 +426,23 @@ fn handle_inner(
         }
         Err(e) => return store_error(&e),
     };
+    let clock = if matches!(
+        &request,
+        Request::Query { .. }
+            | Request::Timeline { .. }
+            | Request::Cost { .. }
+            | Request::Keep { .. }
+            | Request::Watch { .. }
+            | Request::Embed { .. }
+    ) || matches!(&request, Request::Explain { subject, .. } if subject == "query")
+    {
+        Some(match d.query_clock() {
+            Ok(clock) => clock,
+            Err(response) => return response,
+        })
+    } else {
+        None
+    };
     match request {
         Request::Attachment { .. } => unreachable!("attachment reads own their reader"),
         Request::ChatSend { .. }
@@ -458,8 +490,10 @@ fn handle_inner(
                             page_size: None,
                             why: false,
                             session,
-                            now: now_ms(),
-                            day: None,
+                            clock: clock
+                                .as_ref()
+                                .expect("query operations resolve a clock")
+                                .clone(),
                             embeddings,
                             near: None,
                             fields: &[],
@@ -500,7 +534,7 @@ fn handle_inner(
                     cursor: cursor.as_deref(),
                     page_size,
                 },
-                now_ms(),
+                clock.as_ref().expect("calendar operations resolve a clock"),
             ) {
                 Ok(data) => ok(data),
                 Err(f) => Response::Error {
@@ -534,7 +568,7 @@ fn handle_inner(
                     cursor: cursor.as_deref(),
                     page_size,
                 },
-                now_ms(),
+                clock.as_ref().expect("calendar operations resolve a clock"),
             ) {
                 Ok(data) => ok(data),
                 Err(f) => Response::Error {
@@ -569,8 +603,10 @@ fn handle_inner(
                     page_size,
                     why,
                     session,
-                    now: now_ms(),
-                    day: None,
+                    clock: clock
+                        .as_ref()
+                        .expect("query operations resolve a clock")
+                        .clone(),
                     embeddings,
                     near: Some(near),
                     fields: &fields,
@@ -648,7 +684,24 @@ fn handle_inner(
             query,
             limit,
             yes,
-        } => crate::embeddings::handle(&reader, &what, query.as_deref(), limit, yes),
+        } => {
+            let settings = match reader.settings_snapshot(d.config.requests.machine()) {
+                Ok(settings) => settings,
+                Err(error) => return store_error(&error),
+            };
+            crate::embeddings::handle(
+                &reader,
+                &what,
+                query.as_deref(),
+                limit,
+                yes,
+                crate::embeddings::Context {
+                    settings: &settings,
+                    credentials: &d.config.embedding_credentials,
+                    clock: clock.as_ref().expect("embedding query clock"),
+                },
+            )
+        }
 
         Request::Keep {
             request_id,
@@ -676,8 +729,10 @@ fn handle_inner(
                     page_size: None,
                     why: false,
                     session: None,
-                    now: now_ms(),
-                    day: None,
+                    clock: clock
+                        .as_ref()
+                        .expect("query operations resolve a clock")
+                        .clone(),
                     embeddings,
                     near: Some(near),
                     fields: &[],
@@ -766,8 +821,10 @@ fn handle_inner(
                 page_size: Some(1),
                 why: false,
                 session: None,
-                now: now_ms(),
-                day: None,
+                clock: clock
+                    .as_ref()
+                    .expect("query operations resolve a clock")
+                    .clone(),
                 embeddings: false,
                 near: None,
                 fields: &[],
@@ -998,7 +1055,7 @@ fn query_targets(
 ) -> Result<Vec<polylogue_model::Reference>, Response> {
     use polylogue_model::Reference;
     super::query::with_ranking(reader, &d.warm, |embeddings, near| {
-        let now = now_ms();
+        let clock = d.query_clock()?;
         let mut targets = Vec::new();
         let mut seen = HashSet::new();
         let mut cursor: Option<String> = None;
@@ -1009,8 +1066,7 @@ fn query_targets(
                 page_size: Some(1_000),
                 why: false,
                 session: None,
-                now,
-                day: None,
+                clock: clock.clone(),
                 embeddings,
                 near: Some(near),
                 fields: &[],
@@ -1390,8 +1446,11 @@ pub fn start(
             let Ok(reader) = daemon.reads.reader() else {
                 return;
             };
-            if let Ok(Some(provider)) =
-                crate::embeddings::Provider::from_settings(&reader, &machine_id())
+            if let Ok(settings) = reader.settings_snapshot(daemon.config.requests.machine())
+                && let Ok(Some(provider)) = crate::embeddings::Provider::from_settings(
+                    &settings,
+                    &daemon.config.embedding_credentials,
+                )
             {
                 let _ = daemon.warm.vectors(&reader, &provider);
             }

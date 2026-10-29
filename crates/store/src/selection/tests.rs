@@ -212,3 +212,250 @@ fn pure_bindings_preserve_closed_group_values_without_a_clock() {
     );
     assert_eq!(kept.fields[0].values, outcome.values);
 }
+
+#[test]
+fn native_facets_share_field_values_and_stream_cwd_ancestors() {
+    use crate::fixture::CallFacts;
+    use crate::query::facets::{FacetError, FacetKey};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let s = f
+        .session(SessionFacts {
+            id: "test:facet",
+            cwd: Some("/work/morrow/sub"),
+            repo: Some("morrow"),
+            ..Default::default()
+        })
+        .unwrap();
+    for id in ["test:one", "test:two"] {
+        f.message(
+            s,
+            MessageFacts {
+                id,
+                role: "assistant",
+                written_by: "model",
+                model: Some("model-a"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let m = f
+        .message(
+            s,
+            MessageFacts {
+                id: "test:tool",
+                role: "assistant",
+                written_by: "model",
+                model: Some("model-b"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    f.tool_call(
+        s,
+        m,
+        CallFacts {
+            tool: "mcp__notes__find",
+            action: "mcp",
+            outcome: "ok",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let keys = [
+        FacetKey::new(Unit::Sessions, "repo"),
+        FacetKey::new(Unit::Sessions, "cwd"),
+        FacetKey::new(Unit::Sessions, "model"),
+        FacetKey::new(Unit::ToolCalls, "mcp_server"),
+    ];
+    let mut values = BTreeMap::<_, BTreeMap<_, _>>::new();
+    reader
+        .visit_session_facets::<FacetError>(
+            &SessionId::parse("test:facet").unwrap(),
+            &keys,
+            options().clock.now,
+            |row| {
+                values
+                    .entry(row.key)
+                    .or_default()
+                    .insert(row.value, row.count);
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(values[&keys[0]], BTreeMap::from([("morrow".into(), 1)]));
+    assert_eq!(
+        values[&keys[1]],
+        BTreeMap::from([
+            ("/".into(), 1),
+            ("/work".into(), 1),
+            ("/work/morrow".into(), 1),
+            ("/work/morrow/sub".into(), 1)
+        ])
+    );
+    assert_eq!(
+        values[&keys[2]],
+        BTreeMap::from([("model-a".into(), 2), ("model-b".into(), 1)])
+    );
+    assert_eq!(values[&keys[3]], BTreeMap::from([("notes".into(), 1)]));
+    let selected = reader
+        .prepare_selection("sessions where cwd:/work/morrow", &options())
+        .unwrap();
+    let mut rows = 0;
+    reader
+        .visit_selection::<SelectionError>(&selected, None, None, |_| {
+            rows += 1;
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(rows, 1);
+}
+#[test]
+fn absence_of_hook_and_activity_evidence_is_unknown_live_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    f.session(SessionFacts {
+        id: "test:timeless",
+        ..Default::default()
+    })
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["id".into(), "live".into()];
+    let selected = reader.prepare_selection("sessions", &options).unwrap();
+    let mut rows = vec![];
+    reader
+        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+            rows.push(row);
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(rows[0].values["live"], "unknown");
+    assert!(rows[0].first_seen.is_none());
+}
+#[test]
+fn saved_aliases_bind_to_definition_hashes_and_keep_revision_metadata() {
+    let (_dir, mut f) = fixture();
+    let first = f
+        .note(
+            "saved_query",
+            Some("alpha"),
+            Some("sessions where origin:test"),
+            "query:alpha",
+        )
+        .unwrap();
+    let second = f
+        .note(
+            "saved_query",
+            Some("beta"),
+            Some("sessions where origin:test"),
+            "query:beta",
+        )
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let a = reader.prepare_selection("query:alpha", &options()).unwrap();
+    let b = reader.prepare_selection("query:beta", &options()).unwrap();
+    assert_eq!(a.question_id(), b.question_id());
+    assert_eq!(a.definitions()[0].revision, first);
+    assert_eq!(b.definitions()[0].revision, second);
+    assert!(
+        matches!(&a.bound_query().query().source,polylogue_query::ast::Source::Saved{name,..} if name=="alpha")
+    );
+}
+
+#[test]
+fn model_authored_user_task_does_not_answer_a_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let s = f
+        .session(SessionFacts {
+            id: "test:turn",
+            ..Default::default()
+        })
+        .unwrap();
+    f.message(
+        s,
+        MessageFacts {
+            id: "test:turn:human",
+            role: "user",
+            written_by: "human",
+            prompt_kind: Some("prose"),
+            at: Some(1000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    f.message(
+        s,
+        MessageFacts {
+            id: "test:turn:task",
+            role: "user",
+            written_by: "model",
+            prompt_kind: Some("model"),
+            at: Some(2000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let conn = crate::archive::open_write(&f.archive.index_db(), 1).unwrap();
+    conn.execute(
+        "UPDATE message SET parent_id='test:turn:human' WHERE id='test:turn:task'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let options = Options {
+        fields: vec![
+            "id".into(),
+            "answer".into(),
+            "latency".into(),
+            "attempts".into(),
+        ],
+        ..options()
+    };
+    let read = |f: &Fixture| {
+        let pool = f.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let mut rows = vec![];
+        let selection = reader.prepare_selection("turns", &options).unwrap();
+        reader
+            .visit_selection::<SelectionError>(&selection, None, None, |row| {
+                rows.push(row.values);
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        rows
+    };
+    let before = read(&f);
+    assert_eq!(before.len(), 1);
+    assert!(before[0]["answer"].is_null());
+    assert!(before[0]["latency"].is_null());
+    assert_eq!(before[0]["attempts"], 0);
+    f.message(
+        s,
+        MessageFacts {
+            id: "test:turn:answer",
+            role: "assistant",
+            written_by: "model",
+            at: Some(3000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let conn = crate::archive::open_write(&f.archive.index_db(), 1).unwrap();
+    conn.execute(
+        "UPDATE message SET parent_id='test:turn:human' WHERE id='test:turn:answer'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let after = read(&f);
+    assert_eq!(after[0]["answer"], "test:turn:answer");
+    assert_eq!(after[0]["latency"], 2000);
+    assert_eq!(after[0]["attempts"], 1);
+}

@@ -1,32 +1,15 @@
-//! The logical day comes from the operator's settings.
-
+//! The logical day is supplied by the operation owner.
 use super::*;
-
 #[test]
-fn the_logical_day_follows_its_settings() {
-    let mut w = morrow();
-    let mut a = ask("since:2026-10-05");
-    a.day = None;
-    let machine_default = run_q(&w, a).unwrap();
-    w.fx.setting("day.zone", "Pacific/Kiritimati").unwrap();
-    w.fx.setting("day.logical_start", "00:00").unwrap();
-    let pool = w.fx.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let day = logical_day(&reader).unwrap();
-    assert_eq!(day.zone_name(), Some("Pacific/Kiritimati"));
-    assert_eq!(day.start_minutes, 0);
-    drop(reader);
-    let mut a = ask("since:2026-10-05");
-    a.day = None;
-    let resolved = run_q(&w, a).unwrap();
-    assert_eq!(resolved["resolved"]["zone"], "Pacific/Kiritimati");
-    assert_eq!(resolved["resolved"]["day_start_minutes"], 0);
-    assert_ne!(resolved["resolved"], machine_default["resolved"]);
-    w.fx.setting("day.zone", "Mars/Olympus").unwrap();
-    let mut a = ask("kind:*");
-    a.day = None;
-    let refused = run_q(&w, a).unwrap_err();
-    assert!(refused.message.contains("day.zone"), "{}", refused.message);
+fn executions_keep_their_explicit_day_in_the_resolved_context() {
+    let archive = morrow();
+    let mut request = ask("since:2026-10-05");
+    request.clock.day = fixture_clock(0, "Pacific/Kiritimati", 0).day;
+    let result = run_q(&archive, request).unwrap();
+    assert_eq!(
+        result["resolved"]["clock"]["day"],
+        json!({"zone":"Pacific/Kiritimati","start":"00:00:00"})
+    );
 }
 
 #[test]
@@ -86,7 +69,7 @@ fn until_date_uses_logical_day_end_and_until_instant_stays_exclusive() {
         ),
     ] {
         let mut request = ask(text);
-        request.day = Some(LogicalDay::named("Europe/Warsaw", 240).unwrap());
+        request.clock.day = fixture_clock(0, "Europe/Warsaw", 240).day;
         let answer = run(&reader, request).unwrap();
         let actual: Vec<&str> = answer["rows"]
             .as_array()

@@ -182,8 +182,17 @@ fn prepare_inner(
             Ok(())
         },
     )?;
-    let question_id = query_language::identity::question_id(&identity, &catalog, &BTreeMap::new())
-        .map_err(|e| QueryError::language(e, text))?;
+    let mut identity_catalog = catalog.clone();
+    for output in &mut identity_catalog.source_outputs {
+        if let OutputSource::Saved { name, .. } = &mut output.source {
+            if let Some(hash) = identities.get(name) {
+                *name = hash.to_string();
+            }
+        }
+    }
+    let question_id =
+        query_language::identity::question_id(&identity, &identity_catalog, &BTreeMap::new())
+            .map_err(|e| QueryError::language(e, text))?;
     let rendered = query_language::format::format_query(original.query(), &catalog)
         .map_err(|e| QueryError::language(e, text))?;
     let (expanded, _) = crate::compile::source::expand(&rendered, options)?;

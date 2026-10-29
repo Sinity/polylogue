@@ -12,6 +12,7 @@ pub mod archive;
 pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
+pub mod calendar;
 pub mod chat_actions;
 pub mod check_runs;
 pub mod completion;

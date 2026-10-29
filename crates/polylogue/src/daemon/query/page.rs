@@ -63,7 +63,8 @@ pub(super) fn open(
             }
         },
         |context| {
-            context.read_positions.get("generation") == Some(&position.generation)
+            context.clock.day == options.clock.day
+                && context.read_positions.get("generation") == Some(&position.generation)
                 && context.read_positions.get("index_file")
                     == Some(&format!("{}:{}", index_file.0, index_file.1))
                 && context
@@ -209,8 +210,7 @@ struct Question<'a> {
     fields: &'a [String],
     embeddings: bool,
     why: bool,
-    zone: &'a str,
-    day_start_minutes: u16,
+    day: &'a query_language::time::DaySetting,
     vector_writes: Option<u64>,
 }
 /// Execution context identity for derived selection caches, separate from a
@@ -231,8 +231,7 @@ pub(super) fn question(program: &Program, options: &Options, why: bool) -> Resul
         fields: &options.fields,
         embeddings: options.embeddings,
         why,
-        zone: options.clock.day.zone_name(),
-        day_start_minutes: polylogue_store::query::time::product_day(&options.clock).start_minutes,
+        day: &options.clock.day,
         vector_writes: program
             .near
             .is_some()

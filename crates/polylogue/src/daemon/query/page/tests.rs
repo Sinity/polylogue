@@ -1,14 +1,16 @@
 use super::*;
-use polylogue_model::LogicalDay;
 use serde_json::json;
 
 fn options() -> Options {
     Options {
-        clock: polylogue_store::query::time::clock(
-            1_791_367_200_000,
-            LogicalDay::named("Europe/Warsaw", 240).unwrap(),
-        )
-        .unwrap(),
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_791_367_200_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
+        ),
         origins: vec!["claude-code".into()],
         command_words: vec![],
         page_size: Some(1),
