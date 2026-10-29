@@ -57,6 +57,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
         FailureKind::Conflict,
         &[
             "conflict",
+            "stale",
             "resync_required",
             "idempotency_key_reused",
             "action_finished",

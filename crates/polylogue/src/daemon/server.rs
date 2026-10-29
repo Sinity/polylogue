@@ -134,14 +134,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                 ))
                 .into()
         } else {
-            match request {
-                request @ Request::Attachment { reveal: true, .. } => {
-                    super::execution::run(request, &limit, |request| {
-                        super::attachment::socket(&out, request, d)
-                    })
-                }
-                request => service::handle_with_caller(request, d, &limit, &accepted.authorship),
-            }
+            service::handle_with_caller(request, d, &limit, &accepted.authorship)
         };
         let Ok(mut text) = serde_json::to_string(&response) else {
             return;
