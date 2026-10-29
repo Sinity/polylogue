@@ -509,3 +509,30 @@ fn omitted_nested_source_inherits_the_bound_tool_call_unit() {
         &opts(&[]),
     );
 }
+
+#[test]
+fn source_schema_exposes_native_relations_and_only_shaped_output_columns() {
+    let options = opts(&[]);
+    let relation = options
+        .output_schema("tool_calls where outcome:$status")
+        .unwrap();
+    assert_eq!(relation.unit.as_deref(), Some("tool_calls"));
+    assert!(
+        relation
+            .fields
+            .iter()
+            .any(|field| field.name == "session.repo")
+    );
+    let grouped = options
+        .output_schema("tool_calls | group by action | count")
+        .unwrap();
+    assert_eq!(
+        grouped
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["action", "count"]
+    );
+    assert!(grouped.main_time.is_none());
+}

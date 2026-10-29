@@ -11,54 +11,59 @@ pub(super) fn catalog(options: &Options) -> Catalog {
             (ResultPart::Rows, &kept.columns),
             (ResultPart::Matches, &kept.match_columns),
         ] {
-            let unit = catalog.unit(&kept.unit);
-            let fields: Vec<Field> = columns
-                .iter()
-                .map(|column| {
-                    let kind = match column.kind {
-                        ColKind::Text => FieldKind::Text,
-                        ColKind::Number => FieldKind::Number,
-                        ColKind::Time => FieldKind::Time,
-                        ColKind::Money => FieldKind::Money,
-                        ColKind::Duration => FieldKind::Duration,
-                        ColKind::Bool => FieldKind::Bool,
-                        ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),
-                        ColKind::Json => FieldKind::Json,
-                    };
-                    let mut field = unit
-                        .and_then(|unit| {
-                            unit.fields
-                                .iter()
-                                .find(|field| field.name == column.name && field.kind == kind)
-                        })
-                        .cloned()
-                        .unwrap_or_default();
-                    field.name = column.name.clone();
-                    field.kind = if column.reference.is_some() && column.kind == ColKind::Text {
-                        FieldKind::Reference
-                    } else {
-                        kind
-                    };
-                    field
-                })
-                .collect();
-            let main_time = unit
-                .and_then(|unit| unit.main_time.clone())
-                .filter(|name| fields.iter().any(|field| &field.name == name));
+            let schema = schema(&catalog, &kept.unit, columns);
             catalog.source_outputs.push(SourceOutput {
                 source: OutputSource::Result {
                     reference: format!("result:{id}"),
                     part,
                 },
-                schema: OutputSchema {
-                    unit: Some(kept.unit.clone()),
-                    fields,
-                    main_time,
-                },
+                schema,
             });
         }
     }
     catalog
+}
+
+pub(super) fn schema(catalog: &Catalog, unit_name: &str, columns: &[Column]) -> OutputSchema {
+    let unit = catalog.unit(unit_name);
+    let fields: Vec<Field> = columns
+        .iter()
+        .map(|column| {
+            let kind = match column.kind {
+                ColKind::Text => FieldKind::Text,
+                ColKind::Number => FieldKind::Number,
+                ColKind::Time => FieldKind::Time,
+                ColKind::Money => FieldKind::Money,
+                ColKind::Duration => FieldKind::Duration,
+                ColKind::Bool => FieldKind::Bool,
+                ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),
+                ColKind::Json => FieldKind::Json,
+            };
+            let mut field = unit
+                .and_then(|unit| {
+                    unit.fields
+                        .iter()
+                        .find(|field| field.name == column.name && field.kind == kind)
+                })
+                .cloned()
+                .unwrap_or_default();
+            field.name = column.name.clone();
+            field.kind = if column.reference.is_some() && column.kind == ColKind::Text {
+                FieldKind::Reference
+            } else {
+                kind
+            };
+            field
+        })
+        .collect();
+    let main_time = unit
+        .and_then(|unit| unit.main_time.clone())
+        .filter(|name| fields.iter().any(|field| &field.name == name));
+    OutputSchema {
+        unit: Some(unit_name.to_owned()),
+        fields,
+        main_time,
+    }
 }
 
 pub(super) fn expand(
