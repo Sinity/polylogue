@@ -37,7 +37,11 @@ pub fn read(
             1,
         ));
     }
-    frame.query = &page.snapshot.query_text;
+    frame.query = request
+        .arguments
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or(&page.snapshot.query);
     frame.navigation = navigation_entries();
     frame.status = currency(&page.snapshot.currency);
     let route = table
@@ -49,8 +53,6 @@ pub fn read(
         .http_route;
     let body = html! {
         (currency_notice(&page.snapshot.currency, &frame.command))
-        @for note in &page.snapshot.notes { p class="read-note" { (note) } }
-        @for reason in &page.snapshot.incomplete { p class="read-incomplete" role="status" { (reason) } }
         nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,&route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
         (navigation(page))
         (crate::html::document(&page.document))

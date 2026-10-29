@@ -241,19 +241,24 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
         text: "original".into(),
     }]);
     let mut evidence = ProjectionEvidence::default();
-    evidence.variants.insert(
-        0,
-        VariantText {
-            mark: VariantMark {
-                reference: "variant:test".into(),
-                key: "en".into(),
-                original: "block:test:session:message#0".into(),
-                stale: true,
-                show_original: None,
+    evidence
+        .variants
+        .insert(
+            polylogue_model::Reference::parse("block:test:session:message#0").unwrap(),
+            VariantText {
+                mark: VariantMark {
+                    reference: "variant:test".into(),
+                    key: "en".into(),
+                    original: "block:test:session:message#0".into(),
+                    stale: true,
+                    show_original: None,
+                },
+                text: "variant".into(),
+                relation: polylogue_model::VariantRelation::Translates,
+                alignment: vec![],
             },
-            text: "variant".into(),
-        },
-    );
+        )
+        .unwrap();
     let options = ReadOptions::default();
     let projected = project_record(original.clone(), &options, &evidence)
         .unwrap()
@@ -273,7 +278,7 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
     )
     .unwrap();
     assert!(
-        matches!(&items[1],ReadPart::Item(ReadItem{kind:ItemKind::Text{text},..}) if text=="variant")
+        items.iter().any(|item| matches!(item,ReadPart::Item(ReadItem{kind:ItemKind::Text{text},..}) if text=="variant"))
     );
     assert_eq!(projected, original);
 }
@@ -833,6 +838,7 @@ fn inline_images_need_exact_hash_safe_raster_type_and_size() {
             availability: ValueState::known("present".into()),
             link: Some("blobs/hash".into()),
             inline_bytes: Some(bytes.clone()),
+            open: None,
         },
     };
     assert!(
@@ -1189,19 +1195,24 @@ fn variant_marks_only_describe_visible_substitutions() {
         text: "visible".into(),
     }]);
     let mut evidence = ProjectionEvidence::default();
-    evidence.variants.insert(
-        7,
-        VariantText {
-            mark: VariantMark {
-                reference: "variant:test".into(),
-                key: "en".into(),
-                original: "block:test#7".into(),
-                stale: false,
-                show_original: None,
+    evidence
+        .variants
+        .insert(
+            polylogue_model::Reference::parse("block:test:session:message#7").unwrap(),
+            VariantText {
+                mark: VariantMark {
+                    reference: "variant:test".into(),
+                    key: "en".into(),
+                    original: "block:test:session:message#7".into(),
+                    stale: false,
+                    show_original: None,
+                },
+                text: "not selected".into(),
+                relation: polylogue_model::VariantRelation::Translates,
+                alignment: vec![],
             },
-            text: "not selected".into(),
-        },
-    );
+        )
+        .unwrap();
     let items = layout(record, &ReadOptions::default(), &evidence);
     assert!(matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
 }
@@ -1398,4 +1409,169 @@ fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
     assert_eq!(doc.footer.position.as_ref().unwrap().character, *until);
     assert_eq!(doc.footer.position.as_ref().unwrap().item, 0);
     assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
+}
+
+fn text_variant(original: &str, text: &str, alignment: Vec<TextAlignment>) -> VariantText {
+    VariantText {
+        mark: VariantMark {
+            reference: "variant:synthetic@revision".into(),
+            key: "en".into(),
+            original: original.into(),
+            stale: false,
+            show_original: None,
+        },
+        relation: polylogue_model::VariantRelation::Translates,
+        text: text.into(),
+        alignment,
+    }
+}
+#[test]
+fn variants_replace_thinking_and_remote_tool_output_at_their_exact_sources() {
+    let call = Block::ToolCall {
+        call_id: Some("c".into()),
+        tool: Some("test".into()),
+        action: Default::default(),
+        input: json!({}),
+        command: None,
+        path: None,
+        run_by_script: false,
+    };
+    let original = message(vec![
+        Block::Thinking {
+            text: Some("original thinking".into()),
+            redacted: false,
+            signature: Some("opaque".into()),
+        },
+        call.clone(),
+    ]);
+    let call_source = Source::block(
+        &MessageId::parse("test:session:message").unwrap(),
+        &SessionId::parse("test:session").unwrap(),
+        1,
+        false,
+    );
+    let result_source = Source::block(
+        &MessageId::parse("test:remote:result").unwrap(),
+        &SessionId::parse("test:remote").unwrap(),
+        7,
+        false,
+    );
+    let mut evidence = ProjectionEvidence::default();
+    for (reference, text) in [
+        ("block:test:session:message#0", "translated thinking"),
+        (result_source.reference.as_str(), "translated result"),
+    ] {
+        evidence
+            .variants
+            .insert(
+                polylogue_model::Reference::parse(reference).unwrap(),
+                text_variant(reference, text, vec![]),
+            )
+            .unwrap();
+    }
+    evidence.tool_pairs.insert(
+        1,
+        ToolPair {
+            emit_at: call_source.reference.clone(),
+            call: SourceBlock {
+                source: call_source,
+                block: call,
+            },
+            result: Some(SourceBlock {
+                source: result_source.clone(),
+                block: Block::ToolResult {
+                    call_id: Some("c".into()),
+                    reported_duration_ms: None,
+                    outcome: polylogue_model::ToolOutcome::Ok,
+                    output: Some("original result".into()),
+                    data: None,
+                    attachments: vec![],
+                },
+            }),
+            running: false,
+            duration_ms: Default::default(),
+            error_line: None,
+            child: None,
+            edit: None,
+        },
+    );
+    let options = ReadOptions {
+        thinking: Some(Expansion::Full),
+        tools: Some(Expansion::Full),
+        ..Default::default()
+    };
+    assert_eq!(
+        project_record(original.clone(), &options, &evidence)
+            .unwrap()
+            .unwrap(),
+        original
+    );
+    let items = layout(original, &options, &evidence);
+    assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Thinking { content: ThinkingContent::Text { text }, .. } if text == "translated thinking")));
+    assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Call { call } if call.output.as_deref()==Some("translated result") && call.result_source.as_ref()==Some(&result_source))));
+    let doc = document(items);
+    for format in [
+        Format::Terminal,
+        Format::Markdown,
+        Format::Html,
+        Format::Json,
+        Format::Jsonl,
+    ] {
+        let encoded = encode(&doc, format);
+        assert!(encoded.contains("translated thinking"));
+        assert!(encoded.contains("translated result"));
+        assert!(!encoded.contains("original thinking"));
+        assert!(!encoded.contains("original result"));
+        assert!(encoded.contains("variant"));
+    }
+}
+#[test]
+fn document_overlay_uses_original_body_ordinal_and_byte_boundaries() {
+    let mut doc = polylogue_model::Document::new(
+        polylogue_model::DocumentId::parse("test:document").unwrap(),
+        polylogue_model::DocumentPurpose::Transcript,
+    );
+    doc.blocks = vec![
+        Block::Text {
+            text: "first".into(),
+        },
+        Block::Text {
+            text: "aλz".into()
+        },
+    ];
+    let source = Source {
+        block: Some(1),
+        ..Source::record("document:test:document")
+    };
+    let mut evidence = ProjectionEvidence::default();
+    let reference = polylogue_model::Reference::parse("document:test:document").unwrap();
+    evidence
+        .variants
+        .insert(
+            reference.clone(),
+            text_variant(
+                &reference.to_string(),
+                "replacement",
+                vec![TextAlignment {
+                    source: source.clone(),
+                    start: 1,
+                    end: 3,
+                }],
+            ),
+        )
+        .unwrap();
+    let items = layout(
+        Record::Document(polylogue_model::bundle::DocumentRecord {
+            reference: reference.to_string(),
+            commit: 1,
+            document: doc,
+        }),
+        &ReadOptions::default(),
+        &evidence,
+    );
+    assert!(matches!(&items[0].kind,ItemKind::Text{text} if text=="first"));
+    assert!(
+        items.iter().any(|i| i.source == source
+            && matches!(&i.kind,ItemKind::Text{text} if text=="areplacementz"))
+    );
 }

@@ -154,7 +154,7 @@ fn item_markup(item: &ReadItem, inline_limit: usize) -> Markup {
             ThinkingContent::Encrypted => { p class="thinking" { "thinking (encrypted)" } }, ThinkingContent::Redacted => { p class="thinking" { "thinking (redacted)" } }, ThinkingContent::Absent { blocks } => { p class="thinking" { "thinking absent · " (blocks) " blocks" } }
         } },
         ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) " " code { (value(&call.target)) } " " (value(&call.outcome)) @if let Some(exit)=call.exit { " · exit " (exit) } " · " (value(&call.duration_ms)) " ms" } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open)) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() })) } } },
-        ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) } },
+        ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes,open } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) @if let Some(open)=open { " " (ready(open)) } } },
         ItemKind::Other { type_name,data } => { details { summary { (type_name) } pre { (serde_json::to_string_pretty(data).expect("JSON serializes")) } } },
         ItemKind::Indicator { indicator,text,expand } => { aside class="indicator" data-kind=(format!("{indicator:?}")) { (text) @if let Some(call)=expand { " " (ready(call)) } } },
         ItemKind::Omission { count,unit,why,continue_call } => { aside class="omission" { "… " (value(count)) " " (unit) ": " (why) @if let Some(call)=continue_call { " " (ready(call)) } } },
@@ -189,6 +189,17 @@ pub(crate) fn export_css() -> String {
     css
 }
 
+/// Aggregate allowance used by prepared read windows and standalone exports.
+pub const DEFAULT_INLINE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Raster types permitted in an archive HTML image data URL.
+pub fn inline_media_type(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
+    )
+}
+
 fn inline_image(
     attachment: &polylogue_model::Attachment,
     bytes: Option<&[u8]>,
@@ -198,10 +209,7 @@ fn inline_image(
     let mime = attachment.media_type.as_deref()?;
     if bytes.len() > limit
         || limit == 0
-        || !matches!(
-            mime,
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif"
-        )
+        || !inline_media_type(mime)
         || attachment.blob.as_ref() != Some(&polylogue_model::BlobHash::of(bytes))
     {
         return None;

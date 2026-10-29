@@ -169,20 +169,22 @@ pub fn visit_record(
                     reason: Some("author not established by source".into()),
                 },
             };
-            let mark = evidence
-                .variants
-                .iter()
-                .filter(|(ordinal, _)| {
-                    row.block_ordinals
-                        .iter()
-                        .zip(&message.blocks)
-                        .any(|(index, block)| {
-                            index == *ordinal && matches!(block, Block::Text { .. })
-                        })
-                })
-                .map(|(_, variant)| variant)
-                .find(|variant| !variant.mark.stale || options.variants.contains(&variant.mark.key))
-                .map(|variant| variant.mark.clone());
+            let mark =
+                row.block_ordinals
+                    .iter()
+                    .zip(&message.blocks)
+                    .find_map(|(ordinal, block)| {
+                        if !visible_text(block, options) {
+                            return None;
+                        }
+                        let source = Source::block(
+                            &message.id,
+                            &message.session,
+                            *ordinal,
+                            evidence.inherited,
+                        );
+                        evidence.variants.mark_for(&source, options).cloned()
+                    });
             if !visit(ReadItem {
                 source: source.clone(),
                 kind: ItemKind::MessageHeader {
@@ -360,15 +362,13 @@ fn block_items(
     if !options.view.block_kinds().contains(&block.kind()) {
         return Ok(true);
     }
+    if visible_text(block, options) && !variant_indicator(&source, options, evidence, visit) {
+        return Ok(false);
+    }
+    let presented = presentation_block(block, &source, options, evidence)?;
+    let block = presented.as_ref();
     let kind = match block {
-        Block::Text { text } => {
-            let text = evidence
-                .variants
-                .get(&ordinal)
-                .filter(|v| !v.mark.stale || options.variants.contains(&v.mark.key))
-                .map_or(text, |v| &v.text);
-            ItemKind::Text { text: text.clone() }
-        }
+        Block::Text { text } => ItemKind::Text { text: text.clone() },
         Block::Thinking {
             text,
             redacted,
@@ -403,9 +403,22 @@ fn block_items(
                 if pair.emit_at != source.reference {
                     return Ok(true);
                 }
+                let result = pair
+                    .result
+                    .as_ref()
+                    .map(|result| {
+                        presentation_block(&result.block, &result.source, options, evidence)
+                    })
+                    .transpose()?;
+                if options.tools() == Expansion::Full
+                    && let Some(result) = &pair.result
+                    && !variant_indicator(&result.source, options, evidence, visit)
+                {
+                    return Ok(false);
+                }
                 let mut call = call_item(
                     &pair.call.block,
-                    pair.result.as_ref().map(|r| &r.block),
+                    result.as_deref(),
                     options.tools() == Expansion::Full,
                     pair.running,
                 );
@@ -504,6 +517,7 @@ fn attachment_kind(
         availability: prepared.map(|p| p.availability.clone()).unwrap_or_default(),
         link: prepared.and_then(|p| p.link.clone()),
         inline_bytes,
+        open: prepared.and_then(|p| p.open.clone()),
     })
 }
 
@@ -751,4 +765,93 @@ fn absent_thinking(source: Source, blocks: u64) -> ReadItem {
             content: ThinkingContent::Absent { blocks },
         },
     }
+}
+
+fn visible_text(block: &Block, options: &ReadOptions) -> bool {
+    options.view.block_kinds().contains(&block.kind())
+        && match block {
+            Block::Text { .. } => true,
+            Block::Thinking { text: Some(_), .. } => options.thinking() == Expansion::Full,
+            Block::ToolResult {
+                output: Some(_), ..
+            } => options.tools() == Expansion::Full,
+            _ => false,
+        }
+}
+fn presentation_block<'a>(
+    block: &'a Block,
+    source: &Source,
+    options: &ReadOptions,
+    evidence: &ProjectionEvidence,
+) -> Result<std::borrow::Cow<'a, Block>, ReadError> {
+    use std::borrow::Cow;
+    if !visible_text(block, options) {
+        return Ok(Cow::Borrowed(block));
+    }
+    let text = match block {
+        Block::Text { text }
+        | Block::Thinking {
+            text: Some(text), ..
+        }
+        | Block::ToolResult {
+            output: Some(text), ..
+        } => text,
+        _ => return Ok(Cow::Borrowed(block)),
+    };
+    match evidence.variants.apply(source, text, options)? {
+        Cow::Borrowed(_) => Ok(Cow::Borrowed(block)),
+        Cow::Owned(text) => {
+            let mut presented = block.clone();
+            match &mut presented {
+                Block::Text { text: field }
+                | Block::Thinking {
+                    text: Some(field), ..
+                }
+                | Block::ToolResult {
+                    output: Some(field),
+                    ..
+                } => *field = text,
+                _ => unreachable!("text body kind is unchanged"),
+            }
+            Ok(Cow::Owned(presented))
+        }
+    }
+}
+fn variant_indicator(
+    source: &Source,
+    options: &ReadOptions,
+    evidence: &ProjectionEvidence,
+    visit: &mut impl FnMut(ReadItem) -> bool,
+) -> bool {
+    for (_, variant) in evidence.variants.iter() {
+        if variant.mark.stale && !options.variants.contains(&variant.mark.key) {
+            continue;
+        }
+        let applies = if variant.alignment.is_empty() {
+            variant.mark.original == source.reference
+        } else {
+            variant.alignment.iter().any(|range| {
+                range.source.reference == source.reference && range.source.block == source.block
+            })
+        };
+        if applies
+            && !visit(ReadItem {
+                source: source.clone(),
+                kind: ItemKind::Indicator {
+                    indicator: IndicatorKind::Variant,
+                    text: format!(
+                        "[variant {} · {} · {}{}]",
+                        variant.mark.key,
+                        variant.relation.as_str(),
+                        variant.mark.reference,
+                        if variant.mark.stale { " · stale" } else { "" }
+                    ),
+                    expand: variant.mark.show_original.clone().map(Box::new),
+                },
+            })
+        {
+            return false;
+        }
+    }
+    true
 }
