@@ -49,10 +49,14 @@ impl Inner {
         let before = self.index.total_changes();
         let tx = self.index.transaction()?;
         crate::variants::project(&tx)?;
-        if tx.total_changes() != before {
+        let changed = tx.total_changes() != before;
+        if changed {
             bump_counter(&tx)?;
         }
         tx.commit()?;
+        if changed {
+            self.commits.committed();
+        }
         Ok(())
     }
 
@@ -127,6 +131,7 @@ impl Inner {
         )?;
         // Repeated content can still add a newly observed import provenance.
         crate::write_lock::commit(tx)?;
+        self.commits.committed();
         self.project_variant_text()?;
         self.derive_due = true;
         Ok(outcome)

@@ -258,6 +258,7 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
     {
         let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
         let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+        let commits = writer.sender().unwrap().completion_commits();
         assert!(
             writer
                 .restore_authored(original.clone(), vec![], current("import", 10))
@@ -272,6 +273,10 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
         );
         assert!(writer.user(original.request.clone()).unwrap().pending);
         assert_eq!(producer.live_calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            commits.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         let pool = crate::ReadPool::open(&archive).unwrap();
         assert!(
             pool.reader()
@@ -284,7 +289,9 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
     producer.online.store(true, Ordering::SeqCst);
     let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
     let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+    let commits = writer.sender().unwrap().completion_commits();
     assert_eq!(writer.synchronize_primary().unwrap(), 1);
+    commits.try_recv().unwrap();
     let pool = crate::ReadPool::open(&archive).unwrap();
     let stored = pool
         .reader()
@@ -315,4 +322,40 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
             .repeat
     );
     assert_eq!(producer.live_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn commit_subscribers_wake_for_new_visible_facts_and_skip_exact_or_failed_user_retries() {
+    let archive = crate::fixture::writer::WriterArchive::new();
+    let commits = archive.writer.sender().unwrap().completion_commits();
+    let request = UserRequest {
+        id: "setting".into(),
+        machine: "machine".into(),
+        at: Timestamp::from_unix_ms(1).unwrap(),
+        write: UserWrite::SetSetting {
+            key: "key".into(),
+            value: "first".into(),
+            author: Author::Operator,
+            machine: None,
+        },
+    };
+    archive.writer.user(request.clone()).unwrap();
+    commits.try_recv().unwrap();
+    archive.writer.user(request.clone()).unwrap();
+    assert!(matches!(
+        commits.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    let mut changed = request;
+    if let UserWrite::SetSetting { value, .. } = &mut changed.write {
+        *value = "changed".into();
+    }
+    assert!(matches!(
+        archive.writer.user(changed),
+        Err(StoreError::Conflict(_))
+    ));
+    assert!(matches!(
+        commits.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
 }
