@@ -24,8 +24,6 @@ pub(crate) fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
     Ok(crate::encoding::pack_bytes(&serde_json::to_vec(value)?)?)
 }
 
-/// The existing request row owns the original outcome and immutable effect.
-/// A transport retry returns this value, including its original resolved body.
 fn read_source(conn: &Connection) -> Result<Source> {
     if conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name='source_client_request')",
@@ -38,6 +36,8 @@ fn read_source(conn: &Connection) -> Result<Source> {
     }
 }
 
+/// The existing request row owns the original outcome and immutable effect.
+/// A transport retry returns this value, including its original resolved body.
 pub fn known_request(conn: &Connection, request: &UserRequest) -> Result<Option<PreparedRequest>> {
     let source = read_source(conn)?;
     let stored=conn.query_row(&source.sql("SELECT content_hash,request,outcome,effect FROM @source.client_request WHERE id=?1"),[&request.id],|row|Ok((row.get::<_,Vec<u8>>(0)?,row.get::<_,Option<Vec<u8>>>(1)?,row.get::<_,Option<Vec<u8>>>(2)?,row.get::<_,Option<Vec<u8>>>(3)?))).optional()?;
@@ -136,6 +136,58 @@ pub fn prepare(
         .ok_or_else(|| StoreError::Invalid("prepared request was not recorded".into()))
 }
 
+fn validate(prepared: &PreparedRequest) -> Result<()> {
+    fn events<T: PartialEq>(
+        all: &[T],
+        added: &[T],
+        request: &str,
+        identity: impl Fn(&T) -> &str,
+    ) -> Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for event in all {
+            let id = identity(event);
+            if id.is_empty() || !seen.insert(id) {
+                return Err(StoreError::Invalid(
+                    "authored history has a duplicate or empty request identity".into(),
+                ));
+            }
+        }
+        for event in added {
+            if identity(event) != request || !all.contains(event) {
+                return Err(StoreError::Invalid(
+                    "authored event additions disagree with their frozen history".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+    for change in &prepared.effect.deliveries {
+        events(
+            &change.delivery.events,
+            &change.added_events,
+            &prepared.request.id,
+            |e| &e.request,
+        )?;
+    }
+    for change in &prepared.effect.chats {
+        events(
+            &change.action.events,
+            &change.added_events,
+            &prepared.request.id,
+            |e| &e.request,
+        )?;
+    }
+    for change in &prepared.effect.backfills {
+        events(
+            &change.job.events,
+            &change.added_events,
+            &prepared.request.id,
+            |e| &e.request,
+        )?;
+    }
+    Ok(())
+}
+
 /// Apply immutable facts only. No request selection or domain precondition is
 /// rerun after Sinex confirms the prepared body.
 pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> Result<()> {
@@ -151,6 +203,7 @@ pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> 
             "pending is not a canonical outcome".into(),
         ));
     }
+    validate(prepared)?;
     records::apply(tx, &prepared.effect, counter, false)?;
     insert_request(tx, prepared, counter, &[])
 }
@@ -177,6 +230,7 @@ pub fn restore(
             "pending is not a restorable outcome".into(),
         ));
     }
+    validate(prepared)?;
     records::apply(tx, &prepared.effect, counter, true)?;
     let mut imports = claims.to_vec();
     imports.push(current.clone());
