@@ -3,8 +3,8 @@
 use super::*;
 use crate::input_rows::{InputRows, Revision};
 use crate::primary::{
-    Capture, CaptureGroup, CapturedInput, Material, PendingCapture, PreparedInput, Product,
-    ProductWrite,
+    Capture, CaptureGroup, CapturedInput, CapturedReading, Material, PendingCapture, PreparedInput,
+    Product, ProductWrite,
 };
 use crate::staging::{Prepared, PreparedBatch, StoredInput};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,14 +69,6 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     if batch.input.id.is_empty() || i64::try_from(batch.length).is_err() {
         return Err(StoreError::Invalid("invalid primary capture input".into()));
     }
-    // Parsed payloads need the SDK's durable prepared-reading handoff before
-    // this raw-only entry point can acknowledge their temporary preparation.
-    if !batch.parse.is_empty() {
-        return Err(StoreError::Invalid(
-            "primary capture requires durable prepared-reading handoff before raw acquisition"
-                .into(),
-        ));
-    }
     for blob in batch.new_blob.iter().chain(&batch.blobs) {
         if !item.files.iter().any(|file| {
             file.owner == archive.root
@@ -112,6 +104,66 @@ fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     Ok(())
 }
 
+// An acquisition intent is independent of observer time and generated observation IDs.
+// Ordered source content, source facts and reading versions distinguish actual new work.
+fn capture_group_identity(group: &[PreparedBatch]) -> Result<String> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue-capture-group-v1");
+    for item in group {
+        let b = &item.batch;
+        let change = match b.change {
+            Change::First => ("first", 0, 0),
+            Change::Unchanged => ("unchanged", 0, 0),
+            Change::Observed { revision, chain } => ("observed", revision, chain),
+            Change::Reparse { chain } => ("reparse", 0, chain),
+            Change::Appended { from } => (
+                "appended",
+                i64::try_from(from)
+                    .map_err(|_| StoreError::Invalid("capture offset overflow".into()))?,
+                0,
+            ),
+            Change::Rewritten => ("rewritten", 0, 0),
+            Change::Disappeared => ("disappeared", 0, 0),
+        };
+        let observation = b.observation.as_ref().map(|o| {
+            (
+                &o.machine,
+                &o.host,
+                &o.path,
+                o.facts
+                    .as_ref()
+                    .map(|f| (f.device, f.inode, f.size, f.mtime_ns, f.ctime_ns)),
+                &o.import,
+                &o.container,
+            )
+        });
+        let encoded = serde_json::to_vec(&(
+            &b.input,
+            change,
+            b.continues,
+            b.length,
+            b.new_blob.as_ref().map(|v| (v.hash, v.size)),
+            b.blobs.iter().map(|v| (v.hash, v.size)).collect::<Vec<_>>(),
+            observation,
+            b.parse
+                .iter()
+                .map(|step| {
+                    (
+                        &step.reading_version,
+                        step.start,
+                        step.parsed_upto,
+                        step.at_end,
+                        step.reset,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ))?;
+        hash.update(&(encoded.len() as u64).to_le_bytes());
+        hash.update(&encoded);
+    }
+    Ok(format!("capture:{}", hash.finalize().to_hex()))
+}
+
 impl Inner {
     pub(super) fn primary_store_group(
         &mut self,
@@ -134,8 +186,6 @@ impl Inner {
         for item in group {
             validate(item, &self.location)?;
         }
-        self.poll_primary()?;
-        self.drain_primary_captures()?;
         let sinex = Arc::clone(self.sinex.as_ref().ok_or_else(|| {
             StoreError::Invalid("primary acquisition requires a producer".into())
         })?);
@@ -153,7 +203,7 @@ impl Inner {
                 }
             }
         }
-        let group_id = uuid::Uuid::now_v7().to_string();
+        let group_id = capture_group_identity(group)?;
         let mut accepted = Vec::new();
         for (ordinal, item) in group.iter().enumerate() {
             let batch = &item.batch;
@@ -194,6 +244,12 @@ impl Inner {
                 .unwrap_or_else(|| (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64));
             let captured = CapturedInput {
                 input: name,
+                arrival_rank: batch.input.arrival_rank,
+                parsed: batch
+                    .parse
+                    .iter()
+                    .map(CapturedReading::from_step)
+                    .collect::<Result<_>>()?,
                 rows,
                 index,
                 previous: previous_material,
@@ -298,7 +354,7 @@ impl Inner {
                     .or_else(|| captured.previous.clone()),
             ));
         }
-        let count: u64 = self.index.query_row(
+        let count: i64 = self.index.query_row(
             "SELECT count(*) FROM source_material WHERE input=?1 AND chain=?2",
             params![input, chain],
             |row| row.get(0),
@@ -327,7 +383,7 @@ impl Inner {
             Capture::Input(input) => input.group.as_ref(),
             Capture::Blob { .. } => None,
         };
-        let members:Vec<&PendingCapture>=match grouped{Some(group)=>pending.iter().filter(|pending|matches!(&pending.captured,Capture::Input(input) if input.group.as_ref().is_some_and(|other|other.identity==group.identity))).collect(),None=>vec![first]};
+        let mut members:Vec<&PendingCapture>=match grouped{Some(group)=>pending.iter().filter(|pending|matches!(&pending.captured,Capture::Input(input) if input.group.as_ref().is_some_and(|other|other.identity==group.identity))).collect(),None=>vec![first]};
         if let Some(group) = grouped {
             members.sort_by_key(|member| match &member.captured {
                 Capture::Input(input) => input.group.as_ref().map_or(0, |group| group.ordinal),
@@ -383,6 +439,27 @@ impl Inner {
                     else {
                         return Ok(());
                     };
+                    let chain = if let Some(extent) = &rows.extent {
+                        extent.chain
+                    } else if let Some(revision) = &rows.revision {
+                        revision.chain
+                    } else if let Some(revision) =
+                        rows.observation.as_ref().and_then(|o| o.revision)
+                    {
+                        self.index.query_row(
+                            "SELECT chain FROM source_revision WHERE input=?1 AND number=?2",
+                            params![rows.input, revision],
+                            |row| row.get(0),
+                        )?
+                    } else {
+                        latest(&self.index, &rows.input)?.map_or(1, |revision| revision.chain)
+                    };
+                    let key = InputKey {
+                        id: rows.input.clone(),
+                        format: rows.format.clone(),
+                        arrival_rank: input.arrival_rank,
+                    };
+                    let machine = rows.observation.as_ref().map(|o| o.machine.clone());
                     let material = if rows.extent.is_some() {
                         member.material.clone()
                     } else {
@@ -406,6 +483,54 @@ impl Inner {
                         parents: Vec::new(),
                         output_index: writes.len() as u64,
                     });
+                    for captured in &input.parsed {
+                        let mut step = captured.clone().into_step();
+                        step.prepare();
+                        for product in crate::primary::products::parse(&key, chain, &step)? {
+                            let reading = product.reading().expect("parsed product");
+                            let start = match &product {
+                                Product::Message { facts, .. } => facts.offset,
+                                Product::Document { facts, .. } => facts.offset,
+                                Product::Event { facts, .. } => {
+                                    facts.range.map_or(reading.start, |range| range.0)
+                                }
+                                _ => reading.start,
+                            };
+                            let location = match (&input.rows.extent, &member.material) {
+                                (Some(original), Some(material))
+                                    if start >= original.offset as u64
+                                        && start
+                                            < (original.offset as u64 + original.length as u64)
+                                        || original.length == 0
+                                            && start == original.offset as u64 =>
+                                {
+                                    Some(crate::primary::SourceLocation {
+                                        material: material.id.clone(),
+                                        anchor: start - original.offset as u64
+                                            + original.blob_offset as u64,
+                                    })
+                                }
+                                _ => crate::primary::projection::material_at(
+                                    &self.index,
+                                    &key.id,
+                                    chain,
+                                    start,
+                                )?,
+                            };
+                            if location.is_none() {
+                                return Err(StoreError::Invalid(
+                                    "parsed fact has no captured source anchor".into(),
+                                ));
+                            }
+                            writes.push(ProductWrite {
+                                product,
+                                location,
+                                machine: machine.clone(),
+                                parents: Vec::new(),
+                                output_index: writes.len() as u64,
+                            });
+                        }
+                    }
                 }
             }
         }
