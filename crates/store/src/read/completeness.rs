@@ -169,12 +169,12 @@ impl Reader<'_> {
             CompletenessDimension::Incomplete(search_missing)
         };
         let projection = if self.pool.archive.is_primary() {
-            // Scalar stream progress and raw-input certificates cannot certify
-            // the full permitted indexed catalog. The owner proof is distinct.
-            CompletenessDimension::Unknown(vec![CompletenessReason::OwnerProofUnavailable])
-        } else {
-            CompletenessDimension::NotApplicable
-        };
+            if crate::primary::projection::replay_state(conn)?.certified_position().is_some() {
+                CompletenessDimension::Complete
+            } else {
+                CompletenessDimension::Unknown(vec![CompletenessReason::OwnerProofUnavailable])
+            }
+        } else { CompletenessDimension::NotApplicable };
         token.check()?;
         Ok(ReadCompleteness {
             parsing,

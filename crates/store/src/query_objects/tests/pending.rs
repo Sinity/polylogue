@@ -134,10 +134,10 @@ impl Sinex for PendingProducer {
     fn discard_confirmed(&self, _: &[String], _: i64, _: i64) -> Result<()> {
         Ok(())
     }
-    fn confirmed(&self, _: i64, _: &str, _: Option<&str>) -> Result<Vec<Confirmed>> {
+    fn confirmed(&self, _: &crate::primary::ReplayState, _: &str) -> Result<Vec<Confirmed>> {
         Self::unavailable()
     }
-    fn acknowledge(&self, _: i64) -> Result<()> {
+    fn acknowledge(&self, _: &crate::primary::ReplayState) -> Result<()> {
         Self::unavailable()
     }
 }

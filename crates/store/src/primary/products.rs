@@ -151,6 +151,9 @@ pub struct Confirmed {
     pub output_index: u64,
     pub event: String,
     pub change: ConfirmedChange,
+    /// Authenticated owner fetch metadata; absent historical context stays unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<super::NativeFactContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -163,6 +166,7 @@ pub enum ConfirmedChange {
     Ignored,
     PositionComplete,
     ScopeReset { scope: String },
+    Control(Box<super::ReplayControl>),
 }
 
 /// A source capture waiting in the producer spool, before cache application.

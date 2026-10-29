@@ -43,6 +43,7 @@ enum IndexTarget {
     Index(&'static str),
     IndexAndPrimary(&'static str, &'static str),
     PrimarySource(&'static str),
+    PrimaryIndex(&'static str),
 }
 const INDEX_MIGRATIONS: &[IndexMigration] = &[
     IndexMigration {
@@ -91,6 +92,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     IndexMigration {
         version: 12,
         target: IndexTarget::Index(include_str!("schema/index_12.sql")),
+    },
+    IndexMigration {
+        version: 13,
+        target: IndexTarget::PrimaryIndex(include_str!("schema/index_13.sql")),
     },
 ];
 pub(crate) const ARCHIVE_MIGRATIONS: &[&str] = &[
@@ -192,6 +197,8 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                     tx.execute_batch(&crate::source::Source::Cache.sql(sql))?;
                 }
                 IndexTarget::PrimarySource(_) => {}
+                IndexTarget::PrimaryIndex(sql) if primary => tx.execute_batch(sql)?,
+                IndexTarget::PrimaryIndex(_) => {}
             }
         }
         tx.execute_batch(READ_INDEXES)?;

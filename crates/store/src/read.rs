@@ -595,6 +595,17 @@ impl Reader<'_> {
         crate::primary::projection::checkpoint(self.conn()?)
     }
 
+    /// Original authenticated owner association, independent of native-origin
+    /// eligibility. Absent historical metadata stays unknown.
+    pub fn native_fact_context(&self, event: &str) -> Result<Option<crate::primary::NativeFactContext>> {
+        if !self.pool.archive.is_primary() { return Ok(None); }
+        crate::primary::projection::native_context(self.conn()?, event)
+    }
+
+    pub fn confirmed_replay_state(&self) -> Result<crate::primary::ReplayState> {
+        crate::primary::projection::replay_state(self.conn()?)
+    }
+
     pub fn confirmed_scope(&self) -> Result<Option<String>> {
         crate::primary::scope::current(self.conn()?)
     }

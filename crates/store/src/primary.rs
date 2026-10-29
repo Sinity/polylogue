@@ -17,7 +17,7 @@ pub use raw_acquisition::{
 };
 pub use replay::{
     ConfirmedOrigin, DeliveredCompletion, FullProjectionComplete, NativeFactContext, NativeKind,
-    NativeSource, ProjectionAvailability, ProjectionCoverage, ProjectionIdentity, RawInputCoverage,
+    NativeSource, NativeDeliveryCursor, ProjectionAvailability, ProjectionCoverage, ProjectionIdentity, RawInputCoverage,
     RawInputProof, ReplayBasisStatus, ReplayContinuation, ReplayControl, ReplayCursor, ReplayPage,
     ReplayState,
 };
@@ -138,8 +138,8 @@ pub trait Sinex: Send + Sync {
         tombstone_position: i64,
         applied: i64,
     ) -> Result<()>;
-    fn confirmed(&self, after: i64, cache: &str, scope: Option<&str>) -> Result<Vec<Confirmed>>;
-    fn acknowledge(&self, position: i64) -> Result<()>;
+    fn confirmed(&self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>>;
+    fn acknowledge(&self, state: &ReplayState) -> Result<()>;
 }
 
 /// What an input is, in words Sinex keeps: the origin that wrote it, its

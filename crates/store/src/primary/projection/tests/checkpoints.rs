@@ -22,6 +22,7 @@ fn staged(index: &mut Connection, product: Product) {
     stage(
         index,
         &[Confirmed {
+            native: None,
             position: 1,
             output_index: 0,
             event: "native-fact".into(),

@@ -3,7 +3,7 @@ pub(crate) const SCHEMA: &str = concat!("
 CREATE TABLE primary_fact (
  event TEXT PRIMARY KEY, admitted INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
- product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT, session TEXT
+ product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT, session TEXT, native_context BLOB
 ) STRICT;
 CREATE INDEX primary_fact_chain ON primary_fact(input,chain,admitted,event);
 CREATE INDEX primary_fact_session ON primary_fact(session,kind,state,admitted);
@@ -14,11 +14,11 @@ CREATE TABLE primary_fact_blob (
 CREATE INDEX primary_fact_blob_hash ON primary_fact_blob(hash);
 CREATE TABLE primary_pending (
  n INTEGER PRIMARY KEY, position INTEGER NOT NULL, event TEXT NOT NULL,
- change TEXT NOT NULL, product BLOB, source_order INTEGER NOT NULL,
+ change TEXT NOT NULL, product BLOB, source_order INTEGER NOT NULL, native_context BLOB,
  UNIQUE(position,event,change)
 ) STRICT;
 CREATE INDEX primary_pending_position ON primary_pending(position,n);
-CREATE TABLE primary_complete(position INTEGER PRIMARY KEY) STRICT;
+CREATE TABLE primary_complete(position INTEGER PRIMARY KEY, evidence BLOB) STRICT;
 CREATE TABLE source_material (
  id TEXT NOT NULL, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
  length INTEGER NOT NULL, hash BLOB NOT NULL, source_length INTEGER, blob_offset INTEGER NOT NULL,
@@ -30,6 +30,9 @@ CREATE INDEX source_material_place ON source_material(input,chain,offset);
 pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_index.sql");
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
+mod replay;
+pub(crate) use replay::{native_context, replay_state};
+pub(crate) use replay::save as save_replay;
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -60,14 +63,29 @@ pub(crate) fn position(index: &Connection) -> Result<i64> {
 fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let applied = position(&tx)?;
+    let mut state = replay_state(&tx)?;
     for event in events {
+        if let ConfirmedChange::Control(control) = &event.change {
+            if !event.event.is_empty() || event.native.is_some() || event.output_index != 0 {
+                return Err(StoreError::Invalid("owner replay controls cannot carry a fact identity".into()));
+            }
+            replay::stage_control(&tx, &mut state, control)?;
+            continue;
+        }
+        if let Some(context) = &event.native {
+            replay::validate_context(context, state.policy_epoch)?;
+        }
         if matches!(event.change, ConfirmedChange::ScopeReset { .. }) {
             return Err(StoreError::Invalid(
                 "scope reset must precede confirmed data application".into(),
             ));
         }
+        if matches!(event.change, ConfirmedChange::PositionComplete) && state.policy_epoch.is_some() {
+            return Err(StoreError::Invalid("a native replay requires its delivered owner completion receipt".into()));
+        }
         if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
             tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
+            state.applied_position = Some(0);
             continue;
         }
         if event.position <= 0 {
@@ -86,7 +104,14 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             continue;
         }
         if matches!(event.change, ConfirmedChange::Ignored) {
+            if state.policy_epoch.is_some() {
+                return Err(StoreError::Invalid("an indexed owner replay cannot ignore an unsupported fact".into()));
+            }
             continue;
+        }
+        if state.policy_epoch.is_some() {
+            state.availability = super::ProjectionAvailability::Unknown;
+            state.publication = None;
         }
         if event.event.is_empty() {
             return Err(StoreError::Invalid(
@@ -101,22 +126,24 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             _ => unreachable!(),
         };
         let bytes = packed(&event.change)?;
+        let native = event.native.as_ref().map(packed).transpose()?;
         let source_order = i64::try_from(event.output_index).map_err(|_| {
             StoreError::Invalid(
                 "a source output position exceeds SQLite's signed integer range".into(),
             )
         })?;
-        let existing:Option<(Vec<u8>,i64)>=tx.query_row("SELECT product,source_order FROM primary_pending WHERE position=?1 AND event=?2 AND change=?3",params![event.position,event.event,change],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-        if let Some((old, order)) = existing {
-            if old != bytes || order != source_order {
+        let existing:Option<(Vec<u8>,i64,Option<Vec<u8>>)>=tx.query_row("SELECT product,source_order,native_context FROM primary_pending WHERE position=?1 AND event=?2 AND change=?3",params![event.position,event.event,change],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+        if let Some((old, order, context)) = existing {
+            if old != bytes || order != source_order || context != native {
                 return Err(StoreError::Invalid(
                     "a redelivered confirmed change has different contents".into(),
                 ));
             }
         } else {
-            tx.execute("INSERT INTO primary_pending(position,event,change,product,source_order) VALUES (?1,?2,?3,?4,?5)",params![event.position,event.event,change,bytes,source_order])?;
+            tx.execute("INSERT INTO primary_pending(position,event,change,product,source_order,native_context) VALUES (?1,?2,?3,?4,?5,?6)",params![event.position,event.event,change,bytes,source_order,native])?;
         }
     }
+    replay::save(&tx, &state)?;
     crate::fault::check("primary.stage_commit", "")?;
     tx.commit()?;
     Ok(())
@@ -138,6 +165,7 @@ struct Fact {
     end: Option<i64>,
     version: Option<String>,
     session: Option<String>,
+    native: Option<Vec<u8>>,
 }
 impl Fact {
     fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -156,10 +184,11 @@ impl Fact {
             end: row.get(11)?,
             version: row.get(12)?,
             session: row.get(13)?,
+            native: row.get(14)?,
         })
     }
     fn insert(&self, index: &Connection, table: &str) -> Result<()> {
-        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session])?;
+        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session,native_context) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.native])?;
         Ok(())
     }
     fn product(&self) -> Result<Option<Product>> {
@@ -170,6 +199,7 @@ impl Fact {
 fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, &'static str) {
     let reference = match product {
         Product::AttachmentBinding { record } => Some(format!("attachment-binding:{}", record.context().message)),
+        Product::Link { facts, .. } => Some(facts.selection_tag()),
         Product::Session { facts, .. } => Some(format!("session:{}", facts.id)),
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
@@ -223,7 +253,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
         CREATE INDEX temp.primary_candidate_chain ON primary_candidate(input,chain);
         CREATE TEMP VIEW primary_next AS SELECT * FROM primary_candidate UNION ALL SELECT * FROM main.primary_fact f WHERE NOT EXISTS(SELECT 1 FROM primary_candidate c WHERE c.event=f.event);")?;
     let mut query = index.prepare(
-        "SELECT event,product,source_order,position FROM primary_pending WHERE position<=?1 ORDER BY position,CASE change WHEN 'live' THEN 0 WHEN 'archived' THEN 1 WHEN 'restored' THEN 1 ELSE 2 END,n",
+        "SELECT event,product,source_order,position,native_context FROM primary_pending WHERE position<=?1 ORDER BY position,CASE change WHEN 'live' THEN 0 WHEN 'archived' THEN 1 WHEN 'restored' THEN 1 ELSE 2 END,n",
     )?;
     let mut rows = query.query([through])?;
     while let Some(row) = rows.next()? {
@@ -231,6 +261,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
         let bytes: Vec<u8> = row.get(1)?;
         let order: i64 = row.get(2)?;
         let position: i64 = row.get(3)?;
+        let native: Option<Vec<u8>> = row.get(4)?;
         let change: ConfirmedChange = unpacked(&bytes)?;
         let old = index
             .query_row(
@@ -256,6 +287,11 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                         return Err(StoreError::Invalid(
                             "a tombstoned Sinex event cannot become live".into(),
                         ));
+                    }
+                }
+                if let Some(old) = &old {
+                    if old.native != native {
+                        return Err(StoreError::Invalid("a fact changed its original owner context".into()));
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
@@ -300,6 +336,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     end,
                     version,
                     session,
+                    native,
                 })
             }
             ConfirmedChange::Archived => old.map(|mut fact| {
@@ -328,7 +365,8 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
             }),
             ConfirmedChange::Ignored
             | ConfirmedChange::PositionComplete
-            | ConfirmedChange::ScopeReset { .. } => None,
+            | ConfirmedChange::ScopeReset { .. }
+            | ConfirmedChange::Control(_) => None,
         };
         if let Some(next) = next {
             next.insert(index, "primary_candidate")?;
@@ -913,14 +951,14 @@ pub(crate) fn apply(
     }
     stage(index, events)?;
     loop {
-        let applied = position(index)?;
+        let applied = checkpoint(index)?.unwrap_or(-1);
         let next: Option<i64> = index.query_row(
-            "SELECT min(position) FROM primary_complete WHERE position>?1",
+            "SELECT min(position) FROM primary_complete WHERE position>=?1",
             [applied],
             |row| row.get(0),
         )?;
         let Some(next) = next else {
-            return Ok(applied);
+            return position(index);
         };
         candidate(index, next)?;
         let mut plan = plan(index)?;
@@ -950,6 +988,7 @@ pub(crate) fn apply(
             [],
         )?;
         remember_blobs(&tx)?;
+        replay::complete(&tx, next)?;
         tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;
