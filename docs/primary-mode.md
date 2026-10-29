@@ -109,6 +109,15 @@ promotes every complete change through its position and the applied checkpoint
 atomically. The checkpoint is unknown until the first real barrier, including
 the explicit zero barrier for an empty owner store.
 
+Read completeness is evaluated on the pinned Reader snapshot from declared
+native reading contracts, source lengths and parser checkpoints, current
+derivations and pending search work. A parser waiting on a trailing record is
+current only at its recorded observed source length. Intentionally kept sources
+are identified separately from parsed products. Independent source and index
+write counters do not establish completeness. Primary full-projection evidence
+is a separate requirement; scalar stream progress or raw-input coverage alone
+leaves it unknown.
+
 The applied checkpoint is bound to the owner-authoritative grant scope. A scope
 change makes the previous read generation unavailable atomically, cancels its
 readers and cursors, and replays the newly authorized scope. Raw custody,

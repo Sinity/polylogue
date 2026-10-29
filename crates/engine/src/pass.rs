@@ -673,11 +673,10 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let behind = self.reads.reader()?.chains_behind_index(
-            &ORIGINS
-                .iter()
-                .filter(|o| o.support != Support::Kept)
-                .map(|o| (o.name.to_owned(), o.reading_version()))
-                .collect::<Vec<_>>(),
+            &crate::reading_contracts().into_iter().filter_map(|contract| match contract {
+                polylogue_store::ReadingContract::Expected { origin, version } => Some((origin, version)),
+                polylogue_store::ReadingContract::Kept { .. } => None,
+            }).collect::<Vec<_>>(),
         )?;
         let mut replacements = Vec::new();
         let mut rounds: Vec<Vec<Plan>> = Vec::new();
