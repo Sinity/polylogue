@@ -209,7 +209,14 @@ fn prepare(
     prepare_with(
         reader,
         since,
-        &super::super::tests::fixture_clock(now, "UTC", 0),
+        &query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(now).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Etc/UTC").unwrap(),
+                jiff::civil::Time::midnight(),
+            )
+            .unwrap(),
+        ),
         file,
     )
 }
