@@ -39,7 +39,6 @@ pub(crate) struct WorkingState {
     pub(crate) group: String,
     pub(crate) facts: Option<FileFacts>,
     pub(crate) stored: u64,
-    pub(crate) checkpoint: Option<polylogue_store::primary::PendingCheckpoint>,
 }
 
 #[derive(PartialEq, Eq)]

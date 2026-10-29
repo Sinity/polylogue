@@ -1234,9 +1234,6 @@ impl Engine {
                 .writer
                 .source_snapshot(source, &plan.origin.reading_version())
                 .ok();
-            let checkpoint = snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.pending.continuation.clone());
             let head = snapshot.and_then(|snapshot| snapshot.pending.head);
             let capture = head.and_then(|head| match head.captured {
                 polylogue_store::primary::Capture::Input(input)
@@ -1262,7 +1259,6 @@ impl Engine {
                     group: group.clone(),
                     facts: plan.facts,
                     stored: plan.stored_upto,
-                    checkpoint,
                 });
             }
             return;
