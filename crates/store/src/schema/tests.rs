@@ -173,11 +173,13 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
     base_index(&base).unwrap();
-    let base = shape(&base).unwrap();
+    let base_shape = shape(&base).unwrap();
+    base.execute_batch(READ_INDEXES).unwrap();
+    let expected = shape(&base).unwrap();
     let read_indexes: Vec<_> = shape(&conn)
         .unwrap()
         .into_iter()
-        .filter(|item| item.0 == "index" && !base.contains(item))
+        .filter(|item| item.0 == "index" && !base_shape.contains(item))
         .map(|item| item.1)
         .collect();
     assert!(!read_indexes.is_empty());
@@ -185,9 +187,9 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
         assert!(same_index_schema(&conn).unwrap(), "missing {name}");
         ensure_index(&conn).unwrap();
-        assert!(same_schema(&conn, &[INDEX, crate::coverage::SCHEMA, READ_INDEXES]).unwrap());
+        assert_eq!(shape(&conn).unwrap(), expected);
     }
-    assert!(same_schema(&conn, &[INDEX, crate::coverage::SCHEMA, READ_INDEXES]).unwrap());
+    assert_eq!(shape(&conn).unwrap(), expected);
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row

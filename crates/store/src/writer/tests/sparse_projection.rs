@@ -508,6 +508,7 @@ fn sparse_index_migration_keeps_native_versions_and_infers_dense_positions() {
     index.execute_batch("DROP TABLE message_projection; ALTER TABLE block DROP COLUMN ordinal;
         ALTER TABLE session_record DROP COLUMN admitted; ALTER TABLE document_source DROP COLUMN admitted;
         ALTER TABLE event_source DROP COLUMN admitted; ALTER TABLE link_source DROP COLUMN admitted;
+        ALTER TABLE parse_state DROP COLUMN commit_seq;
         PRAGMA user_version=1;").unwrap();
     crate::schema::ensure_index(&index).unwrap();
     assert_eq!(
