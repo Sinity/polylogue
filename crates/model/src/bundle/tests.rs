@@ -132,6 +132,7 @@ fn message_record() -> MessageRecord {
         block_count: 2,
         block_ordinals: vec![0, 1],
         injections: Vec::new(),
+        bindings: Vec::new(),
         message,
     }
 }

@@ -6,6 +6,7 @@ mod stored_names;
 
 pub mod assertion;
 pub mod atomic_write;
+pub mod attachment_binding;
 pub mod authored;
 pub mod authorship;
 pub mod batch;

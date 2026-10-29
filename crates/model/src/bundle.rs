@@ -140,6 +140,9 @@ pub struct MessageRecord {
     pub block_ordinals: Vec<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub injections: Vec<crate::injection::InjectionEvidence>,
+    /// Attachment provenance is independent of the source message value and hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<crate::attachment_binding::AttachmentBinding>,
     pub message: Message,
 }
 
@@ -354,6 +357,8 @@ pub enum BundleError {
     InvalidBlockSelection,
     #[error("injection evidence does not match its source message or field")]
     InvalidInjectionEvidence,
+    #[error("attachment binding does not match its message source slot or provenance")]
+    InvalidAttachmentBinding,
     #[error("complete message content does not match its source version")]
     SourceVersionMismatch,
     #[error("partial message observations conflict at the same source version")]
@@ -511,6 +516,7 @@ impl MessageRecord {
         for evidence in &self.injections {
             evidence.validate_for(&self.message.id, &self.projection())?;
         }
+        crate::attachment_binding::validate_record(self)?;
         if self.is_complete()
             && self
                 .message
