@@ -68,7 +68,10 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     command_surface::Origin::Mcp => Surface::Mcp,
                     _ => Surface::Cli,
                 },
-                cwd: None,
+                cwd: context
+                    .caller()
+                    .identity::<crate::protocol::caller::Accepted>()
+                    .and_then(|caller| caller.working_directory.clone()),
                 json: true,
             };
             let values = serde_json::to_value(arguments).expect("typed arguments serialize");

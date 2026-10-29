@@ -25,6 +25,7 @@ const ENVIRONMENT: [&str; 9] = [
 pub struct Accepted {
     pub authorship: Authorship,
     pub cancellation: polylogue_store::read::limit::ReadCancellation,
+    pub working_directory: Option<PathBuf>,
 }
 
 pub fn accept(
@@ -37,6 +38,7 @@ pub fn accept(
     Accepted {
         authorship: polylogue_model::authorship::compute_authorship(via, evidence, hook.as_ref()),
         cancellation,
+        working_directory: None,
     }
 }
 
@@ -83,6 +85,12 @@ pub fn peer(
         evidence.tool_call_id = supplied.tool_call_id.clone();
     }
     Ok((evidence, via))
+}
+
+/// The accepting daemon observes relative-path context from the native peer.
+pub fn working_directory(stream: &std::os::unix::net::UnixStream) -> std::io::Result<PathBuf> {
+    let credentials = rustix::net::sockopt::socket_peercred(stream)?;
+    std::fs::read_link(format!("/proc/{}/cwd", credentials.pid.as_raw_pid()))
 }
 
 #[derive(Clone)]

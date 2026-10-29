@@ -45,12 +45,14 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                                 polylogue_model::authorship::Channel::Cli,
                             )
                         });
-                    let accepted = crate::protocol::caller::accept(
+                    let mut accepted = crate::protocol::caller::accept(
                         &d.callers,
                         &evidence,
                         channel,
                         cancellation.clone(),
                     );
+                    accepted.working_directory =
+                        crate::protocol::caller::working_directory(&out).ok();
                     let origin = if channel == polylogue_model::authorship::Channel::Mcp {
                         command_surface::Origin::Mcp
                     } else {
@@ -101,8 +103,9 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                     polylogue_model::authorship::Channel::Cli,
                 )
             });
-        let accepted =
+        let mut accepted =
             crate::protocol::caller::accept(&d.callers, &evidence, channel, cancellation.clone());
+        accepted.working_directory = crate::protocol::caller::working_directory(&out).ok();
         let limit = super::execution::limit_for(
             &incoming.request,
             incoming.deadline_ms,
