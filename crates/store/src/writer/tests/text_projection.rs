@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::StatementStatus;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
 #[test]
 fn current_blocks_reuse_stored_text_identities() {
@@ -21,18 +21,25 @@ fn current_blocks_reuse_stored_text_identities() {
             )
         })
         .collect();
-    let b = batch("input", 0, 0, rows, &["session"]);
+    let mut b = batch("input", 0, 0, rows, &["session"]);
+    resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+    tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Read {
+            table_name: "text",
+            column_name: "hash",
+        } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }))
+    .unwrap();
+    assert_eq!(write_rows(&tx, &b, &b.parse[0], 1, 1, None).unwrap(), 32);
+    tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .unwrap();
     assert_eq!(
-        write_test_rows(&tx, &b, &b.parse[0], 1, 1, None).unwrap(),
+        tx.query_row("SELECT count(DISTINCT text_id) FROM block", [], |row| row
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
         32
-    );
-    let reads = tx
-        .prepare_cached("SELECT id FROM text WHERE hash = ?1")
-        .unwrap()
-        .get_status(StatementStatus::Run);
-    println!("text identity lookups for 32 distinct blocks: {reads}");
-    assert_eq!(
-        reads, 32,
-        "current projection repeated historical text identity lookup"
     );
 }
