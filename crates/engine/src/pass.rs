@@ -313,8 +313,15 @@ impl Engine {
             let now = FileFacts::of(&meta);
             if compressed::is_rollout(&f) {
                 match self.capture_rollout(&f, now, pass) {
-                    Ok(Some(plan)) if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) => {
-                        plans.push(plan)
+                    Ok(Some(plan)) => {
+                        if let Some(previous) = plans
+                            .iter_mut()
+                            .find(|p: &&mut Plan| p.input.id == plan.input.id)
+                        {
+                            *previous = plan;
+                        } else {
+                            plans.push(plan);
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => pass
@@ -429,11 +436,16 @@ impl Engine {
             let now = FileFacts::of(&meta);
             if compressed::is_rollout(f) {
                 match self.capture_rollout(f, now, pass) {
-                    Ok(Some(mut plan))
-                        if !plans.iter().any(|p: &Plan| p.input.id == plan.input.id) =>
-                    {
+                    Ok(Some(mut plan)) => {
                         plan.priority = Priority::Live;
-                        plans.push(plan);
+                        if let Some(previous) = plans
+                            .iter_mut()
+                            .find(|p: &&mut Plan| p.input.id == plan.input.id)
+                        {
+                            *previous = plan;
+                        } else {
+                            plans.push(plan);
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => pass
@@ -525,7 +537,7 @@ impl Engine {
                 }
             }
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
-            Change::Reparse { .. } => unreachable!(),
+            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
         };
         // A document is parsed whole: any change parses it from its start.
         let (parse_pos, parser_state) = if whole(st.origin, path) {

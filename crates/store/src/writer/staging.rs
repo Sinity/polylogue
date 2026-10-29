@@ -270,7 +270,8 @@ impl Inner {
                 send_to_sinex(sinex.as_ref(), &tx, rows, file, b.new_blob.as_ref())?;
             }
             crate::fault::check("import.rows", &b.input.id)?;
-            let already_stored = again || matches!(b.change, Change::Unchanged);
+            let already_stored =
+                again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,

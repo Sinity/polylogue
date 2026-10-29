@@ -311,13 +311,13 @@ impl Resolver {
         let mut latest = BTreeMap::<String, Option<(i64, i64)>>::new();
         for b in batches {
             keys.insert(Key::new(Kind::Input, b.input.id.as_bytes()));
-            let prior = if matches!(b.change, Change::Reparse { .. }) {
+            let prior = if matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 None
             } else {
                 match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?}
             };
             let chain = match (&b.change, b.continues, prior) {
-                (Change::Reparse { chain }, _, _) => *chain,
+                (Change::Reparse { chain } | Change::Observed { chain, .. }, _, _) => *chain,
                 (_, true, Some((_, chain)))
                 | (
                     Change::Appended { .. } | Change::Unchanged | Change::Disappeared,
@@ -326,7 +326,7 @@ impl Resolver {
                 ) => chain,
                 _ => prior.map_or(1, |(number, _)| number + 1),
             };
-            if !matches!(b.change, Change::Reparse { .. }) {
+            if !matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 let number = match (&b.change, b.continues, prior) {
                     (_, true, Some((number, _)))
                     | (Change::Unchanged | Change::Disappeared, _, Some((number, _))) => number,
