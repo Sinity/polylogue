@@ -126,3 +126,125 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     assert!(reader.attachment_hash(&asset).is_err());
     assert!(reader.attachment_range(&asset, 0..asset.size).is_err());
 }
+
+// These fixtures exercise source metadata discovery, not byte admission or availability.
+fn member_scan_fixture(prefix: &str) -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE {prefix}observation(id TEXT PRIMARY KEY,input TEXT NOT NULL,details_json TEXT);
+         CREATE TABLE {prefix}observation_container(observation_id TEXT,container_input TEXT);"
+    )).unwrap();
+    for (id, input, namespace, member) in [
+        ("root-a", "archive", "scope-a", "original.zip"),
+        ("member-a", "asset", "scope-a", "assets/a.bin"),
+        ("root-b", "archive", "scope-b", "received.zip"),
+        ("member-b", "other", "scope-b", "assets/b.bin"),
+    ] {
+        let details = serde_json::json!({"import":{
+            "version":1,"import_id":namespace,"member":member
+        }});
+        conn.execute(
+            &format!("INSERT INTO {prefix}observation VALUES (?1,?2,?3)"),
+            params![id, input, details.to_string()],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        &format!("INSERT INTO {prefix}observation_container VALUES ('member-a','archive')"),
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        &format!("INSERT INTO {prefix}observation VALUES ('no-import','unrelated',NULL)"),
+        [],
+    )
+    .unwrap();
+    conn
+}
+
+#[test]
+fn member_discovery_replays_selected_inputs_without_borrowing_another_import_namespace() {
+    for prefix in ["", "source_"] {
+        let conn = member_scan_fixture(prefix);
+        let mut all = Vec::new();
+        let through = visit_import_members(&conn, prefix, 0, None, |source| {
+            all.push((
+                source.observation,
+                source.input,
+                source.membership.import_id,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(through, Some(5));
+        assert_eq!(
+            all,
+            vec![
+                (
+                    "member-a".to_owned(),
+                    "asset".to_owned(),
+                    "scope-a".to_owned()
+                ),
+                (
+                    "root-b".to_owned(),
+                    "archive".to_owned(),
+                    "scope-b".to_owned()
+                ),
+                (
+                    "member-b".to_owned(),
+                    "other".to_owned(),
+                    "scope-b".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(
+            visit_import_members(&conn, prefix, 5, None, |_| panic!(
+                "nothing is newer than the scan cursor"
+            ))
+            .unwrap(),
+            None
+        );
+        let mut replayed = Vec::new();
+        visit_import_members(&conn, prefix, 0, Some("archive"), |source| {
+            replayed.push((source.observation, source.membership.import_id));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(replayed, vec![("root-b".to_owned(), "scope-b".to_owned())]);
+        let mut replayed = Vec::new();
+        visit_import_members(&conn, prefix, 0, Some("asset"), |source| {
+            replayed.push(source.observation);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(replayed, vec!["member-a"]);
+    }
+}
+
+#[test]
+fn member_discovery_filters_before_decoding_and_propagates_visitor_refusal() {
+    let conn = member_scan_fixture("source_");
+    conn.execute(
+        "UPDATE source_observation SET details_json=?1 WHERE id='member-b'",
+        [r#"{"import":{"version":99,"import_id":"scope-b","member":"assets/b.bin"}}"#],
+    )
+    .unwrap();
+    let mut selected = Vec::new();
+    visit_import_members(&conn, "source_", 0, Some("asset"), |source| {
+        selected.push(source.observation);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(selected, vec!["member-a"]);
+    assert!(matches!(
+        visit_import_members(&conn, "source_", 0, Some("other"), |_| Ok(())),
+        Err(StoreError::Invalid(_))
+    ));
+    let mut visited = Vec::new();
+    let error = visit_import_members(&conn, "source_", 0, None, |source| {
+        visited.push(source.observation);
+        Err(StoreError::Conflict("synthetic visitor refusal".into()))
+    });
+    assert!(matches!(error, Err(StoreError::Conflict(_))));
+    assert_eq!(visited, vec!["member-a"]);
+}
