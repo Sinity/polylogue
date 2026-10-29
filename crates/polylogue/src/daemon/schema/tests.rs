@@ -380,6 +380,14 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
         .unwrap()
         .write_all(format!("{row}\n").as_bytes())
         .unwrap();
+    // Explicit imports use content identity, independently of the watched path.
+    let imported_input = daemon
+        .daemon
+        .archive
+        .prepare_bytes(&std::fs::read(&provider).unwrap()[..])
+        .unwrap()
+        .hash()
+        .to_string();
     let imported = super::super::service::handle(
         super::super::Request::Import {
             request_id: "schema-extra-row".into(),
@@ -391,7 +399,7 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
     daemon.wait_for(|status| status["store"]["messages"] == 2);
     std::fs::remove_file(provider).unwrap();
     let request = super::super::Request::SchemaInfer {
-        selection: selection(Some("claude-code"), &[], None),
+        selection: selection(Some("claude-code"), &[&imported_input], None),
     };
     assert!(request.read_only());
     assert!(super::super::execution::request_deadline(&request, None).is_none());
@@ -402,6 +410,11 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
     };
     let report: Inference = serde_json::from_value(data).unwrap();
     assert_eq!(report.origins["claude-code"].records, 2);
+    assert_eq!(
+        report.origins["claude-code"].selection[0].input,
+        imported_input
+    );
+    assert_eq!(report.selection.selected_inputs, 1);
     assert!(
         !serde_json::to_string(&report)
             .unwrap()
