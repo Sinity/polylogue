@@ -1161,20 +1161,23 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     event.set_time(at, evidence).unwrap();
     input.parse[0].output.events.push(event.clone());
     let bytes = serde_json::to_vec(&input.parse[0].output).unwrap();
-    commit_event_bytes(&w, input, &bytes);
+    let mut replay = commit_event_bytes(&w, input, &bytes);
     w.writer.derive().unwrap();
     let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     conn.execute_batch("UPDATE message SET at=0;UPDATE session SET started_at=0;UPDATE event SET at=0;UPDATE document_source SET source_time=0;").unwrap();
     let reads = ReadPool::open(&w.archive).unwrap();
     {
         let reader = reads.reader().unwrap();
-        assert_eq!(reader.messages(&sid("s"), false).unwrap(), vec![message]);
-        assert_eq!(reader.session(&sid("s")).unwrap(), Some(session));
+        assert_eq!(
+            reader.messages(&sid("s"), false).unwrap(),
+            vec![message.clone()]
+        );
+        assert_eq!(reader.session(&sid("s")).unwrap(), Some(session.clone()));
         assert_eq!(
             reader.document(&document.id).unwrap(),
             Some(document.clone())
         );
-        assert_eq!(reader.events(&sid("s")).unwrap(), vec![event]);
+        assert_eq!(reader.events(&sid("s")).unwrap(), vec![event.clone()]);
     }
     let mut earlier = document.clone();
     earlier.blocks = vec![Block::Text {
@@ -1196,8 +1199,18 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     commit_event_bytes(&w, other, &bytes);
     assert_eq!(
         reads.reader().unwrap().document(&document.id).unwrap(),
-        Some(document)
+        Some(document.clone())
     );
+    replay.parse[0].reading_version = "precise-reading-rebuilt".into();
+    w.writer.send(replay).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    w.writer.derive().unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(reader.messages(&sid("s"), false).unwrap(), vec![message]);
+    assert_eq!(reader.session(&sid("s")).unwrap(), Some(session));
+    assert_eq!(reader.document(&document.id).unwrap(), Some(document));
+    assert_eq!(reader.events(&sid("s")).unwrap(), vec![event]);
 }
 
 #[test]
