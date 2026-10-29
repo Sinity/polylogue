@@ -85,15 +85,7 @@ impl ChainReading {
             }
             let mut resolved = resolve::ResolvedKeys::default();
             for key in keys {
-                let existing = resolver.find(&snapshot, &key)?;
-                let row = resolve::RowKey {
-                    pk: match existing {
-                        Some(pk) => pk,
-                        None => resolver.allocate(key.kind)?,
-                    },
-                    existing: existing.is_some(),
-                };
-                resolver.remember(&key, row.pk);
+                let row = resolver.resolve_key(&snapshot, &key)?;
                 resolved.rows.insert(key, row);
             }
             let keys = Arc::new(resolved);

@@ -120,6 +120,69 @@ fn disjoint_workers_reserve_unique_rows_before_either_commits() {
     }
 }
 
+#[test]
+fn disjoint_workers_share_text_identity_without_waiting_for_a_commit() {
+    let w = test_archive();
+    let mut lock = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let blocked = lock
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let start = Arc::new(Barrier::new(3));
+    let (sent, queued) = channel();
+    let mut threads = Vec::new();
+    for (input, session, word) in [("one", "one", "shared text"), ("two", "two", "shared text")] {
+        let sender = w.writer.sender().unwrap();
+        let start = Arc::clone(&start);
+        let sent = sent.clone();
+        threads.push(std::thread::spawn(move || {
+            start.wait();
+            let result = sender.send(batch(
+                input,
+                0,
+                0,
+                vec![row(1, text_message(input, session, Role::User, word, None))],
+                &[session],
+            ));
+            sent.send(result).unwrap();
+        }));
+    }
+    start.wait();
+    queued
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    queued
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap()
+        .unwrap();
+    blocked.commit().unwrap();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(texts(&w, "one"), ["shared text"]);
+    assert_eq!(texts(&w, "two"), ["shared text"]);
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    for table in ["input_ref", "session", "message"] {
+        assert_eq!(
+            index
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "{table} reservations collided"
+        );
+    }
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM text", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "shared text received two row identities"
+    );
+}
+
 #[cfg(feature = "faults")]
 #[test]
 fn refused_commit_releases_reservations_for_an_ordinary_retry() {

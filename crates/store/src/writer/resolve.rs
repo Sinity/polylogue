@@ -154,6 +154,10 @@ impl Resolver {
     }
 
     pub(super) fn lease(self: &Arc<Self>, keys: BTreeSet<Key>) -> Lease {
+        let keys: BTreeSet<_> = keys
+            .into_iter()
+            .filter(|key| key.kind != Kind::Text)
+            .collect();
         let mut active = self.active.lock().expect("resolver lock");
         while keys.iter().any(|key| active.keys.contains(key)) {
             #[cfg(test)]
@@ -179,6 +183,22 @@ impl Resolver {
         Ok(pk)
     }
 
+    pub(super) fn resolve_key(&self, index: &Connection, key: &Key) -> Result<RowKey> {
+        let existing = self.find(index, key)?;
+        let pk = if key.kind == Kind::Text {
+            self.identity(key.clone(), existing)?.pk
+        } else {
+            match existing {
+                Some(pk) => pk,
+                None => self.allocate(key.kind)?,
+            }
+        };
+        self.remember(key, pk);
+        Ok(RowKey {
+            pk,
+            existing: existing.is_some(),
+        })
+    }
     pub(super) fn remember(&self, key: &Key, pk: i64) {
         if let Some(first) = &self.first {
             match key.kind {
@@ -483,15 +503,7 @@ impl Resolver {
             }
             let mut resolved = ResolvedKeys::default();
             for key in keys {
-                let existing = self.find(&snapshot, &key)?;
-                let row = RowKey {
-                    pk: match existing {
-                        Some(pk) => pk,
-                        None => self.allocate(key.kind)?,
-                    },
-                    existing: existing.is_some(),
-                };
-                self.remember(&key, row.pk);
+                let row = self.resolve_key(&snapshot, &key)?;
                 resolved.rows.insert(key, row);
             }
             versions::resolve(self, &snapshot, batches, &chains, &resolved)?;
@@ -526,6 +538,40 @@ pub(crate) struct PackedValue {
     pub body: Vec<u8>,
 }
 impl Resolver {
+    fn identity(&self, key: Key, existing: Option<i64>) -> Result<Arc<Reservation>> {
+        let mut active = self.active.lock().expect("resolver lock");
+        if let Some((pk, prior)) = active.values.get_mut(&key) {
+            if existing.is_some_and(|existing| existing != *pk) {
+                return Err(StoreError::Invalid(
+                    "a shared hash has conflicting row identities".into(),
+                ));
+            }
+            return Ok(match prior.upgrade() {
+                Some(prior) => prior,
+                None => {
+                    let reservation = Arc::new(Reservation { pk: *pk });
+                    *prior = Arc::downgrade(&reservation);
+                    reservation
+                }
+            });
+        }
+        let pk = match existing {
+            Some(pk) => pk,
+            None => {
+                let next = active.next.get_mut(&key.kind).expect("identity allocator");
+                let pk = *next;
+                *next = next
+                    .checked_add(1)
+                    .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?;
+                pk
+            }
+        };
+        let reservation = Arc::new(Reservation { pk });
+        active
+            .values
+            .insert(key, (pk, Arc::downgrade(&reservation)));
+        Ok(reservation)
+    }
     pub(super) fn value(
         &self,
         index: &Connection,
@@ -543,33 +589,7 @@ impl Resolver {
                 |r| r.get::<_, i64>(0),
             )
             .optional()?;
-        let key = if let Some(pk) = pk {
-            Arc::new(Reservation { pk })
-        } else {
-            let mut active = self.active.lock().expect("resolver lock");
-            let key = Key::new(kind, hash.as_slice());
-            if let Some((pk, prior)) = active.values.get_mut(&key) {
-                match prior.upgrade() {
-                    Some(prior) => prior,
-                    None => {
-                        let reservation = Arc::new(Reservation { pk: *pk });
-                        *prior = Arc::downgrade(&reservation);
-                        reservation
-                    }
-                }
-            } else {
-                let next = active.next.get_mut(&kind).expect("value allocator");
-                let pk = *next;
-                *next = next
-                    .checked_add(1)
-                    .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?;
-                let reservation = Arc::new(Reservation { pk });
-                active
-                    .values
-                    .insert(key, (pk, Arc::downgrade(&reservation)));
-                reservation
-            }
-        };
+        let key = self.identity(Key::new(kind, hash.as_slice()), pk)?;
         Ok(PackedValue { key, hash, body })
     }
 }
@@ -611,15 +631,7 @@ pub(super) fn prepare_index(
     batch.change = change;
     let mut resolved = ResolvedKeys::default();
     for key in keys {
-        let existing = resolver.find(index, &key)?;
-        let row = RowKey {
-            pk: match existing {
-                Some(pk) => pk,
-                None => resolver.allocate(key.kind)?,
-            },
-            existing: existing.is_some(),
-        };
-        resolver.remember(&key, row.pk);
+        let row = resolver.resolve_key(index, &key)?;
         resolved.rows.insert(key, row);
     }
     versions::resolve(&resolver, index, &mut [batch], &chains, &resolved)?;
