@@ -233,7 +233,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
     assert_eq!(replay.direct_reference(), direct.direct_reference());
     let mut forged = run.clone();
     forged.binding.query_options.direct_reference =
-        Some(Reference::Message("test:a".parse().unwrap()));
+        Some(Reference::Message(MessageId::parse("test:a").unwrap()));
     assert_eq!(
         reader
             .prepare_query_run_selection(&object, &forged, &options.clock, None, None)
