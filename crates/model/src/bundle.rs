@@ -7,6 +7,20 @@ use serde::{Deserialize, Serialize};
 pub const FORMAT: &str = "polylogue-bundle";
 pub const VERSION: u32 = 1;
 
+/// One reader's immutable context. Streaming batches share this snapshot;
+/// delivery computes record counts without collecting the complete selection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadSnapshot {
+    pub query: String,
+    pub query_text: String,
+    pub ran_at: Timestamp,
+    pub read_at: ChangePosition,
+    pub caught_up: bool,
+    pub enabled_variants: Vec<String>,
+    pub author: Author,
+}
+
 /// The primary manifest stays small. A directory package names a streamed
 /// inventory, rather than collecting all members in the manifest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -376,6 +390,16 @@ impl InputEventRecord {
 }
 
 impl Manifest {
+    pub fn from_snapshot(snapshot: ReadSnapshot, counts: Counts, flags: Flags, inventory: Option<FileDescriptor>) -> Self {
+        Self {
+            format: FORMAT.into(), version: VERSION,
+            query: snapshot.query, query_text: snapshot.query_text,
+            ran_at: snapshot.ran_at, read_at: snapshot.read_at,
+            caught_up: snapshot.caught_up, enabled_variants: snapshot.enabled_variants,
+            author: snapshot.author, counts, flags, inventory,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), BundleError> {
         if self.format != FORMAT {
             return Err(BundleError::WrongFormat(self.format.clone()));
