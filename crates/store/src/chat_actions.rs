@@ -124,12 +124,13 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?
         .map(|row| {
-            let (at, kind, phase, detail, by, receipt) = row?;
+            let (at, kind, phase, detail, by, receipt, request) = row?;
             Ok(ChatEvent {
-                request:r.get(6)?,
+                request,
                 at,
                 kind,
                 phase,
@@ -150,7 +151,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         stage_only,
         needs_approval,
         created_at,
-        execution: polylogue_model::authored::ExecutionEligibility::parse(&execution)
+        execution: polylogue_model::authored::ExecutionEligibility::from_name(&execution)
             .ok_or_else(|| StoreError::Invalid("unknown execution eligibility".into()))?,
         attachments,
         events,

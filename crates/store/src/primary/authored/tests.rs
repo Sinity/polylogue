@@ -26,7 +26,9 @@ fn note(value: &str) -> NewNote {
         kind: NoteKind::Note,
         key: None,
         value: Some(value.into()),
-        author: Author::Agent(Some("session-a".into())),
+        author: Author::Agent(Some(
+            polylogue_model::SessionId::parse("codex:session-a").unwrap(),
+        )),
         targets: vec![Target::parse("repo:example").unwrap()],
         relations: vec![],
         revises: None,
@@ -115,7 +117,9 @@ fn prepared_effect_is_private_and_preserves_full_note_provenance() {
     assert_eq!(count(&conn, "client_request"), 0);
     assert_eq!(
         p.effect.notes[0].note.author,
-        Author::Agent(Some("session-a".into()))
+        Author::Agent(Some(
+            polylogue_model::SessionId::parse("codex:session-a").unwrap()
+        ))
     );
     assert_eq!(p.effect.notes[0].machine, "machine-a");
     assert!(!p.outcome.pending);

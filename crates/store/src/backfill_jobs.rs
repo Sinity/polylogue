@@ -86,7 +86,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<B
         provider,
         since,
         created_at,
-        execution: polylogue_model::authored::ExecutionEligibility::parse(&execution)
+        execution: polylogue_model::authored::ExecutionEligibility::from_name(&execution)
             .ok_or_else(|| StoreError::Invalid("unknown execution eligibility".into()))?,
         events,
     }))
