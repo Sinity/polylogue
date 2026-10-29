@@ -6,9 +6,9 @@
 
 use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};
-use crate::time::{self, Clock, Time};
+use crate::time::{self, Clock, Time, Milliseconds};
 use crate::units::{self, Index, Search, Via};
-use crate::{QueryError, parse};
+use crate::QueryError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -365,73 +365,14 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
         return Ok(program);
     }
     let Some(bound) = bind_saved_source(text, opts)? else {
-        let query = parse(text)?;
-        refuse_commands(text, &query, opts)?;
+        let query = parse_query(text, opts)?;
         return Compiler::new(text, opts).program(&query);
     };
-    let mut query = parse(&bound.text)?;
+    let mut query = parse_query(&bound.text, opts)?;
     bound.bind(&mut query)?;
     let mut compiler = Compiler::new(&bound.text, opts);
     compiler.definitions.push(bound.definition.clone());
     compiler.program(&query)
-}
-
-/// Words a query may start with only quoted: command names, and near
-/// misses of unit or command names.
-fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), QueryError> {
-    let Source::Sessions { cond } = &query.source else {
-        return Ok(());
-    };
-    let first = match &cond.kind {
-        CondKind::And { all } => &all[0],
-        _ => cond,
-    };
-    let CondKind::Text {
-        text: word,
-        phrase: false,
-    } = &first.kind
-    else {
-        return Ok(());
-    };
-    if first.span.start != text.len() - text.trim_start().len() {
-        return Ok(());
-    }
-    let lower = word.to_ascii_lowercase();
-    if matches!(lower.as_str(), "last" | "latest" | "self") || opts.origins.contains(&lower) {
-        return Ok(());
-    }
-    let rest = text[first.span.end..].trim_start();
-    if opts.command_words.contains(&lower) {
-        return Err(QueryError::NotAQuery {
-            word: word.clone(),
-            message: format!(
-                "\"{word}\" is a command, not a query; to search for the word, quote it"
-            ),
-            suggestion: Some(format!("\"{word}\" {rest}").trim_end().to_owned()),
-        });
-    }
-    let allowed = match lower.chars().count() {
-        0..=3 => 0,
-        4..=6 => 1,
-        _ => 2,
-    };
-    if allowed == 0 {
-        return Ok(());
-    }
-    let units: Vec<&str> = Unit::all().map(Unit::name).collect();
-    for name in units
-        .into_iter()
-        .chain(opts.command_words.iter().map(String::as_str))
-    {
-        if name != lower && strsim::damerau_levenshtein(&lower, name) <= allowed {
-            return Err(QueryError::NotAQuery {
-                word: word.clone(),
-                message: format!("did you mean \"{name}\"?"),
-                suggestion: Some(format!("{name} {rest}").trim_end().to_owned()),
-            });
-        }
-    }
-    Ok(())
 }
 
 /// The unit a query's rows currently are, and the aliases they are read
@@ -589,7 +530,7 @@ fn match_column(rel: &MatchRel, name: &str, at: usize) -> Result<(String, ColKin
 
 /// An aggregate over `| matches` rows: computed over the pairs or tuples.
 fn match_agg(
-    f: &AggFn,
+    f: &Aggregate,
     rel: &MatchRel,
     at: usize,
 ) -> Result<Vec<(String, String, ColKind)>, QueryError> {
@@ -603,18 +544,17 @@ fn match_agg(
         format!("count(*) - count({name})"),
         ColKind::Number,
     );
-    Ok(match f {
-        AggFn::Count => unreachable!("handled above"),
-        AggFn::Sum { .. } => vec![(col, format!("sum({name})"), kind), unknown],
-        AggFn::Avg { .. } => vec![(col, format!("avg({name})"), kind), unknown],
-        AggFn::Min { .. } => vec![(col, format!("min({name})"), kind), unknown],
-        AggFn::Max { .. } => vec![(col, format!("max({name})"), kind), unknown],
-        AggFn::Percentile { p, .. } => {
+    Ok(match &f.function {
+        AggregateFunction::Count => unreachable!("handled above"),
+        AggregateFunction::Sum => vec![(col, format!("sum({name})"), kind), unknown],
+        AggregateFunction::Avg => vec![(col, format!("avg({name})"), kind), unknown],
+        AggregateFunction::Min => vec![(col, format!("min({name})"), kind), unknown],
+        AggregateFunction::Max => vec![(col, format!("max({name})"), kind), unknown],
+        AggregateFunction::Percentile(p) => {
             vec![(col, format!("pl_percentile({name}, {p})"), kind), unknown]
         }
-        AggFn::CountDistinct { .. } => {
-            vec![(col, format!("count(DISTINCT {name})"), ColKind::Number)]
-        }
+        AggregateFunction::CountDistinct => { vec![(col, format!("count(DISTINCT {name})"), ColKind::Number)] }
+        _ => return Err(not_built("this aggregate")),
     })
 }
 
@@ -634,22 +574,21 @@ fn and_all(parts: &[String]) -> String {
 
 /// The conditions joined to the rest of the `where` by AND, with
 /// parenthesized ANDs flattened.
-fn top_level(c: &Cond) -> Vec<Cond> {
+fn top_level(c: &Condition) -> Vec<Condition> {
     match &c.kind {
-        CondKind::And { all } => all.iter().flat_map(top_level).collect(),
+        ConditionKind::And { conditions: all } => all.iter().flat_map(top_level).collect(),
         _ => vec![c.clone()],
     }
 }
 
 /// Field names the top-level conditions name, `session.` prefixes removed
 /// for row units.
-fn named_fields(top: &[Cond], unit: Unit) -> HashSet<String> {
+fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
     let mut out = HashSet::new();
     for c in top {
         let f = match &c.kind {
-            CondKind::Match { field, .. }
-            | CondKind::Compare { field, .. }
-            | CondKind::Between { field, .. } => field,
+            ConditionKind::Match { field, .. } => field.as_str(),
+            ConditionKind::Compare { operand, .. } | ConditionKind::Between { operand, .. } => match operand { Operand::Field { name } => name, _ => continue },
             _ => continue,
         };
         let f = f.to_ascii_lowercase();
@@ -692,8 +631,10 @@ fn like_prefix(s: &str) -> String {
 
 fn alternatives(v: &Value) -> Vec<String> {
     match v {
-        Value::One { text, .. } => vec![text.clone()],
-        Value::Alternatives { any } => any.clone(),
+        Value::Scalar { text, .. } => vec![text.clone()],
+        Value::Set { values } => values.iter().flat_map(alternatives).collect(),
+        Value::Unknown => vec!["unknown".into()],
+        Value::Parameter { name } => vec![format!("${name}")],
         Value::Any => vec![],
     }
 }
@@ -746,7 +687,7 @@ fn closed_set_message(def: &fields::Field, value: &str) -> String {
 }
 
 fn group_sort(
-    key: &SortKey,
+    key: &Operand,
     desc: bool,
     keys: Option<&[(String, String, ColKind)]>,
     aggs: Option<&[(String, String, ColKind)]>,
@@ -754,7 +695,8 @@ fn group_sort(
 ) -> Result<Vec<String>, QueryError> {
     let keys = keys.unwrap_or(&[]);
     let mut order = match key {
-        SortKey::Random { seed } => {
+        Operand::Function { .. } => {
+            let seed = random_seed(key)?;
             if let Some(seed) = seed.or(random_seed) {
                 let identity = format!(
                     "json_array({})",
@@ -768,7 +710,7 @@ fn group_sort(
                 vec!["random()".into()]
             }
         }
-        SortKey::Field { field } => {
+        Operand::Field { name: field } => {
             let name = flat(field);
             if !keys
                 .iter()
@@ -879,4 +821,36 @@ fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
         });
     }
     Ok(())
+}
+
+fn parse_query(text: &str, opts: &Options) -> Result<Query, QueryError> {
+    crate::parse::with_catalog(text, &crate::catalog::catalog(&opts.origins, &opts.command_words))
+}
+fn bind_unit(name: &str) -> Result<Unit, QueryError> {
+    Unit::from_name(name.strip_prefix("pl.").unwrap_or(name)).ok_or_else(|| not_built(&format!("unit {name}")))
+}
+fn field_operand(operand: &Operand) -> Result<&str, QueryError> {
+    match operand { Operand::Field { name } => Ok(name), _ => Err(not_built("this computed field")) }
+}
+fn value_text(value: &Value) -> Result<&str, QueryError> {
+    match value { Value::Scalar { text, .. } => Ok(text), Value::Unknown => Ok("unknown"), Value::Parameter { name } => Ok(name), _ => Err(not_built("a set in this scalar position")) }
+}
+trait AggregateField { fn field(&self) -> Option<&str>; }
+impl AggregateField for Aggregate { fn field(&self) -> Option<&str> { self.fields.first().map(String::as_str) } }
+#[derive(Clone, Copy)]
+enum Bucket { Day, Week, Month }
+fn group_operand(operand: &Operand) -> Result<(&str, Option<Bucket>), QueryError> {
+    match operand {
+        Operand::Field { name } => Ok((name, None)),
+        Operand::Function { name, arguments } if arguments.len() == 1 => {
+            let bucket = match name.as_str() { "day" => Bucket::Day, "week" => Bucket::Week, "month" => Bucket::Month, _ => return Err(not_built(&format!("group key {name}"))) };
+            Ok((field_operand(&arguments[0])?, Some(bucket)))
+        }
+        _ => Err(not_built("this group key")),
+    }
+}
+fn random_seed(operand: &Operand) -> Result<Option<u64>, QueryError> {
+    let Operand::Function { name, arguments } = operand else { return Ok(None) };
+    if name != "random" { return Err(not_built(&format!("sort key {name}"))); }
+    arguments.first().map(|v| field_operand(v)?.parse().map_err(|_| not_built("this random seed"))).transpose()
 }

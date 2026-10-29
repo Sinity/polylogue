@@ -8,7 +8,7 @@ pub(super) struct BoundRelation {
     name: String,
     arguments: Vec<Argument>,
     unit: Unit,
-    cond: Option<Cond>,
+    cond: Option<Condition>,
 }
 
 impl<'a> Compiler<'a> {
@@ -39,7 +39,7 @@ impl<'a> Compiler<'a> {
         name: &str,
         arguments: &[Argument],
         span: Span,
-    ) -> Result<(Unit, Option<Cond>), QueryError> {
+    ) -> Result<(Unit, Option<Condition>), QueryError> {
         if self.saved_stack.iter().any(|n| n == name) {
             return Err(QueryError::Invalid {
                 message: format!(
@@ -57,7 +57,7 @@ impl<'a> Compiler<'a> {
             return Ok((bound.unit, bound.cond.clone()));
         }
         let definition = saved_definition(self.text, span.start, name, self.opts)?;
-        let mut query = parse(&definition.text)?;
+        let mut query = parse_query(&definition.text, self.opts)?;
         Parameters::new(name, arguments, None).bind(&mut query, span.start)?;
         if !query.stages.is_empty() || !query.attach.is_empty() {
             return Err(QueryError::Invalid {
@@ -69,9 +69,8 @@ impl<'a> Compiler<'a> {
             });
         }
         let (unit, cond) = match query.source {
-            Source::Unit { unit, cond } => (unit, cond),
-            Source::Sessions { cond } => (Unit::Sessions, Some(cond)),
-            Source::Empty => (Unit::Sessions, None),
+            Source::Unit { unit, condition } => (bind_unit(&unit)?, condition),
+            _ => return Err(not_built("a saved source of this kind as a condition")),
         };
         self.used(name, definition);
         self.saved_relations.push(BoundRelation {
@@ -86,11 +85,11 @@ impl<'a> Compiler<'a> {
     pub(super) fn saved_defaults(
         &mut self,
         scope: &RowContext,
-        top: &[Cond],
-    ) -> Result<Vec<Cond>, QueryError> {
+        top: &[Condition],
+    ) -> Result<Vec<Condition>, QueryError> {
         let mut bound = vec![];
         for condition in top {
-            let CondKind::Saved { name, arguments } = &condition.kind else {
+            let ConditionKind::Saved { name, arguments } = &condition.kind else {
                 bound.push(condition.clone());
                 continue;
             };
@@ -144,13 +143,11 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     {
         return Ok(None);
     }
-    let mut query = parse(text)?;
+    let mut query = parse_query(text, opts)?;
     let (value, quoted) = match &query.source {
-        Source::Sessions { cond: Cond { kind: CondKind::Match { field, value: Value::One { text, quoted } }, .. } } if field.eq_ignore_ascii_case("result") && query.attach.is_empty() => (text.clone(), *quoted),
-        _ => return Err(QueryError::Invalid {
-            message: "A kept result takes stages, not conditions or attached rows. Use `result:ID | group by …`.".into(),
-            position: lead,
-        }),
+        Source::Result { reference } if query.attach.is_empty() => (reference.trim_start_matches("result:").to_owned(), false),
+        Source::Unit { condition: Some(Condition { kind: ConditionKind::Match { field, value: Value::Scalar { text, quoted } }, .. }), .. } if field.eq_ignore_ascii_case("result") && query.attach.is_empty() => (text.clone(), *quoted),
+        _ => return Err(QueryError::Invalid { message: "A kept result takes stages, not conditions or attached rows".into(), position: lead }),
     };
     let (id, part) = if quoted {
         (value.as_str(), "rows")
@@ -180,8 +177,8 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
         &kept.columns
     };
     query.source = Source::Unit {
-        unit: Unit::Sessions,
-        cond: None,
+        unit: Unit::Sessions.name().into(),
+        condition: None,
     };
     let unit = Unit::all()
         .find(|u| u.name() == kept.unit)
@@ -247,24 +244,24 @@ pub(super) fn bind_saved_source(
     if !starts {
         return Ok(None);
     }
-    let query = parse(text)?;
-    let first = match &query.source {
-        Source::Sessions { cond } => match &cond.kind {
-            CondKind::And { all } => &all[0],
-            _ => cond,
-        },
+    let query = parse_query(text, opts)?;
+    let (name, arguments, first_end) = match &query.source {
+        Source::Saved { name, arguments } => {
+            let end = query.stages.first().map_or(text.len(), |s| text[..s.span.start].rfind('|').unwrap_or(s.span.start));
+            (name, arguments, end)
+        }
+        Source::Unit { condition: Some(cond), .. } => {
+            let first = match &cond.kind { ConditionKind::And { conditions } => &conditions[0], _ => cond };
+            let ConditionKind::Saved { name, arguments } = &first.kind else { return Ok(None) };
+            if first.span.start != lead { return Ok(None); }
+            (name, arguments, first.span.end)
+        }
         _ => return Ok(None),
     };
-    let CondKind::Saved { name, arguments } = &first.kind else {
-        return Ok(None);
-    };
-    if first.span.start != lead {
-        return Ok(None);
-    }
     let definition = saved_definition(text, lead + 6, name, opts)?;
     let saved = definition.text.as_str();
-    let rest = text[first.span.end..].trim();
-    let shape = parse(saved)?;
+    let rest = text[first_end..].trim();
+    let shape = parse_query(saved, opts)?;
     let shaped = !shape.stages.is_empty() || !shape.attach.is_empty();
     let (conds, stages) = match rest.find('|') {
         Some(i) => (rest[..i].trim(), &rest[i..]),
@@ -293,9 +290,8 @@ pub(super) fn bind_saved_source(
         return bound(format!("{saved} {stages}"), 0..saved.len());
     }
     let (unit, cond) = match &shape.source {
-        Source::Unit { unit, cond } => (*unit, cond.as_ref()),
-        Source::Sessions { cond } => (Unit::Sessions, Some(cond)),
-        Source::Empty => (Unit::Sessions, None),
+        Source::Unit { unit, condition } => (bind_unit(unit)?, condition.as_ref()),
+        _ => return Err(not_built("this saved source")),
     };
     let Some(cond) = cond else {
         // Every row by the unit's defaults, narrowed by the rest.
@@ -405,23 +401,23 @@ impl Parameters {
         position: usize,
     ) -> Result<(), QueryError> {
         match &mut query.source {
-            Source::Unit { cond: Some(c), .. } | Source::Sessions { cond: c } => {
+            Source::Unit { condition: Some(c), .. } => {
                 self.cond(c, used, position)?
             }
             _ => {}
         }
         for child in &mut query.attach {
             for window in &mut child.windows {
-                if let Window::Cond { cond } = window {
+                if let Window::Where(cond) = window {
                     self.cond(cond, used, position)?;
                 }
             }
         }
         for stage in &mut query.stages {
             match &mut stage.kind {
-                StageKind::Where { cond }
+                StageKind::Where { condition: cond }
                 | StageKind::Scope {
-                    cond: Some(cond), ..
+                    condition: Some(cond), ..
                 } => self.cond(cond, used, position)?,
                 StageKind::Combine { query, .. } => self.query(query, used, position)?,
                 _ => {}
@@ -432,7 +428,7 @@ impl Parameters {
 
     fn cond(
         &self,
-        c: &mut Cond,
+        c: &mut Condition,
         used: &mut Vec<String>,
         position: usize,
     ) -> Result<(), QueryError> {
@@ -441,57 +437,36 @@ impl Parameters {
             .as_ref()
             .is_none_or(|r| r.start <= c.span.start && c.span.end <= r.end);
         match &mut c.kind {
-            CondKind::And { all: list } | CondKind::Or { any: list } => {
-                for x in list {
-                    self.cond(x, used, position)?;
-                }
+            ConditionKind::And { conditions } | ConditionKind::Or { conditions } | ConditionKind::Sequence { steps: conditions, .. } => {
+                for condition in conditions { self.cond(condition, used, position)?; }
             }
-            CondKind::Seq { steps: list, .. } => {
-                for x in list {
-                    self.cond(x, used, position)?;
-                }
-            }
-            CondKind::Not { cond } | CondKind::Exists { cond, .. } => {
-                self.cond(cond, used, position)?
-            }
-            CondKind::Count {
-                cond: Some(cond), ..
-            } => self.cond(cond, used, position)?,
-            CondKind::In { query, .. } => self.query(query, used, position)?,
-            CondKind::Match { value, .. } if inside => {
-                if let Value::One { text, quoted } = value
-                    && let Some(argument) = self.argument(text, used, position)?
-                {
-                    *text = argument.text.clone();
-                    *quoted = argument.quoted;
-                }
-            }
-            CondKind::Compare { value, .. } if inside => {
-                if let Some(argument) = self.argument(value, used, position)? {
-                    *value = argument.text.clone();
-                }
-            }
-            CondKind::Between { from, to, .. } if inside => {
-                for bound in [from, to] {
-                    if let Some(argument) = self.argument(bound, used, position)? {
-                        *bound = argument.text.clone();
-                    }
-                }
-            }
-            CondKind::Text { text, phrase } if inside => {
+            ConditionKind::Not { condition } | ConditionKind::Exists { condition: Some(condition), .. } | ConditionKind::Count { condition: Some(condition), .. } => self.cond(condition, used, position)?,
+            ConditionKind::In { query, .. } => self.query(query, used, position)?,
+            ConditionKind::Match { value, .. } | ConditionKind::Compare { value, .. } | ConditionKind::Similar { value } | ConditionKind::TimeRange { value, .. } if inside => self.value(value, used, position)?,
+            ConditionKind::Between { from, to, .. } if inside => { self.value(from, used, position)?; self.value(to, used, position)?; }
+            ConditionKind::Text { text, mode } if inside => {
                 if let Some(argument) = self.argument(text, used, position)? {
-                    *text = argument.text.clone();
-                    *phrase = argument.quoted;
+                    *text = value_text(&argument.value)?.into();
+                    *mode = if matches!(argument.value, Value::Scalar { quoted: true, .. }) { TextMode::Phrase } else { TextMode::Word };
                 }
             }
-            CondKind::Saved { arguments, .. } if inside => {
-                for inner in arguments {
-                    if let Some(argument) = self.argument(&inner.text, used, position)? {
-                        inner.text = argument.text.clone();
-                        inner.quoted = argument.quoted;
-                    }
-                }
+            ConditionKind::Saved { arguments, .. } if inside => {
+                for argument in arguments { self.value(&mut argument.value, used, position)?; }
             }
+            _ => {}
+        }
+        Ok(())
+    }
+    fn value(&self, value: &mut Value, used: &mut Vec<String>, position: usize) -> Result<(), QueryError> {
+        match value {
+            Value::Parameter { name } => {
+                let marker = format!("${name}");
+                if let Some(argument) = self.argument(&marker, used, position)? { *value = argument.value.clone(); }
+            }
+            Value::Scalar { text, .. } => {
+                if let Some(argument) = self.argument(text, used, position)? { *value = argument.value.clone(); }
+            }
+            Value::Set { values } => for value in values { self.value(value, used, position)?; },
             _ => {}
         }
         Ok(())

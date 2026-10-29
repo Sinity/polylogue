@@ -20,6 +20,7 @@ polylogue-sources.workspace = true
 polylogue-store.workspace = true
 polylogue-engine.workspace = true
 polylogue-query.workspace = true
+query-language.workspace = true
 jiff.workspace = true
 libc.workspace = true
 polylogue-render.workspace = true

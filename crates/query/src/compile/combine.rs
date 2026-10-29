@@ -32,10 +32,13 @@ impl<'a> Compiler<'a> {
         at: usize,
     ) -> Result<Program, QueryError> {
         let mut query = query.clone();
-        if let Source::Sessions { cond } = &query.source {
+        if let Source::Unit { unit: name, condition: Some(cond) } = &query.source
+            && name == "sessions"
+            && !self.text[cond.span.start..].starts_with("sessions")
+        {
             query.source = Source::Unit {
-                unit,
-                cond: Some(cond.clone()),
+                unit: unit.name().into(),
+                condition: Some(cond.clone()),
             };
         }
         if let Some(child) = query.attach.first() {
@@ -175,7 +178,7 @@ impl<'a> Compiler<'a> {
         at: usize,
     ) -> Result<(), QueryError> {
         let other = self.combined_rows(query, scope.unit, at)?;
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
         let not = if how == Combination::Except {
             "NOT "
         } else {
@@ -201,7 +204,7 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         self.setup_near(false);
-        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
         let any_ranked = self.ranking().is_some() || pending.unions.iter().any(|p| p.ranked);
         if pending.fuses.is_empty() && !any_ranked {
             let mut any = vec![format!("({})", and_all(where_sql))];

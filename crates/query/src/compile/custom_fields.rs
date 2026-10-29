@@ -23,7 +23,7 @@ pub(crate) struct Call<'q, 's> {
 impl Call<'_, '_> {
     fn one(&self) -> Option<String> {
         match self.op {
-            FieldOp::Match(Value::One { text, .. }) => Some(text.clone()),
+            FieldOp::Match(Value::Scalar { text, .. }) => Some(text.clone()),
             _ => None,
         }
     }
@@ -49,7 +49,7 @@ impl Call<'_, '_> {
 
     /// The bare, unquoted value `unknown`.
     fn unknown(&self) -> bool {
-        matches!(self.op, FieldOp::Match(Value::One { text, quoted: false })
+        matches!(self.op, FieldOp::Match(Value::Scalar { text, quoted: false })
             if text.eq_ignore_ascii_case("unknown"))
     }
 
@@ -168,7 +168,7 @@ pub(crate) fn thinking(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String,
 
 fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<String, QueryError> {
     let text = x.value()?;
-    let quoted = matches!(x.op, FieldOp::Match(Value::One { quoted: true, .. }));
+    let quoted = matches!(x.op, FieldOp::Match(Value::Scalar { quoted: true, .. }));
     c.text(&[(text, quoted, x.span)], x.scope, index, x.top)
 }
 

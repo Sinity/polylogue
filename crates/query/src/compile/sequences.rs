@@ -7,7 +7,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn exists(
         &mut self,
         unit: Unit,
-        cond: &Cond,
+        cond: &Condition,
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
@@ -28,7 +28,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn counted(
         &mut self,
         unit: Unit,
-        cond: Option<&Cond>,
+        cond: Option<&Condition>,
         op: Op,
         n: u64,
         scope: &RowContext,
@@ -51,7 +51,7 @@ impl<'a> Compiler<'a> {
     fn related_rows(
         &mut self,
         unit: Unit,
-        cond: Option<&Cond>,
+        cond: Option<&Condition>,
         scope: &RowContext,
         span: Span,
     ) -> Result<(String, String, RowContext), QueryError> {
@@ -72,7 +72,7 @@ impl<'a> Compiler<'a> {
     /// each step a condition on one call.
     pub(super) fn seq(
         &mut self,
-        steps: &[Cond],
+        steps: &[Condition],
         gaps: &[Gap],
         scope: &RowContext,
         span: Span,
@@ -111,12 +111,13 @@ impl<'a> Compiler<'a> {
             let mut w = vec![format!("{o}.session_pk = {s}.pk"), conds[i].clone()];
             if i > 0 {
                 let prev = format!("o{}", aliases[i - 1].t);
-                match gaps[i - 1] {
+                match &gaps[i - 1] {
                     Gap::Later => w.push(format!("{o}.n > {prev}.n")),
                     Gap::Next => w.push(format!("{o}.n = {prev}.n + 1")),
                     // Both times known, the later strictly later: a missing
                     // or reversed time does not satisfy a window.
-                    Gap::Within { ms } => {
+                    Gap::Within { duration } => {
+                        let ms = time::duration_ms(value_text(duration)?).ok_or_else(|| not_built("this sequence duration"))?;
                         w.push(format!("{o}.n > {prev}.n"));
                         w.push(format!("{o}.at > {prev}.at"));
                         w.push(format!("{o}.at - {prev}.at <= {ms}"));
@@ -144,7 +145,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn exists_matches(
         &mut self,
         unit: Unit,
-        cond: &Cond,
+        cond: &Condition,
         parent: &RowContext,
         parent_rows: &str,
         span: Span,
@@ -160,8 +161,8 @@ impl<'a> Compiler<'a> {
         w.push(link);
         w.push(self.cond(cond, &child, false)?);
         w.push(format!("({parent_rows})"));
-        let (parent_pk, parent_cols) = row_columns(parent.unit, &parent.a, self.opts.clock.now);
-        let (child_pk, child_cols) = row_columns(unit, &child.a, self.opts.clock.now);
+        let (parent_pk, parent_cols) = row_columns(parent.unit, &parent.a, self.opts.clock.now.as_millisecond());
+        let (child_pk, child_cols) = row_columns(unit, &child.a, self.opts.clock.now.as_millisecond());
         let mut columns = vec![];
         let mut select = vec![format!("{child_pk} AS _pk")];
         let child_names: Vec<&str> = child_cols.iter().map(|(n, _, _, _)| n.as_str()).collect();
@@ -207,7 +208,7 @@ impl<'a> Compiler<'a> {
     /// step takes the earliest call that still lets the rest complete.
     pub(super) fn seq_matches(
         &mut self,
-        steps: &[Cond],
+        steps: &[Condition],
         gaps: &[Gap],
         parent: &RowContext,
         parent_rows: &str,
@@ -240,17 +241,19 @@ impl<'a> Compiler<'a> {
                 sa = a.s
             )
         };
-        let gap = |i: usize, prev_n: &str, prev_at: &str| -> Vec<String> {
+        let gap = |i: usize, prev_n: &str, prev_at: &str| -> Result<Vec<String>, QueryError> {
             let oi = o(i);
-            match gaps[i - 1] {
+            Ok(match &gaps[i - 1] {
                 Gap::Later => vec![format!("{oi}.n > {prev_n}")],
                 Gap::Next => vec![format!("{oi}.n = {prev_n} + 1")],
-                Gap::Within { ms } => vec![
+                Gap::Within { duration } => {
+                    let ms = time::duration_ms(value_text(duration)?).ok_or_else(|| not_built("this sequence duration"))?;
+                    vec![
                     format!("{oi}.n > {prev_n}"),
                     format!("{oi}.at > {prev_at}"),
                     format!("{oi}.at - {prev_at} <= {ms}"),
-                ],
-            }
+                ] },
+            })
         };
         // rest[i]: steps i.. can still follow step i-1 (alias o(i-1)).
         let mut rest = vec![String::new(); k + 1];
@@ -260,7 +263,7 @@ impl<'a> Compiler<'a> {
                 format!("{}.session_pk = {prev}.session_pk", o(i)),
                 conds[i].clone(),
             ];
-            w.extend(gap(i, &format!("{prev}.n"), &format!("{prev}.at")));
+            w.extend(gap(i, &format!("{prev}.n"), &format!("{prev}.at"))?);
             if !rest[i + 1].is_empty() {
                 w.push(rest[i + 1].clone());
             }
@@ -271,7 +274,7 @@ impl<'a> Compiler<'a> {
             if i == 0 {
                 w.push(format!("{}.n > {prev_n}", o(i)));
             } else {
-                w.extend(gap(i, prev_n, prev_at));
+                w.extend(gap(i, prev_n, prev_at)?);
             }
             if !rest[i + 1].is_empty() {
                 w.push(rest[i + 1].clone());

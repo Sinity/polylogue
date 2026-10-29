@@ -8,7 +8,7 @@ pub mod compile;
 pub mod explain;
 pub mod fields;
 pub mod parse;
-pub mod syntax;
+pub mod catalog;
 pub mod time;
 pub mod units;
 
@@ -19,16 +19,14 @@ pub use compile::{
 pub use parse::parse;
 pub use time::Clock;
 
-use pest_derive::Parser;
 use serde::Serialize;
 
-#[derive(Parser)]
-#[grammar = "query.pest"]
-pub struct Grammar;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueryError {
+    #[error("{diagnostic}")]
+    Language { error: query_language::Error, diagnostic: String },
     /// With a caret under the position and, when a simple repair parses,
     /// a corrected query.
     #[error("{message} at position {position}\n  {line}\n  {caret}")]
@@ -88,6 +86,11 @@ fn hint(similar: &[String]) -> String {
 }
 
 impl QueryError {
+    pub fn language(error: query_language::Error, source: &str) -> Self {
+        let diagnostic = error.diagnostic(source);
+        Self::Language { error, diagnostic }
+    }
+
     pub(crate) fn syntax(
         text: &str,
         at: usize,
@@ -109,6 +112,7 @@ impl QueryError {
     /// The stable machine name of the error, as surfaces report it.
     pub fn kind(&self) -> &'static str {
         match self {
+            QueryError::Language { error, .. } => error.kind.code(),
             QueryError::Syntax { .. } | QueryError::TooDeep { .. } | QueryError::Invalid { .. } => {
                 "invalid_query"
             }
@@ -122,6 +126,7 @@ impl QueryError {
     /// The corrected query that runs as given, when one could be formed.
     pub fn suggestion(&self) -> Option<&str> {
         match self {
+            QueryError::Language { error, .. } => error.suggestion.as_deref(),
             QueryError::Syntax { suggestion, .. }
             | QueryError::UnknownField { suggestion, .. }
             | QueryError::NotAQuery { suggestion, .. } => suggestion.as_deref(),

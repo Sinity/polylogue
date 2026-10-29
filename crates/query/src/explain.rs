@@ -27,48 +27,48 @@ fn selected_units(query: &ast::Query, implicit_unit: ast::Unit) -> Vec<ast::Unit
             out.push(unit);
         }
     }
-    fn condition(cond: &ast::Cond, out: &mut Vec<ast::Unit>) {
-        use ast::CondKind;
+    fn condition(cond: &ast::Condition, out: &mut Vec<ast::Unit>) {
+        use ast::ConditionKind;
         match &cond.kind {
-            CondKind::And { all } => {
+            ConditionKind::And { conditions: all } => {
                 for c in all {
                     condition(c, out);
                 }
             }
-            CondKind::Or { any } => {
+            ConditionKind::Or { conditions: any } => {
                 for c in any {
                     condition(c, out);
                 }
             }
-            CondKind::Not { cond } => condition(cond, out),
-            CondKind::Exists { unit, cond } => {
+            ConditionKind::Not { condition: cond } => condition(cond, out),
+            ConditionKind::Exists { unit, cond } => {
                 add(out, *unit);
                 condition(cond, out);
             }
-            CondKind::Count { unit, cond, .. } => {
+            ConditionKind::Count { unit, cond, .. } => {
                 add(out, *unit);
                 if let Some(c) = cond {
                     condition(c, out);
                 }
             }
-            CondKind::In { query, .. } => {
+            ConditionKind::In { query, .. } => {
                 for u in selected_units(query, ast::Unit::Sessions) {
                     add(out, u);
                 }
             }
-            CondKind::Seq { steps, .. } => {
+            ConditionKind::Seq { steps, .. } => {
                 add(out, ast::Unit::ToolCalls);
                 for c in steps {
                     condition(c, out);
                 }
             }
-            CondKind::Match { .. }
-            | CondKind::Compare { .. }
-            | CondKind::Between { .. }
-            | CondKind::Text { .. }
-            | CondKind::Url { .. }
-            | CondKind::Position { .. }
-            | CondKind::Saved { .. } => {}
+            ConditionKind::Match { .. }
+            | ConditionKind::Compare { .. }
+            | ConditionKind::Between { .. }
+            | ConditionKind::Text { .. }
+            | ConditionKind::Url { .. }
+            | ConditionKind::Position { .. }
+            | ConditionKind::Saved { .. } => {}
         }
     }
     let mut out = Vec::new();
@@ -92,15 +92,15 @@ fn selected_units(query: &ast::Query, implicit_unit: ast::Unit) -> Vec<ast::Unit
     for child in &query.attach {
         add(&mut out, child.unit);
         for window in &child.windows {
-            if let ast::Window::Cond { cond } = window {
+            if let ast::Window::Condition { cond } = window {
                 condition(cond, &mut out);
             }
         }
     }
     for stage in &query.stages {
         match &stage.kind {
-            ast::StageKind::Where { cond } => condition(cond, &mut out),
-            ast::StageKind::Scope { unit, cond } => {
+            ast::StageKind::Where { condition: cond } => condition(cond, &mut out),
+            ast::StageKind::Scope { unit, condition: cond } => {
                 current_unit = *unit;
                 add(&mut out, *unit);
                 if let Some(c) = cond {
