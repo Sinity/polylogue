@@ -191,7 +191,7 @@ fn kept_results(
         .collect()
 }
 
-fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<Options, Failure> {
+pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<Options, Failure> {
     Ok(Options {
         clock: ask.clock.clone(),
         origins: polylogue_sources::origin::ORIGINS
