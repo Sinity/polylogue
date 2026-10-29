@@ -188,7 +188,9 @@ fn a_query_starting_with_a_command_is_refused() {
         compile_err("list repo:x")
     );
     let near = compile_err("brife now");
-    assert!(near.contains("\"brief\""), "{near}");
+    assert!(near.contains("brief"), "{near}");
+    assert_eq!(compile("brife now", &opts(&[])).unwrap_err().kind(), "not_a_query");
+    assert_eq!(compile("brife now", &opts(&[])).unwrap_err().suggestion(), Some("brief now"));
     assert!(compile(r#""list" repo:x"#, &opts(&[])).is_ok());
 }
 
@@ -224,7 +226,9 @@ fn every_stored_value_can_be_queried() {
     }
     c("sessions where link:fork");
     c("sessions where link:resume");
-    assert!(compile_err("sessions where kind:chat").contains("kind on sessions is one of"));
+    let refusal = compile("sessions where kind:chat", &opts(&[])).unwrap_err();
+    assert_eq!(refusal.kind(), "bad_value");
+    for known in ["chat", "sessions", "main"] { assert!(refusal.to_string().contains(known), "{refusal}"); }
     assert!(compile_err("sessions where link:reference").contains("link is one of"));
 }
 

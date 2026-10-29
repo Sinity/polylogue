@@ -636,6 +636,8 @@ pub static FIELDS: &[Field] = &[
     ),
     f(ToolCalls, "exit_code", Number, "").sql("{t}.exit_code"),
     f(ToolCalls, "at", Time, "").sql("{t}.at"),
+    f(ToolCalls, "result_at", Time, "native time of the message or notification reporting the result").sql("{t}.result_at"),
+    f(ToolCalls, "reported_duration", Duration, "provider-reported tool duration in milliseconds; unknown when absent").sql("{t}.reported_duration_ms"),
     f(
         ToolCalls,
         "first_seen",
@@ -811,6 +813,8 @@ pub static FIELDS: &[Field] = &[
     .sql("{r}.seq"),
     f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
     sp(Changes, "after", "changes after a cursor `GEN:COUNTER:ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
+    sp(Changes, "sessions", "selection array, available as output only", custom::selection).ids(),
+    sp(Changes, "messages", "selection array, available as output only", custom::selection).ids(),
     // Turns, computed along the active path.
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
     f(Turns, "start", Time, "the first message's time").sql("{r}.start"),

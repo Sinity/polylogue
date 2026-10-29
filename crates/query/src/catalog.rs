@@ -6,7 +6,7 @@ fn field(value: &fields::Field, name: String) -> Field {
     use fields::Kind;
     Field {
         name,
-        kind: match value.kind {
+        kind: if value.value_kind == Some(crate::ColKind::Ids) { FieldKind::List(Box::new(FieldKind::Reference)) } else { match value.kind {
             Kind::Match | Kind::Special => FieldKind::Match,
             Kind::Prefix => FieldKind::Reference,
             Kind::Substring => FieldKind::Substring,
@@ -16,7 +16,7 @@ fn field(value: &fields::Field, name: String) -> Field {
             Kind::Duration => FieldKind::Duration,
             Kind::Time => FieldKind::Time,
             Kind::Bool => FieldKind::Bool,
-        },
+        } },
         values: value
             .values
             .into_iter()
