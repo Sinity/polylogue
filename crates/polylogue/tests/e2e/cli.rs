@@ -234,8 +234,9 @@ pub(super) fn cli(env: &crate::Fixture, args: &[&str]) -> Output {
 }
 
 fn json(out: &Output) -> serde_json::Value {
-    serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    answer.value().cloned().unwrap_or_else(|| serde_json::to_value(answer).unwrap())
 }
 
 fn line(uuid: &str, session: &str, text: &str) -> String {
