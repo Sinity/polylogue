@@ -55,9 +55,8 @@ fn main() -> ExitCode {
     let arguments = std::env::args_os().collect::<Vec<_>>();
     if process.environment.get_os("COMPLETE").is_some() {
         client_pipe_signal();
-        let callback = arguments
-            .iter()
-            .position(|value| value == "--")
+        let separator = arguments.iter().position(|value| value == "--");
+        let callback = separator
             .map(|separator| arguments[separator + 1..].to_vec())
             .unwrap_or_default();
         let index = process
@@ -66,7 +65,9 @@ fn main() -> ExitCode {
             .and_then(|value| value.to_str())
             .and_then(|value| value.parse().ok())
             .unwrap_or_else(|| callback.len().saturating_sub(1));
-        let overrides = completion_overrides(&callback);
+        let mut invocation = arguments[..separator.unwrap_or(arguments.len())].to_vec();
+        invocation.extend(callback.iter().skip(1).cloned());
+        let overrides = completion_overrides(&invocation);
         let catalog = config::archive_location(&process, &overrides)
             .ok()
             .and_then(|archive| {
@@ -86,7 +87,24 @@ fn main() -> ExitCode {
                 .and_then(|value| value.to_str())
                 .map(str::to_owned),
         });
-        clap_complete::CompleteEnv::with_factory(cli::command).complete();
+        let basename = arguments
+            .first()
+            .and_then(|argument| std::path::Path::new(argument).file_name())
+            .unwrap_or(std::ffi::OsStr::new("polylogue"));
+        let bin_name = basename.to_string_lossy().into_owned();
+        // Shell function names must distinguish '-' from '_' and other bytes.
+        let name = format!(
+            "polylogue_{}",
+            basename
+                .as_encoded_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        clap_complete::CompleteEnv::with_factory(move || {
+            cli::command().name(name.clone()).bin_name(bin_name.clone())
+        })
+        .complete();
     }
     let mut matches = match cli::command().try_get_matches_from(arguments.clone()) {
         Ok(matches) => matches,

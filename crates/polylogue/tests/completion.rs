@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
-fn seed(root: &Path, cache: &Path) {
+fn seed(root: &Path, cache: &Path, model: &str) {
     let key = blake3::hash(root.canonicalize().unwrap().as_os_str().as_encoded_bytes()).to_hex()
         [..12]
         .to_owned();
@@ -43,7 +43,7 @@ fn seed(root: &Path, cache: &Path) {
                         "repo".into(),
                         BTreeMap::from([("two words".into(), 3), ("żółw".into(), 2)]),
                     ),
-                    ("model".into(), BTreeMap::from([("alpha".into(), 2)])),
+                    ("model".into(), BTreeMap::from([(model.into(), 2)])),
                 ]),
             })?;
             let field = |name: &str, kind| Field {
@@ -209,7 +209,7 @@ fn completion_matrix_thirteen_positions_three_shells_empty_and_seeded() {
     let mut timings = vec![];
     for seeded in [false, true] {
         if seeded {
-            seed(&root, &cache);
+            seed(&root, &cache, "alpha");
         }
         for shell in ["bash", "zsh", "fish"] {
             for (name, words, expected, needs_catalog) in cases {
@@ -252,7 +252,7 @@ fn wrapper_unicode_and_setting_values_use_the_same_offline_provider() {
     let root = directory.path().join("archive");
     let cache = directory.path().join("cache");
     std::fs::create_dir(&root).unwrap();
-    seed(&root, &cache);
+    seed(&root, &cache, "alpha");
     for shell in ["bash", "zsh", "fish"] {
         let (output, _) = callback(&root, &cache, shell, &["sessions where repo:żó"], "plg");
         assert!(output.contains("żółw"), "{shell}: {output}");
@@ -269,5 +269,135 @@ fn wrapper_unicode_and_setting_values_use_the_same_offline_provider() {
             output.contains("on") && output.contains("off"),
             "{shell}: {output}"
         );
+    }
+}
+
+#[test]
+fn named_wrappers_keep_their_registration_and_selected_offline_catalog() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path();
+    let cache = base.join("cache");
+    let default = base.join("default");
+    let first = base.join("first archive");
+    let second = base.join("selected config/second archive");
+    for (archive, model) in [
+        (&default, "default_value"),
+        (&first, "first_value"),
+        (&second, "second_value"),
+    ] {
+        std::fs::create_dir_all(archive).unwrap();
+        std::fs::write(archive.join("index.db"), b"must remain unopened").unwrap();
+        seed(archive, &cache, model);
+    }
+    let fixture = process::Fixture::new(&default, &base.join("home"), &base.join("config"));
+    let first_config = base.join("first.toml");
+    std::fs::write(
+        &first_config,
+        format!("archive={}\n", serde_json::to_string(&second).unwrap()),
+    )
+    .unwrap();
+    let second_config = base.join("selected config/polylogue.toml");
+    std::fs::write(&second_config, "archive='second archive'\n").unwrap();
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+    let bash = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("bash"))
+        .find(|path| path.is_file())
+        .expect("the development shell provides bash");
+    let mut functions = Vec::new();
+    for (name, flags, expected, other) in [
+        (
+            "polylogue-first",
+            format!(
+                "--archive {} --config {}",
+                quote(first.to_str().unwrap()),
+                quote(first_config.to_str().unwrap())
+            ),
+            "first_value",
+            "second_value",
+        ),
+        (
+            "polylogue_first",
+            format!("--config {}", quote(second_config.to_str().unwrap())),
+            "second_value",
+            "first_value",
+        ),
+    ] {
+        let wrapper = base.join(name);
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!{}\nexec -a \"$0\" {} {flags} \"$@\"\n",
+                bash.display(),
+                quote(BIN)
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let command = |shell: &str| {
+            let mut command = std::process::Command::new(&wrapper);
+            fixture.environment(&mut command);
+            command.env("COMPLETE", shell).env("XDG_CACHE_HOME", &cache);
+            command
+        };
+        let registration = command("bash").output().unwrap();
+        assert!(
+            registration.status.success(),
+            "{}",
+            String::from_utf8_lossy(&registration.stderr)
+        );
+        let registration = String::from_utf8(registration.stdout).unwrap();
+        assert!(
+            registration.contains(wrapper.to_str().unwrap()),
+            "{registration}"
+        );
+        let registrations: Vec<_> = registration
+            .lines()
+            .filter(|line| line.trim_start().starts_with("complete "))
+            .collect();
+        assert!(
+            !registrations.is_empty()
+                && registrations
+                    .iter()
+                    .all(|line| line.ends_with(&format!(" {name}"))),
+            "{registration}"
+        );
+        functions.push(
+            registration
+                .lines()
+                .find(|line| line.starts_with("_clap_complete_") && line.ends_with("() {"))
+                .expect("Bash registration declares a completion function")
+                .to_owned(),
+        );
+        for shell in ["bash", "zsh", "fish"] {
+            let output = command(shell)
+                .env("_CLAP_COMPLETE_INDEX", "3")
+                .env("_CLAP_IFS", "\n")
+                .args(["--", name, "messages", "where", "model:"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{shell}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let output = String::from_utf8(output.stdout).unwrap();
+            assert!(output.contains(expected), "{name}/{shell}: {output}");
+            assert!(
+                !output.contains(other) && !output.contains("default_value"),
+                "{name}/{shell}: {output}"
+            );
+        }
+    }
+    assert_ne!(
+        functions[0], functions[1],
+        "wrapper registrations must coexist"
+    );
+    for archive in [&default, &first, &second] {
+        assert_eq!(
+            std::fs::read(archive.join("index.db")).unwrap(),
+            b"must remain unopened"
+        );
+        assert_eq!(std::fs::read_dir(archive).unwrap().count(), 1);
     }
 }
