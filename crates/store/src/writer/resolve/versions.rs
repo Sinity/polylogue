@@ -737,28 +737,34 @@ impl Assertions {
                 .or(step
                     .repeats_whole_conversations
                     .then_some(step.start as i64));
+            let mut fields = event.clone();
+            fields.data = Json::Null;
+            let fields = packer.pack_json(&fields)?;
             let mut original = imported
                 .map(|identity| identity.sources.clone())
                 .unwrap_or_default();
             if let Some(previous) = self.events.get(&pk).and_then(|sources| {
-                sources
-                    .iter()
-                    .find(|source| source.input == input_pk && source.chain == chain)
+                sources.iter().find(|source| {
+                    source.input == input_pk
+                        && source.chain == chain
+                        && source.value_pk == value.key.pk
+                })
             }) {
-                original.extend(previous.event_source(index, pk, values)?.imported);
+                let previous = previous.event_source(index, pk, values)?;
+                if previous.fields == fields {
+                    original.extend(previous.imported);
+                }
             }
             original.sort();
             original.dedup();
-            let mut fields = event.clone();
-            fields.data = Json::Null;
             let local_range = if imported.is_some() {
                 Some((step.start, step.parsed_upto))
             } else {
-                event.range
+                event.range.or(Some((step.start, step.parsed_upto)))
             };
             let choice = EventChoice {
                 kind: event.kind.clone(),
-                fields: packer.pack_json(&fields)?,
+                fields,
                 imported: original,
                 value_pk: value.key.pk,
                 input: input_pk,

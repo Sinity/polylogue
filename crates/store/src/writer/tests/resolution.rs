@@ -860,10 +860,19 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     newer.range = Some((500, 999));
     newer.data = serde_json::json!({"remaining":7});
     competing.parse[0].output.events.push(newer.clone());
-    competing.parse[0]
-        .output
-        .imported_events
-        .insert(0, reexported.identity);
+    competing.parse[0].output.imported_events.insert(
+        0,
+        polylogue_model::bundle::ImportedEventIdentity {
+            id: id.clone(),
+            sources: vec![polylogue_model::bundle::EventSourceClaim {
+                input: "newer-original".into(),
+                source: "native".into(),
+                source_chain: 1,
+                source_start: Some(500),
+                source_end: Some(999),
+            }],
+        },
+    );
     write_test_rows(&tx, &competing, &competing.parse[0], 1, 3, None).unwrap();
     assert_eq!(
         tx.query_row("SELECT count(*) FROM event_source", [], |r| r
@@ -888,6 +897,22 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
             .event,
         newer
     );
+    let selected = reads.reader().unwrap().event_record(&id).unwrap().unwrap();
+    assert!(
+        selected
+            .identity
+            .sources
+            .iter()
+            .all(|claim| claim.input != "original" && claim.input != "bundle-local")
+    );
+    assert!(
+        selected
+            .identity
+            .sources
+            .iter()
+            .any(|claim| claim.input == "newer-original")
+    );
+
     let tx = conn.transaction().unwrap();
     let empty = batch("preferred-local", 0, 0, Vec::new(), &[]);
     write_test_rows(&tx, &empty, &empty.parse[0], 1, 4, None).unwrap();
