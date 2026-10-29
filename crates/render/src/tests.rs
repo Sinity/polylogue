@@ -1130,3 +1130,23 @@ fn document_attachments_at_different_blocks_do_not_share_availability() {
     assert_eq!(items[0].source.reference, items[1].source.reference);
     assert_ne!(items[0].source.block, items[1].source.block);
 }
+
+#[test]
+fn format_flags_and_public_json_schema_use_one_closed_vocabulary() {
+    let schema = serde_json::to_value(schemars::schema_for!(Format)).unwrap();
+    assert_eq!(schema["enum"], serde_json::json!(Format::NAMES));
+    for name in Format::NAMES {
+        let format = Format::parse(name).unwrap();
+        assert_eq!(format.to_string(), *name);
+        assert_eq!(
+            serde_json::to_value(format).unwrap(),
+            serde_json::json!(name)
+        );
+        assert_eq!(
+            serde_json::from_value::<Format>(serde_json::json!(name)).unwrap(),
+            format
+        );
+    }
+    assert!(Format::parse("md").is_none());
+    assert!(serde_json::from_value::<Format>(serde_json::json!("md")).is_err());
+}
