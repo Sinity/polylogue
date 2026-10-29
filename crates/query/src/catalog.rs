@@ -74,7 +74,11 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
             }
             query_language::catalog::Unit {
                 name: spec.name.into(),
-                aliases: vec![spec.singular.into()],
+                aliases: vec![
+                    spec.singular.into(),
+                    format!("pl.{}", spec.name),
+                    format!("pl.{}", spec.singular),
+                ],
                 sequence_unit: Some("tool_calls".into()),
                 fields: declarations,
                 identity: spec

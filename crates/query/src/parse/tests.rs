@@ -247,3 +247,36 @@ fn former_semantic_spelling_refuses_with_the_canonical_correction() {
         ConditionKind::Similar { .. }
     ));
 }
+
+#[test]
+fn shorthand_time_bounds_keep_their_shared_typed_meaning() {
+    assert!(matches!(
+        cond("since:2026-10-05"),
+        ConditionKind::Since { .. }
+    ));
+    assert!(matches!(
+        cond("until:2026-10-05"),
+        ConditionKind::Until { .. }
+    ));
+    assert!(matches!(
+        cond("messages where at < 2026-10-05"),
+        ConditionKind::Compare { op: Op::Lt, .. }
+    ));
+}
+
+#[test]
+fn product_namespace_spelling_binds_to_the_same_declared_unit() {
+    let catalog = crate::catalog::catalog(&[], &[]);
+    for (qualified, local) in [
+        (
+            "pl.sessions where repo:morrow",
+            "sessions where repo:morrow",
+        ),
+        ("pl.messages where role:user", "messages where role:user"),
+    ] {
+        assert_eq!(
+            query_language::identity::normal_form(&p(qualified), &catalog).unwrap(),
+            query_language::identity::normal_form(&p(local), &catalog).unwrap(),
+        );
+    }
+}
