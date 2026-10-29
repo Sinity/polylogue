@@ -14,7 +14,8 @@ fn the_manual_gives_working_example_queries() {
         clock: polylogue_query::time::clock(
             1_790_000_000_000,
             polylogue_model::LogicalDay::named("UTC", 240).unwrap(),
-        ).unwrap(),
+        )
+        .unwrap(),
         origins: Vec::new(),
         command_words: Vec::new(),
         page_size: None,

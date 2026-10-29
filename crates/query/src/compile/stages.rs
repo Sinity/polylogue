@@ -213,7 +213,9 @@ impl<'a> Compiler<'a> {
                     unknown,
                 ]
             }
-            AggregateFunction::CountDistinct => { vec![(col, format!("count(DISTINCT {expr})"), ColKind::Number)] }
+            AggregateFunction::CountDistinct => {
+                vec![(col, format!("count(DISTINCT {expr})"), ColKind::Number)]
+            }
             _ => return Err(not_built("this aggregate")),
         };
         if scope.unit == Unit::Sessions {
@@ -263,7 +265,9 @@ impl<'a> Compiler<'a> {
         // unpriced) is a lower bound, and the total says how many. A tree
         // cost is one too when a session in the tree is, or when a
         // subagent the tree spawned is not in the archive.
-        if scope.unit == Unit::Sessions && matches!(f.function, AggregateFunction::Sum | AggregateFunction::Avg) {
+        if scope.unit == Unit::Sessions
+            && matches!(f.function, AggregateFunction::Sum | AggregateFunction::Avg)
+        {
             let s = &scope.a.s;
             let unpriced = |sessions: &str| {
                 format!(
@@ -336,7 +340,9 @@ impl<'a> Compiler<'a> {
                     .collect::<Result<Vec<_>, _>>()?
                     .join(" OR ")
             ),
-            ConditionKind::Not { condition: cond } => format!("NOT ({})", self.group_cond(cond, keys, aggs)?),
+            ConditionKind::Not { condition: cond } => {
+                format!("NOT ({})", self.group_cond(cond, keys, aggs)?)
+            }
             ConditionKind::Compare { operand, op, value } => {
                 let field = field_operand(operand)?;
                 let value = value_text(value)?;

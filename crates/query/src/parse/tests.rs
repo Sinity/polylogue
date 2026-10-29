@@ -1,8 +1,15 @@
 use super::*;
 use crate::ast::*;
-fn p(text: &str) -> Query { parse(text).unwrap_or_else(|error| panic!("{text}: {error}")) }
+fn p(text: &str) -> Query {
+    parse(text).unwrap_or_else(|error| panic!("{text}: {error}"))
+}
 fn cond(text: &str) -> ConditionKind {
-    match p(text).source { Source::Unit { condition: Some(c), .. } => c.kind, other => panic!("{text}: {other:?}") }
+    match p(text).source {
+        Source::Unit {
+            condition: Some(c), ..
+        } => c.kind,
+        other => panic!("{text}: {other:?}"),
+    }
 }
 #[test]
 fn every_spec_example_parses_through_the_product_catalog() {
@@ -50,23 +57,52 @@ fn every_spec_example_parses_through_the_product_catalog() {
 
 #[test]
 fn shared_tree_retains_boolean_modes_values_and_spans() {
-    let ConditionKind::And { conditions } = cond("repo:x \"a b\" refactor*") else { panic!() };
+    let ConditionKind::And { conditions } = cond("repo:x \"a b\" refactor*") else {
+        panic!()
+    };
     assert_eq!(conditions.len(), 3);
-    assert!(matches!(&conditions[1].kind, ConditionKind::Text { text, mode: TextMode::Phrase } if text == "a b"));
-    assert!(matches!(&conditions[2].kind, ConditionKind::Text { text, mode: TextMode::Prefix } if text == "refactor"));
+    assert!(
+        matches!(&conditions[1].kind, ConditionKind::Text { text, mode: TextMode::Phrase } if text == "a b")
+    );
+    assert!(
+        matches!(&conditions[2].kind, ConditionKind::Text { text, mode: TextMode::Prefix } if text == "refactor")
+    );
     assert_eq!(conditions[0].span, Span { start: 0, end: 6 });
-    assert!(matches!(cond("cats and dogs"), ConditionKind::And { conditions } if conditions.len() == 3));
+    assert!(
+        matches!(cond("cats and dogs"), ConditionKind::And { conditions } if conditions.len() == 3)
+    );
     assert!(matches!(cond("a OR b"), ConditionKind::Or { .. }));
-    for text in ["NOT tag:x", "-tag:x"] { assert!(matches!(cond(text), ConditionKind::Not { .. })); }
-    assert!(matches!(cond("origin:(a|b|c)"), ConditionKind::Match { value: Value::Set { values }, .. } if values.len() == 3));
-    assert!(matches!(cond("kind:*"), ConditionKind::Match { value: Value::Any, .. }));
-    assert!(matches!(cond("cost:unknown"), ConditionKind::Match { value: Value::Unknown, .. }));
-    assert!(matches!(cond("tag:project:morrow"), ConditionKind::Match { value: Value::Scalar { text, .. }, .. } if text == "project:morrow"));
+    for text in ["NOT tag:x", "-tag:x"] {
+        assert!(matches!(cond(text), ConditionKind::Not { .. }));
+    }
+    assert!(
+        matches!(cond("origin:(a|b|c)"), ConditionKind::Match { value: Value::Set { values }, .. } if values.len() == 3)
+    );
+    assert!(matches!(
+        cond("kind:*"),
+        ConditionKind::Match {
+            value: Value::Any,
+            ..
+        }
+    ));
+    assert!(matches!(
+        cond("cost:unknown"),
+        ConditionKind::Match {
+            value: Value::Unknown,
+            ..
+        }
+    ));
+    assert!(
+        matches!(cond("tag:project:morrow"), ConditionKind::Match { value: Value::Scalar { text, .. }, .. } if text == "project:morrow")
+    );
 }
 
 #[test]
 fn compact_comparisons_and_unknown_fields_have_executable_corrections() {
-    for (text, correction) in [("messages:>=10", "messages >= 10"), ("reop:morrow", "repo:morrow")] {
+    for (text, correction) in [
+        ("messages:>=10", "messages >= 10"),
+        ("reop:morrow", "repo:morrow"),
+    ] {
         let error = parse(text).unwrap_err();
         assert_eq!(error.suggestion(), Some(correction));
         assert!(parse(correction).is_ok());
@@ -75,28 +111,82 @@ fn compact_comparisons_and_unknown_fields_have_executable_corrections() {
 
 #[test]
 fn references_calls_and_sequences_keep_structural_identity() {
-    for text in ["https://chatgpt.com/c/abc", "@3.2"] { assert!(matches!(cond(text), ConditionKind::Reference { reference } if reference == text)); }
-    assert!(matches!(cond("weekday_offset()"), ConditionKind::Text { text, .. } if text == "weekday_offset()"));
-    assert!(matches!(cond("parse(x) fails"), ConditionKind::And { conditions } if conditions.len() == 2));
-    let Source::Unit { condition: Some(Condition { kind: ConditionKind::Sequence { unit, steps, gaps, all }, .. }), .. } = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within:5m] tool:Bash)").source else { panic!() };
-    assert_eq!(unit, "tool_calls"); assert!(!all); assert_eq!(steps.len(), 3);
-    assert_eq!(gaps, vec![Gap::Next, Gap::Within { duration: Value::scalar("5m") }]);
+    for text in ["https://chatgpt.com/c/abc", "@3.2"] {
+        assert!(matches!(cond(text), ConditionKind::Reference { reference } if reference == text));
+    }
+    assert!(
+        matches!(cond("weekday_offset()"), ConditionKind::Text { text, .. } if text == "weekday_offset()")
+    );
+    assert!(
+        matches!(cond("parse(x) fails"), ConditionKind::And { conditions } if conditions.len() == 2)
+    );
+    let Source::Unit {
+        condition:
+            Some(Condition {
+                kind:
+                    ConditionKind::Sequence {
+                        unit,
+                        steps,
+                        gaps,
+                        all,
+                    },
+                ..
+            }),
+        ..
+    } = p("tool_calls where seq(tool:Bash -> [next] tool:Edit -> [within:5m] tool:Bash)").source
+    else {
+        panic!()
+    };
+    assert_eq!(unit, "tool_calls");
+    assert!(!all);
+    assert_eq!(steps.len(), 3);
+    assert_eq!(
+        gaps,
+        vec![
+            Gap::Next,
+            Gap::Within {
+                duration: Value::scalar("5m")
+            }
+        ]
+    );
 }
 
 #[test]
 fn shared_units_stages_and_nested_queries_use_product_names() {
-    for (text, unit) in [("messages where role:user", "messages"), ("message where role:user", "messages"), ("TOOL_CALLS", "tool_calls"), ("work | count", "work"), ("", "sessions"), ("   ", "sessions")] {
-        assert!(matches!(p(text).source, Source::Unit { unit: actual, .. } if actual == unit), "{text}");
+    for (text, unit) in [
+        ("messages where role:user", "messages"),
+        ("message where role:user", "messages"),
+        ("TOOL_CALLS", "tool_calls"),
+        ("work | count", "work"),
+        ("", "sessions"),
+        ("   ", "sessions"),
+    ] {
+        assert!(
+            matches!(p(text).source, Source::Unit { unit: actual, .. } if actual == unit),
+            "{text}"
+        );
     }
-    assert!(matches!(cond("messages >= 10"), ConditionKind::Compare { .. }));
-    let query = p("tool_calls | group by day(at), tool | agg count, sum:duration, p90:duration, count_distinct:session | sort by count desc | where count >= 3 | limit 5 | offset 10");
+    assert!(matches!(
+        cond("messages >= 10"),
+        ConditionKind::Compare { .. }
+    ));
+    let query = p(
+        "tool_calls | group by day(at), tool | agg count, sum:duration, p90:duration, count_distinct:session | sort by count desc | where count >= 3 | limit 5 | offset 10",
+    );
     assert_eq!(query.stages.len(), 6);
-    let StageKind::Aggregate { aggregates } = &query.stages[1].kind else { panic!() };
+    let StageKind::Aggregate { aggregates } = &query.stages[1].kind else {
+        panic!()
+    };
     assert_eq!(aggregates[2].column(), "p90_duration");
-    let nested = p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
+    let nested =
+        p("origin:codex | union (repo:morrow | where cost > 1) | except (messages where chrono)");
     assert_eq!(nested.stages.len(), 2);
-    assert!(matches!(cond("count(tool_call where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls"));
-    assert!(matches!(cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.stages.len() == 1));
+    assert!(
+        matches!(cond("count(tool_call where outcome:error) >= 3"), ConditionKind::Count { unit, op: Op::Ge, count: 3, condition: Some(_), .. } if unit == "tool_calls")
+    );
+    assert!(
+        matches!(cond("id in (messages where chrono | group by session)"), ConditionKind::In { query, .. } if query.stages.len() == 1)
+    );
 }
 
 #[test]
@@ -114,8 +204,19 @@ fn repairs_and_product_depth_guard_are_stable() {
 
 #[test]
 fn saved_arguments_are_values_and_literals_do_not_bind_namespaces() {
-    let Source::Saved { name, arguments } = p("query:failing(repo=morrow, phrase=\"two words\")").source else { panic!() };
-    assert_eq!(name, "failing"); assert_eq!(arguments.len(), 2);
-    assert_eq!(arguments[1].value, Value::Scalar { text: "two words".into(), quoted: true });
+    let Source::Saved { name, arguments } =
+        p("query:failing(repo=morrow, phrase=\"two words\")").source
+    else {
+        panic!()
+    };
+    assert_eq!(name, "failing");
+    assert_eq!(arguments.len(), 2);
+    assert_eq!(
+        arguments[1].value,
+        Value::Scalar {
+            text: "two words".into(),
+            quoted: true
+        }
+    );
     assert!(p("repo:\"sx.events\"").namespaces().is_empty());
 }

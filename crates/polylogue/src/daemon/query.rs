@@ -312,16 +312,33 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let position = reader.change_position()?;
     let mut opts = options(reader, &ask, ask.now, 0)?;
     let question = page::identity(ask.text, &opts)?;
-    let cursor = ask.cursor.map(|text| page::open(text, &seal, question, &position, &opts)).transpose()?;
-    let seed = cursor.as_ref().map_or_else(|| uuid::Uuid::now_v7().as_u128() as u64, |cursor| cursor.context.random_seed);
-    if let Some(cursor) = &cursor { opts.clock = cursor.context.clock.clone(); }
+    let cursor = ask
+        .cursor
+        .map(|text| page::open(text, &seal, question, &position, &opts))
+        .transpose()?;
+    let seed = cursor.as_ref().map_or_else(
+        || uuid::Uuid::now_v7().as_u128() as u64,
+        |cursor| cursor.context.random_seed,
+    );
+    if let Some(cursor) = &cursor {
+        opts.clock = cursor.context.clock.clone();
+    }
     opts.random_seed = Some(seed);
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    let after = cursor.as_ref().map(|cursor| page::check(cursor, &program, &opts, ask.why)).transpose()?;
-    let context = match cursor { Some(cursor) => cursor.context, None => page::context(question, &position, &opts, &program, seed, ask.why)? };
-    let paging = page::Paging { seal: &seal, context };
+    let after = cursor
+        .as_ref()
+        .map(|cursor| page::check(cursor, &program, &opts, ask.why))
+        .transpose()?;
+    let context = match cursor {
+        Some(cursor) => cursor.context,
+        None => page::context(question, &position, &opts, &program, seed, ask.why)?,
+    };
+    let paging = page::Paging {
+        seal: &seal,
+        context,
+    };
     let day = polylogue_query::time::product_day(&opts.clock);
     with_similarity(reader, &program, ask.near, || {
         answer(reader, &program, &day, after, &paging, ask.why)
