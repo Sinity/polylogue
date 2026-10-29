@@ -81,6 +81,7 @@ impl Replay<'_> {
                 }
             }
             let sequence = ProducerReplay {
+                source: crate::source_reference(),
                 operation,
                 root: selection.root,
                 materials: selection.materials,

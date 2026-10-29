@@ -198,6 +198,7 @@ impl Sinex {
             let mut operation = [0u8; 16];
             operation.copy_from_slice(&operation_hash.as_bytes()[..16]);
             let sequence = sinex_protocol::ProducerReplay {
+                source: crate::source_reference(),
                 operation: sinex_model::OperationId(uuid::Uuid::from_bytes(operation)),
                 root: selection.root,
                 materials: selection.materials,

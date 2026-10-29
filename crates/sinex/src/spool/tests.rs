@@ -674,6 +674,7 @@ fn replay_capture_group_retains_its_material_until_applied() {
     let replay = Ingress::ReplaySequence {
         frame: "replacement".into(),
         sequence: Box::new(sinex_protocol::ProducerReplay {
+            source: crate::source_reference(),
             operation: sinex_model::OperationId(uuid::Uuid::nil()),
             root: crate::material_id("polylogue-test", "raw"),
             materials: vec![],
