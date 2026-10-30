@@ -141,7 +141,9 @@ fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
         Kind::Bool => arg.action(ArgAction::SetTrue),
         Kind::Integer => arg.value_parser(clap::value_parser!(u64)),
         Kind::Text => arg,
-        Kind::Json => arg.value_parser(serde_json::from_str::<serde_json::Value>),
+        Kind::Json => {
+            arg.value_parser(|text: &str| serde_json::from_str::<serde_json::Value>(text))
+        }
         Kind::Choice(choices) => arg.value_parser(clap::builder::PossibleValuesParser::new(
             choices.iter().copied(),
         )),

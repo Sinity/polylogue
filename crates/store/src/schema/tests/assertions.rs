@@ -390,7 +390,7 @@ fn source_five_fresh_and_upgrade_keep_old_run_bytes_and_admit_raw_object_binding
                         ..Default::default()
                     },
                     delivery: polylogue_model::read::ReadDelivery::Stream,
-                    format: polylogue_model::bundle::Format::Jsonl,
+                    format: polylogue_model::read::Format::Jsonl,
                     page_budget: None,
                     direct_source: None,
                 },
