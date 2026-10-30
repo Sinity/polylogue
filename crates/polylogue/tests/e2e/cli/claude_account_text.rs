@@ -234,7 +234,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
             _ => None,
         })
         .collect();
-    assert_eq!(exported_documents, [before.clone()]);
+    assert_eq!(exported_documents.as_slice(), std::slice::from_ref(&before));
     assert!(
         !exported
             .iter()
