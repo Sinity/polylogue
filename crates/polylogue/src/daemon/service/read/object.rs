@@ -1,0 +1,300 @@
+//! Exact accepted object reads share durable Begin/Outcome and output codecs.
+use super::*;
+use polylogue_model::Reference;
+
+fn target(request: &Request) -> Option<Result<Reference, Response>> {
+    let Request::Read {
+        target, options, ..
+    } = request
+    else {
+        return None;
+    };
+    (target.starts_with("request:") || options.view == View::Raw && target.starts_with("run:"))
+        .then(|| Reference::parse(target).map_err(|error| self::error("bad_request", error)))
+}
+
+fn execute<T>(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    request: &Request,
+    operation: &Arc<crate::operation::Context>,
+    reference: Reference,
+    run: impl FnOnce(
+        ReadRecord,
+        ReadSnapshot,
+        ReadHeader,
+        Format,
+        Option<PageBudget>,
+        RunId,
+        ReadFooter,
+    ) -> Result<T, Response>,
+) -> Result<T, Response> {
+    let Request::Read {
+        options,
+        format,
+        delivery,
+        budget,
+        ..
+    } = request
+    else {
+        unreachable!()
+    };
+    options
+        .validate()
+        .map_err(|error| self::error("bad_request", error))?;
+    let format =
+        Format::parse(format).ok_or_else(|| error("bad_request", "unknown read format"))?;
+    let budget = if *delivery == ReadDelivery::Page {
+        let mut resolved = PageBudget::default();
+        if let Some(tokens) = budget {
+            resolved.tokens = NonZeroU64::new(*tokens as u64)
+                .ok_or_else(|| error("bad_request", "read budget must be positive"))?;
+        }
+        Some(resolved)
+    } else {
+        None
+    };
+    let prepared = reader
+        .prepare_object_read(&reference)
+        .map_err(|error| store_error(&error))?;
+    let content_hash = prepared.content_hash();
+    let record = prepared
+        .into_record()
+        .map_err(|error| store_error(&error))?;
+    let scope = reader.scope_token();
+    let positions = reader
+        .change_position()
+        .map_err(|error| store_error(&error))?;
+    let binding = ObjectExecutionBinding {
+        reference: reference.clone(),
+        content_hash,
+        scope_fingerprint: reader
+            .query_scope_fingerprint()
+            .map_err(|error| store_error(&error))?,
+        versions: operation.cursor_versions(),
+        presentation: ExecutionPresentation::Read {
+            options: options.clone(),
+            delivery: *delivery,
+            format,
+            page_budget: budget,
+            direct_source: None,
+        },
+        accepted_request: accepted(operation)?,
+    };
+    binding
+        .validate()
+        .map_err(|error| self::error("bad_request", error))?;
+    let id = crate::operation::new_run_id();
+    let hash = binding
+        .hash()
+        .map_err(|error| self::error("internal", error))?;
+    let begin = QueryRun {
+        id: id.clone(),
+        question: None,
+        at: operation.ran_at,
+        read_at: positions.clone(),
+        machine: operation.machine.clone(),
+        authorship: operation.authorship.clone(),
+        binding: RunBinding::OriginalObject {
+            execution: Box::new(binding),
+        },
+    };
+    let writer = d
+        .writes
+        .as_ref()
+        .ok_or_else(|| error("not_yet_available", "read execution custody is unavailable"))?;
+    reader.check().map_err(|error| store_error(&error))?;
+    scope.check().map_err(|error| store_error(&error))?;
+    super::super::execution::record(
+        writer,
+        operation.parent_lifetime(),
+        begin,
+        hash,
+        "read_failed",
+        || d.config.requests.now(),
+        || {
+            reader.check().map_err(|error| store_error(&error))?;
+            scope.check().map_err(|error| store_error(&error))?;
+            let completeness = reader
+                .completeness(&polylogue_engine::reading_contracts())
+                .map_err(|error| store_error(&error))?;
+            let run_reference = format!("run:{id}");
+            let snapshot = ReadSnapshot {
+                query: run_reference.clone(),
+                query_text: reference.to_string(),
+                ran_at: operation.ran_at,
+                read_at: positions,
+                caught_up: completeness.caught_up(),
+                currency: d.currency(reader).map_err(|error| store_error(&error))?,
+                enabled_variants: vec![],
+                author: operation.authorship.author.clone(),
+                notes: vec![],
+                incomplete: vec![],
+            };
+            let header = ReadHeader {
+                target: run_reference,
+                view: options.view,
+                title: ValueState::NotApplicable,
+                kind: HeaderKind::Record {
+                    record_type: if matches!(&reference, Reference::Run(_)) {
+                        "historical_query_run"
+                    } else {
+                        "accepted_request"
+                    }
+                    .into(),
+                },
+                figures: vec![],
+            };
+            let evidence = ProjectionEvidence {
+                authored: if matches!(&reference, Reference::Request(_)) {
+                    Some(AuthoredSelection {
+                        selected: reference,
+                        coverage: AuthoredCoverage::WholeRequest,
+                    })
+                } else {
+                    None
+                },
+                ..Default::default()
+            };
+            let mut footer = ReadFooter::default();
+            let projected = output::project(
+                records::SelectedRecord::from(record),
+                options,
+                &evidence,
+                false,
+                &mut footer,
+            )?;
+            let projected = projected.unwrap_or(ReadRecord::Presentation { parts: vec![] });
+            let value = run(projected, snapshot, header, format, budget, id, footer)?;
+            reader.check().map_err(|error| store_error(&error))?;
+            scope.check().map_err(|error| store_error(&error))?;
+            Ok(super::super::execution::Completed {
+                value,
+                count: Some(1),
+                exact: true,
+                next: None,
+            })
+        },
+    )
+}
+
+pub(super) fn page(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    request: &Request,
+    operation: &Arc<crate::operation::Context>,
+) -> Option<Response> {
+    let reference = match target(request)? {
+        Ok(reference) => reference,
+        Err(error) => return Some(error),
+    };
+    let result = execute(
+        reader,
+        d,
+        request,
+        operation,
+        reference,
+        |record, snapshot, header, format, budget, id, footer| {
+            let mut budget = budget
+                .ok_or_else(|| error("bad_request", "streaming reads require stream delivery"))?;
+            let framing_size = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
+                .map_err(|error| self::error("internal", error))?
+                .len();
+            budget.bytes =
+                std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(framing_size))
+                    .ok_or_else(|| {
+                        error(
+                            "bad_request",
+                            "reading metadata exceeds page framing; use streaming delivery",
+                        )
+                    })?;
+            let mut pager = PageBuilder::new(header, budget, None, ReadFraming::Object { run: id })
+                .map_err(page_error)?;
+            let at = SelectionLocator {
+                row: 0,
+                record: ReadRecordLocator {
+                    kind: ReadRecordKind::Authored,
+                    ordinal: 0,
+                },
+            };
+            for (ordinal, part) in record.parts().iter().enumerate() {
+                if let ReadPart::Item(item) = part {
+                    pager
+                        .push_at(at, ordinal as u64, item.clone())
+                        .map_err(page_error)?;
+                    if pager.is_full() {
+                        break;
+                    }
+                }
+            }
+            let document = pager.finish(footer).map_err(page_error)?;
+            if document.footer.position.is_some() {
+                return Err(error(
+                    "bad_request",
+                    "this object exceeds the page budget; use streaming delivery for the complete retained record",
+                ));
+            }
+            reader.check().map_err(|error| store_error(&error))?;
+            Ok(ReadPage {
+                format,
+                snapshot: ReadPageSnapshot::from(&snapshot),
+                records: vec![],
+                document,
+            })
+        },
+    );
+    Some(match result {
+        Ok(page) => ok(page),
+        Err(error) => error,
+    })
+}
+
+pub(super) fn produce(
+    request: &Request,
+    d: &Daemon,
+    operation: &Arc<crate::operation::Context>,
+    output: &mut dyn Write,
+) -> Option<Result<(), Response>> {
+    let Request::Read {
+        options,
+        with_blobs,
+        delivery: ReadDelivery::Stream,
+        ..
+    } = request
+    else {
+        return None;
+    };
+    let reference = match target(request)? {
+        Ok(reference) => reference,
+        Err(error) => return Some(Err(error)),
+    };
+    Some(super::super::accepting(d).and_then(|()| {
+        let reader = d.reads.reader().map_err(|error| store_error(&error))?;
+        execute(
+            &reader,
+            d,
+            request,
+            operation,
+            reference,
+            |record, snapshot, header, format, _, _, footer| {
+                let check = || reader.check().map_err(|error| store_error(&error));
+                let begin = ReadBegin {
+                    format,
+                    snapshot,
+                    header,
+                    options: options.clone(),
+                };
+                let mut stream = output::Stream::begin(output, &check, &begin)?;
+                stream.record(&record)?;
+                if *with_blobs {
+                    blobs::Blobs::new(&reader)?.record(&record, &mut stream, &check)?;
+                }
+                check()?;
+                stream.finish(footer)
+            },
+        )
+    }))
+}
+
+#[cfg(test)]
+mod tests;

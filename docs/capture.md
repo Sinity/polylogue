@@ -12,6 +12,28 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - **Databases are captured as rows, not images** ([Tool databases](#tool-databases)).
 - **No size limit on valid input.** Payloads, attachments and export members of any size stream through.
 
+## Acquisition
+
+A mutable source freezes its actual origin, stable machine, exact path bytes and durable predecessor before deciding to skip or reading its body. The predecessor includes accepted private captures. An unchanged poll retries that acquisition; an observed A→B→A sequence retains three acquisitions. An older sample cannot become the third acquisition merely because it finishes after B: its frozen precondition must still match when custody is accepted.
+
+A working raw cursor and parser checkpoint describe accepted bytes separately from confirmed source and parse progress. Pending custody is neither a write failure nor confirmation. A quiet file continues through every chunk while confirmation is unavailable. A parser error stops parser facts at their last valid checkpoint; raw acquisition continues through the validated source end. Native JSONL malformed records are counted unreadable; later complete records remain independently readable. That counted outcome is distinct from a parser failure.
+
+Physical continuation uses verified immutable body references in one original acquisition chain. The stream identity includes its source input and coordinate space: provider bytes, a decoded container member, or one database dump. A file generation records the opened file's device, inode, size and modification and change times, and is checked against that descriptor and its path after reading. A database token belongs to one actual consistent transaction and cannot reopen that snapshot after restart. The cursor follows exact predecessor references with no gaps, forks or cycles. An actual retained body reference anchors a branch; an unanchored lookup with several roots stays unknown. Reaching an observed window is separate from proving EOF. A verified empty body with an actual root and total zero proves an empty stream; missing evidence does not.
+
+Export parsing reopens the retained immutable chain from zero. Callback order is separate from byte position: an optional container header, each actual item callback and a final completion carry consecutive ordinals and sealed semantic prefix hashes. A header has no physical byte interval. An item retains its actual scanner range. Completion accounts for every preceding callback and the verified source length; only then does the byte checkpoint advance. Replaying a retained prefix changes no rows or counts. A conflicting prefix or a gap is refused before parsed effects or primary semantic staging.
+
+A failed outer export scan records an unreadable `export` header with byte progress zero and no completion checkpoint or export cursor. Independently unreadable provider records, such as malformed JSONL lines in an otherwise scanned OTLP file, retain their diagnostic counts while valid item callbacks and completion continue. An exact retry does not recount it. A later actual extension is a new bound reading instance; its successful scan can start from zero while preserving the earlier refusal diagnostics. Historical byte receipts retain their original geometry and clocks, and legacy export controls without a sealed prefix remain unknown. A watched whole export retains its confirmed raw generation and chain after a scan refusal. Reusing a later append requires the full retained prefix to match the opened provider file while both descriptor and path retain the sampled generation; a cached tail can only reject reuse.
+
+A stale source precondition retains the complete group's actual encoded bodies and observations as `unresolved_basis_conflict` custody. It advances physical coverage only. It creates no source revision, source extent, current head, parser checkpoint or authored effects, and is never automatically promoted or replayed. Exact retries preserve the original disposition. A later actual observation under a new basis is a separate acquisition. An acquired provider body remains retrievable even when equal logical content creates no new source extent. Observation JSON is never its substitute.
+
+Native aliases require the format's structured identity and exact retained-byte evidence from the authoritative source view frozen before acquisition. The resolved subject must still match at acceptance. Unknown legacy path bytes or source-scope coverage cannot prove a fresh input. They permit raw custody while the source relationship remains unknown; display names and tentative chain numbers cannot supply that proof.
+
+Independent sampled files have independent logical receipts and dispositions. A shared physical writer flush cannot make one stale file freeze a valid file. A container or explicit package retains its complete member group.
+
+One consistent tool-database read transaction is one acquisition group. Its callbacks stage closed encoded parts before any member is accepted, and one atomic publication accepts the completed group. A failed transaction accepts no prefix. Comparison uses the latest accepted journal, including pending captures. Replaying that comparison admits no new raw bytes.
+
+An immutable package's content identity deduplicates within its authenticated receiving producer and stable machine. Another host retains its own acquisition provenance. A sender's author or actor claim never defines the receiving custody identity.
+
 ## Locations
 
 ### Roots, locations and the ignored list
@@ -19,6 +41,8 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - Each origin declares its **root**, a fixed set of **location** patterns, and an **ignored list** with one reason per entry (secret or account state, program files, cache, derived pile, the tool's lock files).
 - The root honours the tool's own home variable where the tool defines one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`); otherwise it is the tool's fixed path under `$HOME`. Polylogue has no setting of its own for any path.
 - Ignoring a tool's credential files is not filtering content: they are account state, not AI work.
+
+Mutable source sampling freezes its source boundary before provider I/O. It binds the current index generation and actual source admission fence, separately from the selected source's observation and pending capture IDs. A later native-ID alias lookup may use only retained facts admitted within that boundary. Acceptance compares the exact resolved source head and pending predecessor; unrelated source commits do not invalidate every sampler. Missing boundary evidence permits private byte custody but cannot establish a fresh source, append coordinates or parser continuation. In primary mode this requires certified coverage of the full scoped projection, including indexed authored records. A raw-input certificate or partial stream checkpoint alone is insufficient.
 
 ### Every file in one class
 
@@ -28,7 +52,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 | `ignored` | matched by an ignored entry | not stored; counted with its reason |
 | `unrecognized` | matched by neither | not stored, not parsed; counted per root, directory pattern and extension, and shown in status |
 
-- **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day with parse state `no_parser_yet` ([archive.md](archive.md#parsing)).
+- **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day and reports `no_parser_yet`. Raw-byte origins have no parser-version checkpoint; a generic row-dump reader retains its real reading version and no-parser control ([archive.md](archive.md#parsing)).
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
 - Hidden directories are entered only when a location names them. Symlinked roots resolve once. An unreadable directory is a reported state, never an empty result. A `.git` directory inside a root is ignored with its reason.
 - **The coverage table** `(root, class, pattern or reason, files, bytes, newest mtime)` is computed from the discovery walk the daemon already performs (the start-up walk plus file notifications). It is an index fact, rebuilt with the index; there is no separate scan.
@@ -85,7 +109,7 @@ Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a projecti
 
 **`llm` CLI** (`~/.config/io.datasette.llm/logs.db`, as rows): a session per `conversation_id`, with prompt and response messages, model, tokens and attachments.
 
-**`pi`** (`~/.pi/agent/sessions/**/*.jsonl`): collected, with parse state `no_parser_yet` until a parser exists.
+**`pi`** (`~/.pi/agent/sessions/**/*.jsonl`): collected as raw bytes and reported as `no_parser_yet` until a parser exists, without a fabricated reading version or parser checkpoint.
 
 **Other producers.** Claude Code web runs are their own origin, `claude-code-web`, once a real transcript file exists. Codex Cloud tasks are origin `codex-cloud` with their own ID namespace (`task_e_…`), from `codex.json` in ChatGPT exports and from the extension.
 
@@ -104,8 +128,10 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
   ```
 
   - `proc` is the **process identity**: `harness_pid` is the hook's parent (the harness runs the hook directly), `harness_start` the process start time, `boot_id` the kernel's boot ID. PID reuse and reboots never let a new process inherit an old session.
-  - `inherited` records another harness's session variables present in the environment (a Codex run launched from a Claude Code shell). It is launch evidence for delegation, never the child's identity. No other environment variable is read or stored.
+  - `inherited` records another harness's session variables present in the environment (a Codex run launched from a Claude Code shell). It is launch evidence for delegation, never the child's identity. The native terminal adapter variables described below are also recorded when present.
   - Hermes's `conversation_history` is left out of the line, because its transcript is read from `state.db`.
+- **Native work context.** At session start, the hook observes Git's common directory, root commits, current revision and branch, and the repository named in `remote.origin.url`, using one shared 50 ms budget. An unavailable or timed-out observation is recorded as unknown with its reason. A source cwd selects where Git observes these facts; it does not identify the repository. When Kitty supplies its native process and window variables, the hook records that adapter key with host, boot and parent-process identity. Structured task and pull-request references supplied by a harness remain in the payload; prompts, goal prose and shell commands do not supply objective identities.
+- **Successful context output** adds a `HookContextEmitted` receipt after the output is handed to the harness. Its `event_id` is distinct from the original invocation; its typed payload names that invocation, session, hook event and canonical delivery references. Failed output leaves no emission receipt. A parsed receipt is a source claim until native admission establishes its provenance, and it identifies no transcript message without an exact native link.
 - **A hook event belongs to its session and never creates one.** The daemon reads spool files like any growing file; a hook line keeps its identity across re-storage.
 - **Hooks complete transcripts** where the transcript is short of the truth: `PreCompact` gives the pre-compaction context, `PostToolUse` restores a truncated tool result (the order is inline, then sidecar, then hook), `UserPromptSubmit` gives exact paste bodies.
 
@@ -113,6 +139,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 
 - **A tool's SQLite database is captured as committed rows, never as a database image.** Each capture keeps rows the tool later deleted (a row seen once stays in the archive) and writes no export side file. Uncommitted write-ahead-log rows are not read.
 - Captured: Codex `state`, `goals`, `memories`, `queue`; Hermes `state.db`, `verification_evidence.db` and each profile's `state.db`; Antigravity `conversations/*.db`, `conversation_summaries.db` and each `state.vscdb`; Grok `memory-v2/**/*.sqlite` and `worktrees.db`; `llm` `logs.db`.
+- Row-dump headers retain the original SQL and structured native column metadata from the same SQLite read transaction: column names and order, declared type, nullability, primary-key order, hidden/generated status and `WITHOUT ROWID`. Schema tools report this metadata separately from observed JSON types and omit SQL and default expressions. A historical SQL-only header establishes table presence; its unobserved columns remain unknown.
 - A table whose schema no parser knows keeps its raw rows readable and is reported as [format drift](archive.md#format-drift).
 
 ## Import
@@ -120,9 +147,13 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 `polylogue import PATH... [--format NAME] [--explain] [--wait]` takes files, directories, ZIPs and tar, tgz and tar.zst archives, including nested containers and multi-part Takeouts (each part is its own container; members join by path). The CLI, MCP and HTTP all take host paths. Every member streams; there is no size limit.
 
 - **Recognition by declared export structure, never by sniffing.** A package is recognized by its structure and its members are parsed by that package's origin; nothing is guessed across origins. A path that matches no declared structure is refused, with the structures tried, and is not stored: the command answers at once, so refusing loses nothing, while a stored unknown file would have no owner and no reader. Members of a recognized package that no parser reads (`chat.html`, `.dat` assets) are stored as package members.
+- A native export filename together with its declared provider signature also identifies a malformed container; its scanner records an unreadable refusal without publishing a valid prefix. Declared OTLP JSONL streams reach the OTLP scanner without requiring the whole file to be one JSON value. A filename alone does not identify a provider, and unrelated JSONL needs its preserved tool layout or an explicit format.
 - **Original containers are kept whole**, and their members are also stored decoded, addressed as `container!/member`. Members deduplicate across overlapping exports; containers do not.
 - **Importing the same bytes again changes nothing.** A newer export merges by field ([sessions.md](sessions.md#one-conversation-through-several-routes)), so a field only the older export had survives.
 - An encrypted or corrupt member refuses its whole container before anything is stored.
+- Container observations record the container input, encoding kind, member index and exact member-name bytes. ZIP display names follow its declared encoding or legacy code page; non-UTF-8 tar names are escaped. Container membership is independent of explicit import membership. Container preflight keeps each original container and decoded member in the shared seekable encoded preparation. ZIP seeks and recognition read through its decoder; tar and compressed-tar entries stream directly into their encodings. Admission transfers those preparations without a plaintext scratch copy or recompression.
+- Codex plain and zstd rollout copies use the recorded native thread identity. Captured compressed bytes and decoded member bytes remain separate; re-encoding equal decoded content adds an observation without a logical revision. Appends preserve the existing byte chain.
+- Native Codex local-image references are read before parsing the observed rollout. Relative names require a recorded absolute working directory. A stored coverage manifest records each reference, its source record range, the recorded directory, and collected, missing, unreadable or unresolved status. Available files retain their exact bytes as content-addressed inputs.
 - The answer lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets. `--explain` classifies every member without storing anything.
 
 | Structure | Recognized by | Origin |
@@ -138,9 +169,11 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | OpenTelemetry GenAI | OTLP-JSON `resourceSpans` | `otel-genai` |
 | OpenAI chat array | only with `--format openai-chat`, since the shape has no reliable structure | `openai-chat` |
 | aider | `.aider.llm.history` beside `.aider.chat.history.md` | `aider`: the LLM history is the session, the Markdown a companion document |
-| Polylogue export bundle | the bundle manifest ([reading.md](reading.md#writing-out)) | the bundle's own records |
+| Polylogue export bundle v1 | first typed manifest, pinned streamed inventory, exact member hashes and sizes ([reading.md](reading.md#writing-out)) | `polylogue-bundle` canonical records |
 | The predecessor's spools | hook spool NDJSON in every old layout, `browser_llm_session` v1 envelopes, `raw_sessions` blobs | the payload's origin |
 | A live-origin file outside its root | only with `--format NAME`, or when the path keeps the tool's own layout | that origin |
+
+Aider's LLM log contains snapshots of the sent context and the returned response. It has no native session or message IDs: the first recorded request fixes its content-derived session identity, and equal sent prefixes share message IDs. Its unzoned log times stay unknown, with the original strings retained. The paired Markdown is a companion document.
 
 Hand-made Markdown chat dumps are not a structure: a flattened transcript is a degraded form of a conversation that has a real source.
 
@@ -152,6 +185,14 @@ AI Studio stores its prompts in Google Drive, which is a known location like a t
 - `driveDocument` and `driveImage` attachments are fetched by Drive ID as attachment bytes. Revision lineage and `branchParent` edges are recorded; a Drive mode that cannot give lineage fails closed.
 - The collector is on whenever the user has authorized a token; the one-time OAuth consent is the only gate, because a known location is never dark behind a setting. Without a token, status shows "not authorized" with the command to run.
 - A prompt deleted in Drive keeps its archived revisions and is marked gone.
+
+## Source clocks
+
+Native parsers carry a decoded time together with its quality, reported precision and any source-declared interval end. Whole epoch seconds and offset timestamps without fractions have second precision; fractional timestamps, epoch milliseconds and native nanoseconds retain subsecond instants. A missing or unreadable native clock has no instant and unknown quality. Capture observations and file metadata keep their own quality and never fill a missing message clock.
+
+Where a native format records events rather than a separate session creation time, the earliest native record or activity time supplies the session start. That start describes the first recorded activity. An OTLP span event retains its native start and end as a bounded interval. Its output message uses the call start and records that basis and both original clock fields in `otel_span_clock`; input history without message times stays unknown.
+
+Gemini activity times retain their original text and zone. Explicit unambiguous source offsets are resolved independently of the host timezone; ambiguous abbreviations without source timezone settings remain unknown. AI Studio chunk times are intrinsic; the Drive listing's file clock is file metadata, separate from message times.
 
 ## Capture status
 
@@ -184,3 +225,13 @@ Its figures and verdicts use the shared status format of [command-surface](https
 - **corrupt-member-refuses-container**: a corrupt member refuses its container before anything is stored.
 - **container-streams**: every member of a container far larger than memory streams with bounded memory.
 - **tool-database-keeps-deleted-rows**: a row deleted by the tool after one capture stays in the archive, and no database image or side file is written.
+
+A completed full discovery walk publishes one capture-coverage snapshot per machine. Every declared root is present, including accessible empty roots, absent roots, unavailable roots and roots with unreadable descendants. Entries aggregate file counts, byte counts and newest source mtime by collection class and declared pattern; ignored entries retain their reason. Status reads the last confirmed full-walk snapshot and its observation time. Incremental file events update inputs without replacing that snapshot.
+
+Coverage uses one unrecognized aggregate per root, independent of how many unknown subdirectories exist. Child symbolic links and special filesystem entries are ignored with explicit reasons; discovery does not follow them during either full walks or incremental events.
+
+Python predecessor archives containing `source.db`, `raw_sessions` and their declared blob files are supported external captured-data packages. Import reads their metadata without opening the archive for writing, validates exact source bytes and explicit append lineage, and preserves the original source facts. This is distinct from retired Rust archive storage layouts, whose codecs belong only to the private, explicit storage converter. Neither form authorizes a live archive conversion or reset.
+
+Canonical bundle import validates the complete immutable package before source or authored writes. Historical authored records use their frozen effects and retained sender provenance; the receiving channel supplies the current import actor. Stored-input replay restores these effects before advancing parse progress, so an interruption resumes from captured bytes. Imported chat and backfill history remains execution-ineligible.
+
+Retired `polylogue-export` v1-v4 documents are refused by name. Their existing original bytes and historical codec evidence are retained for explicit private conversion into the current bundle; they are not interpreted by the normal current-format reader. Python predecessor captured-data packages remain the supported external format described above.

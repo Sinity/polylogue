@@ -2,7 +2,7 @@
 
 Running Polylogue: the daemon's lifetime, its idle and steady-state work, the halt state, orientation and `status`, the operation commands, notices, verification on demand, several archives and machines, configuration, deployment, installing into harnesses, upgrades, and backup and restore.
 
-Neighbouring facts live elsewhere: the durability order and pipeline are [architecture.md#durability](architecture.md#durability) and [architecture.md#pipeline](architecture.md#pipeline); the CLI's grammar, latency classes, completion and exit codes are [interfaces.md](interfaces.md); the schema tools are [archive.md#format-drift](archive.md#format-drift); primary mode and the cutover are [primary-mode.md](primary-mode.md); the signal rule schema and its evaluator are common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md); the web views of status, notices and settings are [web.md](web.md); setting keys will be generated into `reference/settings.md`.
+Neighbouring facts live elsewhere: the durability order and pipeline are [architecture.md#durability](architecture.md#durability) and [architecture.md#pipeline](architecture.md#pipeline); the CLI's grammar, latency classes, completion and exit codes are [interfaces.md](interfaces.md); the schema tools are [archive.md#format-drift](archive.md#format-drift); primary mode and the cutover are [primary-mode.md](primary-mode.md); the signal rule schema and its evaluator are common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md); the web views of status, notices and settings are [web.md](web.md); setting keys will be generated into `reference/settings.md`.
 
 ## The daemon
 
@@ -23,7 +23,7 @@ No step deletes the index or any store.
 
 **How each run ended:** `clean` (with the signal), `refused` (exit 78, with the reason), `failed` (with the error kind), or `unknown` (no record: killed or crashed). `status` shows it. An `unknown` end is never given a cause by closeness in time to another event.
 
-**Liveness.** With `WatchdogSec`, the daemon feeds the watchdog from its request loop, so a process that no longer answers its own socket is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
+**Liveness.** A continuous engine, signal, count or completion worker terminating wakes supervision immediately, including ordinary runs without service notifications or a watchdog. A finite completion snapshot is an expected exit. The daemon stops admission, drains accepted responses and joins workers while preserving join errors. With `WatchdogSec`, the daemon feeds the watchdog only after its own socket answers a request and its continuous workers remain alive, so a process that no longer answers is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
 
 **Restart** resumes from committed positions; it does not rescan the archive, replay tool-database captures or re-read history. Target: socket ready within 2 s of start.
 
@@ -91,10 +91,10 @@ The commands this area owns, each with the reason it is a command rather than a 
 | bare `polylogue` | orientation |
 | `status [--json]` | a snapshot of the daemon, not of archive rows |
 | `daemon [--until-idle] [--json] [--archive DIR]` | runs the service |
-| `import PATH…` | brings an outside file into the archive ([capture.md#import](capture.md#import)) |
+| `import PATH…` | brings explicit daemon-host paths into the archive ([capture.md#import](capture.md#import)); relative paths require the accepting native caller’s working directory |
 | `verify` | an on-demand check of stored bytes |
 | `setting [NAME [VALUE]]` | writes an authored `setting` record |
-| `schema infer\|diff\|unread\|check` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
+| `schema infer\|diff\|unread` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
 | `sinex cutover [--dry-run]` | the one-way move to primary mode ([primary-mode.md#cutover](primary-mode.md#cutover)) |
 
 Notices, the running list and the live list are shipped saved queries (`query:notices`, `query:running`), not commands. No command checks for a terminal or harness variables to decide whether it may run, and every write records its computed author ([assertions.md#authorship](assertions.md#authorship)). Every command shows stored text as it is: Polylogue censors no output.
@@ -103,7 +103,7 @@ There is no repair, reconcile, reindex or reset command and no scheduled check: 
 
 ## Notices
 
-Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) rule schema, evaluator, interrupt budget and desktop notifications. Ruling, 2026-10-28, on desktop notifications: "just needs to be designed elegantly to not be a kludgy mess. most/all of things you listed should be notifications" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
+Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) rule schema, evaluator, interrupt budget and desktop notifications. Ruling, 2026-10-28, on desktop notifications: "just needs to be designed elegantly to not be a kludgy mess. most/all of things you listed should be notifications" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
 
 What is Polylogue's:
 - **Storage.** A rule is a `signal` assertion ([assertions.md#kinds](assertions.md#kinds)); each firing is a delivery naming the rule and revision, the triggering occurrences with their observation, the time, the channel and the reason for any downgrade ([agents.md#deliveries](agents.md#deliveries)). Deliveries survive an index rebuild and reach Sinex in primary mode.
@@ -167,11 +167,17 @@ Deployment configuration is loaded once by `main`, from the config file, then fl
 | subscription plans and price facts | authored `setting` | facts only the operator knows |
 | fetching linked attachments from third parties (`fetch-links`) | authored `setting` | sends requests out of the machine |
 
-**Authored settings** are insert-only assertions with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused. `polylogue setting` lists every setting with its value, who set it and when. Any author may change a setting; `status` lists changes by anyone but the operator until he next looks ([assertions.md](assertions.md#authorship)).
+`polylogue.toml` accepts `archive`, `check_history`, `[http]` (`listen`, `auth_token_file`) and standalone `[day]` (`zone`, `start`). `--config` chooses this file; its directory also supplies `sinex.toml` and `signals.toml`. With no flag, all three files live under `$XDG_CONFIG_HOME/polylogue/`. `--archive`, `--listen` and `--auth-token-file` override the file's values. The two HTTP environment variables override flags. Relative file values resolve against their configuration file; relative flags resolve against the captured working directory. Standalone deployment defaults to the named `UTC` zone and `04:00:00`; an invalid zone refuses startup. Primary mode rejects a local `[day]` and obtains its day from Sinex's current public context.
+
+`signals.toml` has `[notifications]` (`route = "dbus"`, `"command"` or `"both"`, `deadline_ms`, and optional `command = { program = "...", arguments = ["..."] }`), `[value_targets.NAME]` (`path`) and `[action_commands.NAME]` (`program`, `arguments`). Programs and arguments are separate values. Relative paths resolve against the file; a configuration digest identifies the resolved definitions frozen by a delivery.
+
+**Authored settings** are insert-only assertions with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused. `polylogue setting` lists every setting with its value, who set it and when. The typed answer also includes each key’s kind, declared scope, default and owner. `setting KEY` reads one catalog entry; `setting KEY VALUE` authors a change. Host-scoped keys use the captured accepting machine unless `--machine NAME` selects a named host; archive-scoped keys refuse a machine override. Primary attention entries identify Sinex as owner and expose no Polylogue default or locally authored value. Any author may change a setting; `status` lists changes by anyone but the operator until he next looks ([assertions.md](assertions.md#authorship)).
 
 **Not configurable,** because a dominant option exists: provider locations (fixed per origin, honouring a tool's own documented home variable such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`; [capture.md#locations](capture.md#locations)); whether the session-start brief is injected (removing the hooks is the off switch); brief sizes and budgets; worker counts and memory targets (derived from the cgroup CPU quota and affinity); pacing; deadlines (defaults any caller lifts).
 
-**Environment.** No environment variable selects the archive, other than the XDG base directories, `HOME` and the tools' own home variables. The binary reads only those, `PAGER`, `NO_COLOR`, `COMPLETE`, the harness variables read for caller identity, and `POLYLOGUE_LISTEN` and `POLYLOGUE_AUTH_TOKEN_FILE`.
+**Environment.** No environment variable selects the archive, other than the XDG base directories, `HOME` and the tools' own home variables. The binary reads only those, `PAGER`, `NO_COLOR`, `TERM`, `COMPLETE`, the harness variables read for caller identity, and `POLYLOGUE_LISTEN` and `POLYLOGUE_AUTH_TOKEN_FILE`. The startup boundary also captures `DBUS_SESSION_BUS_ADDRESS` as a transport address for the notification worker and `VOYAGE_API_KEY` as the optional paid embedding credential; loading configuration opens no bus connection.
+
+CLI styling uses the stdout and stderr terminal states captured independently at startup. Pipes are plain; `NO_COLOR` or `TERM=dumb` disables styling on both. JSON and protocol output remain plain. Text rendering still escapes archived control characters before adding the displaying client's styling.
 
 **Broken configuration never falls back.** A `sinex.toml` that does not parse or names an unknown mode does not switch to standalone: `status` shows the error with the file's path, the verdict is `degraded`, and writes wait.
 

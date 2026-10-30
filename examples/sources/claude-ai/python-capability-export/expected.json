@@ -26,7 +26,9 @@
           3,
           326
         ],
-        "session": "claude-ai:origin-matrix-claude-ai"
+        "session": "claude-ai:origin-matrix-claude-ai",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [],
@@ -44,7 +46,9 @@
           "id": "claude-ai:message-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-ai:origin-matrix-claude-ai"
+          "session": "claude-ai:origin-matrix-claude-ai",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -53,7 +57,9 @@
       {
         "id": "claude-ai:origin-matrix-claude-ai",
         "kind": "main",
-        "started": "2026-08-01T10:00:00Z"
+        "started": "2026-08-01T10:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

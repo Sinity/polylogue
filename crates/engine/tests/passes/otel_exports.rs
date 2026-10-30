@@ -33,11 +33,8 @@ fn otlp_disk_ordering_and_refused_lines_survive_original_and_index_deletion() {
     {
         let (mut e, _lock) = w.engine(64);
         let imported = e.import(std::slice::from_ref(&original)).unwrap();
-        assert!(
-            imported.pass.errors.is_empty(),
-            "{:?}",
-            imported.pass.errors
-        );
+        assert!(imported.refused.is_empty(), "{imported:?}");
+        assert!(imported.pass.errors.is_empty(), "{imported:?}");
         assert!(imported.pass.bytes_read >= fs::metadata(&original).unwrap().len());
         assert_eq!(imported.pass.messages_written, 40, "{imported:?}");
         for i in 0..40 {

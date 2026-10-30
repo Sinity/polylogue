@@ -1,0 +1,290 @@
+use super::*;
+
+#[test]
+fn output_schema_uses_shared_bucket_names_types_and_closed_values() {
+    let options = opts(&[]);
+    let schema = options
+        .output_schema("tool_calls | group by day(at),outcome | count")
+        .unwrap();
+    let field = |name: &str| {
+        schema
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap()
+    };
+    assert_eq!(field("day").kind, query_language::catalog::FieldKind::Time);
+    assert_eq!(
+        field("count").kind,
+        query_language::catalog::FieldKind::Integer
+    );
+    assert_eq!(
+        field("outcome").values,
+        ["ok", "error", "pending", "unknown"]
+    );
+    assert!(
+        !schema
+            .fields
+            .iter()
+            .any(|field| field.name == "session.repo")
+    );
+}
+
+#[test]
+fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_bodies() {
+    for text in [
+        "sessions where exists tool_call() | matches",
+        "sessions where seq(action:shell -> outcome:error) | matches",
+    ] {
+        let options = opts(&[]);
+        let schema = options.output_schema(text).unwrap();
+        let program = compile(text, &options).unwrap();
+        assert_eq!(
+            schema
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            program
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            "{text}"
+        );
+        assert!(schema.match_patterns.is_empty());
+    }
+    for (definition, text) in [
+        (
+            "sessions where exists tool_call(outcome:error) | matches",
+            "query:matching | sort by command",
+        ),
+        (
+            "sessions where exists tool_call(outcome:error)",
+            "query:matching | matches | sort by command",
+        ),
+    ] {
+        let options = opts(&[("matching", definition)]);
+        let plan = polylogue_query::plan::prepare(text, &options.bindings(), |_| Ok(())).unwrap();
+        let object = plan.query_object().unwrap();
+        let bytes = serde_json::to_vec(&object).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("match_patterns"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("match_outputs"));
+        let restored = serde_json::from_slice(&bytes).unwrap();
+        let replay =
+            polylogue_query::plan::replay(&restored, &polylogue_query::plan::catalog_fingerprint())
+                .unwrap();
+        assert_eq!(replay.question_id(), plan.question_id());
+        assert_eq!(
+            lower(&replay, &options).unwrap().columns,
+            lower(&plan, &options).unwrap().columns,
+            "{text}"
+        );
+        let schema = options.output_schema(text).unwrap();
+        assert_eq!(
+            schema
+                .fields
+                .iter()
+                .find(|field| field.name == "outcome")
+                .unwrap()
+                .values,
+            ["ok", "error", "pending", "unknown"]
+        );
+    }
+    for text in [
+        "sessions where seq all(action:shell -> action:shell) | matches",
+        "sessions where exists tool_call() | limit 1 | matches",
+        "sessions where exists tool_call() | distinct | matches",
+    ] {
+        let error = compile(text, &opts(&[])).unwrap_err();
+        assert_eq!(error.kind(), "not_built", "{text}: {error}");
+    }
+}
+
+#[test]
+fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as_columns() {
+    let mut options = opts(&[
+        ("failing", "tool_calls where outcome:error"),
+        ("grouped", "tool_calls | group by action | count"),
+        ("selected", "tool_calls | fields command"),
+        ("scoped", "sessions | tool_calls where outcome:error"),
+    ]);
+    let plan = polylogue_query::plan::prepare(
+        "query:failing session.repo:morrow | sort by command",
+        &options.bindings(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let object = plan.query_object().unwrap();
+    assert!(
+        !object.source_outputs[0]
+            .schema
+            .fields
+            .iter()
+            .any(|field| field.name == "session.repo")
+    );
+    assert!(object.source_outputs[0].relation_scope.is_none());
+    let encoded = serde_json::to_vec(&object).unwrap();
+    assert!(!String::from_utf8_lossy(&encoded).contains("relation_scope"));
+    let restored = serde_json::from_slice(&encoded).unwrap();
+    let replay =
+        polylogue_query::plan::replay(&restored, &polylogue_query::plan::catalog_fingerprint())
+            .unwrap();
+    let source = &replay.bound_query().query().source;
+    assert!(
+        replay
+            .catalog()
+            .source_scope(source)
+            .unwrap()
+            .fields
+            .iter()
+            .any(|field| field.name == "session.repo")
+    );
+    assert_eq!(replay.question_id(), plan.question_id());
+    let mut runtime_forgery = restored.clone();
+    runtime_forgery.source_outputs[0].relation_scope =
+        Some(query_language::catalog::OutputSchema {
+            unit: Some("tool_calls".into()),
+            fields: vec![query_language::catalog::Field {
+                name: "invented".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    assert_eq!(serde_json::to_vec(&runtime_forgery).unwrap(), encoded);
+    let checked = polylogue_query::plan::replay(
+        &runtime_forgery,
+        &polylogue_query::plan::catalog_fingerprint(),
+    )
+    .unwrap();
+    assert!(
+        !checked
+            .catalog()
+            .source_scope(&checked.bound_query().query().source)
+            .unwrap()
+            .fields
+            .iter()
+            .any(|field| field.name == "invented")
+    );
+    let expected = lower(&replay, &options).unwrap();
+    let changed = polylogue_query::plan::prepare(
+        "sessions where repo:other",
+        &polylogue_query::Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let mut current = options.bindings();
+    current.saved.remove("failing");
+    current
+        .add_saved("failing", &changed, "changed-revision", "changed-root")
+        .unwrap();
+    options.saved = current.saved;
+    let actual = lower(&replay, &options).unwrap();
+    assert_eq!(actual.sql, expected.sql);
+    assert_eq!(actual.params, expected.params);
+    for text in [
+        "query:grouped | where session.repo:morrow",
+        "query:selected | where session.repo:morrow",
+    ] {
+        assert_eq!(
+            compile(text, &options).unwrap_err().kind(),
+            "unknown_field",
+            "{text}"
+        );
+    }
+    let scoped = polylogue_query::plan::prepare(
+        "query:scoped | where session.repo:morrow",
+        &options.bindings(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let scoped_object = scoped.query_object().unwrap();
+    assert_eq!(
+        scoped_object.source_outputs[0].schema.unit.as_deref(),
+        Some("tool_calls")
+    );
+    assert!(
+        !scoped_object.source_outputs[0]
+            .schema
+            .fields
+            .iter()
+            .any(|field| field.name == "codex")
+    );
+    polylogue_query::plan::replay(
+        &scoped_object,
+        &polylogue_query::plan::catalog_fingerprint(),
+    )
+    .unwrap();
+    options.kept.insert(
+        "artifact".into(),
+        Kept {
+            unit: "tool_calls".into(),
+            columns: vec![Column {
+                name: "command".into(),
+                kind: ColKind::Text,
+                reference: None,
+            }],
+            match_columns: vec![],
+        },
+    );
+    let artifact =
+        polylogue_query::plan::prepare("result:artifact", &options.bindings(), |_| Ok(())).unwrap();
+    let mut current = options.bindings();
+    current
+        .add_saved(
+            "artifact-alias",
+            &artifact,
+            "artifact-revision",
+            "artifact-root",
+        )
+        .unwrap();
+    options.saved = current.saved;
+    assert_eq!(
+        compile("query:artifact-alias | where session.repo:morrow", &options)
+            .unwrap_err()
+            .kind(),
+        "unknown_field"
+    );
+    let schema = options
+        .output_schema("tool_calls | group by action | agg sum:exit_code")
+        .unwrap();
+    assert!(schema.fields.iter().any(|field| field.name == "count"));
+}
+
+#[test]
+fn forwarded_saved_conditions_keep_suffixes_defaults_and_reject_cycles() {
+    let options = opts(&[
+        ("pick", "$id"),
+        ("forward", "query:pick(id=$id)"),
+        ("nested", "query:forward(id=$id) origin:claude-code"),
+        ("calls", "tool_calls where outcome:error"),
+        ("wrong-unit", "query:calls"),
+        ("shaped", "sessions | group by repo | count"),
+        ("forward-shaped", "query:shaped"),
+        ("cycle-a", "query:cycle-b"),
+        ("cycle-b", "query:cycle-a"),
+    ]);
+    let id = "7f3a2c10-0003-4000-8000-000000000003";
+    same(
+        &format!("sessions where query:nested(id={id})"),
+        &format!("sessions where {id} origin:claude-code"),
+        &options,
+    );
+    for text in [
+        "sessions where query:wrong-unit",
+        "sessions where query:forward-shaped",
+        "sessions where query:cycle-a",
+    ] {
+        assert!(
+            matches!(compile(text, &options), Err(QueryError::Invalid { .. })),
+            "{text}"
+        );
+    }
+    // Exercise the backend guard itself, independently of Plan cycle validation.
+    let mut compiler = Compiler::new("sessions where query:cycle-a", &options);
+    assert!(matches!(
+        compiler.saved_relation("cycle-a", &[], Span::default()),
+        Err(QueryError::Invalid { .. })
+    ));
+    assert!(compiler.saved_stack.is_empty());
+}

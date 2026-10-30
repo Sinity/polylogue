@@ -149,7 +149,7 @@ fn session_file(path: &Path, session: &str, target: u64, rng: &mut Rng) -> std::
     let base = |kind: &str, uuid: &str, parent: &serde_json::Value| {
         serde_json::json!({
             "type": kind, "uuid": uuid, "parentUuid": parent, "sessionId": session,
-            "timestamp": "2026-09-01T10:00:00.000Z", "cwd": "/realm/project/polylogue/repo",
+            "timestamp": "2026-09-01T10:00:00.000Z", "cwd": "/workspace/project",
             "gitBranch": "master", "version": "2.1.200", "isSidechain": false,
             "userType": "external",
         })
@@ -292,8 +292,7 @@ fn main() {
     let started = Instant::now();
     let root = dir.join("archive");
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    let mut config = Config::from_env();
-    config.home = home;
+    let mut config = measurement_config(home);
     // The measured tree is exactly `--home`; the tools' own directory
     // variables point at the real one.
     config.tool_dirs.clear();
@@ -367,7 +366,6 @@ fn main() {
             "written_over_kept": write_bytes.map(|n|n as f64 / (index + stored).max(1) as f64),
             "written_mb": wchar.map(|n|n as f64 / 1e6),
             "written_over_input": wchar.map(|n|n as f64 / input.max(1) as f64),
-            "exports_mb": dir_size(&archive.exports_dir()) as f64 / 1e6,
             "peak_rss_mb": peak_rss_mb,
             // Seconds per stage; pool stages are thread-seconds.
             "stages": polylogue_store::timing::stage_seconds()
@@ -423,3 +421,17 @@ fn counter_delta(before: Option<u64>, after: Option<u64>) -> Option<u64> {
 #[cfg(test)]
 #[path = "first_build/tests.rs"]
 mod tests;
+
+fn measurement_config(home: std::path::PathBuf) -> Config {
+    Config::new(
+        home,
+        Default::default(),
+        "measurement-machine".into(),
+        "measurement-host".into(),
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .expect("CPU allowance"),
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    )
+    .expect("measurement configuration")
+}

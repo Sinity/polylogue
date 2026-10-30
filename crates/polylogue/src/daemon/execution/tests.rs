@@ -40,7 +40,7 @@ fn slow_read_returns_a_typed_deadline_with_unknown_count() {
     assert!(detail["rows_scanned"].is_null());
     assert!(detail["sqlite_steps"].as_u64().unwrap() > 0);
     assert_eq!(exit_code(&kind), 7);
-    assert_eq!(exit_code("cancelled"), 3);
+    assert_eq!(exit_code("cancelled"), 7);
 }
 
 #[test]
@@ -59,17 +59,21 @@ fn expired_requests_never_start_any_read_operation() {
     let daemon = test_daemon::start("synthetic limits");
     let requests = [
         Request::Status,
-        Request::Read {
-            target: crate::daemon::ReadTarget::Session(
-                polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+        Request::ReadResume {
+            root_run: polylogue_model::RunId::parse("019a0000-0000-7000-8000-000000000001")
+                .unwrap(),
+            cursor: query_language::cursor::SealedCursor::from_wire(
+                "never-open-an-expired-request",
             ),
-            view: "full".into(),
-            format: "json".into(),
-            with_parents: false,
             budget: None,
-            cursor: None,
-            selection: None,
-            slices: false,
+        },
+        Request::Read {
+            target: "session:claude-code:s1".into(),
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Page,
+            format: "json".into(),
+            budget: None,
+            with_blobs: false,
         },
         Request::Context {
             request_id: "synthetic-recall".into(),
@@ -90,7 +94,8 @@ fn expired_requests_never_start_any_read_operation() {
             fields: vec![],
         },
         Request::Complete {
-            word: "repo:".into(),
+            text: "repo:".into(),
+            position: 5,
         },
         Request::Query {
             text: "sessions".into(),
@@ -153,11 +158,14 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
 }
 
 #[test]
-fn export_has_no_default_deadline_and_explicit_deadlines_still_apply() {
-    let request = Request::Export {
-        targets: vec![],
+fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
+    let request = Request::Read {
+        target: "sessions".into(),
+        options: polylogue_model::read::ReadOptions::default(),
+        delivery: polylogue_model::read::ReadDelivery::Stream,
         format: "json".into(),
-        user_state: true,
+        budget: None,
+        with_blobs: false,
     };
     let limit = limit_for(&request, None, Default::default());
     assert!(limit.check().is_ok());
@@ -166,10 +174,10 @@ fn export_has_no_default_deadline_and_explicit_deadlines_still_apply() {
     let response = run(
         request,
         &limit_for(&Request::Status, Some(0), Default::default()),
-        |_| panic!("expired export started"),
+        |_| panic!("expired streamed read started"),
     );
     assert!(
-        matches!(response, Response::Error { kind, detail: Some(detail), .. } if kind == "deadline_exceeded" && detail["stage"] == "export")
+        matches!(response, Response::Error { kind, detail: Some(detail), .. } if kind == "deadline_exceeded" && detail["stage"] == "read")
     );
 }
 
@@ -231,4 +239,17 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
             .unwrap()
             .is_some()
     );
+}
+
+#[test]
+fn resumed_read_is_always_a_page_with_an_ordinary_read_deadline() {
+    let request = Request::ReadResume {
+        root_run: polylogue_model::RunId::parse("019a0000-0000-7000-8000-000000000001").unwrap(),
+        cursor: query_language::cursor::SealedCursor::from_wire("opaque-awaiting-owner-validation"),
+        budget: None,
+    };
+    assert!(request.read_only());
+    assert!(!request.streaming());
+    assert!(request_deadline(&request, None).is_some());
+    assert_eq!(request_deadline(&request, Some(0)), Some(0));
 }

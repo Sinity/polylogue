@@ -6,18 +6,14 @@
 //! unknown name all read it.
 
 use super::query::Failure;
-use polylogue_model::LogicalDay;
 use polylogue_render::measures as text;
 use polylogue_store::Reader;
 use polylogue_store::measure::{self, Selection, daily, drift, quota, survival, tool_calls};
+use query_language::time::DaySetting;
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Clone, Copy)]
-pub enum Paging {
-    Sessions,
-    Facets,
-}
+pub use polylogue_store::measure::Paging;
 
 pub struct Measure {
     /// The name after `| measure` and `polylogue measure`.
@@ -39,7 +35,7 @@ pub struct Measure {
 pub struct Run<'a> {
     pub selection: Selection,
     pub now: i64,
-    pub day: &'a LogicalDay,
+    pub day: &'a DaySetting,
     /// The measure's series or named options.
     pub metric: &'a str,
 }
@@ -70,15 +66,7 @@ pub static MEASURES: &[Measure] = &[
         paging: None,
         argument: Some("provider:method"),
         metrics: &[],
-        run: |r, x| {
-            json(measure::outlook::outlook(
-                r,
-                &x.selection,
-                x.now,
-                x.metric,
-                &polylogue_store::user_writes::machine_id(),
-            ))
-        },
+        run: |r, x| json(measure::outlook::outlook(r, &x.selection, x.now, x.metric)),
         text: text::outlook,
     },
     Measure {
@@ -256,7 +244,7 @@ pub fn run(
     what: &str,
     sessions: Option<Vec<i64>>,
     now: i64,
-    day: &LogicalDay,
+    day: &DaySetting,
     population: Option<Vec<i64>>,
 ) -> Result<Value, Failure> {
     let (m, metric) = find_checked(what)?;

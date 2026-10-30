@@ -1,6 +1,7 @@
 //! Antigravity language-server Markdown exports. Activity markers are agent
 //! actions even when the exporter places them inside a User Input section.
 use crate::document::{Sink, message_id, session_id, str_of};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -12,6 +13,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub mod server;
+
+pub const VERSION: u32 = 1;
 
 pub const ORIGIN: &str = "antigravity";
 pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb"];
@@ -46,25 +49,25 @@ impl DocumentParser for ConversationFile {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
         out.sessions
             .push(Session::new(self.session.clone(), SessionKind::Main));
-        out.events.push(Event {
+        out.events.push({ let (at,time_evidence)=crate::time::parts(None); Event {
             session: Some(self.session.clone()),
             kind: "antigravity_conversation_bytes".into(),
-            at: None,
+ at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until,
             after: None,
             range: None,
             data: serde_json::json!({"hash":BlobHash::of(bytes).to_string(),"length":bytes.len()}),
-        });
+        } });
         records.record("conversation_file", &RecordOutcome::Used);
     }
 }
 pub struct Antigravity;
 static FIELDS: Fields = Fields::new(&[
-    ("source", Rule::Read),
-    ("conversationFile", Rule::Read),
-    ("cascadeId", Rule::Read),
-    ("markdown", Rule::Read),
-    ("title", Rule::Read),
-    ("lastModifiedTime", Rule::Read),
+    ("source", Rule::Read(T::String)),
+    ("conversationFile", Rule::Read(T::String)),
+    ("cascadeId", Rule::Read(T::String)),
+    ("markdown", Rule::Read(T::String)),
+    ("title", Rule::Read(T::String)),
+    ("lastModifiedTime", Rule::Read(T::StringOrNumber)),
     (
         "workspaceName",
         Rule::Kept("workspace label, not a working directory"),
@@ -73,7 +76,8 @@ static FIELDS: Fields = Fields::new(&[
         "snippet",
         Rule::Excluded("preview repeated in the transcript"),
     ),
-]);
+])
+.for_kind("record");
 
 impl DocumentParser for Antigravity {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
@@ -89,12 +93,12 @@ impl DocumentParser for Antigravity {
                 "conversion",
                 &value,
                 &Fields::new(&[
-                    ("source", Rule::Read),
-                    ("cascadeId", Rule::Read),
-                    ("conversationFile", Rule::Read),
-                    ("status", Rule::Read),
-                    ("server_pid", Rule::Read),
-                    ("error", Rule::Read),
+                    ("source", Rule::Read(T::String)),
+                    ("cascadeId", Rule::Read(T::String)),
+                    ("conversationFile", Rule::Read(T::String)),
+                    ("status", Rule::Read(T::String)),
+                    ("server_pid", Rule::Read(T::Number)),
+                    ("error", Rule::Read(T::String)),
                 ]),
             );
             let Some(id) = str_of(&value, "cascadeId").and_then(|id| session_id(ORIGIN, id)) else {
@@ -106,13 +110,19 @@ impl DocumentParser for Antigravity {
             };
             out.sessions
                 .push(Session::new(id.clone(), SessionKind::Main));
-            out.events.push(Event {
-                session: Some(id),
-                kind: "antigravity_conversion".into(),
-                at: None,
-                after: None,
-                range: None,
-                data: value,
+            out.events.push({
+                let (at, time_evidence) = crate::time::parts(None);
+                Event {
+                    session: Some(id),
+                    kind: "antigravity_conversion".into(),
+                    at,
+                    at_quality: time_evidence.quality,
+                    at_precision: time_evidence.precision,
+                    at_until: time_evidence.until,
+                    after: None,
+                    range: None,
+                    data: value,
+                }
             });
             records.record("conversion", &RecordOutcome::Used);
             return;
@@ -140,13 +150,20 @@ impl DocumentParser for Antigravity {
         let mut metadata = value.as_object().expect("validated export object").clone();
         metadata.remove("markdown");
         // The source reports its last update, not the time of each message.
-        out.events.push(Event {
-            session: Some(id.clone()),
-            kind: "antigravity_session".into(),
-            at: value.get("lastModifiedTime").and_then(crate::time::rfc3339),
-            after: None,
-            range: None,
-            data: Json::Object(metadata),
+        out.events.push({
+            let (at, time_evidence) =
+                crate::time::parts(value.get("lastModifiedTime").and_then(crate::time::rfc3339));
+            Event {
+                session: Some(id.clone()),
+                kind: "antigravity_session".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: Json::Object(metadata),
+            }
         });
         let mut sink = Sink::new(out, records);
         let mut role = Role::Assistant;
@@ -202,11 +219,15 @@ impl DocumentParser for Antigravity {
                     offset: position,
                     end: position + 1,
                     message: Message {
+                        attrs: Default::default(),
                         id: mid.clone(),
                         session: id.clone(),
                         parent: parent.replace(mid),
                         role: message_role,
                         at: None,
+                        at_quality: polylogue_model::TimeQuality::Unknown,
+                        at_precision: None,
+                        at_until: None,
                         model: None,
                         prompt_kind: (message_role == Role::User).then_some(PromptKind::Prose),
                         blocks,

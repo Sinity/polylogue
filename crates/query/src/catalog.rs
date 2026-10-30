@@ -1,0 +1,148 @@
+//! The language vocabulary is projected from the product's execution registry.
+use crate::{ast::Unit, fields, units};
+use query_language::catalog::{Catalog, Field, FieldKind, ReferenceSyntax, UnknownRule};
+
+fn field(value: &fields::Field, name: String) -> Field {
+    use fields::Kind;
+    Field {
+        name,
+        kind: if value.value_kind == Some(crate::ColKind::Ids) {
+            FieldKind::List(Box::new(FieldKind::Reference))
+        } else {
+            match value.kind {
+                Kind::Match | Kind::Special => FieldKind::Match,
+                Kind::Prefix => FieldKind::Reference,
+                Kind::Substring => FieldKind::Substring,
+                Kind::Subtree => FieldKind::Subtree,
+                Kind::Number => FieldKind::Number,
+                Kind::Money => FieldKind::Money,
+                Kind::Duration => FieldKind::Duration,
+                Kind::Time => FieldKind::Time,
+                Kind::Bool => FieldKind::Bool,
+            }
+        },
+        values: value
+            .values
+            .into_iter()
+            .flatten()
+            .map(|v| (*v).to_owned())
+            .collect(),
+        unknown: value
+            .stored_unknown
+            .map_or(UnknownRule::Unknown, |v| UnknownRule::Word(v.into())),
+        help: value.help.into(),
+        read_as: value.help.into(),
+        unit: Some(value.unit.name().into()),
+    }
+}
+
+pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
+    let mut catalog = Catalog::new("sessions");
+    catalog.recall_last_unit = Some("messages".into());
+    catalog.commands = commands.to_vec();
+    catalog.units = Unit::all()
+        .map(|unit| {
+            let spec = units::spec(unit);
+            let mut declarations: Vec<Field> = fields::FIELDS
+                .iter()
+                .filter(|f| f.unit == unit)
+                .map(|f| field(f, f.name.into()))
+                .collect();
+            if fields::has_session(unit) {
+                for f in fields::FIELDS.iter().filter(|f| f.unit == Unit::Sessions) {
+                    if !declarations.iter().any(|d| d.name == f.name) {
+                        declarations.push(field(f, f.name.into()));
+                    }
+                }
+            }
+            for relation in spec.relations {
+                for f in fields::FIELDS.iter().filter(|f| f.unit == relation.target) {
+                    declarations.push(field(f, format!("{}.{}", relation.prefix, f.name)));
+                }
+            }
+            // These reference atoms are compiled at the product identity seam.
+            for name in origins.iter().map(String::as_str).chain([
+                "session",
+                "message",
+                "block",
+                "query",
+                "result",
+                "run",
+                "request",
+                "document",
+                "event",
+                "span",
+                "assertion",
+                "delivery",
+                "similar",
+            ]) {
+                if !declarations.iter().any(|f| f.name == name) {
+                    declarations.push(Field {
+                        name: name.into(),
+                        kind: FieldKind::Reference,
+                        ..Field::default()
+                    });
+                }
+            }
+            query_language::catalog::Unit {
+                name: spec.name.into(),
+                aliases: vec![
+                    spec.singular.into(),
+                    format!("pl.{}", spec.name),
+                    format!("pl.{}", spec.singular),
+                ],
+                sequence_unit: Some("tool_calls".into()),
+                fields: declarations,
+                identity: spec
+                    .identity
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                default_order: spec.main_time.into_iter().map(str::to_owned).collect(),
+                main_time: spec.main_time.map(str::to_owned),
+                ..query_language::catalog::Unit::default()
+            }
+        })
+        .collect();
+    catalog.references = [
+        ("@", None),
+        ("session:", Some(":")),
+        ("message:", Some(":")),
+        ("block:", Some("#")),
+        ("document:", Some(":")),
+        ("span:", Some("#")),
+        ("assertion:", Some("@")),
+        ("delivery:", None),
+        ("run:", None),
+    ]
+    .into_iter()
+    .map(|(prefix, marker)| ReferenceSyntax {
+        prefix: prefix.into(),
+        marker: marker.map(str::to_owned),
+    })
+    .collect();
+    catalog
+}
+
+pub use query_language::catalog::{AGGREGATES, KEY_FUNCTIONS, STAGES};
+pub use query_language::complete::{Completion, CompletionKind};
+pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completion> {
+    query_language::complete::complete(text, position, catalog)
+}
+
+/// The native row domain of a typed address. This is pure product vocabulary;
+/// membership and source availability remain Store responsibilities.
+pub fn reference_unit(reference: &polylogue_model::Reference) -> Option<Unit> {
+    use polylogue_model::Reference;
+    Some(match reference {
+        Reference::Session(_) => Unit::Sessions,
+        Reference::Message(_) | Reference::MessageRange { .. } => Unit::Messages,
+        Reference::Block { .. } => Unit::Blocks,
+        Reference::Document(_) => Unit::Documents,
+        Reference::Event(_) => Unit::Events,
+        Reference::Assertion(_) => Unit::Assertions,
+        Reference::Delivery(_) => Unit::Deliveries,
+        Reference::Span { container, .. } => return reference_unit(container),
+        _ => return None,
+    })
+}

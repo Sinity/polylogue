@@ -1,9 +1,12 @@
 //! Helpers shared by the parsers of whole documents (exports, captures):
 //! a running position for the rows they emit, and small JSON readers.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::Records;
 use crate::parse::Output;
-use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId, Timestamp};
+use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId};
 
 /// What a document or conversation parser writes into. `next` supplies
 /// message positions in reading order. The code that splits an input into
@@ -84,6 +87,6 @@ pub fn first_key(head: &[u8]) -> Option<&str> {
 }
 
 /// A time written either as epoch seconds or as an RFC 3339 string.
-pub fn time_of(v: &Json) -> Option<Timestamp> {
+pub fn time_of(v: &Json) -> Option<crate::time::SourceTime> {
     crate::time::epoch_seconds(v).or_else(|| crate::time::rfc3339(v))
 }

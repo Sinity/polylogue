@@ -6,9 +6,10 @@
 //! it needs Sinex's binaries: `SINEXD` and `SINEX_SCHEMA` name them
 //! (`cargo build -p sinexd -p sinex-schema` in a Sinex checkout).
 use polylogue_engine::Engine;
-use polylogue_model::{Author, NewNote, NoteKind, Target};
-use polylogue_sinex::{Config, Mode, Sinex};
-use polylogue_store::user_writes::{UserRequest, UserWrite};
+use polylogue_model::Reference;
+use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+use polylogue_model::user::UserWrite;
+use polylogue_sinex::{Authentication, Config, Mode, Sinex};
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{Morrow, Set};
 use std::collections::BTreeMap;
@@ -41,6 +42,7 @@ fn sinex(dir: &Path) -> Running {
     let sinexd = std::env::var("SINEXD").expect("SINEXD names a built sinexd");
     let schema = std::env::var("SINEX_SCHEMA").expect("SINEX_SCHEMA names a built sinex-schema");
     let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
+        required_extensions: vec!["timescaledb".into(), "vector".into()],
         preload: vec!["timescaledb".into()],
         settings: vec![("timescaledb.enable_chunk_skipping".into(), "on".into())],
     })
@@ -97,10 +99,10 @@ fn sinex(dir: &Path) -> Running {
 }
 
 /// A connection once `sinexd` answers.
-fn connect(config: &Config, root: &Path) -> Arc<Sinex> {
+fn connect(config: &Config) -> Arc<Sinex> {
     let started = Instant::now();
     loop {
-        if let Ok(sinex) = Sinex::connect(config, root)
+        if let Ok(sinex) = Sinex::connect(config, &Authentication::Anonymous, "fixture-host")
             && sinex.reachable().is_ok()
         {
             return Arc::new(sinex);
@@ -115,8 +117,7 @@ fn connect(config: &Config, root: &Path) -> Arc<Sinex> {
 
 /// Builds the Morrow example `example` with its home at `home`, on Sinex.
 fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, config: &Config) {
-    let (archive, _lock) =
-        Archive::open_primary(&example.root, &config.store, sinex.as_ref()).unwrap();
+    let (archive, _lock) = Archive::open_primary(&example.root, &config.store).unwrap();
     let mut settings = example.config();
     settings.home = home.to_path_buf();
     let mut engine = Engine::on_sinex(settings, archive, sinex.clone()).unwrap();
@@ -140,7 +141,7 @@ fn answers(archive: &Archive) -> (BTreeMap<String, serde_json::Value>, Vec<serde
         .collect();
     let notes = reader
         .query(
-            "SELECT n.id, n.kind, n.value, t.ref FROM a.note n JOIN a.note_target t ON t.note_id = n.id ORDER BY n.id",
+            "SELECT n.id,n.kind,n.value,t.ref FROM source_assertion n JOIN source_assertion_link t ON t.assertion=n.id ORDER BY n.id,t.role,t.ref",
             &[],
         )
         .unwrap();
@@ -186,31 +187,30 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
 
     let example = Morrow::lay_out(Set::Main);
     let running = sinex(example.dir.path());
-    let sinex = connect(&running.config, &example.root);
+    let sinex = connect(&running.config);
     phase("sinexd answers");
     build_on_sinex(&example, &example.home, &sinex, &running.config);
     phase("built on Sinex");
     {
-        let (archive, _lock) =
-            Archive::open_primary(&example.root, &running.config.store, sinex.as_ref()).unwrap();
+        let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
         let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
         example.import_exports(&mut engine);
         engine
             .writer()
             .unwrap()
-            .user(UserRequest::now(
+            .user(polylogue_store::fixture::authored::operator_request(
                 "0199d8a0-0000-7000-8000-00000000a001".into(),
-                UserWrite::AddNote {
-                    note: NewNote {
-                        kind: NoteKind::Note,
+                UserWrite::Assert {
+                    assertions: vec![NewAssertion {
+                        kind: AssertionKind::Note,
                         key: None,
-                        value: Some("Synthetic note kept in Sinex".into()),
-                        author: Author::Operator,
-                        targets: vec![Target::Session(polylogue_testkit::session(1))],
-                        relations: vec![],
-                        revises: None,
+                        value: Some(serde_json::json!("Synthetic note kept in Sinex")),
+                        links: vec![NewAssertionLink {
+                            role: LinkRole::About,
+                            reference: Reference::Session(polylogue_testkit::session(1)),
+                        }],
                         valid_until: None,
-                    },
+                    }],
                 },
             ))
             .unwrap();
@@ -261,6 +261,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         event_types: Some(vec!["polylogue.note".into()]),
         from: None,
         until: None,
+        after: None,
     };
     let mut replay = sinex.replay().unwrap();
     let selection = replay.scope(&scope).unwrap().into_iter().next().unwrap();
@@ -309,59 +310,4 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     build_on_sinex(&example, &empty, &sinex, &running.config);
     phase("rebuilt from Sinex");
     assert_eq!(answers(&on_sinex), (sessions, notes), "rebuilt from Sinex");
-
-    // Excising session #1 is Sinex's excision of its file, with Polylogue
-    // as the actor; a later rebuild keeps it removed.
-    {
-        let (archive, _lock) =
-            Archive::open_primary(&example.root, &running.config.store, sinex.as_ref()).unwrap();
-        let mut engine = Engine::on_sinex(example.config(), archive, sinex.clone()).unwrap();
-        let excised = engine
-            .excise(polylogue_engine::ExciseRequest {
-                id: "0199d8a0-0000-7000-8000-00000000e001".into(),
-                target: polylogue_engine::ExciseTarget::Session(polylogue_testkit::session(1)),
-                reason: None,
-                dry_run: false,
-            })
-            .unwrap();
-        assert_eq!(
-            excised.sessions,
-            [polylogue_testkit::session(1).to_string()]
-        );
-    }
-    phase("excised");
-    assert_eq!(
-        sinex_rows(
-            &running.socket,
-            "events where event_type = polylogue.session"
-        ),
-        7
-    );
-    assert_eq!(
-        sinex_rows(
-            &running.socket,
-            "events where event_type = polylogue.excision"
-        ),
-        1
-    );
-    let (after, _) = answers(&on_sinex);
-    assert!(!after.contains_key(&polylogue_testkit::session(1).to_string()));
-    for name in [
-        "sinex.db",
-        "sinex.db-wal",
-        "sinex.db-shm",
-        "index.db",
-        "index.db-wal",
-        "index.db-shm",
-        "sinex-sent.json",
-    ] {
-        let _ = fs::remove_file(example.root.join(name));
-    }
-    build_on_sinex(&example, &example.home, &sinex, &running.config);
-    phase("rebuilt after the excision");
-    assert_eq!(
-        answers(&on_sinex).0,
-        after,
-        "a rebuild keeps the excision, though the provider file is still there"
-    );
 }

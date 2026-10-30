@@ -2,21 +2,11 @@
 //! command, the browser host and the web reader. A write carries a request
 //! ID so a resent write is a no-op.
 
-mod references;
-
 use crate::briefing::Ask;
 use polylogue_model::DeliveryOutcome;
-use polylogue_model::{Author, DocumentId, NewNote, SessionId};
+use polylogue_model::SessionId;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-/// Selects the first page at a message reference or at the latest message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PageSelection {
-    Message(polylogue_model::MessageId),
-    Latest,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -73,7 +63,7 @@ pub enum Request {
     BackfillReport {
         id: String,
         by: String,
-        report: polylogue_store::backfill_jobs::BackfillReport,
+        report: polylogue_model::user::BackfillReport,
     },
     /// What the archive holds of some of a web chat's conversations: the
     /// session, its message count and when it was last captured.
@@ -88,6 +78,13 @@ pub enum Request {
         conversation: String,
     },
     Status,
+    SchemaInfer {
+        #[serde(flatten)]
+        selection: super::schema::Infer,
+    },
+    SchemaUnread {
+        origin: Option<String>,
+    },
     Explain {
         subject: String,
         expression: Option<String>,
@@ -119,9 +116,10 @@ pub enum Request {
         cursor: Option<String>,
         page_size: Option<u64>,
     },
-    /// Completions for one word of a query being typed.
+    /// Grammar completions at a UTF-8 byte offset in the full query text.
     Complete {
-        word: String,
+        text: String,
+        position: usize,
     },
     Attachment {
         message: polylogue_model::MessageId,
@@ -130,14 +128,12 @@ pub enum Request {
         attachment: usize,
         #[serde(default)]
         input: Option<String>,
-        #[serde(default)]
-        reveal: bool,
         #[serde(default = "attachment_chunk")]
         length: usize,
         #[serde(default)]
         cursor: Option<String>,
     },
-    /// Finite JSON-lines change-reference batch over the existing socket.
+    /// Finite change-reference batch using shared SSE framing.
     Changes {
         since: Option<String>,
     },
@@ -158,24 +154,23 @@ pub enum Request {
         #[serde(default)]
         fields: Vec<String>,
     },
-    /// Reads one session, document or event in a view and format.
-    /// `with_parents` (sessions only): the parent sessions' messages first.
+    /// Read one canonical reference or a query through the shared selection.
     Read {
-        target: ReadTarget,
+        target: String,
         #[serde(default)]
-        slices: bool,
-        view: String,
+        options: polylogue_model::read::ReadOptions,
+        #[serde(default)]
+        delivery: polylogue_model::read::ReadDelivery,
         format: String,
-        #[serde(default)]
-        with_parents: bool,
         budget: Option<usize>,
-        cursor: Option<String>,
         #[serde(default)]
-        selection: Option<PageSelection>,
+        with_blobs: bool,
     },
-    /// One exact note revision, including a superseded or withdrawn revision.
-    Note {
-        id: String,
+    /// Continue an acknowledged read with its frozen options and current authority.
+    ReadResume {
+        root_run: polylogue_model::RunId,
+        cursor: query_language::cursor::SealedCursor,
+        budget: Option<std::num::NonZeroU64>,
     },
     Outline {
         session: SessionId,
@@ -188,23 +183,31 @@ pub enum Request {
         request_id: String,
         paths: Vec<PathBuf>,
     },
-    Export {
-        targets: Vec<ReadTarget>,
-        format: String,
-        /// Also the archive's user state: every request and excision.
-        #[serde(default)]
-        user_state: bool,
-    },
-    AddNote {
+    /// Validate and record an extension selection in one pinned operation.
+    BrowserSelectionNote {
         request_id: String,
-        note: NewNote,
+        body: String,
+        quote: String,
+        provider: String,
+        conversation_id: String,
+        message_id: String,
+        page_url: String,
+        selected_at: String,
     },
-    /// A note on every row a query returns (sessions, messages, documents
-    /// or notes); `note.targets` is filled from the rows.
-    AnnotateQuery {
+    Assert {
+        request_id: String,
+        assertions: Vec<polylogue_model::assertion::NewAssertion>,
+    },
+    AssertQuery {
         request_id: String,
         query: String,
-        note: NewNote,
+        assertion: polylogue_model::assertion::NewAssertion,
+    },
+    Revise {
+        request_id: String,
+        #[serde(with = "polylogue_model::assertion_revisions")]
+        bases: Vec<polylogue_model::RevisionReference>,
+        patch: polylogue_model::assertion::AssertionPatch,
     },
     /// The operator accepts or rejects one revision of an agent's note.
     Judge {
@@ -220,7 +223,8 @@ pub enum Request {
         request_id: String,
         name: String,
         text: String,
-        author: Author,
+        #[serde(default)]
+        denominator: Option<String>,
     },
     /// Watches a query: each row that starts matching becomes a notice
     /// (a signal rule delivering notices).
@@ -235,7 +239,6 @@ pub enum Request {
         /// Also show each notice as a desktop notification.
         #[serde(default)]
         notify: bool,
-        author: Author,
     },
     /// Runs a query and keeps the rows it returned, as `result:<id>`.
     Keep {
@@ -246,8 +249,7 @@ pub enum Request {
     },
     Withdraw {
         request_id: String,
-        note: String,
-        author: Author,
+        targets: Vec<polylogue_model::Reference>,
         #[serde(default)]
         reason: Option<String>,
     },
@@ -287,26 +289,17 @@ pub enum Request {
     Setting {
         #[serde(default)]
         request_id: Option<String>,
-        key: String,
+        key: Option<String>,
         #[serde(default)]
         value: Option<String>,
-        /// Per machine instead of archive-wide.
+        /// Explicit host identity for host-scoped settings.
         #[serde(default)]
-        machine: bool,
+        machine: Option<String>,
     },
     Sql {
         statement: String,
     },
-    /// `session:<id>`, `document:<id>` or `input:<id>`. A dry run counts
-    /// what would go and changes nothing.
-    Excise {
-        request_id: String,
-        target: String,
-        #[serde(default)]
-        reason: Option<String>,
-        #[serde(default)]
-        dry_run: bool,
-    },
+
     /// Embeddings: `status`, `preview` (what a build would embed and cost)
     /// or `build`. `query` limits them to the sessions it finds; `limit`
     /// to that many texts. A paid provider builds only with `yes`.
@@ -322,11 +315,24 @@ pub enum Request {
 }
 
 impl Request {
+    pub(crate) fn streaming(&self) -> bool {
+        matches!(
+            self,
+            Self::Changes { .. }
+                | Self::Read {
+                    delivery: polylogue_model::read::ReadDelivery::Stream,
+                    ..
+                }
+        )
+    }
+
     /// Whether the request can run without writing to the archive.
     /// Conditional delivery and setting writes are resolved from their values.
     pub(crate) fn read_only(&self) -> bool {
         match self {
             Self::Status
+            | Self::SchemaInfer { .. }
+            | Self::SchemaUnread { .. }
             | Self::Timeline { .. }
             | Self::Cost { .. }
             | Self::Complete { .. }
@@ -335,9 +341,8 @@ impl Request {
             | Self::Query { .. }
             | Self::Changes { .. }
             | Self::Read { .. }
+            | Self::ReadResume { .. }
             | Self::Outline { .. }
-            | Self::Note { .. }
-            | Self::Export { .. }
             | Self::Resumable { .. }
             | Self::Continue { .. }
             | Self::Sql { .. }
@@ -359,52 +364,28 @@ impl Request {
             | Self::ChatReport { .. }
             | Self::ChatDecide { .. }
             | Self::Import { .. }
-            | Self::AddNote { .. }
-            | Self::AnnotateQuery { .. }
+            | Self::BrowserSelectionNote { .. }
+            | Self::Assert { .. }
+            | Self::AssertQuery { .. }
+            | Self::Revise { .. }
             | Self::Judge { .. }
             | Self::Keep { .. }
             | Self::Save { .. }
             | Self::Watch { .. }
             | Self::Withdraw { .. }
             | Self::AdviceDelivered { .. }
-            | Self::DeliveryEvent { .. }
-            | Self::Excise { .. } => false,
+            | Self::DeliveryEvent { .. } => false,
         }
     }
 
     /// A context has bounded read preparation even when it also records a receipt.
     /// Write authorization still follows read_only, independently of this phase.
     pub(crate) fn has_read_phase(&self) -> bool {
-        self.read_only() || matches!(self, Self::Context { .. })
-    }
-}
-
-/// What `read` and `export` name: `document:ID`, `event:ID`, or a session
-/// ID (with or without `session:`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-pub enum ReadTarget {
-    Session(SessionId),
-    Document(DocumentId),
-    Event(String),
-}
-
-impl ReadTarget {
-    pub fn parse(text: &str) -> Result<Self, String> {
-        if let Some(id) = text.strip_prefix("event:") {
-            if id.is_empty() {
-                return Err("event reference requires an ID".into());
-            }
-            return Ok(Self::Event(id.to_owned()));
-        }
-        if let Some(id) = text.strip_prefix("document:") {
-            return DocumentId::parse(id)
-                .map(Self::Document)
-                .map_err(|e| e.to_string());
-        }
-        SessionId::parse(text.strip_prefix("session:").unwrap_or(text))
-            .map(Self::Session)
-            .map_err(|e| e.to_string())
+        self.read_only()
+            || matches!(
+                self,
+                Self::Context { .. } | Self::AssertQuery { .. } | Self::BrowserSelectionNote { .. }
+            )
     }
 }
 
@@ -413,13 +394,13 @@ fn attachment_chunk() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "result", rename_all = "snake_case")]
+#[serde(
+    into = "command_surface::Answer<serde_json::Value>",
+    from = "command_surface::Answer<serde_json::Value>"
+)]
 pub enum Response {
     Ok {
         data: serde_json::Value,
-        /// References supplied by the response constructor, before transport cleaning.
-        #[serde(skip)]
-        references: References,
     },
     Error {
         kind: String,
@@ -432,99 +413,63 @@ pub enum Response {
 }
 
 impl Response {
-    /// The application response boundary shared by socket and HTTP consumers.
-    /// Mask decoded strings before JSON escaping, keeping every structured field.
-    pub(crate) fn masked(mut self) -> Self {
-        match &mut self {
-            Self::Ok { data, references } => references.clean(data, &mut polylogue_render::mask),
+    pub fn answer(&self) -> command_surface::Answer<serde_json::Value> {
+        match self {
+            Self::Ok { data, .. } => crate::protocol::answer(data.clone()),
             Self::Error {
                 kind,
                 message,
                 detail,
-            } => {
-                *kind = polylogue_render::mask(kind);
-                *message = polylogue_render::mask(message);
-                if let Some(detail) = detail {
-                    polylogue_render::mask_json(detail);
-                }
-            }
+            } => command_surface::Answer::Error {
+                error: crate::protocol::failure(kind, message.clone(), detail.as_ref()),
+                notes: detail
+                    .as_ref()
+                    .and_then(|d| serde_json::from_value(d["notes"].clone()).ok())
+                    .unwrap_or_default(),
+                next: detail
+                    .as_ref()
+                    .and_then(|d| serde_json::from_value(d["next"].clone()).ok())
+                    .unwrap_or_default(),
+            },
         }
-        self
     }
 }
 
-/// Typed identifiers and declared command continuations excluded from text cleaning.
-#[derive(Debug, Clone, Default)]
-pub struct References(Vec<String>);
-
-impl References {
-    pub(crate) fn response(mut self, data: impl Serialize) -> Response {
-        match references::value(&mut self, "", &data) {
-            Ok(data) => {
-                // These root fields belong to the command response, not its authored values.
-                for field in ["cursor", "next", "previous"] {
-                    self.opaque_field(&data, format!("/{field}"));
-                }
-                Response::Ok {
-                    data,
-                    references: self,
-                }
-            }
-            Err(error) => crate::daemon::service::error("internal", error),
-        }
-    }
-    pub(crate) fn value(&mut self, path: &str, data: &impl Serialize) -> serde_json::Value {
-        references::value(self, path, data).expect("model serializes")
-    }
-
-    pub(crate) fn observe(&mut self, path: &str, data: &impl Serialize) {
-        references::observe(self, path, data);
-    }
-
-    pub(crate) fn add(&mut self, path: impl Into<String>, _value: &impl Serialize) {
-        self.0.push(path.into());
-    }
-
-    pub(crate) fn opaque_field(&mut self, value: &serde_json::Value, path: impl Into<String>) {
-        let path = path.into();
-        if let Some(value) = value.pointer(&path).and_then(serde_json::Value::as_str) {
-            self.add(path, &value);
-        }
-    }
-
-    pub(crate) fn field<T: serde::de::DeserializeOwned + Serialize>(
-        &mut self,
-        value: &serde_json::Value,
-        path: impl Into<String>,
-    ) {
-        let path = path.into();
-        if let Some(value) = value
-            .pointer(&path)
-            .and_then(|v| serde_json::from_value::<T>(v.clone()).ok())
-        {
-            self.value(&path, &value);
-        }
-    }
-
-    fn clean(&mut self, value: &mut serde_json::Value, string: &mut dyn FnMut(&str) -> String) {
-        polylogue_model::masking::mask_json_values_except(value, string, &mut self.0);
+impl From<Response> for command_surface::Answer<serde_json::Value> {
+    fn from(response: Response) -> Self {
+        response.answer()
     }
 }
 
-impl Response {
-    pub(crate) fn clean(mut self, mut string: impl FnMut(&str) -> String) -> Self {
-        match &mut self {
-            Self::Ok { data, references } => references.clean(data, &mut string),
-            Self::Error {
-                message, detail, ..
-            } => {
-                *message = string(message);
-                if let Some(detail) = detail {
-                    polylogue_model::masking::mask_json_values(detail, string);
+impl From<command_surface::Answer<serde_json::Value>> for Response {
+    fn from(answer: command_surface::Answer<serde_json::Value>) -> Self {
+        use command_surface::Answer;
+        match answer {
+            Answer::Ok { value, .. }
+            | Answer::Empty { value, .. }
+            | Answer::Degraded { value, .. } => Self::Ok { data: value },
+            Answer::Error { error, notes, next } => {
+                let detail = serde_json::json!({
+                    "position": error.position,
+                    "suggestion": error.suggestion,
+                    "hint": error.hint,
+                    "retryable": error.retryable,
+                    "notes": notes,
+                    "next": next,
+                });
+                Self::Error {
+                    kind: error.code.unwrap_or_else(|| {
+                        serde_json::to_value(error.kind)
+                            .expect("failure kind serializes")
+                            .as_str()
+                            .expect("kind is text")
+                            .to_owned()
+                    }),
+                    message: error.message,
+                    detail: Some(detail),
                 }
             }
         }
-        self
     }
 }
 

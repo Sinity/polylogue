@@ -8,6 +8,10 @@
 //! thinking, tool use and results); claude.ai runs some tools itself, so a
 //! tool result can sit in the assistant message that made the call.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+use crate::fields::ExpectedType as T;
 mod fields;
 mod sidecars;
 
@@ -35,7 +39,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     if sidecars::recognize(path, head) {
         return true;
     }
-    let named = path.file_name().and_then(|n| n.to_str()) == Some("conversations.json");
+    let named = path.extension().is_some_and(|ext| ext == "json");
     named && first_byte(head) == Some(b'[') && first_key(head) == Some("uuid")
 }
 
@@ -43,7 +47,7 @@ pub fn open(path: &Path) -> Option<Parse> {
     if let Some(parser) = sidecars::open(path) {
         return Some(parser);
     }
-    let named = path.file_name().and_then(|n| n.to_str()) == Some("conversations.json");
+    let named = path.extension().is_some_and(|ext| ext == "json");
     named.then(|| Parse::Export(Box::new(Export)))
 }
 
@@ -68,6 +72,17 @@ fn in_design_dir(path: &Path) -> bool {
 pub struct Export;
 
 impl crate::export::ExportParser for Export {
+    fn scan(
+        &mut self,
+        _: &str,
+        reader: &mut dyn crate::export::Input,
+        item: &mut dyn crate::export::ItemSink,
+    ) -> Result<crate::export::ScanStats, crate::export::ScanError> {
+        crate::export::scan_array_or_object(reader, |range, raw| {
+            item.push(range, Vec::new(), None, raw.get().as_bytes())
+        })
+    }
+
     fn item(
         &mut self,
         bytes: &[u8],
@@ -82,12 +97,66 @@ impl crate::export::ExportParser for Export {
 }
 
 static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("uuid", Rule::Read),
-    ("text", Rule::Read),
-    ("content", Rule::Read),
-    ("sender", Rule::Read),
-    ("index", Rule::Read),
-    ("created_at", Rule::Read),
+    ("content[].remaining", Rule::Read(T::Number)),
+    ("attachments[].file_name", Rule::Read(T::String)),
+    ("attachments[].file_type", Rule::Read(T::String)),
+    ("attachments[].file_size", Rule::Read(T::Number)),
+    ("attachments[].extracted_content", Rule::Read(T::String)),
+    ("attachments[].file_uuid", Rule::Read(T::String)),
+    ("attachments[].file_kind", Rule::Read(T::String)),
+    ("files[].file_name", Rule::Read(T::String)),
+    ("files[].file_type", Rule::Read(T::String)),
+    ("files[].file_size", Rule::Read(T::Number)),
+    ("files[].extracted_content", Rule::Read(T::String)),
+    ("files[].file_uuid", Rule::Read(T::String)),
+    ("files[].file_kind", Rule::Read(T::String)),
+    ("files_v2[].file_name", Rule::Read(T::String)),
+    ("files_v2[].file_type", Rule::Read(T::String)),
+    ("files_v2[].file_size", Rule::Read(T::Number)),
+    ("files_v2[].extracted_content", Rule::Read(T::String)),
+    ("files_v2[].file_uuid", Rule::Read(T::String)),
+    ("files_v2[].file_kind", Rule::Read(T::String)),
+    ("content[].type", Rule::Read(T::String)),
+    ("content[].text", Rule::Read(T::String)),
+    ("content[].thinking", Rule::Read(T::String)),
+    ("content[].signature", Rule::Read(T::String)),
+    ("content[].thinking_hidden", Rule::Read(T::Boolean)),
+    (
+        "content[].summaries",
+        Rule::Kept("summaries in indexed block attributes"),
+    ),
+    (
+        "content[].citations",
+        Rule::Kept("citation blocks and indexed attributes"),
+    ),
+    (
+        "content[].start_timestamp",
+        Rule::Kept("indexed block time"),
+    ),
+    ("content[].stop_timestamp", Rule::Kept("indexed block time")),
+    ("content[].id", Rule::Read(T::String)),
+    ("content[].name", Rule::Read(T::String)),
+    ("content[].input", Rule::Kept("tool input in call block")),
+    (
+        "content[].content",
+        Rule::Kept("complete structured tool content"),
+    ),
+    ("content[].tool_use_id", Rule::Read(T::String)),
+    ("content[].is_error", Rule::Read(T::Boolean)),
+    (
+        "content[].structured_content",
+        Rule::Kept("structured tool result"),
+    ),
+    ("content[].source.type", Rule::Read(T::String)),
+    ("content[].source.media_type", Rule::Read(T::String)),
+    ("content[].source.data", Rule::Read(T::String)),
+    ("content[].source.url", Rule::Read(T::String)),
+    ("uuid", Rule::Read(T::String)),
+    ("text", Rule::Read(T::String)),
+    ("content", Rule::Read(T::StringOrArray)),
+    ("sender", Rule::Read(T::String)),
+    ("index", Rule::Read(T::Number)),
+    ("created_at", Rule::Read(T::StringOrNumber)),
     (
         "updated_at",
         Rule::Excluded("edit time; the creation time orders messages"),
@@ -96,8 +165,8 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "edited_at",
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
-    // The model that wrote this message; it overrides the conversation's.
-    ("model", Rule::Read),
+    // The model that wrote this message.for_kind("message"); it overrides the conversation's.
+    ("model", Rule::Read(T::String)),
     (
         "metadata",
         Rule::Kept("message settings such as the thinking configuration"),
@@ -106,18 +175,53 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "truncated",
         Rule::Kept("the export marks a message it shortened"),
     ),
-    ("attachments", Rule::Read),
-    ("files", Rule::Read),
-    ("files_v2", Rule::Read),
+    ("attachments", Rule::Read(T::Array)),
+    ("files", Rule::Read(T::Array)),
+    ("files_v2", Rule::Read(T::Array)),
     (
         "sync_sources",
         Rule::Kept("connected drive and repository sources"),
     ),
-    ("parent_message_uuid", Rule::Read),
-    ("stop_reason", Rule::Read),
+    ("parent_message_uuid", Rule::Read(T::String)),
+    ("stop_reason", Rule::Read(T::String)),
     ("input_mode", Rule::Kept("how the prompt was entered")),
-    ("compaction_summary", Rule::Read),
-]);
+    (
+        "compaction_summary",
+        Rule::Kept("native compaction event and message attributes"),
+    ),
+])
+.shape(
+    &[],
+    &[
+        crate::fields::KnownKinds {
+            path: "sender",
+            values: &["human", "assistant"],
+        },
+        crate::fields::KnownKinds {
+            path: "content[].type",
+            values: &[
+                "text",
+                "voice_note",
+                "thinking",
+                "tool_use",
+                "tool_result",
+                "image",
+                "document",
+                "token_budget",
+            ],
+        },
+    ],
+);
+
+static CONVERSATION_FIELDS: Fields = Fields::new(&[
+    ("", Rule::Kept("conversation settings event")),
+    ("uuid", Rule::Read(T::String)),
+    ("name", Rule::Read(T::String)),
+    ("created_at", Rule::Read(T::StringOrNumber)),
+    ("updated_at", Rule::Read(T::StringOrNumber)),
+    ("chat_messages", Rule::Read(T::Array)),
+])
+.for_kind("conversation");
 
 /// One claude.ai conversation object, shared with browser captures.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
@@ -146,7 +250,9 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         session.offer_title(summary, TitleSource::Summary);
     }
     if let Some(at) = conv.get("created_at").and_then(time_of) {
-        session.offer_start(at);
+        session
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
     sink.records.record("conversation", &RecordOutcome::Used);
@@ -155,19 +261,30 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     if let Some(obj) = conv.as_object() {
         let settings: serde_json::Map<String, Json> = obj
             .iter()
-            .filter(|(k, v)| k.as_str() != "chat_messages" && !v.is_null())
+            .filter(|(k, _)| k.as_str() != "chat_messages")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "conversation_settings".into(),
-            at: conv.get("updated_at").and_then(time_of),
-            after: None,
-            range: None,
-            data: Json::Object(settings),
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(conv.get("updated_at").and_then(time_of));
+            Event {
+                session: Some(sid.clone()),
+                kind: "conversation_settings".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: Json::Object(settings),
+            }
         });
     }
 
+    sink.records.fields(
+        "conversation",
+        &crate::fields::header(conv, &["chat_messages"]),
+        &CONVERSATION_FIELDS,
+    );
     let model = string_of(conv, "model");
     let mut rows: Vec<(Option<i64>, i64, usize, Message)> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
@@ -181,13 +298,19 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                     .get("compaction_summary")
                     .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
                 {
-                    sink.out.events.push(Event {
-                        session: Some(sid.clone()),
-                        kind: "compaction".into(),
-                        at: msg.at,
-                        after: msg.parent.clone(),
-                        range: None,
-                        data: serde_json::json!({ "summary": summary }),
+                    sink.out.events.push({
+                        let (at, time_evidence) = (msg.at, msg.time_evidence());
+                        Event {
+                            session: Some(sid.clone()),
+                            kind: "compaction".into(),
+                            at,
+                            at_quality: time_evidence.quality,
+                            at_precision: time_evidence.precision,
+                            at_until: time_evidence.until,
+                            after: msg.parent.clone(),
+                            range: None,
+                            data: serde_json::json!({ "summary": summary }),
+                        }
                     });
                 }
                 collect_inline(m, &mut sink.out.blobs);
@@ -211,13 +334,19 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     if let Some(leaf) = str_of(conv, "current_leaf_message_uuid")
         && let Some(id) = message_id(ORIGIN, leaf)
     {
-        sink.out.events.push(Event {
-            session: Some(sid),
-            kind: "active_leaf".into(),
-            at: None,
-            after: Some(id),
-            range: None,
-            data: Json::Null,
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid),
+                kind: "active_leaf".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: Some(id),
+                range: None,
+                data: Json::Null,
+            }
         });
     }
 }
@@ -256,9 +385,18 @@ fn message(
     };
     let mut blocks = Vec::new();
     let content = m.get("content").and_then(Json::as_array);
-    for b in content.into_iter().flatten() {
+    for (position, b) in content.into_iter().flatten().enumerate() {
         if let Some(block) = content_block(b, direction) {
             blocks.push(block);
+        }
+        if let Some(citations) = b
+            .get("citations")
+            .filter(|value| !value.is_null() && !value.as_array().is_some_and(Vec::is_empty))
+        {
+            blocks.push(Block::Other {
+                type_name: "citations".into(),
+                data: serde_json::json!({"block":position,"citations":citations}),
+            });
         }
     }
     // Older exports carry only the flat text.
@@ -271,27 +409,65 @@ fn message(
     let parent = str_of(m, "parent_message_uuid")
         .filter(|p| *p != ROOT_PARENT)
         .and_then(|p| message_id(ORIGIN, p));
-    Ok(Message {
-        id,
-        session: sid.clone(),
-        parent,
-        role,
-        at: m.get("created_at").and_then(time_of),
-        model: (role == Role::Assistant)
-            .then(|| string_of(m, "model").or_else(|| model.map(str::to_owned)))
-            .flatten(),
-        prompt_kind,
-        blocks,
-        usage: Default::default(),
-        stop_reason: string_of(m, "stop_reason"),
-        reported_cost_usd: None,
-        duration_ms: None,
-        production: Default::default(),
+    Ok({
+        let (at, time_evidence) = crate::time::parts(m.get("created_at").and_then(time_of));
+        Message {
+            id,
+            session: sid.clone(),
+            parent,
+            role,
+            at,
+            at_quality: time_evidence.quality,
+            at_precision: time_evidence.precision,
+            at_until: time_evidence.until,
+            model: (role == Role::Assistant)
+                .then(|| string_of(m, "model").or_else(|| model.map(str::to_owned)))
+                .flatten(),
+            prompt_kind,
+            blocks,
+            usage: Default::default(),
+            stop_reason: string_of(m, "stop_reason"),
+            reported_cost_usd: None,
+            duration_ms: None,
+            attrs: content_attrs(m),
+            production: Default::default(),
+        }
     })
 }
 
-/// One content block. `token_budget` notes how much context remained; it
-/// is not content and is left in the stored record.
+fn content_attrs(message: &Json) -> serde_json::Map<String, Json> {
+    let mut attrs = crate::fields::attributes(message, &MESSAGE_FIELDS);
+    if let Some(value) = message.get("metadata") {
+        attrs.insert("metadata".into(), value.clone());
+    }
+    let details: Vec<Json> = message
+        .get("content")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(position, block)| {
+            let fields: serde_json::Map<String, Json> = block
+                .as_object()?
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "type" | "text" | "thinking" | "signature" | "input" | "content" | "source"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            (!fields.is_empty()).then(|| serde_json::json!({"position":position,"fields":fields}))
+        })
+        .collect();
+    if !details.is_empty() {
+        attrs.insert("content".into(), Json::Array(details));
+    }
+    attrs
+}
+
+/// One content block. Provider-only kinds remain structured index blocks.
 fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
     let kind = str_of(b, "type").unwrap_or("");
     Some(match kind {
@@ -309,7 +485,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
                     .and_then(Json::as_array)
                     .into_iter()
                     .flatten()
-                    .filter_map(|s| str_of(s, "summary"))
+                    .filter_map(|s| str_of(s, "summary").or_else(|| str_of(s, "text")))
                     .collect();
                 (!summaries.is_empty()).then(|| summaries.join("\n"))
             });
@@ -338,7 +514,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
         "image" => Block::Image(media_attachment(b, direction)),
         "document" => Block::File(media_attachment(b, direction)),
         "tool_result" => tool_result(b, direction),
-        "token_budget" => return None,
+
         other => Block::Other {
             type_name: other.to_owned(),
             data: b.clone(),
@@ -435,11 +611,16 @@ fn tool_result(b: &Json, direction: AttachmentDirection) -> Block {
         _ => {}
     }
     let error = b.get("is_error").and_then(Json::as_bool) == Some(true);
-    let structured = b
+    let mut structured = b
         .get("structured_content")
         .filter(|v| !v.is_null())
         .cloned();
+    if let Some(items) = b.get("content").and_then(Json::as_array) {
+        structured = Some(serde_json::json!({"structured_content":structured,"content":items}));
+    }
+
     Block::ToolResult {
+        reported_duration_ms: None,
         call_id: string_of(b, "tool_use_id"),
         outcome: if error {
             ToolOutcome::Error { reason: None }
@@ -533,18 +714,26 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         session.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = chat.get("created_at").and_then(time_of) {
-        session.offer_start(at);
+        session
+            .offer_start(at.timestamp(), at.evidence())
+            .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
     sink.records.record("chat", &RecordOutcome::Used);
     if let Some(project) = chat.get("project").filter(|p| !p.is_null()) {
-        sink.out.events.push(Event {
-            session: Some(sid.clone()),
-            kind: "design_project".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: project.clone(),
+        sink.out.events.push({
+            let (at, time_evidence) = crate::time::parts(None);
+            Event {
+                session: Some(sid.clone()),
+                kind: "design_project".into(),
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                after: None,
+                range: None,
+                data: project.clone(),
+            }
         });
     }
     let mut previous: Option<polylogue_model::MessageId> = None;
@@ -597,23 +786,31 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
                 ..Attachment::default()
             }));
         }
-        let message = Message {
-            id: id.clone(),
-            session: sid.clone(),
-            parent: previous.replace(id),
-            role,
-            at: m
-                .get("created_at")
-                .and_then(time_of)
-                .or_else(|| body.get("timestamp").and_then(time_of)),
-            model: None,
-            prompt_kind,
-            blocks,
-            usage: Default::default(),
-            stop_reason: None,
-            reported_cost_usd: None,
-            duration_ms: None,
-            production: Default::default(),
+        let message = {
+            let (at, time_evidence) = crate::time::parts(
+                m.get("created_at")
+                    .and_then(time_of)
+                    .or_else(|| body.get("timestamp").and_then(time_of)),
+            );
+            Message {
+                id: id.clone(),
+                session: sid.clone(),
+                parent: previous.replace(id),
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model: None,
+                prompt_kind,
+                blocks,
+                usage: Default::default(),
+                stop_reason: None,
+                reported_cost_usd: None,
+                duration_ms: None,
+                attrs: Default::default(),
+                production: Default::default(),
+            }
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {

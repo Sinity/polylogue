@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// What a delivery answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryEvent {
     SessionStart,
@@ -27,7 +27,7 @@ stored_names!(DeliveryEvent {
 });
 
 /// What prepared a delivery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliverySender {
     Hook,
@@ -42,7 +42,7 @@ stored_names!(DeliverySender {
 });
 
 /// What happened to a delivery after it was prepared.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryOutcome {
     Delivered,

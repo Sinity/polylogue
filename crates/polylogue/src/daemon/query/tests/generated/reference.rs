@@ -474,8 +474,10 @@ impl Leaf {
             Leaf::ExitUnknown => Truth::of(c().exit_code.is_none()),
             Leaf::Command(part) => Truth::known(c().command.map(|x| x.contains(part))),
             Leaf::CommandUnknown => Truth::of(c().command.is_none()),
-            Leaf::CallAtBefore(d) => Truth::known(c().at.map(|t| t < day_start(*d))),
-            Leaf::CallAtUnknown => Truth::of(c().at.is_none()),
+            // The query descriptor reads native parent-message evidence. The
+            // separately cached call clock is retained only in displayed row keys.
+            Leaf::CallAtBefore(d) => Truth::known(m().at.map(|t| t < day_start(*d))),
+            Leaf::CallAtUnknown => Truth::of(m().at.is_none()),
         }
     }
 }

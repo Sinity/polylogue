@@ -24,8 +24,8 @@ fn each_view_keeps_its_columns() {
         ),
         ("v1_links", "parent child kind how"),
         (
-            "v1_notes",
-            "id first_note kind key value author created_at targets current withdrawn",
+            "v1_assertions",
+            "id root kind key value author via machine created_at valid_until about current withdrawn conflict",
         ),
     ] {
         let stmt = conn.prepare(&format!("SELECT * FROM {view}")).unwrap();
@@ -34,7 +34,7 @@ fn each_view_keeps_its_columns() {
 }
 
 #[test]
-fn the_views_read_sessions_messages_and_notes() {
+fn the_views_read_sessions_messages_and_assertions() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     let s = f
@@ -55,7 +55,7 @@ fn the_views_read_sessions_messages_and_notes() {
         },
     )
     .unwrap();
-    f.note("tag", None, Some("research"), "session:test:s1")
+    f.note("tag", Some("research"), None, "session:test:s1")
         .unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -69,15 +69,17 @@ fn the_views_read_sessions_messages_and_notes() {
         .unwrap();
     assert_eq!(messages[0]["session"], "test:s1");
     assert_eq!(messages[0]["text"], "fix the parser");
-    let notes = reader
+    let assertions = reader
         .query(
-            "SELECT value, targets, current, withdrawn FROM v1_notes",
+            "SELECT key, value, about, current, withdrawn FROM v1_assertions",
             &[],
         )
         .unwrap();
-    assert_eq!(notes[0]["targets"], "session:test:s1");
+    assert_eq!(assertions[0]["about"], "session:test:s1");
+    assert_eq!(assertions[0]["key"], "research");
+    assert!(assertions[0]["value"].is_null());
     assert_eq!(
-        (&notes[0]["current"], &notes[0]["withdrawn"]),
+        (&assertions[0]["current"], &assertions[0]["withdrawn"]),
         (&1.into(), &0.into())
     );
 }

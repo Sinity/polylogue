@@ -7,7 +7,10 @@
     },
     "unreadable": {},
     "skipped": {},
-    "unread_fields": {}
+    "unread_fields": {
+      "assistant.edited_at": 2,
+      "assistant.updated_at": 2
+    }
   },
   "output": {
     "background": [],
@@ -15,15 +18,16 @@
     "events": [
       {
         "data": {
-          "name": "Synthetic repeated occurrences",
-          "uuid": "event-occurrences"
+          "uuid": "event-occurrences",
+          "name": "Synthetic repeated occurrences"
         },
         "kind": "conversation_settings",
         "range": [
           3,
           987
         ],
-        "session": "claude-ai:event-occurrences"
+        "session": "claude-ai:event-occurrences",
+        "at_quality": "unknown"
       },
       {
         "at": "2026-01-01T00:00:00Z",
@@ -39,7 +43,9 @@
           3,
           987
         ],
-        "session": "claude-ai:event-occurrences"
+        "session": "claude-ai:event-occurrences",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       },
       {
         "at": "2026-01-01T00:02:00Z",
@@ -55,7 +61,9 @@
           3,
           987
         ],
-        "session": "claude-ai:event-occurrences"
+        "session": "claude-ai:event-occurrences",
+        "at_quality": "intrinsic",
+        "at_precision": "second"
       }
     ],
     "links": [],
@@ -73,7 +81,22 @@
           "id": "claude-ai:repeated",
           "model": "synthetic-first",
           "role": "assistant",
-          "session": "claude-ai:event-occurrences"
+          "session": "claude-ai:event-occurrences",
+          "attrs": {
+            "metadata": {
+              "thinking_config": {
+                "type": "enabled",
+                "budget_tokens": 100
+              }
+            },
+            "compaction_summary": [
+              {
+                "text": "first summary"
+              }
+            ]
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       },
@@ -90,7 +113,22 @@
           "id": "claude-ai:repeated",
           "model": "synthetic-second",
           "role": "assistant",
-          "session": "claude-ai:event-occurrences"
+          "session": "claude-ai:event-occurrences",
+          "attrs": {
+            "metadata": {
+              "thinking_config": {
+                "type": "enabled",
+                "budget_tokens": 200
+              }
+            },
+            "compaction_summary": [
+              {
+                "text": "second summary"
+              }
+            ]
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 3
       }
@@ -102,7 +140,8 @@
         "title": {
           "source": "generated",
           "text": "Synthetic repeated occurrences"
-        }
+        },
+        "started_quality": "unknown"
       }
     ]
   }

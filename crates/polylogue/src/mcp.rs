@@ -5,6 +5,8 @@
 //! answered with its text and recorded as a delivery from `mcp`. Refusals
 //! are tool errors.
 
+mod completion;
+
 use crate::commands::{self, Action, COMMANDS, Caller, Command, Surface, Values};
 use crate::daemon::{Request, Response};
 use polylogue_store::Archive;
@@ -15,12 +17,12 @@ use std::io::{self, BufRead, Write};
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
-        .filter(|c| c.mcp && matches!(c.action, Action::Request(_)))
+        .filter(|c| c.mcp && matches!(c.action, Action::Request(_) | Action::Stream { .. }))
 }
 
 pub fn tools() -> Vec<Value> {
     tool_commands()
-        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": commands::schema(c), "annotations": {"readOnlyHint": !c.writes}}))
+        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": c.typed_mcp_schema.map(|schema|schema()).unwrap_or_else(|| Value::Object(commands::schema(c))), "outputSchema": c.typed_schemas.map(|schemas| schemas().1).unwrap_or_else(|| schemars::schema_for!(command_surface::Answer<Value>).to_value()), "annotations": {"readOnlyHint": !c.writes}}))
         .collect()
 }
 
@@ -43,10 +45,9 @@ fn build_request(
         .ok_or_else(|| {
             polylogue_render::terminal::escape(&format!("error (bad_request): no tool {name}"))
         })?;
-    let Action::Request(build) = command.action else {
-        return Err(polylogue_render::terminal::escape(&format!(
-            "error (bad_request): no tool {name}"
-        )));
+    let build = match command.action {
+        Action::Request(build) | Action::Stream { build, .. } => build,
+        Action::Local(_) | Action::ConfiguredLocal(_) => return Err(format!("no tool {name}")),
     };
     let bad = |e: String| polylogue_render::terminal::escape(&format!("error (bad_request): {e}"));
     let values = Values::from_json(command, Surface::Mcp, arguments).map_err(bad)?;
@@ -83,21 +84,92 @@ fn call_with_limit(
     arguments: serde_json::Map<String, Value>,
     deadline_ms: Option<i64>,
     cancelled: &tokio_util::sync::CancellationToken,
-) -> Result<String, String> {
-    let request = build_request(name, arguments)?;
+    tool_call_id: Option<String>,
+) -> Result<(String, Value, bool), String> {
+    let command = tool_commands()
+        .find(|command| command.mcp_name() == name)
+        .ok_or_else(|| polylogue_render::terminal::escape(&format!("no tool {name}")))?;
+    let canonical = if command.register.is_some() {
+        let envelope: crate::protocol::operations::McpArguments<Value> =
+            serde_json::from_value(Value::Object(arguments.clone()))
+                .map_err(|error| error.to_string())?;
+        Some(command_surface::Request {
+            operation: command.name.into(),
+            arguments: envelope.arguments,
+            request_id: envelope.request_id,
+            deadline: envelope.deadline,
+        })
+    } else {
+        None
+    };
+    let request = if let Some(call) = &canonical {
+        let caller = Caller {
+            surface: Surface::Mcp,
+            cwd: None,
+            json: true,
+        };
+        match command
+            .build_typed
+            .expect("registered commands validate typed arguments")(
+            call.arguments.clone(),
+            &caller,
+            &call.request_id,
+        ) {
+            Ok(request) => request,
+            Err(failure) => {
+                let kind = serde_json::to_value(failure.kind).expect("failure kind serializes");
+                let code = failure
+                    .code
+                    .as_deref()
+                    .unwrap_or_else(|| kind.as_str().expect("failure kind is a string"));
+                let detail = serde_json::to_value(&failure).expect("failure serializes");
+                let text = error_text(code, &failure.message, Some(&detail));
+                let answer = command_surface::Answer::<Value>::error(failure);
+                return Ok((
+                    text,
+                    serde_json::to_value(answer).expect("answer serializes"),
+                    true,
+                ));
+            }
+        }
+    } else {
+        build_request(name, arguments.clone())?
+    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    format_answer(
-        &request,
-        runtime.block_on(crate::client::send_ready(
-            archive,
-            &request,
-            deadline_ms,
-            cancelled,
-        )),
-    )
+    let mut caller = crate::protocol::caller::evidence();
+    if tool_call_id.is_some() {
+        caller.tool_call_id = tool_call_id;
+    }
+    let answer = if let Some(call) = canonical {
+        runtime.block_on(crate::client::call_ready_as(
+            archive, &call, cancelled, caller,
+        ))
+    } else {
+        runtime
+            .block_on(crate::client::send_ready_as(
+                archive,
+                &request,
+                deadline_ms,
+                cancelled,
+                caller,
+            ))
+            .map(|response| response.answer())
+    };
+    let structured = match &answer {
+        Ok(answer) => serde_json::to_value(answer).expect("answer serializes"),
+        Err(error) => serde_json::to_value(command_surface::Answer::<Value>::error(
+            crate::protocol::failure("not_running", error.to_string(), None),
+        ))
+        .expect("failure serializes"),
+    };
+    let failed = matches!(answer, Ok(command_surface::Answer::Error { .. }) | Err(_));
+    let text = match format_answer(&request, answer.map(Response::from)) {
+        Ok(text) | Err(text) => text,
+    };
+    Ok((text, structured, failed))
 }
 
 const VERSIONS: &[&str] = &[
@@ -116,12 +188,19 @@ struct Session {
 
 enum Reply {
     Message(Value),
+    Completion {
+        id: Value,
+        arguments: crate::protocol::complete::Arguments,
+        deadline_ms: Option<i64>,
+        with_result_type: bool,
+    },
     Tool {
         id: Value,
         name: String,
         arguments: serde_json::Map<String, Value>,
         with_result_type: bool,
         deadline_ms: Option<i64>,
+        tool_call_id: Option<String>,
     },
     None,
 }
@@ -177,7 +256,7 @@ impl Session {
             return Reply::Message(success(
                 id,
                 json!({
-                    "protocolVersion": version, "capabilities": {"tools": {}},
+                    "protocolVersion": version, "capabilities": {"tools": {}, "completions": {}},
                     "serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": crate::manual::text(),
                 }),
@@ -223,7 +302,7 @@ impl Session {
                 id,
                 json!({
                     "resultType": "complete", "supportedVersions": VERSIONS,
-                    "capabilities": {"tools": {}}, "instructions": crate::manual::text(),
+                    "capabilities": {"tools": {}, "completions": {}}, "instructions": crate::manual::text(),
                     "ttlMs": 0, "cacheScope": "private",
                     "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")}},
                 }),
@@ -231,6 +310,15 @@ impl Session {
         }
         let with_result_type = self.request_metadata || with_result_type;
         match method {
+            "completion/complete" => match completion::arguments(&params) {
+                Ok(arguments) => Reply::Completion {
+                    id,
+                    arguments,
+                    deadline_ms: meta["deadline_ms"].as_i64(),
+                    with_result_type,
+                },
+                Err(message) => invalid(-32602, message),
+            },
             "tools/list" => {
                 let mut result = json!({"tools": tools()});
                 if with_result_type {
@@ -253,6 +341,7 @@ impl Session {
                     arguments,
                     with_result_type,
                     deadline_ms: meta["deadline_ms"].as_i64(),
+                    tool_call_id: meta["claudecode/toolUseId"].as_str().map(str::to_owned),
                 }
             }
             _ => invalid(-32601, "Method not found"),
@@ -273,20 +362,48 @@ impl Reply {
         match self {
             Self::None => None,
             Self::Message(message) => Some(message),
+            Self::Completion {
+                id,
+                arguments,
+                deadline_ms,
+                with_result_type,
+            } => Some(completion::answer(
+                id,
+                archive,
+                arguments,
+                deadline_ms,
+                cancelled,
+                with_result_type,
+            )),
             Self::Tool {
                 id,
                 name,
                 arguments,
                 with_result_type,
                 deadline_ms,
+                tool_call_id,
             } => {
-                let (text, failed) =
-                    match call_with_limit(archive, &name, arguments, deadline_ms, cancelled) {
-                        Ok(text) => (text, false),
-                        Err(text) => (text, true),
-                    };
-                let mut result =
-                    json!({"content": [{"type": "text", "text": text}], "isError": failed});
+                let (text, structured, failed) = match call_with_limit(
+                    archive,
+                    &name,
+                    arguments,
+                    deadline_ms,
+                    cancelled,
+                    tool_call_id,
+                ) {
+                    Ok(answer) => answer,
+                    Err(text) => {
+                        let answer = command_surface::Answer::<Value>::error(
+                            crate::protocol::failure("bad_request", text.clone(), None),
+                        );
+                        (
+                            text,
+                            serde_json::to_value(answer).expect("failure serializes"),
+                            true,
+                        )
+                    }
+                };
+                let mut result = json!({"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": failed});
                 if with_result_type {
                     result["resultType"] = json!("complete");
                 }
@@ -349,7 +466,7 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
                     }
                     Err(_) => Reply::Message(error(Value::Null, -32700, "Parse error")),
                 };
-                if let Reply::Tool { ref id, .. } = reply {
+                if let Reply::Tool { ref id, .. } | Reply::Completion { ref id, .. } = reply {
                     let id = id.clone();
                     let cancelled = tokio_util::sync::CancellationToken::new();
                     let worker_cancelled = cancelled.clone();
@@ -379,12 +496,8 @@ fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> i
     })
 }
 
-pub fn serve_stdio() -> io::Result<()> {
-    serve(
-        io::stdin().lock(),
-        io::stdout(),
-        &Archive::at(&Archive::default_root()),
-    )
+pub fn serve_stdio(archive: &Archive) -> io::Result<()> {
+    serve(io::stdin().lock(), io::stdout(), archive)
 }
 
 #[cfg(test)]

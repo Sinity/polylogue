@@ -21,7 +21,8 @@
           0,
           279
         ],
-        "session": "ai-studio:1abd"
+        "session": "ai-studio:1abd",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -38,7 +39,8 @@
           "id": "ai-studio:4:1abd#id:10:drive-user",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:1abd"
+          "session": "ai-studio:1abd",
+          "at_quality": "unknown"
         },
         "offset": 39
       },
@@ -54,7 +56,8 @@
           "id": "ai-studio:4:1abd#id:15:drive-assistant",
           "parent": "ai-studio:4:1abd#id:10:drive-user",
           "role": "assistant",
-          "session": "ai-studio:1abd"
+          "session": "ai-studio:1abd",
+          "at_quality": "unknown"
         },
         "offset": 145
       }
@@ -62,7 +65,8 @@
     "sessions": [
       {
         "id": "ai-studio:1abd",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       }
     ]
   }

@@ -158,7 +158,7 @@ fn a_capture_is_stored_durably_and_archived_by_the_loop() {
 
 /// Settings that read only a home under `dir`.
 fn config_at(dir: &std::path::Path) -> polylogue_engine::Config {
-    let mut c = polylogue_engine::Config::from_env();
+    let mut c = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     c.home = dir.join("home");
     c.tool_dirs.clear();
     c
@@ -512,16 +512,25 @@ fn grok_file_blobs(
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
         || match host.ask(&crate::daemon::Request::Read {
-            slices: true,
-            selection: None,
-            target: crate::daemon::ReadTarget::Session(session.clone()),
-            view: "full".into(),
+            target: format!("session:{session}"),
+            options: polylogue_model::read::ReadOptions::default(),
+            delivery: polylogue_model::read::ReadDelivery::Page,
             format: "markdown".into(),
-            with_parents: false,
             budget: None,
-            cursor: None,
+            with_blobs: false,
         }) {
-            Some(crate::daemon::Response::Ok { data, .. }) => data["content"].clone(),
+            Some(crate::daemon::Response::Ok { data, .. }) => {
+                let page: polylogue_model::read::ReadPage = serde_json::from_value(data).unwrap();
+                let mut output = Vec::new();
+                polylogue_render::encode_document(
+                    &page.document,
+                    polylogue_render::Format::Markdown,
+                    polylogue_render::EncodeOptions::default(),
+                    &mut output,
+                )
+                .unwrap();
+                Value::String(String::from_utf8(output).unwrap())
+            }
             _ => Value::Null,
         },
         |content| content.as_str().is_some_and(|t| t.contains(text)),

@@ -275,11 +275,11 @@ impl Reader<'_> {
         let Some(row) = self.deliveries("WHERE d.id = ?1", id)?.pop() else {
             return Ok(None);
         };
-        let body: Vec<u8> =
-            self.conn()?
-                .query_row("SELECT body FROM a.delivery WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })?;
+        let body: Vec<u8> = self.conn()?.query_row(
+            "SELECT body FROM source_delivery WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
         let text = crate::encoding::unpack_text(&body)?;
         Ok(Some((row, text)))
     }
@@ -289,8 +289,8 @@ impl Reader<'_> {
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
                     (SELECT group_concat(e.what, ',') FROM
-                        (SELECT what FROM a.delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
-               FROM a.delivery d {filter}
+                        (SELECT what FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
+               FROM source_delivery d {filter}
               ORDER BY d.commit_seq DESC"
         ))?;
         let rows = stmt.query_map([arg], |r| {
@@ -312,21 +312,57 @@ impl Reader<'_> {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// The current value of a setting: this machine's row, else the
-    /// archive-wide one.
-    pub fn setting(&self, key: &str, machine: &str) -> Result<Option<String>> {
-        use rusqlite::OptionalExtension;
-        Ok(self
+    /// One catalog-checked value. Defaults and primary ownership are resolved
+    /// by the declared catalog, rather than by each consumer.
+    pub fn setting_value(
+        &self,
+        key: &str,
+        machine: &str,
+    ) -> Result<Option<polylogue_model::settings::Value>> {
+        let current = self.setting_current(key, machine)?;
+        if current.owner == "sinex" {
+            return Err(crate::StoreError::Invalid(
+                polylogue_model::settings::Error::SinexOwned(key.into()).to_string(),
+            ));
+        }
+        if !current.conflicts.is_empty() {
+            return Err(crate::StoreError::Ambiguous {
+                reference: format!("setting {key}"),
+                candidates: current.conflicts.iter().map(ToString::to_string).collect(),
+            });
+        }
+        Ok(current.value)
+    }
+
+    pub fn settings_catalog(
+        &self,
+        machine: &str,
+    ) -> Result<Vec<polylogue_model::settings::Current>> {
+        let mut keys: Vec<String> = polylogue_model::settings::CATALOG
+            .iter()
+            .filter(|spec| !spec.key.ends_with('*'))
+            .map(|spec| spec.key.to_string())
+            .collect();
+        let rows = self
             .conn()?
-            .query_row(
-                "SELECT value FROM a.setting
-                  WHERE key = ?1 AND machine IN (?2, '*')
-                  ORDER BY machine = '*', set_at DESC, id DESC
-                  LIMIT 1",
-                params![key, machine],
-                |r| r.get(0),
-            )
-            .optional()?)
+            .prepare("SELECT DISTINCT key FROM source_assertion WHERE kind='setting' ORDER BY key")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for key in rows {
+            if polylogue_model::settings::declaration(&key).is_ok() && !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        keys.sort();
+        keys.iter()
+            .map(|key| self.setting_current(key, machine))
+            .collect()
+    }
+
+    pub fn settings_snapshot(&self, machine: &str) -> Result<polylogue_model::settings::Snapshot> {
+        Ok(polylogue_model::settings::Snapshot::new(
+            self.settings_catalog(machine)?,
+        ))
     }
 
     /// What a session did; `None` when there is no such session.
@@ -450,7 +486,7 @@ impl Reader<'_> {
         };
         let sql = format!(
             "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state,
-                    json_array(s.id, m.id, b.idx, v.at)
+                    json_array(s.id, m.id, json(coalesce(b.ordinal,CAST(b.idx AS TEXT))), v.at)
                FROM work_node v JOIN session s ON s.pk = v.session_pk
                LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
                LEFT JOIN block b ON b.pk = t.call_block_pk
@@ -585,7 +621,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let ids: Vec<String> = conn
             .prepare_cached(
-                "SELECT id FROM a.delivery WHERE sender = 'signal' AND at >= ?1
+                "SELECT id FROM source_delivery WHERE sender = 'signal' AND at >= ?1
                   ORDER BY at DESC, commit_seq DESC",
             )?
             .query_map([since], |r| r.get(0))?

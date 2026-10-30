@@ -5,6 +5,7 @@
 
 use super::*;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+use query_language::time::Clock;
 
 const DAY: i64 = 86_400_000;
 /// 2026-10-01T12:00Z.
@@ -40,6 +41,7 @@ fn msg<'a>(
 /// #1–#8 as the example's FACTS table has them, reduced to what the
 /// queries below read.
 fn morrow() -> TestArchive {
+    use polylogue_model::{MessageId, NativeId, Reference, SessionId};
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
     let cc = |n: u8| format!("claude-code:7f3a2c10-000{n}-4000-8000-00000000000{n}");
@@ -113,10 +115,14 @@ fn morrow() -> TestArchive {
             ..SessionFacts::default()
         })
         .unwrap();
+    let decision_message = MessageId::new(
+        SessionId::parse(&ids[1]).unwrap().origin().clone(),
+        NativeId::new("m2p0").unwrap(),
+    );
     fx.message(
         s2,
         msg(
-            "m2p0",
+            &decision_message.to_string(),
             "user",
             "human",
             "let's use chrono, not time",
@@ -352,18 +358,18 @@ fn morrow() -> TestArchive {
 
     fx.note(
         "tag",
-        Some("project"),
-        Some("morrow"),
+        Some("project:morrow"),
+        None,
         &format!("session:{}", ids[1]),
     )
     .unwrap();
-    fx.note("tag", None, Some("research"), "session:chatgpt:abc-7")
+    fx.note("tag", Some("research"), None, "session:chatgpt:abc-7")
         .unwrap();
     fx.note(
         "decision",
         None,
         Some("decided: chrono, not time"),
-        "message:m2p0",
+        &Reference::Message(decision_message).to_string(),
     )
     .unwrap();
     TestArchive { _dir: dir, fx }
@@ -376,12 +382,21 @@ fn ask(text: &str) -> Ask<'_> {
         page_size: None,
         why: false,
         session: None,
-        now: OCT1 + 7 * DAY,
-        day: Some(LogicalDay::named("UTC", 0).unwrap()),
+        context: fixture_context(OCT1 + 7 * DAY, "UTC", 0),
         embeddings: false,
+        ranking_identity: None,
         near: None,
         fields: &[],
     }
+}
+
+fn save_definition(w: &mut TestArchive, name: &str, text: &str) {
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let opts = options(&reader, &ask(text), 7).unwrap();
+    let plan = reader.prepare_query_plan(text, &opts).unwrap();
+    drop(reader);
+    w.fx.saved_query(name, &plan).unwrap();
 }
 
 fn run_q(w: &TestArchive, a: Ask<'_>) -> Result<Value, Failure> {
@@ -561,8 +576,8 @@ fn row_units_and_their_defaults() {
             ("claude-ai".into(), 1)
         ]
     );
-    // 31: notes.
-    let v = q(&w, "notes where kind:decision");
+    // 31: assertions.
+    let v = q(&w, "assertions where kind:decision");
     assert_eq!(v["rows"][0]["value"], "decided: chrono, not time");
 }
 
@@ -752,7 +767,15 @@ fn kept_results_read_back_as_they_were_kept() {
     let err = run_q(&w, ask("result:0199-kept repo:morrow")).unwrap_err();
     assert_eq!(err.kind, "invalid_query");
     let err = run_q(&w, ask("result:nope")).unwrap_err();
-    assert!(err.message.contains("no kept result"), "{}", err.message);
+    let detail = query_failure_detail(&err, query_language::ErrorKind::BadValue, 0);
+    assert_eq!(
+        detail["message"],
+        "kept result \"result:nope\" has no bound output schema"
+    );
+    assert_eq!(
+        detail["hint"],
+        "Supply its actual typed output snapshot before execution"
+    );
 }
 
 #[test]
@@ -811,36 +834,88 @@ fn text_search_ranks_and_cuts_snippets() {
     assert_eq!(q(&w, "tool_calls where command:\"go te\"")["count"], 2);
 }
 
+#[track_caller]
+fn query_failure_detail(
+    failure: &Failure,
+    kind: query_language::ErrorKind,
+    position: usize,
+) -> &Value {
+    assert_eq!(failure.kind, kind.code());
+    let detail = failure
+        .detail
+        .as_ref()
+        .expect("structured language refusal");
+    assert_eq!(detail["kind"], kind.code());
+    assert_eq!(detail["position"], position);
+    let surface = crate::protocol::failure(&failure.kind, failure.message.clone(), Some(detail));
+    assert_eq!(surface.kind, crate::protocol::kind(kind.code()));
+    assert_eq!(surface.position.unwrap().offset, position);
+    detail
+}
+
+#[track_caller]
+fn assert_same_question(actual: &str, expected: &str) {
+    let catalog = polylogue_query::catalog::catalog(
+        &polylogue_sources::origin::ORIGINS
+            .iter()
+            .map(|origin| origin.name.to_owned())
+            .collect::<Vec<_>>(),
+        &crate::commands::command_words(),
+    );
+    let identity = |text: &str| {
+        let query = query_language::parse::parse(text, &catalog).unwrap();
+        query_language::identity::question_id(&query, &catalog, &Default::default()).unwrap()
+    };
+    assert_eq!(identity(actual), identity(expected));
+}
+
 #[test]
 fn errors_point_at_the_problem_and_offer_a_fix() {
     let w = morrow();
-    // 35.
+    // 35. A correction preserves the intended query and runs as given.
     let f = run_q(&w, ask("reop:morrow")).unwrap_err();
-    assert_eq!(f.kind, "unknown_field");
-    assert_eq!(
-        f.message,
-        "unknown field \"reop\" at position 0; did you mean \"repo\"?"
+    let detail = query_failure_detail(&f, query_language::ErrorKind::UnknownField, 0);
+    assert!(
+        detail["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown field `reop` on `sessions`; fields: ")
     );
-    assert_eq!(f.detail.unwrap()["suggestion"], "repo:morrow");
-    // A closed set names the set and where the value does exist.
+    let suggestion = detail["suggestion"].as_str().unwrap();
+    assert_same_question(suggestion, "repo:morrow");
+    assert_eq!(ids(&q(&w, suggestion)), ids(&q(&w, "repo:morrow")));
+    // A closed set names the complete declaration and every qualifying field.
     let f = run_q(&w, ask("sessions where outcome:error")).unwrap_err();
-    assert!(
-        f.message
-            .contains("one of solved, partial, abandoned, none"),
-        "{}",
-        f.message
+    let detail = query_failure_detail(
+        &f,
+        query_language::ErrorKind::BadValue,
+        "sessions where outcome:".len(),
+    );
+    let catalog = polylogue_query::catalog::catalog(&[], &[]);
+    let values = &catalog.field("sessions", "outcome").unwrap().values;
+    assert_eq!(values, &["solved", "partial", "abandoned", "none"]);
+    assert_eq!(
+        detail["message"],
+        format!(
+            "`outcome` on `sessions` is one of: {}; `error` is a value of {}",
+            values.join(", "),
+            catalog.units_accepting("error").join(", ")
+        )
     );
     assert!(
-        f.message.contains("\"error\" is an outcome of tool_calls"),
-        "{}",
-        f.message
+        catalog
+            .units_accepting("error")
+            .contains(&"tool_calls.outcome".into())
     );
     // Commands and near misses are refused, not searched.
     let f = run_q(&w, ask("brief yesterday")).unwrap_err();
-    assert_eq!(f.kind, "not_a_query");
+    let detail = query_failure_detail(&f, query_language::ErrorKind::NotAQuery, 0);
+    assert_eq!(detail["hint"], "run the `brief` command");
     let f = run_q(&w, ask("messges cargo")).unwrap_err();
-    assert!(f.message.contains("\"messages\""), "{}", f.message);
-    // Short words and real searches are not near misses.
+    let detail = query_failure_detail(&f, query_language::ErrorKind::NotAQuery, 0);
+    let correction = detail["suggestion"].as_str().unwrap();
+    assert_same_question(correction, "messages where cargo");
+    assert!(run_q(&w, ask(correction)).is_ok());
     assert!(run_q(&w, ask("bug fix")).is_ok());
     assert!(run_q(&w, ask("date parsing")).is_ok());
 }
@@ -853,16 +928,16 @@ fn an_empty_result_explains_itself() {
     a.why = true;
     let v = run_q(&w, a).unwrap();
     assert_eq!(v["outcome"], "empty");
-    assert_eq!(v["why"][0]["clause"], "repo:other");
+    assert_same_question(v["why"][0]["clause"].as_str().unwrap(), "repo:other");
     assert_eq!(v["why"][0]["matches"], 0);
     assert_eq!(v["why"][0]["of"], 7);
     // 33: semantic search is not enabled.
-    let v = q(&w, "near:\"ambiguous date formats\"");
+    let v = q(&w, "similar:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "incomplete");
     assert_eq!(v["count"], 7);
 }
 
-/// Similarities for `near:` computed from stored vectors: the texts of the
+/// Similarities for `similar:` computed from stored vectors: the texts of the
 /// sessions whose ID is `LIKE like` lie along the query, every other text
 /// across it.
 fn similarity(w: &TestArchive, like: &str) -> std::sync::Arc<polylogue_store::vectors::Similarity> {
@@ -905,7 +980,7 @@ fn near_ranks_every_row_by_similarity() {
         assert_eq!(q, "ambiguous date formats");
         Ok(std::sync::Arc::clone(&s))
     };
-    let mut a = ask("near:\"ambiguous date formats\"");
+    let mut a = ask("similar:\"ambiguous date formats\"");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -923,7 +998,7 @@ fn near_applies_its_conditions_before_ranking() {
     // excludes #2 still ranks what it keeps instead of finding nothing.
     let s = similarity(&w, "%0002-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let mut a = ask("near:x -id:claude-code:7f3a2c10-0002");
+    let mut a = ask("similar:x -id:claude-code:7f3a2c10-0002");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
@@ -947,7 +1022,7 @@ fn text_and_similarity_rank_together() {
     let mut text_only = ask("messages where parser");
     text_only.page_size = Some(100);
     let lexical = run_q(&w, text_only).unwrap();
-    let mut both = ask("messages where parser near:x");
+    let mut both = ask("messages where parser similar:x");
     both.page_size = Some(100);
     both.embeddings = true;
     both.near = Some(&near);
@@ -972,6 +1047,8 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
     let first = run_q(&w, a).unwrap();
     assert_eq!(first["count"], 8);
     assert_eq!(first["rows"].as_array().unwrap().len(), 3);
+    assert!(first["resolved"]["context"]["clock"].is_object());
+    assert!(first["resolved"]["times"].is_array());
     let mut seen = ids(&first);
     let mut cursor = first["next"].as_str().map(str::to_owned);
     while let Some(c) = cursor {
@@ -979,8 +1056,18 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
         a.page_size = Some(3);
         a.cursor = Some(&c);
         // A later request still answers the first one's question.
-        a.now += DAY;
+        std::sync::Arc::make_mut(&mut a.context).clock.now = a
+            .context
+            .clock
+            .now
+            .checked_add(jiff::SignedDuration::from_millis(DAY))
+            .unwrap();
         let page = run_q(&w, a).unwrap();
+        assert_eq!(
+            page["resolved"]["context"]["clock"],
+            first["resolved"]["context"]["clock"]
+        );
+        assert_eq!(page["resolved"]["times"], first["resolved"]["times"]);
         seen.extend(ids(&page));
         cursor = page["next"].as_str().map(str::to_owned);
     }
@@ -991,7 +1078,12 @@ fn pages_continue_with_a_cursor_and_keep_their_now() {
     let mut a = ask("origin:codex");
     let c = first["next"].as_str().unwrap().to_owned();
     a.cursor = Some(&c);
-    assert_eq!(run_q(&w, a).unwrap_err().kind, "bad_request");
+    let failure = run_q(&w, a).unwrap_err();
+    let detail = query_failure_detail(&failure, query_language::ErrorKind::InvalidQuery, 0);
+    assert_eq!(
+        detail["message"],
+        "the cursor belongs to a different question"
+    );
 }
 
 #[test]
@@ -1019,8 +1111,8 @@ fn a_session_query_scopes_a_row_query() {
     );
     assert_eq!(v["rows"][0]["count"], 2);
     // Grouping by logical day.
-    let v = q(&w, "tool_calls | group by day(at) | count | sort by day_at");
-    assert_eq!(v["rows"][0]["day_at"], "2026-10-01");
+    let v = q(&w, "tool_calls | group by day(at) | count | sort by day");
+    assert_eq!(v["rows"][0]["day"], "2026-10-01");
 }
 
 /// A session that claims a Bead, fails then passes its tests, commits and
@@ -1117,11 +1209,15 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
         .unwrap();
     let failure = run_q(&fixture, ask("sessions")).unwrap_err();
     assert_eq!(failure.kind, "store");
-    assert!(failure.message.contains("malformed JSON"));
+    assert_eq!(
+        failure.message,
+        "kept result \"broken\" field rows_json: invalid JSON"
+    );
     let pool = fixture.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let failure = keep(&reader, ask("sessions")).unwrap_err();
-    assert_eq!(failure.kind, "store");
+    let kept_failure = keep(&reader, ask("sessions")).unwrap_err();
+    assert_eq!(kept_failure.kind, "store");
+    assert_eq!(kept_failure.message, failure.message);
 }
 
 #[test]
@@ -1137,7 +1233,7 @@ fn absent_saved_queries_and_results_are_a_valid_empty_catalog() {
 
 #[test]
 fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
-    for (field, body) in [
+    let shapes = [
         ("unit", json!({"columns": []})),
         ("unit", json!({"unit": 7, "columns": []})),
         ("columns", json!({"unit": "sessions"})),
@@ -1154,12 +1250,15 @@ fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
             "match_columns",
             json!({"unit": "sessions", "columns": [], "match_columns": "wrong"}),
         ),
-    ] {
+    ];
+    for (field, body) in shapes
+        .into_iter()
+        .map(|(field, body)| (field, body.to_string()))
+        .chain(std::iter::once(("rows_json", "{".to_owned())))
+    {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-        fixture
-            .kept_result("broken", "sessions", &body.to_string())
-            .unwrap();
+        fixture.kept_result("broken", "sessions", &body).unwrap();
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
         for failure in [
@@ -1282,3 +1381,55 @@ mod composition;
 
 mod language;
 mod measures;
+
+mod shared_laws;
+
+mod reported_timing;
+
+fn fixture_clock(now: i64, zone: &str, start_minutes: u16) -> Clock {
+    Clock::new(
+        jiff::Timestamp::from_millisecond(now).unwrap(),
+        DaySetting::new(
+            jiff::tz::TimeZone::get(zone).unwrap(),
+            jiff::civil::Time::constant(
+                (start_minutes / 60) as i8,
+                (start_minutes % 60) as i8,
+                0,
+                0,
+            ),
+        )
+        .unwrap(),
+    )
+}
+
+fn fixture_context(
+    now: i64,
+    zone: &str,
+    start_minutes: u16,
+) -> std::sync::Arc<crate::operation::Context> {
+    let clock = fixture_clock(now, zone, start_minutes);
+    std::sync::Arc::new(crate::operation::Context::standalone(
+        crate::operation::Invocation::new(
+            clock.now.into(),
+            "synthetic-query-machine".into(),
+            crate::operation::Context::worker_authorship("query-fixture"),
+        ),
+        clock.day,
+    ))
+}
+
+#[test]
+fn shared_query_diagnostics_keep_correction_and_byte_position_at_the_operation_boundary() {
+    let error = polylogue_query::parse(r#"repo:"morrow"#).unwrap_err();
+    let failure = Failure::from(error);
+    assert_eq!(failure.kind, "invalid_query");
+    let shared = crate::protocol::failure(&failure.kind, failure.message, failure.detail.as_ref());
+    assert_eq!(shared.position.unwrap().offset, 5);
+    assert_eq!(
+        shared.suggestion.as_deref(),
+        Some(&serde_json::json!(r#"repo:"morrow""#))
+    );
+    assert!(polylogue_query::parse(r#"repo:"morrow""#).is_ok());
+}
+
+mod metadata;

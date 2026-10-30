@@ -3,35 +3,53 @@
 use super::*;
 use base64::Engine as _;
 use std::io::Write;
+use std::path::PathBuf;
 
-pub(crate) fn output(values: &Values, data: &Value, json: bool) -> ExitCode {
-    if !values.flag("reveal") {
+pub(crate) fn output(
+    values: &Values,
+    data: &Value,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    if values.text("out").is_none() {
         if json {
-            println!("{}", polylogue_render::terminal::json(data, false));
+            println!(
+                "{}",
+                polylogue_render::terminal::json(
+                    &serde_json::to_value(crate::protocol::answer(data.clone()))
+                        .expect("answer serializes"),
+                    false
+                )
+            );
         } else {
-            print!("{}", print::json(data));
+            print!("{}", print::json(data, false));
         }
         return ExitCode::SUCCESS;
     }
-    match write(values, data) {
+    match write(values, data, startup) {
         Ok(path) => {
             if json {
-                println!("{}", serde_json::json!({"written":path}));
+                println!(
+                    "{}",
+                    serde_json::to_string(&command_surface::Answer::ok(
+                        serde_json::json!({"written":path})
+                    ))
+                    .expect("answer serializes")
+                );
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(json, "attachment_output", &e, 1),
+        Err(e) => fail(startup.output, json, "attachment_output", &e, 1),
     }
 }
 
-fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
-    crate::daemon::attachment::check_cli()?;
+fn write(
+    values: &Values,
+    data: &Value,
+    startup: &crate::config::Startup,
+) -> Result<PathBuf, String> {
     let path = PathBuf::from(values.text("out").ok_or("--out is required")?);
-    let directory = path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(std::path::Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
+    let mut temporary = super::staged_file::StagedFile::new(&path).map_err(|e| e.to_string())?;
     let command = crate::commands::command("attachment").ok_or("attachment command missing")?;
     let Action::Request(build) = command.action else {
         return Err("attachment request missing".into());
@@ -41,7 +59,7 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
         values,
         &Caller {
             surface: Surface::Cli,
-            cwd: Some(current_dir()),
+            cwd: None,
             json: true,
         },
     )?;
@@ -82,7 +100,7 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
                 };
                 *cursor = Some(next);
                 value = match send_with_timeout(
-                    &Archive::at(&Archive::default_root()),
+                    &Archive::at(&startup.config.archive.clone()),
                     &request,
                     values
                         .integer("timeout")
@@ -100,9 +118,7 @@ fn write(values: &Values, data: &Value) -> Result<PathBuf, String> {
                 if offset != page.size || hasher.finalize().as_bytes() != &page.blob.0 {
                     return Err("complete attachment length or hash differs".into());
                 }
-                temporary.as_file().sync_all().map_err(|e| e.to_string())?;
-                temporary.persist(&path).map_err(|e| e.to_string())?;
-                return Ok(path);
+                return temporary.commit().map_err(|e| e.to_string());
             }
         }
     }

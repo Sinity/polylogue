@@ -9,13 +9,29 @@ pub(crate) fn call(
     name: &str,
     arguments: serde_json::Map<String, Value>,
 ) -> Result<String, String> {
+    let command = tool_commands()
+        .find(|command| command.name.replace(' ', "_") == name || command.mcp_name() == name);
+    let (name, arguments) =
+        if let Some(command) = command.filter(|command| command.register.is_some()) {
+            (
+                command.mcp_name(),
+                json!({"arguments":arguments,"request_id":uuid::Uuid::now_v7().to_string()})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        } else {
+            (name.to_owned(), arguments)
+        };
     call_with_limit(
         archive,
-        name,
+        &name,
         arguments,
         None,
         &tokio_util::sync::CancellationToken::new(),
+        None,
     )
+    .and_then(|(text, _, failed)| if failed { Err(text) } else { Ok(text) })
 }
 
 fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -35,14 +51,11 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     let text = call(
         &archive,
         "read",
-        args(json!({"session": "claude-code:s1", "format": "markdown"})),
+        args(json!({"target": "session:claude-code:s1", "format": "markdown"})),
     )
     .unwrap();
-    let read: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert!(
-        read["content"].as_str().unwrap().contains("walrus"),
-        "{text}"
-    );
+    let read: polylogue_model::read::ReadPage = serde_json::from_str(&text).unwrap();
+    assert!(read_pages::body(&read).contains("walrus"), "{text}");
 
     let text = call(&archive, "query", args(json!({"query": "walrus"}))).unwrap();
     assert!(text.contains("claude-code:s1"), "{text}");
@@ -50,7 +63,7 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     let e = call(
         &archive,
         "read",
-        args(json!({"session": "claude-code:s1", "pages": 1})),
+        args(json!({"target": "session:claude-code:s1", "pages": 1})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (bad_request)"), "{e}");
@@ -64,7 +77,7 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     let e = call(
         &archive,
         "read",
-        args(json!({"session": "claude-code:nope"})),
+        args(json!({"target": "session:claude-code:nope"})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (not_found)"), "{e}");
@@ -92,11 +105,11 @@ fn stdio_answers_initialize_tools_calls_and_errors() {
         initialize().to_string(),
         json!({"jsonrpc":"2.0", "method":"notifications/initialized"}).to_string(),
         json!({"jsonrpc":"2.0", "id":2, "method":"tools/list"}).to_string(),
-        json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"status"}}).to_string(),
+        json!({"jsonrpc":"2.0", "id":3, "method":"tools/call", "params":{"name":"polylogue_status","arguments":{"arguments":{},"request_id":"status-jsonrpc"}}}).to_string(),
         json!({"jsonrpc":"2.0", "id":4, "method":"tools/call", "params":{"name":"unknown"}}).to_string(),
         "not JSON".to_owned(),
         json!({"jsonrpc":"2.0", "id":5, "method":"unknown"}).to_string(),
-        json!({"jsonrpc":"2.0", "id":6, "method":"tools/call", "params":{"name":"status", "arguments":[]}}).to_string(),
+        json!({"jsonrpc":"2.0", "id":6, "method":"tools/call", "params":{"name":"polylogue_status", "arguments":[]}}).to_string(),
         json!({"jsonrpc":"2.0", "id":7, "method":"ping"}).to_string(),
     ].join("\n");
     let replies: Vec<Value> = std::thread::scope(|scope| {
@@ -184,7 +197,7 @@ fn protocol_ids_null_arguments_and_ping_follow_the_request_version() {
         .unwrap();
     assert_eq!(ping["id"], id);
     assert_eq!(ping["result"], json!({}));
-    let call = session.prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"status", "arguments":null}}));
+    let call = session.prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"polylogue_status", "arguments":null}}));
     match call {
         Reply::Tool { arguments, .. } => assert!(arguments.is_empty()),
         _ => panic!("null arguments must be an empty argument map"),
@@ -217,7 +230,8 @@ fn server_instructions_include_guidance_and_current_command_names() {
         panic!("initialize must return server information");
     };
     let text = info["result"]["instructions"].as_str().unwrap();
-    assert!(text.contains("Continue pages"));
+    assert!(text.contains("ReadyCall"));
+    assert!(text.contains("root_run") && text.contains("cursor"));
     for command in commands::COMMANDS.iter().filter(|c| c.mcp) {
         assert!(text.contains(&format!("`{}`", command.mcp_name())));
     }
@@ -268,7 +282,7 @@ fn tool_annotations_follow_the_command_table() {
         let json = serde_json::to_value(tool).unwrap();
         assert_eq!(json["annotations"]["readOnlyHint"], !command.writes);
     }
-    for name in ["query", "read", "status"] {
+    for name in ["polylogue_find", "polylogue_read", "polylogue_status"] {
         let tool = tools.iter().find(|t| t["name"] == name).unwrap();
         assert_eq!(tool["annotations"]["readOnlyHint"], true);
     }
@@ -289,8 +303,14 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
     let error = call(&archive, hostile, args(json!({}))).unwrap_err();
     assert!(error.contains(&escaped), "{error}");
     for response in [
-        json!({"result":"ok", "data":{"value":hostile}}),
-        json!({"result":"error", "kind":"cancelled", "message":hostile, "detail":{"suggestion":hostile}}),
+        serde_json::to_value(command_surface::Answer::ok(json!({"value":hostile}))).unwrap(),
+        serde_json::to_value(command_surface::Answer::<Value>::error(
+            command_surface::Failure {
+                suggestion: Some(Box::new(json!(hostile))),
+                ..command_surface::Failure::new(command_surface::FailureKind::Cancelled, hostile)
+            },
+        ))
+        .unwrap(),
     ] {
         let listener = UnixListener::bind(archive.socket()).unwrap();
         let server = std::thread::spawn(move || {
@@ -311,4 +331,74 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
         server.join().unwrap();
         std::fs::remove_file(archive.socket()).unwrap();
     }
+}
+
+#[test]
+fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
+    let daemon = test_daemon::start("MCP ready witness");
+    let ready = daemon
+        .daemon
+        .ready_call(&command_surface::Request {
+            operation: "query".into(),
+            arguments: json!({"query":"sessions"}),
+            request_id: "mcp-ready-id".into(),
+            deadline: command_surface::Deadline::None,
+        })
+        .unwrap();
+    let mut session = Session {
+        initialized: true,
+        ..Default::default()
+    };
+    let reply = session
+        .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":ready.mcp}))
+        .answer(&daemon.daemon.archive)
+        .unwrap();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"]["value"]["count"], 1,
+        "{reply}"
+    );
+    let legacy = call_with_limit(
+        &daemon.daemon.archive,
+        "polylogue_find",
+        args(json!({"query":"sessions"})),
+        None,
+        &Default::default(),
+        None,
+    );
+    assert!(
+        legacy.is_err(),
+        "typed MCP operation accepted arguments outside its declared envelope"
+    );
+    let tool = tools()
+        .into_iter()
+        .find(|tool| tool["name"] == "polylogue_find")
+        .unwrap();
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert!(tool["inputSchema"]["properties"].get("arguments").is_some());
+}
+
+#[test]
+fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    let (text, structured, failed) = call_with_limit(
+        &archive,
+        "polylogue_read",
+        args(json!({
+            "arguments":{"target":"session:claude-code:synthetic", "author":"invented"},
+            "request_id":"invalid-admission-witness"
+        })),
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+    assert!(failed);
+    assert!(text.starts_with("error (bad_request)"), "{text}");
+    let answer: command_surface::Answer<Value> = serde_json::from_value(structured).unwrap();
+    let command_surface::Answer::Error { error, .. } = answer else {
+        panic!("canonical admission error");
+    };
+    assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
 }

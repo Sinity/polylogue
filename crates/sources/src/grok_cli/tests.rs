@@ -5,7 +5,7 @@ use serde_json::json;
 fn grok() -> GrokCli {
     GrokCli {
         place: Place::from_path(Path::new(
-            "/h/.grok/sessions/%2Frealm%2Fproject%2Fsinnix/01a0b507/chat_history.jsonl",
+            "/h/.grok/sessions/%2Fworkspace%2Fprojects%2Fexample/01a0b507/chat_history.jsonl",
         ))
         .unwrap(),
     }
@@ -43,7 +43,7 @@ fn reasoning_joins_the_next_answer_and_messages_are_named_by_offset() {
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs.len(), 5);
     assert_eq!(msgs[0].session.to_string(), "grok-cli:01a0b507");
-    assert_eq!(step.output.sessions[0].cwd, ["/realm/project/sinnix"]);
+    assert_eq!(step.output.sessions[0].cwd, ["/workspace/projects/example"]);
     let answer = msgs[2];
     assert!(
         matches!(&answer.blocks[0], Block::Thinking { text: Some(t), .. } if t == "look first")

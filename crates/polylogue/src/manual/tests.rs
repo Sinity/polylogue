@@ -11,9 +11,13 @@ fn the_manual_gives_working_example_queries() {
         .collect();
     assert!(!examples.is_empty());
     let options = polylogue_query::Options {
-        clock: polylogue_query::Clock::new(
-            1_790_000_000_000,
-            polylogue_model::LogicalDay::named("UTC", 240).unwrap(),
+        clock: query_language::time::Clock::new(
+            jiff::Timestamp::from_millisecond(1_790_000_000_000).unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("UTC").unwrap(),
+                jiff::civil::Time::constant(4, 0, 0, 0),
+            )
+            .unwrap(),
         ),
         origins: Vec::new(),
         command_words: Vec::new(),
@@ -27,13 +31,12 @@ fn the_manual_gives_working_example_queries() {
         chat_pages: Vec::new(),
     };
     for query in examples {
-        let answer = polylogue_query::compile(query, &options);
+        let answer = polylogue_store::query::compile(query, &options);
         assert!(answer.is_ok(), "{query}: {answer:?}");
     }
     let manual = text();
-    for tool in [
-        "brief", "recall", "takeover", "query", "read", "note_add", "status",
-    ] {
+    for command in crate::mcp::tool_commands() {
+        let tool = command.mcp_name();
         assert!(
             crate::mcp::tools()
                 .iter()
@@ -43,6 +46,10 @@ fn the_manual_gives_working_example_queries() {
         assert!(
             manual.contains(&format!("`{tool}`")),
             "{tool} is not described"
+        );
+        assert!(
+            manual.contains(&format!("CLI `{}`", command.cli_words().join(" "))),
+            "{tool} has no runnable CLI spelling"
         );
     }
 }

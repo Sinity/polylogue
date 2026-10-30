@@ -77,19 +77,17 @@ copy.
 | `crates/sources` | one declaration and one parser per origin, reading versions, markup extraction |
 | `crates/store` | every SQLite connection and all SQL: inputs, chains, versioned rows, row codecs, plan execution, migrations |
 | `crates/query` | the catalog and units, compilation to a `Plan`. No SQL |
-| `crates/assertions` | the assertion store and variants: author computation, the revision graph, judgments, Pages, pings, annotation passes |
 | `crates/render` | text, markdown and HTML over typed answers |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | primary mode: the ledger over Sinex's producer client, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
+| `crates/sinex` | primary mode: durable producer custody, the confirmed-stream consumer and Polylogue's kind declarations (behind the `sinex` feature) |
 | `crates/polylogue` | the daemon library and thin CLI, MCP, web and browser-host front ends generated from the command table; the pack builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `extension/` | the browser extension |
 | `xtask/` | developer commands, built on `devkit` from polylogue-sinex-common |
 | `nix/` | the NixOS and Home Manager modules and their shared settings library |
 
-`crates/assertions` and `nix/` do not exist yet: until they do, authored
-records live in `crates/store` and `crates/polylogue`, and the flake ships no
-modules.
+Authored types live in `crates/model`, persistence in `crates/store` and
+product operations in `crates/polylogue`.
 `cargo xtask boundaries` enforces which crates may depend on which; only the
 store touches SQLite.
 
@@ -120,7 +118,7 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
 | `cargo fmt --all` | format |
-| `nix flake check` | the locked package build |
+| `nix flake check` | locked package, source, module and VM checks described in [development](docs/development.md) |
 | `nix build` | the package |
 
 Default tests build the standalone workspace with the fault-test features;
@@ -133,9 +131,7 @@ run is recorded in devkit's history database.
 
 Designed and not built yet: `cargo xtask compile` and `coverage`;
 `cargo xtask laws`, which lists each law in `docs/` with the tests whose names
-carry its key; `cargo xtask docs`, which regenerates `docs/reference/`; and
-flake checks beyond the package build (clippy, fmt, nextest, boundaries,
-module checks, an MCP `initialize` smoke test).
+carry its key; and `cargo xtask docs`, which regenerates `docs/reference/`.
 
 A host may queue these same commands through its own job runner; the
 operator's host does so with AgentCTL, whose descriptor in `.agentctl/`
@@ -372,12 +368,11 @@ initializes tools. Run `cargo xtask` directly; each run owns its services.
 A change that needs polylogue-sinex-common changed too starts there.
 `cargo xtask link-common [<path>]` builds this workspace against a checkout
 of it (the path, else `$POLYLOGUE_SINEX_COMMON`, else
-`../polylogue-sinex-common`), and entering the development shell does the
-same when that checkout exists. It writes the git-ignored
+`../polylogue-sinex-common`). Linking is explicit. It writes the git-ignored
 `.cargo/local.toml`, and Cargo.lock then names the local crates, so the lock
-is not committed in that state. `cargo xtask unlink-common` restores the lock and
-keeps the shell from linking again. Merge the common pull request first;
+is not committed in that state. `cargo xtask unlink-common` restores the lock.
+Merge the common pull request first;
 its workflow then opens a pull request here that moves Cargo.lock to the new
 commit. Convert the callers on that branch, or run `cargo update -p devkit
--p hashed-blobs -p credential-masking` on the branch that converts them, so
+-p hashed-blobs` on the branch that converts them, so
 the lock change and the callers land together.

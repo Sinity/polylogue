@@ -8,7 +8,7 @@ pub fn text() -> String {
             text,
             "\n- `{}` (CLI `{}`): {}",
             command.mcp_name(),
-            command.name,
+            command.cli_words().join(" "),
             command.help
         );
     }

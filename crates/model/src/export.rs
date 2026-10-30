@@ -1,7 +1,7 @@
 //! The export format: one JSON document holding whole sessions, and the
 //! archive's user state. Importing an export into a fresh archive gives the
 //! same sessions and IDs, and the same notes, settings, kept results,
-//! deliveries, chat actions, backfill jobs and excisions.
+//! deliveries, chat actions, backfill jobs.
 
 use crate::{Event, Link, Message, Session};
 use serde::{Deserialize, Serialize};
@@ -18,10 +18,8 @@ pub struct Document {
     pub documents: Vec<crate::Document>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<EventExport>,
-    /// Every request a person or agent made and every excision, in commit
-    /// order, each as the store writes it (`{"change": "request", ...}` or
-    /// `{"change": "excision", ...}`). Import replays them through the
-    /// writer; the store checks each entry.
+    /// Every authored request in commit order, as the store writes it.
+    /// Import replays each entry through the writer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_state: Vec<crate::Json>,
 }

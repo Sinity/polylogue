@@ -1,0 +1,201 @@
+use super::*;
+
+#[test]
+fn frozen_native_output_columns_ignore_parser_atoms_and_rebuild_runtime_qualifiers() {
+    use query_language::catalog::{Field, FieldKind, MatchPattern};
+    let mut previous = None;
+    for origins in [vec![], vec!["claude-code".into(), "codex".into()]] {
+        let mut bindings = Bindings {
+            origins,
+            ..Bindings::default()
+        };
+        let definition = prepare(
+            "sessions where exists tool_call(outcome:error)",
+            &bindings,
+            |_| Ok(()),
+        )
+        .unwrap();
+        bindings
+            .add_saved(
+                "qualified",
+                &definition,
+                "synthetic-revision",
+                "synthetic-root",
+            )
+            .unwrap();
+        let plan = prepare(
+            "query:qualified | matches | sort by outcome",
+            &bindings,
+            |_| Ok(()),
+        )
+        .unwrap();
+        let object = plan.query_object().unwrap();
+        let expected_columns = crate::units::spec(crate::units::Unit::Sessions)
+            .columns
+            .iter()
+            .map(|column| column.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            object.source_outputs[0]
+                .schema
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_columns
+        );
+        let bytes = serde_json::to_vec(&object).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("match_patterns"));
+        let decoded = serde_json::from_slice(&bytes).unwrap();
+        let restored = replay(&decoded, &catalog_fingerprint()).unwrap();
+        assert_eq!(restored.question_id(), plan.question_id());
+        assert_eq!(
+            restored.output_schema().unwrap(),
+            plan.output_schema().unwrap()
+        );
+        if let Some(previous) = &previous {
+            assert_eq!(previous, &object);
+        }
+        previous = Some(object.clone());
+
+        // Runtime metadata is recomputed, including when a caller supplies an
+        // incorrect vector. Canonical fields and their order remain mandatory.
+        let mut changed = object.clone();
+        changed.source_outputs[0].schema.match_patterns = vec![MatchPattern::Sequence {
+            unit: "messages".into(),
+            steps: 7,
+        }];
+        assert_eq!(serde_json::to_vec(&changed).unwrap(), bytes);
+        validate_object(&changed).unwrap();
+        assert_eq!(
+            replay(&changed, &catalog_fingerprint())
+                .unwrap()
+                .output_schema()
+                .unwrap(),
+            plan.output_schema().unwrap()
+        );
+
+        let mut changed = object.clone();
+        changed.source_outputs[0].schema.fields.push(Field {
+            name: "codex".into(),
+            kind: FieldKind::Reference,
+            ..Field::default()
+        });
+        assert!(
+            matches!(validate_object(&changed), Err(QueryError::Invalid { .. })),
+            "previously frozen parser atoms must be refused, not rewritten"
+        );
+        let mut changed = object.clone();
+        changed.source_outputs[0].schema.fields[0].kind = FieldKind::Json;
+        assert!(validate_object(&changed).is_err());
+        let mut changed = object.clone();
+        changed.source_outputs[0]
+            .schema
+            .fields
+            .iter_mut()
+            .find(|field| field.name == "kind")
+            .unwrap()
+            .values
+            .push("invented-kind".into());
+        assert!(validate_object(&changed).is_err());
+        let mut changed = object.clone();
+        changed.source_outputs[0].schema.fields.swap(0, 1);
+        assert!(validate_object(&changed).is_err());
+        let mut changed = object.clone();
+        changed.source_outputs[0].schema.main_time = None;
+        assert!(validate_object(&changed).is_err());
+    }
+}
+
+#[test]
+fn metadata_preparation_uses_shared_binding_before_value_and_reference_formatting() {
+    let mut bindings = Bindings::default();
+    for (name, text) in [
+        ("pick", "$id"),
+        ("forward", "query:pick(id=$id)"),
+        ("nested", "query:forward(id=$id)"),
+        ("by-outcome", "tool_calls where outcome:$outcome"),
+    ] {
+        let plan = prepare(text, &bindings, |_| Ok(())).unwrap();
+        bindings
+            .add_saved(
+                name,
+                &plan,
+                &format!("{name}-revision"),
+                &format!("{name}-root"),
+            )
+            .unwrap();
+    }
+    let id = "7f3a2c10-0003-4000-8000-000000000003";
+    let direct = prepare(id, &bindings, |_| Ok(())).unwrap();
+    for name in ["pick", "forward", "nested"] {
+        for text in [
+            format!("query:{name}(id={id})"),
+            format!("query:{name}(id=\"{id}\")"),
+        ] {
+            let saved = prepare(&text, &bindings, |_| Ok(())).unwrap();
+            assert_eq!(
+                identity::normal_form(saved.expanded_query().query(), saved.catalog()).unwrap(),
+                identity::normal_form(direct.expanded_query().query(), direct.catalog()).unwrap(),
+                "{text}"
+            );
+            let object = saved.query_object().unwrap();
+            let Source::Saved {
+                name, arguments, ..
+            } = &saved.identity_query().source
+            else {
+                panic!("saved identity source")
+            };
+            assert_eq!(
+                object.source_outputs[0].source,
+                OutputSource::Saved {
+                    name: name.clone(),
+                    arguments: arguments.clone()
+                },
+                "frozen output uses the actual bound key"
+            );
+            let mut duplicate = object.clone();
+            let mut snapshot = duplicate.source_outputs[0].clone();
+            let OutputSource::Saved { arguments, .. } = &mut snapshot.source else {
+                panic!("saved output snapshot")
+            };
+            let Value::Scalar { quoted, .. } = &mut arguments[0].value else {
+                panic!("concrete reference argument")
+            };
+            *quoted = !*quoted;
+            duplicate.source_outputs.push(snapshot);
+            assert!(
+                validate_object(&duplicate).is_err(),
+                "semantic duplicate output snapshot"
+            );
+            let replayed = replay(&object, &catalog_fingerprint()).unwrap();
+            assert_eq!(
+                identity::normal_form(replayed.expanded_query().query(), replayed.catalog())
+                    .unwrap(),
+                identity::normal_form(direct.expanded_query().query(), direct.catalog()).unwrap(),
+                "frozen {text}"
+            );
+        }
+    }
+    let failure = prepare(
+        "query:by-outcome(outcome=\"error OR outcome:ok\")",
+        &bindings,
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert_eq!(failure.kind(), "bad_value");
+    let QueryError::Language { error, .. } = failure else {
+        panic!("shared typed refusal")
+    };
+    assert_eq!(error.kind, query_language::ErrorKind::BadValue);
+
+    // The fast path inspects the whole tree, including nested compiled bodies.
+    let nested = prepare(
+        "sessions | union (sessions where exists tool_call() | matches)",
+        &bindings,
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert!(nested.catalog().match_outputs.iter().any(|output| matches!(&output.source.pattern, query_language::catalog::MatchPattern::Exists { unit } if unit == "tool_calls")));
+    nested.query_object().unwrap();
+}

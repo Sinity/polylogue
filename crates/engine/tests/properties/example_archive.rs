@@ -6,7 +6,7 @@ use polylogue_store::{Archive, SqlValue};
 use polylogue_testkit::{Morrow, Set, session};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn jsonl_files(w: &Morrow) -> Vec<PathBuf> {
     w.provider_files()
@@ -46,7 +46,13 @@ fn raw_bytes_survive_the_source() {
     for rel in inputs.iter().map(|f| f.strip_prefix(&home).unwrap()) {
         let w = Morrow::build(Set::Main);
         let file = w.home.join(rel);
-        let bytes = fs::read(&file).unwrap();
+        let bytes = w.stored_bytes(&file).unwrap();
+        if !polylogue_sources::ORIGINS
+            .iter()
+            .any(|origin| origin.is_row_dump(&file))
+        {
+            assert_eq!(bytes, fs::read(&file).unwrap(), "{}", file.display());
+        }
         let before = w.view();
         fs::remove_file(&file).unwrap();
         w.run_pass();
@@ -129,65 +135,43 @@ fn a_corrupt_blob_fails_its_read() {
     let bytes = fs::read(&file).unwrap();
     assert_eq!(w.stored_bytes(&file).unwrap(), bytes);
     let archive = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
-    let blobs: Vec<(Vec<u8>, String)> = archive
+    let descriptors: Vec<Vec<u8>> = archive
         .prepare(
-            "SELECT DISTINCT b.hash, b.place FROM extent e JOIN blob b ON b.hash = e.blob
-             JOIN observation o ON o.input = e.input WHERE o.path = ?1",
+            "SELECT DISTINCT b.storage FROM extent e JOIN blob b ON b.hash=e.blob
+         JOIN observation o ON o.input=e.input WHERE o.path=?1
+         AND e.chain=(SELECT chain FROM revision WHERE input=e.input ORDER BY number DESC LIMIT 1)
+         ORDER BY e.offset LIMIT 1",
         )
         .unwrap()
-        .query_map([file.to_string_lossy()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([file.to_string_lossy()], |r| r.get(0))
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    assert!(!blobs.is_empty());
-    let (hash, place) = &blobs[0];
-    if place == "inline" {
-        // Flip one byte of the stored (compressed) data.
-        let mut data: Vec<u8> = archive
-            .query_row("SELECT data FROM blob WHERE hash = ?1", [hash], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let last = data.len() - 1;
-        data[last] ^= 0x01;
-        archive
-            .execute(
-                "UPDATE blob SET data = ?1 WHERE hash = ?2",
-                rusqlite::params![data, hash],
-            )
-            .unwrap();
-    } else {
-        let path = find_blob_file(&w.root, hash).expect("the blob's file");
-        let mut data = fs::read(&path).unwrap();
-        let mid = data.len() / 2;
-        data[mid] ^= 0x01;
-        fs::write(&path, data).unwrap();
-    }
+    let extent =
+        hashed_blobs::Extent::decode(descriptors.first().expect("stored blob extent")).unwrap();
+    let path = w.root.join(&extent.segment);
+    use std::os::unix::fs::FileExt;
+    let stored = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let mut byte = [0];
+    stored.read_exact_at(&mut byte, extent.offset).unwrap();
+    byte[0] ^= 1;
+    stored.write_all_at(&byte, extent.offset).unwrap();
     drop(archive);
     let err = w
         .stored_bytes(&file)
         .expect_err("a corrupt blob must not read back");
-    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     assert!(
-        err.contains(&hex[..12]) || err.to_lowercase().contains("corrupt") || err.contains("blob"),
-        "the error names neither the blob nor corruption: {err}"
+        err.contains(&extent.segment),
+        "the error does not name the damaged segment: {err}"
     );
-}
-
-fn find_blob_file(root: &Path, hash: &[u8]) -> Option<PathBuf> {
-    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for e in fs::read_dir(&dir).ok()? {
-            let p = e.ok()?.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.file_name()?.to_string_lossy().contains(&hex[..16]) {
-                return Some(p);
-            }
-        }
-    }
-    None
+    assert!(
+        err.contains(&format!("extent {}+{}", extent.offset, extent.len)),
+        "the error does not name the damaged extent: {err}"
+    );
 }
 
 /// one subagent parent. No session has two incoming subagent
@@ -259,7 +243,9 @@ fn compaction_keeps_the_tree_connected() {
 #[test]
 fn appended_steps_reassemble_exactly() {
     let whole = Morrow::build(Set::Main);
-    let new_blobs = Morrow::lay_out(Set::Main);
+    let mut new_blobs = Morrow::lay_out(Set::Main);
+    // Source IDs include paths, so both archives read the same home.
+    new_blobs.home = whole.home.clone();
     let files = jsonl_files(&new_blobs);
     let full: Vec<Vec<u8>> = files.iter().map(|f| fs::read(f).unwrap()).collect();
     // Grow every file in three steps, cut at line ends, running a pass after each.
@@ -321,6 +307,7 @@ fn a_host_rename_restores_nothing() {
     let revisions = count(&w, "SELECT count(*) AS n FROM a.revision");
     let blobs = count(&w, "SELECT count(*) AS n FROM a.blob");
     let config = Config {
+        clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
         host: "morrow-renamed".into(),
         ..w.config()
     };

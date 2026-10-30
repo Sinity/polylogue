@@ -1,57 +1,68 @@
 {
   description = "Polylogue";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  outputs = { self, nixpkgs }:
+  inputs.rust-overlay = {
+    url = "github:oxalica/rust-overlay/4748ec2f5ed4a881474ed4c98aa71a5308cdac8d";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+  inputs.crane.url = "github:ipetkov/crane/eb35abda9f232cc6610b1d1e3200d15c49b7ac54";
+  inputs.home-manager = {
+    url = "github:nix-community/home-manager/2c0350c759688177331b8f5242311fae8877bdb3";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      crane,
+      home-manager,
+    }:
     let
       system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
-      # The package build proves a clean, locked build. Tests run through
-      # `cargo run -p xtask -- check`, which reuses incremental builds.
-      polylogue = pkgs.rustPlatform.buildRustPackage {
-        pname = "polylogue";
-        version = "0.1.0";
-        src = self;
-        # The shared crates are Git dependencies; Nix fetches them at the
-        # locked commit.
-        cargoLock = { lockFile = ./Cargo.lock; allowBuiltinFetchGit = true; };
-        nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
-        buildInputs = [ pkgs.zstd ];
-        cargoBuildFlags = [ "-p" "polylogue" ];
-        # Primary mode is chosen by `sinex.toml` at run time, so the packaged
-        # binary carries it.
-        buildFeatures = [ "sinex" ];
-        doCheck = false;
-        postInstall = ''
-          wrapProgram "$out/bin/polylogue" --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.git ]}
-        '';
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ rust-overlay.overlays.default ];
       };
-    in {
-      packages.${system} = { default = polylogue; inherit polylogue; };
-      checks.${system}.polylogue = polylogue;
-      devShells.${system}.default = pkgs.mkShell {
-        packages = [ pkgs.git pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nodejs_22 pkgs.python3 pkgs.gcc pkgs.pkg-config pkgs.zstd pkgs.nats-server pkgs.mold ];
-        # mold links the test binaries several times faster than the default
-        # linker: on a cold test build the workspace's test binaries took
-        # 169 s of linking with ld and 37 s with mold.
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
-        shellHook = ''
-          # Optional host placement; an explicitly set target directory is kept.
-          if [ -z "''${CARGO_TARGET_DIR:-}" ] && command -v sinnix-cargo-target >/dev/null 2>&1; then
-            if cargo_target="$(sinnix-cargo-target)"; then
-              export CARGO_TARGET_DIR="$cargo_target"
-            fi
-          fi
-          export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$PWD/target}"
-          # Build against a checkout of polylogue-sinex-common when there is
-          # one ($POLYLOGUE_SINEX_COMMON, else the sibling directory), unless
-          # `cargo xtask unlink-common` turned that off.
-          if [ -z "''${LINKING_COMMON:-}" ] && [ -f crates/polylogue/Cargo.toml ] \
-            && [ -f "''${POLYLOGUE_SINEX_COMMON:-../polylogue-sinex-common}/Cargo.toml" ] \
-            && [ ! -e .cargo/local.toml ] && [ ! -e .cargo/common-link.off ]; then
-            LINKING_COMMON=1 cargo xtask link-common \
-              || echo "polylogue: linking polylogue-sinex-common failed; see cargo xtask link-common" >&2
-          fi
-        '';
+      toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      build = import ./nix/build.nix {
+        inherit pkgs toolchain crane;
+        source = self.outPath;
+        revision = self.rev or self.dirtyRev or "unavailable";
       };
+    in
+    {
+      packages.${system} = build.packages;
+      checks.${system} = build.checks // {
+        modules = import ./nix/checks/modules.nix {
+          inherit pkgs nixpkgs;
+          homeManager = home-manager;
+          inherit (self) homeModules nixosModules;
+        };
+        services = import ./nix/checks/services.nix {
+          inherit pkgs;
+          homeManager = home-manager;
+          homeModule = self.homeModules.polylogue;
+          polylogue = build.packages.polylogue;
+        };
+      };
+      homeModules.polylogue = import ./nix/hm-module.nix {
+        packageFor = target: self.packages.${target};
+      };
+      nixosModules.polylogue = import ./nix/module.nix {
+        packageFor = target: self.packages.${target};
+      };
+      formatter.${system} = pkgs.nixfmt-tree;
+      apps.${system} = {
+        polylogue = {
+          type = "app";
+          program = "${build.packages.polylogue}/bin/polylogue";
+        };
+        default = self.apps.${system}.polylogue;
+      };
+      overlays.default = final: _: {
+        inherit (self.packages.${final.stdenv.hostPlatform.system}) polylogue polylogue-extension;
+      };
+      devShells.${system}.default = build.devShell;
     };
 }

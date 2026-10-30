@@ -9,9 +9,9 @@
 //! capture.
 
 use polylogue_model::BlobHash;
-use polylogue_store::chat_actions::{
-    CLAIM_MS, ChatAction, ChatAttachment, ChatStatus, NewChatAction,
-};
+use polylogue_model::user::{CHAT_CLAIM_MS, ChatAction, ChatStatus};
+use polylogue_model::user::{ChatAttachment, NewChatAction};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -28,7 +28,7 @@ pub fn providers() -> impl Iterator<Item = &'static str> {
 
 /// A refusal: an HTTP status for the route and a stable code.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Refused(pub u16, pub &'static str);
+pub struct Refused(pub &'static str);
 
 /// A request to draft or submit one turn in a chat web page.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,23 +83,23 @@ pub fn new_action(
     files: Vec<ChatAttachment>,
 ) -> Result<NewChatAction, Refused> {
     if !providers().any(|p| p == req.provider) {
-        return Err(Refused(400, "unsupported_provider"));
+        return Err(Refused("unsupported_provider"));
     }
     if req.text.trim().is_empty() {
-        return Err(Refused(400, "empty_text"));
+        return Err(Refused("empty_text"));
     }
     if req.model.trim().is_empty() {
-        return Err(Refused(400, "model_required"));
+        return Err(Refused("model_required"));
     }
     for file in &files {
         let basename = Path::new(&file.name)
             .file_name()
             .is_some_and(|n| n == file.name.as_str());
         if !basename || file.name.chars().any(char::is_control) {
-            return Err(Refused(400, "attachment_name_not_a_basename"));
+            return Err(Refused("attachment_name_not_a_basename"));
         }
     }
-    let request = serde_json::to_value(req).map_err(|_| Refused(400, "invalid_action"))?;
+    let request = serde_json::to_value(req).map_err(|_| Refused("invalid_action"))?;
     let mut hashed = request.clone();
     hashed["files"] = json!(files.iter().map(|f| f.blob.to_string()).collect::<Vec<_>>());
     let request_hash = BlobHash::of(&serde_json::to_vec(&hashed).unwrap_or_default());
@@ -145,7 +145,7 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         .rev()
         .find(|e| {
             matches!(
-                polylogue_store::chat_actions::outcome(&e.kind),
+                polylogue_model::user::chat_outcome(&e.kind),
                 Some(Some(ChatStatus::Failed | ChatStatus::Blocked))
             )
         })
@@ -165,7 +165,7 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
         "created_at": iso(a.created_at),
         "updated_at": iso(last.map_or(a.created_at, |e| e.at)),
         "claimed_by": holder,
-        "claim_expires_at": claim.map(|e| iso(e.at + CLAIM_MS)),
+        "claim_expires_at": claim.map(|e| iso(e.at + CHAT_CLAIM_MS)),
         "needs_approval": a.needs_approval,
         "last_error": failure,
         "receipt": a.events.iter().rev().find_map(|e| e.receipt.clone()),
@@ -177,17 +177,9 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
     out
 }
 
-/// The HTTP status and code a store refusal maps to.
+/// The product code is classified at the shared operation boundary.
 pub fn refusal(code: &'static str) -> Refused {
-    let status = match code {
-        "unknown_chat_action"
-        | "unknown_chat_action_attachment"
-        | "attachment_missing"
-        | "unknown_backfill_job" => 404,
-        "unknown_outcome" | "unknown_attachment" | "unknown_report" => 400,
-        _ => 409,
-    };
-    Refused(status, code)
+    Refused(code)
 }
 
 #[cfg(test)]

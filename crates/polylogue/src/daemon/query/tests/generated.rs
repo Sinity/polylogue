@@ -337,10 +337,15 @@ fn generated_call_keys_preserve_distinct_time_conditions() {
             ..SessionFacts::default()
         })
         .unwrap();
-    let message =
-        w.fx.message(session, msg("call-times", "assistant", "model", "", None))
+    for (index, at) in [None, Some(FIRST_DAY)].into_iter().enumerate() {
+        let message =
+            w.fx.message(
+                session,
+                msg(&format!("call-times-{index}"), "assistant", "model", "", at),
+            )
             .unwrap();
-    for at in [None, Some(FIRST_DAY)] {
+        // Make the cache disagree with native evidence so it cannot be substituted.
+        let cached_at = if at.is_some() { None } else { Some(FIRST_DAY) };
         w.fx.tool_call(
             session,
             message,
@@ -348,7 +353,7 @@ fn generated_call_keys_preserve_distinct_time_conditions() {
                 tool: "Read",
                 action: "file_read",
                 outcome: "unknown",
-                at,
+                at: cached_at,
                 ..CallFacts::default()
             },
         )
@@ -364,6 +369,54 @@ fn generated_call_keys_preserve_distinct_time_conditions() {
     assert_eq!(unknown.len(), 1);
     assert_eq!(known.len(), 1);
     assert!(unknown.is_disjoint(&known));
+    for condition in ["at < 2026-10-02", "NOT (at >= 2026-10-02)"] {
+        assert_eq!(
+            key_set(Unit::ToolCalls, &all(&w, &format!("{query} {condition}"))),
+            known,
+            "{condition}: the native point survives a null call cache"
+        );
+    }
+    let message =
+        w.fx.message(
+            session,
+            msg(
+                "call-times-opposing",
+                "assistant",
+                "model",
+                "",
+                Some(FIRST_DAY),
+            ),
+        )
+        .unwrap();
+    let cached_at = FIRST_DAY + 2 * DAY;
+    w.fx.tool_call(
+        session,
+        message,
+        CallFacts {
+            tool: "Read",
+            action: "file_read",
+            outcome: "unknown",
+            at: Some(cached_at),
+            ..CallFacts::default()
+        },
+    )
+    .unwrap();
+    let matching = all(&w, &format!("{query} at < 2026-10-02"));
+    assert_eq!(matching["count"], 2);
+    let opposing = matching["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["message"] == "call-times-opposing")
+        .unwrap();
+    assert_eq!(
+        opposing["at"]
+            .as_str()
+            .and_then(polylogue_model::Timestamp::parse_rfc3339)
+            .map(polylogue_model::Timestamp::unix_ms),
+        Some(cached_at),
+        "displayed cached time remains distinct from predicate evidence"
+    );
 }
 
 fn reference_keys(rows: &Rows, found: &[Row]) -> Vec<String> {
@@ -682,8 +735,8 @@ proptest! {
 
     /// A ranking orders rows and never changes which match or how many:
     /// words ranked by relevance against the same rows sorted by time, and
-    /// `near:` with vectors for every text, for some, and disabled. A
-    /// count after `near:` needs no ranking, so it computes no similarity.
+    /// `similar:` with vectors for every text, for some, and disabled. A
+    /// count after `similar:` needs no ranking, so it computes no similarity.
     #[test]
     fn a_ranking_never_changes_which_rows_match(
         rows in rows(),
@@ -699,7 +752,7 @@ proptest! {
 
         let query = over(Unit::Sessions, &format!("({})", s.text()));
         let plain = all(&w, &query);
-        let ranked_text = format!("{query} near:\"how dates are parsed\"");
+        let ranked_text = format!("{query} similar:\"how dates are parsed\"");
         // Stored vectors stay, so each variant adds to the one before.
         for vectors in ["none", "some texts", "every text"] {
             let similarity = match vectors {
@@ -790,13 +843,13 @@ proptest! {
             ("messages", format!("messages where active:* model:{quoted}")),
             ("tool_calls", format!("tool_calls where action:* command:{quoted}")),
             ("tool_calls", format!("tool_calls where action:* output:{quoted}")),
-            ("notes", format!("notes where value:{quoted}")),
+            ("assertions", format!("assertions where value:{quoted}")),
         ] {
             let total = match unit {
                 "sessions" => all(&w, "kind:*")["count"].as_u64(),
                 "messages" => all(&w, "messages where active:*")["count"].as_u64(),
                 "tool_calls" => all(&w, "tool_calls where action:*")["count"].as_u64(),
-                _ => all(&w, "notes")["count"].as_u64(),
+                _ => all(&w, "assertions")["count"].as_u64(),
             };
             match run_q(&w, ask(&text)) {
                 Ok(v) => prop_assert!(v["count"].as_u64() <= total, "{}: {}", text, v["count"]),
@@ -865,7 +918,7 @@ fn shuffle<T>(items: &mut [T], seed: u64) {
     }
 }
 
-/// Similarities for `near:` from vectors stored for the prose of the
+/// Similarities for `similar:` from vectors stored for the prose of the
 /// sessions `has_vector` accepts (by session ID); other texts have none.
 pub(super) fn vectors_for(
     w: &TestArchive,

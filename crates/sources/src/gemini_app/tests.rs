@@ -128,3 +128,49 @@ fn unknown_and_equal_times_keep_stable_order_and_conversation_links() {
     assert_eq!(step.counts.records, 4);
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
 }
+
+#[test]
+fn source_local_zone_is_retained_and_ambiguous_zone_is_unknown() {
+    use polylogue_model::{Precision, TimeQuality};
+    let html = format!(
+        "<html><body>{}{}</body></html>",
+        cell(
+            "Prompted q<br>Jul 27, 2026, 10:59:30 PM CEST<br><p>a</p>",
+            Some("zone")
+        ),
+        cell(
+            "Prompted unknown<br>Jul 27, 2026, 10:59:30 PM CST<br><p>b</p>",
+            Some("ambiguous")
+        )
+    );
+    let step = crate::export::fixture::parse(
+        &mut open(Path::new("MyActivity.html")).unwrap(),
+        html.as_bytes(),
+    )
+    .unwrap();
+    let known = step
+        .output
+        .messages
+        .iter()
+        .find(|r| r.message.session.native().as_str() == "zone")
+        .unwrap();
+    assert_eq!(known.message.at.unwrap().unix_ms(), 1785185970000);
+    assert_eq!(known.message.at_quality, TimeQuality::Intrinsic);
+    assert_eq!(known.message.at_precision, Some(Precision::Second));
+    assert_eq!(
+        known.message.attrs["activity_time"],
+        "Jul 27, 2026, 10:59:30 PM CEST"
+    );
+    let unknown = step
+        .output
+        .messages
+        .iter()
+        .find(|r| r.message.session.native().as_str() == "ambiguous")
+        .unwrap();
+    assert_eq!(unknown.message.at, None);
+    assert_eq!(unknown.message.at_quality, TimeQuality::Unknown);
+    assert_eq!(
+        unknown.message.attrs["activity_time"],
+        "Jul 27, 2026, 10:59:30 PM CST"
+    );
+}

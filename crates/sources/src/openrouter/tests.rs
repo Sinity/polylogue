@@ -51,12 +51,24 @@ fn a_room_becomes_one_session_named_by_its_first_message() {
     assert_eq!(a.production.first_token_ms, Some(5889));
     assert_eq!(a.reported_cost_usd.as_ref().unwrap().to_string(), "0.0012");
     assert!(step.output.events.iter().any(|e| e.kind == "room_models"));
-    assert!(
-        step.counts.unread_fields.is_empty(),
-        "{:?}",
-        step.counts.unread_fields
-    );
-    assert_eq!(step.counts.records, 3);
+    let expected: std::collections::BTreeMap<String, u64> = [
+        "assistant.context",
+        "assistant.isCollapsed",
+        "assistant.isGenerating",
+        "assistant.isRetrying",
+        "assistant.metadata.tokensPerSecond",
+        "assistant.updatedAt",
+        "room.version",
+        "user.context",
+        "user.isCollapsed",
+        "user.isGenerating",
+        "user.isRetrying",
+        "user.updatedAt",
+    ]
+    .into_iter()
+    .map(|path| (path.to_owned(), 1))
+    .collect();
+    assert_eq!(step.counts.unread_fields, expected);
 }
 
 #[test]

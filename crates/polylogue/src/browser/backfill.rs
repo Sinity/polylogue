@@ -3,7 +3,8 @@
 //! this module checks requests and shapes the answers.
 
 use super::actions::Refused;
-use polylogue_store::backfill_jobs::{BackfillJob, CLAIM_MS, NewBackfillJob};
+use polylogue_model::user::NewBackfillJob;
+use polylogue_model::user::{BACKFILL_CLAIM_MS, BackfillJob};
 use serde_json::{Value, json};
 
 /// The providers whose conversation lists the extension can page through,
@@ -20,7 +21,7 @@ pub fn providers() -> impl Iterator<Item = &'static str> {
 /// timestamp.
 pub fn new_job(provider: &str, since: Option<&str>) -> Result<NewBackfillJob, Refused> {
     if !providers().any(|p| p == provider) {
-        return Err(Refused(400, "unsupported_provider"));
+        return Err(Refused("unsupported_provider"));
     }
     let since = since
         .map(|text| {
@@ -31,7 +32,7 @@ pub fn new_job(provider: &str, since: Option<&str>) -> Result<NewBackfillJob, Re
                         .and_then(|d| d.to_zoned(jiff::tz::TimeZone::UTC))
                         .map(|z| z.timestamp())
                 })
-                .map_err(|_| Refused(400, "since_is_a_date_or_time"))?;
+                .map_err(|_| Refused("since_is_a_date_or_time"))?;
             Ok(at.as_millisecond())
         })
         .transpose()?;
@@ -65,7 +66,7 @@ pub fn view(job: &BackfillJob, now: i64) -> Value {
         "created_at": iso(job.created_at),
         "updated_at": iso(last.map_or(job.created_at, |e| e.at)),
         "claimed_by": holder,
-        "claim_expires_at": holder.and(last).map(|e| iso(e.at + CLAIM_MS)),
+        "claim_expires_at": holder.and(last).map(|e| iso(e.at + BACKFILL_CLAIM_MS)),
     })
 }
 

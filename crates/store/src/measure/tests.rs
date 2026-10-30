@@ -261,7 +261,7 @@ fn hiding_never_changes_a_usage_figure() {
     };
     let (u0, o0) = read(&f);
     assert_eq!(u0.hidden_sessions, 0);
-    f.note("hidden", None, None, "session:claude-code:b")
+    f.note("tag", Some("hidden"), None, "session:claude-code:b")
         .unwrap();
     let (u1, o1) = read(&f);
     assert_eq!(u1.hidden_sessions, 1);

@@ -16,7 +16,7 @@ fn save(id: &str, name: &str, text: &str) -> Request {
         request_id: id.into(),
         name: name.into(),
         text: text.into(),
-        author: Author::Operator,
+        denominator: None,
     }
 }
 
@@ -42,8 +42,8 @@ fn a_saved_query_runs_by_name_and_saving_again_revises_it() {
     let v = ok(&d, query("query:everything"));
     assert_eq!(v["count"], 0, "the newer revision runs: {v}");
     assert_eq!(v["definitions"][0]["revision"], second["id"]);
-    let notes = ok(&d, query("notes where kind:saved_query"));
-    assert_eq!(notes["count"], 1, "one family, revised: {notes}");
+    let assertions = ok(&d, query("assertions where kind:saved_query"));
+    assert_eq!(assertions["count"], 1, "one family, revised: {assertions}");
 }
 
 #[test]
@@ -76,16 +76,16 @@ fn keep_retries_return_the_original_rows_after_membership_changes() {
         text: text.into(),
         name: Some(name.into()),
     };
-    ok(&d, keep("kept", "notes", "before"));
+    ok(&d, keep("kept", "assertions", "before"));
     ok(&d, save("saved", "everything", "sessions"));
     d.restart();
-    let repeated = ok(&d, keep("kept", "notes", "before"));
+    let repeated = ok(&d, keep("kept", "assertions", "before"));
     assert_eq!(repeated["repeat"], true);
     let rows = ok(&d, query("result:kept"));
     assert_eq!(rows["count"], 0);
     for request in [
         keep("kept", "sessions", "before"),
-        keep("kept", "notes", "after"),
+        keep("kept", "assertions", "after"),
     ] {
         assert!(matches!(answer(&d, request), Response::Error { kind, .. } if kind == "conflict"));
     }
@@ -113,7 +113,6 @@ fn watch(id: &str, query: &str, hold: Option<&str>) -> Request {
         name: Some("my watch".into()),
         hold: hold.map(str::to_owned),
         notify: false,
-        author: Author::Operator,
     }
 }
 
@@ -121,10 +120,9 @@ fn watch(id: &str, query: &str, hold: Option<&str>) -> Request {
 fn a_watch_is_a_signal_rule_delivering_notices() {
     let d = test_daemon::start("first prompt");
     ok(&d, watch("w1", "sessions where live:waiting", Some("20m")));
-    let rules = ok(&d, query("notes where kind:signal"));
+    let rules = ok(&d, query("assertions where kind:signal"));
     assert_eq!(rules["count"], 1, "{rules}");
-    let value: serde_json::Value =
-        serde_json::from_str(rules["rows"][0]["value"].as_str().unwrap()).unwrap();
+    let value = &rules["rows"][0]["value"];
     assert_eq!(value["query"], "sessions where live:waiting");
     assert_eq!(value["for"], "20m");
     assert_eq!(value["interrupt"], false);
@@ -151,4 +149,62 @@ fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
         },
     );
     assert_eq!(ok(&d, query("result:quoted-pipe.matches"))["count"], 1);
+}
+
+#[test]
+fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id() {
+    use polylogue_model::Author;
+    use polylogue_model::authorship::{Authorship, Channel};
+    let d = test_daemon::start("first prompt");
+    let caller = Authorship {
+        author: Author::AgentOrigin(polylogue_model::Origin::new("codex").unwrap()),
+        via: Channel::Mcp,
+    };
+    let limit = crate::daemon::execution::limit(None, Default::default());
+    let call = |authorship: &Authorship| {
+        handle_with_caller(
+            save("caller-request", "caller-query", "sessions"),
+            &d.daemon,
+            &limit,
+            authorship,
+        )
+    };
+    assert!(matches!(call(&caller), Response::Ok { .. }));
+    let reads = d.daemon.reads.reader().unwrap();
+    let original = reads.user_request("caller-request").unwrap().unwrap();
+    assert_eq!(original.authorship, caller);
+    assert_eq!(
+        reads
+            .assertion(&polylogue_model::RevisionReference::exact(
+                "caller-request".into(),
+                "caller-request".into()
+            ))
+            .unwrap()
+            .unwrap()
+            .fact
+            .author,
+        caller.author
+    );
+    drop(reads);
+    let Response::Ok { data } = call(&caller) else {
+        panic!("retry failed")
+    };
+    assert_eq!(data["repeat"], true);
+    for changed in [
+        Authorship {
+            author: Author::Operator,
+            via: caller.via,
+        },
+        Authorship {
+            author: caller.author.clone(),
+            via: Channel::Cli,
+        },
+    ] {
+        assert!(matches!(call(&changed), Response::Error { kind, .. } if kind == "conflict"));
+    }
+    let reads = d.daemon.reads.reader().unwrap();
+    assert_eq!(
+        reads.user_request("caller-request").unwrap(),
+        Some(original)
+    );
 }

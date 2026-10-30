@@ -21,7 +21,8 @@
           0,
           998
         ],
-        "session": "ai-studio:code_execution_session"
+        "session": "ai-studio:code_execution_session",
+        "at_quality": "unknown"
       }
     ],
     "links": [],
@@ -39,7 +40,9 @@
           "id": "ai-studio:22:code_execution_session#id:12:chunk-user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "ai-studio:code_execution_session"
+          "session": "ai-studio:code_execution_session",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 39
       },
@@ -56,7 +59,12 @@
           "id": "ai-studio:22:code_execution_session#id:15:chunk-thought-1",
           "parent": "ai-studio:22:code_execution_session#id:12:chunk-user-1",
           "role": "assistant",
-          "session": "ai-studio:code_execution_session"
+          "session": "ai-studio:code_execution_session",
+          "attrs": {
+            "thinkingBudget": 64
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 231
       },
@@ -96,7 +104,9 @@
           "id": "ai-studio:22:code_execution_session#id:12:chunk-code-1",
           "parent": "ai-studio:22:code_execution_session#id:15:chunk-thought-1",
           "role": "assistant",
-          "session": "ai-studio:code_execution_session"
+          "session": "ai-studio:code_execution_session",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 441
       },
@@ -121,7 +131,9 @@
             "input": null,
             "output": 12,
             "reasoning": null
-          }
+          },
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 801
       }
@@ -129,12 +141,15 @@
     "sessions": [
       {
         "id": "ai-studio:code_execution_session",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "ai-studio:code_execution_session",
         "kind": "main",
-        "started": "2025-02-01T11:00:02Z"
+        "started": "2025-02-01T11:00:02Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

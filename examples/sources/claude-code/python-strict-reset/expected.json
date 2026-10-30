@@ -35,7 +35,9 @@
           "id": "claude-code:user-1",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:strict-replay"
+          "session": "claude-code:strict-replay",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -52,7 +54,9 @@
           "id": "claude-code:assistant-1",
           "parent": "claude-code:user-1",
           "role": "assistant",
-          "session": "claude-code:strict-replay"
+          "session": "claude-code:strict-replay",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 156
       }
@@ -61,7 +65,9 @@
       {
         "id": "claude-code:strict-replay",
         "kind": "main",
-        "started": "2025-01-01T00:00:00Z"
+        "started": "2025-01-01T00:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

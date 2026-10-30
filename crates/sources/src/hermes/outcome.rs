@@ -30,6 +30,7 @@ pub(super) fn result(
             };
             return (
                 vec![Block::ToolResult {
+                    reported_duration_ms: None,
                     call_id,
                     outcome: unknown(),
                     output: raw.map(str::to_owned),
@@ -47,6 +48,7 @@ pub(super) fn result(
         .or_else(|| data.get("error").and_then(Json::as_str))
         .map(str::to_owned);
     let mut blocks = vec![Block::ToolResult {
+        reported_duration_ms: None,
         call_id,
         outcome,
         output,

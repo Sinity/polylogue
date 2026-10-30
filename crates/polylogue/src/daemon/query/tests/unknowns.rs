@@ -95,14 +95,14 @@ fn a_missing_child_makes_the_tree_cost_partial() {
     assert_eq!(two["partial_tree_cost"], 0, "{two}");
 }
 
-/// `near:` keeps the matching rows that have no vector, after the ranked
+/// `similar:` keeps the matching rows that have no vector, after the ranked
 /// rows, and says how many there are.
 #[test]
 fn near_says_how_many_rows_have_no_vector() {
     let w = morrow();
     let s = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let mut request = ask("kind:* near:\"ambiguous date formats\"");
+    let mut request = ask("kind:* similar:\"ambiguous date formats\"");
     request.embeddings = true;
     request.near = Some(&near);
     let v = run_q(&w, request).unwrap();
@@ -123,7 +123,7 @@ fn hybrid_search_keeps_text_ranks_when_vectors_are_missing() {
     let w = morrow();
     let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
-    let mut request = ask(r#"messages where chrono near:"ambiguous dates""#);
+    let mut request = ask(r#"messages where chrono similar:"ambiguous dates""#);
     request.embeddings = true;
     request.near = Some(&near);
     let answer = run_q(&w, request).unwrap();
@@ -154,7 +154,7 @@ fn distinct_near_counts_the_answer_rows_without_vectors() {
     let similarity = super::generated::vectors_for(&w, |_| false);
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
     let fields = ["origin".into()];
-    let mut request = ask("kind:* near:dates | distinct");
+    let mut request = ask("kind:* similar:dates | distinct");
     request.fields = &fields;
     request.embeddings = true;
     request.near = Some(&near);
@@ -175,7 +175,7 @@ fn near_selects_sessions_before_a_measurement() {
     let w = morrow();
     let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
-    let mut request = ask("near:dates | limit 1 | measure sessions");
+    let mut request = ask("similar:dates | limit 1 | measure sessions");
     request.embeddings = true;
     request.near = Some(&near);
     let answer = run_q(&w, request).unwrap();
@@ -254,7 +254,7 @@ fn combining_queries_counts_only_the_answers_own_semantic_similarities() {
     let w = morrow();
     let similarity = super::generated::vectors_for(&w, |session| session.contains("0002-4000"));
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
-    let mut request = ask("messages where chrono near:dates | union (messages where chrono)");
+    let mut request = ask("messages where chrono similar:dates | union (messages where chrono)");
     request.embeddings = true;
     request.near = Some(&near);
     let answer = run_q(&w, request).unwrap();
@@ -264,9 +264,9 @@ fn combining_queries_counts_only_the_answers_own_semantic_similarities() {
     let similarity = super::generated::vectors_for(&w, |_| true);
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
     for text in [
-        "messages where chrono | union (messages where chrono near:dates)",
-        "messages where chrono | union (messages where id:m2p0 near:dates)",
-        "near:dates | limit 2 | messages where chrono",
+        "messages where chrono | union (messages where chrono similar:dates)",
+        "messages where chrono | union (messages where id:m2p0 similar:dates)",
+        "similar:dates | limit 2 | messages where chrono",
     ] {
         let mut request = ask(text);
         request.embeddings = true;
@@ -283,7 +283,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     let near = |_: &str| Ok(std::sync::Arc::clone(&similarity));
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let text = "near:dates | limit 1";
+    let text = "similar:dates | limit 1";
     let mut request = ask(text);
     request.embeddings = true;
     request.near = Some(&near);
@@ -291,7 +291,15 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     assert_eq!(kept["rows"].as_array().unwrap().len(), 1);
     let id = "claude-code:7f3a2c10-0002-4000-8000-000000000002";
     assert_eq!(kept["rows"][0]["id"], id);
-    let (selection, _) = usage_selection(&reader, text, OCT1, true, Some(&near)).unwrap();
+    let (selection, _) = usage_selection(
+        &reader,
+        text,
+        fixture_context(OCT1, "UTC", 0),
+        true,
+        Some("synthetic-provider:vectors".into()),
+        Some(&near),
+    )
+    .unwrap();
     let selected = reader
         .query(
             "SELECT pk FROM session WHERE id=?1",
@@ -303,9 +311,70 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
         Some(vec![selected[0]["pk"].as_i64().unwrap()])
     );
     assert_eq!(
-        usage_selection(&reader, text, OCT1, true, None)
-            .unwrap_err()
-            .kind,
+        usage_selection(
+            &reader,
+            text,
+            fixture_context(OCT1, "UTC", 0),
+            true,
+            None,
+            None
+        )
+        .unwrap_err()
+        .kind,
         "embed"
+    );
+}
+
+#[test]
+fn explicit_unknown_is_not_a_quoted_command_value() {
+    let mut archive = morrow();
+    let session = archive
+        .fx
+        .session(SessionFacts {
+            id: "claude-code:unknown-keyword",
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    let message = archive
+        .fx
+        .message(
+            session,
+            msg("unknown-keyword-message", "assistant", "model", "", None),
+        )
+        .unwrap();
+    for command in [None, Some("unknown"), Some("echo synthetic")] {
+        archive
+            .fx
+            .tool_call(
+                session,
+                message,
+                CallFacts {
+                    tool: "Bash",
+                    action: "shell",
+                    command,
+                    outcome: "ok",
+                    ..CallFacts::default()
+                },
+            )
+            .unwrap();
+    }
+    let count = |condition: &str| {
+        q(
+            &archive,
+            &format!("tool_calls where session:claude-code:unknown-keyword {condition}"),
+        )["count"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(count("command:unknown"), 1);
+    assert_eq!(count("NOT command:unknown"), 2);
+    assert_eq!(count("command:\"unknown\""), 1);
+    assert_eq!(count("NOT command:\"unknown\""), 1);
+    assert_eq!(
+        q(
+            &archive,
+            "session:claude-code:unknown-keyword model:unknown"
+        )["count"],
+        1
     );
 }

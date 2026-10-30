@@ -20,6 +20,32 @@ pub fn read_range(path: &Path, start: u64, end: u64) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Native byte proof uses one opened file and verifies the sampled generation
+/// across the read. Replacing the path or changing that file defers the sample.
+pub(crate) fn read_native_range(
+    path: &Path,
+    start: u64,
+    end: u64,
+    expected: Option<polylogue_store::FileFacts>,
+) -> io::Result<(Vec<u8>, polylogue_store::primary::FileSnapshot)> {
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    let observed = crate::acquisition::file_snapshot(&metadata)?;
+    let before = polylogue_store::FileFacts::of(&metadata);
+    if expected.is_some_and(|facts| facts != before) {
+        return Err(io::Error::other("native source changed before reading"));
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0; (end - start) as usize];
+    file.read_exact(&mut bytes)?;
+    if polylogue_store::FileFacts::of(&file.metadata()?) != before
+        || polylogue_store::FileFacts::of(&std::fs::metadata(path)?) != before
+    {
+        return Err(io::Error::other("native source changed during reading"));
+    }
+    Ok((bytes, observed))
+}
+
 /// Whether the bytes just before `from` still equal `tail`, the end of what
 /// was stored. False means the file changed in place, not only grew.
 pub fn tail_intact(path: &Path, from: u64, tail: &[u8]) -> io::Result<bool> {
@@ -57,10 +83,10 @@ enum Decoder {
     Unopened(
         Box<(
             polylogue_store::blobs::StoredChain,
-            std::sync::Arc<hashed_blobs::Store>,
+            std::sync::Arc<polylogue_store::blobs::Blobs>,
         )>,
     ),
-    Plain(Box<hashed_blobs::PlainReader>),
+    Plain(Box<hashed_blobs::BlobReader>),
     Chain(Box<polylogue_store::blobs::ChainReader>),
 }
 
@@ -87,10 +113,10 @@ impl Read for Decoder {
 
 impl Imported {
     pub fn open(
-        store: &hashed_blobs::Store,
+        store: &polylogue_store::blobs::Blobs,
         hash: polylogue_model::BlobHash,
         length: u64,
-    ) -> hashed_blobs::Result<Self> {
+    ) -> polylogue_store::Result<Self> {
         Ok(Self {
             reader: Decoder::Plain(Box::new(store.read_plain(
                 &hashed_blobs::Hash(hash.0),
@@ -105,7 +131,7 @@ impl Imported {
     /// A chain's stored bytes, opened when they are first read.
     pub fn from_chain(
         chain: polylogue_store::blobs::StoredChain,
-        store: std::sync::Arc<hashed_blobs::Store>,
+        store: std::sync::Arc<polylogue_store::blobs::Blobs>,
     ) -> Self {
         Self {
             reader: Decoder::Unopened(Box::new((chain, store))),

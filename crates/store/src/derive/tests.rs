@@ -266,7 +266,7 @@ fn upstream_rule_change_invalidates_unchanged_dependents_only() {
         .unwrap();
     let catalog = synthetic_catalog("first");
     assert_eq!(
-        super::run_all(&mut index, &catalog, &versioned_rules(1)).unwrap(),
+        super::run_all(&mut index, &catalog, &versioned_rules(1), None).unwrap(),
         4
     );
     assert_eq!(
@@ -276,7 +276,7 @@ fn upstream_rule_change_invalidates_unchanged_dependents_only() {
         "before"
     );
     assert_eq!(
-        super::run_all(&mut index, &catalog, &versioned_rules(2)).unwrap(),
+        super::run_all(&mut index, &catalog, &versioned_rules(2), None).unwrap(),
         2
     );
     assert_eq!(
@@ -300,14 +300,15 @@ fn upstream_rule_change_invalidates_unchanged_dependents_only() {
         0
     );
     assert_eq!(
-        super::run_all(&mut index, &catalog, &versioned_rules(2)).unwrap(),
+        super::run_all(&mut index, &catalog, &versioned_rules(2), None).unwrap(),
         0
     );
     assert_eq!(
         super::run_all(
             &mut index,
             &synthetic_catalog("second"),
-            &versioned_rules(2)
+            &versioned_rules(2),
+            None
         )
         .unwrap(),
         1
@@ -371,7 +372,8 @@ fn invalid_dependency_declarations_are_refused_before_any_rows_change() {
                 [],
             )
             .unwrap();
-        let error = super::run_all(&mut index, &synthetic_catalog("same"), &rules).unwrap_err();
+        let error =
+            super::run_all(&mut index, &synthetic_catalog("same"), &rules, None).unwrap_err();
         assert!(
             matches!(error, crate::StoreError::Invalid(ref detail) if detail.contains(reason)),
             "{error}"
@@ -415,7 +417,7 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
     };
     let catalog = synthetic_catalog("same");
     assert_eq!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule), None).unwrap(),
         2
     );
     let before: String = index
@@ -439,7 +441,7 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
         Ok(())
     };
     assert!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule))
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule), None)
             .unwrap_err()
             .to_string()
             .contains("late derived failure")
@@ -461,11 +463,11 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
         Ok(())
     };
     assert_eq!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule), None).unwrap(),
         2
     );
     assert_eq!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule), None).unwrap(),
         0
     );
 }

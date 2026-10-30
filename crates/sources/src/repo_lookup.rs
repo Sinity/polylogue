@@ -3,6 +3,9 @@
 //! an input keeps the join to sessions a function of stored bytes, so a
 //! rebuild gives every session the same repository.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use crate::document::{str_of, string_of};
 use crate::parse::{DocumentParser, Output, Parse};
 use crate::{RecordOutcome, Records};

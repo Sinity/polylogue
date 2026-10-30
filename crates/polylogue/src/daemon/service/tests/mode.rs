@@ -1,48 +1,68 @@
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user as user};
 
-fn loaded(home: &ClaudeHome, text: &str) -> ArchiveMode {
-    let path = home.dir.path().join("sinex.toml");
-    std::fs::write(&path, text).unwrap();
-    crate::sinex::configured_at(&path)
+fn path(home: &ClaudeHome) -> std::path::PathBuf {
+    home.dir.path().join("config/polylogue/sinex.toml")
 }
 
-/// Primary mode on a Sinex that cannot be reached.
-fn primary(home: &ClaudeHome) -> ArchiveMode {
+fn startup(home: &ClaudeHome) -> crate::config::Startup {
+    use crate::config::{EnvSnapshot, Identity, Overrides, ProcessInputs, Startup};
+    Startup::load(
+        &ProcessInputs {
+            environment: EnvSnapshot::from_values([
+                ("HOME".into(), home.home.clone().into_os_string()),
+                (
+                    "XDG_CONFIG_HOME".into(),
+                    home.dir.path().join("config").into_os_string(),
+                ),
+            ]),
+            output: crate::config::OutputConfig::new(false, false, true, None),
+            clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
+            identity: Some(Identity {
+                machine: "synthetic-machine".into(),
+                host: "synthetic-host".into(),
+            }),
+            workers: Some(1),
+            cwd: Some(home.dir.path().into()),
+        },
+        Overrides {
+            archive: Some(home.root.clone()),
+            listen: Some("127.0.0.1:0".parse().unwrap()),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn loaded(home: &ClaudeHome, text: &str) -> crate::config::Startup {
+    let path = path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+    startup(home)
+}
+
+fn primary(home: &ClaudeHome) -> crate::config::Startup {
     loaded(
         home,
         &format!(
-            "mode = 'primary'\nnats = 'invalid://'\nstore = {:?}\n",
+            "mode = 'primary'\nnats = 'nats://127.0.0.1:1'\nstore = {:?}\n",
             home.dir.path().join("sinex-store"),
         ),
     )
 }
 
-/// A Sinex that holds nothing and accepts nothing.
-struct Empty;
+fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
+    start(startup.config, startup.engine, startup.mode)
+}
 
-impl polylogue_store::primary::Sinex for Empty {
-    fn send_part(
-        &self,
-        _: &polylogue_store::primary::Part,
-        _: &mut dyn std::io::Read,
-    ) -> polylogue_store::Result<String> {
-        Err(polylogue_store::StoreError::Sinex("synthetic".into()))
-    }
-    fn send_change(
-        &self,
-        _: &polylogue_store::primary::RegisterChange,
-    ) -> polylogue_store::Result<String> {
-        Err(polylogue_store::StoreError::Sinex("synthetic".into()))
-    }
-    fn excise(&self, _: &[String]) -> polylogue_store::Result<()> {
-        Err(polylogue_store::StoreError::Sinex("synthetic".into()))
-    }
-    fn held(&self, _: i64) -> polylogue_store::Result<Vec<polylogue_store::primary::Held>> {
-        Ok(vec![])
-    }
-    fn send_sessions(&self, _: &polylogue_store::ReadPool) -> polylogue_store::Result<()> {
-        Ok(())
+fn read_request() -> Request {
+    Request::Read {
+        target: "claude-code:s1".into(),
+        options: polylogue_model::read::ReadOptions::default(),
+        format: "json".into(),
+        delivery: polylogue_model::read::ReadDelivery::Page,
+        budget: None,
+        with_blobs: false,
     }
 }
 
@@ -102,9 +122,9 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
         },
         Request::Setting {
             request_id: None,
-            key: "test".into(),
-            value: Some("changed".into()),
-            machine: false,
+            key: Some("browser.actions".into()),
+            value: Some("on".into()),
+            machine: None,
         },
         Request::Context {
             request_id: "delivery".into(),
@@ -115,12 +135,6 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
             request_id: "keep".into(),
             text: "sessions".into(),
             name: None,
-        },
-        Request::Excise {
-            request_id: "remove".into(),
-            target: "session:claude-code:s1".into(),
-            reason: None,
-            dry_run: false,
         },
         Request::Embed {
             what: "build".into(),
@@ -138,77 +152,60 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
 }
 
 #[test]
-fn malformed_config_keeps_reads_and_status_but_creates_no_writing_workers() {
+fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
     for text in [
         "mode = [",
         "mode = 'unknown'\nnats = 'invalid://'\nstore = '/unused'\n",
     ] {
-        let w = seeded();
+        let w = ClaudeHome::new();
+        let store = w.dir.path().join("sinex-store");
+        drop(Archive::open_primary(&w.root, &store).unwrap());
         w.append(
             "pending.jsonl",
             &user("later", "pending", "Must wait for configuration"),
         );
-        let mode = loaded(&w, text);
-        let runtime = start(&w.root, w.config(64 << 20), mode).unwrap();
-        blocked(&runtime, &w.dir.path().join("sinex.toml"));
-        let shown = data(
-            Request::Read {
-                slices: true,
-                selection: None,
-                target: crate::daemon::ReadTarget::Session(
-                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-                ),
-                view: "full".into(),
-                format: "json".into(),
-                with_parents: false,
-                budget: None,
-                cursor: None,
-            },
-            &runtime,
-        );
-        assert_eq!(shown["display_title"], "Stored question");
-        assert_eq!(shown["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
-        assert_eq!(
-            w.count("SELECT count(*) AS n FROM session WHERE id='claude-code:pending'"),
-            0
+        let startup = loaded(&w, text);
+        assert!(startup.config.standalone_day().is_err());
+        let runtime = launch(startup).unwrap();
+        blocked(&runtime, &path(&w));
+        assert!(
+            matches!(handle(read_request(), &runtime.daemon), Response::Error {kind, ..} if kind == "sinex_unavailable")
         );
         assert!(
             data(
                 Request::Setting {
                     request_id: None,
-                    key: "test".into(),
+                    key: Some("browser.actions".into()),
                     value: None,
-                    machine: false
+                    machine: None
                 },
                 &runtime
-            )["value"]
+            )["authored"]
                 .is_null()
         );
-        let context = data(
-            Request::Context {
-                request_id: "read-context".into(),
-                ask: crate::briefing::Ask::Recall {
-                    text: "Stored".into(),
-                    cwd: None,
-                    for_session: None,
-                    cursor: None,
-                },
-                sender: None,
-            },
-            &runtime,
-        );
-        assert!(context["delivery"].is_null());
-        assert_eq!(w.count("SELECT count(*) AS n FROM a.delivery"), 0);
         assert!(w.file("pending.jsonl").exists());
+        assert!(!w.root.join("archive.db").exists());
     }
+}
+
+#[test]
+fn malformed_primary_configuration_does_not_reclassify_a_standalone_archive() {
+    let w = seeded();
+    let refused = launch(loaded(&w, "mode = ["));
+    assert!(refused.is_err());
+    assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
+    assert!(
+        Archive::open_or_create(&w.root).is_ok(),
+        "failed startup retained its lock"
+    );
 }
 
 #[test]
 fn missing_config_is_standalone() {
     let w = seeded();
-    let missing = crate::sinex::configured_at(&w.dir.path().join("missing.toml"));
-    let runtime = start(&w.root, w.config(64 << 20), missing).unwrap();
+    let startup = startup(&w);
+    assert!(matches!(startup.mode, ArchiveMode::Standalone));
+    let runtime = launch(startup).unwrap();
     assert!(runtime.daemon.writes.is_some());
     assert_eq!(
         data(Request::Status, &runtime)["mode"]["state"],
@@ -217,33 +214,43 @@ fn missing_config_is_standalone() {
 }
 
 #[test]
-fn primary_without_sinex_or_a_local_copy_does_not_start() {
-    let w = ClaudeHome::new();
-    w.append(
-        "new.jsonl",
-        &user("new", "new", "Cannot become a fresh standalone archive"),
-    );
-    let refused = start(&w.root, w.config(64 << 20), primary(&w));
-    let error = refused.err().expect("no archive to open").to_string();
-    assert!(error.contains("no local copy"), "{error}");
-    assert!(!w.root.join("archive.db").exists());
-    assert!(!w.root.join("sinex.db").exists());
-}
-
-#[test]
-fn primary_with_a_local_copy_reads_offline_and_pauses_writes() {
-    let w = ClaudeHome::new();
-    w.append(
-        "later.jsonl",
-        &user("later", "later", "Must wait for Sinex"),
-    );
-    let store = w.dir.path().join("sinex-store");
-    drop(polylogue_store::Archive::open_primary(&w.root, &store, &Empty).unwrap());
-    let runtime = start(&w.root, w.config(64 << 20), primary(&w)).unwrap();
-    blocked(&runtime, &w.dir.path().join("sinex.toml"));
-    assert_eq!(
-        data(Request::Status, &runtime)["mode"]["configured"],
-        "primary"
-    );
-    assert!(!w.root.join("archive.db").exists());
+fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day() {
+    for existing in [false, true] {
+        let w = ClaudeHome::new();
+        let store = w.dir.path().join("sinex-store");
+        if existing {
+            drop(Archive::open_primary(&w.root, &store).unwrap());
+        }
+        w.append(
+            "later.jsonl",
+            &user("later", "later", "Must wait for Sinex"),
+        );
+        let startup = primary(&w);
+        assert!(startup.config.standalone_day().is_err());
+        let runtime = launch(startup).unwrap();
+        assert!(runtime.daemon.archive.is_primary());
+        assert!(runtime.daemon.writes.is_some());
+        assert_eq!(data(Request::Status, &runtime)["mode"]["state"], "primary");
+        assert!(
+            matches!(handle(read_request(), &runtime.daemon), Response::Error {kind, ..}
+            if matches!(kind.as_str(), "primary_context_missing" | "primary_context_unavailable"))
+        );
+        let ModeState::Primary { connection } = &runtime.daemon.mode else {
+            panic!("primary mode required")
+        };
+        while connection.status().unwrap().prepared_materials == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(connection.status().unwrap().prepared_bytes > 0);
+        assert!(w.file("later.jsonl").exists());
+        assert!(!w.root.join("archive.db").exists());
+        let reader = runtime.daemon.reads.reader().unwrap();
+        assert_eq!(reader.confirmed_checkpoint().unwrap(), None);
+        assert_eq!(
+            reader
+                .query("SELECT count(*) AS n FROM message", &[])
+                .unwrap()[0]["n"],
+            0
+        );
+    }
 }

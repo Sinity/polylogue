@@ -4,16 +4,12 @@ use crate::{ImportMember, Reader, Result, StoreError, export_items::ExportItems}
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+pub mod bindings;
+pub(crate) mod empty;
 mod read;
 pub use read::{AssetMatch, AttachmentResolution, AttachmentState};
 
 pub const RULES: u32 = 1;
-
-pub(crate) fn invalidate_metadata(conn: &Connection, input: &str) -> Result<()> {
-    conn.execute("DELETE FROM import_asset_metadata WHERE input=?1", [input])?;
-    conn.execute("DELETE FROM import_asset_sidecar WHERE input=?1", [input])?;
-    Ok(())
-}
 
 #[derive(Debug, Clone)]
 pub struct AssetSource {
@@ -23,7 +19,12 @@ pub struct AssetSource {
     pub blob: Option<polylogue_model::BlobHash>,
 }
 
-fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<AssetSource>> {
+fn asset_source(
+    index: &Connection,
+    conn: &Connection,
+    schema: &str,
+    input: &str,
+) -> Result<Option<AssetSource>> {
     let revision: Option<(i64, i64)> = conn
         .query_row(
             &format!("SELECT chain,length FROM {schema}revision WHERE input=?1 ORDER BY number DESC LIMIT 1"),
@@ -36,10 +37,13 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
     };
     let length =
         u64::try_from(length).map_err(|_| StoreError::Invalid("negative asset length".into()))?;
+    if length == 0 {
+        return empty::source(index, conn, schema, input, chain, None, None);
+    }
     let mut hash = blake3::Hasher::new();
     hash.update(&chain.to_le_bytes());
     hash.update(&length.to_le_bytes());
-    let mut stmt=conn.prepare_cached(&format!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size,b.state
+    let mut stmt=conn.prepare_cached(&format!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
         FROM {schema}extent e LEFT JOIN {schema}blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 ORDER BY e.offset"))?;
     let mut rows = stmt.query(params![input, chain])?;
     let mut end = 0u64;
@@ -49,13 +53,11 @@ fn asset_source(conn: &Connection, schema: &str, input: &str) -> Result<Option<A
         let offset = row.get::<_, i64>(0)?;
         let size = row.get::<_, i64>(1)?;
         let stored = row.get::<_, Option<i64>>(4)?;
-        let state = row.get::<_, Option<String>>(5)?;
         let at = row.get::<_, i64>(3)?;
         if offset < 0
             || size < 0
             || at < 0
             || offset as u64 != end
-            || state.as_deref() != Some("present")
             || stored.is_none_or(|stored| {
                 stored < 0 || at.checked_add(size).is_none_or(|end| end > stored)
             })
@@ -117,6 +119,9 @@ pub enum AssetRow {
         source_id: Option<String>,
         sidecar: Option<String>,
     },
+    Binding {
+        record: bindings::AttachmentBindingRecord,
+    },
     Metadata {
         input: String,
         sidecar: String,
@@ -143,7 +148,7 @@ pub enum AssetRow {
 
 impl Reader<'_> {
     pub fn asset_source(&self, input: &str) -> Result<Option<AssetSource>> {
-        asset_source(self.conn()?, "a.", input)
+        asset_source(self.conn()?, self.conn()?, "source_", input)
     }
     /// Only unseen import metadata is decoded. Content and observations
     /// remain separate: equal bytes can have several physical memberships.
@@ -157,60 +162,12 @@ impl Reader<'_> {
             )
             .optional()?
             .unwrap_or(0);
-        let through: i64 = conn.query_row(
-            "SELECT COALESCE(max(rowid),0) FROM a.observation",
-            [],
-            |r| r.get(0),
-        )?;
-        // A ZIP is the source of its members, not one of the attachments among them.
-        let mut originals =
-            std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-        let mut roots=conn.prepare("SELECT DISTINCT c.zip_input,json_extract(o.details_json,'$.import.import_id') FROM a.observation o
-            JOIN a.observation_zip c ON c.observation_id=o.id WHERE o.rowid>?1 AND o.rowid<=?2")?;
-        for row in roots.query_map([after, through], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })? {
-            let (input, import_id) = row?;
-            originals.entry(input).or_default().insert(import_id);
-        }
-        let mut stmt = conn.prepare(
-            "SELECT o.id,o.input,o.details_json FROM a.observation o
-            WHERE o.rowid>?1 AND o.rowid<=?2 AND o.details_json IS NOT NULL AND o.class<>'excised'",
-        )?;
         let mut out = Vec::new();
-        for row in stmt.query_map([after, through], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })? {
-            let (observation, input, details) = row?;
-            let details: serde_json::Value = serde_json::from_str(&details)?;
-            if let Some(member) = details.get("import") {
-                let membership: ImportMember = serde_json::from_value(member.clone())?;
-                if originals
-                    .get(&input)
-                    .is_some_and(|imports| imports.contains(&membership.import_id))
-                {
-                    continue;
-                }
-                if membership.version != 1
-                    || membership.import_id.is_empty()
-                    || membership.member.is_empty()
-                {
-                    return Err(StoreError::Invalid(
-                        "unsupported or invalid import membership".into(),
-                    ));
-                }
-                out.push(ObservedMember {
-                    observation,
-                    input,
-                    membership,
-                });
-            }
-        }
-        Ok((out, (through != after).then_some(through)))
+        let through = visit_import_members(conn, "source_", after, None, |member| {
+            out.push(member);
+            Ok(())
+        })?;
+        Ok((out, through))
     }
 
     pub fn pending_asset_sidecars(&self) -> Result<Vec<(String, String)>> {
@@ -219,7 +176,7 @@ impl Reader<'_> {
             "SELECT DISTINCT m.input,m.sidecar,s.version,s.source_version FROM import_member m
             LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
             WHERE m.sidecar IS NOT NULL
-              AND EXISTS(SELECT 1 FROM a.revision r WHERE r.input=m.input)
+              AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
             ORDER BY m.input,m.sidecar",
         )?;
         let mut pending = Vec::new();
@@ -232,7 +189,7 @@ impl Reader<'_> {
             ))
         })? {
             let (input, sidecar, version, recorded) = row?;
-            let current = asset_source(conn, "a.", &input)?.map(|source| source.version);
+            let current = asset_source(conn, conn, "source_", &input)?.map(|source| source.version);
             if version != Some(RULES) || recorded != current {
                 pending.push((input, sidecar));
             }
@@ -241,12 +198,152 @@ impl Reader<'_> {
     }
 }
 
+/// Visits import metadata inside the caller's source snapshot. Rowids are only
+/// a discovery cursor; replay selects each changed input from zero after source
+/// rematerialization, whose local rowids need not preserve their old order.
+pub(crate) fn visit_import_members(
+    conn: &Connection,
+    prefix: &str,
+    after: i64,
+    input: Option<&str>,
+    mut visit: impl FnMut(ObservedMember) -> Result<()>,
+) -> Result<Option<i64>> {
+    let through: i64 = conn.query_row(
+        &format!("SELECT COALESCE(max(rowid),0) FROM {prefix}observation"),
+        [],
+        |row| row.get(0),
+    )?;
+    // A ZIP is the source of its members, not one of the attachments among them.
+    let mut originals =
+        std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut roots = conn.prepare(&format!(
+        "SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id')
+        FROM {prefix}observation o JOIN {prefix}observation_container c ON c.observation_id=o.id
+        WHERE o.rowid>?1 AND o.rowid<=?2 AND (?3 IS NULL OR c.container_input=?3)
+          AND json_type(o.details_json,'$.import.import_id')='text'"
+    ))?;
+    for row in roots.query_map(params![after, through, input], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (input, import_id) = row?;
+        originals.entry(input).or_default().insert(import_id);
+    }
+    let mut observations = conn.prepare(&format!(
+        "SELECT o.id,o.input,o.details_json FROM {prefix}observation o
+        WHERE o.rowid>?1 AND o.rowid<=?2 AND (?3 IS NULL OR o.input=?3)
+          AND o.details_json IS NOT NULL ORDER BY o.rowid"
+    ))?;
+    for row in observations.query_map(params![after, through, input], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })? {
+        let (observation, input, details) = row?;
+        let details: serde_json::Value = serde_json::from_str(&details)?;
+        if let Some(member) = details.get("import") {
+            let membership: ImportMember = serde_json::from_value(member.clone())?;
+            if originals
+                .get(&input)
+                .is_some_and(|imports| imports.contains(&membership.import_id))
+            {
+                continue;
+            }
+            if membership.version != 1
+                || membership.import_id.is_empty()
+                || membership.member.is_empty()
+            {
+                return Err(StoreError::Invalid(
+                    "unsupported or invalid import membership".into(),
+                ));
+            }
+            visit(ObservedMember {
+                observation,
+                input,
+                membership,
+            })?;
+        }
+    }
+    Ok((through != after).then_some(through))
+}
+
+struct StoredMember {
+    namespace: String,
+    input: String,
+    member: String,
+    source_id: Option<String>,
+    sidecar: Option<String>,
+}
+
+/// The same actual-member projection is used by import refresh and confirmed replay.
+pub(crate) fn project_member(
+    conn: &Connection,
+    source: &ObservedMember,
+    source_id: Option<&str>,
+    sidecar: Option<&str>,
+) -> Result<()> {
+    let previous: Option<StoredMember> = conn.query_row(
+        "SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE observation=?1",
+        [&source.observation], |row| Ok(StoredMember { namespace: row.get(0)?, input: row.get(1)?, member: row.get(2)?, source_id: row.get(3)?, sidecar: row.get(4)? })).optional()?;
+    if let Some(StoredMember {
+        namespace,
+        input,
+        member,
+        source_id: known_id,
+        sidecar: known_sidecar,
+    }) = previous
+    {
+        if namespace != source.membership.import_id
+            || input != source.input
+            || member != source.membership.member
+            || known_id
+                .as_deref()
+                .zip(source_id)
+                .is_some_and(|(old, new)| old != new)
+            || known_sidecar
+                .as_deref()
+                .zip(sidecar)
+                .is_some_and(|(old, new)| old != new)
+        {
+            return Err(StoreError::Conflict(
+                "conflicting identity or classification for one import member".into(),
+            ));
+        }
+        conn.execute(
+            "UPDATE import_member SET source_id=?2,sidecar=?3 WHERE observation=?1",
+            params![
+                source.observation,
+                known_id.as_deref().or(source_id),
+                known_sidecar.as_deref().or(sidecar)
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO import_member VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                source.observation,
+                source.membership.import_id,
+                source.input,
+                source.membership.member,
+                source_id,
+                sidecar
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn install(
     conn: &mut Connection,
     archive: &Connection,
     mut staged: ExportItems,
 ) -> Result<()> {
     crate::fault::check("assets.install", "")?;
+    let catalog_prefix = match crate::source::Source::of(archive)? {
+        crate::source::Source::Cache => "source_",
+        crate::source::Source::Ledger => "",
+    };
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     while let Some(item) = staged.next_item()? {
         match serde_json::from_reader(item.reader)? {
@@ -255,18 +352,9 @@ pub(crate) fn install(
                 source_id,
                 sidecar,
             } => {
-                tx.execute(
-                    "INSERT OR IGNORE INTO import_member VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![
-                        source.observation,
-                        source.membership.import_id,
-                        source.input,
-                        source.membership.member,
-                        source_id,
-                        sidecar
-                    ],
-                )?;
+                project_member(&tx, &source, source_id.as_deref(), sidecar.as_deref())?;
             }
+            AssetRow::Binding { record } => bindings::project(&tx, archive, &record)?,
             AssetRow::Metadata {
                 input,
                 sidecar,
@@ -297,7 +385,7 @@ pub(crate) fn install(
                 source_version: recorded,
                 error,
             } => {
-                if asset_source(archive, "", &input)?
+                if asset_source(&tx, archive, catalog_prefix, &input)?
                     .as_ref()
                     .map(|source| source.version.as_str())
                     != Some(recorded.as_str())

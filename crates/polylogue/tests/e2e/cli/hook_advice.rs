@@ -34,14 +34,11 @@ fn failing_session(cwd: &str, runs: i64) -> String {
     lines.iter().map(|l| format!("{l}\n")).collect()
 }
 
-fn pre_tool_use(env: &[(&str, &Path)], cwd: &str, command: &str) -> String {
-    let mut hook = Command::new(crate::BIN);
+fn pre_tool_use(env: &crate::Fixture, cwd: &str, command: &str) -> String {
+    let mut hook = env.command();
     hook.args(["hook", "PreToolUse"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
-    for (key, value) in env {
-        hook.env(key, value);
-    }
     let mut child = hook.spawn().unwrap();
     let payload = json!({"session_id": "next", "cwd": cwd, "hook_event_name": "PreToolUse",
         "tool_name": "Bash", "tool_input": {"command": command}});
@@ -66,11 +63,7 @@ fn a_verification_that_keeps_failing_here_is_named_before_it_runs_again() {
     std::fs::create_dir_all(&project).unwrap();
     let cwd = "/work/proj";
     std::fs::write(project.join("advised.jsonl"), failing_session(cwd, 2)).unwrap();
-    let env = [
-        ("POLYLOGUE_HOME", home.as_path()),
-        ("POLYLOGUE_ARCHIVE", archive.as_path()),
-        ("XDG_CONFIG_HOME", config.as_path()),
-    ];
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["tool_calls"].as_u64() >= Some(2));
     let socket = archive.join("daemon.sock");
@@ -79,13 +72,19 @@ fn a_verification_that_keeps_failing_here_is_named_before_it_runs_again() {
         "ask":{"ask":"tool_use", "cwd":cwd, "session":"claude-code:next", "command":"cargo test"}})
     };
     let send = |request: serde_json::Value| {
+        let mut request = request;
+        request["caller"] =
+            serde_json::to_value(polylogue_model::authorship::CallerEvidence::default()).unwrap();
         let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
         writeln!(stream, "{request}").unwrap();
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
-        let response: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(response["result"], "ok", "{response}");
-        response["data"].clone()
+        let response: command_surface::Answer<serde_json::Value> =
+            serde_json::from_str(&line).unwrap();
+        response
+            .value()
+            .unwrap_or_else(|| panic!("context request failed: {response:?}"))
+            .clone()
     };
     let prepared = send(ask());
     let text = prepared["prepared"]["text"].as_str().unwrap();

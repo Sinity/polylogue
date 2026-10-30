@@ -63,7 +63,6 @@ enum Cli {
         args: Vec<String>,
     },
     /// Corpus builds and native interactive read measurements.
-    #[command(subcommand)]
     Bench(bench::Bench),
     /// Build against a local checkout of polylogue-sinex-common instead of
     /// the commit Cargo.lock pins.
@@ -83,9 +82,8 @@ enum Cli {
 fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
     Some(match package {
         "polylogue-model" | "xtask" => &[],
-        "polylogue-sources" | "polylogue-query" | "polylogue-store" | "polylogue-render" => {
-            &["polylogue-model"]
-        }
+        "polylogue-sources" | "polylogue-query" | "polylogue-render" => &["polylogue-model"],
+        "polylogue-store" => &["polylogue-model", "polylogue-query"],
         "polylogue-engine" => &["polylogue-model", "polylogue-sources", "polylogue-store"],
         // Test archives: built through the engine, read through the store.
         "polylogue-testkit" => &["polylogue-model", "polylogue-store", "polylogue-engine"],

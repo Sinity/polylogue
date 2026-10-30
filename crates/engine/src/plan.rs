@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// What the loop knows about one input between passes. Its parser state
-/// (`parser_state`) is `None` until the input is next parsed after a restart.
+/// (`parser_state`) is restored lazily from the admitted cursor after a restart.
 pub(crate) struct InputState {
     pub(crate) input_id: String,
     pub(crate) origin: &'static OriginSpec,
@@ -30,11 +30,26 @@ pub(crate) struct InputState {
     pub(crate) failed: Option<FileFacts>,
     /// Failed immutable chains wait for changed bytes or a restart.
     pub(crate) failed_history: HashMap<i64, FailedChain>,
+    /// A cache of actual SDK working state, separate from confirmed progress.
+    pub(crate) working: Option<WorkingState>,
+}
+
+pub(crate) struct WorkingState {
+    pub(crate) capture: String,
+    pub(crate) group: String,
+    pub(crate) facts: Option<FileFacts>,
+    pub(crate) stored: u64,
 }
 
 #[derive(PartialEq, Eq)]
 pub(crate) struct FailedChain {
     pub(crate) length: u64,
+}
+
+/// Physical custody has its own continuation and cannot update source state.
+pub(crate) struct RawState {
+    pub(crate) cursor: Option<polylogue_store::primary::RawAcquisitionCursor>,
+    pub(crate) custody: Option<polylogue_store::primary::RawCustodyReceipt>,
 }
 
 /// One input's work in this pass, advanced job by job.
@@ -49,6 +64,8 @@ pub(crate) struct Plan {
     pub(crate) stored_upto: u64,
     pub(crate) parse_pos: u64,
     pub(crate) storing_started: bool,
+    /// Capture continues while a missing same-version continuation defers parsing.
+    pub(crate) parser_deferred: bool,
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
@@ -57,16 +74,23 @@ pub(crate) struct Plan {
     /// A location the loop keeps watching (not a one-off import).
     pub(crate) tracked: bool,
     pub(crate) failed: bool,
+    pub(crate) parse_failed: bool,
+    pub(crate) replace: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     pub(crate) waiting: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
+    pub(crate) basis: Option<polylogue_store::primary::SourceBasis>,
+    /// The latest step has durable private custody but no confirmed visibility.
+    pub(crate) pending: Option<String>,
+    pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
+    pub(crate) raw: Option<RawState>,
 }
 
 impl Plan {
     /// A plan that parses bytes the archive stored, from `parse_pos`, and
     /// stores nothing: an index behind its archive (a rebuild, a file that
-    /// moved or went, an import), or an input an excision rewrote.
+    /// moved or went, an import).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn stored(
         path: PathBuf,
@@ -81,6 +105,10 @@ impl Plan {
         tracked: bool,
     ) -> Plan {
         Plan {
+            basis: None,
+            pending: None,
+            checkpoint: None,
+            raw: None,
             span: span(origin, &path, chunk),
             path,
             origin,
@@ -92,28 +120,55 @@ impl Plan {
             stored_upto: size,
             parse_pos,
             storing_started: false,
+            parser_deferred: false,
             parser_state: None,
             tail: None,
             chunk,
             priority: Priority::Bulk,
             tracked,
             failed: false,
+            parse_failed: false,
+            replace: false,
             waiting: false,
             source,
         }
     }
 
     pub(crate) fn finished(&self) -> bool {
+        if let Some(raw) = &self.raw {
+            // Missing proof stops this attempt with unknown completeness.
+            return raw
+                .cursor
+                .as_ref()
+                .is_none_or(|cursor| cursor.range().end >= self.size);
+        }
         self.failed
+            || (self.parser_deferred && self.observation.is_none() && self.stored_upto >= self.size)
             || (self.observation.is_none()
                 && self.stored_upto >= self.size
                 && (self.waiting || self.parse_pos >= self.size))
     }
 
     pub(crate) fn next_job(&mut self) -> Job {
-        let start = self.parse_pos;
+        let start = if let Some(raw) = &self.raw {
+            raw.cursor
+                .as_ref()
+                .expect("a continuing physical acquisition has a verified cursor")
+                .range()
+                .end
+        } else if self.parser_deferred {
+            self.stored_upto
+        } else {
+            self.parse_pos
+        };
         let end = self.size.min(start + self.span);
-        let store_from = (end > self.stored_upto).then_some(self.stored_upto);
+        let store_from = if self.raw.is_some() {
+            (end > start).then_some(start)
+        } else {
+            (end > self.stored_upto
+                || self.size == 0 && self.observation.is_some() && !self.storing_started)
+                .then_some(self.stored_upto)
+        };
         let (change, observation, continues, length) = match store_from {
             None if self.size == 0 && self.observation.is_some() => {
                 // An empty file still commits its revision and file facts.
@@ -134,6 +189,7 @@ impl Plan {
             ),
         };
         Job {
+            acquisition: None,
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),
@@ -146,12 +202,17 @@ impl Plan {
             at_end: end == self.size,
             length,
             parser_state: self.parser_state.take(),
+            parser_deferred: self.parser_deferred,
             priority: self.priority,
             source: self.source.clone(),
         }
     }
 
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
+        self.pending = d.pending.clone();
+        if d.checkpoint.is_some() {
+            self.checkpoint = d.checkpoint.clone();
+        }
         // Parsing can fail after new source bytes were sent to the writer.
         // Its rejected writes reload their checkpoints through the existing
         // write report; a parse failure must still remember the stored prefix.
@@ -162,7 +223,20 @@ impl Plan {
             }
             self.tail = Some(d.tail);
         }
+        if d.continuation_missing {
+            self.parser_deferred = true;
+            self.waiting = true;
+            return;
+        }
         if d.error.is_some() {
+            if d.stored > 0 && !d.write_failed {
+                // The parser failed after custody succeeded. Preserve its last
+                // valid cursor while continuing raw acquisition through EOF.
+                self.parse_failed = true;
+                self.parser_deferred = true;
+                self.parser_state = d.parser_state;
+                return;
+            }
             self.failed = true;
             self.parser_state = d.parser_state;
             return;

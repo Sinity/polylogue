@@ -1,0 +1,1514 @@
+{
+  "source_commit": "16708b50bc860330f39f9869761e2ca5a1e8fad2",
+  "source_fingerprint": "99135262379a31eb3d06d6412d46673e6b15dcbc2dc8c8c9362b2056f6924737",
+  "cases": [
+    {
+      "name": "note",
+      "material": {
+        "kind": "material",
+        "frame": "request:note",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "82efce70-e086-dd6e-eb08-545fc9ce9675",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:6f6fa90beaa5ae187020214adba55d738e3ba8868557fb3c7d7a9a50463ec089",
+          "length": 511,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"note\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"add_note\",\"note\":{\"kind\":\"note\",\"key\":\"original-key\",\"value\":\"Retained oracle note\",\"targets\":[\"repo:synthetic\"],\"revises\":\"prior-note\"}}},\"outcome\":{\"id\":\"fact-note\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:1e04a33ce79552849a2ac4b49d6809bae621f0241ec0561908c9e2912511a9e1",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.note",
+              "version": 4
+            },
+            "payload": {
+              "request": "note",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "note": "note",
+              "kind": "note",
+              "author": "operator",
+              "value": "Retained oracle note",
+              "key": "original-key",
+              "targets": [
+                "repo:synthetic"
+              ],
+              "revises": "prior-note",
+              "record_key": "3c83b578d4c1f70c7f3e71c8c0c93c2cd5570c06c855e4e52f0c81abdd970a35",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "note",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "add_note",
+                    "note": {
+                      "kind": "note",
+                      "key": "original-key",
+                      "value": "Retained oracle note",
+                      "targets": [
+                        "repo:synthetic"
+                      ],
+                      "revises": "prior-note"
+                    }
+                  }
+                },
+                "outcome": {
+                  "id": "fact-note",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "82efce70-e086-dd6e-eb08-545fc9ce9675",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:note"
+      ]
+    },
+    {
+      "name": "saved-query",
+      "material": {
+        "kind": "material",
+        "frame": "request:saved-query",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "5c1e88c7-4e22-8a84-544b-7b0828adda1f",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:72cf9b0de84b11606a7694ed8731afd0ab8a7ec7bca6126da11d4867e1207e83",
+          "length": 462,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"saved-query\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"save_query\",\"note\":{\"kind\":\"saved_query\",\"value\":\"sessions\",\"targets\":[]}}},\"outcome\":{\"id\":\"fact-saved-query\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:ef7db8c584b127670ce1aa88b5876b477f25b3da17d86001b39e9c60ad450d3d",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.note",
+              "version": 4
+            },
+            "payload": {
+              "request": "saved-query",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "note": "saved-query",
+              "kind": "saved_query",
+              "author": "operator",
+              "value": "sessions",
+              "key": null,
+              "targets": [],
+              "revises": null,
+              "record_key": "4c3e87dda3dd1062d3fd6b76a2e9b42af9ab0c3d5e9515fc078df7459cc23bbd",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "saved-query",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "save_query",
+                    "note": {
+                      "kind": "saved_query",
+                      "value": "sessions",
+                      "targets": []
+                    }
+                  }
+                },
+                "outcome": {
+                  "id": "fact-saved-query",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "5c1e88c7-4e22-8a84-544b-7b0828adda1f",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:saved-query"
+      ]
+    },
+    {
+      "name": "annotation",
+      "material": {
+        "kind": "material",
+        "frame": "request:annotation",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "c4ab2a27-3b92-4921-6dee-ad425d51b9ca",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:44ce766ff2bb51c9b7c1c1fdeab4eac7a7fb8fc1c8271a94908885d6041f6774",
+          "length": 511,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"annotation\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"annotate_query\",\"query\":\"sessions\",\"note\":{\"kind\":\"note\",\"value\":\"Original selection\",\"targets\":[\"session:codex:synthetic\"]}}},\"outcome\":{\"id\":\"fact-annotation\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:71a424875f593064567d35e5cee92736673c041adcd9da0d14d7813355cf89f8",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.note",
+              "version": 4
+            },
+            "payload": {
+              "request": "annotation",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "note": "annotation",
+              "kind": "note",
+              "author": "operator",
+              "value": "Original selection",
+              "key": null,
+              "targets": [
+                "session:codex:synthetic"
+              ],
+              "revises": null,
+              "record_key": "fda2a9df16e3880c36daa8b2ea69f2ffdbc6bd2839cd902ce8493100aa585cc6",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "annotation",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "annotate_query",
+                    "query": "sessions",
+                    "note": {
+                      "kind": "note",
+                      "value": "Original selection",
+                      "targets": [
+                        "session:codex:synthetic"
+                      ]
+                    }
+                  }
+                },
+                "outcome": {
+                  "id": "fact-annotation",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "c4ab2a27-3b92-4921-6dee-ad425d51b9ca",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:annotation"
+      ]
+    },
+    {
+      "name": "withdrawal",
+      "material": {
+        "kind": "material",
+        "frame": "request:withdrawal",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "e27fa5cb-93a0-e269-525e-560808309e05",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:3789255639e2b94858ab3cb696e6c3db1d651c20515ca858eed86d009084cf63",
+          "length": 443,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"withdrawal\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"withdraw\",\"note\":\"prior-note\",\"reason\":\"Original reason\"}},\"outcome\":{\"id\":\"fact-withdrawal\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:67481b39be09452f16fb78af8269be636495461400c0dbe6dde79b1d1fc51d5f",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.note",
+              "version": 4
+            },
+            "payload": {
+              "request": "withdrawal",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "note": "withdrawal",
+              "kind": "withdrawal",
+              "author": "operator",
+              "withdraws": "prior-note",
+              "value": "Original reason",
+              "record_key": "f08fb4a069e87532ebbe3c7c4f05bf62af2d16e78be37416d06e9527ecd93e07",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "withdrawal",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "withdraw",
+                    "note": "prior-note",
+                    "reason": "Original reason"
+                  }
+                },
+                "outcome": {
+                  "id": "fact-withdrawal",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "e27fa5cb-93a0-e269-525e-560808309e05",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:withdrawal"
+      ]
+    },
+    {
+      "name": "setting",
+      "material": {
+        "kind": "material",
+        "frame": "request:setting",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "42f490e3-e511-5ebc-e949-1baeb7a1f5e3",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:e5356aa9c426c550e6c3ac0b37d35e757ff6a10cbd4ed3923b24f3dfa9d5b99b",
+          "length": 430,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"setting\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"set_setting\",\"key\":\"editor.tab_width\",\"value\":\"2\"}},\"outcome\":{\"id\":\"fact-setting\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:8cb874d93ef47704296aed89aebb56ed403f70dc49bf57d5620ca5d1d0c1d617",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.setting",
+              "version": 4
+            },
+            "payload": {
+              "request": "setting",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "*",
+              "setting": "setting",
+              "key": "editor.tab_width",
+              "value": "2",
+              "author": "operator",
+              "record_key": "41d889ab12113aaa02d1e4e18bae6dd149707d948b39190fd78a41bfa5771d8e",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "setting",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "set_setting",
+                    "key": "editor.tab_width",
+                    "value": "2"
+                  }
+                },
+                "outcome": {
+                  "id": "fact-setting",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "42f490e3-e511-5ebc-e949-1baeb7a1f5e3",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:setting"
+      ]
+    },
+    {
+      "name": "kept-result",
+      "material": {
+        "kind": "material",
+        "frame": "request:kept-result",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "eff30bc0-d517-104f-a3d5-c0c49630f62e",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:b575ba8d25d1cc37a51674071ff67252202e8996025c87d094dc48cd9f158e9c",
+          "length": 477,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"kept-result\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"keep_result\",\"name\":\"original-result\",\"query\":\"sessions\",\"rows_json\":\"[]\",\"read_at\":\"{}\"}},\"outcome\":{\"id\":\"fact-kept-result\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:56cd21b13d97fbc1f0875a0d6ab2f802768db9cfd26450f972df1066dbb10734",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.kept_result",
+              "version": 4
+            },
+            "payload": {
+              "request": "kept-result",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "result": "kept-result",
+              "name": "original-result",
+              "query": "sessions",
+              "rows": [],
+              "read_at": {},
+              "record_key": "2b1c6c8eab7e78a98444dff51431ddf9e086e109fde3ad14122e23b0f9aa0d8a",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "kept-result",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "keep_result",
+                    "name": "original-result",
+                    "query": "sessions",
+                    "rows_json": "[]",
+                    "read_at": "{}"
+                  }
+                },
+                "outcome": {
+                  "id": "fact-kept-result",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "eff30bc0-d517-104f-a3d5-c0c49630f62e",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:kept-result"
+      ]
+    },
+    {
+      "name": "delivery",
+      "material": {
+        "kind": "material",
+        "frame": "request:delivery",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "181bb51b-88af-e433-54d6-ca17d5fdf3a6",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:8485337c75783fecb1d4eeee08a0461a178fc10cf444b42462f199801c6702d2",
+          "length": 585,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"delivery\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"deliver\",\"recipient_kind\":\"session\",\"recipient_id\":\"codex:synthetic\",\"sender\":\"original-sender\",\"event\":\"original-event\",\"cwd\":\"/workspace/synthetic\",\"text\":\"Retained delivery\",\"refs\":[\"repo:synthetic\"]}},\"outcome\":{\"id\":\"fact-delivery\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:1f8cf2d7873c66878d348d511bd475d12923d52b9c128d5387aadd857d989d27",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.delivery",
+              "version": 4
+            },
+            "payload": {
+              "request": "delivery",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "delivery": "delivery",
+              "recipient_kind": "session",
+              "recipient_id": "codex:synthetic",
+              "sender": "original-sender",
+              "event": "original-event",
+              "cwd": "/workspace/synthetic",
+              "content_hash": "e47bc8b8762af59cdb4c6d9fc64f50bc4f2a21acc44cf9b2f0e132bcc638eb17",
+              "bytes": 17,
+              "refs": [
+                "repo:synthetic"
+              ],
+              "record_key": "3b215a148baeb44e48e8eca1f1c4c527e008d53958a27e728af8c332b956b510",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "delivery",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "deliver",
+                    "recipient_kind": "session",
+                    "recipient_id": "codex:synthetic",
+                    "sender": "original-sender",
+                    "event": "original-event",
+                    "cwd": "/workspace/synthetic",
+                    "text": "Retained delivery",
+                    "refs": [
+                      "repo:synthetic"
+                    ]
+                  }
+                },
+                "outcome": {
+                  "id": "fact-delivery",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "181bb51b-88af-e433-54d6-ca17d5fdf3a6",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:delivery"
+      ]
+    },
+    {
+      "name": "delivered-advice",
+      "material": {
+        "kind": "material",
+        "frame": "request:delivered-advice",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "f17cc773-e796-e93f-569b-dddc5d8567ac",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:9c7b61b3e5a44f3f0e4d42f212794a54ace02ed13f722988ac6bda14aa8a14f4",
+          "length": 530,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"delivered-advice\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"delivered_advice\",\"recipient_kind\":\"session\",\"sender\":\"original-sender\",\"event\":\"original-event\",\"text\":\"Original advice\",\"refs\":[]}},\"outcome\":{\"id\":\"fact-delivered-advice\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:b943e40ab9e32561b3a507f9cc9696637d29153fabc877f38925582dd69dc892",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.delivery",
+              "version": 4
+            },
+            "payload": {
+              "request": "delivered-advice",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "delivery": "delivered-advice",
+              "recipient_kind": "session",
+              "recipient_id": null,
+              "sender": "original-sender",
+              "event": "original-event",
+              "cwd": null,
+              "content_hash": "ec76bce7516d1608776f4a343bec9b063471663f61cd0e428fe45f95536229eb",
+              "bytes": 15,
+              "refs": [],
+              "record_key": "975cfabb0c7dbdb1aa9a3a58a4a87fc6563ce2871b50d3216d2e7fecb4f177b9",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "delivered-advice",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "delivered_advice",
+                    "recipient_kind": "session",
+                    "sender": "original-sender",
+                    "event": "original-event",
+                    "text": "Original advice",
+                    "refs": []
+                  }
+                },
+                "outcome": {
+                  "id": "fact-delivered-advice",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "f17cc773-e796-e93f-569b-dddc5d8567ac",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:delivered-advice"
+      ]
+    },
+    {
+      "name": "delivery-outcome",
+      "material": {
+        "kind": "material",
+        "frame": "request:delivery-outcome",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "394beb70-e9ed-3b3c-fd01-ade6f8b79d15",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:ff1d02f868771ec7daeff156124ba01c6f81eb8e02faba4c23f6d7d57957d48d",
+          "length": 484,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"delivery-outcome\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"delivery_event\",\"delivery\":\"prior-delivery\",\"what\":\"used\",\"detail\":\"Original outcome\"}},\"outcome\":{\"id\":\"fact-delivery-outcome\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:735da91d740ec613085d9e06165a00335a43a7f345df830269884e01aa9c63eb",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.delivery_outcome",
+              "version": 4
+            },
+            "payload": {
+              "request": "delivery-outcome",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "delivery": "prior-delivery",
+              "what": "used",
+              "detail": "Original outcome",
+              "record_key": "6945d06043bafa955483254988bbe4ee7c931d1e8d68fcd623be1ecb69d71483",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "delivery-outcome",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "delivery_event",
+                    "delivery": "prior-delivery",
+                    "what": "used",
+                    "detail": "Original outcome"
+                  }
+                },
+                "outcome": {
+                  "id": "fact-delivery-outcome",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "394beb70-e9ed-3b3c-fd01-ade6f8b79d15",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:delivery-outcome"
+      ]
+    },
+    {
+      "name": "generic",
+      "material": {
+        "kind": "material",
+        "frame": "request:generic",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "6d83f11f-787d-1df2-fc82-5236bca9f78d",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:817fb107cf4f7d6475e39fc89b7ba73fd2853d3d1e839b05f2572494ea1b43a4",
+          "length": 418,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"generic\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"chat_claim\",\"by\":\"original-extension\"}},\"outcome\":{\"id\":\"fact-generic\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:0b3424b5da84551409e84554ab1411566d89f3d1b0b315749887161badd5ac70",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.request",
+              "version": 4
+            },
+            "payload": {
+              "request": "generic",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "record_key": "d3e87757f1f788a90a46a906e40db216078d0232fe88f9aab36a92f507dddfd7",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "generic",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "chat_claim",
+                    "by": "original-extension"
+                  }
+                },
+                "outcome": {
+                  "id": "fact-generic",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "6d83f11f-787d-1df2-fc82-5236bca9f78d",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "request:generic"
+      ]
+    },
+    {
+      "name": "restore",
+      "material": {
+        "kind": "material",
+        "frame": "restore:original:observation",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "c75aee39-90b3-498c-47ac-1f769c6c1200",
+          "input": {
+            "kind": "polylogue-observation",
+            "locator": "restore:original",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:e56c2d7451798f6d53fa877a7bb13f45b82a24948c3686886829c217eb21db3b",
+          "length": 899,
+          "parser": "polylogue-request-restore",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "[{\"product\":{\"product\":\"restored_request\",\"prepared\":{\"request\":{\"id\":\"restore-original\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"add_note\",\"note\":{\"kind\":\"note\",\"value\":\"Retained restoration\",\"targets\":[\"repo:synthetic\"]}}},\"outcome\":{\"id\":\"fact-restore-original\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[],\"backfills\":[]}},\"claims\":[{\"machine\":\"prior-importer\",\"input\":\"prior-bundle\",\"chain\":2,\"actor\":\"operator\",\"at\":\"2026-01-02T03:04:06Z\"}],\"current\":{\"machine\":\"original-importer\",\"input\":\"original-bundle\",\"chain\":3,\"actor\":\"script:bundle-import\",\"at\":\"2026-01-02T03:04:07.987654321Z\"}},\"location\":null,\"parents\":[],\"machine\":\"original-recorded-machine\",\"output_index\":19}]",
+      "events": {
+        "kind": "events",
+        "frame": "restore:original",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.request_restore",
+              "version": 4
+            },
+            "payload": {
+              "request": "restore-original",
+              "at": "2026-01-02T03:04:07.987654321Z",
+              "machine": "original-importer",
+              "record_key": "8c81d9f392c8da6999151a5609ce700220f00fc6986d7e57736aa6082471ef1c",
+              "record": {
+                "product": "restored_request",
+                "prepared": {
+                  "request": {
+                    "id": "restore-original",
+                    "machine": "original-host",
+                    "authorship": {
+                      "author": "operator",
+                      "via": "cli"
+                    },
+                    "at": "2026-01-02T03:04:05.123456789Z",
+                    "write": {
+                      "write": "add_note",
+                      "note": {
+                        "kind": "note",
+                        "value": "Retained restoration",
+                        "targets": [
+                          "repo:synthetic"
+                        ]
+                      }
+                    }
+                  },
+                  "outcome": {
+                    "id": "fact-restore-original",
+                    "repeat": false,
+                    "pending": false
+                  },
+                  "effect": {
+                    "variants": {
+                      "variants": [],
+                      "variant_parts": []
+                    },
+                    "notes": [],
+                    "withdrawals": [],
+                    "settings": [],
+                    "kept_results": [],
+                    "deliveries": [],
+                    "chats": [],
+                    "backfills": []
+                  }
+                },
+                "claims": [
+                  {
+                    "machine": "prior-importer",
+                    "input": "prior-bundle",
+                    "chain": 2,
+                    "actor": "operator",
+                    "at": "2026-01-02T03:04:06Z"
+                  }
+                ],
+                "current": {
+                  "machine": "original-importer",
+                  "input": "original-bundle",
+                  "chain": 3,
+                  "actor": "script:bundle-import",
+                  "at": "2026-01-02T03:04:07.987654321Z"
+                }
+              }
+            },
+            "location": {
+              "material": "c75aee39-90b3-498c-47ac-1f769c6c1200",
+              "anchor": 0
+            },
+            "output_index": 19,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "restore:original:observation"
+      ]
+    },
+    {
+      "name": "attachments",
+      "material": {
+        "kind": "material",
+        "frame": "request:attachment-original",
+        "material": {
+          "source": {
+            "name": "polylogue",
+            "version": 3
+          },
+          "id": "b47e281e-f2e1-8f9f-3d7b-3ed4081496c6",
+          "input": {
+            "kind": "polylogue",
+            "locator": "requests",
+            "host": "fixture-host"
+          },
+          "blob": "blake3:d81e75676fe40905de06110269d9a617dea087bf90ce361b6115c73865b23dc5",
+          "length": 921,
+          "parser": "polylogue-request",
+          "parser_version": 3,
+          "part_index": 0,
+          "previous_part": null,
+          "manifest": {
+            "role": "records",
+            "media_type": "application/json"
+          }
+        }
+      },
+      "body": "{\"request\":{\"id\":\"attachment-original\",\"machine\":\"original-host\",\"authorship\":{\"author\":\"operator\",\"via\":\"cli\"},\"at\":\"2026-01-02T03:04:05.123456789Z\",\"write\":{\"write\":\"chat_claim\",\"by\":\"original-extension\"}},\"outcome\":{\"id\":\"fact-attachment-original\",\"repeat\":false,\"pending\":false},\"effect\":{\"variants\":{\"variants\":[],\"variant_parts\":[]},\"notes\":[],\"withdrawals\":[],\"settings\":[],\"kept_results\":[],\"deliveries\":[],\"chats\":[{\"action\":{\"id\":\"original-action\",\"request_key\":\"original-action-key\",\"request_hash\":\"f017ff906e7ba6094d44679d5c68ca40d7e93640df9430d8613b746898c33c05\",\"request\":{\"prompt\":\"Synthetic request\"},\"stage_only\":true,\"needs_approval\":false,\"created_at\":1000,\"execution\":\"live\",\"attachments\":[{\"id\":\"attachment-original\",\"blob\":\"6dcae989244997317d4a077d2a398e3c6c9de9febe5039d4f1e0e078b56af86b\",\"name\":\"original.txt\",\"media_type\":\"text/plain\",\"size\":26}],\"events\":[]},\"added_events\":[]}],\"backfills\":[]}}",
+      "events": {
+        "kind": "events",
+        "frame": "capture-products:354a0074047735cf6acafcb804dfd0f8c21ff770cdf98a894038083323ae1c2a",
+        "source": {
+          "name": "polylogue",
+          "version": 3
+        },
+        "coverage": null,
+        "events": [
+          {
+            "kind": {
+              "name": "polylogue.blob",
+              "version": 3
+            },
+            "payload": {
+              "blob": "6dcae989244997317d4a077d2a398e3c6c9de9febe5039d4f1e0e078b56af86b",
+              "record_key": "2fa3fc303552fbc0e5974b0d6bd04ba933cf26bcf1cf9662cbea1e13530ed7c1",
+              "record": {
+                "product": "blob",
+                "id": "344bdea1-3db3-5d53-3cd9-2d36ecb277b7",
+                "hash": "6dcae989244997317d4a077d2a398e3c6c9de9febe5039d4f1e0e078b56af86b",
+                "length": 26,
+                "extents": [
+                  [
+                    72,
+                    66,
+                    69,
+                    88,
+                    84,
+                    51,
+                    0,
+                    17,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    115,
+                    101,
+                    103,
+                    109,
+                    101,
+                    110,
+                    116,
+                    115,
+                    47,
+                    116,
+                    101,
+                    115,
+                    116,
+                    46,
+                    122,
+                    115,
+                    116,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    225,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    26,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    109,
+                    202,
+                    233,
+                    137,
+                    36,
+                    73,
+                    151,
+                    49,
+                    125,
+                    74,
+                    7,
+                    125,
+                    42,
+                    57,
+                    142,
+                    60,
+                    108,
+                    157,
+                    233,
+                    254,
+                    190,
+                    80,
+                    57,
+                    212,
+                    241,
+                    224,
+                    224,
+                    120,
+                    181,
+                    106,
+                    248,
+                    107,
+                    0,
+                    132,
+                    55,
+                    50,
+                    241,
+                    44,
+                    157,
+                    101,
+                    103,
+                    54,
+                    126,
+                    139,
+                    24,
+                    54,
+                    34,
+                    28,
+                    174,
+                    84,
+                    133,
+                    14,
+                    106,
+                    193,
+                    166,
+                    33,
+                    232,
+                    56,
+                    6,
+                    3,
+                    210,
+                    208,
+                    0,
+                    100,
+                    134,
+                    26,
+                    159,
+                    111,
+                    25,
+                    174,
+                    173,
+                    0,
+                    135,
+                    207,
+                    244,
+                    29,
+                    95,
+                    202,
+                    110,
+                    60,
+                    205,
+                    162,
+                    230,
+                    131,
+                    56,
+                    21,
+                    179,
+                    183,
+                    197,
+                    202,
+                    58,
+                    70,
+                    122,
+                    226,
+                    59,
+                    169,
+                    212
+                  ]
+                ]
+              }
+            },
+            "location": {
+              "material": "344bdea1-3db3-5d53-3cd9-2d36ecb277b7",
+              "anchor": 0
+            },
+            "output_index": 0,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          },
+          {
+            "kind": {
+              "name": "polylogue.request",
+              "version": 4
+            },
+            "payload": {
+              "request": "attachment-original",
+              "at": "2026-01-02T03:04:05.123456789Z",
+              "machine": "original-host",
+              "record_key": "b62428b7e496f740607c45cb388246fe7081bcf93ce303b38b7dac6be186e402",
+              "record": {
+                "product": "request",
+                "request": {
+                  "id": "attachment-original",
+                  "machine": "original-host",
+                  "authorship": {
+                    "author": "operator",
+                    "via": "cli"
+                  },
+                  "at": "2026-01-02T03:04:05.123456789Z",
+                  "write": {
+                    "write": "chat_claim",
+                    "by": "original-extension"
+                  }
+                },
+                "outcome": {
+                  "id": "fact-attachment-original",
+                  "repeat": false,
+                  "pending": false
+                },
+                "effect": {
+                  "variants": {
+                    "variants": [],
+                    "variant_parts": []
+                  },
+                  "notes": [],
+                  "withdrawals": [],
+                  "settings": [],
+                  "kept_results": [],
+                  "deliveries": [],
+                  "chats": [
+                    {
+                      "action": {
+                        "id": "original-action",
+                        "request_key": "original-action-key",
+                        "request_hash": "f017ff906e7ba6094d44679d5c68ca40d7e93640df9430d8613b746898c33c05",
+                        "request": {
+                          "prompt": "Synthetic request"
+                        },
+                        "stage_only": true,
+                        "needs_approval": false,
+                        "created_at": 1000,
+                        "execution": "live",
+                        "attachments": [
+                          {
+                            "id": "attachment-original",
+                            "blob": "6dcae989244997317d4a077d2a398e3c6c9de9febe5039d4f1e0e078b56af86b",
+                            "name": "original.txt",
+                            "media_type": "text/plain",
+                            "size": 26
+                          }
+                        ],
+                        "events": []
+                      },
+                      "added_events": []
+                    }
+                  ],
+                  "backfills": []
+                }
+              }
+            },
+            "location": {
+              "material": "b47e281e-f2e1-8f9f-3d7b-3ed4081496c6",
+              "anchor": 0
+            },
+            "output_index": 1,
+            "parents": [],
+            "reading_order": null,
+            "class": "open"
+          }
+        ]
+      },
+      "dependencies": [
+        "capture:1f9c147f59e6bde998cb22eb33aca663e8fdb265df3765fec356b33767588a9d:ee24366c5e77ec6e8e773b00ae1d996efb77ef5017d2d9d24940af2389353c6b:01a18a3d-a000-71c0-829c-3648938a2ce9",
+        "request:attachment-original"
+      ]
+    }
+  ]
+}

@@ -2,7 +2,7 @@ use crate::{BlobHash, Json};
 use serde::{Deserialize, Serialize};
 
 /// One part of a message's content, in the order the source wrote it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Block {
     Text {
@@ -39,6 +39,9 @@ pub enum Block {
     /// A tool's result. It lives in the message that carried it and points
     /// at its call by `call_id`; the call may be in an earlier message.
     ToolResult {
+        /// Elapsed time explicitly reported by the harness, distinct from timestamp differences.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reported_duration_ms: Option<u64>,
         call_id: Option<String>,
         outcome: ToolOutcome,
         output: Option<String>,
@@ -60,7 +63,8 @@ pub enum Block {
 
 /// A block's variant without its contents: what the index stores as the
 /// block's kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum BlockKind {
     Text,
     Thinking,
@@ -83,7 +87,9 @@ stored_names!(BlockKind {
 
 /// What a tool call does. Each origin's parser maps its own tool names to
 /// one of these; everything after the parser reads only the action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolAction {
     /// Runs a shell command; `command` holds it.
@@ -141,7 +147,7 @@ impl Block {
 }
 
 /// How a tool call ended. Kinds never collapse into one success figure.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolOutcome {
     Ok,
@@ -159,7 +165,7 @@ pub enum ToolOutcome {
 
 /// A tool call's outcome as stored and queried: `pending` is a call with
 /// no result while the harness reports it running, decided when read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CallOutcome {
     Ok,
@@ -186,7 +192,7 @@ impl ToolOutcome {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum ErrorReason {
     /// Refused by a permission rule, mode or the user; the source's own label.
@@ -196,7 +202,7 @@ pub enum ErrorReason {
     ExitCode(i64),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
     StatusFieldUnreadable,
@@ -204,7 +210,7 @@ pub enum UnknownReason {
     RunningInBackground,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Attachment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -225,7 +231,9 @@ pub struct Attachment {
 }
 
 /// Whether the attachment went to the model or came from it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentDirection {
     /// The source records the media without establishing model delivery or authorship.

@@ -157,8 +157,8 @@ pub fn serve(
 /// The command Chrome runs. It passes the calling extension's origin as the
 /// first argument; Chrome itself allows only the origins the host's
 /// manifest lists.
-pub fn run() -> ExitCode {
-    let host = match BrowserHost::for_user() {
+pub fn run(config: &polylogue_engine::Config, archive: &polylogue_store::Archive) -> ExitCode {
+    let host = match BrowserHost::at(config, archive) {
         Ok(c) => Arc::new(c),
         Err(e) => {
             let _ = fail(&mut io::stdout().lock(), "host_storage_unavailable");

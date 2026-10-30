@@ -35,7 +35,9 @@
           "id": "claude-code:o1",
           "prompt_kind": "model",
           "role": "user",
-          "session": "claude-code:agent-c7"
+          "session": "claude-code:agent-c7",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -53,7 +55,9 @@
           "parent": "claude-code:o1",
           "role": "assistant",
           "session": "claude-code:agent-c7",
-          "stop_reason": "end_turn"
+          "stop_reason": "end_turn",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 172
       }
@@ -62,7 +66,9 @@
       {
         "id": "claude-code:agent-c7",
         "kind": "subagent",
-        "started": "2025-08-01T09:00:00Z"
+        "started": "2025-08-01T09:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

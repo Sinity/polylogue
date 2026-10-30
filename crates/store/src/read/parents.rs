@@ -2,38 +2,17 @@
 use super::*;
 mod navigation;
 pub use navigation::OutlineEntry;
-use polylogue_model::masking::MessageMasker;
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ParentIssue {
-    #[error("the parents loop back to {session}")]
-    Cycle { session: SessionId },
-    #[error("parent {parent} of {child} is not available")]
-    MissingParent { child: SessionId, parent: SessionId },
-    #[error("parent ID {parent:?} of {child} is invalid")]
-    InvalidParent { child: SessionId, parent: String },
-    #[error("fork from {parent} to {child} has no available branch anchor ({anchor:?})")]
-    MissingAnchor {
-        child: SessionId,
-        parent: SessionId,
-        anchor: Option<String>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Parents {
-    pub complete: bool,
-    pub issues: Vec<ParentIssue>,
-}
+pub use polylogue_model::read::{ParentIssue, Parents};
 
 struct Key {
     session_pk: i64,
     session: SessionId,
     message_pk: i64,
     id: String,
+    order: i64,
 }
 
 struct Link {
@@ -42,11 +21,20 @@ struct Link {
     anchor: Option<String>,
 }
 
+struct CopiedKey {
+    source: String,
+    chain: i64,
+    sequence: i64,
+    position: i64,
+    key: Key,
+}
+
 struct Frame {
     pk: i64,
     session: SessionId,
     links: VecDeque<Link>,
     keys: Vec<Key>,
+    copied: Vec<CopiedKey>,
     issues: Vec<ParentIssue>,
     /// The fork whose parent view this frame is constructing.
     via: Option<(SessionId, Option<String>)>,
@@ -111,7 +99,7 @@ impl<'a> Reader<'a> {
         session: SessionId,
         via: Option<(SessionId, Option<String>)>,
     ) -> Result<Frame> {
-        let links = self
+        let mut links: VecDeque<Link> = self
             .conn()?
             .prepare_cached(
                 "SELECT parent_id, how, branch_point FROM link
@@ -126,12 +114,45 @@ impl<'a> Reader<'a> {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
+        let forks: std::collections::BTreeSet<_> = links
+            .iter()
+            .filter_map(|link| {
+                if link.how != "fork" {
+                    return None;
+                }
+                Some((
+                    SessionId::parse(&link.parent).ok()?,
+                    link.anchor.as_ref()?.clone(),
+                ))
+            })
+            .collect();
+        let mut issues = Vec::new();
+        if forks.len() > 1 {
+            let mut recorded = forks.into_iter();
+            let (first, first_anchor) = recorded.next().expect("conflicting recorded forks");
+            for (second, second_anchor) in recorded {
+                issues.push(ParentIssue::ConflictingParents {
+                    child: session.clone(),
+                    first: first.clone(),
+                    first_anchor: first_anchor.clone(),
+                    second,
+                    second_anchor,
+                });
+            }
+            // No branch is selected from incompatible recorded fork points.
+            links.retain(|link| {
+                link.how != "fork"
+                    || link.anchor.is_none()
+                    || SessionId::parse(&link.parent).is_err()
+            });
+        }
         Ok(Frame {
             pk,
             session,
             links,
             keys: Vec::new(),
-            issues: Vec::new(),
+            copied: Vec::new(),
+            issues,
             via,
         })
     }
@@ -173,22 +194,31 @@ impl<'a> Reader<'a> {
                 if link.how == "resume" {
                     let copied = self
                         .conn()?
-                        .prepare_cached(
-                            "SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq, m.record_position FROM message m
+                        .prepare_cached(&format!(
+                            "WITH canonical_order AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,ir.id,s.chain,s.seq,s.record_position FROM message m
+                             JOIN canonical_order c ON c.pk=m.pk
                              JOIN message_source s ON s.message_pk = m.pk
+                             JOIN input_ref ir ON ir.pk=s.input_pk
                              JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
                              WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL ORDER BY m.order_input_id, m.seq, m.record_position, m.id",
-                        )?
+                             order::canonical_rows("?1")))?
                         .query_map(params![parent_pk, frame.pk], |r| {
-                            Ok(Key {
-                                session_pk: parent_pk,
-                                session: parent.clone(),
-                                message_pk: r.get(0)?,
-                                id: r.get(1)?,
+                            Ok(CopiedKey {
+                                source: r.get(3)?,
+                                chain: r.get(4)?,
+                                sequence: r.get(5)?,
+                                position: r.get(6)?,
+                                key: Key {
+                                    session_pk: parent_pk,
+                                    session: parent.clone(),
+                                    message_pk: r.get(0)?,
+                                    id: r.get(1)?,
+                                    order: r.get(2)?,
+                                },
                             })
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
-                    frame.keys.extend(copied);
+                    frame.copied.extend(copied);
                 } else if link.anchor.is_none() {
                     frame.issues.push(ParentIssue::MissingAnchor {
                         child: frame.session.clone(),
@@ -207,12 +237,16 @@ impl<'a> Reader<'a> {
                 continue;
             }
             let mut done = frames.pop().expect("the current frame exists");
-            for (message_pk, id) in self.own_keys(done.pk)? {
+            let (copied, issue) = copied_order(&done.session, std::mem::take(&mut done.copied))?;
+            done.keys.extend(copied);
+            done.issues.extend(issue);
+            for (message_pk, id, order) in self.own_keys(done.pk)? {
                 done.keys.push(Key {
                     session_pk: done.pk,
                     session: done.session.clone(),
                     message_pk,
                     id,
+                    order,
                 });
             }
             active.remove(&done.pk);
@@ -249,6 +283,109 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Each source contributes only its recorded ordering constraints. A unique
+/// topological order composes copied families without choosing a source by ID.
+fn copied_order(
+    child: &SessionId,
+    copies: Vec<CopiedKey>,
+) -> Result<(Vec<Key>, Option<ParentIssue>)> {
+    let mut sources = std::collections::BTreeMap::<(String, i64), Vec<(i64, i64, i64)>>::new();
+    let mut keys = std::collections::BTreeMap::new();
+    for copy in copies {
+        sources.entry((copy.source, copy.chain)).or_default().push((
+            copy.sequence,
+            copy.position,
+            copy.key.message_pk,
+        ));
+        keys.entry(copy.key.message_pk).or_insert(copy.key);
+    }
+    let mut edges = std::collections::BTreeMap::<i64, std::collections::BTreeSet<i64>>::new();
+    let mut incoming: std::collections::BTreeMap<i64, usize> =
+        keys.keys().map(|key| (*key, 0)).collect();
+    let message = |key: i64| -> Result<MessageId> {
+        MessageId::parse(&keys[&key].id).map_err(|e| StoreError::Invalid(e.to_string()))
+    };
+    for positions in sources.values_mut() {
+        positions.sort_unstable_by_key(|(sequence, position, _)| (*sequence, *position));
+        positions.dedup();
+        for pair in positions.windows(2) {
+            let (left, right) = (pair[0].2, pair[1].2);
+            if left != right && (pair[0].0, pair[0].1) == (pair[1].0, pair[1].1) {
+                return Ok((
+                    Vec::new(),
+                    Some(ParentIssue::UnknownOrder {
+                        child: child.clone(),
+                        first: message(left)?,
+                        second: message(right)?,
+                    }),
+                ));
+            }
+            if left != right && edges.entry(left).or_default().insert(right) {
+                *incoming
+                    .get_mut(&right)
+                    .expect("every source member has a key") += 1;
+            }
+        }
+    }
+    let mut ready: std::collections::BTreeSet<_> = incoming
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(key, _)| *key)
+        .collect();
+    let mut order = Vec::new();
+    while !incoming.is_empty() {
+        let candidates: Vec<_> = ready.iter().copied().take(2).collect();
+        let issue = match candidates.as_slice() {
+            [] => {
+                let (left, right) = edges
+                    .iter()
+                    .find_map(|(left, next)| {
+                        incoming
+                            .contains_key(left)
+                            .then(|| {
+                                next.iter()
+                                    .find(|right| incoming.contains_key(right))
+                                    .map(|right| (*left, *right))
+                            })
+                            .flatten()
+                    })
+                    .expect("a remaining cycle has an edge");
+                Some(ParentIssue::ConflictingOrder {
+                    child: child.clone(),
+                    first: message(left)?,
+                    second: message(right)?,
+                })
+            }
+            [left, right] => Some(ParentIssue::UnknownOrder {
+                child: child.clone(),
+                first: message(*left)?,
+                second: message(*right)?,
+            }),
+            _ => None,
+        };
+        if let Some(issue) = issue {
+            return Ok((Vec::new(), Some(issue)));
+        }
+        let key = ready.pop_first().expect("one uniquely ordered member");
+        incoming.remove(&key);
+        order.push(key);
+        for next in edges.get(&key).into_iter().flatten() {
+            let count = incoming.get_mut(next).expect("unvisited source successor");
+            *count -= 1;
+            if *count == 0 {
+                ready.insert(*next);
+            }
+        }
+    }
+    Ok((
+        order
+            .into_iter()
+            .map(|key| keys.remove(&key).expect("each member emitted once"))
+            .collect(),
+        None,
+    ))
+}
+
 impl MessageSelection<'_, '_> {
     /// The same selection read for a text view, which never shows a tool
     /// result's structured data: it is left unread, so a large value costs
@@ -259,8 +396,7 @@ impl MessageSelection<'_, '_> {
         self
     }
 
-    /// Hidden messages without PEM markers cannot change ordered masking
-    /// state. Keep their metadata positions while leaving their bodies unread.
+    /// Keep hidden messages' metadata positions while leaving their bodies unread.
     pub fn for_blocks(mut self, kinds: &[polylogue_model::BlockKind], prompts: bool) -> Self {
         self.structured = false;
         self.visibility = Some(Visibility {
@@ -278,9 +414,11 @@ impl MessageSelection<'_, '_> {
         &self.parents
     }
 
-    pub(super) fn require_complete(&self) -> Result<()> {
+    /// Require the complete requested parent history before using its metadata
+    /// as a strict content or evidence binding. No record bodies are loaded.
+    pub fn require_complete(&self) -> Result<()> {
         match self.parents.issues.first() {
-            Some(issue) => Err(StoreError::IncompleteParents(issue.clone())),
+            Some(issue) => Err(StoreError::IncompleteParents(Box::new(issue.clone()))),
             None => Ok(()),
         }
     }
@@ -289,14 +427,129 @@ impl MessageSelection<'_, '_> {
         self.visit_from(VisitStart::default(), visit).map(drop)
     }
 
-    /// Skip source messages before hydrating their blocks. Rendering callers must
-    /// restore masking state checked against this exact selection. With the
-    /// start message's key, a session's own messages before it are not read
+    pub fn visit_with_projection(
+        &self,
+        visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_from_with_projection(VisitStart::default(), visit)
+            .map(drop)
+    }
+
+    /// Visit canonical facts, original block positions and their admission in
+    /// the same selected row. Raw-source retention does not affect the receipt.
+    pub fn visit_with_evidence(
+        &self,
+        visit: impl FnMut(Message, MessageProjection, Option<u64>) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_from_with_evidence(VisitStart::default(), visit)
+            .map(drop)
+    }
+
+    /// Canonical facts with the full own-session snapshot ordinal, before
+    /// inherited prefixes or caller subsets change the visited sequence.
+    pub fn visit_with_record_evidence(
+        &self,
+        visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
+    ) -> Result<()> {
+        self.visit_from_with_record_evidence(VisitStart::default(), visit)
+            .map(drop)
+    }
+
+    pub fn visit_from_with_record_evidence(
+        &self,
+        start: VisitStart,
+        mut visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        let mut error = None;
+        let last = self.visit_from_projected(start, true, |message, projection, evidence| {
+            match self.reader.conn().and_then(|conn| evidence.record(conn)) {
+                Ok((admitted, order)) => visit(message, projection, admitted, order),
+                Err(err) => {
+                    error = Some(err);
+                    ControlFlow::Break(())
+                }
+            }
+        })?;
+        match error {
+            Some(error) => Err(error),
+            None => Ok(last),
+        }
+    }
+
+    /// Skip source messages before hydrating their blocks. With the start
+    /// message's key, a session's own messages before it are not read
     /// at all. Returns the key of the last message visited.
     pub fn visit_from(
         &self,
         start: VisitStart,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        self.visit_from_rows(start, false, |message, _, _| visit(message))
+    }
+
+    pub fn visit_from_with_projection(
+        &self,
+        start: VisitStart,
+        mut visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        self.visit_from_projected(start, false, |message, projection, _| {
+            visit(message, projection)
+        })
+    }
+
+    pub fn visit_from_with_evidence(
+        &self,
+        start: VisitStart,
+        mut visit: impl FnMut(Message, MessageProjection, Option<u64>) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        let mut error = None;
+        let last = self.visit_from_projected(start, false, |message, projection, admission| {
+            match self.reader.conn().and_then(|conn| admission.resolve(conn)) {
+                Ok(admitted) => visit(message, projection, admitted),
+                Err(err) => {
+                    error = Some(err);
+                    ControlFlow::Break(())
+                }
+            }
+        })?;
+        match error {
+            Some(error) => Err(error),
+            None => Ok(last),
+        }
+    }
+
+    fn visit_from_projected(
+        &self,
+        start: VisitStart,
+        ordered: bool,
+        mut visit: impl FnMut(Message, MessageProjection, MessageEvidence) -> ControlFlow<()>,
+    ) -> Result<Option<i64>> {
+        let mut missing = false;
+        let last =
+            self.visit_from_rows(
+                start,
+                ordered,
+                |message, projection, admitted| match projection {
+                    Some(projection) => visit(message, projection, admitted),
+                    None => {
+                        missing = true;
+                        ControlFlow::Break(())
+                    }
+                },
+            )?;
+        if missing {
+            return Err(StoreError::Invalid(
+                "the message has no canonical source reading".into(),
+            ));
+        }
+        Ok(last)
+    }
+
+    fn visit_from_rows(
+        &self,
+        start: VisitStart,
+        ordered: bool,
+        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageEvidence) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         if let Some(keys) = &self.with_parents {
             let mut last = None;
@@ -307,13 +560,18 @@ impl MessageSelection<'_, '_> {
                     &key.session,
                     Some(key.message_pk),
                     MessageContent {
+                        order: if ordered {
+                            RecordOrder::Known(key.order)
+                        } else {
+                            RecordOrder::Skip
+                        },
                         structured: self.structured,
                         visibility: self.visibility.as_ref(),
                     },
                     |pk| pk == key.message_pk,
-                    &mut |pk, message| {
+                    &mut |pk, message, projection, admitted| {
                         last = Some(pk);
-                        flow = visit(message);
+                        flow = visit(message, projection, admitted);
                         ControlFlow::Break(())
                     },
                 )?;
@@ -333,25 +591,26 @@ impl MessageSelection<'_, '_> {
             }
         };
         match (start.key, &self.with_parents) {
-            (Some(key), None) => self.visit_kept(Some(key), 0, |_| true, visit),
-            _ => self.visit_kept(None, 0, after_prefix, visit),
+            (Some(key), None) => self.visit_kept_projection(Some(key), 0, ordered, |_| true, visit),
+            _ => self.visit_kept_projection(None, 0, ordered, after_prefix, visit),
         }
     }
 
     /// Visits the selected messages `keep` takes, in order, from the own
     /// session's message `from` when given; `keep` sees each key before its
     /// blocks are read.
-    fn visit_kept(
+    fn visit_kept_projection(
         &self,
         from: Option<i64>,
         skip: usize,
+        ordered: bool,
         mut keep: impl FnMut(i64) -> bool,
-        mut visit: impl FnMut(Message) -> ControlFlow<()>,
+        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageEvidence) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut last = None;
-        let mut visit = |pk, message| {
+        let mut visit = |pk, message, projection, admitted| {
             last = Some(pk);
-            visit(message)
+            visit(message, projection, admitted)
         };
         if let Some(keys) = &self.with_parents {
             let mut start = skip;
@@ -370,6 +629,11 @@ impl MessageSelection<'_, '_> {
                         &key.session,
                         Some(key.message_pk),
                         MessageContent {
+                            order: if ordered {
+                                RecordOrder::OwnSession
+                            } else {
+                                RecordOrder::Skip
+                            },
                             structured: self.structured,
                             visibility: self.visibility.as_ref(),
                         },
@@ -388,6 +652,11 @@ impl MessageSelection<'_, '_> {
                 id,
                 from,
                 MessageContent {
+                    order: if ordered {
+                        RecordOrder::OwnSession
+                    } else {
+                        RecordOrder::Skip
+                    },
                     structured: self.structured,
                     visibility: self.visibility.as_ref(),
                 },
@@ -419,62 +688,6 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    /// The masking state before the selection's message `message` when a
-    /// private key block may be open there; `None` when masking starts
-    /// afresh. An open key is the only masking state that crosses a block
-    /// boundary, and only messages holding a PEM header or END line
-    /// (`message.pem`) open or close one. So the state is the masker after
-    /// those messages alone, in order from the first that leaves a key open.
-    pub fn masking_before(&self, message: usize) -> Result<Option<MessageMasker>> {
-        Ok(self.masking_states()?.before(message))
-    }
-
-    /// Recover the ordered states at PEM markers once for a backward page.
-    pub fn masking_states(&self) -> Result<MaskingStates> {
-        let conn = self.reader.conn()?;
-        let mut marked = HashMap::new();
-        let mut statement =
-            conn.prepare_cached("SELECT pk,pem FROM message WHERE session_pk=?1 AND pem<>0")?;
-        for (session, _) in self.sessions() {
-            for row in statement.query_map([session], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })? {
-                let (key, pem) = row?;
-                marked.insert(key, pem);
-            }
-        }
-        if !marked.values().any(|pem| *pem == 2) {
-            return Ok(MaskingStates(Vec::new()));
-        }
-        let positions: HashMap<_, _> = self
-            .keys()?
-            .into_iter()
-            .enumerate()
-            .map(|(index, key)| (key, index))
-            .collect();
-        let mut states = Vec::new();
-        let mut masker = MessageMasker::default();
-        let mut started = false;
-        let current = std::cell::Cell::new(0);
-        self.visit_kept(
-            None,
-            0,
-            |pk| {
-                current.set(pk);
-                marked.contains_key(&pk)
-            },
-            |mut message| {
-                masker.message_text(&mut message);
-                started |= marked[&current.get()] == 2;
-                if started {
-                    states.push((positions[&current.get()] + 1, masker.clone()));
-                }
-                ControlFlow::Continue(())
-            },
-        )?;
-        Ok(MaskingStates(states))
-    }
-
     pub(super) fn keys(&self) -> Result<Vec<i64>> {
         match &self.with_parents {
             Some(keys) => Ok(keys.iter().map(|key| key.message_pk).collect()),
@@ -483,11 +696,45 @@ impl MessageSelection<'_, '_> {
                     .reader
                     .own_keys(*pk)?
                     .into_iter()
-                    .map(|(pk, _)| pk)
+                    .map(|(pk, _, _)| pk)
                     .collect()),
                 None => Ok(Vec::new()),
             },
         }
+    }
+
+    /// Available tool-bearing keys in this exact selection, including a usable
+    /// tail with parent issues. Plain-message payloads and callbacks are skipped.
+    pub(crate) fn visit_available_tool_message_ids(
+        &self,
+        mut visit: impl FnMut(&str) -> Result<()>,
+    ) -> Result<()> {
+        self.reader.check()?;
+        if let Some(keys) = &self.with_parents {
+            let mut tooling = self.reader.conn()?.prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=?1 AND b.kind IN ('tool_call','tool_result')
+                 AND EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=b.pk OR t.result_block_pk=b.pk))",
+            )?;
+            for key in keys {
+                self.reader.check()?;
+                if tooling.query_row([key.message_pk], |row| row.get::<_, bool>(0))? {
+                    visit(&key.id)?;
+                }
+            }
+        } else if let Some((session, _)) = &self.own {
+            let mut statement = self.reader.conn()?.prepare_cached(
+                "SELECT m.id FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
+                 AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ('tool_call','tool_result')
+                   AND EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=b.pk OR t.result_block_pk=b.pk))
+                 ORDER BY m.order_input_id,m.seq,m.record_position,m.id",
+            )?;
+            let mut rows = statement.query([session])?;
+            while let Some(row) = rows.next()? {
+                self.reader.check()?;
+                visit(&row.get::<_, String>(0)?)?;
+            }
+        }
+        self.reader.check()
     }
 
     /// What the selected content is: parents status; for the session read,
@@ -539,7 +786,7 @@ impl MessageSelection<'_, '_> {
         // visiting each message.
         let mut selected = conn.prepare_cached(
             "SELECT DISTINCT own.import_id FROM parsed p
-            JOIN input_ref ir ON ir.pk=p.input_pk JOIN a.input i ON i.id=ir.id
+            JOIN input_ref ir ON ir.pk=p.input_pk JOIN source_input i ON i.id=ir.id
             JOIN import_member own ON own.input=ir.id
             WHERE p.session_pk=?1",
         )?;
@@ -549,11 +796,11 @@ impl MessageSelection<'_, '_> {
             }
         }
         let mut hash = blake3::Hasher::new();
-        let mut stmt=conn.prepare_cached("SELECT m.observation,m.input,m.member,m.source_id,r.chain,r.length,e.offset,e.length,e.blob,e.blob_offset,b.state,
+        let mut stmt=conn.prepare_cached("SELECT m.observation,m.input,m.member,m.source_id,r.chain,r.length,e.offset,e.length,e.blob,e.blob_offset,b.storage,
             metadata.ordinal,metadata.source_id,metadata.name,metadata.media_type,metadata.size,s.version,s.error
             FROM import_member m
-            LEFT JOIN a.revision r ON r.input=m.input AND r.number=(SELECT max(latest.number) FROM a.revision latest WHERE latest.input=m.input)
-            LEFT JOIN a.extent e ON e.input=r.input AND e.chain=r.chain LEFT JOIN a.blob b ON b.hash=e.blob
+            LEFT JOIN source_revision r ON r.input=m.input AND r.number=(SELECT max(latest.number) FROM source_revision latest WHERE latest.input=m.input)
+            LEFT JOIN source_extent e ON e.input=r.input AND e.chain=r.chain LEFT JOIN source_blob b ON b.hash=e.blob
             LEFT JOIN import_asset_metadata metadata ON metadata.input=m.input AND metadata.sidecar=m.sidecar
             LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
             WHERE m.import_id=?1 ORDER BY m.observation,e.offset,metadata.ordinal")?;
@@ -594,13 +841,4 @@ fn hash_row(hash: &mut blake3::Hasher, row: &rusqlite::Row<'_>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Private masking states indexed by the next source message.
-pub struct MaskingStates(Vec<(usize, MessageMasker)>);
-impl MaskingStates {
-    pub fn before(&self, message: usize) -> Option<MessageMasker> {
-        let end = self.0.partition_point(|(at, _)| *at <= message);
-        end.checked_sub(1).map(|index| self.0[index].1.clone())
-    }
 }

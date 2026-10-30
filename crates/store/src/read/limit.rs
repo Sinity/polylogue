@@ -42,26 +42,32 @@ pub struct ReadLimit {
     deadline: Option<Instant>,
     steps: Arc<AtomicU64>,
     stage: Arc<Mutex<Option<&'static str>>>,
+    scopes: Arc<Mutex<Vec<super::scope::ReadScopeToken>>>,
     pub cancellation: ReadCancellation,
 }
 
 impl ReadLimit {
     pub fn new(duration: Duration, cancellation: ReadCancellation) -> Self {
-        Self {
-            deadline: Instant::now().checked_add(duration),
-            cancellation,
-            steps: Arc::new(AtomicU64::new(0)),
-            stage: Arc::new(Mutex::new(None)),
-        }
+        Self::with_deadline(Instant::now().checked_add(duration), cancellation)
+    }
+
+    /// Bind an already admitted absolute deadline without renewing its budget.
+    pub fn at(deadline: Instant, cancellation: ReadCancellation) -> Self {
+        Self::with_deadline(Some(deadline), cancellation)
     }
 
     /// Export has cancellation even when its caller has asked for no deadline.
     pub fn without_deadline(cancellation: ReadCancellation) -> Self {
+        Self::with_deadline(None, cancellation)
+    }
+
+    fn with_deadline(deadline: Option<Instant>, cancellation: ReadCancellation) -> Self {
         Self {
-            deadline: None,
+            deadline,
             cancellation,
             steps: Arc::new(AtomicU64::new(0)),
             stage: Arc::new(Mutex::new(None)),
+            scopes: Default::default(),
         }
     }
 
@@ -82,7 +88,27 @@ impl ReadLimit {
         self.steps.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn bind_scope(&self, scope: super::scope::ReadScopeToken) -> Result<()> {
+        scope.check()?;
+        let mut scopes = self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !scopes.iter().any(|existing| existing.same(&scope)) {
+            scopes.push(scope);
+        }
+        Ok(())
+    }
+
     pub fn check(&self) -> Result<()> {
+        for scope in self
+            .scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            scope.check()?;
+        }
         if self.cancellation.is_cancelled() {
             Err(StoreError::ReadCancelled)
         } else if self

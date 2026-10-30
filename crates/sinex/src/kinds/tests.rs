@@ -1,227 +1,312 @@
 use super::*;
-use sinex_model::{
-    Class, EventPayload, KeyKind, MaterialId, Origin, ReadingOrder, RecordLocation, ReplaceRule,
-};
+use crate::products;
+use polylogue_store::primary::{Product, Reading};
+use serde_json::json;
 
-fn at(seconds: i64) -> Timestamp {
-    Timestamp::from_unix_secs(seconds).unwrap()
-}
-
-fn message(text: &str) -> Message {
-    Message {
-        message: "claude-code:m1".into(),
-        session: "claude-code:s1".into(),
-        parent: None,
-        role: "user".into(),
-        written_by: "human".into(),
-        prompt_kind: Some("prose".into()),
-        at: Some(at(1_790_000_000)),
-        model: None,
-        text: text.into(),
-        usage: Usage::default(),
-        cost_nusd: None,
-        stop_reason: None,
-        duration_ms: None,
-        attachments: vec![],
-        copies: vec![],
-    }
-}
-
-fn origin() -> Origin {
-    Origin::Record {
-        location: RecordLocation {
-            material: MaterialId::new(),
-            anchor: 0,
+fn reading(input: &str, start: u64) -> Reading {
+    Reading {
+        delivery: None,
+        source_length: None,
+        input: polylogue_store::InputKey {
+            id: input.into(),
+            format: "codex".into(),
+            arrival_rank: 0,
         },
-        output_index: 0,
+        chain: 1,
+        reading_version: "reader-3".into(),
+        order_from: None,
+        repeats_whole_conversations: false,
+        start,
+        parsed_upto: 100,
+        at_end: true,
+        no_parser_yet: false,
+    }
+}
+fn message(input: &str, start: u64) -> Product {
+    Product::Message {native_fields:None,declared_injections:None,declared_attachment_bindings:None,reading:reading(input,start),order:Some(6),projection:None,facts:Box::new(serde_json::from_value(json!({"offset":50,"end":100,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"nested":{"citation":["source"]}},"production":{"phase":"final","server_tool_use":{"web_search_requests":0}},"blocks":[{"type":"tool_result","call_id":"native","outcome":{"kind":"ok"},"output":"done","reported_duration_ms":17}]}})).unwrap())}
+}
+
+#[test]
+fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record() {
+    let first = message("input-a", 0);
+    let later = message("input-a", 25);
+    let copy = message("input-b", 0);
+    assert_eq!(
+        products::key(&first, 0).unwrap(),
+        products::key(&later, 0).unwrap()
+    );
+    assert_ne!(
+        products::key(&first, 0).unwrap(),
+        products::key(&copy, 0).unwrap()
+    );
+    let payload = products::payload(&first, 0).unwrap();
+    assert_eq!(
+        products::decode("polylogue.message", payload.clone()).unwrap(),
+        first
+    );
+    let declaration = declarations("polylogue")
+        .into_iter()
+        .find(|declaration| declaration.kind.name == "polylogue.message")
+        .unwrap();
+    declaration
+        .evaluate(&payload, sinex_model::Class::Open)
+        .unwrap();
+    let validator =
+        jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap()).unwrap();
+    validator.validate(&payload).unwrap();
+    let mut malformed = payload;
+    malformed["record"]["facts"]["message"]["usage"] = json!("invalid usage");
+    assert!(validator.validate(&malformed).is_err());
+}
+
+#[test]
+fn complete_snapshot_schema_keys_session_and_reducer_and_carries_honest_unknown_time() {
+    let snapshot = polylogue_model::work_products::WorkSnapshot {
+        reducer_version: polylogue_model::work_products::VERSION,
+        position: 42,
+        session_id: polylogue_model::SessionId::parse("codex:s").unwrap(),
+        membership: polylogue_model::work_products::SnapshotMembership::Retired {
+            basis: polylogue_model::work_products::component::MembershipBasis {
+                membership_version: polylogue_model::work_products::membership::VERSION,
+                selection_version: polylogue_model::work_products::SelectionVersion::Confirmed1,
+                completed_position: 42,
+                scope: "scope".into(),
+                membership_hash: "retired-known-root".into(),
+            },
+        },
+        session: None,
+        retired: true,
+        unavailable: Vec::new(),
+        messages: Vec::new(),
+        calls: Vec::new(),
+        turns: Vec::new(),
+        sources: Vec::new(),
+        native: Vec::new(),
+    };
+    let fact = Product::WorkSnapshot { snapshot };
+    let payload = products::payload(&fact, 0).unwrap();
+    let declarations = declarations("polylogue");
+    let declaration = declarations
+        .iter()
+        .find(|declaration| declaration.kind.name == "polylogue.work_snapshot")
+        .unwrap();
+    assert_eq!(
+        declaration.key_rule,
+        Some(sinex_model::kinds::KeyRule::Fields {
+            fields: vec!["session".into(), "reducer_version".into()]
+        })
+    );
+    assert_eq!(
+        declaration.time_rule,
+        Some(sinex_model::kinds::TimeRule::Unknown)
+    );
+    declaration
+        .evaluate(&payload, sinex_model::Class::Open)
+        .unwrap();
+    assert_eq!(
+        products::decode("polylogue.work_snapshot", payload.clone()).unwrap(),
+        fact
+    );
+    let mut malformed = payload;
+    malformed["source_position"] = 43.into();
+    assert!(products::decode("polylogue.work_snapshot", malformed).is_err());
+    assert!(declarations.iter().all(|declaration| !matches!(
+        declaration.kind.name.as_str(),
+        "polylogue.tool_call" | "polylogue.turn"
+    )));
+}
+
+#[test]
+fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
+    for declaration in declarations("polylogue") {
+        assert_eq!(
+            declaration.kind.version,
+            match declaration.kind.name.as_str() {
+                "polylogue.work_snapshot"
+                | "polylogue.message"
+                | "polylogue.kept_result"
+                | "polylogue.delivery"
+                | "polylogue.delivery_outcome"
+                | "polylogue.request"
+                | "polylogue.request_restore" => 5,
+                "polylogue.input_observation"
+                | "polylogue.session"
+                | "polylogue.document"
+                | "polylogue.event"
+                | "polylogue.link"
+                | "polylogue.background"
+                | "polylogue.repository"
+                | "polylogue.parse_progress" => 4,
+                "polylogue.query_run" | "polylogue.blob" | "polylogue.coverage" => 3,
+                "polylogue.fragment" => 2,
+                "polylogue.assertion"
+                | "polylogue.assertion_restore"
+                | "polylogue.historical_restore"
+                | "polylogue.attachment_binding"
+                | "polylogue.query"
+                | "polylogue.query_run_outcome"
+                | "polylogue.work_component_status" => 1,
+                other => panic!("undeclared successor kind/version expectation: {other}"),
+            }
+        );
+        assert!(
+            declaration
+                .field_hints
+                .iter()
+                .any(|hint| hint.field == "/record" && hint.class == sinex_model::Class::Guarded)
+        );
+        assert_eq!(declaration.search, sinex_model::kinds::Search::None);
+    }
+    assert!(kind_reference("polylogue.unknown").is_err());
+    for retired in [
+        "polylogue.note",
+        "polylogue.setting",
+        "polylogue.historical_query_run",
+        "polylogue.conserved_request",
+    ] {
+        assert!(
+            kind_reference(retired).is_err(),
+            "receive-only or retired kind was registered: {retired}"
+        );
     }
 }
 
-#[devkit::test]
-fn sessions_messages_and_calls_are_keyed_by_polylogue_ids_and_replaced_when_newer() {
-    let keys: [(KeyKind, ReplaceRule, &'static [&'static str]); 4] = [
-        (Session::KEY, Session::REPLACE, &["session"]),
-        (Message::KEY, Message::REPLACE, &["message"]),
-        (ToolCall::KEY, ToolCall::REPLACE, &["call"]),
-        (Turn::KEY, Turn::REPLACE, &["turn"]),
-    ];
-    for (key, replace, field) in keys {
-        assert_eq!(key, KeyKind::Fields(field));
-        assert_eq!(replace, ReplaceRule::ReplaceWhenNewer);
-    }
-    assert_eq!(Note::REPLACE, ReplaceRule::SuppressRepeat);
-    let a = Message::payload_schema();
-    assert!(
-        a["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|f| f == "text")
+#[test]
+fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
+    use polylogue_model::bundle::fragments::{
+        TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord, TextSourceVersion,
+        TextSpanOrigin,
+    };
+    use polylogue_model::{BlobHash, Reference};
+    let container =
+        Reference::Message(polylogue_model::MessageId::parse("codex:morrow-fragment").unwrap());
+    let mut fragment = TextFragment {
+        container: container.clone(),
+        source_version: TextSourceVersion::ContentHash {
+            record: container,
+            hash: BlobHash::of(b"original source value"),
+        },
+        coverage: TextCoverage {
+            start: 7,
+            end: 10,
+            total_bytes: None,
+        },
+        text: "abc".into(),
+        text_hash: BlobHash::of(b"abc"),
+        provenance: TextFragmentProvenance {
+            spans: vec![],
+            sources: vec![],
+            imports: vec![],
+        },
+    };
+    fragment.provenance.spans.push(TextSpanOrigin {
+        reference: fragment.reference(),
+        start: 7,
+        end: 10,
+    });
+    let record = TextFragmentRecord {
+        reference: fragment.reference().to_string(),
+        commit: 9000,
+        fragment,
+    };
+    record.validate().unwrap();
+    let product = Product::Fragment {
+        reading: reading("input-fragment", 12),
+        facts: Box::new(polylogue_model::batch::FragmentRow {
+            offset: 12,
+            end: 47,
+            record,
+        }),
+    };
+    let payload = products::payload(&product, 0).unwrap();
+    let declaration = declarations("polylogue")
+        .into_iter()
+        .find(|declaration| declaration.kind.name == "polylogue.fragment")
+        .unwrap();
+    assert_eq!(declaration.kind.version, 2);
+    jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
+        .unwrap()
+        .validate(&payload)
+        .unwrap();
+    assert_eq!(payload["record"]["facts"]["offset"], 12);
+    assert_eq!(payload["record"]["facts"]["end"], 47);
+    assert_eq!(payload["record"]["facts"]["record"]["commit"], 9000);
+    assert!(payload.get("message").is_none());
+    assert_eq!(
+        products::decode("polylogue.fragment", payload).unwrap(),
+        product
     );
 }
 
-#[devkit::test]
-fn message_fields_default_to_guarded_and_skip_sinex_search() {
-    assert!(Message::FIELD_HINTS.contains(&("/text", Class::Guarded)));
-    assert_eq!(Message::SEARCH, sinex_model::kinds::Search::None);
-    assert_eq!(ToolCall::SEARCH, sinex_model::kinds::Search::None);
-    assert!(Session::FIELD_HINTS.is_empty());
-    let event = sinex_model::Event::build(
-        &message("a prompt"),
-        "polylogue",
-        origin(),
-        ReadingOrder(1),
-        [0; 32],
-        Class::Open,
-    )
-    .unwrap();
-    assert_eq!(event.class, Class::Open);
-    let sealed = sinex_model::Event::build(
-        &message("a prompt"),
-        "polylogue",
-        origin(),
-        ReadingOrder(1),
-        [0; 32],
-        Class::Sealed,
-    )
-    .unwrap();
-    assert_eq!(sealed.class, Class::Sealed);
-}
-
-#[devkit::test]
-fn the_same_message_read_twice_has_one_equivalence_key() {
-    let build = |text: &str| {
-        sinex_model::Event::build(
-            &message(text),
-            "polylogue",
-            origin(),
-            ReadingOrder(1),
-            [0; 32],
-            Class::Guarded,
-        )
-        .unwrap()
+#[test]
+fn component_replacement_keeps_its_physical_key_across_copy_arrival_and_resolution() {
+    use polylogue_model::work_products::component::*;
+    let mut status = ComponentStatus {
+        version: VERSION,
+        reducer_version: polylogue_model::work_products::VERSION,
+        position: 42,
+        component_kind: ComponentKind::LogicalWork,
+        physical: vec![PhysicalRef {
+            session: polylogue_model::SessionId::parse("codex:physical").unwrap(),
+            evidence: vec![PhysicalEvidence {
+                event: "00000000-0000-7000-8000-000000000001".into(),
+                field: PhysicalField::MessageSession,
+            }],
+        }],
+        links: vec![],
+        status: ComponentState::Unavailable {
+            reasons: vec!["logical_membership_root_unavailable".into()],
+        },
+    };
+    let unavailable = Product::WorkComponentStatus {
+        status: Box::new(status.clone()),
+    };
+    status.position = 43;
+    status.physical[0].evidence.push(PhysicalEvidence {
+        event: "00000000-0000-7000-8000-000000000002".into(),
+        field: PhysicalField::SessionId,
+    });
+    status.status = ComponentState::Resolved {
+        superseding_root_refs: vec![RootRef {
+            session: polylogue_model::SessionId::parse("codex:established-root").unwrap(),
+            reducer_version: polylogue_model::work_products::VERSION,
+        }],
+        basis: MembershipBasis {
+            membership_version: polylogue_model::work_products::membership::VERSION,
+            selection_version: polylogue_model::work_products::SelectionVersion::Confirmed1,
+            completed_position: 43,
+            scope: "owner-scope".into(),
+            membership_hash: "confirmed-membership".into(),
+        },
+    };
+    let resolved = Product::WorkComponentStatus {
+        status: Box::new(status),
     };
     assert_eq!(
-        build("first reading").equivalence_key,
-        build("a newer parser's reading").equivalence_key
+        products::key(&unavailable, 0).unwrap(),
+        products::key(&resolved, 0).unwrap()
     );
-}
-
-use serde_json::{Value, json};
-
-fn example(schema: &Value, root: &Value, optional: bool) -> Value {
-    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        return example(
-            root.pointer(reference.strip_prefix('#').unwrap()).unwrap(),
-            root,
-            optional,
-        );
-    }
-    if let Some(v) = schema.get("const") {
-        return v.clone();
-    }
-    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
-        return values[0].clone();
-    }
-    if let Some(branches) = schema
-        .get("anyOf")
-        .or_else(|| schema.get("oneOf"))
-        .and_then(Value::as_array)
-    {
-        let branch = if optional {
-            branches
-                .iter()
-                .find(|s| s.get("type").and_then(Value::as_str) != Some("null"))
-                .unwrap()
-        } else {
-            &branches[0]
-        };
-        return example(branch, root, optional);
-    }
-    let ty = schema.get("type").unwrap_or(&Value::Null);
-    let ty = ty
-        .as_str()
-        .or_else(|| {
-            ty.as_array()
-                .and_then(|a| a.iter().filter_map(Value::as_str).find(|s| *s != "null"))
-        })
-        .unwrap_or("object");
-    match ty {
-        "string" => match schema.get("format").and_then(Value::as_str) {
-            Some("date-time") => json!("2026-10-27T14:00:00+02:00"),
-            Some("uuid") => json!("019a26cd-e800-7000-8000-000000000001"),
-            _ => json!("sample"),
-        },
-        "integer" | "number" => schema.get("minimum").cloned().unwrap_or(json!(0)),
-        "boolean" => json!(optional),
-        "null" => Value::Null,
-        "array" => json!([]),
-        _ => {
-            let mut object = serde_json::Map::new();
-            if let Some(fields) = schema.get("properties").and_then(Value::as_object) {
-                let required = schema.get("required").and_then(Value::as_array);
-                for (name, field) in fields {
-                    if optional || required.is_some_and(|fields| fields.contains(&json!(name))) {
-                        object.insert(name.clone(), example(field, root, optional));
-                    }
-                }
-            }
-            Value::Object(object)
-        }
-    }
-}
-
-fn parity<P: EventPayload>() {
-    let declaration = super::declarations("polylogue")
+    let declaration = declarations("polylogue")
         .into_iter()
-        .find(|declaration| declaration.kind.name == P::EVENT_TYPE)
+        .find(|declaration| declaration.kind.name == "polylogue.work_component_status")
         .unwrap();
-    for optional in [false, true] {
-        let schema = declaration.payload_schema.as_ref().unwrap();
-        let payload = example(schema, schema, optional);
-        let typed: P = serde_json::from_value(payload).unwrap();
-        let event = sinex_model::Event::build(
-            &typed,
-            "polylogue",
-            origin(),
-            ReadingOrder(1),
-            [0; 32],
-            Class::Open,
-        )
-        .unwrap();
-        assert_eq!(event.kind_ref(), declaration.kind);
+    assert_eq!(declaration.kind.version, 1);
+    assert_eq!(
+        declaration.key_rule,
+        Some(sinex_model::kinds::KeyRule::Fields {
+            fields: vec!["component_kind".into(), "component_sessions".into()]
+        })
+    );
+    let validator =
+        jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap()).unwrap();
+    for product in [unavailable, resolved] {
+        let payload = products::payload(&product, 0).unwrap();
+        validator.validate(&payload).unwrap();
+        assert!(payload.get("session").is_none());
+        assert!(payload.get("complete").is_none());
         assert_eq!(
-            super::kind_reference(P::EVENT_TYPE).unwrap(),
-            declaration.kind
+            products::decode("polylogue.work_component_status", payload).unwrap(),
+            product
         );
-        let evaluated = declaration.evaluate(&event.payload, Class::Open).unwrap();
-        assert_eq!(evaluated.equivalence_key, event.equivalence_key);
-        assert_eq!(evaluated.ts_orig, event.ts_orig);
-        assert_eq!(evaluated.record_state, event.record_state);
-        assert_eq!(evaluated.owned_blobs, event.owned_blobs);
-        assert_eq!(evaluated.class, event.class);
     }
-}
-
-#[test]
-fn all_ten_producer_declarations_preserve_typed_keys_clocks_and_classes() {
-    assert_eq!(super::declarations("polylogue").len(), 10);
-    parity::<Session>();
-    parity::<Message>();
-    parity::<ToolCall>();
-    parity::<Turn>();
-    parity::<Delivery>();
-    parity::<DeliveryOutcome>();
-    parity::<Note>();
-    parity::<Setting>();
-    parity::<KeptResult>();
-    parity::<Excision>();
-}
-
-#[test]
-fn undeclared_producer_kind_has_no_wire_reference() {
-    assert!(matches!(
-        super::kind_reference("polylogue.unknown"),
-        Err(crate::Error::Invalid(_))
-    ));
 }

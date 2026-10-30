@@ -1,10 +1,12 @@
+mod assertions;
+mod components;
 use super::*;
 
 #[test]
 fn every_schema_applies_to_an_empty_database() {
     for (name, create) in [
         ("archive", ensure_archive as fn(&Connection) -> Result<()>),
-        ("sinex", ensure_sinex),
+        ("primary", ensure_primary_index),
         ("index", ensure_index),
         ("embeddings", ensure_embeddings),
     ] {
@@ -14,160 +16,19 @@ fn every_schema_applies_to_an_empty_database() {
     }
 }
 
-/// `archive.sql` as version 1 declared it. The archive's migrations start
-/// from these tables.
-const ARCHIVE_1: &str = include_str!("tests/archive_1.sql");
-
-/// An archive at `version`: version 1's tables and the migrations after it.
-/// A test for a migration fills an archive at the version before, migrates
-/// it and checks that every row is still there.
-pub(crate) fn archive_at(version: u32) -> Connection {
-    let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(ARCHIVE_1).unwrap();
-    for step in &ARCHIVE_MIGRATIONS[..version as usize - 1] {
-        conn.execute_batch(step).unwrap();
+#[test]
+fn numbered_source_and_index_migrations_keep_the_embedding_baseline() {
+    assert_eq!(ARCHIVE_VERSION, 5);
+    assert_eq!(INDEX_VERSION, 15);
+    for (create, expected) in [
+        (ensure_archive as fn(&Connection) -> Result<()>, 5),
+        (ensure_index, 15),
+        (ensure_embeddings, 1),
+    ] {
+        let conn = Connection::open_in_memory().unwrap();
+        create(&conn).unwrap();
+        assert_eq!(version(&conn).unwrap(), expected);
     }
-    set_version(&conn, version).unwrap();
-    conn
-}
-
-#[test]
-fn version_1_and_the_migrations_give_the_declared_archive() {
-    for from in 1..=ARCHIVE_VERSION {
-        let conn = archive_at(from);
-        ensure_archive(&conn).unwrap_or_else(|e| panic!("from version {from}: {e}"));
-        assert_eq!(version(&conn).unwrap(), ARCHIVE_VERSION);
-        assert!(
-            same_schema(&conn, &[ARCHIVE]).unwrap(),
-            "from version {from}"
-        );
-    }
-}
-
-#[test]
-fn migration_2_adds_backfill_jobs_and_keeps_every_row() {
-    let conn = archive_at(1);
-    conn.execute_batch(
-        "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq)
-             VALUES ('s1', '*', 'browser.actions', 'on', 'operator', 1, 1);
-         INSERT INTO chat_action(id, request_key, request_hash, request_json, stage_only,
-             needs_approval, created_at, commit_seq)
-             VALUES ('a1', 'k1', x'00', '{}', 1, 0, 2, 2);
-         INSERT INTO chat_action_event(action, n, at, kind, phase, commit_seq)
-             VALUES ('a1', 1, 2, 'queued', 'queued', 2);",
-    )
-    .unwrap();
-    let rows = |conn: &Connection| -> Vec<String> {
-        ["setting", "chat_action", "chat_action_event"]
-            .iter()
-            .flat_map(|table| {
-                conn.prepare(&format!("SELECT * FROM {table}"))
-                    .unwrap()
-                    .query_map([], |r| {
-                        Ok((0..r.as_ref().column_count())
-                            .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
-                            .collect::<Vec<_>>()
-                            .join("|"))
-                    })
-                    .unwrap()
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .unwrap()
-            })
-            .collect()
-    };
-    let before = rows(&conn);
-    ensure_archive(&conn).unwrap();
-    assert!(version(&conn).unwrap() >= 2);
-    assert_eq!(rows(&conn), before);
-    conn.execute_batch(
-        "INSERT INTO backfill_job(id, provider, since, created_at, commit_seq)
-             VALUES ('j1', 'chatgpt', NULL, 3, 3);",
-    )
-    .unwrap();
-}
-
-#[test]
-fn migration_3_keeps_every_request_and_leaves_old_ones_without_their_content() {
-    let conn = archive_at(2);
-    conn.execute_batch(
-        "INSERT INTO client_request(id, content_hash, created_at) VALUES ('r1', x'01', 5);",
-    )
-    .unwrap();
-    ensure_archive(&conn).unwrap();
-    assert!(version(&conn).unwrap() >= 3);
-    let row: (String, Vec<u8>, i64, Option<Vec<u8>>, i64) = conn
-        .query_row(
-            "SELECT id, content_hash, created_at, request, commit_seq FROM client_request",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .unwrap();
-    assert_eq!(row, ("r1".into(), vec![1], 5, None, 0));
-}
-
-#[test]
-fn migration_4_counts_the_rows_it_finds_and_keeps_every_row() {
-    let conn = archive_at(3);
-    conn.execute_batch(
-        "INSERT INTO input(id, format) VALUES ('i1', 'f'), ('i2', 'f');
-         INSERT INTO revision(input, number, produced, chain, length, commit_seq)
-             VALUES ('i1', 1, 'first', 1, 10, 1), ('i1', 2, 'appended', 1, 20, 2),
-                    ('i2', 1, 'imported', 1, 5, 3);
-         INSERT INTO blob(hash, size, stored_size, place, encoding, state)
-             VALUES (x'01', 100, 50, 'file', 'plain', 'present'),
-                    (x'02', 7, 7, 'file', 'plain', 'writing');",
-    )
-    .unwrap();
-    let rows = |conn: &Connection| -> Vec<String> {
-        ["input", "revision", "blob"]
-            .iter()
-            .flat_map(|table| {
-                conn.prepare(&format!("SELECT * FROM {table}"))
-                    .unwrap()
-                    .query_map([], |r| {
-                        Ok((0..r.as_ref().column_count())
-                            .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
-                            .collect::<Vec<_>>()
-                            .join("|"))
-                    })
-                    .unwrap()
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .unwrap()
-            })
-            .collect()
-    };
-    let before = rows(&conn);
-    ensure_archive(&conn).unwrap();
-    assert!(version(&conn).unwrap() >= 4);
-    assert_eq!(rows(&conn), before);
-    let counts = |conn: &Connection| -> Vec<(String, i64)> {
-        conn.prepare("SELECT name, n FROM row_count ORDER BY name")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap()
-    };
-    let expect = |input: i64, revision: i64, stored: i64| {
-        vec![
-            ("input".to_owned(), input),
-            ("revision".to_owned(), revision),
-            ("stored_bytes".to_owned(), stored),
-        ]
-    };
-    assert_eq!(counts(&conn), expect(2, 3, 100));
-    // The triggers keep the counts from here on.
-    conn.execute_batch(
-        "UPDATE blob SET state = 'present' WHERE hash = x'02';
-         INSERT INTO input(id, format) VALUES ('i3', 'f');
-         DELETE FROM revision WHERE input = 'i2';
-         UPDATE blob SET state = 'deleting' WHERE hash = x'01';",
-    )
-    .unwrap();
-    assert_eq!(counts(&conn), expect(3, 2, 7));
-    conn.execute_batch("DELETE FROM blob WHERE hash = x'02';")
-        .unwrap();
-    assert_eq!(counts(&conn), expect(3, 2, 0));
 }
 
 const TWO_TABLES: &str = "CREATE TABLE kept(value TEXT NOT NULL) STRICT;
@@ -267,7 +128,7 @@ fn a_newer_database_or_one_with_unknown_tables_is_refused() {
     // The current version with a table missing, as an archive written by a
     // build that declared the same version with other tables.
     for change in [
-        "DROP TABLE excised",
+        "DROP TABLE revision",
         "ALTER TABLE note ADD COLUMN synthetic TEXT",
     ] {
         let conn = Connection::open_in_memory().unwrap();
@@ -304,40 +165,23 @@ fn comments_and_spacing_in_the_declarations_do_not_change_the_schema() {
 }
 
 #[test]
-fn index_format_changes_require_a_version_and_digest_update() {
-    assert_eq!(
-        (
-            INDEX_VERSION,
-            blake3::hash(INDEX.as_bytes()).to_hex().to_string(),
-            blake3::hash(include_bytes!("../encoding/rows.dict"))
-                .to_hex()
-                .to_string()
-        ),
-        (
-            52,
-            "5c4ccbd763a4443e606e3b90373f869f93e36cf0581cd3bdab25f9503d69e5e1".to_owned(),
-            "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
-        ),
-        "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"
-    );
-}
-
-#[test]
 fn read_indexes_are_added_in_place_and_survive_reopen() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(INDEX).unwrap();
+    base_index(&conn).unwrap();
     set_version(&conn, INDEX_VERSION).unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     assert!(same_index_schema(&conn).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
-    base.execute_batch(INDEX).unwrap();
-    let base = shape(&base).unwrap();
+    base_index(&base).unwrap();
+    let base_shape = shape(&base).unwrap();
+    base.execute_batch(READ_INDEXES).unwrap();
+    let expected = shape(&base).unwrap();
     let read_indexes: Vec<_> = shape(&conn)
         .unwrap()
         .into_iter()
-        .filter(|item| item.0 == "index" && !base.contains(item))
+        .filter(|item| item.0 == "index" && !base_shape.contains(item))
         .map(|item| item.1)
         .collect();
     assert!(!read_indexes.is_empty());
@@ -345,9 +189,9 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
         assert!(same_index_schema(&conn).unwrap(), "missing {name}");
         ensure_index(&conn).unwrap();
-        assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+        assert_eq!(shape(&conn).unwrap(), expected);
     }
-    assert!(same_schema(&conn, &[INDEX, READ_INDEXES]).unwrap());
+    assert_eq!(shape(&conn).unwrap(), expected);
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
@@ -358,4 +202,115 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
     conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
         .unwrap();
     assert!(!same_index_schema(&conn).unwrap());
+}
+
+#[test]
+fn migration_keeps_rows_source_bytes_and_paid_embedding_hashes_when_mask_state_retires() {
+    let index = Connection::open_in_memory().unwrap();
+    index.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    index
+        .execute_batch(include_str!("fixtures/index_3.sql"))
+        .unwrap();
+    index.execute_batch("PRAGMA user_version=3;
+      INSERT INTO input_ref(pk,id,format) VALUES(1,'synthetic-source','fixture');
+      INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:migration','claude-code','migration','main',1);
+      INSERT INTO message(pk,id,session_pk,order_input_pk,seq,arrival_rank,role,written_by,prompt_kind,input_pk,cost_nusd,provider_cost_nusd,pem,order_input_id)
+      VALUES(1,'claude-code:migration/m',1,1,1,0,'user','human','prose',1,12345,67890,2,'synthetic-source');").unwrap();
+    let source = "--secret=synthetic-preserved-value\n\0";
+    let text_body = crate::encoding::pack_text(source).unwrap();
+    let hash = blake3::hash(source.as_bytes());
+    let block_body =
+        crate::encoding::pack_json(&serde_json::json!({"type":"text","text":null})).unwrap();
+    index
+        .execute(
+            "INSERT INTO text(id,hash,body) VALUES(1,?1,?2)",
+            rusqlite::params![hash.as_bytes().as_slice(), text_body],
+        )
+        .unwrap();
+    index.execute("INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body) VALUES(1,1,0,'text',1,?1)",[&block_body]).unwrap();
+    let reading_body = crate::encoding::pack_json(&serde_json::json!({"source":source})).unwrap();
+    index
+        .execute(
+            "INSERT INTO message_version(version_hash,body) VALUES(?1,?2)",
+            rusqlite::params![hash.as_bytes().as_slice(), reading_body],
+        )
+        .unwrap();
+    let embeddings = Connection::open_in_memory().unwrap();
+    ensure_embeddings(&embeddings).unwrap();
+    let vector = [0_f32, 1_f32, 0_f32]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect::<Vec<_>>();
+    embeddings.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES(?1,'synthetic/model/3/document/unit',0,3,?2,1)",
+        rusqlite::params![hash.as_bytes().as_slice(),vector]).unwrap();
+    let values = |conn: &Connection| {
+        conn.query_row(
+            "SELECT id,cost_nusd,provider_cost_nusd FROM message",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    let before = values(&index);
+    ensure_index(&index).unwrap();
+    ensure_index(&index).unwrap();
+    assert_eq!(version(&index).unwrap(), INDEX_VERSION);
+    assert_eq!(values(&index), before);
+    assert_eq!(
+        index
+            .query_row("SELECT body FROM block", [], |row| row.get::<_, Vec<u8>>(0))
+            .unwrap(),
+        block_body
+    );
+    let (stored_hash, stored_body): (Vec<u8>, Vec<u8>) = index
+        .query_row("SELECT hash,body FROM text", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(stored_hash, hash.as_bytes());
+    assert_eq!(crate::encoding::unpack_text(&stored_body).unwrap(), source);
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT body FROM message_version WHERE version_hash=?1",
+                [&stored_hash],
+                |row| row.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+        reading_body
+    );
+    let (cached_hash, cached_vector): (Vec<u8>, Vec<u8>) = embeddings
+        .query_row("SELECT text_hash,vector FROM embedded", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(cached_hash, stored_hash);
+    assert_eq!(cached_vector, vector);
+    assert!(
+        !index
+            .prepare("SELECT name FROM pragma_table_info('message') WHERE name='pem'")
+            .unwrap()
+            .exists([])
+            .unwrap()
+    );
+}
+
+#[test]
+fn cursor_checkpoint_migration_keeps_prior_cursor_without_manufacturing_state() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(include_str!("fixtures/index_3.sql"))
+        .unwrap();
+    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'checkpoint-migration','claude-code');
+        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,commit_seq) VALUES(1,1,'prior-reading','done',2,17);
+        PRAGMA user_version=3;").unwrap();
+    ensure_index(&conn).unwrap();
+    let prior:(String,i64,i64,Option<Vec<u8>>)=conn.query_row("SELECT reading_version,parsed_upto,commit_seq,checkpoint FROM parse_state WHERE input_pk=1 AND chain=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(prior, ("prior-reading".into(), 2, 17, None));
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
 }

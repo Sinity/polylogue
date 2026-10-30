@@ -28,7 +28,9 @@
           "id": "claude-code:parent-u",
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:claude-lineage-parent"
+          "session": "claude-code:claude-lineage-parent",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 0
       },
@@ -46,7 +48,9 @@
           "model": "claude-sonnet-4-5-20250929",
           "parent": "claude-code:parent-u",
           "role": "assistant",
-          "session": "claude-code:claude-lineage-parent"
+          "session": "claude-code:claude-lineage-parent",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
         },
         "offset": 187
       }
@@ -55,7 +59,9 @@
       {
         "id": "claude-code:claude-lineage-parent",
         "kind": "main",
-        "started": "2026-07-01T12:00:00Z"
+        "started": "2026-07-01T12:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
       }
     ]
   }

@@ -1,6 +1,19 @@
 use super::settings::merge_hooks;
 use super::*;
 
+pub(super) fn startup() -> Startup {
+    let engine = polylogue_engine::Config::new(
+        PathBuf::from("/synthetic/home"),
+        Default::default(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        1,
+        polylogue_model::WallClock::fixed("2026-01-01T00:00:00Z".parse().unwrap()),
+    )
+    .unwrap();
+    Startup::for_test(engine, Path::new("/synthetic/archive"))
+}
+
 #[test]
 fn hook_spool_files_get_one_line_per_event() {
     let dir = tempfile::tempdir().unwrap();
@@ -9,6 +22,8 @@ fn hook_spool_files_get_one_line_per_event() {
         Harness::ClaudeCode,
         "Stop",
         &json!({"session_id": "a"}),
+        &json!({}),
+        &startup(),
     )
     .unwrap();
     append_to_spool(
@@ -16,6 +31,8 @@ fn hook_spool_files_get_one_line_per_event() {
         Harness::Codex,
         "SessionEnd",
         &json!({"session_id": "b"}),
+        &json!({}),
+        &startup(),
     )
     .unwrap();
     let file = dir
@@ -28,6 +45,7 @@ fn hook_spool_files_get_one_line_per_event() {
         .collect();
     assert_eq!(lines.len(), 2);
     assert!(lines[0]["event_id"].is_string());
+    assert_eq!(lines[0]["at_ns"], "1767225600000000000");
     assert_ne!(lines[0]["event_id"], lines[1]["event_id"]);
     assert_eq!(lines[0]["provider"], "claude-code");
     assert_eq!(lines[0]["session_id"], "a");
@@ -45,7 +63,15 @@ fn a_hermes_turn_keeps_its_event_without_the_conversation() {
         "cwd": "/tmp",
         "extra": {"is_first_turn": true, "user_message": "hi", "conversation_history": [{"role": "user"}]},
     });
-    append_to_spool(dir.path(), Harness::Hermes, "pre_llm_call", &payload).unwrap();
+    append_to_spool(
+        dir.path(),
+        Harness::Hermes,
+        "pre_llm_call",
+        &payload,
+        &json!({}),
+        &startup(),
+    )
+    .unwrap();
     let file = dir
         .path()
         .join(format!("{}.ndjson", std::os::unix::process::parent_id()));
@@ -65,11 +91,78 @@ fn a_hermes_turn_keeps_its_event_without_the_conversation() {
 }
 
 #[test]
+fn hermes_session_uses_the_resolved_source_profile_and_machine() {
+    let mut startup = startup();
+    startup.engine.tool_dirs.insert(
+        "HERMES_HOME".into(),
+        PathBuf::from("/synthetic/other-hermes"),
+    );
+    let expected = polylogue_sources::hermes::session_at(
+        "synthetic-machine",
+        Path::new("/synthetic/other-hermes/state.db"),
+        "turn-1",
+    )
+    .unwrap();
+    assert_eq!(
+        session_of(Harness::Hermes, &json!({"session_id":"turn-1"}), &startup),
+        Some(expected)
+    );
+}
+
+#[test]
+fn context_uses_the_configured_archive_socket_and_clock() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < until =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("configured archive was not contacted: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = String::new();
+        BufReader::new(&stream).read_line(&mut request).unwrap();
+        let request: Value = serde_json::from_str(&request).unwrap();
+        let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
+        assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
+        let response = Response::Ok {
+            data: json!({"delivery":"context-1", "prepared":{"empty":false,"text":"configured archive"}}),
+        };
+        writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+    });
+    let reply = respond(
+        Harness::Codex,
+        "SessionStart",
+        &json!({"session_id":"turn-1","cwd":"/synthetic/project"}),
+        &startup,
+    );
+    peer.join().unwrap();
+    assert_eq!(
+        reply,
+        Some(("context-1".into(), "configured archive".into()))
+    );
+}
+
+#[test]
 fn each_harness_gets_context_in_its_own_shape() {
     // Without a daemon the hooks fail open: no context, no output.
     let start = json!({"session_id": "a", "cwd": "/nonexistent", "source": "startup"});
-    assert!(respond(Harness::Codex, "Stop", &start).is_none());
-    assert!(respond(Harness::Hermes, "SessionStart", &start).is_none());
+    assert!(respond(Harness::Codex, "Stop", &start, &startup()).is_none());
+    assert!(respond(Harness::Hermes, "SessionStart", &start, &startup()).is_none());
 }
 
 #[test]
@@ -191,6 +284,7 @@ fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
         tool_advice(
             Harness::ClaudeCode,
             &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
+            &startup(),
             |request, budget| {
                 calls += 1;
                 match request {
@@ -199,7 +293,6 @@ fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
                         assert_eq!(budget, ADVICE_BUDGET);
                         Some(Response::Ok {
                             data: json!({"delivery":"advice:one", "prepared":{"empty":false, "text":"try this"}}),
-                            references: Default::default(),
                         })
                     }
                     Request::AdviceDelivered {
@@ -214,7 +307,7 @@ fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
                     _ => panic!("unexpected request"),
                 }
             },
-            |_, _, text| {
+            |_, _, text, _| {
                 assert_eq!(text, "try this");
                 output_called.set(true);
                 printed
@@ -229,8 +322,9 @@ fn hermes_tool_events_do_not_request_or_print_advice() {
     tool_advice(
         Harness::Hermes,
         &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
+        &startup(),
         |_, _| panic!("a Hermes tool event requested advice"),
-        |_, _, _| panic!("a Hermes tool event printed advice"),
+        |_, _, _, _| panic!("a Hermes tool event printed advice"),
     );
 }
 
@@ -298,9 +392,13 @@ fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
         settings
     );
     assert_eq!(
-        session_of(Harness::GeminiCli, &json!({"session_id":"test"}))
-            .unwrap()
-            .to_string(),
+        session_of(
+            Harness::GeminiCli,
+            &json!({"session_id":"test"}),
+            &startup()
+        )
+        .unwrap()
+        .to_string(),
         "gemini-cli:test"
     );
 }
@@ -334,5 +432,94 @@ fn decoded_hook_context_has_visible_terminal_controls() {
             _ => &value["hookSpecificOutput"]["additionalContext"],
         };
         assert_eq!(context, &polylogue_render::terminal::escape(text));
+    }
+}
+
+#[test]
+fn successful_native_context_output_produces_a_distinct_parsable_emission_receipt() {
+    for printed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let startup = startup();
+        let payload = json!({"session_id":"emission-session","cwd":"/synthetic/project"});
+        let native = json!({"boot_id":"synthetic-boot"});
+        let invocation = append_to_spool(
+            dir.path(),
+            Harness::ClaudeCode,
+            "SessionStart",
+            &payload,
+            &native,
+            &startup,
+        )
+        .unwrap();
+        let recorder = EmissionRecorder {
+            dir: dir.path(),
+            harness: Harness::ClaudeCode,
+            event: "SessionStart",
+            invocation: Some(&invocation),
+            session: session_of(Harness::ClaudeCode, &payload, &startup),
+            native: &native,
+            startup: &startup,
+        };
+        let emitted = recorder.emit(
+            &["first-receipt".into(), "second:receipt".into()],
+            "context text is not an attribution marker",
+            |harness, event, text| {
+                assert_eq!(harness, Harness::ClaudeCode);
+                assert_eq!(event, "SessionStart");
+                assert_eq!(text, "context text is not an attribution marker");
+                let path = std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                assert_eq!(
+                    std::fs::read_to_string(path).unwrap().lines().count(),
+                    1,
+                    "emission was recorded before output succeeded"
+                );
+                printed
+            },
+        );
+        assert_eq!(emitted, printed);
+        let path = std::fs::read_dir(dir.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(polylogue_sources::hook_spool::open(&path).is_some());
+        let step = polylogue_sources::parse::run(
+            &polylogue_sources::hook_spool::HookSpool,
+            &mut polylogue_sources::hook_spool::ParserState::default(),
+            &bytes,
+            0,
+        )
+        .unwrap();
+        assert_eq!(step.output.events.len(), if printed { 2 } else { 1 });
+        assert!(step.output.messages.is_empty());
+        let claims = step
+            .output
+            .events
+            .iter()
+            .filter_map(polylogue_sources::hook_spool::context_emission)
+            .collect::<Vec<_>>();
+        if printed {
+            assert_eq!(claims.len(), 1);
+            assert_eq!(claims[0].invocation, invocation);
+            assert_eq!(
+                claims[0].session.to_string(),
+                "claude-code:emission-session"
+            );
+            assert_eq!(claims[0].hook_event, "SessionStart");
+            assert_eq!(
+                claims[0].deliveries,
+                ["delivery:first-receipt", "delivery:second:receipt"]
+            );
+            assert_ne!(step.output.events[1].data["event_id"], invocation);
+        } else {
+            assert!(claims.is_empty());
+        }
     }
 }

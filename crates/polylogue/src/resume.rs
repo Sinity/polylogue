@@ -76,10 +76,10 @@ pub fn resumable(
     reader: &Reader<'_>,
     cwd: &Path,
     limit: u64,
-    now: polylogue_model::Timestamp,
+    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Vec<ResumableSession>, StoreError> {
-    use crate::daemon::query::notes;
-    use polylogue_model::{NoteKind, Target};
+    use crate::daemon::query::assertions;
+    use polylogue_model::{Reference, assertion::AssertionKind};
     let dirs = crate::briefing::scope_dirs(cwd);
     let mut out = Vec::new();
     // Look further back than `limit`: most sessions finish cleanly.
@@ -87,14 +87,20 @@ pub fn resumable(
         let id = s.id.to_string();
         let open = reader.open_items(&id)?.unwrap_or_default();
         let conditions = format!(
-            "{} (kind:{} OR kind:{}) agent:false",
-            notes::about(&[Target::Session(s.id.clone())]),
-            NoteKind::Handoff.as_str(),
-            NoteKind::Blocker.as_str(),
+            "{} (kind:{} OR kind:{}) author:operator",
+            assertions::about(&[Reference::Session(s.id.clone())]),
+            AssertionKind::Handoff.as_str(),
+            AssertionKind::Blocker.as_str(),
         );
-        let follow_ups: Vec<String> = notes::list(reader, &conditions, now)?
+        let follow_ups: Vec<String> = assertions::list(reader, &conditions, context)?
             .into_iter()
-            .map(|n| format!("{}: {}", n.kind.as_str(), n.value.unwrap_or_default()))
+            .map(|n| {
+                format!(
+                    "{}: {}",
+                    n.fact.kind.as_str(),
+                    n.fact.text().unwrap_or_default()
+                )
+            })
             .collect();
         if !open.any() && follow_ups.is_empty() {
             continue;

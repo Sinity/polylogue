@@ -176,7 +176,7 @@
       "#8",
       "#7"
     ],
-    "31 notes where kind:decision": [
+    "31 assertions where kind:decision": [
       [
         "decided: chrono, not time",
         "#2",
@@ -193,7 +193,7 @@
         "Noted on the message above: next friday bug in weekday_offset()."
       ]
     ],
-    "33 near:\"ambiguous date formats\"": {
+    "33 similar:\"ambiguous date formats\"": {
       "outcome": "incomplete",
       "rows": [
         "#8",

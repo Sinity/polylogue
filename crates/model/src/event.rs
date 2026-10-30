@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// A recorded fact from an input, optionally tied to a conversation.
 /// Without a conversation, it belongs to its input and record range.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionId>,
@@ -11,6 +11,12 @@ pub struct Event {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Timestamp>,
+    #[serde(default = "crate::time::unknown_quality")]
+    pub at_quality: crate::TimeQuality,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_precision: Option<crate::Precision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_until: Option<Timestamp>,
     /// The message the event follows, when the source places it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<MessageId>,
@@ -23,7 +29,7 @@ pub struct Event {
     pub data: Json,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
     /// A fork: the child shares the parent's messages up to `at`, then
@@ -86,7 +92,7 @@ pub static LINK_HOW_NAMES: &[&str] = LINK_HOWS.0.split_at(LINK_HOWS.1).0;
 
 /// A relationship between two sessions, from an explicit marker in the
 /// source, never from guessing.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Link {
     pub kind: LinkKind,
     pub parent: SessionId,
@@ -107,6 +113,16 @@ impl Link {
         (self.kind, &self.parent, &self.child)
     }
 
+    /// Internal selection tag for locating all canonical copies of this link.
+    pub fn selection_tag(&self) -> String {
+        blake3::hash(
+            &serde_json::to_vec(&("polylogue.link.selection.v1", self.key()))
+                .expect("typed link identity"),
+        )
+        .to_hex()
+        .to_string()
+    }
+
     /// Fills the parts this statement of the link lacks from another
     /// statement of the same link: a subagent's own file
     /// names its parent, the parent's progress record names the tool call.
@@ -123,3 +139,26 @@ impl Link {
 
 #[cfg(test)]
 mod tests;
+
+impl Event {
+    pub fn time_evidence(&self) -> crate::TimeEvidence {
+        crate::TimeEvidence {
+            quality: self.at_quality,
+            precision: self.at_precision,
+            until: self.at_until,
+        }
+    }
+
+    pub fn set_time(
+        &mut self,
+        at: Option<Timestamp>,
+        evidence: crate::TimeEvidence,
+    ) -> Result<(), crate::TimeEvidenceError> {
+        evidence.validate(at)?;
+        self.at = at;
+        self.at_quality = evidence.quality;
+        self.at_precision = evidence.precision;
+        self.at_until = evidence.until;
+        Ok(())
+    }
+}

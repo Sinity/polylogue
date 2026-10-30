@@ -19,8 +19,13 @@ fn evidence_until_reads_the_rows_polylogue_had_then() {
     assert!(engine.run_pass().unwrap().errors.is_empty());
     let first = query(&home, "messages | sort by first_seen").unwrap();
     let then = first["rows"][0]["first_seen"].as_str().unwrap().to_owned();
-    // Observations are timed in milliseconds: the next one is later.
-    std::thread::sleep(std::time::Duration::from_millis(5));
+    // Each capture receives an explicit observation clock; elapsed wall time
+    // does not advance the clock captured by the previous engine.
+    drop(engine);
+    let mut config = home.config(64 << 20);
+    config.clock = polylogue_model::WallClock::fixed("2026-10-07T10:00:01Z".parse().unwrap());
+    let mut engine =
+        polylogue_engine::Engine::new(config, polylogue_store::Archive::at(&home.root)).unwrap();
     home.append("a.jsonl", &claude_user("a2", "a", "second prompt"));
     assert!(engine.run_pass().unwrap().errors.is_empty());
     let all = query(&home, "messages | sort by first_seen").unwrap();

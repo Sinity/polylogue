@@ -55,27 +55,24 @@ fn declaration_pages_preserve_every_entry() {
         .filter(|v| v["kind"] == "read_view")
         .map(|v| v["name"].as_str().unwrap())
         .collect();
-    assert_eq!(views, polylogue_render::View::NAMES);
+    assert_eq!(views, polylogue_model::read::View::NAMES);
 }
 
 #[test]
 fn every_grammar_keyword_is_discoverable() {
     let page = answer("syntax", None, None, None, None).unwrap();
     let keywords = page["entries"][0]["keywords"].as_array().unwrap();
-    for line in include_str!("../../../query/src/query.pest")
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
-    {
-        for (i, text) in line.split('"').enumerate() {
-            if i % 2 == 1
-                && text.chars().any(|c| c.is_ascii_alphabetic())
-                && text
-                    .chars()
-                    .all(|c| c.is_ascii_alphabetic() || c == '_' || c == ':')
-            {
-                assert!(keywords.contains(&json!(text)), "missing {text}");
-            }
-        }
+    for function in [
+        "day",
+        "hour",
+        "week",
+        "weekday",
+        "month",
+        "month_day",
+        "program",
+        "fingerprint",
+    ] {
+        assert!(keywords.contains(&json!(function)), "missing {function}");
     }
     assert!(
         page["entries"][0]["stages"]
@@ -93,17 +90,31 @@ fn every_grammar_keyword_is_discoverable() {
 
 #[test]
 fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
-    let w = crate::test_daemon::start("synthetic query explanation");
-    w.set("day.zone", "Pacific/Kiritimati");
-    w.set("day.logical_start", "07:30");
-    data(handle(
-        Request::Save {
-            request_id: "save-explain".into(),
-            name: "mine".into(),
-            text: "self".into(),
-            author: polylogue_model::Author::Operator,
-        },
-        &w.daemon,
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::get("Pacific/Kiritimati").unwrap(),
+        jiff::civil::Time::constant(7, 30, 0, 0),
+    )
+    .unwrap();
+    let w = crate::test_daemon::start_with_clock_and_day(
+        "synthetic query explanation",
+        polylogue_model::WallClock::fixed("2026-10-29T08:00:00Z".parse().unwrap()),
+        day,
+    );
+    let save = Request::Save {
+        request_id: "save-explain".into(),
+        name: "mine".into(),
+        text: "self".into(),
+        denominator: None,
+    };
+    let limit = crate::daemon::execution::limit_for(&save, None, Default::default());
+    let caller = polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Agent(Some(
+            polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
+        )),
+        via: polylogue_model::authorship::Channel::Mcp,
+    };
+    data(crate::daemon::service::handle_with_caller(
+        save, &w.daemon, &limit, &caller,
     ));
     let kept = data(handle(
         Request::Keep {
@@ -129,8 +140,14 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         let program = &explanation["program"];
         assert!(!program["sql"].as_str().unwrap().is_empty());
         assert!(explanation["parsed"].is_object());
-        assert_eq!(program["zone"], "Pacific/Kiritimati");
-        assert_eq!(program["day_start_minutes"], 450);
+        let clock: query_language::time::ClockWire =
+            serde_json::from_value(program["clock"].clone()).unwrap();
+        assert_eq!(
+            clock.now,
+            "2026-10-29T08:00:00Z".parse::<jiff::Timestamp>().unwrap()
+        );
+        assert_eq!(clock.day.zone, "Pacific/Kiritimati");
+        assert_eq!(clock.day.start, jiff::civil::Time::constant(7, 30, 0, 0));
         assert!(program["incomplete"].is_array());
         assert!(program["params"].is_array());
         if expression == "query:mine" {

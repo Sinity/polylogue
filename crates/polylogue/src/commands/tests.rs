@@ -6,6 +6,7 @@ fn sample(a: &Arg) -> &'static str {
     match a.kind {
         Kind::Choice(choices) => choices[0],
         Kind::Integer => "1",
+        Kind::Json => "{}",
         _ => "claude-code:s1",
     }
 }
@@ -71,10 +72,20 @@ fn the_command_line_has_nothing_outside_the_table() {
             assert!(GROUPS.iter().any(|g| g.name == name), "group {name}");
             for leaf in sub.get_subcommands() {
                 let full = format!("{name} {}", leaf.get_name());
-                assert!(command(&full).is_some(), "{full} is not in the table");
+                assert!(
+                    COMMANDS
+                        .iter()
+                        .any(|command| command.cli_words().join(" ") == full),
+                    "{full} is not in the table"
+                );
             }
         } else {
-            assert!(command(name).is_some(), "{name} is not in the table");
+            assert!(
+                COMMANDS
+                    .iter()
+                    .any(|command| command.cli_words().join(" ") == name),
+                "{name} is not in the table"
+            );
         }
     }
     for g in GROUPS {
@@ -119,7 +130,10 @@ fn command_words_are_every_first_word() {
     for w in [
         "status",
         "list",
-        "note",
+        "assert",
+        "assert-query",
+        "revise",
+        "withdraw",
         "measure",
         "embed",
         "hooks",
@@ -171,13 +185,13 @@ fn one_operation_makes_one_request_on_every_surface() {
         "dialogue",
         "--budget",
         "100",
-        "--with-parents",
+        "--inherited",
     ])
     .unwrap();
     let mcp = Values::from_json(
         read,
         Surface::Mcp,
-        json!({"session": "claude-code:s1", "view": "dialogue", "budget": 100, "with_parents": true})
+        json!({"target": "claude-code:s1", "view": "dialogue", "budget": 100, "inherited": true})
             .as_object()
             .unwrap()
             .clone(),
@@ -187,41 +201,22 @@ fn one_operation_makes_one_request_on_every_surface() {
         read,
         Surface::Http,
         vec![
-            ("session".into(), "claude-code:s1".into()),
+            ("target".into(), "claude-code:s1".into()),
             ("view".into(), "dialogue".into()),
             ("budget".into(), "100".into()),
-            ("with_parents".into(), "true".into()),
+            ("inherited".into(), "true".into()),
         ],
     )
     .unwrap();
     let a = request_json(read, &cli, &cli_caller());
     assert_eq!(a, request_json(read, &mcp, &mcp_caller()));
     assert_eq!(a, request_json(read, &http, &cli_caller()));
-    assert_eq!(a["view"], "dialogue");
+    assert_eq!(a["options"]["view"], "dialogue");
     assert_eq!(a["budget"], 100);
 }
 
 #[test]
-fn note_lists_and_queries_carry_every_option() {
-    let (c, v) = crate::cli::parse(&[
-        "polylogue",
-        "note",
-        "list",
-        "repo:x",
-        "--kind",
-        "lesson,handoff",
-        "--agents",
-        "--limit",
-        "3",
-    ])
-    .unwrap();
-    let r = request_json(c, &v, &cli_caller());
-    assert_eq!(
-        r["text"],
-        r#"notes where (target:"repo:x") (kind:lesson OR kind:handoff) agent:true"#
-    );
-    assert_eq!(r["page_size"], 3);
-
+fn query_commands_carry_every_option() {
     let (c, v) = crate::cli::parse(&[
         "polylogue",
         "--why",
@@ -246,67 +241,25 @@ fn note_lists_and_queries_carry_every_option() {
 }
 
 #[test]
-fn an_agent_writes_notes_as_itself() {
-    let add = command("note add").unwrap();
-    let args = json!({"targets": ["repo:x"], "body": "b"});
-    let v = Values::from_json(add, Surface::Mcp, args.as_object().unwrap().clone()).unwrap();
-    assert_eq!(
-        request_json(add, &v, &mcp_caller())["note"]["author"],
-        "agent"
-    );
-    let (_, v) = crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b"]).unwrap();
-    assert_eq!(
-        request_json(add, &v, &cli_caller())["note"]["author"],
-        "operator"
-    );
-    let (_, v) =
-        crate::cli::parse(&["polylogue", "note", "add", "repo:x", "-m", "b", "--agent"]).unwrap();
-    assert_eq!(
-        request_json(add, &v, &cli_caller())["note"]["author"],
-        "agent"
-    );
-}
-
-#[test]
-fn values_are_checked_against_the_table() {
+fn typed_read_validation_owns_defaults_and_conditional_requirements() {
     let read = command("read").unwrap();
-    let check = |v: serde_json::Value| {
-        Values::from_json(read, Surface::Mcp, v.as_object().unwrap().clone())
+    let build = read.build_typed.unwrap();
+    let caller = mcp_caller();
+    for invalid in [
+        json!({"target":"claude-code:s1","pages":2}),
+        json!({"target":"claude-code:s1","budget":"many"}),
+        json!({"target":"claude-code:s1","view":"sideways"}),
+        json!({}),
+        json!({"target":"claude-code:s1","to":"synthetic-output"}),
+    ] {
+        assert!(build(invalid, &caller, "read-invalid").is_err());
+    }
+    let request = build(json!({"target":"claude-code:s1"}), &caller, "read-default").unwrap();
+    let Request::Read { options, .. } = request else {
+        panic!("full read");
     };
-    let e = check(json!({"session": "claude-code:s1", "pages": 2})).unwrap_err();
-    assert!(e.contains("no argument `pages`"), "{e}");
-    let e = check(json!({"session": "claude-code:s1", "budget": "many"})).unwrap_err();
-    assert!(e.contains("whole number"), "{e}");
-    let e = check(json!({"session": "claude-code:s1", "view": "sideways"})).unwrap_err();
-    assert!(e.contains("one of full"), "{e}");
-    let e = check(json!({})).unwrap_err();
-    assert!(e.contains("needs `session`"), "{e}");
-    // Arguments that act on the calling machine are not offered.
-    let export = command("export").unwrap();
-    let e = Values::from_json(
-        export,
-        Surface::Http,
-        json!({"sessions": ["claude-code:s1"], "out": "/tmp/x"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    )
-    .unwrap_err();
-    assert!(e.contains("no argument `out`"), "{e}");
-    // Defaults fill what is left out.
-    let v = check(json!({"session": "claude-code:s1"})).unwrap();
-    assert_eq!(v.text("view").as_deref(), Some("full"));
-}
-
-#[test]
-fn a_write_may_carry_its_request_id() {
-    let add = command("note add").unwrap();
-    let args = json!({"targets": ["repo:x"], "body": "b", "request_id": "r1"});
-    let v = Values::from_json(add, Surface::Http, args.as_object().unwrap().clone()).unwrap();
-    assert_eq!(v.request_id(), "r1");
-    let read = command("read").unwrap();
-    let args = json!({"session": "claude-code:s1", "request_id": "r1"});
-    assert!(Values::from_json(read, Surface::Http, args.as_object().unwrap().clone()).is_err());
+    assert_eq!(options.view, polylogue_model::read::View::Transcript);
+    assert_eq!(options.output_lines, 100);
 }
 
 #[test]
@@ -328,13 +281,52 @@ fn http_callers_name_their_directory() {
 
 #[test]
 fn mcp_schemas_follow_the_arguments() {
-    let s = schema(command("read").unwrap());
-    assert_eq!(s["required"], json!(["session"]));
-    assert_eq!(s["properties"]["budget"]["type"], "integer");
-    assert_eq!(s["properties"]["view"]["default"], "full");
-    assert_eq!(s["additionalProperties"], false);
-    let s = schema(command("note add").unwrap());
+    let tools = crate::mcp::tools();
+    for command in COMMANDS.iter().filter(|command| command.mcp) {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == command.mcp_name())
+            .unwrap();
+        let expected = command
+            .typed_mcp_schema
+            .map(|schema| schema())
+            .unwrap_or_else(|| Value::Object(schema(command)));
+        assert_eq!(tool["inputSchema"], expected, "{}", command.name);
+        assert_eq!(expected["additionalProperties"], false, "{}", command.name);
+    }
+    let read = command("read").unwrap();
+    let s = read.typed_mcp_schema.unwrap()();
+    assert!(s["properties"]["arguments"].is_object());
     assert!(s["properties"]["request_id"].is_object());
+    assert!(
+        serde_json::to_string(&s)
+            .unwrap()
+            .contains("ResumeArguments")
+    );
+    let resume = &s["$defs"]["ResumeArguments"];
+    assert_eq!(resume["additionalProperties"], false);
+    assert_eq!(
+        resume["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["budget", "cursor", "root_run"])
+    );
+    assert_eq!(
+        resume["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["root_run", "cursor"])
+    );
+    for name in ["assert", "assert-query", "revise", "withdraw"] {
+        let s = schema(command(name).unwrap());
+        assert!(s["properties"].get("request_id").is_none(), "{name}");
+    }
 }
 
 #[test]
@@ -414,26 +406,61 @@ mod client_answers;
 
 #[test]
 fn request_id_is_declared_for_all_write_surfaces() {
-    let (command, values) = crate::cli::parse(&[
+    let (assert, values) = crate::cli::parse(&[
         "polylogue",
-        "note",
-        "add",
-        "repo:x",
-        "--body",
-        "b",
+        "assert",
+        r#"[{"kind":"note","value":"b","links":[{"role":"about","reference":"repo:x"}]}]"#,
         "--request-id",
         "retry-one",
     ])
     .unwrap();
     assert_eq!(values.request_id(), "retry-one");
-    for surface in [Surface::Cli, Surface::Mcp, Surface::Http] {
-        assert_eq!(
-            command
-                .args_for(surface)
-                .filter(|a| a.name == "request_id")
-                .count(),
-            1
+    let Action::Request(build) = assert.action else {
+        panic!("assert must build a request")
+    };
+    let Request::Assert {
+        request_id,
+        assertions,
+    } = build(assert, &values, &cli_caller()).unwrap()
+    else {
+        panic!("wrong assertion operation")
+    };
+    assert_eq!(request_id, "retry-one");
+    assert_eq!(assertions.len(), 1);
+    assert_eq!(assertions[0].value, Some(json!("b")));
+    let root = crate::cli::command();
+    assert!(
+        root.get_arguments()
+            .any(|arg| arg.get_id() == "request_id" && arg.is_global_set())
+    );
+    for command in COMMANDS.iter().filter(|command| command.writes) {
+        // CLI identity is global; typed remote identity belongs to the envelope.
+        assert!(
+            !command
+                .args_for(Surface::Cli)
+                .any(|arg| arg.name == "request_id")
         );
+        for surface in [Surface::Mcp, Surface::Http] {
+            assert_eq!(
+                command
+                    .args_for(surface)
+                    .filter(|arg| arg.name == "request_id")
+                    .count(),
+                usize::from(command.register.is_none()),
+                "{} {surface:?}",
+                command.name
+            );
+        }
+        if let Some(schema) = command.typed_mcp_schema {
+            let schema = schema();
+            assert!(schema["properties"]["request_id"].is_object());
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("request_id"))
+            );
+        }
     }
 }
 
@@ -477,3 +504,5 @@ fn daily_series_is_a_metric_option() {
         "sessions where origin:codex | measure daily:tokens"
     );
 }
+
+mod assertions;

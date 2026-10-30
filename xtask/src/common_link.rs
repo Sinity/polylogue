@@ -42,7 +42,6 @@ fn with_link<T>(
     operation: impl FnOnce(LocalLink<'_>) -> Result<T, String>,
 ) -> Result<T, String> {
     let patch = root.join(".cargo/local.toml");
-    let disabled = root.join(".cargo/common-link.off");
     let lock = root.join("Cargo.lock");
     let backup = root.join(".cargo/common-link.lock");
     let fuzz_lock = root.join("fuzz/Cargo.lock");
@@ -54,7 +53,6 @@ fn with_link<T>(
     operation(LocalLink {
         repository: REPOSITORY,
         patch: &patch,
-        disabled: &disabled,
         locks: &locks,
     })
 }

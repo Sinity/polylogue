@@ -98,8 +98,7 @@ fn saved_relations_bind_defaults_before_the_caller_narrows_them() {
         ("child-ref", "session:claude-code:7f3a2c10-0003"),
         ("abandoned", "messages where active:false"),
     ] {
-        w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
-            .unwrap();
+        save_definition(&mut w, name, text);
     }
     for query in [
         "sessions where query:children",
@@ -122,16 +121,15 @@ fn saved_relations_bind_defaults_before_the_caller_narrows_them() {
 }
 
 fn save(w: &mut TestArchive, name: &str, text: &str) {
-    w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
-        .unwrap();
+    save_definition(w, name, text);
 }
 
 #[test]
 fn parameterized_saved_references_agree_with_direct_references() {
     let mut w = morrow();
     w.fx.note(
-        "hidden",
-        None,
+        "tag",
+        Some("hidden"),
         None,
         "session:claude-code:7f3a2c10-0002-4000-8000-000000000002",
     )
@@ -148,6 +146,7 @@ fn parameterized_saved_references_agree_with_direct_references() {
         for name in ["pick", "forward", "nested"] {
             for query in [
                 format!("query:{name}(id={id})"),
+                format!("query:{name}(id=\"{id}\")"),
                 format!("sessions where query:{name}(id={id})"),
                 format!("sessions where query:{name}(id={id}) origin:claude-code"),
             ] {
@@ -212,25 +211,12 @@ fn saved_references_under_or_and_not_keep_outer_defaults() {
 #[test]
 fn saved_relation_errors_reach_the_query_error_path() {
     let mut w = morrow();
-    for (name, text) in [
-        ("pick", "$id"),
-        ("forward", "query:pick(id=$id)"),
-        ("missing", "query:absent"),
-        ("twice", "origin:codex"),
-        ("twice", "origin:claude-code"),
-        ("ambiguous", "query:twice"),
-        ("cycle", "query:cycle"),
-        ("cycle-a", "query:cycle-b"),
-        ("cycle-b", "query:cycle-a"),
-        ("broken", "sessions where ("),
-        ("invalid-field", "sessions where invented_field:true"),
-        ("invalid-value", "sessions where cost > nonsense"),
-    ] {
-        save(&mut w, name, text);
-    }
+    save(&mut w, "pick", "$id");
+    save(&mut w, "forward", "query:pick(id=$id)");
+    save(&mut w, "twice", "origin:codex");
+    save(&mut w, "twice", "origin:claude-code");
     for (call, kind, message) in [
         ("absent", "invalid_query", "no saved query"),
-        ("missing", "invalid_query", "no saved query"),
         ("pick", "invalid_query", "needs a value"),
         ("forward", "invalid_query", "needs a value"),
         (
@@ -239,12 +225,6 @@ fn saved_relation_errors_reach_the_query_error_path() {
             "has no parameter",
         ),
         ("twice", "invalid_query", "2 saved queries"),
-        ("ambiguous", "invalid_query", "2 saved queries"),
-        ("cycle", "invalid_query", "refers to itself"),
-        ("cycle-a", "invalid_query", "refers to itself"),
-        ("broken", "invalid_query", ""),
-        ("invalid-field", "unknown_field", "invented_field"),
-        ("invalid-value", "bad_value", "amount in dollars"),
     ] {
         for query in [
             format!("query:{call}"),
@@ -258,5 +238,69 @@ fn saved_relation_errors_reach_the_query_error_path() {
                 failure.message
             );
         }
+    }
+    let baseline = q(&w, "sessions")["count"].clone();
+    // These predecessor definitions could never obtain current frozen custody.
+    // Preserve their raw evidence, while refusing execution of only a used name.
+    for (name, text) in [
+        ("missing", "query:absent"),
+        ("ambiguous", "query:twice"),
+        ("cycle", "query:cycle"),
+        ("cycle-a", "query:cycle-b"),
+        ("cycle-b", "query:cycle-a"),
+        ("broken", "sessions where ("),
+        ("invalid-field", "sessions where invented_field:true"),
+        ("invalid-value", "sessions where cost > nonsense"),
+    ] {
+        let pool = w.fx.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let opts = options(&reader, &ask(text), 7).unwrap();
+        assert!(
+            reader.prepare_query_plan(text, &opts).is_err(),
+            "{name}: {text}"
+        );
+        drop(reader);
+        let id = w.fx.historical_saved_query(name, text).unwrap();
+        let pool = w.fx.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let evidence = reader
+            .assertion_evidence(&polylogue_model::RevisionReference::exact(id.clone(), id))
+            .unwrap()
+            .unwrap();
+        let polylogue_model::historical::AssertionEvidence::Historical { fact, .. } = evidence
+        else {
+            panic!("historical definition was reauthored");
+        };
+        assert_eq!(fact.value.as_deref(), Some(text));
+        drop(reader);
+        for query in [
+            format!("query:{name}"),
+            format!("sessions where query:{name}"),
+        ] {
+            let failure = run_q(&w, ask(&query)).unwrap_err();
+            assert_eq!(
+                failure.kind, "not_yet_available",
+                "{query}: {}",
+                failure.message
+            );
+        }
+    }
+    assert_eq!(q(&w, "sessions")["count"], baseline);
+    // Native diagnostic details remain available before any definition is saved.
+    for (text, kind, message) in [
+        (
+            "sessions where invented_field:true",
+            "unknown_field",
+            "invented_field",
+        ),
+        (
+            "sessions where cost > nonsense",
+            "bad_value",
+            "amount in dollars",
+        ),
+    ] {
+        let failure = run_q(&w, ask(text)).unwrap_err();
+        assert_eq!(failure.kind, kind, "{text}");
+        assert!(failure.message.contains(message), "{}", failure.message);
     }
 }

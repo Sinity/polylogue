@@ -1,0 +1,48 @@
+{
+  "counts": {
+    "records": 1,
+    "used": {
+      "export": 1
+    },
+    "unreadable": {},
+    "skipped": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-03-05T04:21:34Z",
+        "at_quality": "intrinsic",
+        "at_precision": "second",
+        "data": {
+          "source": "antigravity_language_server",
+          "cascadeId": "synthetic-clock",
+          "title": "Native clock",
+          "lastModifiedTime": "2026-03-05T04:21:34Z",
+          "workspaceName": "example"
+        },
+        "kind": "antigravity_session",
+        "session": "antigravity:synthetic-clock",
+        "range": [
+          0,
+          176
+        ]
+      }
+    ],
+    "links": [],
+    "messages": [],
+    "sessions": [
+      {
+        "id": "antigravity:synthetic-clock",
+        "kind": "main",
+        "title": {
+          "source": "generated",
+          "text": "Native clock"
+        },
+        "started_quality": "unknown"
+      }
+    ]
+  }
+}

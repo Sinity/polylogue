@@ -5,11 +5,13 @@
 //! the one writer ([`polylogue_store::chat_actions`],
 //! [`polylogue_store::backfill_jobs`]).
 
-use super::{Daemon, browser_refusal, error, machine_id, ok, store_error, writer};
+use super::{Daemon, browser_refusal, error, ok, store_error, writer};
 use crate::browser::{actions, backfill};
 use crate::daemon::{Request, Response};
+use crate::operation::Invocation;
 use base64::Engine as _;
-use polylogue_store::{Reader, StoreError, UserRequest, UserWrite, user_writes};
+use polylogue_model::user::UserWrite;
+use polylogue_store::{Reader, StoreError, user_writes};
 use serde_json::json;
 
 fn refused(e: &StoreError) -> Response {
@@ -21,19 +23,35 @@ fn refused(e: &StoreError) -> Response {
     }
 }
 
-fn enabled(reader: &Reader<'_>) -> Result<bool, Response> {
-    reader
-        .setting("browser.actions", &machine_id())
-        .map(|value| value.as_deref() == Some("on"))
-        .map_err(|e| store_error(&e))
+fn enabled(invocation: &Invocation, reader: &Reader<'_>) -> Result<bool, Response> {
+    match reader.setting_value("browser.actions", &invocation.machine) {
+        Ok(Some(polylogue_model::settings::Value::Boolean(value))) => Ok(value),
+        Ok(_) => Err(error(
+            "invalid",
+            "browser.actions has no typed boolean value",
+        )),
+        Err(error) => Err(store_error(&error)),
+    }
 }
 
 /// Writes `write`; `None` when it found nothing to claim. Chat actions and
 /// backfill jobs carry their own retry keys, so each write gets a new
 /// request ID.
-fn apply(d: &Daemon, write: UserWrite) -> Result<Option<String>, Response> {
+fn apply(
+    d: &Daemon,
+    invocation: &Invocation,
+    write: UserWrite,
+) -> Result<Option<String>, Response> {
     let writes = writer(d)?;
-    match writes.user(UserRequest::now(user_writes::new_request_id(), write)) {
+    invocation
+        .check_parent_admission()
+        .map_err(|error| store_error(&error))?;
+    let request = invocation.request(user_writes::new_request_id(), write);
+    let result = match invocation.parent_lifetime() {
+        Some(parent) => writes.user_with_parent(request, parent),
+        None => writes.user(request),
+    };
+    match result {
         Ok(outcome) => Ok(Some(outcome.id)),
         Err(StoreError::NotFound(_)) => Ok(None),
         Err(e) => Err(refused(&e)),
@@ -41,8 +59,8 @@ fn apply(d: &Daemon, write: UserWrite) -> Result<Option<String>, Response> {
 }
 
 /// Writes `write`, then answers with the chat action it names.
-fn chat_then_view(d: &Daemon, write: UserWrite) -> Response {
-    let id = match apply(d, write) {
+fn chat_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Response {
+    let id = match apply(d, invocation, write) {
         Ok(Some(id)) => id,
         Ok(None) => return ok(json!({ "action": null })),
         Err(response) => return response,
@@ -52,15 +70,15 @@ fn chat_then_view(d: &Daemon, write: UserWrite) -> Response {
         Err(e) => return store_error(&e),
     };
     match reader.chat_action(&id) {
-        Ok(Some(a)) => ok(json!({ "action": actions::view(&a, super::now_ms()) })),
+        Ok(Some(a)) => ok(json!({ "action": actions::view(&a, invocation.at.unix_ms()) })),
         Ok(None) => browser_refusal(actions::refusal("unknown_chat_action")),
         Err(e) => store_error(&e),
     }
 }
 
 /// Writes `write`, then answers with the backfill job it names.
-fn backfill_then_view(d: &Daemon, write: UserWrite) -> Response {
-    let id = match apply(d, write) {
+fn backfill_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Response {
+    let id = match apply(d, invocation, write) {
         Ok(Some(id)) => id,
         Ok(None) => return ok(json!({ "job": null })),
         Err(response) => return response,
@@ -70,7 +88,7 @@ fn backfill_then_view(d: &Daemon, write: UserWrite) -> Response {
         Err(e) => return store_error(&e),
     };
     match reader.backfill_job(&id) {
-        Ok(Some(job)) => ok(json!({ "job": backfill::view(&job, super::now_ms()) })),
+        Ok(Some(job)) => ok(json!({ "job": backfill::view(&job, invocation.at.unix_ms()) })),
         Ok(None) => browser_refusal(actions::refusal("unknown_backfill_job")),
         Err(e) => store_error(&e),
     }
@@ -80,7 +98,7 @@ fn backfill_then_view(d: &Daemon, write: UserWrite) -> Response {
 fn store_files(
     d: &Daemon,
     files: &[actions::ChatFile],
-) -> Result<Vec<polylogue_store::chat_actions::ChatAttachment>, Response> {
+) -> Result<Vec<polylogue_model::user::ChatAttachment>, Response> {
     let writes = writer(d)?;
     files
         .iter()
@@ -94,18 +112,23 @@ fn store_files(
         .collect()
 }
 
-pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Response {
-    let now = super::now_ms();
+pub(super) fn handle(
+    request: Request,
+    d: &Daemon,
+    reader: Reader<'_>,
+    invocation: &Invocation,
+) -> Response {
+    let now = invocation.at.unix_ms();
     match request {
         Request::ChatSend {
             request_id,
             action,
             files,
         } => {
-            match enabled(&reader) {
+            match enabled(invocation, &reader) {
                 Ok(true) => {}
                 Ok(false) => {
-                    return browser_refusal(actions::Refused(409, "browser_actions_off"));
+                    return browser_refusal(actions::Refused("browser_actions_off"));
                 }
                 Err(response) => return response,
             }
@@ -119,7 +142,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
                 Err(response) => return response,
             };
             match actions::new_action(&request_id, &action, stored) {
-                Ok(new) => chat_then_view(d, UserWrite::ChatEnqueue(new)),
+                Ok(new) => chat_then_view(d, invocation, UserWrite::ChatEnqueue(new)),
                 Err(r) => browser_refusal(r),
             }
         }
@@ -135,7 +158,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
             Err(e) => store_error(&e),
         },
         Request::ChatClaim { by } => {
-            let on = match enabled(&reader) {
+            let on = match enabled(invocation, &reader) {
                 Ok(on) => on,
                 Err(response) => return response,
             };
@@ -143,12 +166,13 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
             if !on {
                 return ok(json!({ "enabled": false, "action": null }));
             }
-            chat_then_view(d, UserWrite::ChatClaim { by })
+            chat_then_view(d, invocation, UserWrite::ChatClaim { by })
         }
         Request::ChatReport { id, update } => {
             drop(reader);
             chat_then_view(
                 d,
+                invocation,
                 UserWrite::ChatReport {
                     action: id,
                     by: update.by,
@@ -168,6 +192,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
             drop(reader);
             chat_then_view(
                 d,
+                invocation,
                 UserWrite::ChatDecide {
                     action: id,
                     approve,
@@ -188,7 +213,7 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
         Request::BackfillStart { provider, since } => {
             drop(reader);
             match backfill::new_job(&provider, since.as_deref()) {
-                Ok(new) => backfill_then_view(d, UserWrite::BackfillStart(new)),
+                Ok(new) => backfill_then_view(d, invocation, UserWrite::BackfillStart(new)),
                 Err(r) => browser_refusal(r),
             }
         }
@@ -200,16 +225,17 @@ pub(super) fn handle(request: Request, d: &Daemon, reader: Reader<'_>) -> Respon
         },
         Request::BackfillCancel { id } => {
             drop(reader);
-            backfill_then_view(d, UserWrite::BackfillCancel { job: id })
+            backfill_then_view(d, invocation, UserWrite::BackfillCancel { job: id })
         }
         Request::BackfillClaim { by } => {
             drop(reader);
-            backfill_then_view(d, UserWrite::BackfillClaim { by })
+            backfill_then_view(d, invocation, UserWrite::BackfillClaim { by })
         }
         Request::BackfillReport { id, by, report } => {
             drop(reader);
             backfill_then_view(
                 d,
+                invocation,
                 UserWrite::BackfillReport {
                     job: id,
                     by,

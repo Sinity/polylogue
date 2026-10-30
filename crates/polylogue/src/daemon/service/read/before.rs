@@ -1,0 +1,205 @@
+//! Descending metadata coordinates hydrate only the adjacent canonical record.
+use super::*;
+use polylogue_store::selection::SelectionRow;
+
+pub(super) fn visit(
+    reader: &Reader<'_>,
+    selection: &PreparedSelection,
+    rendering: &Rendering<'_>,
+    anchor: ReadPosition,
+    footer: &mut ReadFooter,
+    emit: &mut Emit<'_>,
+) -> Result<(), Response> {
+    let near = rendering.near;
+    let mut current = None;
+    reader.visit_selection_from::<Response>(
+        selection,
+        anchor.selection.row,
+        near,
+        |ordinal, row| {
+            if ordinal != anchor.selection.row {
+                return Err(error("stale_cursor", "the backward row coordinate changed"));
+            }
+            current = Some(row);
+            Ok(ControlFlow::Break(()))
+        },
+    )?;
+    let current =
+        current.ok_or_else(|| error("stale_cursor", "the backward row is no longer selected"))?;
+    let mut walk = Walk {
+        reader,
+        selection,
+        rendering,
+        footer,
+        emit,
+    };
+    if !walk.row(anchor.selection.row, current, Some(anchor), near)? {
+        return Ok(());
+    }
+    reader.visit_selection_before::<Response>(
+        selection,
+        anchor.selection.row,
+        near,
+        |ordinal, row| {
+            Ok(if walk.row(ordinal, row, None, near)? {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            })
+        },
+    )?;
+    Ok(())
+}
+
+struct Walk<'a, 'pool, 'read, 'emit> {
+    reader: &'a Reader<'pool>,
+    selection: &'a PreparedSelection<'read>,
+    rendering: &'a Rendering<'a>,
+    footer: &'a mut ReadFooter,
+    emit: &'a mut Emit<'emit>,
+}
+impl Walk<'_, '_, '_, '_> {
+    fn row(
+        &mut self,
+        ordinal: u64,
+        row: SelectionRow,
+        position: Option<ReadPosition>,
+        near: Option<&polylogue_store::selection::NearFn<'_>>,
+    ) -> Result<bool, Response> {
+        let start = position.map(|position| position.selection.record);
+        let anchor_item = position.map(|position| position.item);
+        let Some(reference) = row.reference else {
+            let record = ReadRecordLocator {
+                kind: ReadRecordKind::Presentation,
+                ordinal: 0,
+            };
+            if start.is_some_and(|start| start != record) {
+                return Err(error("stale_cursor", "the backward result row changed"));
+            }
+            return (self.emit)(
+                &presentation(self.selection, &row.values),
+                SelectionLocator {
+                    row: ordinal,
+                    record,
+                },
+                Some(0),
+            );
+        };
+        if let polylogue_model::Reference::Document(id) = &reference {
+            let selected = |_: &Source| Ok(false);
+            let evidence = ProjectionEvidence::default();
+            let layout = evidence::Layout {
+                options: self.rendering.options,
+                evidence: &evidence,
+                selected: &selected,
+                ready_attachment: self.rendering.ready_attachment,
+                backwards: true,
+                anchor: None,
+            };
+            if let Some(record) = output::document_omission(
+                &reference.to_string(),
+                self.rendering.options,
+                self.selection.direct_reference().is_none(),
+                self.footer,
+            )? {
+                let at = SelectionLocator {
+                    row: ordinal,
+                    record: ReadRecordLocator {
+                        kind: ReadRecordKind::Presentation,
+                        ordinal: 0,
+                    },
+                };
+                if position.is_some_and(|position| position.selection != at || position.item != 0) {
+                    return Err(error(
+                        "stale_cursor",
+                        "the backward document omission changed",
+                    ));
+                }
+                return (self.emit)(&record, at, Some(0));
+            }
+            return documents::visit(self.reader, id, ordinal, position, &layout, self.emit);
+        }
+        let mut current = match start {
+            Some(start) => Some(start),
+            None => {
+                backward::last_record(self.reader, &reference, self.rendering.options.inherited)?
+            }
+        };
+        let mut required_anchor = start.is_some();
+        while let Some(record_position) = current {
+            let mut observed = false;
+            let mut keep = true;
+            records::reference(
+                self.reader,
+                &reference,
+                self.rendering.options.inherited,
+                Some(&record_position),
+                &mut |record, evidence, actual| {
+                    if observed || actual != record_position {
+                        return Err(error(
+                            "stale_cursor",
+                            "the backward record coordinate changed",
+                        ));
+                    }
+                    observed = true;
+                    let projected = output::project(
+                        record,
+                        self.rendering.options,
+                        &evidence,
+                        self.selection.direct_reference().is_none(),
+                        self.footer,
+                    )?;
+                    if let Some(record) = projected {
+                        let at = SelectionLocator {
+                            row: ordinal,
+                            record: actual,
+                        };
+                        let selected = |source: &Source| {
+                            selected_source(
+                                self.reader,
+                                self.selection,
+                                Some(&reference),
+                                self.rendering.options,
+                                near,
+                                source,
+                            )
+                        };
+                        let layout = evidence::Layout {
+                            options: self.rendering.options,
+                            evidence: &evidence,
+                            selected: &selected,
+                            ready_attachment: self.rendering.ready_attachment,
+                            backwards: true,
+                            anchor: required_anchor.then_some(anchor_item).flatten(),
+                        };
+                        keep = output::emit_record(self.reader, &record, at, &layout, self.emit)?;
+                    } else if required_anchor {
+                        return Err(error(
+                            "stale_cursor",
+                            "the backward anchor is no longer visible",
+                        ));
+                    }
+                    // The metadata adapter names exactly one record, never its suffix.
+                    Ok(false)
+                },
+            )?;
+            if !observed {
+                return Err(error(
+                    "stale_cursor",
+                    "the backward record is no longer selected",
+                ));
+            }
+            if !keep {
+                return Ok(false);
+            }
+            current = backward::previous_record(
+                self.reader,
+                &reference,
+                self.rendering.options.inherited,
+                &record_position,
+            )?;
+            required_anchor = false;
+        }
+        Ok(true)
+    }
+}

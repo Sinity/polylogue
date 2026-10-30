@@ -176,10 +176,9 @@ fn in_compares_with_the_values_a_query_groups_by() {
     );
 }
 
-/// A saved query: a note of kind `saved_query` named by its key.
+/// An independently restored current definition with actual object custody.
 fn saved(w: &mut TestArchive, name: &str, text: &str) {
-    w.fx.note("saved_query", Some(name), Some(text), "repo:synthetic")
-        .unwrap();
+    save_definition(w, name, text);
 }
 
 #[test]

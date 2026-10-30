@@ -12,7 +12,7 @@ use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response as HttpResponse};
 use axum::routing::{get, post};
-use polylogue_store::backfill_jobs::BackfillReport;
+use polylogue_model::user::BackfillReport;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -59,16 +59,12 @@ async fn ask(host: Arc<BrowserHost>, request: Request) -> Result<Value, Box<Http
             message,
             detail,
         }) => {
-            let status = detail
-                .as_ref()
-                .and_then(|d| d["http_status"].as_u64())
-                .and_then(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())
-                .unwrap_or(match kind.as_str() {
-                    "bad_request" | "invalid_query" => StatusCode::BAD_REQUEST,
-                    "conflict" => StatusCode::CONFLICT,
-                    "not_found" => StatusCode::NOT_FOUND,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
-                });
+            let failure = crate::protocol::failure(&kind, message.clone(), detail.as_ref());
+            let answer = command_surface::Answer::<Value>::error(failure);
+            let status = answer
+                .http_status()
+                .and_then(|status| StatusCode::from_u16(status).ok())
+                .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
             Err(Box::new(refuse(status, &kind, &message)))
         }
         None => Err(Box::new(refuse(

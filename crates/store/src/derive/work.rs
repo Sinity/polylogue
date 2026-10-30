@@ -164,7 +164,7 @@ impl Pursuit {
     }
 }
 
-/// An excision removes a session's nodes (and, by cascade, their edges)
+/// Re-parse replaces a session's nodes (and, by cascade, their edges)
 /// but leaves a shared goal no attempt pursues any more.
 fn sweep(index: &Transaction<'_>) -> Result<()> {
     index.execute(

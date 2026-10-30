@@ -10,8 +10,8 @@ inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR", "CARGO_TARGET_DIR"
 unset = ["PYTHONPATH", "PYTHONHOME"]
 
 [environment.values]
-# Share CPU and memory with other builds.
-CARGO_BUILD_JOBS = "8"
+# Two compile jobs keep linked test builds below MemoryHigh=8G.
+CARGO_BUILD_JOBS = "2"
 # Incremental state is half of each target directory and the drive is write-bound;
 # agent builds rarely reuse it across commits.
 CARGO_INCREMENTAL = "0"

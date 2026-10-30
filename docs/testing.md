@@ -58,6 +58,17 @@ Fuzzing runs as tests. Ruling, 2026-03-12: fuzzing "MUST NOT be a separate comma
 
 Performance is measured by paired `bench` runs: the base and the change built and run together over one sample on the same host, so host load affects both alike. A change is judged by the pair, never by comparing runs from different times.
 
+`cargo xtask bench --root PATH ...` keeps manifests, sample copies, archives,
+reports and the benchmark lock under one directory. Without the flag it uses
+`POLYLOGUE_BENCH_HOME`, then `$XDG_DATA_HOME/polylogue-bench` (the XDG home
+default is `~/.local/share`). Sample names are single directory names.
+
+Selected inputs are copied under the sample root before the manifest hashes
+them. SQLite samples use a consistent read transaction, including committed
+WAL rows and excluding uncommitted writes. Later source changes do not alter
+the sampled bytes. Corpus estimates refuse negative or non-finite predicted
+wall or stage durations; an invalid fit does not establish a performance target.
+
 What is measured: the first build per stage; incremental updates; interactive reads; the CLI latency classes end to end ([interfaces.md#latency-classes](interfaces.md#latency-classes)); daemon start and restart; idle I/O over 10 minutes; the append-to-view latency of live sessions.
 
 **Figures.** Each report gives hardware-independent figures: bytes read and written per input byte and per event, syncs per writer group, and stage utilisation (the share of time each stage is busy, and whether any stage idles with a queue). Absolute rates, wall time per stage, peak memory, final storage sizes and the host's load during the run are reported beside them for the host that ran it. A reading the runner could not take stays unknown. The targets these figures are checked against are in [architecture.md#pipeline](architecture.md#pipeline).

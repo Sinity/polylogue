@@ -1,8 +1,7 @@
-//! One batch of the change feed, prepared completely before it is sent.
-use super::{Failure, present, validate, values};
-use crate::daemon::Response;
+//! One SSE batch of change references, prepared before delivery.
+use super::Failure;
 use polylogue_model::ChangePosition;
-use polylogue_query::{Clock, Options};
+use polylogue_query::Options;
 use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -55,25 +54,13 @@ fn io(error: impl ToString) -> Failure {
     }
 }
 
-fn write(
-    file: &mut File,
-    line: Line,
-    clean: &mut impl FnMut(Response) -> Response,
-) -> Result<(), Failure> {
-    let data = serde_json::to_value(&line).map_err(io)?;
-    let mut references = super::super::request::References::default();
-    match &line {
-        Line::Begin { position, .. } | Line::Change { position, .. } => {
-            references.add("/position", position)
-        }
-        Line::Complete { position, .. } => references.add("/position", position),
-    }
-    if let Line::Change { change, .. } = &line {
-        reference_fields(change, "/change", &data, &mut references);
-    }
-    let response = clean(Response::Ok { data, references }.masked());
-    serde_json::to_writer(&mut *file, &response).map_err(io)?;
-    file.write_all(b"\n").map_err(io)
+fn write(file: &mut File, line: Line) -> Result<(), Failure> {
+    let name = match &line {
+        Line::Begin { .. } => "begin",
+        Line::Change { .. } => "record",
+        Line::Complete { .. } => "complete",
+    };
+    crate::protocol::stream::event(file, name, &line).map_err(io)
 }
 
 fn check_change(
@@ -83,7 +70,7 @@ fn check_change(
 ) -> Result<(), Failure> {
     let kind = change["kind"].as_str();
     let allowed = match component {
-        Component::Archive => matches!(kind, Some("note" | "excision")),
+        Component::Archive => matches!(kind, Some("note")),
         Component::Index => matches!(kind, Some("session" | "removed")),
     };
     let bound = match component {
@@ -93,7 +80,6 @@ fn check_change(
     if !allowed
         || !change["ref"].as_str().is_some_and(|s| !s.is_empty())
         || !change["seq"].as_i64().is_some_and(|n| n >= 0 && n <= bound)
-        || (kind == Some("excision") && !change["target"].as_str().is_some_and(|s| !s.is_empty()))
     {
         return Err(Failure {
             kind: "store".into(),
@@ -108,9 +94,8 @@ fn check_change(
 pub(crate) fn prepare_with(
     reader: &Reader<'_>,
     since: Option<&str>,
-    now: i64,
+    clock: &query_language::time::Clock,
     mut file: File,
-    mut clean: impl FnMut(Response) -> Response,
 ) -> Result<File, Failure> {
     let previous = since
         .map(|s| ChangePosition::parse(s).ok_or_else(|| invalid("since takes GEN:COUNTER:ARCHIVE")))
@@ -136,12 +121,11 @@ pub(crate) fn prepare_with(
             replacement,
             generation_changed,
         },
-        &mut clean,
     )?;
     // Archive local order is meaningful only within archive.db. Index-side
     // references follow as a separate component, never a combined chronology.
     let components = [
-        (Component::Archive, "(kind:note OR kind:excision)"),
+        (Component::Archive, "kind:note"),
         (
             Component::Index,
             if replacement {
@@ -165,7 +149,7 @@ pub(crate) fn prepare_with(
         // This fixed internal query has neither saved sources nor kept
         // results, so compilation need not load either archive-wide catalog.
         let opts = Options {
-            clock: Clock::new(now, super::logical_day(reader)?),
+            clock: clock.clone(),
             origins: Vec::new(),
             command_words: Vec::new(),
             page_size: None,
@@ -177,13 +161,11 @@ pub(crate) fn prepare_with(
             kept: Default::default(),
             chat_pages: Vec::new(),
         };
-        let program = polylogue_query::compile(&text, &opts)?;
-        validate(reader, &program)?;
-        reader.query_each(
-            &program.sql,
-            &values(&program.params),
-            |mut change| -> Result<(), Failure> {
-                present(&program, &mut change)?;
+        let program = polylogue_store::query::compile(&text, &opts)?;
+        reader.visit_query_values(
+            &program,
+            None,
+            |change| -> Result<std::ops::ControlFlow<()>, Failure> {
                 check_change(&change, component, &target)?;
                 count = count
                     .checked_add(1)
@@ -195,8 +177,8 @@ pub(crate) fn prepare_with(
                         component,
                         change,
                     },
-                    &mut clean,
-                )
+                )?;
+                Ok(std::ops::ControlFlow::Continue(()))
             },
         )?;
     }
@@ -207,41 +189,10 @@ pub(crate) fn prepare_with(
             count,
             replacement,
         },
-        &mut clean,
     )?;
     file.flush().map_err(io)?;
     file.seek(SeekFrom::Start(0)).map_err(io)?;
     Ok(file)
-}
-
-/// Change rows declare references by their typed kind, on both query and feed answers.
-pub(super) fn reference_fields(
-    change: &Value,
-    prefix: &str,
-    data: &Value,
-    references: &mut super::super::request::References,
-) {
-    let path = format!("{prefix}/ref");
-    match change["kind"].as_str() {
-        Some("session" | "removed") => references.field::<polylogue_model::SessionId>(data, path),
-        Some("note" | "excision") => references.opaque_field(data, path),
-        _ => {}
-    }
-    if let Some(target) = change["target"].as_str()
-        && polylogue_store::excise::ExciseTarget::parse(target).is_ok()
-    {
-        references.add(format!("{prefix}/target"), &target);
-    }
-    for (field, message) in [("sessions", false), ("messages", true)] {
-        for index in 0..change[field].as_array().map_or(0, Vec::len) {
-            let path = format!("{prefix}/{field}/{index}");
-            if message {
-                references.field::<polylogue_model::MessageId>(data, path);
-            } else {
-                references.field::<polylogue_model::SessionId>(data, path);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
