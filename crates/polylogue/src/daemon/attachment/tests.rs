@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_daemon;
-use base64::Engine as _;
 use polylogue_model::{BlobHash, MessageId};
 use std::io::{Read, Seek, SeekFrom, Write};
 

@@ -36,7 +36,7 @@ fn corrupt(writer: &WriterArchive, ordinal: u64) {
         index
             .execute(
                 "UPDATE document_block SET body=x'00' WHERE idx=?1",
-                [ordinal],
+                [i64::try_from(ordinal).unwrap()],
             )
             .unwrap(),
         1

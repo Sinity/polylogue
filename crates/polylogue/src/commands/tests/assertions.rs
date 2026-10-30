@@ -27,7 +27,7 @@ fn canonical_assertion_operations_share_typed_arguments_and_envelope_identity() 
             "withdraw",
         ),
     ] {
-        let command = command(name).unwrap();
+        let command = crate::commands::command(name).unwrap();
         assert!(command.mcp && command.http && command.writes);
         let build = command.build_typed.unwrap();
         let cli = build(args.clone(), &cli_caller(), "same-id").unwrap();
@@ -135,7 +135,7 @@ fn predecessor_note_commands_are_retired_in_favor_of_the_canonical_operations() 
     assert_eq!(request["op"], "query");
     assert_eq!(request["text"], "note add repo:x -m b");
     for name in ["assert", "assert-query", "revise", "withdraw"] {
-        let command = command(name).unwrap();
+        let command = crate::commands::command(name).unwrap();
         assert!(command.register.is_some() && command.typed_schemas.is_some());
         assert_eq!(command.http_path(), format!("/{name}"));
         assert_eq!(command.mcp_name(), format!("polylogue_{name}"));
@@ -145,7 +145,7 @@ fn predecessor_note_commands_are_retired_in_favor_of_the_canonical_operations() 
 #[test]
 fn assertion_operation_schemas_expose_closed_domain_arguments_and_writer_receipts() {
     for name in ["assert", "assert-query", "revise", "withdraw"] {
-        let command = command(name).unwrap();
+        let command = crate::commands::command(name).unwrap();
         let (arguments, answer) = command.typed_schemas.unwrap()();
         assert_eq!(arguments["additionalProperties"], false, "{name}");
         assert!(arguments["properties"].get("request_id").is_none());
