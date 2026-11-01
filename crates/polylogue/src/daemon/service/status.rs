@@ -82,9 +82,16 @@ fn primary(
     };
     Some(match connection.status() {
         Ok(producer) => {
-            let (applied_position, position_error) = match reader.confirmed_checkpoint() {
+            let (applied_position, mut position_error) = match reader.confirmed_checkpoint() {
                 Ok(position) => (position, None),
                 Err(error) => (None, Some(error.to_string())),
+            };
+            let (refused_events, last_refused) = match reader.confirmed_refusals() {
+                Ok(refusals) => refusals,
+                Err(error) => {
+                    position_error.get_or_insert(error.to_string());
+                    (0, None)
+                }
             };
             let lag_positions = producer
                 .owner_position
@@ -95,6 +102,8 @@ fn primary(
                 applied_position,
                 lag_positions,
                 position_error,
+                refused_events,
+                last_refused,
             }
         }
         Err(error) => Primary::Unavailable {

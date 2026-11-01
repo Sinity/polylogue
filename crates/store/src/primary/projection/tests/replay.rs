@@ -160,3 +160,57 @@ fn a_scope_reset_cannot_share_a_page_with_facts() {
     );
     assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 0);
 }
+
+#[test]
+fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            input(1, "before"),
+            barrier(1),
+            Confirmed {
+                native: None,
+                position: 2,
+                output_index: 0,
+                event: "event-unknown".into(),
+                change: ConfirmedChange::Refused {
+                    kind: "polylogue.future@7".into(),
+                    reason: "unsupported Polylogue kind polylogue.future@7".into(),
+                },
+            },
+            barrier(2),
+            input(3, "after"),
+            barrier(3),
+        ],
+    )
+    .unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(3));
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 2);
+    let refused: (i64, String, String) = index
+        .query_row(
+            "SELECT position,kind,reason FROM primary_refused WHERE event='event-unknown'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        refused,
+        (
+            2,
+            "polylogue.future@7".into(),
+            "unsupported Polylogue kind polylogue.future@7".into()
+        )
+    );
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM primary_fact WHERE event='event-unknown'"
+        ),
+        0
+    );
+}

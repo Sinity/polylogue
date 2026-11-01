@@ -178,6 +178,13 @@ pub enum ConfirmedChange {
     Archived,
     Restored,
     Tombstoned,
+    /// Polylogue could not read the event (an unknown kind, a refused fetch).
+    /// It stays in Sinex and is read again by a rebuild; the index records
+    /// the refusal and continues with the next event.
+    Refused {
+        kind: String,
+        reason: String,
+    },
     Control(Box<super::ReplayControl>),
 }
 

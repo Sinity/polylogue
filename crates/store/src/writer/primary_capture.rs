@@ -648,12 +648,20 @@ impl Inner {
     }
 
     pub(super) fn drain_primary_captures(&mut self) -> Result<()> {
+        self.poll_primary()?;
+        self.complete_ready_captures()?;
+        self.poll_primary()?;
+        Ok(())
+    }
+
+    /// Prepares the parsed facts of captures whose materials Sinex has
+    /// confirmed. It reads only the spool and the index.
+    pub(super) fn complete_ready_captures(&mut self) -> Result<()> {
         let sinex = Arc::clone(
             self.sinex
                 .as_ref()
                 .ok_or_else(|| StoreError::Invalid("primary drain requires a producer".into()))?,
         );
-        self.poll_primary()?;
         let pending = sinex.pending_captures()?;
         let Some(first) = pending.first() else {
             return Ok(());
@@ -885,7 +893,6 @@ impl Inner {
             .map(|member| member.identity.clone())
             .collect::<Vec<_>>();
         sinex.complete_captures(&identities, &writes)?;
-        self.poll_primary()?;
         Ok(())
     }
 

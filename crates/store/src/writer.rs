@@ -20,7 +20,7 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -36,6 +36,7 @@ mod batch;
 mod bytes;
 mod chain;
 mod confirmed;
+mod follow;
 mod historical;
 mod primary;
 mod primary_capture;
@@ -89,6 +90,8 @@ enum Msg {
     ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
     Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
     SynchronizePrimary(SyncSender<Result<i64>>),
+    /// The stream follower handled a page, or failed to read one.
+    StreamFollowed(Option<String>),
     CaptureBody(String, SyncSender<Result<crate::primary::PreparedBody>>),
     Capture(String, SyncSender<Result<crate::primary::Capture>>),
     RawAcquisitionCursor(
@@ -137,6 +140,8 @@ pub struct Writer {
     /// first build.
     started_empty: bool,
     resolver: Arc<resolve::Resolver>,
+    /// In primary mode, the thread that reads the confirmed stream.
+    follower: Option<follow::Follower>,
 }
 
 /// Orders new work against shutdown. Once the stop message is queued,
@@ -295,11 +300,6 @@ const KEY_INDEXES: &[&str] = &["message_id", "event_id", "text_hash"];
 
 /// Batches waiting for the writer before senders block.
 const QUEUE: usize = 4;
-/// How long a primary writer waits for work before it reads the confirmed
-/// stream on its own, so other hosts' writes and a rebuild arrive unasked.
-const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(2);
-/// The longest wait between reads while reading the stream keeps failing.
-const STREAM_POLL_LONGEST: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Input bytes a transaction covers before committing. A batch's bytes
 /// stay counted against the parse pool's limit until its transaction
@@ -394,6 +394,7 @@ impl Writer {
             None
         };
         let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
+        let stream_source = sinex.clone();
         let commits = crate::completion::CommitEvents::default();
         #[cfg(any(test, feature = "fixture"))]
         let dispatch = dispatch::Barriers::default();
@@ -413,7 +414,6 @@ impl Writer {
             search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
             sinex,
-            stream_wait: STREAM_POLL,
             stream_error: None,
         };
         // Senders block once a few batches wait. The writer is the slowest
@@ -427,18 +427,23 @@ impl Writer {
         let handle = std::thread::Builder::new()
             .name("polylogue-writer".into())
             .spawn(move || inner.run(&rx, &users_rx))?;
+        let queue = WriterQueue::new(
+            tx,
+            users,
+            Arc::clone(&resolver),
+            commits,
+            #[cfg(any(test, feature = "fixture"))]
+            dispatch,
+        );
+        let follower = stream_source
+            .map(|sinex| follow::Follower::start(sinex, queue.clone(), archive))
+            .transpose()?;
         Ok(Self {
-            tx: Some(WriterQueue::new(
-                tx,
-                users,
-                Arc::clone(&resolver),
-                commits,
-                #[cfg(any(test, feature = "fixture"))]
-                dispatch,
-            )),
+            tx: Some(queue),
             handle: Some(handle),
             started_empty: empty,
             resolver,
+            follower,
         })
     }
 
@@ -712,6 +717,9 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
+        if let Some(mut follower) = self.follower.take() {
+            follower.stop();
+        }
         if let Some(queue) = self.tx.take() {
             queue.stop();
         }
@@ -1082,9 +1090,6 @@ struct Inner {
     location: Archive,
     /// In primary mode, where every register row goes before it commits.
     sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
-    /// How long an idle primary writer waits before reading the stream;
-    /// it grows while reading fails.
-    stream_wait: std::time::Duration,
     /// The last stream error recorded, so a lasting outage is recorded once.
     stream_error: Option<String>,
 }
@@ -1134,53 +1139,28 @@ impl Inner {
         }
     }
 
-    /// The next queued message. An idle primary writer follows the confirmed
-    /// stream while it waits.
-    fn next_message(&mut self, rx: &Receiver<Msg>) -> Option<Msg> {
-        if self.sinex.is_none() {
-            return rx.recv().ok();
-        }
-        loop {
-            match rx.recv_timeout(self.stream_wait) {
-                Ok(message) => return Some(message),
-                Err(RecvTimeoutError::Disconnected) => return None,
-                Err(RecvTimeoutError::Timeout) => self.follow_stream(),
-            }
-        }
-    }
-
-    /// Sends what waits in the spool, applies what Sinex confirmed and
-    /// derives from it. A failure is recorded in the write report (Sinex's
-    /// health also shows it in status) and the next read waits longer.
-    fn follow_stream(&mut self) {
-        let _busy = crate::timing::writer_started();
-        let turn = Arc::clone(&self.search.turn);
-        let _turn = turn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result = self.synchronize_primary().and_then(|_| {
-            if self.derive_due {
-                self.derive().map(drop)
-            } else {
-                Ok(())
-            }
-        });
-        self.stream_wait = self.next_stream_wait(result);
-    }
-
-    fn next_stream_wait(&mut self, result: Result<()>) -> std::time::Duration {
+    /// The follower's page was handled: record a failed read once per
+    /// distinct error (Sinex's health also shows it in status); after a
+    /// successful one, prepare the facts of captures Sinex confirmed and derive.
+    fn stream_followed(&mut self, error: Option<String>) {
+        let result = match error {
+            Some(error) => Err(StoreError::Sinex(error)),
+            None => self.complete_ready_captures().and_then(|()| {
+                if self.derive_due {
+                    self.derive().map(drop)
+                } else {
+                    Ok(())
+                }
+            }),
+        };
         match result {
-            Ok(()) => {
-                self.stream_error = None;
-                STREAM_POLL
-            }
+            Ok(()) => self.stream_error = None,
             Err(error) => {
                 let error = format!("confirmed stream: {error}");
                 if self.stream_error.as_ref() != Some(&error) {
                     self.report.errors.push(error.clone());
                     self.stream_error = Some(error);
                 }
-                (self.stream_wait * 2).min(STREAM_POLL_LONGEST)
             }
         }
     }
@@ -1195,6 +1175,7 @@ impl Inner {
         let mut coverage = Vec::new();
         let mut confirmations = Vec::new();
         let mut synchronizations = Vec::new();
+        let mut followed = Vec::new();
         let mut snapshots = Vec::new();
         let mut pending_bodies = Vec::new();
         let mut private_captures = Vec::new();
@@ -1206,8 +1187,9 @@ impl Inner {
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
-            let Some(first) = self.next_message(rx) else {
-                break;
+            let first = match rx.recv() {
+                Ok(first) => first,
+                Err(_) => break,
             };
             let _busy = crate::timing::writer_started();
             self.serve_users(users);
@@ -1290,6 +1272,10 @@ impl Inner {
                         synchronizations.push(reply);
                         false
                     }
+                    Msg::StreamFollowed(error) => {
+                        followed.push(error);
+                        false
+                    }
                     Msg::Stop => {
                         stopping = true;
                         false
@@ -1329,6 +1315,9 @@ impl Inner {
             }
             for reply in synchronizations.drain(..) {
                 let _ = reply.send(self.synchronize_primary());
+            }
+            for error in followed.drain(..) {
+                self.stream_followed(error);
             }
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));

@@ -19,6 +19,7 @@ CREATE TABLE primary_pending (
 ) STRICT;
 CREATE INDEX primary_pending_position ON primary_pending(position,n);
 CREATE TABLE primary_complete(position INTEGER PRIMARY KEY, evidence BLOB) STRICT;
+", include_str!("projection/refused.sql"), "
 CREATE TABLE source_material (
  id TEXT NOT NULL, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
  length INTEGER NOT NULL, hash BLOB NOT NULL, source_length INTEGER, blob_offset INTEGER NOT NULL,
@@ -28,6 +29,7 @@ CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
 ", include_str!("projection/reference_index.sql"));
 pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_index.sql");
+pub(crate) const REFUSED: &str = include_str!("projection/refused.sql");
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
@@ -96,6 +98,7 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             ConfirmedChange::Archived => "archived",
             ConfirmedChange::Restored => "restored",
             ConfirmedChange::Tombstoned => "tombstoned",
+            ConfirmedChange::Refused { .. } => "refused",
             ConfirmedChange::Control(_) => unreachable!(),
         };
         let bytes = packed(&event.change)?;
@@ -362,7 +365,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 }
                 None => Fact::tombstoned(event, position, order),
             }),
-            ConfirmedChange::Control(_) => None,
+            ConfirmedChange::Refused { .. } | ConfirmedChange::Control(_) => None,
         };
         if let Some(next) = next {
             next.insert(index, "primary_candidate")?;
@@ -939,6 +942,27 @@ fn coverage(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
+/// Events Polylogue could not read are recorded with their kind, position
+/// and reason; the stream continues past them.
+fn refusals(tx: &rusqlite::Transaction<'_>, through: i64) -> Result<()> {
+    let mut query = tx.prepare(
+        "SELECT event,position,product FROM primary_pending WHERE change='refused' AND position<=?1",
+    )?;
+    let mut rows = query.query([through])?;
+    while let Some(row) = rows.next()? {
+        let event: String = row.get(0)?;
+        let position: i64 = row.get(1)?;
+        let bytes: Vec<u8> = row.get(2)?;
+        if let ConfirmedChange::Refused { kind, reason } = unpacked(&bytes)? {
+            tx.execute(
+                "INSERT INTO primary_refused(event,position,kind,reason) VALUES (?1,?2,?3,?4) ON CONFLICT(event) DO UPDATE SET position=excluded.position,kind=excluded.kind,reason=excluded.reason",
+                params![event, position, kind, reason],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     tx.execute(
         "DELETE FROM primary_fact_blob WHERE event IN (SELECT event FROM primary_candidate)",
@@ -998,6 +1022,7 @@ pub(crate) fn apply(
         requests(&tx, &plan)?;
         queries(&tx, &plan)?;
         coverage(&tx, &plan)?;
+        refusals(&tx, next)?;
         crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
         bindings(&tx, &plan)?;
         // Variants are authored records, so only a request can change them.

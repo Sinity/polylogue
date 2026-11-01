@@ -640,6 +640,29 @@ impl Reader<'_> {
         crate::primary::projection::checkpoint(self.conn()?)
     }
 
+    /// How many confirmed events Polylogue could not read, and the reason
+    /// for the latest of them.
+    pub fn confirmed_refusals(&self) -> Result<(u64, Option<String>)> {
+        let conn = self.conn()?;
+        let count: i64 =
+            conn.query_row("SELECT count(*) FROM primary_refused", [], |row| row.get(0))?;
+        let latest = conn
+            .query_row(
+                "SELECT kind,position,reason FROM primary_refused ORDER BY position DESC LIMIT 1",
+                [],
+                |row| {
+                    Ok(format!(
+                        "{} at {}: {}",
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?
+                    ))
+                },
+            )
+            .optional()?;
+        Ok((u64::try_from(count).unwrap_or_default(), latest))
+    }
+
     /// Original authenticated owner association, independent of native-origin
     /// eligibility. Absent historical metadata stays unknown.
     pub fn native_fact_context(

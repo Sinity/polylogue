@@ -13,6 +13,31 @@ use sinex_protocol::{
 };
 use std::time::Duration;
 
+/// An event Polylogue cannot read (an unknown kind, a refused or
+/// inconsistent fetch) is refused at its position so the stream continues;
+/// only a lost connection stops the page.
+pub(crate) fn readable(
+    position: i64,
+    event: &str,
+    kind: String,
+    read: Result<Confirmed>,
+) -> Result<Confirmed> {
+    match read {
+        Err(Error::Unreachable(reason)) => Err(Error::Unreachable(reason)),
+        Err(error) => Ok(Confirmed {
+            position,
+            event: event.into(),
+            output_index: 0,
+            native: None,
+            change: ConfirmedChange::Refused {
+                kind,
+                reason: error.to_string(),
+            },
+        }),
+        read => read,
+    }
+}
+
 fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
     let declared = crate::kinds::declared_definition(&sinex_model::KindRef {
         name: event.event_type.clone(),
@@ -278,23 +303,27 @@ impl Client {
                 sinex_protocol::Confirmed::EventReference { commit_seq, event }
                     if commit_seq > after =>
                 {
-                    match self.fetch_event(event, commit_seq).await? {
-                        Some(fetched) => {
-                            if fetched.commit_seq != commit_seq {
-                                return Err(Error::Invalid(
-                                    "a fetched event differs from its confirmed position".into(),
-                                ));
-                            }
-                            decode_event(&fetched)?
+                    let fetched = self.fetch_event(event, commit_seq).await;
+                    let kind = match &fetched {
+                        Ok(Some(fetched)) => {
+                            format!("{}@{}", fetched.event_type, fetched.kind_version)
                         }
-                        None => Confirmed {
+                        _ => String::new(),
+                    };
+                    let read = fetched.and_then(|fetched| match fetched {
+                        Some(fetched) if fetched.commit_seq != commit_seq => Err(Error::Invalid(
+                            "a fetched event differs from its confirmed position".into(),
+                        )),
+                        Some(fetched) => decode_event(&fetched),
+                        None => Ok(Confirmed {
                             position: commit_seq,
                             event: event.to_string(),
                             output_index: 0,
                             native: None,
                             change: ConfirmedChange::Tombstoned,
-                        },
-                    }
+                        }),
+                    });
+                    readable(commit_seq, &event.to_string(), kind, read)?
                 }
                 sinex_protocol::Confirmed::EventReference { .. } => continue,
                 sinex_protocol::Confirmed::Archived(change) => Confirmed {

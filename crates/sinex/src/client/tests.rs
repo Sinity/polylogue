@@ -181,3 +181,35 @@ fn authentication_and_host_are_explicit_and_password_debug_is_redacted() {
     let sinex = Sinex::open(&config, &secret, "supplied-host").unwrap();
     assert_eq!(sinex.host, "supplied-host");
 }
+
+#[test]
+fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_the_page() {
+    use polylogue_store::primary::ConfirmedChange;
+    let refused = crate::client::confirmed::readable(
+        9,
+        "event-x",
+        "polylogue.future@7".into(),
+        Err(Error::Invalid(
+            "unsupported Polylogue kind polylogue.future@7".into(),
+        )),
+    )
+    .unwrap();
+    assert_eq!(refused.position, 9);
+    assert_eq!(refused.event, "event-x");
+    assert_eq!(
+        refused.change,
+        ConfirmedChange::Refused {
+            kind: "polylogue.future@7".into(),
+            reason: "unsupported Polylogue kind polylogue.future@7".into(),
+        }
+    );
+    assert!(matches!(
+        crate::client::confirmed::readable(
+            9,
+            "event-x",
+            String::new(),
+            Err(Error::Unreachable("connection lost".into()))
+        ),
+        Err(Error::Unreachable(_))
+    ));
+}
