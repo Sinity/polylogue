@@ -250,7 +250,7 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     let receipt = spool.operation("group").unwrap().join("ack/receipt.json");
     let original = fs::read(&receipt).unwrap();
     let mut damaged: serde_json::Value = serde_json::from_slice(&original).unwrap();
-    damaged["value"]["commit_seq"] = 0.into();
+    damaged["value"]["phase"]["commit_seq"] = 0.into();
     fs::write(&receipt, serde_json::to_vec(&damaged).unwrap()).unwrap();
     assert!(spool.retire(1).is_err());
     assert!(spool.get("raw").unwrap().is_some());
