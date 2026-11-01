@@ -1473,7 +1473,10 @@ fn query_targets_in(
                         else {
                             return Err(error(
                                 "conflict",
-                                "the supplied source is not a recorded message",
+                                format!(
+                                    "the supplied source is not a recorded message; the query selected {row_count} rows, first {:?}",
+                                    targets.first()
+                                ),
                             ));
                         };
                         let mut memberships = 0_u8;
