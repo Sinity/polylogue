@@ -1,16 +1,19 @@
 use super::*;
-use crate::daemon::{Request, Response, server, service};
+use crate::daemon::{Request, server, service};
 
 /// Every current note assertion.
 fn notes(host: &BrowserHost) -> Vec<Value> {
-    let Some(Response::Ok { data, .. }) = host.ask(&Request::Query {
-        text: "assertions where kind:note".into(),
-        cursor: None,
-        page_size: None,
-        why: false,
-        session: None,
-        fields: vec![],
-    }) else {
+    let Some(Ok(data)) = host
+        .ask(&Request::Query {
+            text: "assertions where kind:note".into(),
+            cursor: None,
+            page_size: None,
+            why: false,
+            session: None,
+            fields: vec![],
+        })
+        .map(crate::protocol::into_value)
+    else {
         panic!("notes unavailable")
     };
     data["rows"].as_array().unwrap().clone()
@@ -52,7 +55,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
         200
     );
     loop {
-        if matches!(service::handle(Request::Status, &runtime.daemon), Response::Ok { data, .. } if data["store"]["messages"] == 1 && data["busy"] == false)
+        if matches!(crate::protocol::into_value(service::handle(Request::Status, &runtime.daemon)), Ok(data) if data["store"]["messages"] == 1 && data["busy"] == false)
         {
             break;
         }

@@ -16,7 +16,12 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         &daemon.daemon,
     );
     assert!(
-        matches!(imported, crate::daemon::Response::Ok { .. }),
+        matches!(
+            imported,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
         "{imported:?}"
     );
     let archive = Archive::at(&daemon.daemon.archive.root);

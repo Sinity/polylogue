@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     commands::{Caller, Surface},
-    daemon::{Request, Response, service::Daemon},
+    daemon::{Request, service::Daemon},
 };
 use command_surface::{Answer, Operation, OperationFuture, OperationSpec, RequestContext};
 use serde_json::json;
@@ -59,7 +59,7 @@ impl Operation for HeldCatalog {
                 &limit,
                 accepted.invocation.as_ref().unwrap(),
             );
-            let Response::Ok { data } = response else {
+            let Some(data) = response.value().cloned() else {
                 panic!("setting producer failed: {response:?}");
             };
             let value = serde_json::from_value(data).unwrap();

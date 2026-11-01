@@ -10,7 +10,6 @@ pub fn resolved_times_digest(times: &[ResolvedTime]) -> Result<String, Selection
     serde_json::to_writer(&mut digest, times).map_err(|error| SelectionError::Invalid {
         kind: "internal",
         message: format!("resolved query times cannot be encoded: {error}"),
-        detail: None,
     })?;
     Ok(digest.finalize().to_hex().to_string())
 }
@@ -39,7 +38,6 @@ pub fn check_resolved_times(
         return Err(SelectionError::Invalid {
             kind: "stale_cursor",
             message: "the resolved query times changed".into(),
-            detail: None,
         });
     }
     Ok(())

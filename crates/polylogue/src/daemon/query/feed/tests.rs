@@ -88,7 +88,7 @@ fn an_output_failure_never_returns_a_deliverable_file() {
     assert_eq!(
         prepare(&pool.reader().unwrap(), None, 0, File::open(path).unwrap())
             .unwrap_err()
-            .kind,
+            .code(),
         "io"
     );
 }
@@ -150,7 +150,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
     assert_eq!(
         prepare(&reader, Some(&future), 0, tempfile::tempfile().unwrap())
             .unwrap_err()
-            .kind,
+            .code(),
         "bad_request"
     );
     assert_eq!(
@@ -161,7 +161,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
             tempfile::tempfile().unwrap()
         )
         .unwrap_err()
-        .kind,
+        .code(),
         "bad_request"
     );
 }

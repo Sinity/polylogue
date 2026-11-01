@@ -67,10 +67,14 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         "query:old-feed".into(),
     ] {
         let error = run(&reader, ask(&query, T0)).unwrap_err();
-        assert_eq!(error.kind, "resync_required", "{query}: {error:?}");
-        assert_eq!(error.detail.unwrap()["reason"], "generation_changed");
+        assert_eq!(error.code(), "resync_required", "{query}: {error:?}");
+        assert!(
+            error.message.starts_with("the index generation changed"),
+            "{query}: {}",
+            error.message
+        );
         assert_eq!(
-            keep(&reader, ask(&query, T0)).unwrap_err().kind,
+            keep(&reader, ask(&query, T0)).unwrap_err().code(),
             "resync_required",
             "keep {query}"
         );
@@ -197,7 +201,7 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
 
 #[test]
 fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
-    use crate::daemon::{Request, Response, service::handle};
+    use crate::daemon::{Request, service::handle};
     let daemon = crate::test_daemon::start("synthetic source");
     let result = handle(
         Request::Keep {
@@ -207,7 +211,9 @@ fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
         },
         &daemon.daemon,
     );
-    assert!(matches!(result, Response::Error { kind, .. } if kind == "resync_required"));
+    assert!(
+        matches!(result, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("resync_required"))
+    );
     let pool = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
     assert_eq!(
         pool.reader()

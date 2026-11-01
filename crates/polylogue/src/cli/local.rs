@@ -363,7 +363,7 @@ pub fn manual(
     if json {
         println!(
             "{}",
-            serde_json::to_string(&crate::protocol::answer(
+            serde_json::to_string(&command_surface::Answer::ok(
                 serde_json::json!({"manual": text})
             ))
             .expect("manual is serializable")

@@ -86,7 +86,7 @@ fn membership_refuses_group_values_of_another_type() {
     let w = morrow();
     let query = "sessions where cwd in (sessions | group by cost)";
     let error = run_q(&w, ask(query)).unwrap_err();
-    assert_eq!(error.kind, "invalid_query");
+    assert_eq!(error.code(), "invalid_query");
     assert!(error.message.contains("same type"), "{}", error.message);
 }
 
@@ -231,7 +231,7 @@ fn saved_relation_errors_reach_the_query_error_path() {
             format!("sessions where query:{call}"),
         ] {
             let failure = run_q(&w, ask(&query)).unwrap_err();
-            assert_eq!(failure.kind, kind, "{query}: {}", failure.message);
+            assert_eq!(failure.code(), kind, "{query}: {}", failure.message);
             if call == "twice" {
                 let rows = q(&w, "assertions where kind:saved_query key:twice");
                 let expected: std::collections::BTreeSet<_> = rows["rows"]
@@ -245,14 +245,16 @@ fn saved_relation_errors_reach_the_query_error_path() {
                     })
                     .collect();
                 assert_eq!(expected.len(), 2);
-                let detail = failure.detail.as_ref().unwrap();
-                assert_eq!(detail["what"], "query:twice");
+                assert!(
+                    failure.message.starts_with("query:twice "),
+                    "{}",
+                    failure.message
+                );
                 assert_eq!(
-                    detail["candidates"]
-                        .as_array()
-                        .unwrap()
+                    failure
+                        .candidates()
                         .iter()
-                        .map(|candidate| candidate.as_str().unwrap().to_owned())
+                        .cloned()
                         .collect::<std::collections::BTreeSet<_>>(),
                     expected
                 );
@@ -305,7 +307,8 @@ fn saved_relation_errors_reach_the_query_error_path() {
         ] {
             let failure = run_q(&w, ask(&query)).unwrap_err();
             assert_eq!(
-                failure.kind, "not_yet_available",
+                failure.code(),
+                "not_yet_available",
                 "{query}: {}",
                 failure.message
             );
@@ -326,7 +329,7 @@ fn saved_relation_errors_reach_the_query_error_path() {
         ),
     ] {
         let failure = run_q(&w, ask(text)).unwrap_err();
-        assert_eq!(failure.kind, kind, "{text}");
+        assert_eq!(failure.code(), kind, "{text}");
         assert!(failure.message.contains(message), "{}", failure.message);
     }
 }

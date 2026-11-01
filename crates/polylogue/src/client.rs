@@ -1,7 +1,9 @@
 //! One socket client for CLI, MCP, browser-host and hook requests.
 pub mod stream;
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
+use command_surface::Answer;
 use polylogue_store::Archive;
+use serde_json::Value;
 use std::io;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -23,7 +25,7 @@ fn runtime() -> io::Result<&'static tokio::runtime::Runtime> {
         .map_err(|error| io::Error::other(error.clone()))
 }
 
-pub fn send(socket: &Path, request: &Request) -> io::Result<Response> {
+pub fn send(socket: &Path, request: &Request) -> io::Result<Answer<Value>> {
     let deadline = crate::daemon::execution::request_deadline(request, None);
     runtime()?.block_on(async {
         if let Some(deadline_ms) = deadline {
@@ -50,7 +52,7 @@ pub fn send_with_budget(
     socket: &Path,
     request: &Request,
     budget: Duration,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     let deadline = Instant::now()
         .checked_add(budget)
         .ok_or_else(|| io::Error::other("socket deadline is out of range"))?;
@@ -74,7 +76,7 @@ pub fn send_when_ready(
     archive: &Archive,
     request: &Request,
     deadline_ms: Option<i64>,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     runtime()?.block_on(send_ready(
         archive,
         request,
@@ -89,7 +91,7 @@ pub(crate) async fn send_ready(
     request: &Request,
     deadline_ms: Option<i64>,
     cancelled: &CancellationToken,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     send_ready_as(
         archive,
         request,
@@ -106,7 +108,7 @@ pub(crate) async fn send_ready_as(
     deadline_ms: Option<i64>,
     cancelled: &CancellationToken,
     caller: polylogue_model::authorship::CallerEvidence,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     let deadline_ms = crate::daemon::execution::request_deadline(request, deadline_ms);
     let exchange = async {
         let stream = crate::cli::when_ready(archive, deadline_ms, || {
@@ -143,7 +145,7 @@ async fn exchange(
     socket: &Path,
     request: &Request,
     deadline_ms: Option<i64>,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     exchange_stream(
         tokio::net::UnixStream::connect(socket).await?,
         request,
@@ -158,7 +160,7 @@ async fn exchange_stream(
     request: &Request,
     deadline_ms: Option<i64>,
     caller: polylogue_model::authorship::CallerEvidence,
-) -> io::Result<Response> {
+) -> io::Result<Answer<Value>> {
     let outgoing = crate::daemon::execution::Outgoing {
         request,
         deadline_ms,
@@ -213,8 +215,7 @@ pub(crate) async fn call_ready_as(
                 Ok(result) => result,
                 Err(_) => Ok(command_surface::Answer::error(crate::protocol::failure(
                     "deadline_exceeded",
-                    "the daemon did not answer before the deadline".into(),
-                    None,
+                    "the daemon did not answer before the deadline",
                 ))),
             }
         } else {
@@ -223,8 +224,7 @@ pub(crate) async fn call_ready_as(
     };
     tokio::select! {
         answer = work => answer,
-        _ = cancelled.cancelled() => Ok(command_surface::Answer::error(crate::protocol::failure(
-            "cancelled", "the request was cancelled".into(), None))),
+        _ = cancelled.cancelled() => Ok(command_surface::Answer::error(crate::protocol::failure("cancelled", "the request was cancelled"))),
     }
 }
 

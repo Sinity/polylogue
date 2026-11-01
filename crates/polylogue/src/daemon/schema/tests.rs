@@ -399,7 +399,15 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
         },
         &daemon.daemon,
     );
-    assert!(matches!(imported, Response::Ok { .. }), "{imported:?}");
+    assert!(
+        matches!(
+            imported,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{imported:?}"
+    );
     daemon.wait_for(|status| status["store"]["messages"] == 2);
     std::fs::remove_file(provider).unwrap();
     let request = super::super::Request::SchemaInfer {
@@ -409,7 +417,7 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
     assert!(super::super::execution::request_deadline(&request, None).is_none());
     let socket = daemon.daemon.archive.root.join("daemon.sock");
     let response = crate::client::send(&socket, &request).unwrap();
-    let Response::Ok { data, .. } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}");
     };
     let report: Inference = serde_json::from_value(data).unwrap();
@@ -429,7 +437,7 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
     };
     assert!(unread.read_only());
     let response = crate::client::send(&socket, &unread).unwrap();
-    let Response::Ok { data, .. } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}");
     };
     let shapes = data["shapes"].as_array().unwrap();

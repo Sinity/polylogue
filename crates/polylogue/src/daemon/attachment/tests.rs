@@ -28,8 +28,8 @@ fn request(
         cursor,
     }
 }
-fn page(response: Response) -> BytePage {
-    let Response::Ok { data } = response else {
+fn page(response: command_surface::Answer<serde_json::Value>) -> BytePage {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
     serde_json::from_value(data).unwrap()
@@ -86,7 +86,7 @@ fn explicit_inputs_and_inline_cursor_sources_never_fall_back_to_other_bytes() {
         &daemon.daemon,
     );
     assert!(
-        matches!(refused,Response::Error{ref kind,..} if kind=="attachment_unavailable"),
+        matches!(refused,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("attachment_unavailable")),
         "{refused:?}"
     );
     let first = page(read(request(&message, None, None, 1), &daemon.daemon));
@@ -101,7 +101,7 @@ fn explicit_inputs_and_inline_cursor_sources_never_fall_back_to_other_bytes() {
         &daemon.daemon,
     );
     assert!(
-        matches!(refused,Response::Error{ref kind,..} if kind=="bad_request"),
+        matches!(refused,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
     let mut changed: Cursor = serde_json::from_slice(
@@ -119,7 +119,7 @@ fn explicit_inputs_and_inline_cursor_sources_never_fall_back_to_other_bytes() {
         .encode(serde_json::to_vec(&changed).unwrap());
     let refused = read(request(&message, None, Some(changed), 1), &daemon.daemon);
     assert!(
-        matches!(refused,Response::Error{ref kind,..} if kind=="stale_cursor"),
+        matches!(refused,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("stale_cursor")),
         "{refused:?}"
     );
 }
@@ -172,7 +172,7 @@ fn receiving_member_cursors_keep_their_input_selection_and_original_wire_shape()
                     &daemon.daemon,
                 );
                 assert!(
-                    matches!(refused,Response::Error{ref kind,..} if kind=="attachment_unavailable"),
+                    matches!(refused,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("attachment_unavailable")),
                     "{refused:?}"
                 );
             }
@@ -226,7 +226,10 @@ fn missing_or_corrupt_inline_frames_refuse_even_a_zero_byte_page() {
             file.write_all(&original).unwrap();
             file.sync_all().unwrap();
         }
-        assert!(matches!(refused, Response::Error { .. }), "{refused:?}");
+        assert!(
+            matches!(refused, command_surface::Answer::Error { .. }),
+            "{refused:?}"
+        );
         assert_eq!(
             page(read(request(&message, None, None, 1), &daemon.daemon)).size,
             0

@@ -1,15 +1,14 @@
 //! Read-only schema operations over pinned stored revisions. Selection and
 //! payload observation release their SQL readers independently.
-use super::{
-    Response,
-    service::{Daemon, error, ok, store_error},
-};
+use super::service::{Daemon, error, ok, store_error};
+use command_surface::Answer;
 use polylogue_sources::{
     Capture, Parse,
     schema::{Framing, Observer, Schema, Selection},
 };
 use polylogue_store::{ReadPool, StoreError, read::limit::ReadLimit, schema_inputs::InputRevision};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, BufRead, BufReader, Read},
@@ -166,7 +165,7 @@ impl<R: Read> Read for IdleRead<'_, R> {
     }
 }
 
-pub(super) fn infer(d: &Daemon, selection: Infer) -> Response {
+pub(super) fn infer(d: &Daemon, selection: Infer) -> Answer<Value> {
     if let Err(message) = selection.validate() {
         return error("bad_request", message);
     }
@@ -381,7 +380,7 @@ fn observe_bytes(
         .map_err(|_| "unreadable_input")
 }
 
-pub(super) fn unread(reader: &polylogue_store::Reader<'_>, origin: Option<&str>) -> Response {
+pub(super) fn unread(reader: &polylogue_store::Reader<'_>, origin: Option<&str>) -> Answer<Value> {
     match reader.wire_shapes(polylogue_store::wire_shapes::Scope::current(origin)) {
         Ok(mut report) => {
             report.shapes.retain(|shape| shape.unused_count > 0);

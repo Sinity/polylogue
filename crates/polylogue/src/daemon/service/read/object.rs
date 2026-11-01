@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::Reference;
 
-fn target(request: &Request) -> Option<Result<Reference, Response>> {
+fn target(request: &Request) -> Option<Result<Reference, Failure>> {
     let Request::Read {
         target, options, ..
     } = request
@@ -10,7 +10,7 @@ fn target(request: &Request) -> Option<Result<Reference, Response>> {
         return None;
     };
     (target.starts_with("request:") || options.view == View::Raw && target.starts_with("run:"))
-        .then(|| Reference::parse(target).map_err(|error| self::error("bad_request", error)))
+        .then(|| Reference::parse(target).map_err(|error| Failure::new("bad_request", error)))
 }
 
 fn execute<T>(
@@ -28,8 +28,8 @@ fn execute<T>(
         RunId,
         ReadFooter,
         &ProjectionEvidence,
-    ) -> Result<T, Response>,
-) -> Result<T, Response> {
+    ) -> Result<T, Failure>,
+) -> Result<T, Failure> {
     let Request::Read {
         options,
         format,
@@ -42,36 +42,28 @@ fn execute<T>(
     };
     options
         .validate()
-        .map_err(|error| self::error("bad_request", error))?;
+        .map_err(|error| Failure::new("bad_request", error))?;
     let format =
-        Format::parse(format).ok_or_else(|| error("bad_request", "unknown read format"))?;
+        Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
     let budget = if *delivery == ReadDelivery::Page {
         let mut resolved = PageBudget::default();
         if let Some(tokens) = budget {
             resolved.tokens = NonZeroU64::new(*tokens as u64)
-                .ok_or_else(|| error("bad_request", "read budget must be positive"))?;
+                .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
         }
         Some(resolved)
     } else {
         None
     };
-    let prepared = reader
-        .prepare_object_read(&reference)
-        .map_err(|error| store_error(&error))?;
+    let prepared = reader.prepare_object_read(&reference)?;
     let content_hash = prepared.content_hash();
-    let record = prepared
-        .into_record()
-        .map_err(|error| store_error(&error))?;
+    let record = prepared.into_record()?;
     let scope = reader.scope_token();
-    let positions = reader
-        .change_position()
-        .map_err(|error| store_error(&error))?;
+    let positions = reader.change_position()?;
     let binding = ObjectExecutionBinding {
         reference: reference.clone(),
         content_hash,
-        scope_fingerprint: reader
-            .query_scope_fingerprint()
-            .map_err(|error| store_error(&error))?,
+        scope_fingerprint: reader.query_scope_fingerprint()?,
         versions: operation.cursor_versions(),
         presentation: ExecutionPresentation::Read {
             options: options.clone(),
@@ -84,11 +76,11 @@ fn execute<T>(
     };
     binding
         .validate()
-        .map_err(|error| self::error("bad_request", error))?;
+        .map_err(|error| Failure::new("bad_request", error))?;
     let id = crate::operation::new_run_id();
     let hash = binding
         .hash()
-        .map_err(|error| self::error("internal", error))?;
+        .map_err(|error| Failure::new("internal", error))?;
     let begin = QueryRun {
         id: id.clone(),
         question: None,
@@ -100,26 +92,21 @@ fn execute<T>(
             execution: Box::new(binding),
         },
     };
-    let writer = d
-        .writes
-        .as_ref()
-        .ok_or_else(|| error("not_yet_available", "read execution custody is unavailable"))?;
-    reader.check().map_err(|error| store_error(&error))?;
-    scope.check().map_err(|error| store_error(&error))?;
+    let writer = d.writes.as_ref().ok_or_else(|| {
+        Failure::new("not_yet_available", "read execution custody is unavailable")
+    })?;
+    reader.check()?;
+    scope.check()?;
     super::super::execution::record(
         writer,
         operation.parent_lifetime(),
         begin,
         hash,
-        "read_failed",
         || d.config.requests.now(),
         || {
-            reader.check().map_err(|error| store_error(&error))?;
-            scope.check().map_err(|error| store_error(&error))?;
-            let caught_up = d
-                .warm
-                .caught_up(reader, &positions.to_string())
-                .map_err(|error| store_error(&error))?;
+            reader.check()?;
+            scope.check()?;
+            let caught_up = d.warm.caught_up(reader, &positions.to_string())?;
             let run_reference = format!("run:{id}");
             let snapshot = ReadSnapshot {
                 query: run_reference.clone(),
@@ -127,7 +114,7 @@ fn execute<T>(
                 ran_at: operation.ran_at,
                 read_at: positions,
                 caught_up,
-                currency: d.currency(reader).map_err(|error| store_error(&error))?,
+                currency: d.currency(reader)?,
                 enabled_variants: vec![],
                 author: operation.authorship.author.clone(),
                 notes: vec![],
@@ -170,8 +157,8 @@ fn execute<T>(
             let value = run(
                 projected, snapshot, header, format, budget, id, footer, &evidence,
             )?;
-            reader.check().map_err(|error| store_error(&error))?;
-            scope.check().map_err(|error| store_error(&error))?;
+            reader.check()?;
+            scope.check()?;
             Ok(super::super::execution::Completed {
                 value,
                 count: Some(1),
@@ -187,10 +174,10 @@ pub(super) fn page(
     d: &Daemon,
     request: &Request,
     operation: &Arc<crate::operation::Context>,
-) -> Option<Response> {
+) -> Option<Answer<Value>> {
     let reference = match target(request)? {
         Ok(reference) => reference,
-        Err(error) => return Some(error),
+        Err(failure) => return Some(failure.answer()),
     };
     let Request::Read { options, .. } = request else {
         return None;
@@ -202,15 +189,16 @@ pub(super) fn page(
         operation,
         reference,
         |record, snapshot, header, format, budget, id, footer, evidence| {
-            let mut budget = budget
-                .ok_or_else(|| error("bad_request", "streaming reads require stream delivery"))?;
+            let mut budget = budget.ok_or_else(|| {
+                Failure::new("bad_request", "streaming reads require stream delivery")
+            })?;
             let framing_size = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
-                .map_err(|error| self::error("internal", error))?
+                .map_err(|error| Failure::new("internal", error))?
                 .len();
             budget.bytes =
                 std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(framing_size))
                     .ok_or_else(|| {
-                        error(
+                        Failure::new(
                             "bad_request",
                             "reading metadata exceeds page framing; use streaming delivery",
                         )
@@ -228,7 +216,7 @@ pub(super) fn page(
             // object reading has no message attachments to open.
             let selected = |_: &Source| Ok(false);
             let ready_attachment = |_: &polylogue_model::MessageId, _, _, _: Option<&str>| {
-                Err(error(
+                Err(Failure::new(
                     "not_yet_available",
                     "an object reading has no message attachments",
                 ))
@@ -246,12 +234,12 @@ pub(super) fn page(
             })?;
             let document = pager.finish(footer).map_err(page_error)?;
             if document.footer.position.is_some() {
-                return Err(error(
+                return Err(Failure::new(
                     "bad_request",
                     "this object exceeds the page budget; use streaming delivery for the complete retained record",
                 ));
             }
-            reader.check().map_err(|error| store_error(&error))?;
+            reader.check()?;
             Ok(ReadPage {
                 format,
                 snapshot: ReadPageSnapshot::from(&snapshot),
@@ -261,8 +249,11 @@ pub(super) fn page(
         },
     );
     Some(match result {
-        Ok(page) => ok(page),
-        Err(error) => error,
+        Ok(page) => match serde_json::to_value(&page) {
+            Ok(value) => crate::protocol::read(value, &page.snapshot.currency),
+            Err(problem) => error("internal", problem),
+        },
+        Err(failure) => failure.answer(),
     })
 }
 
@@ -271,7 +262,7 @@ pub(super) fn produce(
     d: &Daemon,
     operation: &Arc<crate::operation::Context>,
     output: &mut dyn Write,
-) -> Option<Result<(), Response>> {
+) -> Option<Result<(), Failure>> {
     let Request::Read {
         options,
         with_blobs,
@@ -286,7 +277,7 @@ pub(super) fn produce(
         Err(error) => return Some(Err(error)),
     };
     Some(super::super::accepting(d).and_then(|()| {
-        let reader = d.reads.reader().map_err(|error| store_error(&error))?;
+        let reader = d.reads.reader()?;
         execute(
             &reader,
             d,
@@ -294,7 +285,7 @@ pub(super) fn produce(
             operation,
             reference,
             |record, snapshot, header, format, _, _, footer, _| {
-                let check = || reader.check().map_err(|error| store_error(&error));
+                let check = || reader.check().map_err(Failure::from);
                 let begin = ReadBegin {
                     format,
                     snapshot,

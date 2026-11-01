@@ -1,5 +1,5 @@
 //! One-record projection and transfer over a caller-owned pinned selection.
-use super::super::{Response, error};
+use super::super::Failure;
 use polylogue_model::bundle::{Counts, Record};
 use polylogue_model::read::*;
 use std::io::Write;
@@ -12,7 +12,7 @@ pub(super) fn project(
     evidence: &ProjectionEvidence,
     mixed: bool,
     footer: &mut ReadFooter,
-) -> Result<Option<ReadRecord>, Response> {
+) -> Result<Option<ReadRecord>, Failure> {
     let record = match selected {
         super::records::SelectedRecord::Canonical(record) => *record,
         super::records::SelectedRecord::LinkIssue { session, issue } => {
@@ -47,7 +47,7 @@ pub(super) fn document_omission(
     options: &ReadOptions,
     mixed: bool,
     footer: &mut ReadFooter,
-) -> Result<Option<ReadRecord>, Response> {
+) -> Result<Option<ReadRecord>, Failure> {
     if options.view != View::Dialogue {
         return Ok(None);
     }
@@ -70,7 +70,7 @@ fn projection_error(
     error: ReadError,
     mixed: bool,
     footer: &mut ReadFooter,
-) -> Result<Option<ReadRecord>, Response> {
+) -> Result<Option<ReadRecord>, Failure> {
     match error {
         ReadError::UnsupportedTarget {
             view,
@@ -124,7 +124,7 @@ pub(super) fn emit_record(
     at: SelectionLocator,
     layout: &super::evidence::Layout<'_>,
     emit: &mut super::Emit<'_>,
-) -> Result<bool, Response> {
+) -> Result<bool, Failure> {
     if record.record().is_some() && !emit(record, at, None)? {
         return Ok(false);
     }
@@ -143,16 +143,16 @@ pub(super) fn emit_record(
 /// The callback remains valid after a Reader has released a prepared spool.
 pub(super) struct Stream<'a> {
     output: &'a mut dyn Write,
-    check: &'a dyn Fn() -> Result<(), Response>,
+    check: &'a dyn Fn() -> Result<(), Failure>,
     counts: Counts,
     shown: u64,
 }
 impl<'a> Stream<'a> {
     pub(super) fn begin(
         output: &'a mut dyn Write,
-        check: &'a dyn Fn() -> Result<(), Response>,
+        check: &'a dyn Fn() -> Result<(), Failure>,
         begin: &ReadBegin,
-    ) -> Result<Self, Response> {
+    ) -> Result<Self, Failure> {
         let mut stream = Self {
             output,
             check,
@@ -163,14 +163,15 @@ impl<'a> Stream<'a> {
         Ok(stream)
     }
 
-    fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Response> {
+    fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Failure> {
         (self.check)()?;
-        crate::protocol::stream::event(self.output, name, payload).map_err(|e| error("io", e))
+        crate::protocol::stream::event(self.output, name, payload)
+            .map_err(|e| Failure::new("io", e))
     }
 
-    pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Response> {
+    pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Failure> {
         if matches!(record.record(), Some(Record::Manifest(_))) {
-            return Err(error(
+            return Err(Failure::new(
                 "bad_request",
                 "a read cannot emit an embedded manifest",
             ));
@@ -199,7 +200,7 @@ impl<'a> Stream<'a> {
                 Record::TextFragment(_) => self.counts.text_fragments += 1,
                 Record::Blob(_) => self.counts.blobs += 1,
                 Record::Manifest(_) => {
-                    return Err(error(
+                    return Err(Failure::new(
                         "bad_request",
                         "a read cannot emit an embedded manifest",
                     ));
@@ -214,11 +215,11 @@ impl<'a> Stream<'a> {
         Ok(())
     }
 
-    pub(super) fn blob(&mut self, chunk: &ReadBlobChunk) -> Result<(), Response> {
+    pub(super) fn blob(&mut self, chunk: &ReadBlobChunk) -> Result<(), Failure> {
         self.emit("blob", chunk)
     }
 
-    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<(), Response> {
+    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<(), Failure> {
         footer.shown = self.shown;
         footer.count = ValueState::known(self.shown);
         let complete = ReadComplete {
@@ -229,39 +230,26 @@ impl<'a> Stream<'a> {
     }
 }
 
-pub(super) fn read_error(error: ReadError) -> Response {
-    let (kind, detail) = match &error {
-        ReadError::UnsupportedTarget {
-            view,
-            target,
-            accepted_views,
-        } => (
+pub(super) fn read_error(error: ReadError) -> Failure {
+    let (code, hint) = match &error {
+        ReadError::UnsupportedTarget { accepted_views, .. } => (
             "bad_request",
-            Some(serde_json::json!({"view":view,"target":target,"accepted_views":accepted_views})),
+            Some(format!(
+                "views that read it: {}",
+                accepted_views
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
         ),
-        ReadError::RequiredExpansion {
-            view,
-            target,
-            option,
-        } => (
-            "bad_request",
-            Some(
-                serde_json::json!({"view":view,"target":target,"option":option,"required":"full"}),
-            ),
-        ),
-        ReadError::MissingEvidence {
-            view,
-            evidence,
-            reference,
-        } => (
-            "not_yet_available",
-            Some(serde_json::json!({"view":view,"evidence":evidence,"ref":reference})),
-        ),
+        ReadError::RequiredExpansion { option, .. } => {
+            ("bad_request", Some(format!("set {option} to full")))
+        }
+        ReadError::MissingEvidence { .. } => ("not_yet_available", None),
         _ => ("bad_request", None),
     };
-    Response::Error {
-        kind: kind.into(),
-        message: error.to_string(),
-        detail,
-    }
+    let mut failure = Failure::new(code, &error);
+    failure.error.hint = hint;
+    failure
 }

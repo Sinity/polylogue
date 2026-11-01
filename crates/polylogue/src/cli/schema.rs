@@ -61,16 +61,18 @@ pub fn diff(
 
 pub fn output(
     values: &Values,
-    value: &serde_json::Value,
+    answer: &command_surface::Answer<serde_json::Value>,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
+    let value = answer
+        .value()
+        .expect("output handlers receive answers with values");
     if json && values.text("output").is_none() {
-        let answer = crate::protocol::answer(value.clone());
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::to_value(&answer).expect("answer serializes"),
+                &serde_json::to_value(answer).expect("answer serializes"),
                 false
             )
         );

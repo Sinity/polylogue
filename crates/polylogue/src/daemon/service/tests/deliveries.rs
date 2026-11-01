@@ -14,7 +14,9 @@ fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value 
         sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
     };
     match handle(request, &d.daemon) {
-        Response::Ok { data, .. } => data,
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data,
         other => panic!("{other:?}"),
     }
 }
@@ -29,7 +31,9 @@ fn deliveries(d: &test_daemon::TestDaemon) -> u64 {
         fields: vec![],
     };
     match handle(request, &d.daemon) {
-        Response::Ok { data, .. } => data["count"].as_u64().unwrap(),
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data["count"].as_u64().unwrap(),
         other => panic!("{other:?}"),
     }
 }
@@ -92,7 +96,7 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
         limit.check(),
         Err(polylogue_store::StoreError::ReadDeadlineExceeded)
     ));
-    let Response::Ok { data, .. } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("accepted receipt was reported as a refusal: {response:?}");
     };
     assert_eq!(data["delivery"], id);

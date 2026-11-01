@@ -72,7 +72,7 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
     assert_eq!(
         open(&token, &seal, other, &position(), (1, 2), &options)
             .unwrap_err()
-            .kind,
+            .code(),
         "invalid_query"
     );
     let mut tampered = token.into_bytes();
@@ -88,7 +88,7 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
             &options
         )
         .unwrap_err()
-        .kind,
+        .code(),
         "invalid_query"
     );
 }
@@ -113,7 +113,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
     assert_eq!(
         open(token.as_str(), &seal, question, &newer, (1, 2), &options)
             .unwrap_err()
-            .kind,
+            .code(),
         "stale_cursor"
     );
     let mut changed = program.clone();
@@ -124,7 +124,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
     assert_eq!(
         check(&continuation, &changed, &options, false)
             .unwrap_err()
-            .kind,
+            .code(),
         "stale_cursor"
     );
     let mut changed = options.clone();
@@ -132,7 +132,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
     assert_eq!(
         check(&continuation, &program, &changed, false)
             .unwrap_err()
-            .kind,
+            .code(),
         "invalid_query"
     );
 }
@@ -190,7 +190,7 @@ fn resolution_vector_size_does_not_grow_the_authenticated_continuation() {
     assert_eq!(
         check(&continuation, &program, &options, false)
             .unwrap_err()
-            .kind,
+            .code(),
         "stale_cursor"
     );
 }

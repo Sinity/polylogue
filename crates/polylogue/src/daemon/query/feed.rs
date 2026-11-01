@@ -39,19 +39,11 @@ pub(crate) enum Component {
 }
 
 fn invalid(message: &str) -> Failure {
-    Failure {
-        kind: "bad_request".into(),
-        message: message.into(),
-        detail: None,
-    }
+    Failure::new("bad_request", message)
 }
 
 fn io(error: impl ToString) -> Failure {
-    Failure {
-        kind: "io".into(),
-        message: error.to_string(),
-        detail: None,
-    }
+    Failure::new("io", error.to_string())
 }
 
 fn write(file: &mut File, line: Line) -> Result<(), Failure> {
@@ -81,11 +73,10 @@ fn check_change(
         || !change["ref"].as_str().is_some_and(|s| !s.is_empty())
         || !change["seq"].as_i64().is_some_and(|n| n >= 0 && n <= bound)
     {
-        return Err(Failure {
-            kind: "store".into(),
-            message: "a change reference is outside its declared component or view".into(),
-            detail: None,
-        });
+        return Err(Failure::new(
+            "store",
+            "a change reference is outside its declared component or view",
+        ));
     }
     Ok(())
 }

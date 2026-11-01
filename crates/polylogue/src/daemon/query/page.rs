@@ -10,18 +10,11 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-fn failure(error: Error) -> Failure {
-    Failure {
-        kind: error.kind.code().into(),
-        message: error.to_string(),
-        detail: serde_json::to_value(error).ok(),
-    }
-}
 fn invalid(message: &str) -> Failure {
-    failure(Error::new(ErrorKind::InvalidQuery, message, 0))
+    Failure::from(Error::new(ErrorKind::InvalidQuery, message, 0))
 }
 fn stale(message: &str) -> Failure {
-    failure(
+    Failure::from(
         Error::new(ErrorKind::StaleCursor, message, 0)
             .hint("run the query again without its cursor"),
     )
@@ -81,7 +74,7 @@ pub(super) fn open(
                 })
         },
     )
-    .map_err(failure)
+    .map_err(Failure::from)
 }
 
 fn context_digest(domain: &str, value: &impl Serialize) -> Result<String, Failure> {
@@ -202,7 +195,7 @@ pub(super) fn after_row(
         .seal
         .seal(&continuation)
         .map(|cursor| cursor.as_str().to_owned())
-        .map_err(failure)
+        .map_err(Failure::from)
 }
 
 #[cfg(test)]

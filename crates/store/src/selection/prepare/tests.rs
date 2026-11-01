@@ -178,10 +178,10 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
         None,
     )
     .unwrap_err();
-    let detail = refused.detail();
+    let message = refused.to_string();
     let roundtrip = SelectionError::from(refused.into_store_error());
     assert_eq!(roundtrip.kind(), "not_yet_available");
-    assert_eq!(roundtrip.detail(), detail);
+    assert_eq!(roundtrip.to_string(), message);
     let mut native = Bindings {
         origins: vec!["test".into()],
         ..Default::default()

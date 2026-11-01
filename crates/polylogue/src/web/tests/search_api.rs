@@ -16,7 +16,9 @@ fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
         },
         &r.web.daemon,
     ) {
-        Response::Ok { data, .. } => data,
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data,
         other => panic!("{text}: {other:?}"),
     }
 }
@@ -196,8 +198,8 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
             .unwrap(),
         ));
         let api: Value = serde_json::from_str(&raw).unwrap();
-        match socket {
-            Response::Ok { data: answer, .. } => {
+        match crate::protocol::into_value(socket) {
+            Ok(answer) => {
                 assert_eq!(status, StatusCode::OK, "{raw}");
                 assert_eq!(api["rows"], answer["rows"], "{text}");
                 let args = json!({"query":text,"limit":50,"why":true})
@@ -213,9 +215,9 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
                 let mcp: Value = serde_json::from_str(&mcp).unwrap();
                 assert_eq!(api["rows"], mcp["rows"]);
             }
-            Response::Error { kind, .. } => {
+            Err(failure) => {
                 assert_ne!(status, StatusCode::OK, "{raw}");
-                assert_eq!(api["error"], kind);
+                assert_eq!(api["error"]["code"], failure.code.unwrap());
             }
         }
     }

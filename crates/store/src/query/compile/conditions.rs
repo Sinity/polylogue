@@ -151,6 +151,14 @@ impl<'a> Compiler<'a> {
                 if native || (reference.starts_with("message:") && reference.contains("..")) {
                     return self.native_reference(reference, scope, c.span);
                 }
+                // Pages and commits are designed reference forms with no producer yet.
+                if let Some(kind @ ("page" | "file")) =
+                    reference.split_once(':').map(|(kind, _)| kind)
+                {
+                    return Err(QueryError::NotBuilt {
+                        what: format!("{kind} references"),
+                    });
+                }
                 if reference.starts_with("http") {
                     self.url(reference, scope, c.span)?
                 } else if reference.starts_with('@') {

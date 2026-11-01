@@ -270,13 +270,13 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         }],
         valid_until: None,
     };
-    let Response::Ok { data, .. } = handle(
+    let Ok(data) = crate::protocol::into_value(handle(
         Request::Assert {
             request_id: "exact-note".into(),
             assertions: vec![note],
         },
         &r.web.daemon,
-    ) else {
+    )) else {
         panic!("note failed")
     };
     let old = data["id"].as_str().unwrap().to_owned();
@@ -295,7 +295,9 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
             },
             &r.web.daemon
         ),
-        Response::Ok { .. }
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
     ));
     let exact = Reference::Assertion(polylogue_model::RevisionReference::exact(
         old.clone(),

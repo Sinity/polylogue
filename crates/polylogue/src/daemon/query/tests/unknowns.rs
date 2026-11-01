@@ -320,7 +320,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
             None
         )
         .unwrap_err()
-        .kind,
+        .code(),
         "embed"
     );
 }

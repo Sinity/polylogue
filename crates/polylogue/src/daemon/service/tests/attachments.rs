@@ -18,7 +18,9 @@ fn attachment_read_refuses_once_the_daemon_stops_accepting() {
         },
         &daemon.daemon,
     );
-    assert!(matches!(response,Response::Error { kind,.. } if kind=="shutting_down"));
+    assert!(
+        matches!(response,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
+    );
 }
 
 #[test]
@@ -41,7 +43,7 @@ fn attachment_pages_bound_each_transfer_and_keep_every_requested_byte_reachable(
             },
             &daemon.daemon,
         );
-        let Response::Ok { data } = response else {
+        let Some(data) = response.value().cloned() else {
             panic!("{response:?}")
         };
         let page: crate::daemon::attachment::BytePage = serde_json::from_value(data).unwrap();

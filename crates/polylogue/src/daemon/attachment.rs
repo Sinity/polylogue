@@ -1,8 +1,10 @@
 //! Checked attachment bytes through the ordinary application operation.
+use super::Request;
 use super::service::{Daemon, error, store_error};
-use super::{Request, Response};
 use base64::Engine as _;
+use command_surface::Answer;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub(crate) const PAGE_BYTES: usize = 64 * 1024;
 
@@ -44,9 +46,9 @@ enum CursorSource {
     },
 }
 
-pub(super) fn read(request: Request, d: &Daemon) -> Response {
-    if let Err(response) = super::service::accepting(d) {
-        return response;
+pub(super) fn read(request: Request, d: &Daemon) -> Answer<Value> {
+    if let Err(failure) = super::service::accepting(d) {
+        return failure.answer();
     }
     let Request::Attachment {
         message,
@@ -137,11 +139,18 @@ pub(super) fn read(request: Request, d: &Daemon) -> Response {
         None => None,
     };
     let Some(found) = found else {
-        return Response::Error {
-            kind: "attachment_unavailable".into(),
-            message: "select one of the stored files with --input".into(),
-            detail: Some(serde_json::json!({"attachment": resolution})),
-        };
+        let failure = crate::protocol::failure(
+            "attachment_unavailable",
+            "select one of the stored files with --input",
+        )
+        .with_candidates(
+            resolution
+                .matches
+                .iter()
+                .map(|found| found.input.clone())
+                .collect(),
+        );
+        return Answer::error(failure);
     };
     if decoded
         .as_ref()
@@ -204,7 +213,7 @@ pub(super) fn read(request: Request, d: &Daemon) -> Response {
             if let Err(error) = scope.check() {
                 return store_error(&error);
             }
-            Response::Ok { data }
+            Answer::ok(data)
         }
         Err(e) => error("internal", e),
     }
@@ -217,7 +226,7 @@ fn inline_page(
     cursor: Option<Cursor>,
     length: usize,
     source: CursorSource,
-) -> Response {
+) -> Answer<Value> {
     use std::io::{Read, Seek, SeekFrom};
     let result = (|| -> polylogue_store::Result<BytePage> {
         reader.check()?;
@@ -326,7 +335,7 @@ fn inline_page(
                 if let Err(e) = reader.check() {
                     return store_error(&e);
                 }
-                Response::Ok { data }
+                Answer::ok(data)
             }
             Err(e) => error("internal", e),
         },

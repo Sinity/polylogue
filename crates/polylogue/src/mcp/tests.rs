@@ -258,11 +258,11 @@ fn manual_query_examples_compile_through_the_public_command() {
 #[test]
 fn errors_show_archived_controls_as_text() {
     let hostile = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
-    let text = super::error_text(
-        hostile,
-        hostile,
-        Some(&serde_json::json!({"suggestion":hostile})),
-    );
+    let mut failure = crate::protocol::failure("bad_request", hostile)
+        .with_suggestion(serde_json::json!(hostile));
+    failure.code = Some(hostile.into());
+    let failure = failure.with_candidates(vec![hostile.into()]);
+    let text = super::error_text(&failure);
     assert!(
         !text
             .chars()
@@ -305,10 +305,8 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
     for response in [
         serde_json::to_value(command_surface::Answer::ok(json!({"value":hostile}))).unwrap(),
         serde_json::to_value(command_surface::Answer::<Value>::error(
-            command_surface::Failure {
-                suggestion: Some(Box::new(json!(hostile))),
-                ..command_surface::Failure::new(command_surface::FailureKind::Cancelled, hostile)
-            },
+            command_surface::Failure::new(command_surface::FailureKind::Cancelled, hostile)
+                .with_suggestion(json!(hostile)),
         ))
         .unwrap(),
     ] {

@@ -34,7 +34,7 @@ fn a_block_reference_names_its_block_message_and_session() {
     assert_eq!(ids(&q(&w, "block:test:message#0")), ["test:session"]);
     assert_eq!(q(&w, "messages where block:test:message#999")["count"], 0);
     let bad = run_q(&w, ask("block:test:message:0")).unwrap_err();
-    assert_eq!(bad.kind, "invalid_query");
+    assert_eq!(bad.code(), "invalid_query");
 }
 
 #[test]
@@ -48,15 +48,15 @@ fn an_assertion_reference_names_the_current_revision_or_one_revision() {
     let by_revision = q(&w, &format!("assertions where assertion:{root}@{id}"));
     assert_eq!(by_revision["count"], 1);
     let elsewhere = run_q(&w, ask(&format!("assertion:{root}"))).unwrap_err();
-    assert_eq!(elsewhere.kind, "not_built");
+    assert_eq!(elsewhere.code(), "not_built");
     assert_eq!(
-        elsewhere.detail.as_ref().unwrap()["what"],
-        "this reference at the selected row grain"
+        elsewhere.message,
+        "this reference at the selected row grain is not built yet"
     );
     // Pages and commits are not built: refused by name, never empty.
     for later in ["page:plan", "file:src/a.rs@HEAD"] {
         assert_eq!(
-            run_q(&w, ask(later)).unwrap_err().kind,
+            run_q(&w, ask(later)).unwrap_err().code(),
             "not_built",
             "{later}"
         );

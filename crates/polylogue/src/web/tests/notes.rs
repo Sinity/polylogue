@@ -229,8 +229,7 @@ fn agent_write(f: &Fixture, request: crate::daemon::Request) -> Value {
         &f.daemon.daemon,
         &limit,
         &invocation,
-    )
-    .answer();
+    );
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     answer.value().unwrap().clone()
 }

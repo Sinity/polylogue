@@ -4,53 +4,14 @@
 //! the attachments agree.
 
 use polylogue_store::Reader;
-use polylogue_store::query::{Options, Program, QueryError, Shape};
+use polylogue_store::query::{Options, Program, Shape};
 #[cfg(test)]
 use polylogue_store::{SqlValue, query::ColKind};
 use query_language::time::DaySetting;
 
 use serde_json::{Value, json};
 
-/// A failed query, as the response's error and its detail.
-#[derive(Debug)]
-pub struct Failure {
-    pub kind: String,
-    pub message: String,
-    pub detail: Option<Value>,
-}
-
-impl From<polylogue_store::StoreError> for Failure {
-    fn from(e: polylogue_store::StoreError) -> Self {
-        Failure {
-            kind: crate::protocol::store_code(&e).into(),
-            message: e.to_string(),
-            detail: None,
-        }
-    }
-}
-
-impl From<polylogue_store::selection::SelectionError> for Failure {
-    fn from(error: polylogue_store::selection::SelectionError) -> Self {
-        if let polylogue_store::selection::SelectionError::Store(error) = error {
-            return Self::from(error);
-        }
-        Self {
-            kind: error.kind().to_owned(),
-            message: error.to_string(),
-            detail: error.detail(),
-        }
-    }
-}
-
-impl From<QueryError> for Failure {
-    fn from(e: QueryError) -> Self {
-        Failure {
-            kind: e.kind().into(),
-            message: e.to_string(),
-            detail: e.detail(),
-        }
-    }
-}
+use super::Failure;
 
 pub(crate) mod assertions;
 pub(crate) mod feed;
@@ -192,7 +153,35 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     Ok(kept)
 }
 
-pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+/// How a query answered, decided where the answer is assembled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Rows,
+    Empty,
+    /// Assembled from parts of which at least one failed.
+    Incomplete,
+    Measure,
+}
+
+/// A query's answer document with its outcome and the notes that explain it.
+#[derive(Debug)]
+pub struct QueryAnswer {
+    pub value: Value,
+    pub outcome: Outcome,
+    pub notes: Vec<String>,
+}
+
+impl QueryAnswer {
+    fn measure(value: Value) -> Self {
+        Self {
+            value,
+            outcome: Outcome::Measure,
+            notes: Vec::new(),
+        }
+    }
+}
+
+pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
     let seal = CursorSeal::new(reader.cursor_key()?);
     let position = reader.change_position()?;
@@ -221,11 +210,10 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     if let Some(cursor) = &cursor {
         for key in ["operation_context", "catalog", "scope", "ranking_identity"] {
             if cursor.context.versions.get(key) != operation_versions.get(key) {
-                return Err(Failure {
-                    kind: "stale_cursor".into(),
-                    message: "the captured query context is no longer available".into(),
-                    detail: None,
-                });
+                return Err(Failure::new(
+                    "stale_cursor",
+                    "the captured query context is no longer available",
+                ));
             }
         }
     }
@@ -255,10 +243,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         seal: &seal,
         context,
     };
-    let evaluation = ask
-        .context
-        .replay_clock(program.clock.clone())
-        .map_err(context_failure)?;
+    let evaluation = ask.context.replay_clock(program.clock.clone())?;
     let mut output = with_similarity(reader, &program, ask.near, || {
         answer(
             reader,
@@ -269,27 +254,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             ask.why,
         )
     })?;
-    output["resolved"] = json!({"context":evaluation.provenance(),"times":program.resolved_times});
+    output.value["resolved"] =
+        json!({"context":evaluation.provenance(),"times":program.resolved_times});
     Ok(output)
-}
-
-fn context_failure(response: crate::daemon::Response) -> Failure {
-    match response {
-        crate::daemon::Response::Error {
-            kind,
-            message,
-            detail,
-        } => Failure {
-            kind,
-            message,
-            detail,
-        },
-        _ => Failure {
-            kind: "internal".into(),
-            message: "operation context replay failed".into(),
-            detail: None,
-        },
-    }
 }
 
 /// The answer to a compiled program: its count and one page after `after`.
@@ -301,7 +268,7 @@ fn answer(
     after: Option<Vec<Value>>,
     paging: &page::Paging<'_>,
     why_asked: bool,
-) -> Result<Value, Failure> {
+) -> Result<QueryAnswer, Failure> {
     let params = values(&program.params);
     let read_at = read_at(reader)?;
     if let Some(m) = &program.measure {
@@ -383,9 +350,9 @@ fn answer(
                     data
                 }
             };
-            return Ok(
+            return Ok(QueryAnswer::measure(
                 json!({"outcome":"measure","measure":m.what,"data":data,"count":count,"next":next,"read_at":read_at}),
-            );
+            ));
         }
         let sessions = if m.everything {
             None
@@ -411,9 +378,9 @@ fn answer(
             day,
             population,
         )?;
-        return Ok(
+        return Ok(QueryAnswer::measure(
             json!({ "outcome": "measure", "measure": m.what, "data": data, "read_at": read_at }),
-        );
+        ));
     }
     let (mut rows, count, next, without) = read_page(reader, program, &after, paging)?;
 
@@ -436,14 +403,25 @@ fn answer(
         unknown.insert("near".into(), json!(without));
     }
     let outcome = if !program.incomplete.is_empty() {
-        "incomplete"
+        Outcome::Incomplete
     } else if count == 0 {
-        "empty"
+        Outcome::Empty
     } else {
-        "rows"
+        Outcome::Rows
     };
+    let mut answer_notes = notes.clone();
+    answer_notes.extend(
+        program
+            .incomplete
+            .iter()
+            .map(|part| format!("incomplete: {part}")),
+    );
     let mut out = json!({
-        "outcome": outcome,
+        "outcome": match outcome {
+            Outcome::Incomplete => "incomplete",
+            Outcome::Empty => "empty",
+            _ => "rows",
+        },
         "unit": if program.shape == Shape::Matches { "matches" } else { program.unit.name() },
         "shape": program.shape,
         "columns": program.columns,
@@ -465,7 +443,11 @@ fn answer(
         polylogue_store::read::limit::ReadLimit::set_stage("explanation counts");
         out["why"] = why(reader, program, &params)?;
     }
-    Ok(out)
+    Ok(QueryAnswer {
+        value: out,
+        outcome,
+        notes: answer_notes,
+    })
 }
 
 fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), Failure> {
@@ -550,11 +532,10 @@ pub(crate) fn select_usage(
     near: Option<&NearFn<'_>>,
 ) -> Result<polylogue_store::measure::Selection, Failure> {
     validate(reader, program)?;
-    let m = program.measure.as_ref().ok_or_else(|| Failure {
-        kind: "bad_request".into(),
-        message: "cost requires a sessions query".into(),
-        detail: None,
-    })?;
+    let m = program
+        .measure
+        .as_ref()
+        .ok_or_else(|| Failure::new("bad_request", "cost requires a sessions query"))?;
     let select = || -> Result<Option<Vec<i64>>, Failure> {
         Ok(if m.everything {
             None
@@ -590,11 +571,6 @@ pub(crate) fn usage_selection(
     let (plan, options) = prepare_usage(reader, text, context, embeddings, ranking_identity)?;
     let program = polylogue_store::query::lower(&plan, &options)?;
     Ok((select_usage(reader, &program, near)?, plan.question_id()))
-}
-
-/// Keep declared column metadata and source values as the compiled answer supplies them.
-pub(crate) fn response(data: Value) -> super::Response {
-    super::Response::Ok { data }
 }
 
 #[cfg(test)]

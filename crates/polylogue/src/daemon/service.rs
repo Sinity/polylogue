@@ -4,13 +4,15 @@
 mod execution;
 mod status;
 
-use super::{Request, Response};
+use super::{Failure, Request};
 use crate::briefing::{self, Ask};
 use crate::operation::{Context, Invocation};
+use command_surface::Answer;
 use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
 use polylogue_model::user::{Delivery, UserWrite};
 use polylogue_store::user_writes;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
+use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -54,19 +56,19 @@ impl Daemon {
     pub(crate) fn operation_context(
         &self,
         authorship: &polylogue_model::authorship::Authorship,
-    ) -> Result<Arc<crate::operation::Context>, Response> {
+    ) -> Result<Arc<crate::operation::Context>, Failure> {
         self.resolve_operation_context(self.invocation(authorship))
     }
     pub(crate) fn resolve_operation_context(
         &self,
         invocation: crate::operation::Invocation,
-    ) -> Result<Arc<crate::operation::Context>, Response> {
+    ) -> Result<Arc<crate::operation::Context>, Failure> {
         let context = match &self.mode {
             ModeState::Standalone => crate::operation::Context::standalone(
                 invocation,
                 self.config
                     .standalone_day()
-                    .map_err(|problem| error("not_yet_available", problem))?
+                    .map_err(|problem| Failure::new("not_yet_available", problem.to_string()))?
                     .clone(),
             ),
             #[cfg(feature = "sinex")]
@@ -80,7 +82,7 @@ impl Daemon {
             }
             #[cfg(feature = "sinex")]
             ModeState::Blocked { error: reason, .. } => {
-                return Err(error("sinex_unavailable", reason));
+                return Err(Failure::new("sinex_unavailable", reason.clone()));
             }
         };
         Ok(Arc::new(context))
@@ -164,55 +166,58 @@ impl Daemon {
     }
 }
 
+/// A query answer's outcome comes from the query itself and the index currency.
 fn query_answer(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
-    mut data: serde_json::Value,
-) -> Response {
+    answer: super::query::QueryAnswer,
+) -> Answer<Value> {
     let currency = match d.currency(reader) {
         Ok(currency) => currency,
         Err(error) => return store_error(&error),
     };
-    let Some(position) = data
-        .get_mut("read_at")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return error("internal", "a query answer omitted its read position");
-    };
-    position.insert(
-        "currency".into(),
-        serde_json::to_value(currency).expect("currency serializes"),
-    );
-    super::query::response(data)
-}
-
-pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
-    Response::Error {
-        kind: kind.into(),
-        message: message.to_string(),
-        detail: None,
+    let super::query::QueryAnswer {
+        mut value,
+        outcome,
+        notes,
+    } = answer;
+    value["read_at"]["currency"] = serde_json::to_value(&currency).expect("currency serializes");
+    let mut notes = notes;
+    notes.extend(crate::protocol::currency_note(&currency).map(str::to_owned));
+    let degraded = currency.degraded() || outcome == super::query::Outcome::Incomplete;
+    if degraded {
+        Answer::Degraded {
+            value,
+            notes,
+            next: vec![],
+        }
+    } else if outcome == super::query::Outcome::Empty {
+        Answer::Empty {
+            value,
+            notes,
+            next: vec![],
+        }
+    } else {
+        Answer::Ok {
+            value,
+            notes,
+            next: vec![],
+        }
     }
 }
 
-pub(crate) fn store_error(e: &StoreError) -> Response {
+pub(crate) fn error(code: &str, message: impl ToString) -> Answer<Value> {
+    Failure::new(code, message).answer()
+}
+
+/// A store failure. A capture waiting for Sinex is not a failure: it is the
+/// degraded answer naming the durable capture.
+pub(crate) fn store_error(e: &StoreError) -> Answer<Value> {
     match e {
-        StoreError::PrimaryPending { identity } => ok(serde_json::json!({
-            "identity": identity, "pending": true,
-        })),
-
-        StoreError::IncompleteParents(issue) => Response::Error {
-            kind: "incomplete_parents".into(),
-            message: e.to_string(),
-            detail: Some(serde_json::json!({"issue": issue})),
-        },
-
-        StoreError::Query(query) => Response::Error {
-            kind: query.kind().into(),
-            message: query.to_string(),
-            detail: query.detail(),
-        },
-
-        _ => error(crate::protocol::store_code(e), e),
+        StoreError::PrimaryPending { identity } => {
+            crate::protocol::written(serde_json::json!({ "identity": identity }), true)
+        }
+        e => Failure::store(e).answer(),
     }
 }
 
@@ -225,7 +230,7 @@ fn context(
     ask: &Ask,
     sender: Option<String>,
     operation: &Arc<Context>,
-) -> Response {
+) -> Answer<Value> {
     let (prepared, selected_scope) = {
         let reader = match d.reads.reader() {
             Ok(r) => r,
@@ -256,9 +261,11 @@ fn context(
         if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
             && let Err(error) = limit.check()
         {
-            let info = serde_json::to_value(ask).unwrap_or_default();
-            let info = serde_json::json!({"op": "context", "text": info["text"]});
-            return super::execution::refusal(&error, &info, &limit);
+            let text = match ask {
+                Ask::Recall { text, .. } => Some(text.as_str()),
+                _ => None,
+            };
+            return super::execution::refusal(&error, "context", text, &limit);
         }
         match result {
             Ok(p) => (p, reader.scope_token()),
@@ -291,7 +298,7 @@ fn context(
         });
         let writes = match writer(d) {
             Ok(writes) => writes,
-            Err(response) => return response,
+            Err(failure) => return failure.answer(),
         };
         if let Err(error) = polylogue_store::read::limit::ReadLimit::finish_scope("record delivery")
         {
@@ -313,10 +320,13 @@ fn context(
             Err(e) => return store_error(&e),
         }
     }
-    ok(serde_json::json!({ "delivery": delivery, "prepared": prepared, "pending": pending }))
+    crate::protocol::written(
+        serde_json::json!({ "delivery": delivery, "prepared": prepared, "pending": pending }),
+        pending,
+    )
 }
 
-fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
+fn writer(d: &Daemon) -> Result<&WriterSender, Failure> {
     d.writes.as_ref().ok_or_else(|| d.mode.write_refusal())
 }
 
@@ -330,66 +340,71 @@ fn authored_preparation() -> user_writes::PreparationContext {
     )
 }
 
-fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) -> Response {
-    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
-        && let Err(error) = limit.check()
-    {
-        return store_error(&error);
-    }
-    let writes = match writer(d) {
-        Ok(writes) => writes,
-        Err(response) => return response,
+/// Submits one authored write; a write prepared from a read carries the
+/// selected generation through the writer queue to custody commit. A write
+/// accepted locally but not yet confirmed by Sinex is a degraded answer.
+fn submit<T: serde::Serialize>(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    w: UserWrite,
+    selected_scope: Option<polylogue_store::ReadScopeToken>,
+    present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
+) -> Answer<Value> {
+    let accepted = || -> Result<_, Failure> {
+        if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
+            limit.check()?;
+        }
+        let writes = writer(d)?;
+        invocation.check_parent_admission()?;
+        Ok(writes)
     };
-    if let Err(error) = invocation.check_parent_admission() {
-        return store_error(&error);
-    }
+    let writes = match accepted() {
+        Ok(writes) => writes,
+        Err(failure) => return failure.answer(),
+    };
     let request = invocation.request(request_id, w);
     let preparation = authored_preparation();
     let result = match invocation.parent_lifetime() {
-        Some(parent) => writes.user_preparing_with_parent(request, preparation, None, parent),
-        None => writes.user_preparing(request, preparation, None),
+        Some(parent) => {
+            writes.user_preparing_with_parent(request, preparation, selected_scope, parent)
+        }
+        None => writes.user_preparing(request, preparation, selected_scope),
     };
     match result {
-        Ok(out) => ok(out),
-        Err(e) => store_error(&e),
+        Ok(outcome) => {
+            let pending = outcome.pending;
+            match serde_json::to_value(present(outcome)) {
+                Ok(value) => crate::protocol::written(value, pending),
+                Err(cause) => error("internal", cause),
+            }
+        }
+        Err(error) => store_error(&error),
     }
 }
 
-/// Carries the selected generation through the writer queue to custody commit.
+fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) -> Answer<Value> {
+    submit(d, invocation, request_id, w, None, |outcome| outcome)
+}
+
 fn write_from_read(
     d: &Daemon,
     invocation: &Invocation,
     request_id: String,
     w: UserWrite,
     selected_scope: polylogue_store::ReadScopeToken,
-) -> Response {
-    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
-        && let Err(error) = limit.check()
-    {
-        return store_error(&error);
-    }
-    let writes = match writer(d) {
-        Ok(writes) => writes,
-        Err(response) => return response,
-    };
-    if let Err(error) = invocation.check_parent_admission() {
-        return store_error(&error);
-    }
-    let request = invocation.request(request_id, w);
-    let preparation = authored_preparation();
-    let result = match invocation.parent_lifetime() {
-        Some(parent) => {
-            writes.user_preparing_with_parent(request, preparation, Some(selected_scope), parent)
-        }
-        None => writes.user_preparing(request, preparation, Some(selected_scope)),
-    };
-    match result {
-        Ok(out) => ok(out),
-        Err(error) => store_error(&error),
-    }
+) -> Answer<Value> {
+    submit(
+        d,
+        invocation,
+        request_id,
+        w,
+        Some(selected_scope),
+        |outcome| outcome,
+    )
 }
 
-pub(crate) fn browser_refusal(refused: crate::browser::actions::Refused) -> Response {
+pub(crate) fn browser_refusal(refused: crate::browser::actions::Refused) -> Answer<Value> {
     error(refused.0, refused.0)
 }
 
@@ -399,9 +414,23 @@ pub(crate) fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-pub(crate) fn ok(data: impl serde::Serialize) -> Response {
+/// A list read: empty when it matched nothing.
+fn listed<T: serde::Serialize>(items: Vec<T>) -> Answer<Value> {
+    let empty = items.is_empty();
+    match serde_json::to_value(items) {
+        Ok(value) if empty => Answer::Empty {
+            value,
+            notes: vec![],
+            next: vec![],
+        },
+        Ok(value) => Answer::ok(value),
+        Err(cause) => error("internal", cause),
+    }
+}
+
+pub(crate) fn ok(data: impl serde::Serialize) -> Answer<Value> {
     match serde_json::to_value(data) {
-        Ok(data) => Response::Ok { data },
+        Ok(data) => Answer::ok(data),
         Err(cause) => error("internal", cause),
     }
 }
@@ -411,8 +440,8 @@ fn repeated_request(
     id: &str,
     intended: &UserWrite,
     invocation: &Invocation,
-) -> Result<Option<UserWrite>, Response> {
-    match reader.user_request(id).map_err(|e| store_error(&e))? {
+) -> Result<Option<UserWrite>, Failure> {
+    match reader.user_request(id)? {
         Some(previous)
             if previous.machine == invocation.machine
                 && previous.authorship == invocation.authorship
@@ -420,15 +449,15 @@ fn repeated_request(
         {
             Ok(Some(previous.write))
         }
-        Some(_) => Err(store_error(&StoreError::Conflict(id.into()))),
+        Some(_) => Err(StoreError::Conflict(id.into()).into()),
         None => Ok(None),
     }
 }
 
 /// Refuses new requests once the daemon is stopping.
-pub(super) fn accepting(d: &Daemon) -> Result<(), Response> {
+pub(super) fn accepting(d: &Daemon) -> Result<(), Failure> {
     if d.stopping.load(Ordering::Acquire) {
-        return Err(error(
+        return Err(Failure::new(
             "shutting_down",
             "the daemon has stopped accepting requests",
         ));
@@ -442,20 +471,20 @@ pub(crate) fn change_feed(
     d: &Daemon,
     operation: &Arc<crate::operation::Context>,
     output: &mut dyn std::io::Write,
-) -> Option<Result<(), Response>> {
+) -> Option<Result<(), Failure>> {
     let Request::Changes { since } = request else {
         return None;
     };
     Some(accepting(d).and_then(|()| {
         let mut file = feeds::read(d, since.as_deref(), operation)?;
-        std::io::copy(&mut file, output).map_err(|e| error("io", e))?;
+        std::io::copy(&mut file, output).map_err(|e| Failure::new("io", e))?;
         Ok(())
     }))
 }
 
 /// Answers one request. Reads use the read pool; imports go to the loop
 /// thread, which owns the writer.
-pub fn handle(request: Request, d: &Daemon) -> Response {
+pub fn handle(request: Request, d: &Daemon) -> Answer<Value> {
     let limit = super::execution::limit_for(&request, None, Default::default());
     handle_with_limit(request, d, &limit)
 }
@@ -464,7 +493,7 @@ pub fn handle_with_limit(
     request: Request,
     d: &Daemon,
     limit: &polylogue_store::read::limit::ReadLimit,
-) -> Response {
+) -> Answer<Value> {
     let authorship = polylogue_model::authorship::compute_authorship(
         polylogue_model::authorship::Channel::Daemon,
         &Default::default(),
@@ -478,7 +507,7 @@ pub fn handle_with_caller(
     d: &Daemon,
     limit: &polylogue_store::read::limit::ReadLimit,
     authorship: &polylogue_model::authorship::Authorship,
-) -> Response {
+) -> Answer<Value> {
     handle_with_invocation(request, d, limit, &d.invocation(authorship))
 }
 
@@ -487,7 +516,7 @@ pub(crate) fn handle_with_invocation(
     d: &Daemon,
     limit: &polylogue_store::read::limit::ReadLimit,
     invocation: &crate::operation::Invocation,
-) -> Response {
+) -> Answer<Value> {
     #[cfg(test)]
     if let Some(sender) = d.read_limits.lock().unwrap().as_ref() {
         let _ = sender.send(crate::test_daemon::ReadObservation {
@@ -507,12 +536,12 @@ fn handle_inner(
     request: Request,
     d: &Daemon,
     invocation: &crate::operation::Invocation,
-) -> Response {
-    if let Err(response) = accepting(d) {
-        return response;
+) -> Answer<Value> {
+    if let Err(failure) = accepting(d) {
+        return failure.answer();
     }
     if d.mode.blocked() && !request.read_only() {
-        return d.mode.write_refusal();
+        return d.mode.write_refusal().answer();
     }
     if let Request::Complete { text, position } = &request {
         if *position > text.len() || !text.is_char_boundary(*position) {
@@ -534,7 +563,7 @@ fn handle_inner(
         if let Err(error) = token.check() {
             return store_error(&error);
         }
-        return ok(candidates);
+        return listed(candidates);
     }
     if let Request::SchemaInfer { selection } = request {
         return super::schema::infer(d, selection);
@@ -565,7 +594,7 @@ fn handle_inner(
     {
         Some(match d.resolve_operation_context(invocation.clone()) {
             Ok(operation) => operation,
-            Err(response) => return response,
+            Err(failure) => return failure.answer(),
         })
     } else {
         None
@@ -587,7 +616,7 @@ fn handle_inner(
         | Request::Conversations { .. }
         | Request::StoredFiles { .. } => browser::handle(request, d, reader, invocation),
         Request::Changes { .. } => error(
-            "stream_required",
+            "bad_request",
             "the change feed uses the finite socket stream",
         ),
         Request::Explain {
@@ -644,11 +673,7 @@ fn handle_inner(
             };
             match result {
                 Ok(data) => ok(data),
-                Err(f) => Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                },
+                Err(f) => f.answer(),
             }
         }
         Request::Timeline {
@@ -670,11 +695,7 @@ fn handle_inner(
                 operation.as_ref().expect("calendar operation context"),
             ) {
                 Ok(data) => ok(data),
-                Err(f) => Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                },
+                Err(f) => f.answer(),
             }
         }
         Request::Cost {
@@ -708,11 +729,7 @@ fn handle_inner(
                 operation.as_ref().expect("calendar operation context"),
             ) {
                 Ok(data) => ok(data),
-                Err(f) => Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                },
+                Err(f) => f.answer(),
             },
         ),
         Request::Status => status::answer(d, &reader),
@@ -744,12 +761,8 @@ fn handle_inner(
                     fields: &fields,
                 };
                 match super::query::run(&reader, ask) {
-                    Ok(data) => query_answer(d, &reader, data),
-                    Err(f) => Response::Error {
-                        kind: f.kind,
-                        message: f.message,
-                        detail: f.detail,
-                    },
+                    Ok(answer) => query_answer(d, &reader, answer),
+                    Err(f) => f.answer(),
                 }
             },
         ),
@@ -759,7 +772,7 @@ fn handle_inner(
 
         Request::Sql { statement } => match reader.query(&statement, &[]) {
             // The connection is read-only: a statement that writes fails.
-            Ok(rows) => ok(rows),
+            Ok(rows) => listed(rows),
             Err(e) => error("sql", e),
         },
         Request::Outline {
@@ -803,7 +816,13 @@ fn handle_inner(
                 return error("internal", "the loop has stopped");
             }
             match wait.recv() {
-                Ok(Ok(report)) => ok(report),
+                Ok(Ok(report)) => {
+                    let pending = report.user_state.pending > 0;
+                    match serde_json::to_value(report) {
+                        Ok(value) => crate::protocol::written(value, pending),
+                        Err(problem) => error("internal", problem),
+                    }
+                }
                 Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
                 Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
                     self::error("import", error)
@@ -856,12 +875,12 @@ fn handle_inner(
                     drop(reader);
                     return write_from_read(d, invocation, request_id, previous, selected_scope);
                 }
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
                 Ok(None) => {}
             }
             let operation = match d.resolve_operation_context(invocation.clone()) {
                 Ok(operation) => operation,
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             };
             let kept = super::query::with_ranking(
                 &reader,
@@ -886,11 +905,7 @@ fn handle_inner(
             let kept = match kept {
                 Ok(k) => k,
                 Err(f) => {
-                    return Response::Error {
-                        kind: f.kind,
-                        message: f.message,
-                        detail: f.detail,
-                    };
+                    return f.answer();
                 }
             };
             drop(reader);
@@ -922,7 +937,7 @@ fn handle_inner(
             let resolved = match repeated_request(&reader, &request_id, &intended, invocation) {
                 Ok(Some(previous)) => previous,
                 Ok(None) => intended,
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             };
             drop(reader);
             write(d, invocation, request_id, resolved)
@@ -960,11 +975,7 @@ fn handle_inner(
                 fields: &[],
             };
             if let Err(f) = super::query::run(&reader, ask) {
-                return Response::Error {
-                    kind: f.kind,
-                    message: f.message,
-                    detail: f.detail,
-                };
+                return f.answer();
             }
             drop(reader);
             let mut rule = serde_json::json!({
@@ -1018,7 +1029,7 @@ fn handle_inner(
             };
             let (session, message_id) = match input.references() {
                 Ok(references) => references,
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             };
             let message = polylogue_model::Reference::Message(message_id.clone());
             let intended = UserWrite::Assert {
@@ -1037,7 +1048,7 @@ fn handle_inner(
                     );
                 }
                 Ok(None) => {}
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             }
             // A message reference names exactly one message whatever its
             // reachability; `id:` takes the native ID, not the reference text.
@@ -1047,7 +1058,7 @@ fn handle_inner(
             );
             let targets = match query_targets_in(d, &reader, &query, invocation, Some(&session)) {
                 Ok(targets) => targets,
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             };
             if targets.as_slice() != [message] {
                 return error(
@@ -1091,7 +1102,7 @@ fn handle_inner(
                     }
                     let targets = match query_targets(d, &reader, &query, invocation) {
                         Ok(targets) => targets,
-                        Err(response) => return response,
+                        Err(failure) => return failure.answer(),
                     };
                     UserWrite::AssertQuery {
                         query,
@@ -1099,24 +1110,21 @@ fn handle_inner(
                         resolved: targets,
                     }
                 }
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             };
             let targets = match &resolved {
                 UserWrite::AssertQuery { resolved, .. } => resolved.len(),
                 _ => return error("conflict", "stored request has another action"),
             };
             drop(reader);
-            match write_from_read(d, invocation, request_id, resolved, selected_scope) {
-                Response::Ok { data } => {
-                    match serde_json::from_value::<polylogue_model::user::UserOutcome>(data) {
-                        Ok(outcome) => ok(polylogue_model::user::AssertQueryOutcome::new(
-                            outcome, targets,
-                        )),
-                        Err(error) => self::error("internal", error),
-                    }
-                }
-                other => other,
-            }
+            submit(
+                d,
+                invocation,
+                request_id,
+                resolved,
+                Some(selected_scope),
+                |outcome| polylogue_model::user::AssertQueryOutcome::new(outcome, targets),
+            )
         }
         Request::Revise {
             request_id,
@@ -1235,11 +1243,9 @@ fn handle_inner(
                 &cwd,
                 limit.unwrap_or(10),
                 operation.as_ref().expect("resumable operation context"),
-            )
-            .map_err(|error| store_error(&error))
-            {
-                Ok(c) => ok(c),
-                Err(e) => e,
+            ) {
+                Ok(sessions) => listed(sessions),
+                Err(e) => store_error(&e),
             }
         }
         Request::Continue { session } => match crate::resume::plan(&reader, &session) {
@@ -1315,7 +1321,7 @@ fn query_targets(
     reader: &polylogue_store::Reader<'_>,
     query: &str,
     invocation: &crate::operation::Invocation,
-) -> Result<Vec<polylogue_model::Reference>, Response> {
+) -> Result<Vec<polylogue_model::Reference>, Failure> {
     query_targets_in(d, reader, query, invocation, None)
 }
 
@@ -1327,7 +1333,7 @@ fn query_targets_in(
     query: &str,
     invocation: &crate::operation::Invocation,
     container: Option<&polylogue_model::Reference>,
-) -> Result<Vec<polylogue_model::Reference>, Response> {
+) -> Result<Vec<polylogue_model::Reference>, Failure> {
     use polylogue_model::query_objects::{ExecutionPresentation, QueryRun, RunBinding};
     super::query::with_ranking(
         reader,
@@ -1348,15 +1354,10 @@ fn query_targets_in(
                 fields: &[],
             };
             let options =
-                super::query::options(reader, &ask, uuid::Uuid::new_v4().as_u128() as u64)
-                    .map_err(|failure| Response::Error {
-                        kind: failure.kind,
-                        message: failure.message,
-                        detail: failure.detail,
-                    })?;
+                super::query::options(reader, &ask, uuid::Uuid::new_v4().as_u128() as u64)?;
             let selection = reader.prepare_query_selection(query, &options)?;
             if selection.program().shape != polylogue_query::Shape::Rows {
-                return Err(error(
+                return Err(Failure::new(
                     "bad_request",
                     "assertions require identifiable rows, not a grouped or aggregate population",
                 ));
@@ -1371,7 +1372,7 @@ fn query_targets_in(
                 .accepted_request()
                 .map(serde_json::to_value)
                 .transpose()
-                .map_err(|problem| error("internal", problem))?;
+                .map_err(|problem| Failure::new("internal", problem))?;
             let mut binding = selection.execution_binding(
                 query_options,
                 ExecutionPresentation::Query,
@@ -1386,9 +1387,7 @@ fn query_targets_in(
                 id: crate::operation::new_run_id(),
                 question: Some(selection.question_id()),
                 at: operation.ran_at,
-                read_at: reader
-                    .change_position()
-                    .map_err(|problem| store_error(&problem))?,
+                read_at: reader.change_position()?,
                 machine: operation.machine.clone(),
                 authorship: operation.authorship.clone(),
                 binding: RunBinding::Original {
@@ -1397,26 +1396,22 @@ fn query_targets_in(
             };
             let hash = run
                 .binding_hash()
-                .map_err(|problem| error("internal", problem))?;
+                .map_err(|problem| Failure::new("internal", problem))?;
             let writes = writer(d)?;
-            operation
-                .check_parent_admission()
-                .map_err(|problem| store_error(&problem))?;
+            operation.check_parent_admission()?;
             match operation.parent_lifetime() {
                 Some(parent) => writes.query_object_with_parent(object, parent),
                 None => writes.query_object(object),
-            }
-            .map_err(|problem| store_error(&problem))?;
+            }?;
             self::execution::record(
                 writes,
                 operation.parent_lifetime(),
                 run,
                 hash,
-                "assertion_selection_failed",
                 || d.config.requests.now(),
                 || {
                     if !selection.program().incomplete.is_empty() {
-                        return Err(error(
+                        return Err(Failure::new(
                             "not_yet_available",
                             "the query population is incomplete; no assertion was written",
                         ));
@@ -1424,16 +1419,16 @@ fn query_targets_in(
                     let mut row_count = 0_u64;
                     let mut targets = Vec::new();
                     let mut seen = HashSet::new();
-                    reader.visit_selection::<Response>(&selection, None, Some(near), |row| {
-                        row_count = row_count
-                            .checked_add(1)
-                            .ok_or_else(|| error("internal", "selected row count exceeds u64"))?;
+                    reader.visit_selection::<Failure>(&selection, None, Some(near), |row| {
+                        row_count = row_count.checked_add(1).ok_or_else(|| {
+                            Failure::new("internal", "selected row count exceeds u64")
+                        })?;
                         let reference = row
                             .target
                             .as_ref()
                             .map(polylogue_model::read::ReadTarget::reference)
                             .ok_or_else(|| {
-                                error(
+                                Failure::new(
                                     "not_yet_available",
                                     "the selected row has no authoritative source reference",
                                 )
@@ -1446,7 +1441,7 @@ fn query_targets_in(
                     if let Some(polylogue_model::Reference::Session(expected)) = container {
                         let Some(polylogue_model::Reference::Message(message)) = targets.first()
                         else {
-                            return Err(error(
+                            return Err(Failure::new(
                                 "conflict",
                                 format!(
                                     "the supplied source is not a recorded message; the query selected {row_count} rows, first {:?}",
@@ -1456,38 +1451,36 @@ fn query_targets_in(
                         };
                         let mut memberships = 0_u8;
                         let mut matches = false;
-                        reader
-                            .visit_message_sessions(message, |session| {
-                                memberships += 1;
-                                matches = &session == expected;
-                                Ok(if memberships == 2 {
-                                    std::ops::ControlFlow::Break(())
-                                } else {
-                                    std::ops::ControlFlow::Continue(())
-                                })
+                        reader.visit_message_sessions(message, |session| {
+                            memberships += 1;
+                            matches = &session == expected;
+                            Ok(if memberships == 2 {
+                                std::ops::ControlFlow::Break(())
+                            } else {
+                                std::ops::ControlFlow::Continue(())
                             })
-                            .map_err(|problem| store_error(&problem))?;
+                        })?;
                         if memberships != 1 || !matches {
-                            return Err(error(
+                            return Err(Failure::new(
                                 "conflict",
                                 "the message has missing, ambiguous or mismatching recorded conversation membership",
                             ));
                         }
                     }
                     if container.is_some() && row_count != 1 {
-                        return Err(error(
+                        return Err(Failure::new(
                             "conflict",
                             "the supplied message is missing or ambiguous; capture the conversation and retry",
                         ));
                     }
                     if targets.is_empty() {
-                        return Err(error(
+                        return Err(Failure::new(
                             "empty",
                             "the query returns no rows; no assertion was written",
                         ));
                     }
                     let count = u64::try_from(targets.len())
-                        .map_err(|_| error("internal", "selected row count exceeds u64"))?;
+                        .map_err(|_| Failure::new("internal", "selected row count exceeds u64"))?;
                     Ok(self::execution::Completed {
                         value: targets,
                         count: Some(count),
@@ -1677,7 +1670,7 @@ impl ModeState {
     }
 
     /// The answer to a write the daemon cannot take.
-    fn write_refusal(&self) -> Response {
+    fn write_refusal(&self) -> Failure {
         #[cfg(feature = "sinex")]
         if let Self::Blocked {
             path,
@@ -1685,13 +1678,14 @@ impl ModeState {
             ..
         } = self
         {
-            return Response::Error {
-                kind: "sinex_unavailable".into(),
-                message: format!("archive writes are paused: {reason}"),
-                detail: Some(serde_json::json!({ "config_path": path, "error": reason })),
-            };
+            let mut failure = Failure::new(
+                "sinex_unavailable",
+                format!("archive writes are paused: {reason}"),
+            );
+            failure.error.hint = Some(format!("fix the Sinex settings in {}", path.display()));
+            return failure;
         }
-        store_error(&StoreError::WriterGone)
+        Failure::from(StoreError::WriterGone)
     }
 }
 

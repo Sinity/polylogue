@@ -1,5 +1,5 @@
 //! Shared SSE framing for finite operation streams.
-use crate::daemon::{Request, Response, service::Daemon};
+use crate::daemon::{Failure, Request, service::Daemon};
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -15,8 +15,9 @@ pub fn event(output: &mut dyn Write, name: &str, value: &impl Serialize) -> io::
     output.flush()
 }
 
-pub fn error(output: &mut dyn Write, response: &Response) -> io::Result<()> {
-    event(output, "error", response)
+/// A failure after the stream began ends it with the error answer.
+pub fn error(output: &mut dyn Write, failure: Failure) -> io::Result<()> {
+    event(output, "error", &failure.answer::<serde_json::Value>())
 }
 
 pub fn produce(
@@ -24,7 +25,7 @@ pub fn produce(
     daemon: &Daemon,
     operation: &std::sync::Arc<crate::operation::Context>,
     output: &mut dyn Write,
-) -> Option<Result<(), Response>> {
+) -> Option<Result<(), Failure>> {
     crate::commands::COMMANDS.iter().find_map(|command| {
         if let crate::commands::Action::Stream { produce, .. } = command.action {
             produce(request, daemon, operation, output)
@@ -38,7 +39,7 @@ pub fn produce(
 pub(crate) struct GuardedWriter<'a> {
     output: &'a mut dyn Write,
     limit: polylogue_store::read::limit::ReadLimit,
-    failure: Option<Response>,
+    failure: Option<Failure>,
     scope: polylogue_store::ReadScopeToken,
 }
 impl<'a> GuardedWriter<'a> {
@@ -60,18 +61,18 @@ impl<'a> GuardedWriter<'a> {
         publish: impl FnOnce(&mut dyn Write) -> io::Result<T>,
     ) -> io::Result<T> {
         if let Err(error) = self.limit.check() {
-            self.failure = Some(crate::daemon::service::store_error(&error));
+            self.failure = Some(Failure::store(&error));
             return Err(io::Error::other(error));
         }
         match self.scope.with_current(|| Ok(publish(self.output))) {
             Ok(result) => result,
             Err(error) => {
-                self.failure = Some(crate::daemon::service::store_error(&error));
+                self.failure = Some(Failure::store(&error));
                 Err(io::Error::other(error))
             }
         }
     }
-    pub fn failure(&mut self) -> Option<Response> {
+    pub fn failure(&mut self) -> Option<Failure> {
         self.failure.take()
     }
 }
@@ -104,10 +105,10 @@ pub(crate) fn produce_limited(
     operation: &std::sync::Arc<crate::operation::Context>,
     output: &mut dyn Write,
     limit: &polylogue_store::read::limit::ReadLimit,
-) -> Option<Result<(), Response>> {
+) -> Option<Result<(), Failure>> {
     let scope = match daemon.reads.scope_token() {
         Ok(scope) => scope,
-        Err(error) => return Some(Err(crate::daemon::service::store_error(&error))),
+        Err(error) => return Some(Err(Failure::from(error))),
     };
     let mut writer = GuardedWriter::new(output, limit.clone(), scope);
     let result = produce(request, daemon, operation, &mut writer);
@@ -130,7 +131,10 @@ mod tests {
         let mut bytes = Vec::new();
         let mut writer = GuardedWriter::new(&mut bytes, limit, scope);
         assert!(writer.write_all(b"stale complete event").is_err());
-        let failure = writer.failure().expect("typed scope failure").answer();
+        let failure = writer
+            .failure()
+            .expect("typed scope failure")
+            .answer::<serde_json::Value>();
         let command_surface::Answer::Error { error, .. } = failure else {
             panic!("scope changed failure");
         };

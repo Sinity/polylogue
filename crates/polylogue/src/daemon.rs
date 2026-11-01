@@ -7,6 +7,7 @@ pub(crate) mod attachment;
 pub mod calendar;
 pub(crate) mod disconnect;
 pub mod execution;
+mod failure;
 pub(crate) mod lifecycle;
 pub mod measure;
 pub mod query;
@@ -16,4 +17,5 @@ pub mod server;
 pub mod service;
 pub mod warm;
 
-pub use request::{Request, Response};
+pub use failure::Failure;
+pub use request::Request;

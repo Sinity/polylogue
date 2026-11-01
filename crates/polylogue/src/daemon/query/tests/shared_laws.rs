@@ -1,6 +1,6 @@
 //! Shared independent cases through the product compiler, fixture store and pager.
 use super::super::*;
-use super::{fixture_clock, fixture_context};
+use super::{fixture_clock, fixture_context, run};
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use query_language::cursor::{PageRequest, SealedCursor};
 use query_language::{
@@ -280,7 +280,7 @@ impl laws::Executor<Plan> for Execution {
                 fields: &["id".into(), "cost".into(), "repo".into()],
             },
         )
-        .map_err(|failure| error(failure.message))?;
+        .map_err(|failure| error(failure.message.clone()))?;
         let rows = answer["rows"]
             .as_array()
             .expect("query rows")

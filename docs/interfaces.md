@@ -252,13 +252,14 @@ One declared **affordance table** per verb lists the next actions offered after 
 ## Output
 
 - **Machine formats:** `--json` (one document, the answer envelope of [query.md](query.md#answers)) and `--jsonl` (header, rows, then `{"next_cursor": …}`) on every command; `--fields a,b` selects columns; `--page-size N`, `--cursor C`. A command's JSON schema is generated from its answer type (MCP `outputSchema` uses the same) and published by `explain capabilities --json`.
+- **Outcome and notes:** the operation that assembles an answer decides its outcome (`ok`, `empty`, `degraded`, `error`) and its notes; every surface carries both unchanged, and no surface infers an outcome from the value. On a terminal the notes go to stderr after the value.
 - **Colour and decoration** only when stdout is a terminal, `NO_COLOR` is unset and `TERM` is not `dumb`; stderr is judged on its own. There is no `--plain` flag, because detection decides. Only the 16 ANSI colours are used, so the terminal's palette applies.
 - **Width:** the terminal's; 100 columns for pipes, so piped columns are stable.
 - **Tables:** columns sized by display width; numbers right-aligned; unknown shown as `—`, never `0`. When a table is wider than the terminal, columns drop in a declared order per unit (for sessions: cwd, origin, message count; row number, time, short ID, title and cost stay), then the title is cut with `…`. Row numbers are plain and dimmed.
 - **Values:** times local to the logical day's zone, with the year omitted in the current year; durations `3m 43s`; costs `$2.85`, unknown `—`.
 - **Pager:** on a terminal, output longer than the screen goes to `$PAGER` (default `less -FRX`). The first page is written as soon as it arrives, later pages are requested only as the pager consumes earlier ones, and quitting the pager cancels the rest.
 - **Archived text:** C0 and C1 control characters other than tab and newline, and bidirectional overrides, are shown escaped (`\x1b`) in every terminal output, the picker preview included. This protects the terminal and alters no stored text.
-- **Errors:** one printer for every failure: kind, position with a caret when there is one, and a runnable `try:` line, shell-quoted, with archived IDs quoted so a pasted ID cannot inject. With `--json` the error is `{"error":{"kind","message","position","suggestion","retryable"}}` on stdout and nothing on stderr.
+- **Errors:** one printer for every failure: kind, position with a caret when there is one, and a runnable `try:` line, shell-quoted, with archived IDs quoted so a pasted ID cannot inject. With `--json` the error is `{"error":{"kind","message","position","suggestion","candidates","retryable"}}` on stdout and nothing on stderr; `candidates` lists what an ambiguous reference matched, each on its own line for a person.
 
 ```console
 $ polylogue 'sessions | grup by origin'

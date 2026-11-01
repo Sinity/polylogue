@@ -40,14 +40,14 @@ fn page(
     cursor: Option<&ResumeArguments>,
 ) -> ReadPage {
     let response = handle(request(target, inherited, view, budget, cursor), d);
-    let Response::Ok { data, .. } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
     serde_json::from_value(data).unwrap()
 }
-fn refused(response: Response, expected: &str) {
+fn refused(response: command_surface::Answer<serde_json::Value>, expected: &str) {
     assert!(
-        matches!(&response, Response::Error { kind, .. } if kind == expected),
+        matches!(&response, command_surface::Answer::Error { error, .. } if error.code.as_deref() == Some(expected)),
         "{response:?}"
     );
 }
@@ -289,7 +289,7 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
         &d.daemon,
     );
     assert!(
-        matches!(&response, Response::Error { kind, .. } if kind == "stale_cursor"),
+        matches!(&response, command_surface::Answer::Error { error, .. } if error.code.as_deref() == Some("stale_cursor")),
         "{response:?}"
     );
 }
@@ -396,7 +396,7 @@ fn direct_anchors_keep_their_own_original_text_and_refuse_missing_sources() {
             ),
             &d.daemon
         ),
-        Response::Error { .. }
+        command_surface::Answer::Error { .. }
     ));
 }
 
@@ -482,7 +482,7 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
     let mut references = Vec::new();
     loop {
         let response = handle(request(cursor), &d.daemon);
-        let Response::Ok { data, .. } = response else {
+        let Some(data) = response.value().cloned() else {
             panic!("{response:?}")
         };
         references.extend(
@@ -509,7 +509,9 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
     d.set("browser.actions", "on");
     assert!(matches!(
         handle(request(first.clone()), &d.daemon),
-        Response::Ok { .. }
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
     ));
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
@@ -521,7 +523,7 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
     file.flush().unwrap();
     d.wait_for(|status| status["store"]["messages"] == 127);
     assert!(
-        matches!(handle(request(first), &d.daemon), Response::Error { kind, .. } if kind == "stale_cursor")
+        matches!(handle(request(first), &d.daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("stale_cursor"))
     );
 }
 

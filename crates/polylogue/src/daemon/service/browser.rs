@@ -7,45 +7,42 @@
 
 use super::{Daemon, browser_refusal, error, ok, store_error, writer};
 use crate::browser::{actions, backfill};
-use crate::daemon::{Request, Response};
+use crate::daemon::{Failure, Request};
 use crate::operation::Invocation;
 use base64::Engine as _;
+use command_surface::Answer;
 use polylogue_model::user::UserWrite;
 use polylogue_store::{Reader, StoreError, user_writes};
+use serde_json::Value;
 use serde_json::json;
 
-fn refused(e: &StoreError) -> Response {
+fn refused(e: &StoreError) -> Failure {
     match e {
         StoreError::ChatAction(code) | StoreError::Backfill(code) => {
-            browser_refusal(actions::refusal(code))
+            let refused = actions::refusal(code);
+            Failure::new(refused.0, refused.0)
         }
-        other => store_error(other),
+        other => Failure::store(other),
     }
 }
 
-fn enabled(invocation: &Invocation, reader: &Reader<'_>) -> Result<bool, Response> {
+fn enabled(invocation: &Invocation, reader: &Reader<'_>) -> Result<bool, Failure> {
     match reader.setting_value("browser.actions", &invocation.machine) {
         Ok(Some(polylogue_model::settings::Value::Boolean(value))) => Ok(value),
-        Ok(_) => Err(error(
+        Ok(_) => Err(Failure::new(
             "invalid",
             "browser.actions has no typed boolean value",
         )),
-        Err(error) => Err(store_error(&error)),
+        Err(error) => Err(Failure::store(&error)),
     }
 }
 
 /// Writes `write`; `None` when it found nothing to claim. Chat actions and
 /// backfill jobs carry their own retry keys, so each write gets a new
 /// request ID.
-fn apply(
-    d: &Daemon,
-    invocation: &Invocation,
-    write: UserWrite,
-) -> Result<Option<String>, Response> {
+fn apply(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Result<Option<String>, Failure> {
     let writes = writer(d)?;
-    invocation
-        .check_parent_admission()
-        .map_err(|error| store_error(&error))?;
+    invocation.check_parent_admission()?;
     let request = invocation.request(user_writes::new_request_id(), write);
     let result = match invocation.parent_lifetime() {
         Some(parent) => writes.user_with_parent(request, parent),
@@ -59,11 +56,11 @@ fn apply(
 }
 
 /// Writes `write`, then answers with the chat action it names.
-fn chat_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Response {
+fn chat_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Answer<Value> {
     let id = match apply(d, invocation, write) {
         Ok(Some(id)) => id,
         Ok(None) => return ok(json!({ "action": null })),
-        Err(response) => return response,
+        Err(failure) => return failure.answer(),
     };
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
@@ -77,11 +74,11 @@ fn chat_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Resp
 }
 
 /// Writes `write`, then answers with the backfill job it names.
-fn backfill_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Response {
+fn backfill_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Answer<Value> {
     let id = match apply(d, invocation, write) {
         Ok(Some(id)) => id,
         Ok(None) => return ok(json!({ "job": null })),
-        Err(response) => return response,
+        Err(failure) => return failure.answer(),
     };
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
@@ -98,7 +95,7 @@ fn backfill_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> 
 fn store_files(
     d: &Daemon,
     files: &[actions::ChatFile],
-) -> Result<Vec<polylogue_model::user::ChatAttachment>, Response> {
+) -> Result<Vec<polylogue_model::user::ChatAttachment>, Failure> {
     let writes = writer(d)?;
     files
         .iter()
@@ -107,7 +104,7 @@ fn store_files(
                 .prepare_decoded(&file.bytes)
                 .and_then(|(new_blob, prepared)| writes.store_blob(new_blob, prepared))
                 .map(|blob| actions::attachment(file, blob))
-                .map_err(|e| store_error(&e))
+                .map_err(Failure::from)
         })
         .collect()
 }
@@ -117,7 +114,7 @@ pub(super) fn handle(
     d: &Daemon,
     reader: Reader<'_>,
     invocation: &Invocation,
-) -> Response {
+) -> Answer<Value> {
     let now = invocation.at.unix_ms();
     match request {
         Request::ChatSend {
@@ -130,7 +127,7 @@ pub(super) fn handle(
                 Ok(false) => {
                     return browser_refusal(actions::Refused("browser_actions_off"));
                 }
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             }
             drop(reader);
             // Checked before any file is stored.
@@ -139,7 +136,7 @@ pub(super) fn handle(
             }
             let stored = match store_files(d, &files) {
                 Ok(stored) => stored,
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             };
             match actions::new_action(&request_id, &action, stored) {
                 Ok(new) => chat_then_view(d, invocation, UserWrite::ChatEnqueue(new)),
@@ -160,7 +157,7 @@ pub(super) fn handle(
         Request::ChatClaim { by } => {
             let on = match enabled(invocation, &reader) {
                 Ok(on) => on,
-                Err(response) => return response,
+                Err(failure) => return failure.answer(),
             };
             drop(reader);
             if !on {
@@ -207,7 +204,7 @@ pub(super) fn handle(
                     "media_type": a.media_type,
                     "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
                 })),
-                Err(e) => refused(&e),
+                Err(e) => refused(&e).answer(),
             }
         }
         Request::BackfillStart { provider, since } => {

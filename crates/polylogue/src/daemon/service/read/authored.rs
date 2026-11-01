@@ -1,5 +1,5 @@
 //! Read authored effects as their unchanged whole immutable request.
-use super::super::{Response, error, store_error};
+use super::super::Failure;
 use polylogue_model::{
     Reference,
     bundle::Record,
@@ -10,17 +10,14 @@ use polylogue_store::{
     read::authored_evidence::{AuthoredReadEvidence, AuthoredReadIssue},
 };
 
-type Visit<'a> = dyn FnMut(Record, ProjectionEvidence) -> Result<bool, Response> + 'a;
+type Visit<'a> = dyn FnMut(Record, ProjectionEvidence) -> Result<bool, Failure> + 'a;
 
 pub(super) fn reference(
     reader: &Reader<'_>,
     reference: &Reference,
     visit: &mut Visit<'_>,
-) -> Result<bool, Response> {
-    match reader
-        .authored_record(reference)
-        .map_err(|error| store_error(&error))?
-    {
+) -> Result<bool, Failure> {
+    match reader.authored_record(reference)? {
         Some(AuthoredReadEvidence::Historical { selected, record }) => visit(
             Record::Historical(record),
             ProjectionEvidence {
@@ -46,8 +43,10 @@ pub(super) fn reference(
         }) if matches!(reference, Reference::Assertion(_)) => {
             direct_assertion(reader, reference, visit)
         }
-        Some(AuthoredReadEvidence::Incomplete { issue }) => Err(error("not_yet_available", issue)),
-        None => Err(error(
+        Some(AuthoredReadEvidence::Incomplete { issue }) => {
+            Err(Failure::new("not_yet_available", issue))
+        }
+        None => Err(Failure::new(
             "not_found",
             format!("no authored record for {reference}"),
         )),
@@ -58,14 +57,13 @@ fn direct_assertion(
     reader: &Reader<'_>,
     reference: &Reference,
     visit: &mut Visit<'_>,
-) -> Result<bool, Response> {
+) -> Result<bool, Failure> {
     let Reference::Assertion(revision) = reference else {
         unreachable!()
     };
     let row = reader
-        .assertion_evidence(revision)
-        .map_err(|error| store_error(&error))?
-        .ok_or_else(|| error("not_found", format!("no assertion {reference}")))?;
+        .assertion_evidence(revision)?
+        .ok_or_else(|| Failure::new("not_found", format!("no assertion {reference}")))?;
     let record = match row {
         polylogue_model::historical::AssertionEvidence::Current(row) => {
             let reference = format!("assertion:{}@{}", row.fact.root, row.fact.id);
@@ -87,7 +85,7 @@ fn direct_assertion(
             imports,
         } => {
             if commit_seq == 0 {
-                return Err(error(
+                return Err(Failure::new(
                     "not_yet_available",
                     "historical assertion has no retained positive local admission",
                 ));

@@ -155,7 +155,15 @@ fn actual_no_effect_request_read_records_one_object_run_and_roundtrips_through_d
         &limit,
         &actor(),
     );
-    assert!(matches!(imported, Response::Ok { .. }), "{imported:?}");
+    assert!(
+        matches!(
+            imported,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{imported:?}"
+    );
     let reader = receiver.daemon.reads.reader().unwrap();
     let Some(polylogue_store::read::authored_evidence::AuthoredReadEvidence::Local {
         record, ..
@@ -273,7 +281,7 @@ fn actual_object_stream_stops_on_scope_reset_and_cancellation_before_record_body
             "cancelled"
         };
         assert!(
-            matches!(response, Err(Response::Error { ref kind, .. }) if kind == expected),
+            matches!(&response, Err(failure) if failure.code() == expected),
             "{response:?}"
         );
         assert_eq!(

@@ -1,5 +1,4 @@
 use super::*;
-use crate::daemon::Response;
 use polylogue_store::Archive;
 
 #[test]
@@ -233,8 +232,10 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     BufReader::new(stream).read_line(&mut line).unwrap();
     assert!(
         matches!(
-            serde_json::from_str::<Response>(&line).unwrap(),
-            Response::Ok { .. }
+            serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&line).unwrap(),
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
         ),
         "{line}"
     );

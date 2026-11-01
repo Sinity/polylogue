@@ -55,11 +55,11 @@ impl From<&str> for Held {
         reason.to_owned().into()
     }
 }
-impl From<crate::daemon::Response> for Held {
-    fn from(response: crate::daemon::Response) -> Self {
+impl From<crate::daemon::Failure> for Held {
+    fn from(failure: crate::daemon::Failure) -> Self {
         Self {
             reason: "owner context is unavailable".into(),
-            detail: Some(Box::new(response.answer().map(|_| ()))),
+            detail: Some(Box::new(failure.answer())),
         }
     }
 }

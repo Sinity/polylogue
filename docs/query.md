@@ -32,7 +32,7 @@ How the first word of a command line is read (command, query signal, `find`) is 
 
 ### Errors
 
-Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint` and `retryable`. Polylogue's query error kinds and their exit codes are listed in [interfaces.md](interfaces.md#exit-codes). A unit or field that is part of the design but has no producer yet answers `not_built`, never an empty result.
+Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint`, `candidates` (the matches of an ambiguous reference, or the known fields close to an unknown one) and `retryable`. Polylogue's query error kinds and their exit codes are listed in [interfaces.md](interfaces.md#exit-codes). A unit or field that is part of the design but has no producer yet answers `not_built`, never an empty result.
 
 ### References inside queries
 

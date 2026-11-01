@@ -11,7 +11,7 @@ impl Read for Bytes<'_> {
 }
 fn refusal() -> Answer<serde_json::Value> {
     Answer::Error {
-        error: crate::protocol::failure("scope_changed", "scope changed: λ".into(), None),
+        error: crate::protocol::failure("scope_changed", "scope changed: λ"),
         notes: vec!["acquire a new reader".into()],
         next: vec![],
     }

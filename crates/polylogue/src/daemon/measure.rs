@@ -5,7 +5,7 @@
 //! commands, the `query` help, the plain-text view and the error for an
 //! unknown name all read it.
 
-use super::query::Failure;
+use super::Failure;
 use polylogue_render::measures as text;
 use polylogue_store::Reader;
 use polylogue_store::measure::{self, Selection, daily, drift, quota, survival, tool_calls};
@@ -268,11 +268,7 @@ pub fn run(
 }
 
 fn bad_request(message: String) -> Failure {
-    Failure {
-        kind: "bad_request".into(),
-        message,
-        detail: None,
-    }
+    Failure::new("bad_request", message)
 }
 
 pub fn find_checked(what: &str) -> Result<(&'static Measure, &str), Failure> {

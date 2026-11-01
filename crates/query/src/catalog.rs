@@ -114,6 +114,8 @@ pub fn catalog(origins: &[String], commands: &[String]) -> Catalog {
         ("assertion:", Some("@")),
         ("delivery:", None),
         ("run:", None),
+        ("page:", None),
+        ("file:", Some("@")),
     ]
     .into_iter()
     .map(|(prefix, marker)| ReferenceSyntax {

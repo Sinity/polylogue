@@ -24,15 +24,20 @@ fn a_starting_daemon_is_waited_for() {
         let (stream, _) = listener.accept().unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
-        let reply = serde_json::to_string(&Response::Ok {
-            data: serde_json::json!({"ready": true}),
-        })
+        let reply = serde_json::to_string(&command_surface::Answer::ok(
+            serde_json::json!({"ready": true}),
+        ))
         .unwrap();
         std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
         drop(lock);
     });
     let response = send_with_timeout(&archive, &Request::Status, None).unwrap();
-    assert!(matches!(response, Response::Ok { .. }));
+    assert!(matches!(
+        response,
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
+    ));
     server.join().unwrap();
 }
 

@@ -38,5 +38,5 @@ fn evidence_until_reads_the_rows_polylogue_had_then() {
     let session = query(&home, "sessions | sort by first_seen").unwrap();
     assert_eq!(session["rows"][0]["first_seen"], then.as_str());
     let refused = query(&home, &format!("sessions where evidence_until:{then}")).unwrap_err();
-    assert_eq!(refused.kind, "invalid_query");
+    assert_eq!(refused.code(), "invalid_query");
 }

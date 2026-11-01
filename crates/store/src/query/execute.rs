@@ -35,14 +35,12 @@ impl Reader<'_> {
                     E::from(SelectionError::Invalid {
                         kind: "embed",
                         message: "semantic search unavailable".into(),
-                        detail: None,
                     })
                 })?;
                 let similarity = near(&request.text).map_err(|message| {
                     E::from(SelectionError::Invalid {
                         kind: "embed",
                         message,
-                        detail: None,
                     })
                 })?;
                 self.with_similarity(similarity, run)
@@ -98,7 +96,6 @@ impl Reader<'_> {
             return Err(SelectionError::Invalid {
                 kind: "bad_request",
                 message: "page size must be positive".into(),
-                detail: None,
             });
         }
         self.with_clock(&program.clock, || {
@@ -169,7 +166,6 @@ fn invalid(message: &str) -> SelectionError {
     SelectionError::Invalid {
         kind: "bad_request",
         message: message.into(),
-        detail: None,
     }
 }
 
@@ -266,7 +262,6 @@ pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
                 *v = serde_json::from_str(text).map_err(|_| SelectionError::Invalid {
                     kind: "store",
                     message: "invalid stored JSON value".into(),
-                    detail: None,
                 })?;
             }
         }
@@ -278,7 +273,6 @@ pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
                 serde_json::from_str(text).map_err(|e| SelectionError::Invalid {
                     kind: "store",
                     message: format!("invalid stored selection: {e}"),
-                    detail: None,
                 })?
             } else {
                 v.take()
@@ -294,7 +288,6 @@ pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
                 return Err(SelectionError::Invalid {
                     kind: "store",
                     message: "a stored selection must be an array of IDs".into(),
-                    detail: None,
                 });
             }
             *v = selection;

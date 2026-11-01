@@ -1,6 +1,6 @@
 //! Page presentation seeks original document blocks without making a partial
 //! canonical Document. Full record transfer retains the strict record adapter.
-use super::{Emit, Response, attachment_evidence, error, evidence, output, store_error};
+use super::{Emit, Failure, attachment_evidence, evidence, output};
 use polylogue_model::{
     Block, DocumentId,
     read::{
@@ -11,17 +11,17 @@ use polylogue_model::{
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
-fn stale() -> Response {
-    error(
+fn stale() -> Failure {
+    Failure::new(
         "stale_cursor",
         "the continued document block is no longer selected",
     )
 }
 
-fn check(reader: &Reader<'_>) -> Result<(), Response> {
-    reader.check().map_err(|error| store_error(&error))?;
+fn check(reader: &Reader<'_>) -> Result<(), Failure> {
+    reader.check()?;
     if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
-        limit.check().map_err(|error| store_error(&error))?;
+        limit.check()?;
     }
     Ok(())
 }
@@ -44,7 +44,7 @@ fn emit_items(
     start: Option<ReadPosition>,
     layout: &evidence::Layout<'_>,
     emit: &mut Emit<'_>,
-) -> Result<bool, Response> {
+) -> Result<bool, Failure> {
     let at = position(row, ordinal);
     let anchor = start.filter(|start| start.selection == at);
     if anchor.is_some_and(|start| {
@@ -89,7 +89,7 @@ fn block_items(
     ordinal: u64,
     block: Block,
     layout: &evidence::Layout<'_>,
-) -> Result<Vec<ReadItem>, Response> {
+) -> Result<Vec<ReadItem>, Failure> {
     check(reader)?;
     let source = Source {
         block: Some(ordinal),
@@ -131,19 +131,14 @@ pub(super) fn visit(
     start: Option<ReadPosition>,
     layout: &evidence::Layout<'_>,
     emit: &mut Emit<'_>,
-) -> Result<bool, Response> {
+) -> Result<bool, Failure> {
     check(reader)?;
     let selected = reader
-        .select_document(id)
-        .map_err(|error| store_error(&error))?
-        .ok_or_else(|| error("not_found", format!("no document {id}")))?;
+        .select_document(id)?
+        .ok_or_else(|| Failure::new("not_found", format!("no document {id}")))?;
     let reference = format!("document:{id}");
-    if reader
-        .document_commit(id)
-        .map_err(|error| store_error(&error))?
-        .is_none()
-    {
-        return Err(error(
+    if reader.document_commit(id)?.is_none() {
+        return Err(Failure::new(
             "not_yet_available",
             format!("{reference} has no retained source admission evidence"),
         ));
@@ -155,9 +150,7 @@ pub(super) fn visit(
     }
     let from = start.map(|start| start.selection.record.ordinal);
     if let Some(ordinal) = from.filter(|ordinal| *ordinal > 0)
-        && !selected
-            .has_block(ordinal - 1)
-            .map_err(|error| store_error(&error))?
+        && !selected.has_block(ordinal - 1)?
     {
         return Err(stale());
     }
@@ -171,7 +164,7 @@ pub(super) fn visit(
             Ok(true)
         };
     }
-    let root = || -> Result<Vec<ReadItem>, Response> {
+    let root = || -> Result<Vec<ReadItem>, Failure> {
         let mut items = Vec::new();
         polylogue_render::visit_document_root(
             &reference,
@@ -239,7 +232,7 @@ pub(super) fn visit(
         )
     };
     check(reader)?;
-    result.map_err(|error| store_error(&error))?;
+    result?;
     if let Some(error) = failure {
         return Err(error);
     }

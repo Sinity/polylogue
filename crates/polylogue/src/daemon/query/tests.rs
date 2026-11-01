@@ -464,8 +464,13 @@ fn run_q(w: &TestArchive, a: Ask<'_>) -> Result<Value, Failure> {
     run(&r, a)
 }
 
+/// The answer document of a query; the outcome is checked where it matters.
+fn run(r: &Reader<'_>, a: Ask<'_>) -> Result<Value, Failure> {
+    super::run(r, a).map(|answer| answer.value)
+}
+
 fn q(w: &TestArchive, text: &str) -> Value {
-    run_q(w, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
+    run_q(w, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message))
 }
 
 /// The `id` column of each row, shortened to the session's number.
@@ -707,7 +712,7 @@ fn matches_return_the_rows_that_matched() {
     );
     // Without one exists or seq, there is nothing to return as matches.
     let err = run_q(&w, ask("sessions where repo:morrow | matches")).unwrap_err();
-    assert_eq!(err.kind, "invalid_query");
+    assert_eq!(err.code(), "invalid_query");
 }
 
 #[test]
@@ -824,7 +829,7 @@ fn kept_results_read_back_as_they_were_kept() {
     );
     // Conditions do not narrow a kept result; stages do.
     let err = run_q(&w, ask("result:0199-kept repo:morrow")).unwrap_err();
-    assert_eq!(err.kind, "invalid_query");
+    assert_eq!(err.code(), "invalid_query");
     let err = run_q(&w, ask("result:nope")).unwrap_err();
     let detail = query_failure_detail(&err, query_language::ErrorKind::BadValue, 0);
     assert_eq!(
@@ -893,22 +898,20 @@ fn text_search_ranks_and_cuts_snippets() {
     assert_eq!(q(&w, "tool_calls where command:\"go te\"")["count"], 2);
 }
 
+/// The shared failure as every surface reports it, checked for its code and
+/// byte position.
 #[track_caller]
 fn query_failure_detail(
     failure: &Failure,
     kind: query_language::ErrorKind,
     position: usize,
-) -> &Value {
-    assert_eq!(failure.kind, kind.code());
-    let detail = failure
-        .detail
-        .as_ref()
-        .expect("structured language refusal");
-    assert_eq!(detail["kind"], kind.code());
-    assert_eq!(detail["position"], position);
-    let surface = crate::protocol::failure(&failure.kind, failure.message.clone(), Some(detail));
-    assert_eq!(surface.kind, crate::protocol::kind(kind.code()));
-    assert_eq!(surface.position.unwrap().offset, position);
+) -> Value {
+    assert_eq!(failure.code(), kind.code());
+    assert_eq!(failure.kind, crate::protocol::kind(kind.code()));
+    assert_eq!(failure.position.as_ref().unwrap().offset, position);
+    let mut detail = serde_json::to_value(&failure.error).unwrap();
+    // The message carries the source line and caret below its first line.
+    detail["message"] = failure.message.lines().next().unwrap_or_default().into();
     detail
 }
 
@@ -1246,7 +1249,7 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
         .kept_result("broken", "sessions", "not JSON")
         .unwrap();
     let failure = run_q(&fixture, ask("sessions")).unwrap_err();
-    assert_eq!(failure.kind, "store");
+    assert_eq!(failure.code(), "store");
     assert_eq!(
         failure.message,
         "kept result \"broken\" field rows_json: invalid JSON"
@@ -1254,7 +1257,7 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
     let pool = fixture.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
     let kept_failure = keep(&reader, ask("sessions")).unwrap_err();
-    assert_eq!(kept_failure.kind, "store");
+    assert_eq!(kept_failure.code(), "store");
     assert_eq!(kept_failure.message, failure.message);
 }
 
@@ -1303,7 +1306,7 @@ fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
             run(&reader, ask("sessions")).unwrap_err(),
             keep(&reader, ask("sessions")).unwrap_err(),
         ] {
-            assert_eq!(failure.kind, "store");
+            assert_eq!(failure.code(), "store");
             assert!(failure.message.contains("broken"), "{failure:?}");
             assert!(failure.message.contains(field), "{failure:?}");
         }
@@ -1381,8 +1384,8 @@ fn fixture_context(
 fn shared_query_diagnostics_keep_correction_and_byte_position_at_the_operation_boundary() {
     let error = polylogue_query::parse(r#"repo:"morrow"#).unwrap_err();
     let failure = Failure::from(error);
-    assert_eq!(failure.kind, "invalid_query");
-    let shared = crate::protocol::failure(&failure.kind, failure.message, failure.detail.as_ref());
+    assert_eq!(failure.code(), "invalid_query");
+    let shared = failure.error;
     assert_eq!(shared.position.unwrap().offset, 5);
     assert_eq!(
         shared.suggestion.as_deref(),

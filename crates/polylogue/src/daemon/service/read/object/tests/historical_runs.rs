@@ -64,8 +64,8 @@ fn public_raw_historical_run_exports_imports_and_rebuilds_without_replay_authori
     let refusal =
         super::super::super::produce(&replay, &d.daemon, &operation, &mut Vec::new()).unwrap();
     assert!(
-        matches!(refusal, Err(Response::Error { ref kind, ref detail, .. }) if kind == "not_built"
-            && detail.as_ref().and_then(|detail| detail.get("what")).and_then(serde_json::Value::as_str) == Some("run references require their acknowledged execution binding")),
+        matches!(&refusal, Err(failure) if failure.code() == "not_built"
+            && failure.message == "run references require their acknowledged execution binding is not built yet"),
         "{refusal:?}"
     );
 
@@ -107,7 +107,15 @@ fn public_raw_historical_run_exports_imports_and_rebuilds_without_replay_authori
         &limit,
         &actor(),
     );
-    assert!(matches!(imported, Response::Ok { .. }), "{imported:?}");
+    assert!(
+        matches!(
+            imported,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{imported:?}"
+    );
     let restored = retained(&receiver.daemon, &original.id);
     assert_eq!(restored.encoded_run, original.encoded_run);
     assert_eq!(restored.source, original.source);
@@ -178,7 +186,7 @@ fn raw_historical_run_honors_scope_and_cancellation_before_record_body() {
             "cancelled"
         };
         assert!(
-            matches!(response, Err(Response::Error { ref kind, .. }) if kind == expected),
+            matches!(&response, Err(failure) if failure.code() == expected),
             "{response:?}"
         );
         assert_eq!(
@@ -203,7 +211,7 @@ fn raw_historical_run_page_preserves_record_and_small_budget_offers_streaming() 
     let operation = d.daemon.operation_context(&actor()).unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let response = super::super::super::page(&reader, &d.daemon, &request, &operation);
-    let Response::Ok { data } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
     let page: ReadPage = serde_json::from_value(data).unwrap();
@@ -228,7 +236,7 @@ fn raw_historical_run_page_preserves_record_and_small_budget_offers_streaming() 
     }
     let response = super::super::super::page(&reader, &d.daemon, &request, &operation);
     assert!(
-        matches!(response, Response::Error { ref kind, .. } if kind == "bad_request"),
+        matches!(response, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("bad_request")),
         "{response:?}"
     );
     drop(reader);

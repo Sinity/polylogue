@@ -1,6 +1,6 @@
 //! Attachment presentation follows actual receiving custody and checked bytes.
 //! Canonical descriptors and their historical naming claims remain unchanged.
-use super::{Response, store_error};
+use super::Failure;
 use polylogue_model::{Attachment, BlobHash, MessageId, read::*};
 use polylogue_store::{
     Reader, StoreError,
@@ -8,7 +8,7 @@ use polylogue_store::{
 };
 
 pub(super) type ReadyAttachment<'a> =
-    dyn Fn(&MessageId, u64, u64, Option<&str>) -> Result<ReadyCall, Response> + 'a;
+    dyn Fn(&MessageId, u64, u64, Option<&str>) -> Result<ReadyCall, Failure> + 'a;
 
 enum Proof {
     Verified {
@@ -119,7 +119,7 @@ pub(super) fn prepare(
     mut item: ReadItem,
     index: u64,
     ready: &ReadyAttachment<'_>,
-) -> Result<ReadItem, Response> {
+) -> Result<ReadItem, Failure> {
     let ItemKind::Attachment {
         attachment,
         availability,
@@ -140,7 +140,7 @@ pub(super) fn prepare(
         *open = None;
         return Ok(item);
     };
-    reader.check().map_err(|e| store_error(&e))?;
+    reader.check()?;
     let proof = match proof(reader, message, block, index, attachment) {
         Ok(proof) => proof,
         Err(
@@ -152,10 +152,10 @@ pub(super) fn prepare(
             | StoreError::Invalid(_)),
         ) => {
             // A cancellation or scope change outranks a simultaneous byte error.
-            reader.check().map_err(|e| store_error(&e))?;
+            reader.check()?;
             Proof::Unavailable(error.to_string())
         }
-        Err(error) => return Err(store_error(&error)),
+        Err(error) => return Err(Failure::store(&error)),
     };
     *verified_hash = None;
     *open = None;
@@ -182,7 +182,7 @@ pub(super) fn prepare(
             *inline_bytes = None;
         }
     }
-    reader.check().map_err(|e| store_error(&e))?;
+    reader.check()?;
     Ok(item)
 }
 

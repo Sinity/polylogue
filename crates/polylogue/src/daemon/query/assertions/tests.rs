@@ -1,5 +1,5 @@
 use super::*;
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
 use crate::test_daemon;
 use polylogue_model::Timestamp;
 use polylogue_model::assertion::{
@@ -21,10 +21,21 @@ fn add(w: &test_daemon::TestDaemon, id: &str, authored: (Author, NewAssertion)) 
             via: polylogue_model::authorship::Channel::Cli,
         },
     );
-    assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    assert!(
+        matches!(
+            response,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{response:?}"
+    );
 }
 
-fn operator(w: &test_daemon::TestDaemon, request: Request) -> Response {
+fn operator(
+    w: &test_daemon::TestDaemon,
+    request: Request,
+) -> command_surface::Answer<serde_json::Value> {
     crate::daemon::service::handle_with_caller(
         request,
         &w.daemon,
@@ -95,7 +106,15 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
             },
         },
     );
-    assert!(matches!(revised, Response::Ok { .. }), "{revised:?}");
+    assert!(
+        matches!(
+            revised,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{revised:?}"
+    );
     let agent = Author::Agent(Some(SessionId::parse("codex:x").unwrap()));
     add(
         &w,
@@ -131,7 +150,15 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
             reason: Some("superseded".into()),
         },
     );
-    assert!(matches!(withdrawn, Response::Ok { .. }), "{withdrawn:?}");
+    assert!(
+        matches!(
+            withdrawn,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{withdrawn:?}"
+    );
     let reader = w.daemon.reads.reader().unwrap();
     assert_eq!(
         values(&list(&reader, &about, &context).unwrap()),

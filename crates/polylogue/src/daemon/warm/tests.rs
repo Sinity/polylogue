@@ -50,7 +50,9 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
         },
         &d.daemon,
     ) {
-        crate::daemon::Response::Ok { data, .. } => data,
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data,
         other => panic!("{other:?}"),
     };
     assert!(
@@ -112,7 +114,9 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
         },
         &daemon.daemon,
     ) {
-        crate::daemon::Response::Ok { data, .. } => {
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => {
             let candidate = data
                 .as_array()
                 .unwrap()
@@ -142,7 +146,9 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
             },
             &daemon.daemon,
         ) {
-            crate::daemon::Response::Error { kind, .. } => assert_eq!(kind, "bad_request"),
+            command_surface::Answer::Error { error, .. } => {
+                assert_eq!(error.code.as_deref(), Some("bad_request"))
+            }
             other => panic!("{other:?}"),
         }
     }

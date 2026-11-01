@@ -263,8 +263,10 @@ fn send(
         files,
     };
     match crate::daemon::service::handle(request, &w.daemon) {
-        crate::daemon::Response::Ok { data, .. } => Ok(data["action"].clone()),
-        crate::daemon::Response::Error { kind, .. } => Err(kind),
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => Ok(data["action"].clone()),
+        command_surface::Answer::Error { error, .. } => Err(error.code.unwrap_or_default()),
     }
 }
 
@@ -391,7 +393,7 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
             &w.daemon,
         )
     };
-    let crate::daemon::Response::Ok { data, .. } = start("chatgpt") else {
+    let Some(data) = start("chatgpt").value().cloned() else {
         panic!("the job did not start")
     };
     let id = data["job"]["id"].as_str().unwrap().to_owned();
@@ -441,10 +443,10 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
         || conversations(&host, &["listed-1"]),
         |v| v["conversations"][0]["state"] == "archived",
     );
-    let crate::daemon::Response::Error { kind, .. } = start("gemini") else {
+    let command_surface::Answer::Error { error, .. } = start("gemini") else {
         panic!("gemini has no conversation list")
     };
-    assert_eq!(kind, "unsupported_provider");
+    assert_eq!(error.code.as_deref(), Some("unsupported_provider"));
 }
 
 #[test]
@@ -519,7 +521,8 @@ fn grok_file_blobs(
             budget: None,
             with_blobs: false,
         }) {
-            Some(crate::daemon::Response::Ok { data, .. }) => {
+            Some(answer) if answer.value().is_some() => {
+                let data = crate::protocol::into_value(answer).unwrap();
                 let page: polylogue_model::read::ReadPage = serde_json::from_value(data).unwrap();
                 let mut output = Vec::new();
                 polylogue_render::encode_document(

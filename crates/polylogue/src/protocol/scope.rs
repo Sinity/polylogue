@@ -55,11 +55,7 @@ pub(crate) fn answer<T>(
 ) -> command_surface::Answer<T> {
     match scopes.check() {
         Ok(()) => answer,
-        Err(error) => command_surface::Answer::error(super::failure(
-            super::store_code(&error),
-            error.to_string(),
-            None,
-        )),
+        Err(error) => command_surface::Answer::error(super::store_failure(&error)),
     }
 }
 

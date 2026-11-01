@@ -1,12 +1,17 @@
 use super::*;
 
-fn answer(d: &test_daemon::TestDaemon, request: Request) -> Response {
+fn answer(
+    d: &test_daemon::TestDaemon,
+    request: Request,
+) -> command_surface::Answer<serde_json::Value> {
     handle(request, &d.daemon)
 }
 
 fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
     match answer(d, request) {
-        Response::Ok { data, .. } => data,
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data,
         other => panic!("{other:?}"),
     }
 }
@@ -64,7 +69,9 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
         save("first", "everything", "documents"),
         save("first", "other", "sessions"),
     ] {
-        assert!(matches!(answer(&d, request), Response::Error { kind, .. } if kind == "conflict"));
+        assert!(
+            matches!(answer(&d, request), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("conflict"))
+        );
     }
 }
 
@@ -87,7 +94,9 @@ fn keep_retries_return_the_original_rows_after_membership_changes() {
         keep("kept", "sessions", "before"),
         keep("kept", "assertions", "after"),
     ] {
-        assert!(matches!(answer(&d, request), Response::Error { kind, .. } if kind == "conflict"));
+        assert!(
+            matches!(answer(&d, request), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("conflict"))
+        );
     }
 }
 
@@ -100,7 +109,7 @@ fn a_save_that_query_names_could_not_say_is_refused() {
         ("broken", "\"unclosed"),
     ] {
         match answer(&d, save("r", name, text)) {
-            Response::Error { .. } => {}
+            command_surface::Answer::Error { .. } => {}
             other => panic!("{name:?} {text:?}: {other:?}"),
         }
     }
@@ -131,7 +140,7 @@ fn a_watch_is_a_signal_rule_delivering_notices() {
         watch("w3", "kind:*", Some("soon")),
     ] {
         match answer(&d, bad) {
-            Response::Error { .. } => {}
+            command_surface::Answer::Error { .. } => {}
             other => panic!("{other:?}"),
         }
     }
@@ -169,7 +178,12 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
             authorship,
         )
     };
-    assert!(matches!(call(&caller), Response::Ok { .. }));
+    assert!(matches!(
+        call(&caller),
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
+    ));
     let reads = d.daemon.reads.reader().unwrap();
     let original = reads.user_request("caller-request").unwrap().unwrap();
     assert_eq!(original.authorship, caller);
@@ -186,7 +200,7 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
         caller.author
     );
     drop(reads);
-    let Response::Ok { data } = call(&caller) else {
+    let Some(data) = call(&caller).value().cloned() else {
         panic!("retry failed")
     };
     assert_eq!(data["repeat"], true);
@@ -200,7 +214,9 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
             via: Channel::Cli,
         },
     ] {
-        assert!(matches!(call(&changed), Response::Error { kind, .. } if kind == "conflict"));
+        assert!(
+            matches!(call(&changed), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("conflict"))
+        );
     }
     let reads = d.daemon.reads.reader().unwrap();
     assert_eq!(

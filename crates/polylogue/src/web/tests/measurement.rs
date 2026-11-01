@@ -86,7 +86,9 @@ fn document_previous_cost() {
             },
             &r.web.daemon
         ),
-        Response::Ok { .. }
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
     ));
     r.w.wait_for(|s| s["store"]["documents"].as_u64().is_some_and(|n| n > 0));
     let id = "claude-ai:project:measured:doc:doc";

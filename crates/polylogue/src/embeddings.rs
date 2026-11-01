@@ -14,8 +14,9 @@
 //! Startup supplies the Voyage credential captured from `VOYAGE_API_KEY` and never runs without
 //! `--yes` after a preview.
 
-use crate::daemon::Response;
+use crate::daemon::Failure;
 use crate::daemon::service::{error, ok, store_error};
+use command_surface::Answer;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{Vector, Vectors};
 use serde::Serialize;
@@ -475,7 +476,7 @@ fn query_sessions(
     reader: &Reader<'_>,
     query: &str,
     context: &std::sync::Arc<crate::operation::Context>,
-) -> Result<Vec<String>, Response> {
+) -> Result<Vec<String>, Failure> {
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -491,29 +492,26 @@ fn query_sessions(
             near: None,
             fields: &[],
         };
-        let page = crate::daemon::query::run(reader, ask).map_err(|f| Response::Error {
-            kind: f.kind,
-            message: f.message,
-            detail: f.detail,
-        })?;
+        let answer = crate::daemon::query::run(reader, ask)?;
+        let page = &answer.value;
         if page["unit"] != "sessions" || page["shape"] != "rows" {
-            return Err(error("bad_request", "embed takes session rows"));
+            return Err(Failure::new("bad_request", "embed takes session rows"));
         }
-        if !page["incomplete"].as_array().is_some_and(Vec::is_empty) {
-            return Err(error(
+        if answer.outcome == crate::daemon::query::Outcome::Incomplete {
+            return Err(Failure::new(
                 "not_yet_available",
                 "embedding selection requires complete query results",
             ));
         }
         let rows = page["rows"].as_array().ok_or_else(|| {
-            error(
+            Failure::new(
                 "bad_request",
                 "embedding selection did not return session rows",
             )
         })?;
         for row in rows {
             let id = row["id"].as_str().ok_or_else(|| {
-                error(
+                Failure::new(
                     "bad_request",
                     "embedding selection requires session identities",
                 )
@@ -535,7 +533,7 @@ pub fn handle(
     limit: Option<u64>,
     yes: bool,
     context: Context<'_>,
-) -> Response {
+) -> Answer<Value> {
     let provider = match Provider::from_settings(context.settings, context.credentials) {
         Ok(p) => p,
         Err(e) => return error("bad_request", e),
@@ -563,7 +561,7 @@ pub fn handle(
         None => None,
         Some(q) => match query_sessions(reader, q, context.operation) {
             Ok(ids) => Some(ids),
-            Err(response) => return response,
+            Err(failure) => return failure.answer(),
         },
     };
     let result = match what {

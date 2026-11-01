@@ -1,5 +1,5 @@
 //! One accepting invocation, extended with a canonical evaluation context when needed.
-use crate::daemon::{Response, service::error};
+use crate::daemon::Failure;
 use polylogue_model::{
     Timestamp,
     authorship::{Authorship, Channel},
@@ -128,10 +128,10 @@ impl Context {
     pub fn primary(
         invocation: Invocation,
         policy: polylogue_sinex::ResolvedContext,
-    ) -> Result<Self, Response> {
+    ) -> Result<Self, Failure> {
         let observed_at =
             Timestamp::from_unix_ns(policy.observed_at.unix_ns()).ok_or_else(|| {
-                error(
+                Failure::new(
                     "primary_context_invalid",
                     "the owner observation time is outside the supported range",
                 )
@@ -204,9 +204,9 @@ impl Context {
         .into()
     }
     /// Only an authenticated evaluation clock may be replayed; capture time stays current.
-    pub fn replay_clock(&self, clock: Clock) -> Result<Self, Response> {
+    pub fn replay_clock(&self, clock: Clock) -> Result<Self, Failure> {
         if clock.day != self.clock.day {
-            return Err(error(
+            return Err(Failure::new(
                 "stale_cursor",
                 "the canonical logical day changed since this cursor was issued",
             ));

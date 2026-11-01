@@ -9,23 +9,26 @@ pub(super) fn visit(
     anchor: ReadPosition,
     footer: &mut ReadFooter,
     emit: &mut Emit<'_>,
-) -> Result<(), Response> {
+) -> Result<(), Failure> {
     let near = rendering.near;
     let mut current = None;
-    reader.visit_selection_from::<Response>(
+    reader.visit_selection_from::<Failure>(
         selection,
         anchor.selection.row,
         near,
         |ordinal, row| {
             if ordinal != anchor.selection.row {
-                return Err(error("stale_cursor", "the backward row coordinate changed"));
+                return Err(Failure::new(
+                    "stale_cursor",
+                    "the backward row coordinate changed",
+                ));
             }
             current = Some(row);
             Ok(ControlFlow::Break(()))
         },
     )?;
-    let current =
-        current.ok_or_else(|| error("stale_cursor", "the backward row is no longer selected"))?;
+    let current = current
+        .ok_or_else(|| Failure::new("stale_cursor", "the backward row is no longer selected"))?;
     let mut walk = Walk {
         reader,
         selection,
@@ -36,7 +39,7 @@ pub(super) fn visit(
     if !walk.row(anchor.selection.row, current, Some(anchor), near)? {
         return Ok(());
     }
-    reader.visit_selection_before::<Response>(
+    reader.visit_selection_before::<Failure>(
         selection,
         anchor.selection.row,
         near,
@@ -65,7 +68,7 @@ impl Walk<'_, '_, '_, '_> {
         row: SelectionRow,
         position: Option<ReadPosition>,
         near: Option<&polylogue_store::selection::NearFn<'_>>,
-    ) -> Result<bool, Response> {
+    ) -> Result<bool, Failure> {
         let start = position.map(|position| position.selection.record);
         let anchor_item = position.map(|position| position.item);
         let Some(target) = row.target else {
@@ -74,7 +77,10 @@ impl Walk<'_, '_, '_, '_> {
                 ordinal: 0,
             };
             if start.is_some_and(|start| start != record) {
-                return Err(error("stale_cursor", "the backward result row changed"));
+                return Err(Failure::new(
+                    "stale_cursor",
+                    "the backward result row changed",
+                ));
             }
             return (self.emit)(
                 &presentation(self.selection, &row.values),
@@ -110,7 +116,7 @@ impl Walk<'_, '_, '_, '_> {
                     },
                 };
                 if position.is_some_and(|position| position.selection != at || position.item != 0) {
-                    return Err(error(
+                    return Err(Failure::new(
                         "stale_cursor",
                         "the backward document omission changed",
                     ));
@@ -134,7 +140,7 @@ impl Walk<'_, '_, '_, '_> {
                 Some(&record_position),
                 &mut |record, evidence, actual| {
                     if observed || actual != record_position {
-                        return Err(error(
+                        return Err(Failure::new(
                             "stale_cursor",
                             "the backward record coordinate changed",
                         ));
@@ -172,7 +178,7 @@ impl Walk<'_, '_, '_, '_> {
                         };
                         keep = output::emit_record(self.reader, &record, at, &layout, self.emit)?;
                     } else if required_anchor {
-                        return Err(error(
+                        return Err(Failure::new(
                             "stale_cursor",
                             "the backward anchor is no longer visible",
                         ));
@@ -182,7 +188,7 @@ impl Walk<'_, '_, '_, '_> {
                 },
             )?;
             if !observed {
-                return Err(error(
+                return Err(Failure::new(
                     "stale_cursor",
                     "the backward record is no longer selected",
                 ));

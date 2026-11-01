@@ -1,9 +1,11 @@
 //! Metadata outline over the same store message selection.
-use super::super::{Response, error, store_error};
+use super::super::{Failure, error, store_error};
 use base64::Engine as _;
+use command_surface::Answer;
 use polylogue_model::SessionId;
 use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 const CURSOR_VERSION: u8 = 6;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,9 +41,9 @@ impl Cursor {
     /// The cursor in `token`, when this index generation sealed it. One
     /// from an earlier generation is stale (its key is gone); anything else
     /// that does not open is invalid.
-    fn open(token: &str, key: &[u8; 32], generation: &str) -> Result<Self, Response> {
+    fn open(token: &str, key: &[u8; 32], generation: &str) -> Result<Self, Failure> {
         let invalid = || {
-            error(
+            Failure::new(
                 "bad_request",
                 "the read cursor is invalid or from an unsupported version",
             )
@@ -59,7 +61,7 @@ impl Cursor {
         if seal == blake3::keyed_hash(key, &body) {
             Ok(cursor)
         } else if cursor.generation != generation {
-            Err(error(
+            Err(Failure::new(
                 "stale_cursor",
                 "the index was rebuilt; start the read again",
             ))
@@ -75,7 +77,7 @@ pub(super) fn run(
     with_parents: bool,
     size: usize,
     cursor: Option<&str>,
-) -> Response {
+) -> Answer<Value> {
     if size == 0 {
         return error("bad_request", "outline page size must be positive");
     }
@@ -110,7 +112,7 @@ pub(super) fn run(
     let from = if let Some(token) = cursor {
         let cursor = match Cursor::open(token, &key, &generation) {
             Ok(c) => c,
-            Err(e) => return e,
+            Err(failure) => return failure.answer(),
         };
         if cursor.binding != binding {
             return error(

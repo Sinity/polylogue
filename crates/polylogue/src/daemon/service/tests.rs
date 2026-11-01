@@ -7,7 +7,7 @@ fn read(
     format: &str,
     budget: Option<usize>,
     cursor: Option<&crate::protocol::read::ResumeArguments>,
-) -> Response {
+) -> command_surface::Answer<serde_json::Value> {
     let Some(view) = polylogue_model::read::View::parse(view) else {
         return error("bad_request", "unknown reading view");
     };
@@ -36,8 +36,8 @@ fn read(
     handle(request, d)
 }
 
-fn typed(response: Response) -> polylogue_model::read::ReadPage {
-    let Response::Ok { data, .. } = response else {
+fn typed(response: command_surface::Answer<serde_json::Value>) -> polylogue_model::read::ReadPage {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
     serde_json::from_value(data).unwrap()
@@ -95,7 +95,7 @@ fn a_read_honours_its_view_format_and_budget() {
         assert!(
             matches!(
                 read(&w.daemon, view, format, None, cursor),
-                Response::Error { kind, .. } if kind == expected
+                command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some(expected)
             ),
             "{view} {format} {cursor:?}"
         );
@@ -129,7 +129,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         .unwrap();
     thread.join().unwrap();
     assert!(
-        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "shutting_down")
+        matches!(handle(Request::Status, &daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
     );
     assert!(
         Archive::open_or_create(&root).is_ok(),
@@ -191,7 +191,12 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     let mut runtime =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
-    assert!(matches!(handle(Request::Status, &old), Response::Ok { .. }));
+    assert!(matches!(
+        handle(Request::Status, &old),
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
+    ));
     runtime.shutdown().unwrap();
     assert!(matches!(
         old.reads.reader(),
@@ -201,11 +206,13 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     assert!(matches!(
         handle(Request::Status, &next.daemon),
-        Response::Ok { .. }
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
     ));
     next.shutdown().unwrap();
     assert!(
-        matches!(handle(Request::Status, &old), Response::Error { kind, .. } if kind == "shutting_down")
+        matches!(handle(Request::Status, &old), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
@@ -253,13 +260,13 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     runtime.stop_accepting();
     for request in requests {
         assert!(
-            matches!(request.join().unwrap(), Response::Error { kind, .. } if kind == "shutting_down")
+            matches!(request.join().unwrap(), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
         );
     }
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     assert!(
-        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "shutting_down")
+        matches!(handle(Request::Status, &daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 
@@ -351,7 +358,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
         },
         &w.daemon,
     );
-    let Response::Ok { data, .. } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
     assert_eq!(data["rows"][0]["title"], "First human question");
@@ -411,7 +418,7 @@ fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
         )
     });
     assert!(
-        matches!(response,Response::Error{ref kind,..} if kind=="scope_changed"),
+        matches!(response,command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("scope_changed")),
         "{response:?}"
     );
     let reader = daemon.daemon.reads.reader().unwrap();
@@ -450,7 +457,7 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
         selected_scope,
     );
     assert!(
-        matches!(response, Response::Error { ref kind, .. } if kind == "scope_changed"),
+        matches!(response, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("scope_changed")),
         "{response:?}"
     );
     let reader = daemon.daemon.reads.reader().unwrap();
@@ -477,7 +484,15 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
         },
         selected_scope,
     );
-    assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    assert!(
+        matches!(
+            response,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{response:?}"
+    );
     assert!(
         daemon
             .daemon

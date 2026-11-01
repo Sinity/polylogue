@@ -176,7 +176,7 @@ fn invalid_period_is_refused_before_semantic_selection_runs() {
     assert_eq!(
         cost(&reader, request, &fixture_context("04:00:00", 0))
             .unwrap_err()
-            .kind,
+            .code(),
         "bad_request"
     );
 }
@@ -335,7 +335,7 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
     assert_eq!(
         timeline(&reader, request(Some(cursor)), &changed)
             .unwrap_err()
-            .kind,
+            .code(),
         "stale_cursor"
     );
     // The retired unsealed shape must not be accepted as a fallback.
@@ -402,5 +402,5 @@ fn signed_calendar_cursor_requires_current_owner_binding_before_clock_replay() {
         Ok(_) => panic!("a correctly sealed obsolete owner binding must be stale"),
         Err(error) => error,
     };
-    assert_eq!(failure.kind, "stale_cursor");
+    assert_eq!(failure.code(), "stale_cursor");
 }

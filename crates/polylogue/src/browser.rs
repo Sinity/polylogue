@@ -19,9 +19,11 @@ pub mod native;
 pub(crate) mod notes;
 pub mod routes;
 
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
+use command_surface::Answer;
 use polylogue_engine::Config;
 use polylogue_store::Archive;
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
@@ -54,7 +56,7 @@ impl BrowserHost {
 
     /// Asks the daemon. `None` when it does not answer: callers report what
     /// they cannot know as unknown, never as absent.
-    pub fn ask(&self, request: &Request) -> Option<Response> {
+    pub fn ask(&self, request: &Request) -> Option<Answer<Value>> {
         crate::client::send(&self.socket, request).ok()
     }
 
@@ -68,15 +70,10 @@ impl BrowserHost {
             value: None,
             machine: None,
         };
-        match self.ask(&request) {
-            Some(Response::Ok { data, .. }) => {
-                let current: polylogue_model::settings::Current =
-                    serde_json::from_value(data).ok()?;
-                match current.value {
-                    Some(polylogue_model::settings::Value::Boolean(enabled)) => Some(enabled),
-                    _ => None,
-                }
-            }
+        let data = crate::protocol::into_value(self.ask(&request)?).ok()?;
+        let current: polylogue_model::settings::Current = serde_json::from_value(data).ok()?;
+        match current.value {
+            Some(polylogue_model::settings::Value::Boolean(enabled)) => Some(enabled),
             _ => None,
         }
     }
