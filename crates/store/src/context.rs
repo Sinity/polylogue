@@ -408,7 +408,7 @@ impl Reader<'_> {
             work.files_changed.push(path?);
         }
         let mut stmt = conn.prepare_cached(
-            "SELECT commit_hash FROM commit_link WHERE session_pk = ?1 ORDER BY rowid",
+            "SELECT commit_hash FROM commit_link WHERE session_pk = ?1 ORDER BY commit_hash",
         )?;
         for hash in stmt.query_map([pk], |r| r.get::<_, String>(0))? {
             work.commits.push(hash?);
