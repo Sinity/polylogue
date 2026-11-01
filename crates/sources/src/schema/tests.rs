@@ -337,3 +337,5 @@ fn nested_json_has_no_fixed_depth_cutoff() {
 mod memory;
 
 mod streaming;
+
+mod throughput;
