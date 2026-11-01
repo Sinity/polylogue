@@ -362,7 +362,7 @@ fn a_change_feed_deadline_uses_timeout_exit_code() {
     let mut wire = Vec::new();
     crate::protocol::stream::error(
         &mut wire,
-        &crate::daemon::service::error("deadline_exceeded", "read deadline exceeded"),
+        crate::daemon::Failure::new("deadline_exceeded", "read deadline exceeded"),
     )
     .unwrap();
     assert_eq!(receive(&wire[..], &mut output, None).unwrap(), 7);

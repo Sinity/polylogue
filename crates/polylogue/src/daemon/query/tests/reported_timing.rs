@@ -1,6 +1,6 @@
 //! Native tool timing facts reach the public registry through the real loop.
 use super::super::*;
-use super::fixture_context;
+use super::{fixture_context, run};
 use polylogue_testkit::ClaudeHome;
 
 #[test]

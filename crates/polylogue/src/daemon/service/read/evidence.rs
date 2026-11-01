@@ -1,6 +1,6 @@
 //! Indexed tool relationships enrich layout one pair at a time. Canonical
 //! records remain unchanged; offsets describe the existing emitted item order.
-use super::{Response, error, output, store_error};
+use super::{Failure, output};
 use polylogue_model::{MessageId, PromptKind, Role, read::*};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
@@ -8,7 +8,7 @@ use std::ops::ControlFlow;
 pub(super) struct Layout<'a> {
     pub options: &'a ReadOptions,
     pub evidence: &'a ProjectionEvidence,
-    pub selected: &'a dyn Fn(&Source) -> Result<bool, Response>,
+    pub selected: &'a dyn Fn(&Source) -> Result<bool, Failure>,
     pub ready_attachment: &'a super::attachment_evidence::ReadyAttachment<'a>,
     pub backwards: bool,
     pub anchor: Option<u64>,
@@ -20,50 +20,44 @@ struct Segment {
     count: u64,
     attachment_index: Option<u64>,
 }
-fn check(reader: &Reader<'_>) -> Result<(), Response> {
-    reader.scope_token().check().map_err(|e| store_error(&e))?;
+fn check(reader: &Reader<'_>) -> Result<(), Failure> {
+    reader.scope_token().check()?;
     if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
-        limit.check().map_err(|e| store_error(&e))?;
+        limit.check()?;
     }
     Ok(())
 }
-fn visible(reader: &Reader<'_>, source: &Source, options: &ReadOptions) -> Result<bool, Response> {
+fn visible(reader: &Reader<'_>, source: &Source, options: &ReadOptions) -> Result<bool, Failure> {
     let (Some(message), Some(session)) = (&source.message, &source.source_session) else {
-        return Err(error(
+        return Err(Failure::new(
             "not_yet_available",
             "tool source has no canonical message identity",
         ));
     };
     check(reader)?;
     let selected = reader
-        .select_messages(session, false)
-        .map_err(|e| store_error(&e))?
+        .select_messages(session, false)?
         .for_blocks(&[], false);
-    let Some(from) = selected
-        .locate(Some(message))
-        .map_err(|e| store_error(&e))?
-    else {
+    let Some(from) = selected.locate(Some(message))? else {
         return Ok(false);
     };
     let mut shown = false;
-    selected
-        .visit_from(from, |message| {
-            let harness =
-                message.role == Role::System || message.prompt_kind == Some(PromptKind::Harness);
-            shown = options
-                .view
-                .keeps_message_metadata(message.role, message.prompt_kind)
-                && (!harness || options.harness() != Expansion::None);
-            ControlFlow::Break(())
-        })
-        .map_err(|e| store_error(&e))?;
+    selected.visit_from(from, |message| {
+        let harness =
+            message.role == Role::System || message.prompt_kind == Some(PromptKind::Harness);
+        shown = options
+            .view
+            .keeps_message_metadata(message.role, message.prompt_kind)
+            && (!harness || options.harness() != Expansion::None);
+        ControlFlow::Break(())
+    })?;
     Ok(shown)
 }
 fn segments(
     reader: &Reader<'_>,
     record: &ReadRecord,
     layout: &Layout<'_>,
-) -> Result<Vec<Segment>, Response> {
+) -> Result<Vec<Segment>, Failure> {
     // These parts contain only the current canonical record's own fields.
     // Remote counterpart bodies are never collected here.
     let base = if let Some(record) = record.record() {
@@ -88,9 +82,7 @@ fn segments(
             && let (Some(message), Some(ordinal)) = (&item.source.message, item.source.block)
         {
             check(reader)?;
-            if let Some((call, result)) = reader
-                .message_tool_pair_sources(message, ordinal)
-                .map_err(|e| store_error(&e))?
+            if let Some((call, result)) = reader.message_tool_pair_sources(message, ordinal)?
                 && (call.reference == item.source.reference
                     || visible(reader, &call, layout.options)?)
             {
@@ -103,14 +95,15 @@ fn segments(
                 pair_at = Some((message.clone(), ordinal));
                 if layout.options.tools() == Expansion::Full && result.is_some() {
                     let (data, attachments) = reader
-                        .message_tool_pair_result_shape(message, ordinal)
-                        .map_err(|e| store_error(&e))?
-                        .ok_or_else(|| error("stale_cursor", "paired result geometry changed"))?;
+                        .message_tool_pair_result_shape(message, ordinal)?
+                        .ok_or_else(|| {
+                            Failure::new("stale_cursor", "paired result geometry changed")
+                        })?;
                     count = count
                         .checked_add(u64::from(data))
                         .and_then(|value| value.checked_add(attachments))
                         .ok_or_else(|| {
-                            error(
+                            Failure::new(
                                 "not_yet_available",
                                 "tool layout position exceeds its ordinal range",
                             )
@@ -124,7 +117,7 @@ fn segments(
                 .or_default();
             let current = *index;
             *index = index.checked_add(1).ok_or_else(|| {
-                error(
+                Failure::new(
                     "not_yet_available",
                     "attachment index exceeds its ordinal range",
                 )
@@ -141,7 +134,7 @@ fn segments(
             attachment_index,
         });
         offset = offset.checked_add(count).ok_or_else(|| {
-            error(
+            Failure::new(
                 "not_yet_available",
                 "read layout position exceeds its ordinal range",
             )
@@ -153,8 +146,8 @@ fn pair_parts(
     reader: &Reader<'_>,
     segment: &Segment,
     layout: &Layout<'_>,
-    mut visit: impl FnMut(ReadItem, Option<u64>) -> Result<bool, Response>,
-) -> Result<bool, Response> {
+    mut visit: impl FnMut(ReadItem, Option<u64>) -> Result<bool, Failure>,
+) -> Result<bool, Failure> {
     let Some((message, ordinal)) = &segment.pair else {
         return visit(segment.item.clone(), segment.attachment_index);
     };
@@ -163,10 +156,9 @@ fn pair_parts(
         reader.message_tool_pair(message, *ordinal)
     } else {
         reader.message_tool_pair_header(message, *ordinal)
-    }
-    .map_err(|e| store_error(&e))?;
+    }?;
     let mut pair =
-        pair.ok_or_else(|| error("stale_cursor", "indexed tool relationship changed"))?;
+        pair.ok_or_else(|| Failure::new("stale_cursor", "indexed tool relationship changed"))?;
     pair.call.source.inherited = layout.evidence.inherited;
     if let Some(result) = &mut pair.result {
         result.source.inherited = layout.evidence.inherited;
@@ -178,11 +170,11 @@ fn pair_parts(
             .as_ref()
             .filter(|result| result.source.reference == segment.item.source.reference)
             .cloned()
-            .ok_or_else(|| error("stale_cursor", "paired result source changed"))?
+            .ok_or_else(|| Failure::new("stale_cursor", "paired result source changed"))?
     };
     pair.emit_at = source.source.reference.clone();
     let original = source.source.block.ok_or_else(|| {
-        error(
+        Failure::new(
             "not_yet_available",
             "tool source has no original block ordinal",
         )
@@ -231,8 +223,8 @@ pub(super) fn visit_parts(
     reader: &Reader<'_>,
     record: &ReadRecord,
     layout: &Layout<'_>,
-    mut visit: impl FnMut(ReadItem, u64) -> Result<bool, Response>,
-) -> Result<bool, Response> {
+    mut visit: impl FnMut(ReadItem, u64) -> Result<bool, Failure>,
+) -> Result<bool, Failure> {
     check(reader)?;
     let segments = segments(reader, record, layout)?;
     if layout.backwards {
@@ -248,7 +240,7 @@ pub(super) fn visit_parts(
                 Ok(true)
             })?;
             if parts.len() as u64 != segment.count {
-                return Err(error("stale_cursor", "tool layout geometry changed"));
+                return Err(Failure::new("stale_cursor", "tool layout geometry changed"));
             }
             for (index, (item, attachment_index)) in parts.into_iter().enumerate().rev() {
                 let ordinal = segment.start + index as u64;
@@ -283,7 +275,7 @@ pub(super) fn visit_parts(
                 return Ok(false);
             }
             if offset != segment.count {
-                return Err(error("stale_cursor", "tool layout geometry changed"));
+                return Err(Failure::new("stale_cursor", "tool layout geometry changed"));
             }
         }
     }
@@ -295,7 +287,7 @@ fn attachment_item(
     item: ReadItem,
     index: Option<u64>,
     layout: &Layout<'_>,
-) -> Result<ReadItem, Response> {
+) -> Result<ReadItem, Failure> {
     if let Some(index) = index {
         super::attachment_evidence::prepare(reader, item, index, layout.ready_attachment)
     } else {

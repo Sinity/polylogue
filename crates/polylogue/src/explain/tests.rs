@@ -1,9 +1,11 @@
 use super::*;
-use crate::daemon::{Request, Response, service::handle};
+use crate::daemon::{Request, service::handle};
 
-fn data(response: Response) -> Value {
+fn data(response: command_surface::Answer<serde_json::Value>) -> Value {
     match response {
-        Response::Ok { data, .. } => data,
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data,
         other => panic!("{other:?}"),
     }
 }
@@ -174,7 +176,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         assert!(
             matches!(
                 handle(explain(expression), &w.daemon),
-                Response::Error { .. }
+                command_surface::Answer::Error { .. }
             ),
             "{expression:?}"
         );

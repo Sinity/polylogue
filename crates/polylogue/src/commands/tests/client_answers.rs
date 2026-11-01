@@ -3,7 +3,6 @@
 //! the complete answer, with native transport provenance and observed read positions.
 
 use super::*;
-use crate::daemon::Response;
 use crate::test_daemon;
 use axum::body::{Body, to_bytes};
 use polylogue_model::authorship::{Authorship, Channel};
@@ -57,8 +56,14 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> Answer {
     };
     let request = build(c, &values, &caller).map_err(|e| format!("bad_request: {e}"))?;
     match crate::client::send(&w.daemon.archive.socket(), &request).unwrap() {
-        Response::Ok { data, .. } => Ok(data),
-        Response::Error { kind, message, .. } => Err(format!("{kind}: {message}")),
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => Ok(data),
+        command_surface::Answer::Error { error, .. } => Err(format!(
+            "{}: {}",
+            error.code.as_deref().unwrap_or_default(),
+            error.message
+        )),
     }
 }
 

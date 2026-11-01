@@ -3,7 +3,7 @@
 mod files;
 
 use crate::commands::{self, Action, Caller, Command, Surface, Values};
-use crate::daemon::{Response, service};
+use crate::daemon::service;
 use polylogue_engine::Config;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -121,10 +121,13 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
                 json: true,
             },
         )?;
-        match service::handle(request, &runtime.daemon) {
-            Response::Ok { data, .. } => Ok(data),
-            Response::Error { kind, message, .. } => Err(format!("{command}: {kind}: {message}")),
-        }
+        crate::protocol::into_value(service::handle(request, &runtime.daemon)).map_err(|failure| {
+            format!(
+                "{command}: {}: {}",
+                failure.code.as_deref().unwrap_or_default(),
+                failure.message
+            )
+        })
     };
     invoke(
         "import",

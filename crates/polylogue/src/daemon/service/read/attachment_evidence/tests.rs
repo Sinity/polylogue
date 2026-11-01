@@ -29,7 +29,7 @@ fn ready(
     block: u64,
     index: u64,
     input: Option<&str>,
-) -> Result<ReadyCall, Response> {
+) -> Result<ReadyCall, crate::daemon::Failure> {
     let arguments = crate::protocol::attachment::Arguments {
         message: message.to_string(),
         block,
@@ -46,7 +46,7 @@ fn ready(
             request_id: "synthetic-attachment-evidence".into(),
             deadline: command_surface::Deadline::Default,
         })
-        .map_err(|failure| command_surface::Answer::<serde_json::Value>::error(failure).into())
+        .map_err(crate::daemon::Failure::from)
 }
 
 #[test]
@@ -196,9 +196,10 @@ fn physical_verification_preserves_parent_cancellation_before_byte_work() {
         let result = prepare(&reader, original, 0, &|m, b, a, i| {
             ready(&daemon, m, b, a, i)
         });
-        let Err(Response::Error { kind, .. }) = result else {
+        let Err(failure) = &result else {
             panic!("cancelled attachment preparation did not refuse: {result:?}");
         };
+        let kind = failure.code().to_owned();
         assert_eq!(
             kind,
             crate::protocol::store_code(&StoreError::ReadCancelled)

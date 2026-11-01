@@ -30,7 +30,7 @@ fn write_scoped_json(
             Ok(result) => result,
             Err(error) if offset == 0 => {
                 // No old response bytes escaped; publish the safe failure without its old scope.
-                let mut error = serde_json::to_vec(&service::store_error(&error).answer())
+                let mut error = serde_json::to_vec(&service::store_error(&error))
                     .map_err(std::io::Error::other)?;
                 error.push(b'\n');
                 return output.write_all(&error);
@@ -83,7 +83,6 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                 Err(error) => command_surface::Answer::error(crate::protocol::failure(
                     "bad_request",
                     error.to_string(),
-                    None,
                 )),
                 Ok((request, caller)) => {
                     let (evidence, channel) =
@@ -146,7 +145,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                         match d.reads.scope_token() {
                             Ok(scope) => read_scope = Some(scope),
                             Err(error) => {
-                                let answer = service::store_error(&error).answer();
+                                let answer = service::store_error(&error);
                                 if writeln!(
                                     out,
                                     "{}",
@@ -196,10 +195,10 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                                         .expect("stream command owns its request")
                                     })
                             }
-                            Err(error) => Err(service::store_error(&error)),
+                            Err(error) => Err(crate::daemon::Failure::from(error)),
                         });
-                        if let Err(response) = produced {
-                            let _ = crate::protocol::stream::error(&mut out, &response);
+                        if let Err(failure) = produced {
+                            let _ = crate::protocol::stream::error(&mut out, failure);
                         }
                         let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
                         continue;
@@ -291,8 +290,8 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             None
         };
         if let Some(result) = produced {
-            if let Err(response) = result {
-                let _ = crate::protocol::stream::error(&mut out, &response);
+            if let Err(failure) = result {
+                let _ = crate::protocol::stream::error(&mut out, failure);
             }
             let _ = out.set_write_timeout(Some(Duration::from_secs(1)));
             continue;
@@ -309,7 +308,7 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
             }),
         };
         let mut publication = crate::protocol::ReadScopes::single(read_scope.clone());
-        let response = if let Some((operation, arguments)) = typed {
+        let answer = if let Some((operation, arguments)) = typed {
             let table = operations;
             let request = command_surface::Request {
                 operation: operation.into(),
@@ -342,11 +341,11 @@ fn serve_client(stream: UnixStream, d: &Arc<Daemon>, operations: &command_surfac
                 Default::default(),
             ));
             publication = crate::protocol::ReadScopes::dispatched(&dispatched, read_scope.clone());
-            dispatched.answer.into()
+            dispatched.answer
         } else {
             service::handle_with_caller(request, d, &limit, &accepted.authorship)
         };
-        let answer = crate::protocol::scope_answer(response.answer(), &publication);
+        let answer = crate::protocol::scope_answer(answer, &publication);
         if write_scoped_json(&mut out, &answer, &publication).is_err() {
             return;
         }

@@ -1,5 +1,5 @@
 //! Shared logical-day composition for timeline, day and cost clients.
-use super::query::{self, Failure};
+use super::{Failure, query};
 use crate::operation::Context;
 use polylogue_store::{Reader, timeline};
 use query_language::cursor::{
@@ -12,12 +12,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn invalid(message: impl Into<String>) -> Failure {
-    Failure {
-        kind: "bad_request".into(),
-        message: message.into(),
-        detail: None,
-    }
+fn invalid(message: impl ToString) -> Failure {
+    Failure::new("bad_request", message)
 }
 
 fn date(text: Option<&str>, clock: &Clock) -> Result<jiff::civil::Date, Failure> {
@@ -32,13 +28,6 @@ fn date(text: Option<&str>, clock: &Clock) -> Result<jiff::civil::Date, Failure>
     )
 }
 
-fn cursor_failure(error: query_language::Error) -> Failure {
-    Failure {
-        kind: error.kind.code().into(),
-        message: error.to_string(),
-        detail: serde_json::to_value(error).ok(),
-    }
-}
 fn fingerprint(domain: &str, value: &impl Serialize) -> Result<blake3::Hash, Failure> {
     let mut digest = blake3::Hasher::new();
     digest.update(b"polylogue.calendar.cursor-context.v1\0");
@@ -106,8 +95,7 @@ fn paging(
                 },
             )
         })
-        .transpose()
-        .map_err(cursor_failure)?;
+        .transpose()?;
     let resuming = continuation.is_some();
     let (context, after) = match continuation {
         Some(cursor) => {
@@ -150,15 +138,12 @@ fn paging(
             None,
         ),
     };
-    let operation = Arc::new(
-        owner
-            .replay_clock(context.clock.clone())
-            .map_err(|_| Failure {
-                kind: "stale_cursor".into(),
-                message: "the canonical calendar context changed; run without the cursor".into(),
-                detail: None,
-            })?,
-    );
+    let operation = Arc::new(owner.replay_clock(context.clock.clone()).map_err(|_| {
+        Failure::new(
+            "stale_cursor",
+            "the canonical calendar context changed; run without the cursor",
+        )
+    })?);
     Ok(Paging {
         operation,
         seal,
@@ -172,17 +157,16 @@ fn resolved(
     values: Vec<query_language::time::ResolvedTime>,
 ) -> Result<(), Failure> {
     if paging.resuming && paging.context.resolved_times != values {
-        return Err(Failure {
-            kind: "stale_cursor".into(),
-            message: "the resolved calendar times changed; run without the cursor".into(),
-            detail: None,
-        });
+        return Err(Failure::new(
+            "stale_cursor",
+            "the resolved calendar times changed; run without the cursor",
+        ));
     }
     paging.context.resolved_times = values;
     Ok(())
 }
 fn resolve(text: &str, clock: &Clock) -> Result<query_language::time::ResolvedTime, Failure> {
-    query_language::time::resolve(text, clock).map_err(cursor_failure)
+    query_language::time::resolve(text, clock).map_err(Failure::from)
 }
 fn ranking(paging: &mut Paging, program: &polylogue_store::query::Program) -> Result<(), Failure> {
     let current = program
@@ -190,11 +174,10 @@ fn ranking(paging: &mut Paging, program: &polylogue_store::query::Program) -> Re
         .as_ref()
         .map(|_| polylogue_store::vectors::writes().to_string());
     if paging.resuming && paging.context.versions.get("ranking") != current.as_ref() {
-        return Err(Failure {
-            kind: "stale_cursor".into(),
-            message: "the ranking changed; run without the cursor".into(),
-            detail: None,
-        });
+        return Err(Failure::new(
+            "stale_cursor",
+            "the ranking changed; run without the cursor",
+        ));
     }
     if let Some(current) = current {
         paging.context.versions.insert("ranking".into(), current);
@@ -227,13 +210,7 @@ fn activity(
                     row_identity: after.to_string(),
                 },
             };
-            json!(
-                paging
-                    .seal
-                    .seal(&continuation)
-                    .map_err(cursor_failure)?
-                    .as_str()
-            )
+            json!(paging.seal.seal(&continuation)?.as_str())
         }
         None => Value::Null,
     };

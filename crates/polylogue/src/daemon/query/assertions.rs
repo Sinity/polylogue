@@ -100,6 +100,7 @@ fn page(
             fields: &[],
         },
     )
+    .map(|answer| answer.value)
     .map_err(|f| StoreError::Invalid(format!("assertions query {text:?}: {}", f.message)))
 }
 

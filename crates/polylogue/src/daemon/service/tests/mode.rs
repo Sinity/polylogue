@@ -78,7 +78,9 @@ fn seeded() -> ClaudeHome {
 
 fn data(request: Request, runtime: &Runtime) -> serde_json::Value {
     match handle(request, &runtime.daemon) {
-        Response::Ok { data, .. } => data,
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data,
         other => panic!("read refused: {other:?}"),
     }
 }
@@ -145,8 +147,9 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
     ];
     for request in requests {
         assert!(
-            matches!(handle(request, &runtime.daemon), Response::Error { kind, detail: Some(detail), .. }
-            if kind == "sinex_unavailable" && detail["config_path"] == path.to_str().unwrap())
+            matches!(handle(request, &runtime.daemon), command_surface::Answer::Error { error, .. }
+            if error.code.as_deref() == Some("sinex_unavailable")
+                && error.hint.as_deref().is_some_and(|hint| hint.contains(path.to_str().unwrap())))
         );
     }
 }
@@ -169,7 +172,7 @@ fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
         let runtime = launch(startup).unwrap();
         blocked(&runtime, &path(&w));
         assert!(
-            matches!(handle(read_request(), &runtime.daemon), Response::Error {kind, ..} if kind == "sinex_unavailable")
+            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("sinex_unavailable"))
         );
         assert!(
             data(
@@ -232,8 +235,8 @@ fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day
         assert!(runtime.daemon.writes.is_some());
         assert_eq!(data(Request::Status, &runtime)["mode"]["state"], "primary");
         assert!(
-            matches!(handle(read_request(), &runtime.daemon), Response::Error {kind, ..}
-            if matches!(kind.as_str(), "primary_context_missing" | "primary_context_unavailable"))
+            matches!(handle(read_request(), &runtime.daemon), command_surface::Answer::Error { error, .. }
+            if matches!(error.code.as_deref(), Some("primary_context_missing" | "primary_context_unavailable")))
         );
         let ModeState::Primary { connection } = &runtime.daemon.mode else {
             panic!("primary mode required")

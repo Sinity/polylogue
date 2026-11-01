@@ -1,18 +1,18 @@
 //! Adjacent canonical record coordinates. The caller hydrates exactly the
 //! returned record through records::reference and stops after its first record.
-use super::super::{Response, error, store_error};
+use super::super::Failure;
 use polylogue_model::read::{ReadRecordKind, ReadRecordLocator, ReadTarget};
 use polylogue_store::Reader;
 
-fn stale() -> Response {
-    error("stale_cursor", "the previous record coordinate changed")
+fn stale() -> Failure {
+    Failure::new("stale_cursor", "the previous record coordinate changed")
 }
 
 pub(super) fn last_record(
     reader: &Reader<'_>,
     target: &ReadTarget,
     inherited: bool,
-) -> Result<Option<ReadRecordLocator>, Response> {
+) -> Result<Option<ReadRecordLocator>, Failure> {
     adjacent(reader, target, inherited, None)
 }
 pub(super) fn previous_record(
@@ -20,7 +20,7 @@ pub(super) fn previous_record(
     target: &ReadTarget,
     inherited: bool,
     current: &ReadRecordLocator,
-) -> Result<Option<ReadRecordLocator>, Response> {
+) -> Result<Option<ReadRecordLocator>, Failure> {
     adjacent(reader, target, inherited, Some(current))
 }
 fn adjacent(
@@ -28,9 +28,9 @@ fn adjacent(
     target: &ReadTarget,
     inherited: bool,
     current: Option<&ReadRecordLocator>,
-) -> Result<Option<ReadRecordLocator>, Response> {
+) -> Result<Option<ReadRecordLocator>, Failure> {
     use ReadRecordKind::{Authored, Document, Event, Link, LinkIssue, Message, Session};
-    reader.check().map_err(|error| store_error(&error))?;
+    reader.check()?;
     let mut families = [
         (Session, 0),
         (LinkIssue, 0),
@@ -42,7 +42,7 @@ fn adjacent(
         ReadTarget::Session(id) => {
             let Some(physical) = reader
                 .physical_record_counts(id)
-                .map_err(|error| store_error(&error))?
+                ?
             else {
                 return if current.is_some() {
                     Err(stale())
@@ -50,15 +50,13 @@ fn adjacent(
                     Ok(None)
                 };
             };
-            let selected = reader
-                .select_messages(id, inherited)
-                .map_err(|error| store_error(&error))?;
+            let selected = reader.select_messages(id, inherited)?;
             let issues = if inherited {
                 u64::try_from(selected.parents().issues.len()).map_err(|_| stale())?
             } else {
                 0
             };
-            let messages = selected.len().map_err(|error| store_error(&error))?;
+            let messages = selected.len()?;
             let messages = u64::try_from(messages).map_err(|_| stale())?;
             families = [
                 (Session, 1),
@@ -80,7 +78,7 @@ fn adjacent(
                     count += 1;
                     Ok(std::ops::ControlFlow::Continue(()))
                 })
-                .map_err(|error| store_error(&error))?;
+                ?;
             families[0] = (Message, count);
             1
         }

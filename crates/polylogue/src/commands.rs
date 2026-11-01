@@ -110,11 +110,12 @@ pub type StreamProducer = fn(
     &crate::daemon::service::Daemon,
     &std::sync::Arc<crate::operation::Context>,
     &mut dyn std::io::Write,
-) -> Option<Result<(), crate::daemon::Response>>;
+) -> Option<Result<(), crate::daemon::Failure>>;
 
 pub type TypedRequestBuilder =
     fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>;
-pub type OutputHandler = fn(&Values, &Value, &crate::config::Startup, bool) -> ExitCode;
+pub type OutputHandler =
+    fn(&Values, &command_surface::Answer<Value>, &crate::config::Startup, bool) -> ExitCode;
 
 #[derive(Clone, Copy)]
 pub enum Action {

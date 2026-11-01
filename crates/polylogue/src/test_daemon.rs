@@ -2,7 +2,7 @@
 //! its loop reads only the temporary home, and its socket is served on a
 //! thread of its own.
 
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
 use crate::daemon::{
     server,
     service::{self, Daemon, handle},
@@ -138,9 +138,9 @@ impl TestDaemon {
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
-        let status = || match handle(Request::Status, &self.daemon) {
-            Response::Ok { data, .. } => data,
-            other => panic!("status failed: {other:?}"),
+        let status = || {
+            crate::protocol::into_value(handle(Request::Status, &self.daemon))
+                .unwrap_or_else(|failure| panic!("status failed: {failure:?}"))
         };
         while !ok(&status()) {
             std::thread::sleep(Duration::from_millis(10));
@@ -247,7 +247,7 @@ impl TestDaemon {
             },
             &self.daemon,
         );
-        assert!(matches!(r, Response::Ok { .. }), "{r:?}");
+        assert!(matches!(r, command_surface::Answer::Ok { .. }), "{r:?}");
     }
 }
 

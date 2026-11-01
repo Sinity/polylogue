@@ -1,8 +1,10 @@
 //! An explicit browser selection becomes an ordinary operator note.
 use super::BrowserHost;
-use crate::daemon::{Request, Response};
+use crate::daemon::{Failure, Request};
+use command_surface::Answer;
 use polylogue_model::{MessageId, Reference};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,13 +25,13 @@ pub(crate) struct SelectionNote {
     pub(crate) source: Source,
 }
 
-fn invalid(message: &str) -> Response {
-    crate::daemon::service::error("bad_request", message)
+fn invalid(message: &str) -> Failure {
+    Failure::new("bad_request", message)
 }
 
-pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Response {
-    if let Err(response) = input.references() {
-        return response;
+pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Answer<Value> {
+    if let Err(failure) = input.references() {
+        return failure.answer();
     }
     host.ask(&Request::BrowserSelectionNote {
         request_id: input.request_id,
@@ -50,7 +52,7 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Response {
 }
 
 impl SelectionNote {
-    pub(crate) fn references(&self) -> Result<(Reference, MessageId), Response> {
+    pub(crate) fn references(&self) -> Result<(Reference, MessageId), Failure> {
         let source = &self.source;
         if uuid::Uuid::parse_str(&self.request_id).is_err()
             || self.body.trim().is_empty()

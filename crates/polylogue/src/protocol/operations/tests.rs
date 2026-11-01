@@ -165,8 +165,7 @@ fn typed_sql_empty_rows_are_successful_empty_reads() {
             statement: "SELECT 1 AS witness WHERE 0".into(),
         },
     )
-    .unwrap()
-    .answer();
+    .unwrap();
     assert_eq!(socket.exit_code(), 1, "{socket:?}");
     assert_eq!(socket.http_status(), Some(200));
     assert_eq!(socket.value(), Some(&json!([])));
@@ -240,7 +239,7 @@ fn typed_setting_catalog_is_a_real_table_answer() {
         },
         &daemon.daemon,
     );
-    let crate::daemon::Response::Ok { data } = raw else {
+    let Some(data) = raw.value().cloned() else {
         panic!("catalog producer failed: {raw:?}");
     };
     let _: crate::protocol::setting::Answer =

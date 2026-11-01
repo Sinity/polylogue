@@ -139,9 +139,9 @@ fn context_uses_the_configured_archive_socket_and_clock() {
         let request: Value = serde_json::from_str(&request).unwrap();
         let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
         assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
-        let response = Response::Ok {
-            data: json!({"delivery":"context-1", "prepared":{"empty":false,"text":"configured archive"}}),
-        };
+        let response = command_surface::Answer::ok(
+            json!({"delivery":"context-1", "prepared":{"empty":false,"text":"configured archive"}}),
+        );
         writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
     });
     let reply = respond(

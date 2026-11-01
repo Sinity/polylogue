@@ -2,19 +2,21 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn pending_receipt_is_degraded_with_http_success() {
+fn a_pending_write_is_degraded_with_its_note_and_http_success() {
     let receipt = json!({"id":"record:one", "pending":true});
-    let answer = answer(receipt.clone());
+    let answer = written(receipt.clone(), true);
     assert_eq!(answer.exit_code(), 5);
     assert_eq!(answer.http_status(), Some(200));
     assert_eq!(answer.value(), Some(&receipt));
-    assert!(matches!(answer, Answer::Degraded { .. }));
+    assert_eq!(answer.notes(), [AWAITING_CONFIRMATION]);
+    assert!(matches!(written(receipt, false), Answer::Ok { .. }));
 }
 
 #[test]
 fn failures_follow_the_shared_table() {
     for (code, exit, http) in [
         ("invalid_query", 2, Some(400)),
+        ("invalid_cursor", 2, Some(400)),
         ("stale_cursor", 2, Some(400)),
         ("not_built", 2, Some(501)),
         ("refused", 3, Some(403)),
@@ -24,6 +26,7 @@ fn failures_follow_the_shared_table() {
         ("job_ended", 4, Some(409)),
         ("browser_actions_off", 4, Some(409)),
         ("unknown_chat_action", 4, Some(404)),
+        ("attachment_unavailable", 4, Some(404)),
         ("unsupported_provider", 2, Some(400)),
         ("io", 4, Some(500)),
         ("stopped_early", 5, Some(500)),
@@ -31,7 +34,7 @@ fn failures_follow_the_shared_table() {
         ("deadline_exceeded", 7, Some(504)),
         ("cancelled", 7, None),
     ] {
-        let answer = Answer::<Value>::error(failure(code, "failed".into(), None));
+        let answer = Answer::<Value>::error(failure(code, "failed"));
         assert_eq!(answer.exit_code(), exit, "{code}");
         assert_eq!(answer.http_status(), http, "{code}");
         assert!(answer.value().is_none());
@@ -39,56 +42,24 @@ fn failures_follow_the_shared_table() {
 }
 
 #[test]
-fn socket_uses_shared_envelope_without_losing_pending_identity() {
-    let response = crate::daemon::service::ok(json!({"id":"record:pending", "pending":true}));
-    let bytes = serde_json::to_vec(&response).unwrap();
-    let answer: Answer<Value> = serde_json::from_slice(&bytes).unwrap();
-    assert!(matches!(answer, Answer::Degraded { .. }));
-    assert_eq!(answer.value().unwrap()["id"], "record:pending");
-    assert_eq!(answer.exit_code(), 5);
-    let read: crate::daemon::Response = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(read.answer().exit_code(), 5);
+fn a_degraded_answer_keeps_its_outcome_and_notes_on_the_socket_wire() {
+    let answer = written(json!({"id":"record:pending", "pending":true}), true);
+    let bytes = serde_json::to_vec(&answer).unwrap();
+    let read: Answer<Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(read, answer);
+    assert_eq!(read.notes(), [AWAITING_CONFIRMATION]);
+    assert_eq!(read.exit_code(), 5);
 }
 
 #[test]
 fn pending_capture_returns_receipt_instead_of_storage_failure() {
-    let response =
+    let answer =
         crate::daemon::service::store_error(&polylogue_store::StoreError::PrimaryPending {
             identity: "capture:pending".into(),
         });
-    let answer = response.answer();
     assert!(matches!(answer, Answer::Degraded { .. }));
     assert_eq!(answer.value().unwrap()["identity"], "capture:pending");
     assert_eq!(answer.http_status(), Some(200));
-}
-
-#[test]
-fn query_empty_and_incomplete_outcomes_keep_their_shared_exit() {
-    assert_eq!(
-        answer(json!({"outcome":"empty", "rows":[], "count":0})).exit_code(),
-        1
-    );
-    let incomplete = answer(
-        json!({"outcome":"incomplete", "rows":[{"id":"session:one"}], "incomplete":["semantic vectors unavailable"]}),
-    );
-    assert_eq!(incomplete.exit_code(), 5);
-    assert_eq!(incomplete.http_status(), Some(200));
-    assert_eq!(
-        incomplete.value().unwrap()["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-}
-
-#[test]
-fn a_bundle_with_unconfirmed_authored_restorations_is_degraded() {
-    let report = json!({"imported":["synthetic.bundle"], "user_state":{"pending":1,"applied":0,"present":0}});
-    let result = answer(report.clone());
-    assert_eq!(result.exit_code(), 5);
-    assert_eq!(result.http_status(), Some(200));
-    assert_eq!(result.value(), Some(&report));
 }
 
 #[test]
@@ -99,9 +70,9 @@ fn projection_failures_distinguish_conflicts_from_invalid_input() {
         (BundleError::SourceVersionMismatch, FailureKind::Conflict),
         (BundleError::InvalidBlockSelection, FailureKind::BadRequest),
     ] {
-        let response =
+        let answer =
             crate::daemon::service::store_error(&polylogue_store::StoreError::Projection(issue));
-        let Answer::Error { error, .. } = response.answer() else {
+        let Answer::Error { error, .. } = answer else {
             panic!("projection failure is not success")
         };
         assert_eq!(error.kind, kind);
@@ -109,19 +80,43 @@ fn projection_failures_distinguish_conflicts_from_invalid_input() {
 }
 
 #[test]
-fn noncurrent_primary_reads_keep_their_data_and_observed_positions_as_degraded() {
+fn an_ambiguous_reference_names_every_candidate() {
+    let error = polylogue_store::StoreError::Ambiguous {
+        reference: "7f3a".into(),
+        candidates: vec!["session:test:7f3a-1".into(), "session:test:7f3a-2".into()],
+    };
+    let failure = store_failure(&error);
+    assert_eq!(failure.kind, FailureKind::Ambiguous);
+    assert_eq!(
+        failure.candidates,
+        ["session:test:7f3a-1", "session:test:7f3a-2"]
+    );
+    let selection = polylogue_store::StoreError::Selection {
+        code: "stale_cursor",
+        message: "the selected row position is unavailable".into(),
+    };
+    assert_eq!(store_failure(&selection).kind, FailureKind::StaleCursor);
+    assert_eq!(
+        store_failure(&selection).code.as_deref(),
+        Some("stale_cursor")
+    );
+}
+
+#[test]
+fn noncurrent_primary_reads_keep_their_data_and_say_why() {
     use polylogue_model::currency::IndexCurrency;
     for currency in [
         IndexCurrency::primary(Some(5), Some(8), Some(0.5), Some(true), None),
         IndexCurrency::primary(Some(5), Some(8), Some(9.0), Some(true), None),
         IndexCurrency::primary(Some(5), None, None, Some(false), Some("unreachable".into())),
     ] {
-        let value = json!({"rows":[{"ref":"session:synthetic"}], "read_at":{"currency":currency}});
-        let result = answer(value.clone());
+        let value = json!({"rows":[{"ref":"session:synthetic"}]});
+        let result = read(value.clone(), &currency);
         assert_eq!(result.exit_code(), 5);
         assert_eq!(result.http_status(), Some(200));
         assert_eq!(result.value(), Some(&value));
+        assert_eq!(result.notes().len(), 1, "{currency:?}");
     }
-    let value = json!({"read_at":{"currency":IndexCurrency::primary(Some(8),Some(8),Some(0.5),Some(true),None)}});
-    assert!(matches!(answer(value), Answer::Ok { .. }));
+    let current = IndexCurrency::primary(Some(8), Some(8), Some(0.5), Some(true), None);
+    assert!(matches!(read(json!({}), &current), Answer::Ok { .. }));
 }

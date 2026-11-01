@@ -30,9 +30,8 @@ pub fn seed_bytes(daemon: &TestDaemon, bytes: &[u8]) -> &'static str {
         },
         &daemon.daemon,
     );
-    let Response::Ok { data, .. } = imported else {
-        panic!("{imported:?}")
-    };
+    let data =
+        crate::protocol::into_value(imported).unwrap_or_else(|failure| panic!("{failure:?}"));
     assert_eq!(data["pass"]["errors"], serde_json::json!([]));
     std::fs::remove_dir_all(source).unwrap();
     "chatgpt:transport-message"

@@ -229,7 +229,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 .change_position()
                 .unwrap()
         };
-        let Response::Ok { data, .. } = handle(
+        let Ok(data) = crate::protocol::into_value(handle(
             Request::Read {
                 target: "session:claude-code:s1".into(),
                 options: ReadOptions::default(),
@@ -239,7 +239,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 with_blobs: false,
             },
             &r.web.daemon,
-        ) else {
+        )) else {
             panic!("socket read failed")
         };
         let socket: ReadPage = serde_json::from_value(data).unwrap();
@@ -578,7 +578,7 @@ fn cost_uses_public_accounting_and_session_scope() {
                 send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{html}");
             assert_eq!(headers[header::CACHE_CONTROL], "no-store");
-            let Response::Ok { data, .. } = handle(
+            let Ok(data) = crate::protocol::into_value(handle(
                 Request::Query {
                     text: format!("{scope} | measure usage"),
                     cursor: None,
@@ -588,7 +588,7 @@ fn cost_uses_public_accounting_and_session_scope() {
                     fields: vec![],
                 },
                 &r.web.daemon,
-            ) else {
+            )) else {
                 panic!("usage failed")
             };
             let report =

@@ -1,8 +1,13 @@
 //! One typed status constructor over current archive and runtime observations.
-use super::{Daemon, Response, error, now_ms, ok, store_error};
-use crate::protocol::status::{Answer, Counted, Counting};
+use super::{Daemon, error, now_ms, store_error};
+use crate::protocol::status::{Counted, Counting};
+use serde_json::Value;
 
-pub(super) fn answer(d: &Daemon, reader: &polylogue_store::Reader<'_>) -> Response {
+/// Status over an index that is not current is a degraded answer.
+pub(super) fn answer(
+    d: &Daemon,
+    reader: &polylogue_store::Reader<'_>,
+) -> command_surface::Answer<Value> {
     let position = match reader.change_position() {
         Ok(position) => position.to_string(),
         Err(error) => return store_error(&error),
@@ -34,7 +39,7 @@ pub(super) fn answer(d: &Daemon, reader: &polylogue_store::Reader<'_>) -> Respon
         Ok(currency) => currency,
         Err(error) => return store_error(&error),
     };
-    let answer = Answer {
+    let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
         uptime_seconds: d.started.elapsed().as_secs(),
@@ -56,11 +61,14 @@ pub(super) fn answer(d: &Daemon, reader: &polylogue_store::Reader<'_>) -> Respon
         notices,
         warm: d.warm.summary(),
         mode,
-        currency,
+        currency: currency.clone(),
         #[cfg(feature = "sinex")]
         primary: primary(d, reader),
     };
-    ok(answer)
+    match serde_json::to_value(status) {
+        Ok(value) => crate::protocol::read(value, &currency),
+        Err(problem) => error("internal", problem),
+    }
 }
 
 #[cfg(feature = "sinex")]

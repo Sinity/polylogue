@@ -246,7 +246,7 @@ fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
             _ => unreachable!(),
         }
         assert_eq!(
-            run_q(&w, request).unwrap_err().kind,
+            run_q(&w, request).unwrap_err().code(),
             if matches!(changed, "zone" | "day-start") {
                 "stale_cursor"
             } else {
@@ -277,7 +277,10 @@ fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
             assert!(reopened.run_pass().unwrap().errors.is_empty());
-            assert_eq!(page(&home, Some(cursor)).unwrap_err().kind, "invalid_query");
+            assert_eq!(
+                page(&home, Some(cursor)).unwrap_err().code(),
+                "invalid_query"
+            );
             assert_eq!(page(&home, None).unwrap()["rows"][0]["id"], "claude-code:a");
         } else {
             std::fs::write(
@@ -545,7 +548,7 @@ fn page_cursor_carries_no_query_or_caller_text_and_rejects_other_shapes() {
         .encode(br#"{"offset":1,"now":0,"query":"old"}"#);
     let mut request = ask("sessions");
     request.cursor = Some(&old);
-    assert_eq!(run_q(&w, request).unwrap_err().kind, "invalid_query");
+    assert_eq!(run_q(&w, request).unwrap_err().code(), "invalid_query");
 }
 
 #[test]
@@ -616,7 +619,7 @@ fn next_page(w: &TestArchive, text: &str, size: u64, cursor: Option<&str>) -> Va
     let mut request = ask(text);
     request.page_size = Some(size);
     request.cursor = cursor;
-    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
+    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message))
 }
 
 /// The `id` of each row: a session's or a message's.
@@ -752,5 +755,5 @@ fn continuation_refuses_a_changed_captured_ranking_basis() {
     changed.page_size = Some(1);
     changed.cursor = Some(cursor);
     changed.ranking_identity = Some("synthetic-provider:vectors-b".into());
-    assert_eq!(run_q(&w, changed).unwrap_err().kind, "stale_cursor");
+    assert_eq!(run_q(&w, changed).unwrap_err().code(), "stale_cursor");
 }

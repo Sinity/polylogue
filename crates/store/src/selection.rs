@@ -33,11 +33,7 @@ pub enum SelectionError {
     #[error(transparent)]
     Language(#[from] query_language::Error),
     #[error("{message}")]
-    Invalid {
-        kind: &'static str,
-        message: String,
-        detail: Option<Value>,
-    },
+    Invalid { kind: &'static str, message: String },
 }
 impl SelectionError {
     /// Preserve typed query diagnostics and Store control failures at accepting
@@ -50,7 +46,10 @@ impl SelectionError {
                 diagnostic: error.to_string(),
                 error,
             }),
-            Self::Invalid { message, .. } => StoreError::Invalid(message),
+            Self::Invalid { kind, message } => StoreError::Selection {
+                code: kind,
+                message,
+            },
         }
     }
     pub fn kind(&self) -> &str {
@@ -61,19 +60,11 @@ impl SelectionError {
             Self::Store(StoreError::NotFound(_)) => "not_found",
             Self::Store(StoreError::Ambiguous { .. }) => "ambiguous",
             Self::Store(StoreError::Query(error)) => error.kind(),
+            Self::Store(StoreError::Selection { code, .. }) => code,
             Self::Store(_) => "store",
             Self::Query(error) => error.kind(),
             Self::Language(error) => error.kind.code(),
             Self::Invalid { kind, .. } => kind,
-        }
-    }
-    pub fn detail(&self) -> Option<Value> {
-        match self {
-            Self::Query(error) => error.detail(),
-            Self::Language(error) => serde_json::to_value(error).ok(),
-            Self::Invalid { detail, .. } => detail.clone(),
-            Self::Store(StoreError::Query(error)) => error.detail(),
-            Self::Store(_) => None,
         }
     }
 }
@@ -81,7 +72,6 @@ fn invalid(kind: &'static str, message: impl Into<String>) -> SelectionError {
     SelectionError::Invalid {
         kind,
         message: message.into(),
-        detail: None,
     }
 }
 
@@ -745,9 +735,9 @@ impl Reader<'_> {
         {
             return Err(SelectionError::Invalid {
                 kind: "resync_required",
-                message: "the index generation changed; read the current state again".into(),
-                detail: Some(
-                    serde_json::json!({"generation":position.generation,"reason":"generation_changed"}),
+                message: format!(
+                    "the index generation changed to {}; read the current state again",
+                    position.generation
                 ),
             });
         }
@@ -766,15 +756,13 @@ impl Reader<'_> {
                             "no session or message has an ID starting {:?}",
                             check.word
                         ),
-                        detail: Some(serde_json::json!({"word":check.word})),
                     });
                 }
                 _ => {
-                    return Err(SelectionError::Invalid {
-                        kind: "ambiguous",
-                        message: format!("{:?} starts several IDs: {}", check.word, ids.join(", ")),
-                        detail: Some(serde_json::json!({"word":check.word,"ids":ids})),
-                    });
+                    return Err(SelectionError::Store(StoreError::Ambiguous {
+                        reference: check.word.clone(),
+                        candidates: ids,
+                    }));
                 }
             }
         }

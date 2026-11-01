@@ -7,24 +7,26 @@ use std::path::PathBuf;
 
 pub(crate) fn output(
     values: &Values,
-    data: &Value,
+    answer: &command_surface::Answer<Value>,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
+    let data = answer
+        .value()
+        .expect("output handlers receive answers with values");
     if values.text("out").is_none() {
         if json {
             println!(
                 "{}",
                 polylogue_render::terminal::json(
-                    &serde_json::to_value(crate::protocol::answer(data.clone()))
-                        .expect("answer serializes"),
+                    &serde_json::to_value(answer).expect("answer serializes"),
                     false
                 )
             );
         } else {
             print!("{}", print::json(data, false));
         }
-        return ExitCode::SUCCESS;
+        return ExitCode::from(answer.exit_code());
     }
     match write(values, data, startup) {
         Ok(path) => {
@@ -108,10 +110,17 @@ fn write(
                 )
                 .map_err(|e| e.to_string())?
                 {
-                    Response::Ok { data, .. } => data,
-                    Response::Error { kind, message, .. } => {
-                        return Err(format!("{kind}: {message}"));
+                    command_surface::Answer::Error { error, .. } => {
+                        return Err(format!(
+                            "{}: {}",
+                            error.code.as_deref().unwrap_or_default(),
+                            error.message
+                        ));
                     }
+                    answer => answer
+                        .value()
+                        .cloned()
+                        .expect("a non-error answer has a value"),
                 };
             }
             None => {

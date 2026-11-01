@@ -63,7 +63,7 @@ fn set_stages_refuse_what_does_not_combine() {
         "origin:codex | count | union (origin:claude-code)",
         "origin:codex | union (origin:claude-code | distinct)",
     ] {
-        assert_eq!(error(&w, bad).kind, "invalid_query", "{bad}");
+        assert_eq!(error(&w, bad).code(), "invalid_query", "{bad}");
     }
 }
 
@@ -171,7 +171,7 @@ fn in_compares_with_the_values_a_query_groups_by() {
         ids(&q(&w, "sessions where exists message(chrono)"))
     );
     assert_eq!(
-        error(&w, "sessions where id in (messages where chrono)").kind,
+        error(&w, "sessions where id in (messages where chrono)").code(),
         "invalid_query"
     );
 }
@@ -198,7 +198,7 @@ fn saved_queries_take_their_parameters_as_values() {
     );
     // A value is one value: it cannot add a condition.
     assert_eq!(
-        error(&w, "query:by-outcome(outcome=\"error OR outcome:ok\")").kind,
+        error(&w, "query:by-outcome(outcome=\"error OR outcome:ok\")").code(),
         "bad_value"
     );
     for bad in [
@@ -206,7 +206,7 @@ fn saved_queries_take_their_parameters_as_values() {
         "query:by-outcome(outcome=error, extra=1)",
         "tool_calls where query:by-outcome(result=error)",
     ] {
-        assert_eq!(error(&w, bad).kind, "invalid_query", "{bad}");
+        assert_eq!(error(&w, bad).code(), "invalid_query", "{bad}");
     }
     // `$word` the caller writes is a word.
     assert_eq!(q(&w, "messages where \"$HOME\"")["outcome"], "empty");
@@ -218,7 +218,7 @@ fn a_name_two_saved_queries_share_is_refused() {
     saved(&mut w, "twice", "origin:codex");
     saved(&mut w, "twice", "origin:chatgpt");
     let f = error(&w, "query:twice");
-    assert_eq!(f.kind, "ambiguous");
+    assert_eq!(f.code(), "ambiguous");
     let expected = q(&w, "assertions where kind:saved_query key:twice");
     let references: std::collections::BTreeSet<_> = expected["rows"]
         .as_array()
@@ -231,14 +231,11 @@ fn a_name_two_saved_queries_share_is_refused() {
         })
         .collect();
     assert_eq!(references.len(), 2);
-    let detail = f.detail.unwrap();
-    assert_eq!(detail["what"], "query:twice");
+    assert!(f.message.starts_with("query:twice "), "{}", f.message);
     assert_eq!(
-        detail["candidates"]
-            .as_array()
-            .unwrap()
+        f.candidates
             .iter()
-            .map(|candidate| candidate.as_str().unwrap().to_owned())
+            .cloned()
             .collect::<std::collections::BTreeSet<_>>(),
         references
     );

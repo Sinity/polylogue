@@ -296,7 +296,7 @@ fn build(rows: &Rows) -> TestArchive {
 fn all(w: &TestArchive, text: &str) -> Value {
     let mut request = ask(text);
     request.page_size = Some(1 << 40);
-    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
+    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message))
 }
 
 fn result_rows(v: &Value) -> Vec<Value> {
@@ -716,7 +716,7 @@ proptest! {
                     request.page_size = Some(size);
                     request.cursor = cursor.as_deref();
                     let page = run_q(&w, request)
-                        .unwrap_or_else(|f| panic!("{query} by {size}: {} {}", f.kind, f.message));
+                        .unwrap_or_else(|f| panic!("{query} by {size}: {} {}", f.code(), f.message));
                     prop_assert_eq!(&page["count"], &whole["count"], "{} by {}", query, size);
                     got.extend(result_rows(&page));
                     cursor = page["next"].as_str().map(str::to_owned);
@@ -854,8 +854,8 @@ proptest! {
             match run_q(&w, ask(&text)) {
                 Ok(v) => prop_assert!(v["count"].as_u64() <= total, "{}: {}", text, v["count"]),
                 Err(f) => prop_assert!(
-                    !matches!(f.kind.as_str(), "store" | "internal"),
-                    "{}: {} {}", text, f.kind, f.message
+                    !matches!(f.code(), "store" | "internal"),
+                    "{}: {} {}", text, f.code(), f.message
                 ),
             }
         }

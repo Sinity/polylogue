@@ -361,7 +361,7 @@ async fn stream(
         let result = limit.scope(
             || match worker.daemon.resolve_operation_context(invocation) {
                 Ok(operation) => produce(&worker_request, &worker.daemon, &operation, &mut guarded),
-                Err(response) => Some(Err(response)),
+                Err(failure) => Some(Err(failure)),
             },
         );
         let result = match guarded.failure() {
@@ -376,16 +376,16 @@ async fn stream(
             return;
         };
         match result {
-            Err(response) => {
+            Err(failure) => {
                 if let Some(ready) = output.ready.take() {
-                    let _ = ready.send(Err(response));
+                    let _ = ready.send(Err(failure));
                 } else {
-                    let _ = crate::protocol::stream::error(&mut output, &response);
+                    let _ = crate::protocol::stream::error(&mut output, failure);
                 }
             }
             Ok(()) => {
                 if let Some(ready) = output.ready.take() {
-                    let _ = ready.send(Err(crate::daemon::service::error(
+                    let _ = ready.send(Err(crate::daemon::Failure::new(
                         "internal",
                         "stream completed without producing events",
                     )));
@@ -411,7 +411,7 @@ async fn stream(
                 .into_response()
         }
         Ok(Ok(false)) => json_answer(web, ask(web, request).await),
-        Ok(Err(response)) => json_answer(web, response),
+        Ok(Err(failure)) => json_answer(web, failure),
         Err(error) => json_answer(web, crate::daemon::service::error("internal", error)),
     }
 }
@@ -419,7 +419,7 @@ async fn stream(
 struct ProducerWriter {
     output: tokio::io::DuplexStream,
     runtime: tokio::runtime::Handle,
-    ready: Option<tokio::sync::oneshot::Sender<Result<bool, crate::daemon::Response>>>,
+    ready: Option<tokio::sync::oneshot::Sender<Result<bool, crate::daemon::Failure>>>,
 }
 impl std::io::Write for ProducerWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {

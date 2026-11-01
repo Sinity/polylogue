@@ -22,7 +22,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
     (FailureKind::Empty, &["empty"]),
     (
         FailureKind::InvalidQuery,
-        &["query", "sql", "invalid_query"],
+        &["query", "sql", "invalid_query", "invalid_cursor"],
     ),
     (FailureKind::UnknownField, &["unknown_field"]),
     (FailureKind::BadValue, &["bad_value"]),
@@ -61,6 +61,8 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
         &[
             "refused",
             "operator_required",
+            "embeddings_off",
+            "confirm",
             "rejected",
             "primary_context_refused",
         ],
@@ -72,6 +74,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
             "unknown_chat_action",
             "unknown_chat_action_attachment",
             "attachment_missing",
+            "attachment_unavailable",
             "unknown_backfill_job",
         ],
     ),
@@ -115,7 +118,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
 ];
 
 #[cfg(feature = "sinex")]
-pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> crate::daemon::Response {
+pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> Failure {
     use polylogue_sinex::ContextFailureKind as Kind;
     let code = match problem.kind {
         Kind::Missing => "primary_context_missing",
@@ -125,13 +128,15 @@ pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> crate::daemo
         Kind::Stale => "primary_context_stale",
         Kind::Invalid => "primary_context_invalid",
     };
-    crate::daemon::Response::Error {
-        kind: code.into(),
-        message: problem.reason,
-        detail: Some(
-            serde_json::json!({"retryable":matches!(problem.kind,Kind::Missing|Kind::Pending|Kind::Unavailable|Kind::Stale),"hint":problem.last_known_identity.map(|identity|format!("last observed owner settings: {identity}"))}),
-        ),
-    }
+    let mut failure = failure(code, problem.reason);
+    failure.retryable = matches!(
+        problem.kind,
+        Kind::Missing | Kind::Pending | Kind::Unavailable | Kind::Stale
+    );
+    failure.hint = problem
+        .last_known_identity
+        .map(|identity| format!("last observed owner settings: {identity}"));
+    failure
 }
 
 pub fn kind(code: &str) -> FailureKind {
@@ -161,101 +166,114 @@ pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
         StoreError::NotFound(_) => "not_found",
         StoreError::Invalid(_) => "bad_request",
         StoreError::Query(error) => error.kind(),
+        StoreError::Selection { code, .. } => code,
         StoreError::IncompleteParents(_) => "incomplete_parents",
         StoreError::PrimaryPending { .. } => "degraded",
         _ => "store",
     }
 }
 
-pub fn failure(code: &str, message: String, detail: Option<&Value>) -> Failure {
+/// A product failure code, classified once into the shared kind.
+pub fn failure(code: &str, message: impl Into<String>) -> Failure {
     let mut failure = Failure::new(kind(code), message);
     failure.code = Some(code.to_owned());
-    if let Some(detail) = detail {
-        failure.position = detail.get("position").and_then(|position| {
-            let offset = position.as_u64().or_else(|| position["offset"].as_u64())?;
-            Some(Position {
-                offset: usize::try_from(offset).ok()?,
-                length: position["length"]
-                    .as_u64()
-                    .and_then(|n| usize::try_from(n).ok())
-                    .unwrap_or(1),
-            })
-        });
-        failure.suggestion = detail
-            .get("suggestion")
-            .filter(|v| !v.is_null())
-            .cloned()
-            .map(Box::new);
-        failure.hint = detail["hint"].as_str().map(str::to_owned);
-        failure.retryable = detail["retryable"].as_bool().unwrap_or(failure.retryable);
-    }
     failure
 }
 
-/// Pending writes have a durable local receipt but no confirmed remote commit.
-/// Read outcomes carry their incompleteness in the typed answer payload.
-pub fn answer(value: Value) -> Answer<Value> {
-    if value["pending"].as_bool() == Some(true)
-        || value["state"].as_str() == Some("pending")
-        || value
-            .pointer("/user_state/pending")
-            .and_then(Value::as_u64)
-            .is_some_and(|count| count > 0)
-    {
+/// A query error keeps its position, correction and hint as typed fields.
+pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
+    use polylogue_store::query::QueryError;
+    let mut failure = failure(error.kind(), error.to_string());
+    let position = match error {
+        QueryError::Language { error, .. } => {
+            failure.hint = error.hint.clone();
+            failure.retryable = error.retryable;
+            Some(error.position)
+        }
+        QueryError::Syntax { position, .. }
+        | QueryError::UnknownField { position, .. }
+        | QueryError::BadValue { position, .. }
+        | QueryError::Invalid { position, .. } => Some(*position),
+        _ => None,
+    };
+    failure.candidates = match error {
+        QueryError::Ambiguous { candidates, .. } => candidates.clone(),
+        QueryError::UnknownField { similar, .. } => similar.clone(),
+        _ => Vec::new(),
+    };
+    failure.position = position.map(|offset| Position { offset, length: 1 });
+    failure.suggestion = error
+        .suggestion()
+        .map(|text| Box::new(Value::String(text.to_owned())));
+    failure
+}
+
+/// Every store error reaches surfaces through this one classification.
+pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
+    match error {
+        polylogue_store::StoreError::Query(error) => query_failure(error),
+        polylogue_store::StoreError::Ambiguous { candidates, .. } => {
+            let mut failure = failure(store_code(error), error.to_string());
+            failure.candidates = candidates.clone();
+            failure
+        }
+        error => failure(store_code(error), error.to_string()),
+    }
+}
+
+/// The value of an answer that carries one, or its failure.
+pub fn into_value<T>(answer: Answer<T>) -> Result<T, Failure> {
+    match answer {
+        Answer::Ok { value, .. } | Answer::Empty { value, .. } | Answer::Degraded { value, .. } => {
+            Ok(value)
+        }
+        Answer::Error { error, .. } => Err(error),
+    }
+}
+
+/// A write accepted into the local primary spool is degraded until Sinex confirms it.
+pub fn written<T>(value: T, pending: bool) -> Answer<T> {
+    if pending {
         Answer::Degraded {
             value,
-            notes: vec!["accepted locally; awaiting Sinex confirmation".into()],
-            next: vec![],
-        }
-    } else if let Some(currency) = value
-        .get("currency")
-        .or_else(|| value.pointer("/snapshot/currency"))
-        .or_else(|| value.pointer("/read_at/currency"))
-        .and_then(|value| {
-            serde_json::from_value::<polylogue_model::currency::IndexCurrency>(value.clone()).ok()
-        })
-        && currency.degraded()
-    {
-        use polylogue_model::currency::{CurrencyState, IndexCurrency};
-        let note = match currency {
-            IndexCurrency::Primary {
-                state: CurrencyState::Behind,
-                ..
-            } => "primary index is behind the observed owner position",
-            IndexCurrency::Primary {
-                state: CurrencyState::Unavailable,
-                ..
-            } => "primary owner is unavailable",
-            _ => "primary index currency is unknown",
-        };
-        Answer::Degraded {
-            value,
-            notes: vec![note.into()],
-            next: vec![],
-        }
-    } else if value["incomplete"].as_bool() == Some(true)
-        || value["outcome"].as_str() == Some("incomplete")
-        || value["incomplete"]
-            .as_array()
-            .is_some_and(|parts| !parts.is_empty())
-    {
-        Answer::Degraded {
-            value,
-            notes: vec![],
-            next: vec![],
-        }
-    } else if value.as_array().is_some_and(Vec::is_empty)
-        || value["empty"].as_bool() == Some(true)
-        || value["outcome"].as_str() == Some("empty")
-    {
-        Answer::Empty {
-            value,
-            notes: vec![],
+            notes: vec![AWAITING_CONFIRMATION.into()],
             next: vec![],
         }
     } else {
         Answer::ok(value)
     }
+}
+
+pub const AWAITING_CONFIRMATION: &str = "accepted locally; awaiting Sinex confirmation";
+
+/// A read over an index that is not current keeps its value and says why.
+pub fn read<T>(value: T, currency: &polylogue_model::currency::IndexCurrency) -> Answer<T> {
+    match currency_note(currency) {
+        Some(note) => Answer::Degraded {
+            value,
+            notes: vec![note.into()],
+            next: vec![],
+        },
+        None => Answer::ok(value),
+    }
+}
+
+pub fn currency_note(currency: &polylogue_model::currency::IndexCurrency) -> Option<&'static str> {
+    use polylogue_model::currency::{CurrencyState, IndexCurrency};
+    if !currency.degraded() {
+        return None;
+    }
+    Some(match currency {
+        IndexCurrency::Primary {
+            state: CurrencyState::Behind,
+            ..
+        } => "primary index is behind the observed owner position",
+        IndexCurrency::Primary {
+            state: CurrencyState::Unavailable,
+            ..
+        } => "primary owner is unavailable",
+        _ => "primary index currency is unknown",
+    })
 }
 
 #[cfg(test)]

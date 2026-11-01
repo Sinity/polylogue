@@ -1,8 +1,5 @@
 use super::*;
-use crate::daemon::{
-    Request, Response,
-    service::{Daemon, error},
-};
+use crate::daemon::{Failure, Request, service::Daemon};
 use std::io::Write;
 
 fn web(daemon: &crate::test_daemon::TestDaemon) -> Arc<Web> {
@@ -22,8 +19,8 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
         _: &Daemon,
         _: &std::sync::Arc<crate::operation::Context>,
         _: &mut dyn Write,
-    ) -> Option<Result<(), Response>> {
-        Some(Err(error("bad_request", "invalid selection")))
+    ) -> Option<Result<(), crate::daemon::Failure>> {
+        Some(Err(Failure::new("bad_request", "invalid selection")))
     }
     let daemon = crate::test_daemon::start("synthetic stream refusal");
     tokio::runtime::Builder::new_multi_thread()
@@ -56,7 +53,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
         _: &Daemon,
         authorship: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
-    ) -> Option<Result<(), Response>> {
+    ) -> Option<Result<(), crate::daemon::Failure>> {
         assert_eq!(
             authorship.authorship.author,
             polylogue_model::Author::Operator
@@ -77,7 +74,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
             &serde_json::json!({"snapshot":"synthetic"}),
         )
         .unwrap();
-        Some(Err(error("conflict", "source changed")))
+        Some(Err(Failure::new("conflict", "source changed")))
     }
     let daemon = crate::test_daemon::start("synthetic stream late failure");
     tokio::runtime::Builder::new_multi_thread()
@@ -123,14 +120,14 @@ fn stream_headers_arrive_while_the_bounded_producer_is_waiting_for_the_reader() 
         _: &Daemon,
         _: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
-    ) -> Option<Result<(), Response>> {
+    ) -> Option<Result<(), crate::daemon::Failure>> {
         let result = (|| {
             crate::protocol::stream::event(output, "begin", &serde_json::json!({}))?;
             // Exceeds the transport buffer. Preparation cannot finish until the body is consumed.
             crate::protocol::stream::event(output, "record", &"x".repeat(128 * 1024))?;
             crate::protocol::stream::event(output, "complete", &serde_json::json!({}))
         })();
-        Some(result.map_err(|error| crate::daemon::service::error("io", error)))
+        Some(result.map_err(|error| Failure::new("io", error)))
     }
     let daemon = crate::test_daemon::start("synthetic stream backpressure");
     tokio::runtime::Builder::new_multi_thread()
@@ -270,10 +267,10 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
         daemon: &Daemon,
         _: &std::sync::Arc<crate::operation::Context>,
         output: &mut dyn Write,
-    ) -> Option<Result<(), Response>> {
+    ) -> Option<Result<(), crate::daemon::Failure>> {
         let reader = match daemon.reads.reader() {
             Ok(reader) => reader,
-            Err(error) => return Some(Err(crate::daemon::service::store_error(&error))),
+            Err(error) => return Some(Err(Failure::from(error))),
         };
         let result = (|| {
             crate::protocol::stream::event(
@@ -290,7 +287,7 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
             crate::protocol::stream::event(output, "complete", &serde_json::json!({}))?;
             Ok::<(), Box<dyn std::error::Error>>(())
         })();
-        Some(result.map_err(|error| crate::daemon::service::error("io", error)))
+        Some(result.map_err(|error| Failure::new("io", error)))
     }
     let daemon = crate::test_daemon::start("native generation stream witness");
     tokio::runtime::Builder::new_multi_thread()

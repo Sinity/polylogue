@@ -252,7 +252,7 @@ fn completion_handler_uses_the_catalog_when_archive_reader_slots_are_closed() {
         },
         &daemon.daemon,
     );
-    let crate::daemon::Response::Ok { data, .. } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
     assert!(

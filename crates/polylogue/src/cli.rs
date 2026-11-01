@@ -12,9 +12,10 @@ pub(crate) mod staged_file;
 pub(crate) mod write_out;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
 use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
+use command_surface::Answer;
 use polylogue_store::Archive;
 use serde_json::Value;
 use std::process::ExitCode;
@@ -373,7 +374,7 @@ pub fn run(
         crate::client::call_ready(&Archive::at(&root), &call)
     } else {
         let timeout = deadline.duration(Some(crate::daemon::execution::timeout()));
-        send_with_timeout(&Archive::at(&root), &request, timeout).map(|response| response.answer())
+        send_with_timeout(&Archive::at(&root), &request, timeout)
     };
     let answer = match result {
         Ok(r) => r,
@@ -410,39 +411,30 @@ pub fn run(
         );
         return ExitCode::from(outcome_code);
     }
-    let response: Response = answer.into();
-    match response {
-        Response::Ok { data, .. } => {
-            if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
-                crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
-            }
-            match cmd.output {
-                Some(output) => output(&values, &data, startup, json),
-                None => {
-                    if json {
-                        println!(
-                            "{}",
-                            polylogue_render::terminal::json(
-                                &serde_json::to_value(crate::protocol::answer(data.clone()))
-                                    .expect("answer serializes"),
-                                false
-                            )
-                        );
-                    } else {
-                        print!("{}", (cmd.print)(&data, policy.stdout_color()));
-                    }
-                    ExitCode::from(outcome_code)
-                }
-            }
+    if let Answer::Error { error, notes, .. } = &answer {
+        return fail_with(policy, json, error, notes);
+    }
+    let data = answer.value().expect("a non-error answer has a value");
+    if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
+        crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
+    }
+    match cmd.output {
+        Some(output) => output(&values, &answer, startup, json),
+        None => {
+            print!("{}", (cmd.print)(data, policy.stdout_color()));
+            notes(answer.notes(), policy);
+            ExitCode::from(outcome_code)
         }
-        Response::Error {
-            kind,
-            message,
-            detail,
-        } => {
-            let code = crate::daemon::execution::exit_code(&kind);
-            fail_detail(policy, json, &kind, &message, detail, code)
-        }
+    }
+}
+
+/// Notes go to standard error, so standard output stays the value alone.
+fn notes(notes: &[String], output: crate::config::OutputConfig) {
+    for note in notes {
+        eprint!(
+            "{}",
+            print::diagnostic("note", note, None, output.stderr_color())
+        );
     }
 }
 
@@ -450,10 +442,13 @@ pub fn run(
 /// resume command; without `--exec`, the plan is printed.
 pub fn resume_output(
     values: &Values,
-    data: &Value,
+    answer: &Answer<Value>,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
+    let data = answer
+        .value()
+        .expect("output handlers receive answers with values");
     if !values.flag("exec") {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
@@ -528,7 +523,7 @@ fn send_with_timeout(
     archive: &Archive,
     request: &Request,
     timeout: Option<std::time::Duration>,
-) -> std::io::Result<Response> {
+) -> std::io::Result<Answer<Value>> {
     let deadline_ms = crate::daemon::execution::request_deadline(
         request,
         timeout.map(crate::daemon::execution::deadline),
@@ -580,53 +575,60 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
     }
 }
 
+/// A failure made here, before or instead of a daemon answer.
 pub(crate) fn fail(
     output: crate::config::OutputConfig,
     json: bool,
-    kind: &str,
+    code: &str,
     message: &str,
-    code: u8,
+    _exit: u8,
 ) -> ExitCode {
-    fail_detail(output, json, kind, message, None, code)
+    fail_with(output, json, &crate::protocol::failure(code, message), &[])
 }
 
-/// An error with structured detail: printed whole for programs; for a
-/// person, the message and the corrected query when there is one.
-fn fail_detail(
+/// One printer for every failure: the whole answer for programs; for a
+/// person, the code, the message, the corrected query and the notes.
+fn fail_with(
     output: crate::config::OutputConfig,
     json: bool,
-    kind: &str,
-    message: &str,
-    detail: Option<serde_json::Value>,
-    _code: u8,
+    failure: &command_surface::Failure,
+    notes: &[String],
 ) -> ExitCode {
     if json {
+        let answer = Answer::<Value>::Error {
+            error: failure.clone(),
+            notes: notes.to_vec(),
+            next: vec![],
+        };
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::to_value(Response::Error {
-                    kind: kind.into(),
-                    message: message.into(),
-                    detail: detail.clone()
-                })
-                .expect("failure serializes"),
+                &serde_json::to_value(answer).expect("failure serializes"),
                 false
             )
         );
     } else {
+        let code = failure.code.clone().unwrap_or_else(|| {
+            serde_json::to_value(failure.kind)
+                .ok()
+                .and_then(|kind| kind.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        });
         eprint!(
             "{}",
             print::diagnostic(
-                kind,
-                message,
-                detail
-                    .as_ref()
-                    .and_then(|value| value["suggestion"].as_str()),
+                &code,
+                &failure.message,
+                failure.suggestion.as_deref().and_then(Value::as_str),
                 output.stderr_color()
             )
         );
+        for candidate in &failure.candidates {
+            eprintln!("  {}", polylogue_render::terminal::escape(candidate));
+        }
+        self::notes(notes, output);
     }
-    ExitCode::from(crate::protocol::kind(kind).exit_code())
+    ExitCode::from(failure.kind.exit_code())
 }
 
 #[cfg(test)]

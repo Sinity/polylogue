@@ -8,7 +8,8 @@
 mod completion;
 
 use crate::commands::{self, Action, COMMANDS, Caller, Command, Surface, Values};
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
+use command_surface::Answer;
 use polylogue_store::Archive;
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
@@ -28,11 +29,21 @@ pub fn tools() -> Vec<Value> {
 
 /// An error as tool text, with the corrected query when the daemon formed
 /// one, so an agent can retry with it as given.
-fn error_text(kind: &str, message: &str, detail: Option<&serde_json::Value>) -> String {
-    let text = match detail.and_then(|d| d["suggestion"].as_str()) {
-        Some(s) => format!("error ({kind}): {message}\ntry: {s}"),
-        None => format!("error ({kind}): {message}"),
-    };
+/// One text form for a failure: its code, message and runnable correction.
+fn error_text(failure: &command_surface::Failure) -> String {
+    let code = failure.code.clone().unwrap_or_else(|| {
+        serde_json::to_value(failure.kind)
+            .ok()
+            .and_then(|kind| kind.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    });
+    let mut text = format!("error ({code}): {}", failure.message);
+    if let Some(suggestion) = failure.suggestion.as_deref().and_then(Value::as_str) {
+        text.push_str(&format!("\ntry: {suggestion}"));
+    }
+    for candidate in &failure.candidates {
+        text.push_str(&format!("\n  {candidate}"));
+    }
     polylogue_render::terminal::escape(&text)
 }
 
@@ -59,22 +70,34 @@ fn build_request(
     build(command, &values, &caller).map_err(bad)
 }
 
-fn format_answer(request: &Request, response: std::io::Result<Response>) -> Result<String, String> {
-    match response {
-        Ok(Response::Ok { data, .. }) if matches!(request, Request::Context { .. }) => {
-            Ok(polylogue_render::terminal::escape(
-                data["prepared"]["text"].as_str().unwrap_or_default(),
-            ))
-        }
-        Ok(Response::Ok { data, .. }) => Ok(polylogue_render::terminal::json(&data, true)),
-        Ok(Response::Error {
-            kind,
-            message,
-            detail,
-        }) => Err(error_text(&kind, &message, detail.as_ref())),
-        Err(e) => Err(polylogue_render::terminal::escape(&format!(
+/// The text content beside the structured answer; notes follow the value.
+fn format_answer(
+    request: &Request,
+    answer: Result<&Answer<Value>, &std::io::Error>,
+) -> Result<String, String> {
+    let answer = answer.map_err(|e| {
+        polylogue_render::terminal::escape(&format!(
             "error (daemon_required): no Polylogue daemon answered ({e}); start it with `polylogue daemon`"
-        ))),
+        ))
+    })?;
+    let notes = answer
+        .notes()
+        .iter()
+        .map(|note| format!("\nnote: {}", polylogue_render::terminal::escape(note)))
+        .collect::<String>();
+    match answer {
+        Answer::Error { error, .. } => Err(format!("{}{notes}", error_text(error))),
+        answer => {
+            let value = answer.value().expect("a non-error answer has a value");
+            let text = if matches!(request, Request::Context { .. }) {
+                polylogue_render::terminal::escape(
+                    value["prepared"]["text"].as_str().unwrap_or_default(),
+                )
+            } else {
+                polylogue_render::terminal::json(value, true)
+            };
+            Ok(format!("{text}{notes}"))
+        }
     }
 }
 
@@ -117,13 +140,7 @@ fn call_with_limit(
         ) {
             Ok(request) => request,
             Err(failure) => {
-                let kind = serde_json::to_value(failure.kind).expect("failure kind serializes");
-                let code = failure
-                    .code
-                    .as_deref()
-                    .unwrap_or_else(|| kind.as_str().expect("failure kind is a string"));
-                let detail = serde_json::to_value(&failure).expect("failure serializes");
-                let text = error_text(code, &failure.message, Some(&detail));
+                let text = error_text(&failure);
                 let answer = command_surface::Answer::<Value>::error(failure);
                 return Ok((
                     text,
@@ -148,25 +165,23 @@ fn call_with_limit(
             archive, &call, cancelled, caller,
         ))
     } else {
-        runtime
-            .block_on(crate::client::send_ready_as(
-                archive,
-                &request,
-                deadline_ms,
-                cancelled,
-                caller,
-            ))
-            .map(|response| response.answer())
+        runtime.block_on(crate::client::send_ready_as(
+            archive,
+            &request,
+            deadline_ms,
+            cancelled,
+            caller,
+        ))
     };
     let structured = match &answer {
         Ok(answer) => serde_json::to_value(answer).expect("answer serializes"),
         Err(error) => serde_json::to_value(command_surface::Answer::<Value>::error(
-            crate::protocol::failure("not_running", error.to_string(), None),
+            crate::protocol::failure("not_running", error.to_string()),
         ))
         .expect("failure serializes"),
     };
     let failed = matches!(answer, Ok(command_surface::Answer::Error { .. }) | Err(_));
-    let text = match format_answer(&request, answer.map(Response::from)) {
+    let text = match format_answer(&request, answer.as_ref()) {
         Ok(text) | Err(text) => text,
     };
     Ok((text, structured, failed))
@@ -394,7 +409,7 @@ impl Reply {
                     Ok(answer) => answer,
                     Err(text) => {
                         let answer = command_surface::Answer::<Value>::error(
-                            crate::protocol::failure("bad_request", text.clone(), None),
+                            crate::protocol::failure("bad_request", text.clone()),
                         );
                         (
                             text,

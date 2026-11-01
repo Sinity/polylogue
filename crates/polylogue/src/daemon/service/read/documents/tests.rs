@@ -48,7 +48,7 @@ fn options() -> ReadOptions {
     }
 }
 
-fn selected(_: &Source) -> Result<bool, Response> {
+fn selected(_: &Source) -> Result<bool, crate::daemon::Failure> {
     Ok(false)
 }
 fn ready(
@@ -56,7 +56,7 @@ fn ready(
     _: u64,
     _: u64,
     _: Option<&str>,
-) -> Result<ReadyCall, Response> {
+) -> Result<ReadyCall, crate::daemon::Failure> {
     panic!("a plain document block has no receiving attachment action")
 }
 fn layout<'a>(
@@ -284,9 +284,10 @@ fn document_block_decode_obeys_cancellation_and_generation_changes_between_items
                     Ok(true)
                 },
             );
-            let Err(Response::Error { kind, .. }) = result else {
+            let Err(failure) = &result else {
                 panic!("changed request continued: {result:?}")
             };
+            let kind = failure.code().to_owned();
             let expected = if reset {
                 StoreError::ScopeChanged
             } else {

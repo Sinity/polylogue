@@ -80,17 +80,25 @@ fn value(answer: command_surface::Answer<Value>) -> Result<Value, command_surfac
     }
 }
 
-fn answer(
+/// The whole typed answer one surface gave, with the CLI's exit status.
+fn surface_answer(
     env: &crate::Fixture,
     archive: &Path,
     mcp: &mut Mcp,
     surface: &str,
     text: &str,
-) -> Result<Value, command_surface::Failure> {
+) -> command_surface::Answer<Value> {
     match surface {
         "cli" => {
             let out = cli(env, &["--json", text]);
-            value(serde_json::from_slice(&out.stdout).unwrap())
+            let answer: command_surface::Answer<Value> =
+                serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(
+                out.status.code(),
+                Some(i32::from(answer.exit_code())),
+                "{out:?}"
+            );
+            answer
         }
         "socket" => {
             let mut stream = UnixStream::connect(archive.join("daemon.sock")).unwrap();
@@ -103,7 +111,7 @@ fn answer(
             writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).unwrap();
-            value(serde_json::from_str(&line).unwrap())
+            serde_json::from_str(&line).unwrap()
         }
         "mcp" => {
             let reply = mcp.request(
@@ -114,14 +122,28 @@ fn answer(
             );
             assert!(reply["error"].is_null(), "{reply}");
             let result = &reply["result"];
-            let answered =
-                value(serde_json::from_value(result["structuredContent"].clone()).unwrap());
-            assert_eq!(result["isError"], answered.is_err());
+            let answered: command_surface::Answer<Value> =
+                serde_json::from_value(result["structuredContent"].clone()).unwrap();
+            assert_eq!(
+                result["isError"],
+                matches!(answered, command_surface::Answer::Error { .. })
+            );
             answered
         }
         _ => unreachable!(),
     }
 }
+
+fn answer(
+    env: &crate::Fixture,
+    archive: &Path,
+    mcp: &mut Mcp,
+    surface: &str,
+    text: &str,
+) -> Result<Value, command_surface::Failure> {
+    value(surface_answer(env, archive, mcp, surface, text))
+}
+
 fn same_question(actual: &str, expected: &str) {
     let catalog = polylogue_query::catalog::catalog(&[], &[]);
     let identity = |text: &str| {
@@ -255,4 +277,48 @@ fn every_surface_refuses_command_words_and_values_outside_a_set() {
             }
         }
     }
+}
+
+/// An answer assembled with a missing part is degraded on every surface,
+/// keeps its rows, and names the missing part in its notes: the daemon's
+/// typed outcome reaches CLI JSON, the socket and MCP structured output
+/// unchanged.
+#[test]
+fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let archive = dir.path().join("archive");
+    let config = dir.path().join("config");
+    let project = home.join(".claude/projects/-query");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("query.jsonl"),
+        line("q1", "query", "synthetic walrus prompt"),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
+    let mut mcp = Mcp::start(&env);
+    let text = "similar:\"walrus migration\"";
+    let mut answers = Vec::new();
+    for surface in ["cli", "socket", "mcp"] {
+        let answer = surface_answer(&env, &archive, &mut mcp, surface, text);
+        let command_surface::Answer::Degraded { value, notes, .. } = &answer else {
+            panic!("{surface}: {answer:?}");
+        };
+        assert_eq!(answer.exit_code(), 5, "{surface}");
+        assert_eq!(value["count"], 1, "{surface}: {value}");
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.starts_with("incomplete: semantic search is not enabled")),
+            "{surface}: {notes:?}"
+        );
+        answers.push(notes.clone());
+    }
+    assert!(
+        answers.windows(2).all(|pair| pair[0] == pair[1]),
+        "{answers:?}"
+    );
 }

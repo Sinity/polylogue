@@ -10,15 +10,17 @@ mod connection;
 pub mod pages;
 mod reader;
 
+use crate::daemon::Request;
 use crate::daemon::service::Daemon;
-use crate::daemon::{Request, Response};
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, Request as HttpRequest, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response as HttpResponse};
 use axum::routing::get;
+use command_surface::Answer;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -295,7 +297,7 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
 }
 
 /// Runs a request on a blocking thread, as the socket would.
-pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
+pub async fn ask(web: &Arc<Web>, request: Request) -> Answer<Value> {
     let scope = if request.read_only() {
         match web.daemon.reads.scope_token() {
             Ok(scope) => Some(scope),
@@ -313,7 +315,7 @@ pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
         &Default::default(),
         None,
     );
-    let response = tokio::task::spawn_blocking(move || {
+    let answer = tokio::task::spawn_blocking(move || {
         let invocation = d.invocation(&authorship).with_parent(parent);
         crate::daemon::service::handle_with_invocation(request, &d, &limit, &invocation)
     })
@@ -321,8 +323,8 @@ pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     .unwrap_or_else(|error| crate::daemon::service::error("internal", error));
     cancel.0.take();
     let publication = crate::protocol::ReadScopes::single(scope);
-    let answer = crate::protocol::scope_answer(response.answer(), &publication);
-    browser_response(answer.into(), &web.daemon.archive.root)
+    let answer = crate::protocol::scope_answer(answer, &publication);
+    browser_response(answer, &web.daemon.archive.root)
 }
 
 pub(super) fn request_limit() -> polylogue_store::read::limit::ReadLimit {
@@ -361,25 +363,29 @@ impl Drop for CancelRead {
     }
 }
 
-fn browser_response(response: Response, root: &std::path::Path) -> Response {
-    let mut response = response;
-    match &mut response {
-        Response::Ok { data } => access::scrub_value(data, root),
-        Response::Error {
-            message, detail, ..
-        } => {
-            *message = access::scrub(message, root);
-            if let Some(detail) = detail {
-                access::scrub_value(detail, root);
-            }
+/// Archive paths never reach a browser, in values, failures or notes.
+fn browser_response(answer: Answer<Value>, root: &std::path::Path) -> Answer<Value> {
+    let mut answer = answer.map(|mut value| {
+        access::scrub_value(&mut value, root);
+        if let Some(value) = value.as_object_mut() {
+            value.remove("archive");
         }
+        value
+    });
+    let notes = match &mut answer {
+        Answer::Error { error, notes, .. } => {
+            error.message = access::scrub(&error.message, root);
+            error.hint = error.hint.as_deref().map(|hint| access::scrub(hint, root));
+            notes
+        }
+        Answer::Ok { notes, .. } | Answer::Empty { notes, .. } | Answer::Degraded { notes, .. } => {
+            notes
+        }
+    };
+    for note in notes {
+        *note = access::scrub(note, root);
     }
-    if let Response::Ok { data, .. } = &mut response
-        && let Some(data) = data.as_object_mut()
-    {
-        data.remove("archive");
-    }
-    response
+    answer
 }
 
 fn page(html: String) -> HttpResponse {
@@ -391,11 +397,9 @@ fn failed(status: StatusCode, kind: &str, message: &str) -> HttpResponse {
 }
 
 async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
-    let status = match ask(&web, Request::Status).await {
-        Response::Ok { data, .. } => data,
-        Response::Error { kind, message, .. } => {
-            return failed(error_status(&kind), &kind, &message);
-        }
+    let status = match crate::protocol::into_value(ask(&web, Request::Status).await) {
+        Ok(status) => status,
+        Err(failure) => return failed_with(&failure),
     };
     let sessions = match ask(
         &web,
@@ -409,9 +413,10 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
         },
     )
     .await
+    .value()
     {
-        Response::Ok { data, .. } => data,
-        _ => serde_json::Value::Null,
+        Some(sessions) => sessions.clone(),
+        None => serde_json::Value::Null,
     };
     page(pages::home(&status, &sessions))
 }
@@ -435,18 +440,14 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
         session: None,
         fields: vec![],
     };
-    match ask(&web, request).await {
-        Response::Ok { data, .. } => {
-            page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref()))
-        }
-        Response::Error {
-            kind,
-            message,
-            detail,
-        } => {
-            let e = serde_json::json!({ "kind": kind, "message": access::scrub(&message, &web.daemon.archive.root), "detail": detail });
-            page(pages::search(&p.q, None, Some(&e), p.cursor.as_deref()))
-        }
+    match crate::protocol::into_value(ask(&web, request).await) {
+        Ok(data) => page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref())),
+        Err(failure) => page(pages::search(
+            &p.q,
+            None,
+            Some(&failure),
+            p.cursor.as_deref(),
+        )),
     }
 }
 
@@ -458,7 +459,7 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
         p.q.trim()
     };
     let text = format!("{scope} | measure usage");
-    match ask(
+    let answer = ask(
         &web,
         Request::Query {
             text,
@@ -469,14 +470,10 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
             fields: vec![],
         },
     )
-    .await
-    {
-        Response::Ok { data, .. } => page(pages::cost(scope, &data["data"])),
-        Response::Error { kind, message, .. } => failed(
-            error_status(&kind),
-            &kind,
-            &access::scrub(&message, &web.daemon.archive.root),
-        ),
+    .await;
+    match crate::protocol::into_value(answer) {
+        Ok(data) => page(pages::cost(scope, &data["data"])),
+        Err(failure) => failed_with(&failure),
     }
 }
 
@@ -580,11 +577,19 @@ async fn live_js() -> HttpResponse {
         .into_response()
 }
 
-fn error_status(kind: &str) -> StatusCode {
-    crate::protocol::kind(kind)
+/// An HTML failure page with the failure's shared HTTP status. The message
+/// was already scrubbed of archive paths by `ask`.
+fn failed_with(failure: &command_surface::Failure) -> HttpResponse {
+    let status = failure
+        .kind
         .http_status()
         .and_then(|status| StatusCode::from_u16(status).ok())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    failed(
+        status,
+        failure.code.as_deref().unwrap_or_default(),
+        &failure.message,
+    )
 }
 
 /// The data as the socket gives it, or a typed error with its HTTP status.

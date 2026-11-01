@@ -450,6 +450,7 @@ fn live_here(
                 fields: &fields,
             },
         )
+        .map(|answer| answer.value)
         .map_err(|f| StoreError::Invalid(format!("live sessions {text:?}: {}", f.message)))?;
         for row in page["rows"].as_array().into_iter().flatten() {
             let Some(id) = row["id"].as_str() else {
@@ -1014,11 +1015,11 @@ fn recall(
             },
         );
         match answer {
-            Ok(page) => break Some((page, indexes)),
+            Ok(page) => break Some((page.value, indexes)),
             // The provider could not embed the text: the words still search.
-            Err(f) if similarity && f.kind == "embed" => {
+            Err(f) if similarity && f.code() == "embed" => {
                 similarity = false;
-                similarity_failed = Some(f.message);
+                similarity_failed = Some(f.error.message);
             }
             Err(f) => {
                 return Err(StoreError::Invalid(format!(

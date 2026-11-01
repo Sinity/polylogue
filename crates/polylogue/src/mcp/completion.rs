@@ -58,22 +58,20 @@ pub(super) fn answer(
         Ok((_, answer, _)) => answer,
         Err(message) => return error(id, -32603, &message),
     };
-    if answer["outcome"] == "error" {
-        let mut response = error(
-            id,
-            -32000,
-            answer["error"]["message"]
-                .as_str()
-                .unwrap_or("completion failed"),
-        );
-        response["error"]["data"] = answer;
-        return response;
-    }
-    let completions: crate::protocol::complete::Answer =
-        match serde_json::from_value(answer["value"].clone()) {
-            Ok(completions) => completions,
+    let structured = answer;
+    let answer: command_surface::Answer<crate::protocol::complete::Answer> =
+        match serde_json::from_value(structured.clone()) {
+            Ok(answer) => answer,
             Err(_) => return error(id, -32603, "invalid completion answer"),
         };
+    let completions = match crate::protocol::into_value(answer) {
+        Ok(completions) => completions,
+        Err(failure) => {
+            let mut response = error(id, -32000, &failure.message);
+            response["error"]["data"] = structured;
+            return response;
+        }
+    };
     let mut values = Vec::with_capacity(completions.len());
     for completion in &completions {
         if arguments

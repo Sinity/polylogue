@@ -1,13 +1,15 @@
 //! One pinned selection, with bounded page layout and complete record transfer.
-use super::{Daemon, Response, error, ok, store_error};
+use super::{Daemon, Failure, error};
 use crate::daemon::Request;
+use command_surface::Answer;
 use polylogue_model::{BlobHash, RunId, bundle::ReadSnapshot, query_objects::*, read::*};
 use polylogue_render::pager::{PageBuilder, PageError, Push};
 use polylogue_store::{
     Reader,
-    selection::{PreparedSelection, RunReplayContext, SelectionError},
+    selection::{PreparedSelection, RunReplayContext},
 };
 use query_language::cursor::{Continuation, CursorContext, CursorSeal};
+use serde_json::Value;
 use std::{io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
 
 mod attachment_evidence;
@@ -22,35 +24,13 @@ mod outline;
 mod output;
 mod records;
 
-fn failure(error: SelectionError) -> Response {
-    match error {
-        SelectionError::Store(error) => store_error(&error),
-        error => Response::Error {
-            kind: error.kind().into(),
-            message: error.to_string(),
-            detail: error.detail(),
-        },
-    }
-}
-impl From<SelectionError> for Response {
-    fn from(error: SelectionError) -> Self {
-        failure(error)
-    }
-}
-fn language_error(error: query_language::Error) -> Response {
-    Response::Error {
-        kind: error.kind.code().into(),
-        message: error.to_string(),
-        detail: serde_json::to_value(error).ok(),
-    }
-}
-fn page_error(error: PageError) -> Response {
+fn page_error(error: PageError) -> Failure {
     let kind = if matches!(error, PageError::ItemChanged | PageError::InvalidPosition) {
         "stale_cursor"
     } else {
         "bad_request"
     };
-    self::error(kind, error)
+    Failure::new(kind, error)
 }
 pub(super) fn outline(
     reader: &Reader<'_>,
@@ -58,7 +38,7 @@ pub(super) fn outline(
     parents: bool,
     size: usize,
     cursor: Option<&str>,
-) -> Response {
+) -> Answer<Value> {
     outline::run(reader, id, parents, size, cursor)
 }
 
@@ -81,18 +61,18 @@ fn pending(d: &Daemon) -> Option<&dyn polylogue_store::primary::Sinex> {
         super::ModeState::Blocked { .. } => None,
     }
 }
-fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::Value>, Response> {
+fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::Value>, Failure> {
     operation
         .accepted_request()
         .map(serde_json::to_value)
         .transpose()
-        .map_err(|e| error("internal", e))
+        .map_err(|e| Failure::new("internal", e))
 }
-fn layout_contract(options: &ReadOptions, format: Format) -> Result<String, Response> {
+fn layout_contract(options: &ReadOptions, format: Format) -> Result<String, Failure> {
     // External evidence participates in the prepared selection commitment.
     // Version three gives document blocks their original-ordinal page coordinates.
     let bytes = serde_json::to_vec(&("canonical-read-layout-v3", options, format))
-        .map_err(|e| error("internal", e))?;
+        .map_err(|e| Failure::new("internal", e))?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
@@ -109,15 +89,15 @@ fn prepared<T>(
         ReadHeader,
         Option<&polylogue_store::selection::NearFn<'_>>,
         &Arc<crate::operation::Context>,
-    ) -> Result<(T, ReadFooter), Response>,
-) -> Result<T, Response> {
+    ) -> Result<(T, ReadFooter), Failure>,
+) -> Result<T, Failure> {
     crate::daemon::query::with_ranking(
         reader,
         &d.warm,
         &d.config,
         |embeddings, ranking_identity, near| {
             let writer = d.writes.as_ref().ok_or_else(|| {
-                error("not_yet_available", "read execution custody is unavailable")
+                Failure::new("not_yet_available", "read execution custody is unavailable")
             })?;
             let versions = operation.cursor_versions();
             let id = crate::operation::new_run_id();
@@ -131,14 +111,14 @@ fn prepared<T>(
                     ..
                 } => {
                     polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
-                    options.validate().map_err(|e| error("bad_request", e))?;
+                    options.validate().map_err(|e| Failure::new("bad_request", e))?;
                     let format = Format::parse(format)
-                        .ok_or_else(|| error("bad_request", "unknown read format"))?;
+                        .ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
                     let logical_budget = if *delivery == ReadDelivery::Page {
                         let mut resolved = PageBudget::default();
                         if let Some(tokens) = budget {
                             resolved.tokens = NonZeroU64::new(*tokens as u64).ok_or_else(|| {
-                                error("bad_request", "read budget must be positive")
+                                Failure::new("bad_request", "read budget must be positive")
                             })?;
                         }
                         Some(resolved)
@@ -161,12 +141,7 @@ fn prepared<T>(
                         reader,
                         &ask,
                         uuid::Uuid::now_v7().as_u128() as u64,
-                    )
-                    .map_err(|e| Response::Error {
-                        kind: e.kind,
-                        message: e.message,
-                        detail: e.detail,
-                    })?;
+                    )?;
                     let selection = reader.prepare_selection(target, &compile)?;
                     let object = selection.query_object()?;
                     let query_options = polylogue_store::query::execute::options_snapshot(
@@ -201,14 +176,11 @@ fn prepared<T>(
                         .context
                         .versions
                         .insert("read_layout".into(), layout_contract(options, format)?);
-                    operation
-                        .check_parent_admission()
-                        .map_err(|e| store_error(&e))?;
+                    operation.check_parent_admission()?;
                     match operation.parent_lifetime() {
                         Some(parent) => writer.query_object_with_parent(object, parent),
                         None => writer.query_object(object),
-                    }
-                    .map_err(|e| store_error(&e))?;
+                    }?;
                     (selection, binding, id.clone(), None, None)
                 }
                 Request::ReadResume {
@@ -230,13 +202,13 @@ fn prepared<T>(
                         },
                     )?;
                     let position = ReadSeek::from_order_position(&position)
-                        .map_err(|e| error("stale_cursor", e))?;
+                        .map_err(|e| Failure::new("stale_cursor", e))?;
                     let (root, binding) = selection.authenticated_execution(reader)?;
                     let root = root.clone();
                     let binding = binding.clone();
                     (selection, binding, root, Some(position), *budget)
                 }
-                _ => return Err(error("bad_request", "a read request is required")),
+                _ => return Err(Failure::new("bad_request", "a read request is required")),
             };
             let (options, format, mut budget) = match &binding.presentation {
                 ExecutionPresentation::Read {
@@ -246,19 +218,25 @@ fn prepared<T>(
                     ..
                 } => (options.clone(), *format, *page_budget),
                 ExecutionPresentation::Query => {
-                    return Err(error("bad_request", "the root execution is not a read"));
+                    return Err(Failure::new(
+                        "bad_request",
+                        "the root execution is not a read",
+                    ));
                 }
             };
             if binding.replay.context.versions.get("read_layout")
                 != Some(&layout_contract(&options, format)?)
             {
-                return Err(error("stale_cursor", "the captured read layout changed"));
+                return Err(Failure::new(
+                    "stale_cursor",
+                    "the captured read layout changed",
+                ));
             }
             if let Some(tokens) = budget_override {
                 budget
                     .as_mut()
                     .ok_or_else(|| {
-                        error(
+                        Failure::new(
                             "bad_request",
                             "streaming reads do not have paged continuations",
                         )
@@ -280,11 +258,11 @@ fn prepared<T>(
                     serde_json::from_value::<command_surface::RunnableRequest>(value.clone())
                 })
                 .transpose()
-                .map_err(|e| store_error(&polylogue_store::StoreError::Invalid(e.to_string())))?
+                .map_err(|e| Failure::from(polylogue_store::StoreError::Invalid(e.to_string())))?
                 .map_or(command_surface::Deadline::Default, |request| {
                     request.deadline
                 });
-            let hash = binding.hash().map_err(|e| error("internal", e))?;
+            let hash = binding.hash().map_err(|e| Failure::new("internal", e))?;
             let mut context = selection.cursor_context().clone();
             context.read_positions = binding.replay.context.read_positions.clone();
             context.versions = binding.replay.context.versions.clone();
@@ -307,7 +285,7 @@ fn prepared<T>(
                     execution: Box::new(binding),
                 }
             };
-            let positions = reader.change_position().map_err(|e| store_error(&e))?;
+            let positions = reader.change_position()?;
             let page_run = QueryRun {
                 id,
                 question: Some(selection.question_id()),
@@ -327,29 +305,26 @@ fn prepared<T>(
                 target,
                 deadline,
             };
-            operation
-                .check_parent_admission()
-                .map_err(|e| store_error(&e))?;
+            operation.check_parent_admission()?;
             super::execution::record(
                 writer,
                 operation.parent_lifetime(),
                 page_run,
                 execution.hash,
-                "read_failed",
                 || d.config.requests.now(),
                 || {
                     polylogue_store::read::limit::ReadLimit::set_stage("read snapshot");
                     let caught_up = d
                         .warm
                         .caught_up(reader, &positions.to_string())
-                        .map_err(|e| store_error(&e))?;
+                        ?;
                     let snapshot = ReadSnapshot {
                         query: format!("query:{}", selection.question_id()),
                         query_text: execution.target.clone(),
                         ran_at: operation.ran_at,
                         caught_up,
                         read_at: positions,
-                        currency: d.currency(reader).map_err(|e| store_error(&e))?,
+                        currency: d.currency(reader)?,
                         enabled_variants: execution.options.variants.clone(),
                         author: operation.authorship.author.clone(),
                         notes: selection.program().notes.clone(),
@@ -359,11 +334,10 @@ fn prepared<T>(
                         Some(ReadTarget::Session(id)) => {
                             let session = reader
                                 .session(id)
-                                .map_err(|e| store_error(&e))?
-                                .ok_or_else(|| error("not_found", format!("no session {id}")))?;
+                                ?
+                                .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
                             let title = reader
-                                .display_title(id)
-                                .map_err(|e| store_error(&e))?
+                                .display_title(id)?
                                 .map(ValueState::known)
                                 .unwrap_or_default();
                             (
@@ -422,8 +396,7 @@ fn prepared<T>(
     )
 }
 
-type Emit<'a> =
-    dyn FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Response> + 'a;
+type Emit<'a> = dyn FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Failure> + 'a;
 
 fn selected_source(
     reader: &Reader<'_>,
@@ -432,20 +405,18 @@ fn selected_source(
     options: &ReadOptions,
     near: Option<&polylogue_store::selection::NearFn<'_>>,
     source: &Source,
-) -> Result<bool, Response> {
+) -> Result<bool, Failure> {
     if let (Some(ReadTarget::Session(session)), Some(message)) = (target, &source.message) {
         return Ok(reader
-            .select_messages(session, options.inherited)
-            .map_err(|e| store_error(&e))?
-            .locate(Some(message))
-            .map_err(|e| store_error(&e))?
+            .select_messages(session, options.inherited)?
+            .locate(Some(message))?
             .is_some());
     }
     let reference = polylogue_model::Reference::parse(&source.reference)
-        .map_err(|e| error("not_yet_available", e))?;
+        .map_err(|e| Failure::new("not_yet_available", e))?;
     reader
         .selection_contains(selection, &reference, near)
-        .map_err(failure)
+        .map_err(Failure::from)
 }
 
 struct Rendering<'a> {
@@ -461,14 +432,14 @@ fn visit(
     rendering: &Rendering<'_>,
     start: Option<ReadPosition>,
     footer: &mut ReadFooter,
-    mut emit: impl FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Response>,
-) -> Result<(), Response> {
+    mut emit: impl FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Failure>,
+) -> Result<(), Failure> {
     let options = rendering.options;
     let near = rendering.near;
     let mixed = selection.direct_target().is_none();
     let start_row = start.map_or(0, |p| p.selection.row);
     let mut pending = start.map(|p| p.selection);
-    reader.visit_selection_from::<Response>(selection, start_row, near, |row_number, row| {
+    reader.visit_selection_from::<Failure>(selection, start_row, near, |row_number, row| {
         let record_start = pending.filter(|p| p.row == row_number).map(|p| p.record);
         let keep = if let Some(target) = row.target {
             if rendering.page
@@ -498,7 +469,7 @@ fn visit(
                     if position
                         .is_some_and(|position| position.selection != at || position.item != 0)
                     {
-                        return Err(error(
+                        return Err(Failure::new(
                             "stale_cursor",
                             "the continued document omission changed",
                         ));
@@ -527,7 +498,7 @@ fn visit(
                     };
                     if let Some(expected) = pending {
                         if expected != at {
-                            return Err(error(
+                            return Err(Failure::new(
                                 "stale_cursor",
                                 "the continued record coordinate changed",
                             ));
@@ -563,7 +534,10 @@ fn visit(
                 },
             };
             if pending.is_some_and(|expected| expected != at) {
-                return Err(error("stale_cursor", "the continued result row changed"));
+                return Err(Failure::new(
+                    "stale_cursor",
+                    "the continued result row changed",
+                ));
             }
             pending = None;
             emit(&presentation(selection, &row.values), at, Some(0))?
@@ -575,7 +549,7 @@ fn visit(
         })
     })?;
     if pending.is_some() {
-        return Err(error(
+        return Err(Failure::new(
             "stale_cursor",
             "the continued record is no longer selected",
         ));
@@ -612,7 +586,7 @@ fn attachment_call(
     block: u64,
     attachment: u64,
     input: Option<&str>,
-) -> Result<ReadyCall, Response> {
+) -> Result<ReadyCall, Failure> {
     let arguments = serde_json::to_value(crate::protocol::attachment::Arguments {
         message: message.to_string(),
         block,
@@ -621,16 +595,16 @@ fn attachment_call(
         length: crate::daemon::attachment::PAGE_BYTES as u64,
         cursor: None,
     })
-    .map_err(|e| error("internal", e))?;
+    .map_err(|e| Failure::new("internal", e))?;
     let identity = serde_json::to_vec(&(execution.hash, &execution.root, &arguments))
-        .map_err(|e| error("internal", e))?;
+        .map_err(|e| Failure::new("internal", e))?;
     d.ready_call(&command_surface::RunnableRequest {
         operation: "attachment".into(),
         arguments,
         request_id: format!("read-attachment-{}", blake3::hash(&identity).to_hex()),
         deadline: execution.deadline,
     })
-    .map_err(|error| command_surface::Answer::<serde_json::Value>::error(error).into())
+    .map_err(Failure::from)
 }
 
 fn next_call(
@@ -638,39 +612,38 @@ fn next_call(
     d: &Daemon,
     execution: &Execution,
     seek: ReadSeek,
-) -> Result<ReadyCall, Response> {
-    let after = seek.to_order_position().map_err(|e| error("internal", e))?;
-    let cursor = CursorSeal::new(reader.cursor_key().map_err(|e| store_error(&e))?)
-        .seal(&Continuation {
-            context: execution.context.clone(),
-            after,
-        })
-        .map_err(language_error)?;
+) -> Result<ReadyCall, Failure> {
+    let after = seek
+        .to_order_position()
+        .map_err(|e| Failure::new("internal", e))?;
+    let cursor = CursorSeal::new(reader.cursor_key()?).seal(&Continuation {
+        context: execution.context.clone(),
+        after,
+    })?;
     let request = Request::ReadResume {
         root_run: execution.root.clone(),
         cursor,
         budget: execution.budget.map(|b| b.tokens),
     };
     let arguments = crate::protocol::read::Arguments::from_request(&request)
-        .map_err(|e| error("internal", e))?;
-    let arguments = serde_json::to_value(arguments).map_err(|e| error("internal", e))?;
+        .map_err(|e| Failure::new("internal", e))?;
+    let arguments = serde_json::to_value(arguments).map_err(|e| Failure::new("internal", e))?;
     let identity = serde_json::to_vec(&(execution.hash, seek, execution.budget))
-        .map_err(|e| error("internal", e))?;
+        .map_err(|e| Failure::new("internal", e))?;
     let call = command_surface::RunnableRequest {
         operation: "read".into(),
         arguments,
         request_id: format!("read-page-{}", blake3::hash(&identity).to_hex()),
         deadline: execution.deadline,
     };
-    d.ready_call(&call)
-        .map_err(|error| command_surface::Answer::<serde_json::Value>::error(error).into())
+    d.ready_call(&call).map_err(Failure::from)
 }
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
     request: &Request,
     operation: &Arc<crate::operation::Context>,
-) -> Response {
+) -> Answer<Value> {
     if matches!(
         request,
         Request::Read {
@@ -700,15 +673,17 @@ pub(super) fn page(
                 page: true,
             };
             let scope = selection.scope_token();
-            let mut budget = execution
-                .budget
-                .ok_or_else(|| error("bad_request", "streaming reads require stream delivery"))?;
+            let mut budget = execution.budget.ok_or_else(|| {
+                Failure::new("bad_request", "streaming reads require stream delivery")
+            })?;
             let snapshot_bytes = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
-                .map_err(|e| error("internal", e))?
+                .map_err(|e| Failure::new("internal", e))?
                 .len();
             budget.bytes =
                 std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(snapshot_bytes))
-                    .ok_or_else(|| error("bad_request", "reading metadata exceeds page framing"))?;
+                    .ok_or_else(|| {
+                        Failure::new("bad_request", "reading metadata exceeds page framing")
+                    })?;
             let framing = ReadFraming::Query {
                 question: selection.question_id(),
             };
@@ -731,7 +706,7 @@ pub(super) fn page(
                     return Ok(true);
                 };
                 let Some(ReadPart::Item(item)) = record.parts().first() else {
-                    return Err(error(
+                    return Err(Failure::new(
                         "stale_cursor",
                         "continued layout item is unavailable",
                     ));
@@ -760,7 +735,7 @@ pub(super) fn page(
                     &mut emit,
                 )?;
             }
-            scope.check().map_err(|e| store_error(&e))?;
+            scope.check()?;
             polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
             let upper = pager.upper_position().copied();
             let document = pager
@@ -786,7 +761,7 @@ pub(super) fn page(
                     Ok(footer)
                 })
                 .map_err(page_error)?;
-            scope.check().map_err(|e| store_error(&e))?;
+            scope.check()?;
             let footer = document.footer.clone();
             Ok((
                 ReadPage {
@@ -800,8 +775,11 @@ pub(super) fn page(
         },
     );
     match result {
-        Ok(page) => ok(page),
-        Err(error) => error,
+        Ok(page) => match serde_json::to_value(&page) {
+            Ok(value) => crate::protocol::read(value, &page.snapshot.currency),
+            Err(problem) => error("internal", problem),
+        },
+        Err(failure) => failure.answer(),
     }
 }
 pub(crate) fn produce(
@@ -809,7 +787,7 @@ pub(crate) fn produce(
     d: &Daemon,
     operation: &Arc<crate::operation::Context>,
     output: &mut dyn Write,
-) -> Option<Result<(), Response>> {
+) -> Option<Result<(), Failure>> {
     if let Some(result) = self::object::produce(request, d, operation, output) {
         return Some(result);
     }
@@ -822,7 +800,7 @@ pub(crate) fn produce(
         return None;
     };
     Some(super::accepting(d).and_then(|()| {
-        let reader = d.reads.reader().map_err(|e| store_error(&e))?;
+        let reader = d.reads.reader()?;
         prepared(
             &reader,
             d,
@@ -841,9 +819,9 @@ pub(crate) fn produce(
                 };
                 let scope = selection.scope_token();
                 let check = || {
-                    scope.check().map_err(|e| store_error(&e))?;
+                    scope.check()?;
                     if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
-                        limit.check().map_err(|e| store_error(&e))?;
+                        limit.check()?;
                     }
                     Ok(())
                 };

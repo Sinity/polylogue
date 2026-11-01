@@ -7,6 +7,7 @@
 //! removed from as features land.
 
 use super::fixture_context;
+use super::run;
 use crate::daemon::query::*;
 use polylogue_testkit::{Morrow, Set, morrow_dir, short};
 use std::collections::BTreeMap;
@@ -30,7 +31,7 @@ const GAPS: &[(&str, &str)] = &[
 
 fn archive_with_notes() -> Morrow {
     use crate::daemon::service::ArchiveMode;
-    use crate::daemon::{Request, Response, service};
+    use crate::daemon::{Request, service};
     use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
     use polylogue_model::{Block, Reference};
     use polylogue_testkit::session;
@@ -100,7 +101,15 @@ fn archive_with_notes() -> Morrow {
             },
             &runtime.daemon,
         );
-        assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+        assert!(
+            matches!(
+                response,
+                command_surface::Answer::Ok { .. }
+                    | command_surface::Answer::Empty { .. }
+                    | command_surface::Answer::Degraded { .. }
+            ),
+            "{response:?}"
+        );
     }
     runtime.shutdown().unwrap();
     archive
@@ -163,7 +172,7 @@ fn compare(
             }
             return Ok(());
         }
-        (Err(f), _) => return Err(format!("error {} {}", f.kind, f.message)),
+        (Err(f), _) => return Err(format!("error {} {}", f.code(), f.message)),
         (Ok(v), _) => v,
     };
     let differ = |got: String, want: String| {
@@ -409,7 +418,7 @@ fn pages_of_every_size_concatenate_to_the_whole_answer() {
                         ..ask(text)
                     },
                 )
-                .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.kind, f.message));
+                .unwrap_or_else(|f| panic!("{key} by {size}: {} {}", f.code(), f.message));
                 if page["count"] != whole["count"] {
                     wrong.push(format!(
                         "{key} by {size}: count {} of {}",

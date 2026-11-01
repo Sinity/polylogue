@@ -84,9 +84,6 @@ fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
         ),
     ] {
         let response = query_sessions(&reader, query, &operation).unwrap_err();
-        assert!(
-            matches!(&response, Response::Error { kind, .. } if kind == expected),
-            "{query}: {response:?}"
-        );
+        assert!(response.code() == expected, "{query}: {response:?}");
     }
 }

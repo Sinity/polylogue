@@ -3,8 +3,8 @@ use polylogue_model::Reference;
 use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
 use serde_json::json;
 
-fn assert_document_import(response: Response) {
-    let Response::Ok { data, .. } = &response else {
+fn assert_document_import(response: command_surface::Answer<serde_json::Value>) {
+    let Some(data) = &response.value().cloned() else {
         panic!("document import failed: {response:?}")
     };
     let report: polylogue_engine::ImportReport = serde_json::from_value(data.clone()).unwrap();
@@ -67,7 +67,7 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
         assert!(!page.contains("<script>"));
         assert!(page.contains("polylogue read --request"));
         let api = read_page(&r, &target, &[]).await;
-        let Response::Ok { data, .. } = handle(
+        let Ok(data) = crate::protocol::into_value(handle(
             Request::Read {
                 target: target.clone(),
                 options: ReadOptions::default(),
@@ -77,7 +77,7 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
                 with_blobs: false,
             },
             &r.web.daemon,
-        ) else {
+        )) else {
             panic!("document read failed")
         };
         let socket: ReadPage = serde_json::from_value(data).unwrap();
@@ -129,7 +129,12 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
         },
         &r.web.daemon,
     );
-    assert!(matches!(note, Response::Ok { .. }));
+    assert!(matches!(
+        note,
+        command_surface::Answer::Ok { .. }
+            | command_surface::Answer::Empty { .. }
+            | command_surface::Answer::Degraded { .. }
+    ));
     let kept = handle(
         Request::Keep {
             request_id: "web-kept-group".into(),
@@ -138,7 +143,15 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
         },
         &r.web.daemon,
     );
-    assert!(matches!(kept, Response::Ok { .. }), "{kept:?}");
+    assert!(
+        matches!(
+            kept,
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
+        ),
+        "{kept:?}"
+    );
     rt().block_on(async {
         let (status, _, messages) = send(
             &r,

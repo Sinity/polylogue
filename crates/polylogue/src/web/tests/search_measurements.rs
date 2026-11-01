@@ -58,7 +58,9 @@ fn search_measurements() {
         let started = Instant::now();
         assert!(matches!(
             handle(request.clone(), &r.web.daemon),
-            Response::Ok { .. }
+            command_surface::Answer::Ok { .. }
+                | command_surface::Answer::Empty { .. }
+                | command_surface::Answer::Degraded { .. }
         ));
         let first_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut samples = Vec::new();
@@ -66,7 +68,9 @@ fn search_measurements() {
             let started = Instant::now();
             assert!(matches!(
                 handle(request.clone(), &r.web.daemon),
-                Response::Ok { .. }
+                command_surface::Answer::Ok { .. }
+                    | command_surface::Answer::Empty { .. }
+                    | command_surface::Answer::Degraded { .. }
             ));
             samples.push(started.elapsed().as_secs_f64() * 1000.0);
         }

@@ -21,7 +21,8 @@
 
 use crate::briefing::{Ask, StartSource};
 use crate::config::Startup;
-use crate::daemon::{Request, Response};
+use crate::daemon::Request;
+use command_surface::Answer;
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::SessionId;
 use polylogue_sources::origin::by_name;
@@ -242,7 +243,7 @@ fn request_id(at: jiff::Timestamp) -> std::io::Result<String> {
 }
 
 /// Sends one request with a time budget for the whole exchange.
-fn ask_daemon(startup: &Startup, request: &Request, budget: Duration) -> Option<Response> {
+fn ask_daemon(startup: &Startup, request: &Request, budget: Duration) -> Option<Answer<Value>> {
     exchange(
         &Archive::at(&startup.config.archive).socket(),
         request,
@@ -250,7 +251,7 @@ fn ask_daemon(startup: &Startup, request: &Request, budget: Duration) -> Option<
     )
 }
 
-fn exchange(socket: &Path, request: &Request, budget: Duration) -> Option<Response> {
+fn exchange(socket: &Path, request: &Request, budget: Duration) -> Option<Answer<Value>> {
     crate::client::send_with_budget(socket, request, budget).ok()
 }
 
@@ -357,9 +358,7 @@ fn context(startup: &Startup, ask: Ask) -> Option<(String, String)> {
         },
         CONTEXT_BUDGET,
     )?;
-    let Response::Ok { data, .. } = reply else {
-        return None;
-    };
+    let data = crate::protocol::into_value(reply).ok()?;
     if data["prepared"]["empty"].as_bool() != Some(false) {
         return None;
     }

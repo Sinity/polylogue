@@ -16,7 +16,9 @@ fn ok_as(d: &test_daemon::TestDaemon, request: Request, author: Author) -> serde
             via: polylogue_model::authorship::Channel::Cli,
         },
     ) {
-        Response::Ok { data, .. } => data,
+        command_surface::Answer::Ok { value: data, .. }
+        | command_surface::Answer::Empty { value: data, .. }
+        | command_surface::Answer::Degraded { value: data, .. } => data,
         other => panic!("{other:?}"),
     }
 }
@@ -87,7 +89,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         &d.daemon,
     );
     assert!(
-        matches!(refused, Response::Error { ref kind, .. } if kind == "bad_request"),
+        matches!(refused, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
     ok(
@@ -191,7 +193,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         &d.daemon,
     );
     assert!(
-        matches!(refused, Response::Error { ref kind, .. } if kind == "empty"),
+        matches!(refused, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("empty")),
         "{refused:?}"
     );
     let refused = handle(
@@ -203,7 +205,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         &d.daemon,
     );
     assert!(
-        matches!(refused, Response::Error { ref kind, .. } if kind == "bad_request"),
+        matches!(refused, command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
 }

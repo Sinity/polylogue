@@ -188,7 +188,6 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                     &limit,
                     &invocation,
                 )
-                .answer()
             });
             let answer = match worker.await {
                 Ok(answer) => answer,
@@ -197,42 +196,7 @@ impl<C: CommandType> Operation for TypedCommand<C> {
                 }
             };
             drop(guard);
-            match answer {
-                Answer::Error { error, notes, next } => Answer::Error { error, notes, next },
-                answer => {
-                    let converted = answer.map(serde_json::from_value::<C::Answer>);
-                    match converted {
-                        Answer::Ok {
-                            value: Ok(value),
-                            notes,
-                            next,
-                        } => Answer::Ok { value, notes, next },
-                        Answer::Empty {
-                            value: Ok(value),
-                            notes,
-                            next,
-                        } => Answer::Empty { value, notes, next },
-                        Answer::Degraded {
-                            value: Ok(value),
-                            notes,
-                            next,
-                        } => Answer::Degraded { value, notes, next },
-                        Answer::Ok {
-                            value: Err(error), ..
-                        }
-                        | Answer::Empty {
-                            value: Err(error), ..
-                        }
-                        | Answer::Degraded {
-                            value: Err(error), ..
-                        } => Answer::error(Failure::new(
-                            FailureKind::Io,
-                            format!("invalid {} answer: {error}", C::NAME),
-                        )),
-                        Answer::Error { .. } => unreachable!(),
-                    }
-                }
-            }
+            typed(answer, C::NAME)
         })
     }
 
@@ -242,6 +206,24 @@ impl<C: CommandType> Operation for TypedCommand<C> {
             &serde_json::to_value(answer).expect("typed answer serializes"),
             false,
         )
+    }
+}
+
+/// The daemon's answer decoded into the operation's declared answer type;
+/// the outcome, notes and next actions pass through unchanged.
+fn typed<T: DeserializeOwned>(answer: Answer<Value>, name: &str) -> Answer<T> {
+    let mut problem = None;
+    let decoded = answer.map(|value| {
+        serde_json::from_value::<T>(value)
+            .map_err(|error| problem = Some(error))
+            .ok()
+    });
+    match problem {
+        Some(error) => Answer::error(Failure::new(
+            FailureKind::Io,
+            format!("invalid {name} answer: {error}"),
+        )),
+        None => decoded.map(|value| value.expect("decoded without a problem")),
     }
 }
 

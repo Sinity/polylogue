@@ -160,6 +160,9 @@ pub enum StoreError {
     Query(#[from] polylogue_query::QueryError),
     #[error("{reference} is unavailable: {reason}")]
     ReferenceUnavailable { reference: String, reason: String },
+    /// A selection refusal with the product code that classifies it.
+    #[error("{message}")]
+    Selection { code: &'static str, message: String },
 }
 
 impl From<rusqlite::Error> for StoreError {

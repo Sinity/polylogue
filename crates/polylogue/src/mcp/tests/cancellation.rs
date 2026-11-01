@@ -266,7 +266,7 @@ fn assert_no_prepared(daemon: &test_daemon::TestDaemon) {
         },
         &daemon.daemon,
     );
-    let crate::daemon::Response::Ok { data, .. } = response else {
+    let Some(data) = response.value().cloned() else {
         panic!("{response:?}");
     };
     assert_eq!(
