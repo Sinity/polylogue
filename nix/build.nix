@@ -166,6 +166,14 @@ in
     TZDIR = "${pkgs.tzdata}/share/zoneinfo";
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
     shellHook = ''
+      # On a host that provides it, each checkout builds in its own target
+      # under the shared compiler cache, seeded from a warm target of the same
+      # Cargo.lock; an explicitly set target directory is kept.
+      if [ -z "''${CARGO_TARGET_DIR:-}" ] && command -v sinnix-cargo-target >/dev/null 2>&1; then
+        if cargo_target="$(sinnix-cargo-target)"; then
+          export CARGO_TARGET_DIR="$cargo_target"
+        fi
+      fi
       if [ -d .githooks ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
         && ! git config --get core.hooksPath >/dev/null; then
         git config --local core.hooksPath .githooks

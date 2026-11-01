@@ -23,9 +23,10 @@ pool = "normal"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
-cache = "none"
+cache = "tree+environment"
 cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
+priority = 10
 
 [operations.check]
 description = "Formatting, boundaries, both clippy configurations and all tests"
@@ -34,7 +35,7 @@ pool = "bulk"
 result = "exit"
 timeout_seconds = 1200
 scratch = "tmpfs"
-cache = "none"
+cache = "tree+environment"
 cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
@@ -45,7 +46,7 @@ pool = "bulk"
 result = "exit"
 timeout_seconds = 1200
 scratch = "tmpfs"
-cache = "none"
+cache = "tree+environment"
 cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
@@ -56,7 +57,7 @@ pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
-cache = "none"
+cache = "tree+environment"
 cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
@@ -68,9 +69,10 @@ pool = "normal"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
-cache = "none"
+cache = "tree+environment"
 cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
+priority = 20
 
 [operations.focused]
 description = "Selected package or test checks with the normal development queue"
@@ -80,7 +82,7 @@ pool = "normal"
 result = "exit"
 timeout_seconds = 1800
 scratch = "tmpfs"
-cache = "none"
+cache = "tree+environment"
 cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
