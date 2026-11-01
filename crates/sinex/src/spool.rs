@@ -87,7 +87,7 @@ pub(crate) struct Material {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "fields", rename_all = "snake_case")]
 pub(crate) enum Payload {
-    Material(Material),
+    Material(Box<Material>),
     Events { group: Option<Group> },
     ReplaySequence { group: Option<Group> },
     Signals,
@@ -170,7 +170,7 @@ pub(crate) struct Record {
 impl Record {
     pub(crate) fn material(&self) -> Option<&Material> {
         match &self.payload {
-            Payload::Material(material) => Some(material),
+            Payload::Material(material) => Some(material.as_ref()),
             _ => None,
         }
     }
@@ -1306,7 +1306,7 @@ impl Spool {
         let order = self.next.get();
         let export_bindings = exports::bindings(&frame, full_capture)?;
         let payload = match (&frame, facts.take()) {
-            (Ingress::Material { .. }, Some(facts)) => Payload::Material(Material {
+            (Ingress::Material { .. }, Some(facts)) => Payload::Material(Box::new(Material {
                 id: facts.id,
                 blob: facts.blob,
                 length: facts.length,
@@ -1321,7 +1321,7 @@ impl Spool {
                 exports: export_bindings,
                 named: facts.named,
                 request: facts.request,
-            }),
+            })),
             (Ingress::Events { .. }, _) => Payload::Events { group },
             (Ingress::ReplaySequence { .. }, _) => Payload::ReplaySequence { group },
             (Ingress::Signals { .. }, _) => Payload::Signals,
