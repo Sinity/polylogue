@@ -325,7 +325,7 @@ impl Client {
             serde_json::to_vec(&Ingress::LargeFrame {
                 frame: prepared.identity.clone(),
                 blob: prepared.record.frame.blob,
-                length: prepared.frame.length,
+                length: prepared.record.frame.length,
             })?
         };
         let acknowledgment = match self.transmit(&prepared.identity, body).await {
