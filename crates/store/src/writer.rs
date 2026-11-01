@@ -884,6 +884,29 @@ impl WriterSender {
         user_via(&self.0, request, Some(scope), None, None)
     }
 
+    /// Queues a user request without waiting for its commit. The writer
+    /// applies queued requests in order, so a later request (a delivery's
+    /// outcome after the delivery) finds an earlier one. The receiver gets the
+    /// outcome once committed; when nobody waits for it, a failure is kept in
+    /// the writer's report.
+    pub fn enqueue_user(
+        &self,
+        request: polylogue_model::user::UserRequest,
+        scope: Option<crate::ReadScopeToken>,
+    ) -> Result<Receiver<Result<polylogue_model::user::UserOutcome>>> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send_user(UserMsg::Request(
+                Box::new(request),
+                scope,
+                None,
+                None,
+                reply,
+            ))
+            .map_err(|_| StoreError::WriterGone)?;
+        Ok(wait)
+    }
+
     /// As [`Writer::user_preparing`].
     pub fn user_preparing(
         &self,
@@ -1089,7 +1112,12 @@ impl Inner {
                         .and_then(|()| {
                             self.write_user(&request, scope.as_ref(), preparation.as_deref())
                         });
-                    let _ = reply.send(result);
+                    // A queued request nobody waits for still reports its failure.
+                    if let Err(std::sync::mpsc::SendError(Err(error))) = reply.send(result) {
+                        self.report
+                            .errors
+                            .push(format!("user request {}: {error}", request.id));
+                    }
                 }
                 UserMsg::QueryObject(object, parent, reply) => {
                     let result = self

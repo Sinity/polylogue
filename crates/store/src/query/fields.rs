@@ -644,6 +644,32 @@ pub fn live_state(s: &str, now: i64) -> String {
     )
 }
 
+/// The state [`live_state`] gives a session whose live facts are these, at
+/// `now`, when it is one of the active states (`waiting`, `working`, `idle`);
+/// `None` for every other state. The daemon's scope index answers "who works
+/// here now" with it, without reading the session rows.
+pub fn active_live_state(
+    last_event: Option<&str>,
+    last_event_at: Option<i64>,
+    waiting_on: Option<&str>,
+    now: i64,
+) -> Option<&'static str> {
+    if last_event == Some("hook_session_end") {
+        return None;
+    }
+    let at = last_event_at?;
+    if now - at.min(now) > LIVE_WINDOW_MS {
+        return None;
+    }
+    Some(if waiting_on.is_some() {
+        "waiting"
+    } else if matches!(last_event, Some("hook_stop" | "hook_notification")) {
+        "idle"
+    } else {
+        "working"
+    })
+}
+
 /// When `s`'s live state changes with no new fact: the end of the live
 /// window or of the 24 hours after the last evidence; NULL when only a new
 /// fact can change it.

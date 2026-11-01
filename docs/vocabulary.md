@@ -251,6 +251,10 @@ generated page of the thing they belong to, or on the area page that owns them.
   desktop notification. A **shipped rule** is defined in code.
 - **picker**: the embedded fuzzy selector; `@N` names row N of the last list.
 - **catalog file**: the completion data the daemon publishes.
+- **scope index**: the daemon's in-memory map of main sessions by the working
+  directories they recorded, with repository, activity, stored message count,
+  live facts and task; it answers which sessions are under a directory, live
+  there or hold a task there without reading the index.
 - **workbench**: the web UI.
 - **host**: the browser extension's native messaging host.
 

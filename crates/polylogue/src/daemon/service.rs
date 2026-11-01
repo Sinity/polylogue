@@ -30,6 +30,10 @@ pub struct Daemon {
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
     pub(crate) warm: super::warm::Warm,
+    /// Sessions by working directory, kept current by the scope worker.
+    pub(crate) scope: super::scope::SharedScopeIndex,
+    /// Briefs answered whose delivery records are still queued.
+    pub(crate) queued_deliveries: super::queued_deliveries::QueuedDeliveries,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
     mode: ModeState,
@@ -245,9 +249,18 @@ pub(crate) fn store_error(e: &StoreError) -> Answer<Value> {
     }
 }
 
-/// Prepares context and, when a sender is named, records it as a delivery
-/// before handing it out: prepared is recorded first, delivered is a
-/// separate event the client reports.
+/// How much of a session-start brief's remaining time its sections leave
+/// for the answer to reach the caller: a fifth, at most a second.
+fn answer_reserve(left: std::time::Duration) -> std::time::Duration {
+    (left / 5).min(std::time::Duration::from_secs(1))
+}
+
+/// Prepares context and, when a sender is named, queues its delivery record
+/// and answers without waiting for the writer, so a busy writer never delays
+/// a brief. The delivery ID is the request ID, chosen before the text is
+/// prepared and written into it; the writer records the delivery, and any
+/// later outcome event for it, in queue order. A session-start brief stops
+/// its sections early enough to answer before the request's deadline.
 fn context(
     d: &Daemon,
     request_id: String,
@@ -255,15 +268,28 @@ fn context(
     sender: Option<String>,
     operation: &Arc<Context>,
 ) -> Answer<Value> {
-    let (prepared, selected_scope) = {
-        let reader = match d.reads.reader() {
-            Ok(r) => r,
-            Err(e) => return store_error(&e),
-        };
-        let settings = match reader.settings_snapshot(&operation.machine) {
-            Ok(settings) => settings,
-            Err(error) => return store_error(&error),
-        };
+    use polylogue_store::read::limit::ReadLimit;
+    let request_limit = ReadLimit::current();
+    let brief_limit = match (ask, &request_limit) {
+        (Ask::SessionStart { .. }, Some(limit)) => limit.deadline().map(|deadline| {
+            let left = deadline.saturating_duration_since(Instant::now());
+            ReadLimit::at(
+                deadline
+                    .checked_sub(answer_reserve(left))
+                    .unwrap_or(deadline),
+                limit.cancellation.child(),
+            )
+        }),
+        _ => None,
+    };
+    let queued = ask
+        .recipient()
+        .and_then(|recipient| d.queued_deliveries.latest(&recipient.to_string()));
+    let prepare = || -> Result<_, Answer<Value>> {
+        let reader = d.reads.reader().map_err(|e| store_error(&e))?;
+        let settings = reader
+            .settings_snapshot(&operation.machine)
+            .map_err(|e| store_error(&e))?;
         let provider =
             crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
                 .ok()
@@ -274,35 +300,52 @@ fn context(
         };
         let near: Option<&super::query::NearFn<'_>> = provider.is_some().then_some(&near);
         let ranking_identity = crate::embeddings::ranking_key(&reader, provider.as_ref());
-        let result = briefing::prepare(
+        // Assertions written after this are the next brief's delta.
+        let written_up_to = reader
+            .change_position()
+            .map_err(|e| store_error(&e))?
+            .archive;
+        let prepared = briefing::prepare(
             &reader,
+            &d.scope,
+            queued,
             ask,
             &request_id,
             operation,
             ranking_identity.as_deref(),
             near,
-        );
-        if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
-            && let Err(error) = limit.check()
-        {
-            let text = match ask {
-                Ask::Recall { text, .. } => Some(text.as_str()),
-                _ => None,
-            };
-            return super::execution::refusal(&error, "context", text, &limit);
-        }
-        match result {
-            Ok(p) => (p, reader.scope_token()),
-            Err(e) => return store_error(&e),
-        }
+        )
+        .map_err(|e| match &request_limit {
+            Some(limit) if limit.check().is_err() => {
+                let text = match ask {
+                    Ask::Recall { text, .. } => Some(text.as_str()),
+                    _ => None,
+                };
+                super::execution::refusal(&e, "context", text, limit)
+            }
+            _ => store_error(&e),
+        })?;
+        Ok((prepared, reader.scope_token(), written_up_to))
     };
-    if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
+    let prepared = match &brief_limit {
+        Some(limit) => limit.scope(prepare),
+        None => prepare(),
+    };
+    let (prepared, selected_scope, written_up_to) = match prepared {
+        Ok(prepared) => prepared,
+        Err(answer) => return answer,
+    };
+    // The request's own deadline and cancellation still apply.
+    if let Some(limit) = &request_limit
         && let Err(error) = limit.check()
     {
-        return store_error(&error);
+        let text = match ask {
+            Ask::Recall { text, .. } => Some(text.as_str()),
+            _ => None,
+        };
+        return super::execution::refusal(&error, "context", text, limit);
     }
     let mut delivery = None;
-    let mut pending = false;
     if let Some(sender) = sender
         && !prepared.empty
     {
@@ -324,30 +367,58 @@ fn context(
             Ok(writes) => writes,
             Err(failure) => return failure.answer(),
         };
-        if let Err(error) = polylogue_store::read::limit::ReadLimit::finish_scope("record delivery")
-        {
+        if let Err(error) = ReadLimit::finish_scope("record delivery") {
             return store_error(&error);
         }
         if let Err(error) = operation.check_parent_admission() {
             return store_error(&error);
         }
-        let request = operation.request(request_id, write);
-        let result = match operation.parent_lifetime() {
-            Some(parent) => writes.user_from_read_with_parent(request, selected_scope, parent),
-            None => writes.user_from_read(request, selected_scope),
+        // Queued without the caller's lifetime: the text has been handed
+        // over, so its record is written even when the caller has gone.
+        let request = operation.request(request_id.clone(), write);
+        let since = briefing::LastBrief {
+            at: request.at,
+            seq: written_up_to,
         };
-        match result {
-            Ok(out) => {
-                pending = out.pending;
-                delivery = Some(out.id);
+        match writes.enqueue_user(request, Some(selected_scope)) {
+            Ok(committed) => {
+                if let Some(recipient) = ask.recipient() {
+                    d.queued_deliveries
+                        .add(recipient.to_string(), since, committed);
+                }
+                delivery = Some(request_id);
             }
             Err(e) => return store_error(&e),
         }
     }
     crate::protocol::written(
-        serde_json::json!({ "delivery": delivery, "prepared": prepared, "pending": pending }),
-        pending,
+        serde_json::json!({ "delivery": delivery, "prepared": prepared }),
+        false,
     )
+}
+
+/// Queues what happened to a delivery and answers at once: the writer
+/// applies it after the delivery it names, and a repeated request ID is
+/// applied once. The hook waits only for the hand-over and may have exited
+/// before the daemon reads its request; the outcome it reports has happened,
+/// so it is recorded whether or not the caller is still connected.
+fn delivery_event(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    write: UserWrite,
+) -> Answer<Value> {
+    let writes = match writer(d) {
+        Ok(writes) => writes,
+        Err(failure) => return failure.answer(),
+    };
+    match writes.enqueue_user(invocation.request(request_id.clone(), write), None) {
+        Ok(_) => crate::protocol::written(
+            serde_json::json!({ "id": request_id, "queued": true }),
+            false,
+        ),
+        Err(error) => store_error(&error),
+    }
 }
 
 fn writer(d: &Daemon) -> Result<&WriterSender, Failure> {
@@ -1242,15 +1313,16 @@ fn handle_inner(
             )
         }
         Request::DeliveryEvent {
+            request_id,
             delivery,
             what,
             detail,
         } => {
             drop(reader);
-            write(
+            delivery_event(
                 d,
                 invocation,
-                user_writes::new_request_id(),
+                request_id,
                 UserWrite::DeliveryEvent {
                     delivery,
                     what,
@@ -1261,6 +1333,7 @@ fn handle_inner(
         Request::Resumable { cwd, limit } => {
             match crate::resume::resumable(
                 &reader,
+                &d.scope,
                 &cwd,
                 limit.unwrap_or(10),
                 operation.as_ref().expect("resumable operation context"),
@@ -1524,6 +1597,7 @@ pub struct Runtime {
     counts_stop: Option<Sender<()>>,
     counts: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
+    scope: Option<super::scope::ScopeWorker>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
@@ -1587,6 +1661,13 @@ impl Runtime {
         if self.counts.as_ref().is_some_and(JoinHandle::is_finished) {
             return Some("count worker terminated");
         }
+        if let Some(failure) = self
+            .scope
+            .as_ref()
+            .and_then(|worker| worker.worker_failure())
+        {
+            return Some(failure);
+        }
         self.completion
             .as_ref()
             .and_then(|worker| worker.worker_failure())
@@ -1601,6 +1682,12 @@ impl Runtime {
             failure = Some(error);
         }
         self.completion.take();
+        if let Some(scope) = self.scope.as_mut()
+            && let Err(error) = scope.shutdown()
+        {
+            failure.get_or_insert(error);
+        }
+        self.scope.take();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }
@@ -1807,6 +1894,8 @@ pub fn start(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
         warm: super::warm::Warm::default(),
+        scope: super::scope::SharedScopeIndex::default(),
+        queued_deliveries: super::queued_deliveries::QueuedDeliveries::default(),
         writes,
         mode,
         loop_tx: Mutex::new(tx.clone()),
@@ -1833,6 +1922,7 @@ pub fn start(
         counts_stop: None,
         counts: None,
         completion: None,
+        scope: None,
         completion_scope: Some(completion_scope),
         engine: None,
         lock: Some(lock),
@@ -1845,6 +1935,15 @@ pub fn start(
         .writes
         .as_ref()
         .map(WriterSender::completion_commits);
+    runtime.scope = Some(super::scope::ScopeWorker::start(
+        Arc::clone(&runtime.daemon),
+        runtime
+            .daemon
+            .writes
+            .as_ref()
+            .map(WriterSender::completion_commits),
+        runtime.worker_events.clone(),
+    )?);
     if !runtime.daemon.mode.blocked() {
         runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
             Arc::clone(&runtime.daemon),

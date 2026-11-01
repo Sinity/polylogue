@@ -59,6 +59,20 @@ pub struct MessageFacts<'a> {
     pub seq: Option<i64>,
 }
 
+/// What [`Fixture::many_sessions`] writes.
+#[derive(Debug, Clone, Copy)]
+pub struct ManySessions<'a> {
+    /// The directory every session works under.
+    pub prefix: &'a str,
+    pub sessions: usize,
+    /// Messages per session.
+    pub messages: usize,
+    /// How many of the newest sessions end on a model answer with text.
+    pub answered: usize,
+    /// The newest session's last activity, Unix ms.
+    pub last: i64,
+}
+
 /// A tool call's facts, with its result when `outcome` is not `unknown`.
 #[derive(Debug, Clone, Default)]
 pub struct CallFacts<'a> {
@@ -312,6 +326,92 @@ impl Fixture {
             [session_pk],
         )?;
         Ok(pk)
+    }
+
+    /// Many main sessions in one transaction, for tests that bound how much
+    /// of the archive a read touches. Session `n` (from 0) is
+    /// `test:many-<n>`, works in `<prefix>/d<n mod 97>/w<n mod 13>`, and was
+    /// last active `last - (sessions - 1 - n)` minutes ago, so the highest
+    /// numbers are the newest. Each has `messages` messages alternating a
+    /// person's prompt and a model answer; the newest `answered` end on a
+    /// model answer with text. Counts and brief summaries are stored as the
+    /// derive step leaves them. Returns the session row keys in order.
+    pub fn many_sessions(&mut self, spec: ManySessions<'_>) -> Result<Vec<i64>> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.index,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let mut pks = Vec::with_capacity(spec.sessions);
+        {
+            let mut session = tx.prepare(
+                "INSERT INTO session(id, origin, native_id, kind, cwd, cwd_json, started_at,
+                     last_activity_at, message_count, changed, started_time)
+                 VALUES (?1, 'test', ?2, 'main', ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+            )?;
+            let mut message = tx.prepare(
+                "INSERT INTO message(id, session_pk, order_input_pk, order_input_id, seq, role,
+                     written_by, prompt_kind, at, input_pk, on_active_path, words)
+                 VALUES (?1, ?2, ?3, 'fixture', ?4, ?5, ?6, ?7, ?8, ?3, 1, 3)",
+            )?;
+            let mut block = tx.prepare(
+                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
+                 VALUES (?1, ?2, 0, 'text', ?3, ?4)",
+            )?;
+            let text_body =
+                crate::encoding::pack_json(&serde_json::json!({"type": "text", "text": ""}))?;
+            for n in 0..spec.sessions {
+                let native = format!("many-{n}");
+                let cwd = format!("{}/d{}/w{}", spec.prefix, n % 97, n % 13);
+                let last = spec.last - 60_000 * (spec.sessions - 1 - n) as i64;
+                let started = last - 30_000;
+                session.execute(params![
+                    format!("test:{native}"),
+                    native,
+                    cwd,
+                    serde_json::json!([cwd]).to_string(),
+                    started,
+                    last,
+                    spec.messages as i64,
+                    fixture_time(Some(started))?,
+                ])?;
+                let pk = tx.last_insert_rowid();
+                let answered = n + spec.answered >= spec.sessions;
+                for m in 0..spec.messages {
+                    // The last message is always a model answer.
+                    let model = (spec.messages - 1 - m) % 2 == 0;
+                    self.seq += 1;
+                    message.execute(params![
+                        format!("many-{n}-{m}"),
+                        pk,
+                        self.input_pk,
+                        self.seq,
+                        if model { "assistant" } else { "user" },
+                        if model { "model" } else { "human" },
+                        (!model).then_some("prose"),
+                        started + m as i64,
+                    ])?;
+                    let message_pk = tx.last_insert_rowid();
+                    if answered && m + 1 == spec.messages {
+                        let text = crate::text_rows::intern(
+                            &tx,
+                            &format!("Answer {n}: the synthetic work is finished."),
+                            1,
+                            None,
+                            None,
+                            None,
+                        )?;
+                        block.execute(params![message_pk, pk, text, text_body])?;
+                    }
+                }
+                pks.push(pk);
+            }
+        }
+        for &pk in &pks {
+            crate::derive::brief::run(&tx, pk)?;
+        }
+        tx.commit()?;
+        crate::text_rows::index_pending(&self.index, || ())?;
+        Ok(pks)
     }
 
     pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: &str) -> Result<()> {

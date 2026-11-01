@@ -500,6 +500,33 @@ struct MessageContent<'a> {
 }
 
 impl Reader<'_> {
+    /// Pages this reader's connection had to read from its database files
+    /// (`SQLITE_DBSTATUS_CACHE_MISS`, every attached database) since the last
+    /// call, which resets the count. Tests bound a request's reads with it.
+    #[cfg(any(test, feature = "fixture"))]
+    #[allow(unsafe_code)]
+    pub fn take_page_reads(&self) -> Result<u64> {
+        let conn = self.conn()?;
+        let (mut current, mut highest) = (0, 0);
+        // SAFETY: the handle belongs to this reader's open connection, which
+        // outlives the call; the status call only reads counters and resets one.
+        let code = unsafe {
+            rusqlite::ffi::sqlite3_db_status(
+                conn.handle(),
+                rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS,
+                &mut current,
+                &mut highest,
+                1,
+            )
+        };
+        if code != rusqlite::ffi::SQLITE_OK {
+            return Err(StoreError::Invalid(format!(
+                "page read count is unavailable (SQLite code {code})"
+            )));
+        }
+        Ok(u64::try_from(current).unwrap_or(0))
+    }
+
     pub(crate) fn prepare_assertion_history(&self, cutoff: i64) -> Result<()> {
         let conn = self.conn()?;
         if !self.assertion_history_ready.borrow().contains(&cutoff) {

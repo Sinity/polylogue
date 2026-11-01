@@ -34,10 +34,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// How long a hook that brings context waits for the daemon: a brief
-/// during a first build over a large archive takes a few seconds. The
-/// harnesses' hook timeouts are longer.
-const CONTEXT_BUDGET: Duration = Duration::from_secs(8);
+/// How long a hook that brings context waits for the daemon. A brief's
+/// reads are bounded by what it reports and its sections stop before this
+/// deadline, so the hook gets the sections ready in time rather than
+/// nothing; session start never waits longer than this.
+const CONTEXT_BUDGET: Duration = Duration::from_millis(1_500);
+/// How long the hook waits to hand a delivery's outcome to the daemon,
+/// which queues it and answers at once.
+const DELIVERED_BUDGET: Duration = Duration::from_millis(20);
 
 /// A harness that calls the hook command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,9 +372,13 @@ fn context(startup: &Startup, ask: Ask) -> Option<(String, String)> {
 }
 
 fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
+    let Ok(request_id) = request_id(startup.clock.now()) else {
+        return;
+    };
     let _ = ask_daemon(
         startup,
         &Request::DeliveryEvent {
+            request_id,
             delivery: delivery.to_owned(),
             what: DeliveryOutcome::Delivered,
             detail: Some("written to the harness hook output".into()),
@@ -531,7 +539,7 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         )
     {
         for d in deliveries.split(',') {
-            delivered(startup, d, CONTEXT_BUDGET);
+            delivered(startup, d, DELIVERED_BUDGET);
         }
     }
     ExitCode::SUCCESS

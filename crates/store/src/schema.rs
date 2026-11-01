@@ -33,7 +33,9 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/attachment_bindings.sql"),
     "\n",
-    include_str!("schema/index_12.sql")
+    include_str!("schema/index_12.sql"),
+    "\n",
+    include_str!("schema/session_cwd.sql")
 );
 pub(crate) const QUERY_RUNS: &str = include_str!("schema/query_runs.sql");
 #[cfg(test)]
@@ -131,6 +133,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
     IndexMigration {
         version: 17,
         target: IndexTarget::Index(include_str!("schema/index_17.sql")),
+    },
+    IndexMigration {
+        version: 19,
+        target: IndexTarget::Index(include_str!("schema/session_cwd.sql")),
     },
 ];
 pub(crate) enum ArchiveMigration {

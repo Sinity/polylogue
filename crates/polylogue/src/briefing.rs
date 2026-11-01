@@ -11,10 +11,7 @@
 //! - Beads claimed here in the last week that the claiming session has not
 //!   closed or released;
 //! - what the recent sessions here did: commits, pull requests, files
-//!   changed, checks, Beads, plan items left open, the last answer;
-//! - checks that failed here with no later pass: `xtask` check and test
-//!   runs (what AgentCTL's jobs run) in this checkout, from devkit's run
-//!   history, and test, build and lint commands sessions ran themselves;
+//!   changed, Beads, what they left open, the last answer;
 //! - signal notices of the last day;
 //! - on resume, only what changed since the session's last brief; after
 //!   compaction, every prompt the operator typed in the session, verbatim.
@@ -23,8 +20,17 @@
 //! bytes; [`DEFAULT_BUDGET`]). Sections fill in the order above and each
 //! names what did not fit and the command that shows it. The operator's
 //! prompts after compaction are never cut.
+//!
+//! A brief's reads are bounded by what it reports, not by how much work
+//! happened under its directory: which sessions are under the directory,
+//! working there now or holding Beads comes from the daemon's scope index
+//! in memory, and each listed session costs one stored summary. Sections
+//! run cheapest first within the request's deadline; a section that meets
+//! the deadline is left out with reason `deadline`, and the brief answers
+//! with what it has.
 
 use crate::daemon::query::{NearFn, assertions};
+use crate::daemon::scope::SharedScopeIndex;
 use polylogue_model::DeliveryEvent;
 use polylogue_model::user::LeftOut;
 use polylogue_model::{
@@ -32,7 +38,7 @@ use polylogue_model::{
     assertion::{Assertion, AssertionKind},
 };
 use polylogue_store::search;
-use polylogue_store::{Reader, StoreError};
+use polylogue_store::{Reader, ScopeSession, SessionSummary, StoreError};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -45,8 +51,9 @@ const RECALL_PAGE: u64 = 20;
 pub const DEFAULT_BUDGET: u64 = 2_000;
 /// Bytes kept for the lines that name what did not fit.
 const POINTER_RESERVE: usize = 600;
-/// How far back failing checks, Bead claims and notices are reported.
-const FAILING_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// How far back Bead claims are reported.
+const CLAIM_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// How far back signal notices are reported.
 const NOTICE_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Why a session is starting, as the harness reports it.
@@ -173,8 +180,9 @@ pub fn scope_dirs(cwd: &Path) -> Vec<String> {
 
 /// The repository names a directory answers to: its own name, the Git
 /// root's name, a project home's name (`<project>/repo` is named after
-/// `<project>`), and every repository recorded for sessions there.
-fn repo_names(reader: &Reader<'_>, dirs: &[String]) -> Result<Vec<String>, StoreError> {
+/// `<project>`), and every repository recorded for sessions there
+/// (`recorded`, from the scope index).
+fn repo_names(dirs: &[String], recorded: Vec<String>) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     // Inside a checkout, only its root names a repository; elsewhere the
     // directory itself does.
@@ -194,19 +202,42 @@ fn repo_names(reader: &Reader<'_>, dirs: &[String]) -> Result<Vec<String>, Store
         }
     }
     names.retain(|n| n != "repo");
-    for r in reader.repos_under(dirs)? {
+    for r in recorded {
         if !names.contains(&r) {
             names.push(r);
         }
     }
-    Ok(names)
+    names
+}
+
+/// The latest brief a session received: when, and the archive's write
+/// counter then. Assertions written after it are the next brief's delta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastBrief {
+    pub at: Timestamp,
+    pub seq: i64,
+}
+
+impl LastBrief {
+    /// The later of two.
+    fn newest(a: Option<Self>, b: Option<Self>) -> Option<Self> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(if b.at > a.at { b } else { a }),
+            (a, b) => a.or(b),
+        }
+    }
 }
 
 /// Prepares the context `ask` wants. `delivery_id` goes in the text, so a
-/// reader of the transcript can find the delivery record. `near` ranks a
-/// recall by similarity when vectors exist.
+/// reader of the transcript can find the delivery record. `scope` is the
+/// daemon's scope index; `queued` is the latest brief handed to the ask's
+/// recipient whose delivery record the writer has not committed yet. `near`
+/// ranks a recall by similarity when vectors exist.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare(
     reader: &Reader<'_>,
+    scope: &SharedScopeIndex,
+    queued: Option<LastBrief>,
     ask: &Ask,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
@@ -218,7 +249,16 @@ pub fn prepare(
             cwd,
             session,
             source,
-        } => session_start(reader, cwd, session.as_ref(), *source, delivery_id, context),
+        } => session_start(
+            reader,
+            scope,
+            queued,
+            cwd,
+            session.as_ref(),
+            *source,
+            delivery_id,
+            context,
+        ),
         Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, context),
         Ask::Recall {
             text, cwd, cursor, ..
@@ -234,7 +274,6 @@ pub fn prepare(
         ),
     }
 }
-
 /// Notes a brief carries: the operator's, and agents' the operator
 /// accepted.
 fn operator_notes(
@@ -338,6 +377,9 @@ struct Fitter {
     room: usize,
     /// Lines naming what did not fit, written last from the reserve.
     pointers: Vec<String>,
+    /// The line naming the sections the deadline left out, and the command
+    /// that prints the whole brief.
+    late: Option<String>,
     budget: u64,
 }
 
@@ -350,6 +392,7 @@ impl Fitter {
             refs: Vec::new(),
             left_out: Vec::new(),
             pointers: Vec::new(),
+            late: None,
             budget,
         }
     }
@@ -396,6 +439,7 @@ impl Fitter {
             tail.push("\nLeft out for the budget:".to_owned());
             tail.extend(self.pointers.iter().map(|p| format!("- {p}")));
         }
+        tail.extend(self.late.take());
         tail.push(closing.to_owned());
         for line in tail {
             if line.len() + 1 > reserve {
@@ -409,172 +453,196 @@ impl Fitter {
     }
 }
 
-/// Sessions working under `dirs` now, other than `me`, through the query
-/// `live` runs.
-fn live_here(
-    reader: &Reader<'_>,
-    dirs: &[String],
-    me: Option<&SessionId>,
-    context: &std::sync::Arc<crate::operation::Context>,
-) -> Result<Vec<Item>, StoreError> {
-    let places: Vec<String> = dirs
-        .iter()
-        .map(|d| format!("cwd:{}", assertions::quoted(d)))
-        .collect();
-    let text = format!(
-        "sessions where ({}) (live:working OR live:waiting OR live:idle) | sort by live_rank, last_event_at desc",
-        places.join(" OR ")
-    );
-    let fields = [
-        "id".to_owned(),
-        "title".to_owned(),
-        "live".to_owned(),
-        "todo".to_owned(),
-        "last_event_at".to_owned(),
-    ];
-    let mut items = Vec::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let page = crate::daemon::query::run(
-            reader,
-            crate::daemon::query::Ask {
-                text: &text,
-                cursor: cursor.as_deref(),
-                page_size: None,
-                why: false,
-                session: None,
-                context: std::sync::Arc::clone(context),
-                embeddings: false,
-                ranking_identity: None,
-                near: None,
-                fields: &fields,
-            },
-        )
-        .map(|answer| answer.value)
-        .map_err(|f| StoreError::Invalid(format!("live sessions {text:?}: {}", f.message)))?;
-        for row in page["rows"].as_array().into_iter().flatten() {
-            let Some(id) = row["id"].as_str() else {
-                continue;
-            };
-            if me.is_some_and(|m| m.to_string() == id) {
-                continue;
-            }
-            let title = row["title"]
-                .as_str()
-                .map_or("untitled".into(), |t| one_line(t, 80));
-            let mut line = format!(
-                "- {id}  {title}: {}",
-                row["live"].as_str().unwrap_or("unknown")
-            );
-            if let Some(todo) = row["todo"].as_str() {
-                let _ = write!(line, ", doing \"{}\"", one_line(todo, 100));
-            }
-            if let Some(at) = row["last_event_at"].as_str() {
-                let _ = write!(
-                    line,
-                    ", last event {}",
-                    at.chars().take(16).collect::<String>().replace('T', " ")
-                );
-            }
-            items.push(Item {
-                text: line,
-                refs: vec![format!("session:{id}")],
-            });
-        }
-        match page["next"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
-            None => return Ok(items),
+/// What the scope index says about a brief's directories, copied out of it
+/// so that no archive read happens under its lock.
+struct Here {
+    repos: Vec<String>,
+    /// Sessions there active after the last brief, newest first: one more
+    /// than a brief reports, so it knows whether there are more.
+    recent: Vec<ScopeSession>,
+    live: Vec<(ScopeSession, &'static str)>,
+    beads: Vec<polylogue_store::OpenBead>,
+}
+
+impl Here {
+    fn of(
+        index: &polylogue_store::ScopeIndex,
+        dirs: &[String],
+        me: Option<&str>,
+        now: i64,
+        after: Option<Timestamp>,
+        claims_since: i64,
+    ) -> Self {
+        let recent = index
+            .sessions_under(dirs, me)
+            .into_iter()
+            .filter(|s| after.is_none_or(|p| s.session.last_activity.is_some_and(|t| t > p)))
+            .take(RECENT_SESSIONS as usize + 1)
+            .cloned()
+            .collect();
+        Self {
+            repos: index.repos_under(dirs),
+            recent,
+            live: index
+                .live_under(dirs, me, now)
+                .into_iter()
+                .map(|live| (live.session.clone(), live.state))
+                .collect(),
+            beads: index.open_beads(dirs, claims_since),
         }
     }
 }
 
-/// What a recent session did, in a few lines.
-fn session_item(
+/// The sections that ran into the brief's deadline. Each section that reads
+/// the archive runs through [`Deadline::section`]; one that meets the
+/// deadline is left out with reason `deadline`, and the brief answers with
+/// the sections it has instead of nothing.
+#[derive(Default)]
+struct Deadline {
+    late: Vec<&'static str>,
+}
+
+impl Deadline {
+    fn section<T>(
+        &mut self,
+        reader: &Reader<'_>,
+        what: &'static str,
+        work: impl FnOnce() -> Result<T, StoreError>,
+    ) -> Result<Option<T>, StoreError> {
+        match reader.check().and_then(|()| work()) {
+            Ok(value) => Ok(Some(value)),
+            // A query's own failure wraps the deadline; the reader knows it.
+            Err(error)
+                if matches!(error, StoreError::ReadDeadlineExceeded)
+                    || matches!(reader.check(), Err(StoreError::ReadDeadlineExceeded)) =>
+            {
+                self.late.push(what);
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Other sessions working, waiting or idle under the brief's directories,
+/// leaving out the ones a `hidden` note hides.
+fn live_items(
     reader: &Reader<'_>,
-    s: &polylogue_store::NearbySession,
-) -> Result<Item, StoreError> {
-    let id = s.id.to_string();
+    live: &[(ScopeSession, &'static str)],
+) -> Result<Vec<Item>, StoreError> {
+    let ids: Vec<String> = live.iter().map(|(s, _)| s.session.id.to_string()).collect();
+    let hidden = reader.hidden_sessions(&ids)?;
+    Ok(live
+        .iter()
+        .zip(ids)
+        .filter(|(_, id)| !hidden.contains(id))
+        .map(|((s, state), id)| {
+            let title = s
+                .session
+                .title
+                .as_deref()
+                .map_or("untitled".into(), |t| one_line(t, 80));
+            let mut line = format!("- {id}  {title}: {state}");
+            if let Some(todo) = s.todo() {
+                let _ = write!(line, ", doing \"{}\"", one_line(todo, 100));
+            }
+            if let Some(at) = s.last_event_at().and_then(Timestamp::from_unix_ms) {
+                let _ = write!(line, ", last event {}", day(Some(at)));
+            }
+            Item {
+                text: line,
+                refs: vec![format!("session:{id}")],
+            }
+        })
+        .collect())
+}
+
+/// What a recent session did, in a few lines, from its stored summary and
+/// its live facts.
+fn session_item(s: &ScopeSession, summary: Option<&SessionSummary>) -> Item {
+    let id = s.session.id.to_string();
+    let counted = s.session.messages.map_or_else(
+        || "messages not counted yet".to_owned(),
+        |n| format!("{n} messages"),
+    );
     let mut text = format!(
-        "- {}  {}  ({} messages)  {id}",
-        day(s.last_activity),
-        s.title
+        "- {}  {}  ({counted})  {id}",
+        day(s.session.last_activity),
+        s.session
+            .title
             .as_deref()
             .map_or_else(|| "untitled".into(), |t| one_line(t, 100)),
-        s.messages,
     );
-    let work = reader.session_work(&id)?.unwrap_or_default();
     let mut did = Vec::new();
-    if !work.commits.is_empty() {
-        did.push(format!(
-            "{} commit{} ({})",
-            work.commits.len(),
-            if work.commits.len() == 1 { "" } else { "s" },
-            work.commits
+    let mut open = Vec::new();
+    if let Some(work) = summary {
+        if !work.commits.is_empty() {
+            did.push(format!(
+                "{} commit{} ({})",
+                work.commits.len(),
+                if work.commits.len() == 1 { "" } else { "s" },
+                work.commits
+                    .iter()
+                    .map(|c| c.chars().take(7).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !work.pull_requests.is_empty() {
+            did.push(format!("pull requests {}", work.pull_requests.join(", ")));
+        }
+        if work.files_changed > 0 {
+            let shown: Vec<&str> = work
+                .recent_files
                 .iter()
-                .map(|c| c.chars().take(7).collect::<String>())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+                .map(|p| p.rsplit('/').next().unwrap_or(p))
+                .collect();
+            let more = work.files_changed.saturating_sub(shown.len() as u64);
+            did.push(format!(
+                "changed {} file{}: {}{}",
+                work.files_changed,
+                if work.files_changed == 1 { "" } else { "s" },
+                shown.join(", "),
+                if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        if work.unanswered_prompt {
+            open.push("the last prompt has no answer".to_owned());
+        }
     }
-    if !work.pull_requests.is_empty() {
-        did.push(format!("pull requests {}", work.pull_requests.join(", ")));
-    }
-    if !work.files_changed.is_empty() {
-        let shown: Vec<&str> = work
-            .files_changed
-            .iter()
-            .take(4)
-            .map(|p| p.rsplit('/').next().unwrap_or(p))
-            .collect();
-        let more = work.files_changed.len().saturating_sub(shown.len());
-        did.push(format!(
-            "changed {} file{}: {}{}",
-            work.files_changed.len(),
-            if work.files_changed.len() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            shown.join(", "),
-            if more > 0 {
-                format!(" and {more} more")
-            } else {
-                String::new()
-            }
-        ));
-    }
-    if let Some(task) = &work.task {
+    if let Some(task) = s.task() {
         did.push(format!("claimed {task}, still open"));
     }
     if !did.is_empty() {
         let _ = write!(text, "\n    did: {}", did.join("; "));
     }
-    let mut open = Vec::new();
-    if let Some(items) = reader.open_items(&id)? {
-        if items.unanswered_prompt {
-            open.push("the last prompt has no answer".to_owned());
-        }
-        if items.open_tool_call {
-            open.push("a tool call never finished".to_owned());
-        }
-        if let Some(w) = &items.waiting_on {
-            open.push(format!("waiting on {w}"));
-        }
+    if s.open_tool_call() || summary.is_some_and(|w| w.unfinished_tool_call) {
+        open.push("a tool call never finished".to_owned());
+    }
+    if let Some(w) = s.waiting_on() {
+        open.push(format!("waiting on {w}"));
     }
     if !open.is_empty() {
         let _ = write!(text, "\n    open: {}", open.join("; "));
     }
-    if let Some(answer) = &work.last_answer {
+    if let Some(answer) = summary.and_then(|w| w.last_answer.as_deref()) {
         let _ = write!(text, "\n    last answer: \"{}\"", one_line(answer, 300));
     }
-    Ok(Item {
+    Item {
         text,
         refs: vec![format!("session:{id}")],
-    })
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn session_start(
     reader: &Reader<'_>,
+    scope: &SharedScopeIndex,
+    queued: Option<LastBrief>,
     cwd: &Path,
     session: Option<&SessionId>,
     source: StartSource,
@@ -584,11 +652,60 @@ fn session_start(
     let now: Timestamp = context.clock.now.into();
     let dirs = scope_dirs(cwd);
     let here = cwd.display().to_string();
+    let me = session.map(ToString::to_string);
+
+    // On resume and after compaction, only what changed since this
+    // session's last brief, committed or still queued.
+    let previous = match (source, &me) {
+        (StartSource::Resume | StartSource::Compact, Some(s)) => LastBrief::newest(
+            reader
+                .deliveries_to(s)?
+                .into_iter()
+                .next()
+                .map(|d| LastBrief {
+                    at: d.at,
+                    seq: d.seq,
+                }),
+            queued,
+        ),
+        _ => None,
+    };
+    let claims_since = previous.map_or(now.unix_ms() - CLAIM_WINDOW_MS, |p| p.at.unix_ms());
+    let mut deadline = Deadline::default();
+    let stop = polylogue_store::read::limit::ReadLimit::current().and_then(|l| l.deadline());
+    let found = scope.read(stop, |index| {
+        Here::of(
+            index,
+            &dirs,
+            me.as_deref(),
+            now.unix_ms(),
+            previous.map(|p| p.at),
+            claims_since,
+        )
+    });
     let mut targets: Vec<Reference> = dirs.iter().map(|d| Reference::Cwd(d.clone())).collect();
-    targets.extend(repo_names(reader, &dirs)?.into_iter().map(Reference::Repo));
+    let recorded = found.as_ref().map(|h| h.repos.clone()).unwrap_or_default();
+    targets.extend(repo_names(&dirs, recorded).into_iter().map(Reference::Repo));
     if let Some(s) = session {
         targets.push(Reference::Session(s.clone()));
     }
+    let (mut recent, live, beads) = match found {
+        Some(h) => (h.recent, Some(h.live), Some(h.beads)),
+        None => {
+            deadline
+                .late
+                .extend(["live sessions", "open Beads", "recent sessions"]);
+            (Vec::new(), None, None)
+        }
+    };
+    let more_sessions = recent.len() as u64 > RECENT_SESSIONS;
+    recent.truncate(RECENT_SESSIONS as usize);
+    // Handoffs and blockers on the sessions listed belong with them.
+    targets.extend(
+        recent
+            .iter()
+            .map(|s| Reference::Session(s.session.id.clone())),
+    );
 
     let assertion_scope = targets
         .iter()
@@ -613,38 +730,6 @@ fn session_start(
         ))
     );
 
-    // On resume and after compaction, only what changed since this
-    // session's last brief.
-    let previous = match (source, session) {
-        (StartSource::Resume | StartSource::Compact, Some(s)) => {
-            reader.deliveries_to(&s.to_string())?.into_iter().next()
-        }
-        _ => None,
-    };
-    let after = |t: Option<Timestamp>| match &previous {
-        Some(p) => t.is_some_and(|t| t > p.at),
-        None => true,
-    };
-    let mut recent = reader.sessions_under(
-        &dirs,
-        session.map(ToString::to_string).as_deref(),
-        RECENT_SESSIONS + 1,
-    )?;
-    recent.retain(|s| after(s.last_activity));
-    let more_sessions = recent.len() as u64 > RECENT_SESSIONS;
-    recent.truncate(RECENT_SESSIONS as usize);
-    // Handoffs and blockers on the sessions listed belong with them.
-    targets.extend(recent.iter().map(|s| Reference::Session(s.id.clone())));
-    let held_notes = operator_notes(
-        reader,
-        targets.clone(),
-        previous.as_ref().map(|p| p.seq),
-        context,
-    )?;
-    // Stored authorship and judgments remain readable evidence. Neither is a
-    // trusted native-admission proof, which the current Reader cannot supply.
-    let notes: Vec<Assertion> = Vec::new();
-
     let mut header = format!("Polylogue brief for {here} (delivery {delivery_id})\n");
     if let Some(p) = &previous {
         let _ = writeln!(
@@ -656,9 +741,9 @@ fn session_start(
     // The operator's own words after compaction are never cut.
     let mut prompt_refs = Vec::new();
     if source == StartSource::Compact
-        && let Some(s) = session
+        && let Some(s) = &me
     {
-        let prompts = reader.prompts(&s.to_string())?;
+        let prompts = reader.prompts(s)?;
         if !prompts.is_empty() {
             let _ = writeln!(
                 header,
@@ -670,6 +755,15 @@ fn session_start(
             }
         }
     }
+    // Sections run cheapest first, each within the deadline.
+    let held_notes = deadline
+        .section(reader, "operator notes", || {
+            operator_notes(reader, targets.clone(), previous.map(|p| p.seq), context)
+        })?
+        .unwrap_or_default();
+    // Stored authorship and judgments remain readable evidence. Neither is a
+    // trusted native-admission proof, which the current Reader cannot supply.
+    let notes: Vec<Assertion> = Vec::new();
     if !held_notes.is_empty() {
         let _ = writeln!(
             header,
@@ -698,17 +792,20 @@ fn session_start(
         "operator notes",
         &operator_notes_command,
     );
-    fit.section(
-        "Other agents working here now:",
-        live_here(reader, &dirs, session, context)?,
-        "live sessions",
-        "polylogue live",
-    );
-    let claims_since = previous
-        .as_ref()
-        .map_or(now.unix_ms() - FAILING_WINDOW_MS, |p| p.at.unix_ms());
-    let beads: Vec<Item> = reader
-        .open_beads(&dirs, claims_since)?
+    if let Some(live) = live.filter(|live| !live.is_empty())
+        && let Some(items) =
+            deadline.section(reader, "live sessions", || live_items(reader, &live))?
+    {
+        fit.section(
+            "Other agents working here now:",
+            items,
+            "live sessions",
+            "polylogue live",
+        );
+    }
+    // Beads come from the scope index and read nothing.
+    let beads: Vec<Item> = beads
+        .unwrap_or_default()
         .into_iter()
         .map(|b| Item {
             text: format!(
@@ -726,30 +823,33 @@ fn session_start(
         "open Beads",
         "polylogue list task:",
     );
-    let mut sessions = Vec::new();
-    for s in &recent {
-        sessions.push(session_item(reader, s)?);
+    let sessions = deadline.section(reader, "recent sessions", || {
+        recent
+            .iter()
+            .map(|s| Ok(session_item(s, reader.session_summary(s.pk)?.as_ref())))
+            .collect::<Result<Vec<Item>, StoreError>>()
+    })?;
+    if let Some(sessions) = sessions {
+        if more_sessions {
+            fit.left_out.push(LeftOut {
+                what: "older sessions in this directory".into(),
+                reason: format!("a brief reports on the {RECENT_SESSIONS} most recent"),
+            });
+            fit.pointers
+                .push(format!("older sessions here: `polylogue list cwd:{here}`"));
+        }
+        fit.section(
+            "Recent sessions here, and what they did:",
+            sessions,
+            "recent sessions",
+            &format!("polylogue list cwd:{here}"),
+        );
     }
-    if more_sessions {
-        fit.left_out.push(LeftOut {
-            what: "older sessions in this directory".into(),
-            reason: format!("a brief reports on the {RECENT_SESSIONS} most recent"),
-        });
-        fit.pointers
-            .push(format!("older sessions here: `polylogue list cwd:{here}`"));
-    }
-    fit.section(
-        "Recent sessions here, and what they did:",
-        sessions,
-        "recent sessions",
-        &format!("polylogue list cwd:{here}"),
-    );
-    let notices: Vec<Item> = reader
-        .notices_since(
-            previous
-                .as_ref()
-                .map_or(now.unix_ms() - NOTICE_WINDOW_MS, |p| p.at.unix_ms()),
-        )?
+    let notices = deadline.section(reader, "notices", || {
+        reader.notices_since(previous.map_or(now.unix_ms() - NOTICE_WINDOW_MS, |p| p.at.unix_ms()))
+    })?;
+    let notices: Vec<Item> = notices
+        .unwrap_or_default()
         .into_iter()
         .map(|(row, text)| Item {
             text: format!("- {}  {}", day(Some(row.at)), one_line(&text, 200)),
@@ -758,7 +858,11 @@ fn session_start(
         .collect();
     fit.section("Signal notices:", notices, "notices", "polylogue notices");
 
-    let other_assertions = unjudged_other_assertions(reader, &targets, context)?;
+    let other_assertions = deadline
+        .section(reader, "assertions by other authors", || {
+            unjudged_other_assertions(reader, &targets, context)
+        })?
+        .unwrap_or(0);
     if other_assertions > 0 {
         fit.left_out.push(LeftOut {
             what: format!("{other_assertions} assertions by other authors"),
@@ -766,6 +870,19 @@ fn session_start(
         });
         fit.pointers.push(format!(
             "{other_assertions} assertions by other authors, not yet accepted: `{other_assertions_command}`"
+        ));
+    }
+    if !deadline.late.is_empty() {
+        for what in &deadline.late {
+            fit.left_out.push(LeftOut {
+                what: (*what).into(),
+                reason: "deadline".into(),
+            });
+        }
+        fit.late = Some(format!(
+            "Not available before the deadline: {}; the whole brief: `polylogue brief --cwd {} --deadline none`",
+            deadline.late.join(", "),
+            polylogue_render::shell_quote(&here)
         ));
     }
     let empty = fit.refs.is_empty();
@@ -790,7 +907,6 @@ fn session_start(
         next: None,
     })
 }
-
 fn takeover(
     reader: &Reader<'_>,
     session: &SessionId,

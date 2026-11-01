@@ -42,6 +42,7 @@ pub mod reference;
 mod repo_lookup;
 pub mod schema;
 pub mod schema_inputs;
+pub mod scope_index;
 pub mod search;
 pub mod selection;
 pub mod session_export;
@@ -68,11 +69,14 @@ pub mod writer;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
-pub use context::{DeliveryRow, NearbySession, OpenBead, OpenItems, Prompt, SessionWork};
+pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
     BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
     KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,
     scope::{ReadScopeToken, ScopeInvalidation},
+};
+pub use scope_index::{
+    LiveSession, NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession,
 };
 pub use writer::{
     Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,

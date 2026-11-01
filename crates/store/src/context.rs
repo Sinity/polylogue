@@ -1,43 +1,11 @@
-//! Reads that context assembly needs: sessions by working directory, what
-//! each did, open Beads there, a session's own
-//! prompts, earlier deliveries and settings.
+//! Reads that context assembly needs beyond the scope index: what a listed
+//! session did, whether sessions are hidden, a session's own prompts, what
+//! it left open, earlier deliveries and settings.
 
-use crate::read::{parse_name, ts};
 use crate::{Reader, Result, StoreError};
-use polylogue_model::{SessionId, SessionKind, Timestamp};
+use polylogue_model::Timestamp;
 use rusqlite::OptionalExtension;
-use rusqlite::params;
 use serde::Serialize;
-
-/// A session that worked in or below a directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NearbySession {
-    pub id: SessionId,
-    pub kind: SessionKind,
-    pub title: Option<String>,
-    pub started: Option<Timestamp>,
-    pub last_activity: Option<Timestamp>,
-    pub messages: u64,
-    pub cwd: Option<String>,
-}
-
-/// A nearby session from a row of (id, kind, title, started_at,
-/// last_activity_at, message count, cwd). A row whose id does not parse is
-/// `None`.
-fn nearby_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<NearbySession>> {
-    let Ok(id) = SessionId::parse(&r.get::<_, String>(0)?) else {
-        return Ok(None);
-    };
-    Ok(Some(NearbySession {
-        id,
-        kind: parse_name(&r.get::<_, String>(1)?).unwrap_or(SessionKind::Main),
-        title: r.get(2)?,
-        started: ts(r.get(3)?),
-        last_activity: ts(r.get(4)?),
-        messages: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
-        cwd: r.get(6)?,
-    }))
-}
 
 /// A delivery as stored, without its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -53,30 +21,6 @@ pub struct DeliveryRow {
     pub seq: i64,
     /// What happened to it, in order: delivered, failed, not_sent, used.
     pub events: Vec<String>,
-}
-
-/// What a session did, from its parsed rows: the outcome a brief reports,
-/// rather than its title.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct SessionWork {
-    /// The text of its last model message.
-    pub last_answer: Option<String>,
-    /// Files it wrote or edited successfully, most recent first.
-    pub files_changed: Vec<String>,
-    /// Commits (short hashes) and pull requests (`owner/repo#n`) its
-    /// commands' output names.
-    pub commits: Vec<String>,
-    pub pull_requests: Vec<String>,
-    /// The Bead its latest successful claim holds, when still open.
-    pub task: Option<String>,
-}
-
-/// A Bead whose latest claim under a directory is still open.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct OpenBead {
-    pub id: String,
-    pub session: String,
-    pub since: Option<Timestamp>,
 }
 
 /// What a session left open: the evidence a resumable session is ranked
@@ -110,57 +54,92 @@ pub struct Prompt {
     pub text: String,
 }
 
+/// What a session did, as the derive step keeps it for briefs: the outcome
+/// a brief reports, rather than its title.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SessionSummary {
+    /// The text of its last model message that has text.
+    pub last_answer: Option<String>,
+    /// How many files it wrote or edited successfully.
+    pub files_changed: u64,
+    /// The most recently changed of them, newest first.
+    pub recent_files: Vec<String>,
+    /// Commits (hashes) and pull requests (`owner/repo#n`) its commands made.
+    pub commits: Vec<String>,
+    pub pull_requests: Vec<String>,
+    /// Its last message is a person's prompt with no answer after it.
+    pub unanswered_prompt: bool,
+    /// Its newest tool call has no result.
+    pub unfinished_tool_call: bool,
+}
+
 impl Reader<'_> {
-    /// Sessions whose working directory is one of `dirs` or below one,
-    /// newest activity first, leaving out `exclude`.
-    pub fn sessions_under(
-        &self,
-        dirs: &[String],
-        exclude: Option<&str>,
-        limit: u64,
-    ) -> Result<Vec<NearbySession>> {
-        let mut out: Vec<NearbySession> = Vec::new();
+    /// What the session with row `pk` did, as the derive step last stored
+    /// it; `None` before the derive step has summarized it.
+    pub fn session_summary(&self, pk: i64) -> Result<Option<SessionSummary>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT s.id, s.kind, coalesce(s.title, s.derived_title), s.started_at, s.last_activity_at,
-                    (SELECT count(*) FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL), s.cwd
-               FROM session s
-              WHERE s.kind = 'main' AND s.stub = 0
-                AND (s.cwd = ?1 OR (s.cwd >= ?1 || '/' AND s.cwd < ?1 || '0'))
-                AND s.id IS NOT ?2
-              ORDER BY s.last_activity_at DESC
-              LIMIT ?3",
-        )?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        for dir in dirs {
-            for row in stmt.query_map(params![dir, exclude, limit], nearby_session)? {
-                if let Some(s) = row?
-                    && !out.iter().any(|o| o.id == s.id)
-                {
-                    out.push(s);
+        let row = conn
+            .prepare_cached(
+                "SELECT last_answer_pk, files_changed, recent_files_json, commits_json,
+                        pull_requests_json, unanswered_prompt, unfinished_tool_call
+                   FROM session_brief WHERE session_pk = ?1",
+            )?
+            .query_row([pk], |r| {
+                Ok((
+                    r.get::<_, Option<i64>>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, bool>(5)?,
+                    r.get::<_, bool>(6)?,
+                ))
+            })
+            .optional()?;
+        let Some((answer, files, recent, commits, pull_requests, unanswered, unfinished)) = row
+        else {
+            return Ok(None);
+        };
+        let last_answer = match answer {
+            Some(message) => {
+                let mut parts = Vec::new();
+                let mut stmt = conn.prepare_cached(
+                    "SELECT t.body FROM block b JOIN text t ON t.id = b.text_id
+                      WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
+                )?;
+                for body in stmt.query_map([message], |r| r.get::<_, Vec<u8>>(0))? {
+                    parts.push(crate::encoding::unpack_text(&body?)?);
                 }
+                let text = parts.join("\n");
+                (!text.trim().is_empty()).then_some(text)
             }
-        }
-        out.sort_by_key(|s| std::cmp::Reverse(s.last_activity));
-        out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
-        Ok(out)
+            None => None,
+        };
+        Ok(Some(SessionSummary {
+            last_answer,
+            files_changed: u64::try_from(files).unwrap_or(0),
+            recent_files: serde_json::from_str(&recent)?,
+            commits: serde_json::from_str(&commits)?,
+            pull_requests: serde_json::from_str(&pull_requests)?,
+            unanswered_prompt: unanswered,
+            unfinished_tool_call: unfinished,
+        }))
     }
 
-    /// The repositories recorded for sessions in these directories.
-    pub fn repos_under(&self, dirs: &[String]) -> Result<Vec<String>> {
+    /// Which of these sessions a current `hidden` note hides.
+    pub fn hidden_sessions(&self, ids: &[String]) -> Result<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT DISTINCT repo FROM session
-              WHERE repo IS NOT NULL
-                AND (cwd = ?1 OR (cwd >= ?1 || '/' AND cwd < ?1 || '0'))",
-        )?;
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {} FROM (SELECT ?1 AS id) s",
+            crate::query::fields::hidden("s")
+        ))?;
         let mut out = Vec::new();
-        for dir in dirs {
-            for r in stmt.query_map([dir], |r| r.get::<_, String>(0))? {
-                let r = r?;
-                if !out.contains(&r) {
-                    out.push(r);
-                }
+        for id in ids {
+            if stmt.query_row([id], |r| r.get::<_, bool>(0))? {
+                out.push(id.clone());
             }
         }
         Ok(out)
@@ -363,101 +342,6 @@ impl Reader<'_> {
         Ok(polylogue_model::settings::Snapshot::new(
             self.settings_catalog(machine)?,
         ))
-    }
-
-    /// What a session did; `None` when there is no such session.
-    pub fn session_work(&self, session: &str) -> Result<Option<SessionWork>> {
-        let conn = self.conn()?;
-        let Some(pk) = conn
-            .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
-            .query_row([session], |r| r.get::<_, i64>(0))
-            .optional()?
-        else {
-            return Ok(None);
-        };
-        let mut work = SessionWork::default();
-        let last: Option<i64> = conn
-            .prepare_cached(
-                "SELECT m.pk FROM message m
-                  WHERE m.session_pk = ?1 AND m.written_by = 'model' AND m.duplicate_of IS NULL
-                    AND EXISTS (SELECT 1 FROM block b WHERE b.message_pk = m.pk AND b.kind = 'text')
-                  ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC
-                  LIMIT 1",
-            )?
-            .query_row([pk], |r| r.get(0))
-            .optional()?;
-        if let Some(message) = last {
-            let mut parts = Vec::new();
-            let mut stmt = conn.prepare_cached(
-                "SELECT t.body FROM block b JOIN text t ON t.id = b.text_id
-                  WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
-            )?;
-            for body in stmt.query_map([message], |r| r.get::<_, Vec<u8>>(0))? {
-                parts.push(crate::encoding::unpack_text(&body?)?);
-            }
-            let text = parts.join("\n");
-            work.last_answer = (!text.trim().is_empty()).then_some(text);
-        }
-        let mut stmt = conn.prepare_cached(
-            "SELECT path FROM tool_call
-              WHERE session_pk = ?1 AND action IN ('file_write', 'file_edit')
-                AND outcome = 'ok' AND path IS NOT NULL
-              GROUP BY path ORDER BY max(at) DESC, path",
-        )?;
-        for path in stmt.query_map([pk], |r| r.get::<_, String>(0))? {
-            work.files_changed.push(path?);
-        }
-        let mut stmt = conn.prepare_cached(
-            "SELECT commit_hash FROM commit_link WHERE session_pk = ?1 ORDER BY commit_hash",
-        )?;
-        for hash in stmt.query_map([pk], |r| r.get::<_, String>(0))? {
-            work.commits.push(hash?);
-        }
-        let mut stmt = conn.prepare_cached(
-            "SELECT repo, number FROM pr_link WHERE session_pk = ?1 ORDER BY repo, number",
-        )?;
-        for row in stmt.query_map([pk], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-            let (repo, number) = row?;
-            work.pull_requests.push(format!("{repo}#{number}"));
-        }
-        work.task = conn
-            .prepare_cached("SELECT live_task FROM session WHERE pk = ?1")?
-            .query_row([pk], |r| r.get(0))?;
-        Ok(Some(work))
-    }
-
-    /// Beads still held open by a claim of a session under `dirs` that was
-    /// active since `since`, most recent first.
-    pub fn open_beads(&self, dirs: &[String], since: i64) -> Result<Vec<OpenBead>> {
-        let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT s.live_task, s.id, s.last_activity_at FROM session s
-              WHERE s.live_task IS NOT NULL AND s.last_activity_at >= ?2
-                AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
-                            OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
-              ORDER BY s.last_activity_at DESC, s.pk DESC",
-        )?;
-        let dirs = serde_json::to_string(dirs)?;
-        let mut seen: Vec<String> = Vec::new();
-        let mut out = Vec::new();
-        for row in stmt.query_map(params![dirs, since], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-            ))
-        })? {
-            let (id, session, at) = row?;
-            if !seen.contains(&id) {
-                seen.push(id.clone());
-                out.push(OpenBead {
-                    id,
-                    session,
-                    since: ts(at),
-                });
-            }
-        }
-        Ok(out)
     }
 
     /// The text of a message's text blocks, joined.

@@ -258,16 +258,19 @@ pub enum Request {
         reason: Option<String>,
     },
     /// Prepares context: a brief, a takeover or a recall. With a `sender`
-    /// (hook, mcp, ...) it is recorded as a delivery to the recipient
-    /// before it is returned; the request ID becomes the delivery ID.
+    /// (hook, mcp, ...) its record as a delivery to the recipient is queued
+    /// for the writer and the answer does not wait for it; the request ID
+    /// becomes the delivery ID.
     Context {
         request_id: String,
         ask: Ask,
         #[serde(default)]
         sender: Option<String>,
     },
-    /// What happened to a delivery after it was handed out.
+    /// What happened to a delivery after it was handed out. The daemon
+    /// queues it and answers at once; a repeated request ID is applied once.
     DeliveryEvent {
+        request_id: String,
         delivery: String,
         what: DeliveryOutcome,
         #[serde(default)]
