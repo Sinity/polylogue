@@ -61,7 +61,7 @@ impl BrowserHost {
     /// Asks the daemon. `None` when it does not answer: callers report what
     /// they cannot know as unknown, never as absent.
     pub fn ask(&self, request: &Request) -> Option<Response> {
-        crate::cli::send(&self.socket, request).ok()
+        crate::client::send(&self.socket, request).ok()
     }
 
     /// The chat actions setting, or `None` when the daemon does not answer.

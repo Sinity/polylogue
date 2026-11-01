@@ -399,6 +399,7 @@ it("finishes a pending capture when the daemon already has its file bytes", asyn
 
   const hash = "cd".repeat(32);
   files[0].stored = { blob: hash, size: 2 };
+  await chrome.storage.session.clear();
   const restarted = start(chrome, { indexedDB: new IDBFactory() });
   expect((await restarted.captureTab(1, "sweep")).outcome).toBe("stored");
   expect(host.stored).toHaveLength(2);
@@ -460,4 +461,16 @@ it("keeps the next capture when the old page closes during a download", async ()
   expect(stored).toEqual([newer.raw]);
   expect(calls).toBe(2);
   expect(capturer.downloading.size).toBe(0);
+});
+
+it("keeps unchanged conversation fingerprints across a browser restart", async () => {
+  const host = storingHost([]);
+  const page = chatgptPage();
+  const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const before = start(chrome, { indexedDB: new IDBFactory() });
+  expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
+  await chrome.storage.session.clear();
+  const after = start(chrome, { indexedDB: new IDBFactory() });
+  expect((await after.captureTab(1, "sweep")).outcome).toBe("unchanged");
+  expect(host.stored).toHaveLength(1);
 });

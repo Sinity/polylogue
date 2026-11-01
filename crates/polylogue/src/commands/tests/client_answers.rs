@@ -17,6 +17,7 @@ const ASKED: &[(&str, &[&str])] = &[
     ("query", &["sessions where"]),
     ("list", &[]),
     ("read", &["claude-code:s1"]),
+    ("outline", &["claude-code:s1"]),
     ("read", &["claude-code:missing"]),
     ("attachment", &["claude-code:missing", "0"]),
     ("note list", &[]),
@@ -45,7 +46,7 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str]) -> Answer {
         json: true,
     };
     let request = build(c, &values, &caller).map_err(|e| format!("bad_request: {e}"))?;
-    match crate::cli::send(&w.daemon.archive.socket(), &request).unwrap() {
+    match crate::client::send(&w.daemon.archive.socket(), &request).unwrap() {
         Response::Ok { data } => Ok(data),
         Response::Error { kind, message, .. } => Err(format!("{kind}: {message}")),
     }

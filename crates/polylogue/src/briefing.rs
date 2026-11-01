@@ -817,7 +817,7 @@ fn session_start(
             }),
     );
     fit.section(
-        "Checks that failed here with no later pass:",
+        "Verifications that failed here since their last pass:",
         failing,
         "failing checks",
         "polylogue work kind:verification state:error",

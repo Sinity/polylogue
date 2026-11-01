@@ -129,7 +129,7 @@ export class Capturer {
   /**
    * `chrome` and `host` are the browser and the host; `outbox`
    * keeps captures until the host has them; `seen` remembers what each
-   * conversation held when it was last captured (a transient chrome.storage area; the daemon owns pending files).
+   * conversation held when it was last captured across browser restarts; the daemon owns pending files.
    */
   constructor({ chrome, host, outbox, seen, log = () => {} }) {
     this.chrome = chrome;

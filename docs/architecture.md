@@ -138,7 +138,7 @@ capture stays.
 The extension keeps captures the host has not yet acknowledged in its outbox.
 The daemon reports attachments marked `not_fetched: "downloading"` in the latest
 capture, so backfill and unchanged page captures resume their downloads after a
-browser restart. Conversation fingerprints are temporary browser-session state.
+browser restart. Conversation fingerprints survive browser restarts in extension storage.
 [Chat actions](../crates/store/src/chat_actions.rs) and
 [backfill jobs](../crates/store/src/backfill_jobs.rs) are archive rows the
 writer changes: the operator queues or starts them through the CLI, MCP or the
@@ -369,6 +369,7 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
 ## Python client
 
 The standard-library client in `clients/python/polylogue/client.py` invokes the
