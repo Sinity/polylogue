@@ -405,6 +405,9 @@ pub fn run(
         }
         Err(e) => return fail(policy, json, "io", &e.to_string(), 1),
     };
+    if let Err(failure) = decoded(cmd, &answer) {
+        return fail_with(policy, json, &failure, &[]);
+    }
     let outcome_code = answer.exit_code();
     if json && cmd.output.is_none() {
         println!(
@@ -581,6 +584,17 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 }
 
 /// A failure made here, before or instead of a daemon answer.
+/// Refuses an answer whose value is not its operation's declared type, the
+/// same way for every operation, before anything reads it.
+pub(crate) fn decoded(cmd: &Command, answer: &Answer<Value>) -> Result<(), command_surface::Failure> {
+    match (cmd.decode_answer, answer.value()) {
+        (Some(decode), Some(value)) => {
+            decode(value).map_err(|error| crate::protocol::protocol_mismatch(cmd.name, error))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn fail(
     output: crate::config::OutputConfig,
     json: bool,

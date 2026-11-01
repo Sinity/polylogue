@@ -99,7 +99,12 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
     (FailureKind::StoppedEarly, &["stopped_early"]),
     (
         FailureKind::NotRunning,
-        &["not_running", "daemon_required", "shutting_down"],
+        &[
+            "not_running",
+            "daemon_required",
+            "shutting_down",
+            "daemon_protocol_mismatch",
+        ],
     ),
     (FailureKind::Timeout, &["timeout", "deadline_exceeded"]),
     (FailureKind::Cancelled, &["cancelled"]),
@@ -145,6 +150,18 @@ pub fn kind(code: &str) -> FailureKind {
         .iter()
         .find_map(|(kind, codes)| codes.contains(&code).then_some(*kind))
         .unwrap_or(FailureKind::Io)
+}
+
+/// An answer whose value does not decode as its operation's declared type:
+/// the daemon that answered was built from other sources.
+pub fn protocol_mismatch(operation: &str, error: impl std::fmt::Display) -> Failure {
+    failure(
+        "daemon_protocol_mismatch",
+        format!(
+            "the daemon answered {operation} in a shape this build does not read ({error}); \
+             it speaks another protocol version, so restart it with `polylogue daemon`"
+        ),
+    )
 }
 
 /// A product failure code, classified once into the shared kind.

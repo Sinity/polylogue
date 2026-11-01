@@ -435,3 +435,20 @@ fn help_and_build_revision_exit_before_loading_an_explicit_deployment() {
     assert!(!archive.exists());
     assert_eq!(std::fs::read_to_string(config).unwrap(), malformed);
 }
+
+#[test]
+fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
+    // A daemon from an earlier build still put the outcome in the document.
+    let older = Answer::ok(serde_json::json!({
+        "outcome": "rows", "unit": "sessions", "rows": [], "count": 0
+    }));
+    for name in ["query", "list", "measure sessions"] {
+        let command = crate::commands::command(name).unwrap_or_else(|| panic!("{name}"));
+        let refused = super::decoded(command, &older).unwrap_err();
+        assert_eq!(refused.code.as_deref(), Some("daemon_protocol_mismatch"), "{name}");
+        assert_eq!(refused.kind, command_surface::FailureKind::NotRunning, "{name}");
+    }
+    let failed: Answer<serde_json::Value> =
+        Answer::error(crate::protocol::failure("not_found", "nothing"));
+    assert!(super::decoded(crate::commands::command("query").unwrap(), &failed).is_ok());
+}
