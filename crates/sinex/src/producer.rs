@@ -97,7 +97,7 @@ impl Sinex {
         })?;
         if let Some(entry) = latest.filter(|entry| entry.identity.starts_with(&desired)) {
             return Ok(PreparedWrite {
-                identity: entry.identity,
+                identity: entry.record.identity,
                 pending: true,
             });
         }
@@ -215,8 +215,7 @@ impl Sinex {
         };
         crate::client::checked(ack.clone())?;
         let descriptor = entry
-            .material
-            .as_ref()
+            .material()
             .ok_or_else(|| Error::Invalid("capture has no material descriptor".into()))?;
         let material = Material {
             id: ack
@@ -241,10 +240,10 @@ impl Sinex {
             if entry.unresolved {
                 return Ok(());
             }
-            let Some(captured) = entry.capture.clone() else {
+            let Some(captured) = entry.capture().cloned() else {
                 return Ok(());
             };
-            let acknowledged = if entry.refused {
+            let acknowledged = if entry.phase.is_refused() {
                 None
             } else {
                 Self::capture_material(queue, &entry)?
@@ -260,7 +259,7 @@ impl Sinex {
                 acknowledged
             };
             pending.push(PendingCapture {
-                identity: entry.identity,
+                identity: entry.record.identity,
                 captured,
                 material,
                 anchor,
@@ -304,7 +303,7 @@ impl Sinex {
         {
             Some(entry) => {
                 return Ok(PreparedWrite {
-                    identity: entry.identity,
+                    identity: entry.record.identity,
                     pending: true,
                 });
             }
@@ -438,7 +437,7 @@ impl Sinex {
             }
             if queue
                 .get(&observation)?
-                .is_some_and(|entry| entry.acknowledged && !entry.refused)
+                .is_some_and(|entry| entry.phase.is_acknowledged())
             {
                 queue.prepare_group(
                     Ingress::Events {
@@ -550,10 +549,9 @@ impl Sinex {
     pub(crate) fn drain_observations(&self) -> Result<()> {
         let mut ready = Vec::new();
         self.visit_prepared(|queue, entry| {
-            if entry.kind == crate::spool::Kind::Material
-                && entry.acknowledged
-                && !entry.refused
-                && entry.capture.is_none()
+            if entry.material().is_some()
+                && entry.phase.is_acknowledged()
+                && entry.capture().is_none()
                 && queue.capture_group(&entry.identity)?.is_none()
                 && let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)?
                 && matches!(
@@ -561,7 +559,7 @@ impl Sinex {
                     "polylogue-products" | "polylogue-request-restore"
                 )
             {
-                ready.push(entry.identity);
+                ready.push(entry.record.identity);
             }
             Ok(())
         })?;
@@ -608,7 +606,7 @@ impl Sinex {
                     let entry = queue
                         .get(identity)?
                         .ok_or_else(|| Error::Invalid("capture is not prepared".into()))?;
-                    if entry.unresolved || entry.refused {
+                    if entry.unresolved || entry.phase.is_refused() {
                         return Err(Error::Refused {
                             name: identity.clone(),
                             reason: "capture has no accepted semantic custody".into(),
@@ -685,7 +683,7 @@ impl Sinex {
         let queue = self.queue()?;
         if let Some(group) = queue.group_for(identities)? {
             return Ok(PreparedWrite {
-                identity: group.identity,
+                identity: group.record.identity,
                 pending: true,
             });
         }
@@ -811,7 +809,7 @@ impl Sinex {
         for name in names {
             let observation = format!("{name}:observation");
             if let Some(entry) = queue.get(&observation)? {
-                if !entry.named {
+                if !entry.is_named() {
                     return Err(Error::Invalid(
                         "named observation has another operation type".into(),
                     ));
@@ -822,7 +820,7 @@ impl Sinex {
                     visit(&write.product).map_err(Error::Store)?;
                 }
             } else if let Some(entry) = queue.get(&name)? {
-                if !entry.named {
+                if !entry.is_named() {
                     return Err(Error::Invalid(
                         "named product has another operation type".into(),
                     ));
@@ -851,7 +849,7 @@ impl Sinex {
             }
             for entry in page {
                 after = Some(entry.order);
-                if !entry.request {
+                if !entry.is_request() {
                     continue;
                 }
                 let retained = {
@@ -916,7 +914,7 @@ impl Sinex {
         visit: &mut dyn FnMut(&polylogue_store::NewBlob) -> polylogue_store::Result<()>,
     ) -> polylogue_store::Result<()> {
         Ok(self.visit_prepared(|_, entry| {
-            if let Some(Capture::Blob { hash, length }) = entry.capture {
+            if let Some(Capture::Blob { hash, length }) = entry.capture().cloned() {
                 visit(&polylogue_store::NewBlob { hash, size: length })
                     .map_err(|error| Error::Invalid(error.to_string()))?;
             }
@@ -927,12 +925,15 @@ impl Sinex {
     pub(crate) fn drain_requests(&self) -> Result<()> {
         let mut ready = Vec::new();
         self.visit_prepared(|queue, entry| {
-            if entry.request
+            if entry.is_request()
                 && entry.identity.starts_with("request:")
-                && entry.acknowledged
+                && matches!(
+                    entry.phase,
+                    crate::spool::Phase::Acknowledged { .. } | crate::spool::Phase::Refused
+                )
                 && queue.capture_group(&entry.identity)?.is_none()
             {
-                ready.push(entry.identity);
+                ready.push(entry.record.identity);
             }
             Ok(())
         })?;
@@ -968,10 +969,10 @@ impl Sinex {
                 .flat_map(|change| &change.action.attachments)
             {
                 self.visit_prepared(|queue,entry|{
-                    if matches!(&entry.capture,Some(Capture::Blob{hash,..}) if *hash==attachment.blob) {
+                    if matches!(entry.capture(),Some(Capture::Blob{hash,..}) if *hash==attachment.blob) {
                         if let Some(material)=Self::capture_material(queue,&entry)? {
                             writes.push(ProductWrite{location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
-                            if queue.capture_group(&entry.identity)?.is_none() {dependencies.push(entry.identity);}
+                            if queue.capture_group(&entry.identity)?.is_none() {dependencies.push(entry.record.identity);}
                         } else {waiting=true;}
                     }
                     Ok(())

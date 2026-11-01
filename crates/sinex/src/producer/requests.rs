@@ -115,16 +115,13 @@ fn validate(
     custody: &QueuedPublicationCustody,
 ) -> Result<()> {
     crate::client::confirmed::source3::validate_source(custody)?;
-    let body = entry
-        .body
-        .as_ref()
-        .ok_or_else(|| unavailable(&entry.identity))?;
+    let body = entry.body().ok_or_else(|| unavailable(&entry.identity))?;
     let expected_frame = format!("blake3:{}", custody.frame_content_hash);
     let expected_body = format!("blake3:{}", custody.blob);
     if custody.producer_identity != producer
         || custody.frame != entry.identity
         || custody.frame != frame.frame()
-        || expected_frame != entry.frame_hash
+        || expected_frame != entry.frame.blob
         || expected_frame
             != sinex_transport::producer::content_hash(frame)
                 .map_err(crate::client::submit_error)?
@@ -137,9 +134,9 @@ fn validate(
         || custody.source_version != material.source.version
         || custody.parser != material.parser
         || custody.parser_version != material.parser_version
-        || entry.refused
+        || entry.phase.is_refused()
         || entry.unresolved
-        || !entry.request
+        || !entry.is_request()
     {
         return Err(Error::Refused {
             name: entry.identity.clone(),

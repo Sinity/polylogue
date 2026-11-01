@@ -27,7 +27,7 @@ fn prepared() -> Fixture {
         let request = selector(&queue, &entry, Vec::new()).unwrap();
         (entry, request)
     };
-    let receipt=serde_json::from_value(json!({"number":11,"frame":entry.identity,"material":material.id,"admitted":[],"outcome":{"frame_content_hash":entry.frame_hash},"refusal":null,"commit_seq":null})).unwrap();
+    let receipt=serde_json::from_value(json!({"number":11,"frame":entry.identity,"material":material.id,"admitted":[],"outcome":{"frame_content_hash":entry.frame.blob},"refusal":null,"commit_seq":null})).unwrap();
     let binding = RecordedMaterialBinding {
         receipt,
         material: material.id,
@@ -311,13 +311,14 @@ fn own_recorded_observer_uses_authenticated_read_acl_without_registration_or_cur
     }
     assert_eq!(count, 1);
     assert!(
-        !client
+        client
             .queue()
             .unwrap()
             .get(&entry.identity)
             .unwrap()
             .unwrap()
-            .acknowledged,
+            .phase
+            .is_pending(),
         "observation creates no ACK"
     );
     drop(client);

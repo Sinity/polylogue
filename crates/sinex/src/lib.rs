@@ -439,11 +439,8 @@ impl polylogue_store::primary::Sinex for Sinex {
         let mut admitted = false;
         for receipt in receipts.into_values() {
             if let Some(entry) = queue.get(&receipt.frame)? {
-                admitted |= matches!(
-                    entry.kind,
-                    spool::Kind::Events | spool::Kind::ReplaySequence
-                ) && receipt.refusal.is_none()
-                    && receipt.commit_seq.is_some();
+                admitted |=
+                    entry.is_write() && receipt.refusal.is_none() && receipt.commit_seq.is_some();
                 client::adopt_receipt(&queue, &entry, receipt)?;
             }
         }

@@ -18,10 +18,10 @@ impl Sinex {
                 return Ok(());
             };
             after = Some(entry.order);
-            if entry.unresolved || entry.refused || entry.private || entry.revoked {
+            if entry.unresolved || entry.phase.is_refused() || entry.is_private() || entry.revoked {
                 continue;
             }
-            if entry.capture.is_some() {
+            if entry.capture().is_some() {
                 let pinned = self.queue()?.pin_capture(&entry.identity)?;
                 let Capture::Input(input) = pinned.decode()? else {
                     return Err(Error::Invalid(

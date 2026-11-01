@@ -105,7 +105,7 @@ impl Sinex {
             let entry = queue
                 .get(identity)?
                 .ok_or_else(|| Error::Invalid("private canonical custody disappeared".into()))?;
-            if !entry.private {
+            if !entry.is_private() {
                 return Err(Error::Invalid(
                     "private custody index names a public operation".into(),
                 ));
@@ -152,7 +152,7 @@ fn existing(
     let Some(entry) = queue.get(name)? else {
         return Ok(false);
     };
-    if !entry.private {
+    if !entry.is_private() {
         return Err(Error::Invalid(
             "canonical custody name belongs to another operation".into(),
         ));

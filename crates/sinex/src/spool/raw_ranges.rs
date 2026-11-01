@@ -48,7 +48,7 @@ fn disposition(
 }
 
 pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
-    let Some(Capture::Input(input)) = &prepared.capture else {
+    let Some(Capture::Input(input)) = prepared.capture() else {
         return Ok(());
     };
     let (Some(generation), Some(_)) = (&input.generation, input.raw_range) else {
@@ -102,7 +102,7 @@ impl Spool {
         let Some(prepared) = self.get(identity)? else {
             return Ok(None);
         };
-        let Some(Capture::Input(input)) = prepared.capture else {
+        let Some(Capture::Input(input)) = prepared.capture().cloned() else {
             return Ok(None);
         };
         let (Some(generation), Some(range)) = (input.generation, input.raw_range) else {
@@ -118,7 +118,7 @@ impl Spool {
 
     pub fn pin_raw(&self, identity: &str) -> Result<PinnedRange> {
         let prepared = self.required(identity)?;
-        let Some(Capture::Input(input)) = &prepared.capture else {
+        let Some(Capture::Input(input)) = prepared.capture() else {
             return invalid("raw custody reference is not an input");
         };
         let generation = input

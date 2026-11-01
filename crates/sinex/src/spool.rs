@@ -15,18 +15,8 @@ mod names;
 mod raw_ranges;
 mod sources;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Kind {
-    Material,
-    Events,
-    Signals,
-    ReplaySequence,
-    RegisterKinds,
-    Chunk,
-    LargeFrame,
-}
-
+/// A durable body or sidecar file: its decoded identity and the encoding that
+/// reads it back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Bytes {
     pub blob: String,
@@ -63,13 +53,9 @@ impl Bytes {
         }
         Ok(descriptor)
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct Material {
-    pub id: String,
-    pub blob: String,
-    pub length: u64,
+    fn identity(&self) -> (&str, u64) {
+        (&self.blob, self.length)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,54 +65,192 @@ pub(crate) struct Group {
     encoding: Encoding,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct Prepared {
-    pub order: u64,
-    pub identity: String,
-    pub kind: Kind,
-    pub frame_hash: String,
-    pub frame_length: u64,
-    frame_encoding: Encoding,
-    pub body: Option<Bytes>,
-    pub material: Option<Material>,
-    pub capture: Option<Capture>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub captured: Option<Bytes>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub control: Option<Control>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub exports: Vec<exports::ExportBinding>,
-    #[serde(default)]
-    pub exports_checked: bool,
-    #[serde(default)]
-    pub exports_unknown: bool,
-    #[serde(default)]
-    pub named: bool,
-    /// Derived from the immutable Events envelope, never its operation name.
-    pub canonical: bool,
-    pub canonical_scope: Option<String>,
-    #[serde(default)]
-    pub canonical_epoch: Option<i64>,
-    #[serde(default)]
-    pub private: bool,
-    #[serde(default)]
-    pub revoked: bool,
-    pub request: bool,
-    pub group: Option<Group>,
-    #[serde(skip)]
-    pub unresolved: bool,
-    #[serde(skip)]
-    pub acknowledged: bool,
-    #[serde(skip)]
-    pub commit_seq: Option<i64>,
-    #[serde(skip)]
-    pub refused: bool,
+/// The canonical scope and policy epoch a canonical Events frame was proven
+/// against.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Coverage {
+    pub scope: String,
+    pub epoch: i64,
 }
 
-impl Prepared {
+/// A canonical Events frame carries no source. Without coverage it is never
+/// published.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Canonical {
+    pub coverage: Option<Coverage>,
+}
+
+/// A captured material and the facts the queue keeps about its custody.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Material {
+    pub id: String,
+    pub blob: String,
+    pub length: u64,
+    pub body: Bytes,
+    pub capture: Option<Capture>,
+    pub captured: Option<Bytes>,
+    pub control: Option<Control>,
+    pub exports: Vec<exports::ExportBinding>,
+    pub exports_unknown: bool,
+    /// Its observation is found by logical name.
+    pub named: bool,
+    /// Carries a retained authored request.
+    pub request: bool,
+    /// Holds private canonical custody that is never published.
+    pub private: bool,
+}
+
+/// What an operation is. Each variant owns exactly the facts that variant has.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "fields", rename_all = "snake_case")]
+pub(crate) enum Payload {
+    Material(Material),
+    Events {
+        canonical: Option<Canonical>,
+        group: Option<Group>,
+    },
+    ReplaySequence {
+        group: Option<Group>,
+    },
+    Signals,
+    RegisterKinds,
+    Chunk,
+    LargeFrame,
+}
+
+/// Where an operation stands with its receipt. The only legal transition is
+/// from pending to one settled phase; a settled phase never changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub(crate) enum Phase {
+    /// No receipt yet.
+    Pending,
+    /// The owner accepted the operation; canonical writes carry the position
+    /// that confirmed them.
+    Acknowledged { commit_seq: Option<i64> },
+    /// The owner refused the operation.
+    Refused,
+    /// The owner already holds different contents under this identity; the
+    /// offered frame hash is kept as evidence.
+    Conflicted { offered: String },
+}
+
+impl Phase {
+    /// The phase an acknowledgment from the owner settles.
+    fn settled_by(acknowledgment: &Acknowledgment) -> Self {
+        if acknowledgment.refusal.is_some() {
+            Self::Refused
+        } else {
+            Self::Acknowledged {
+                commit_seq: acknowledgment.commit_seq,
+            }
+        }
+    }
+
+    /// The one place that decides which phase changes are legal.
+    pub(crate) fn advance(&self, next: Self) -> Result<Self> {
+        match (self, &next) {
+            (Self::Pending, Self::Pending) => invalid("pending is not a settled outcome"),
+            (Self::Pending, _) => Ok(next),
+            _ => invalid("a settled operation cannot change its outcome"),
+        }
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+    pub(crate) fn is_acknowledged(&self) -> bool {
+        matches!(self, Self::Acknowledged { .. })
+    }
+    /// Refused by the owner, or conflicting with what the owner holds.
+    pub(crate) fn is_refused(&self) -> bool {
+        matches!(self, Self::Refused | Self::Conflicted { .. })
+    }
+    pub(crate) fn commit_seq(&self) -> Option<i64> {
+        match self {
+            Self::Acknowledged { commit_seq } => *commit_seq,
+            _ => None,
+        }
+    }
+    fn confirmed_through(&self, applied: i64) -> bool {
+        self.commit_seq()
+            .is_some_and(|position| position <= applied)
+    }
+}
+
+/// The immutable queue record, written once as `metadata.json`. Receipts,
+/// revocation and acquisition standing live in their own files.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct Record {
+    /// Relative to its acquisition for an acquisition member until loaded.
+    pub order: u64,
+    pub identity: String,
+    pub frame: Bytes,
+    pub payload: Payload,
+}
+
+impl Record {
+    pub(crate) fn material(&self) -> Option<&Material> {
+        match &self.payload {
+            Payload::Material(material) => Some(material),
+            _ => None,
+        }
+    }
+    pub(crate) fn body(&self) -> Option<&Bytes> {
+        self.material().map(|material| &material.body)
+    }
+    pub(crate) fn capture(&self) -> Option<&Capture> {
+        self.material()?.capture.as_ref()
+    }
+    pub(crate) fn captured(&self) -> Option<&Bytes> {
+        self.material()?.captured.as_ref()
+    }
+    pub(crate) fn control(&self) -> Option<&Control> {
+        self.material()?.control.as_ref()
+    }
+    pub(crate) fn exports(&self) -> &[exports::ExportBinding] {
+        self.material()
+            .map_or(&[], |material| material.exports.as_slice())
+    }
+    pub(crate) fn group(&self) -> Option<&Group> {
+        match &self.payload {
+            Payload::Events { group, .. } | Payload::ReplaySequence { group } => group.as_ref(),
+            _ => None,
+        }
+    }
+    pub(crate) fn canonical(&self) -> Option<&Canonical> {
+        match &self.payload {
+            Payload::Events { canonical, .. } => canonical.as_ref(),
+            _ => None,
+        }
+    }
+    /// A write the owner confirms with a queue position.
+    pub(crate) fn is_write(&self) -> bool {
+        matches!(
+            self.payload,
+            Payload::Events { .. } | Payload::ReplaySequence { .. }
+        )
+    }
+    pub(crate) fn is_request(&self) -> bool {
+        self.material().is_some_and(|material| material.request)
+    }
+    pub(crate) fn is_private(&self) -> bool {
+        self.material().is_some_and(|material| material.private)
+    }
+    /// Only canonical and private custody can be revoked.
+    fn is_revocable(&self) -> bool {
+        self.canonical().is_some() || self.is_private()
+    }
+    pub(crate) fn is_named(&self) -> bool {
+        match &self.payload {
+            Payload::Events { .. } => true,
+            Payload::Material(material) => material.named,
+            _ => false,
+        }
+    }
     pub(crate) fn logical_name(&self) -> Option<&str> {
-        self.named.then(|| {
-            if self.kind == Kind::Material {
+        self.is_named().then(|| {
+            if self.material().is_some() {
                 self.identity
                     .strip_suffix(":observation")
                     .unwrap_or(&self.identity)
@@ -134,6 +258,25 @@ impl Prepared {
                 &self.identity
             }
         })
+    }
+}
+
+/// An operation as loaded: its immutable record plus the standing that other
+/// files decide. Never serialized.
+#[derive(Clone, Debug)]
+pub(crate) struct Prepared {
+    pub record: Record,
+    pub phase: Phase,
+    /// Canonical or private custody was revoked (`revoked.json`). It is
+    /// independent of the receipt: an acknowledged operation can be revoked.
+    pub revoked: bool,
+    /// Its acquisition was accepted with an unresolved basis conflict.
+    pub unresolved: bool,
+}
+impl std::ops::Deref for Prepared {
+    type Target = Record;
+    fn deref(&self) -> &Record {
+        &self.record
     }
 }
 
@@ -158,13 +301,11 @@ struct Checked<T> {
     digest: String,
 }
 
+/// The settled outcome and the acknowledgment bytes that proved it.
 #[derive(Serialize, Deserialize)]
 struct Receipt {
     payload: Bytes,
-    commit_seq: Option<i64>,
-    refused: bool,
-    #[serde(default)]
-    conflict: Option<String>,
+    phase: Phase,
 }
 
 /// Only pending operations live here. Ordered and capture-membership indexes
@@ -305,12 +446,13 @@ impl Spool {
     }
 
     pub fn get(&self, identity: &str) -> Result<Option<Prepared>> {
-        let Some(mut prepared) =
-            read_checked::<Prepared>(&self.operation(identity)?.join("metadata.json"))?
+        let Some(mut record) =
+            read_checked::<Record>(&self.operation(identity)?.join("metadata.json"))?
         else {
             return Ok(None);
         };
-        if prepared.identity != identity {
+        let mut unresolved = false;
+        if record.identity != identity {
             return invalid("spool operation identity differs from its directory");
         }
         let directory = self.operation(identity)?;
@@ -328,42 +470,42 @@ impl Spool {
             let base = acquisition
                 .order_base
                 .ok_or_else(|| Error::Invalid("acquisition has no accepted queue order".into()))?;
-            if prepared.order == 0 || prepared.order > acquisition.count {
+            if record.order == 0 || record.order > acquisition.count {
                 return invalid("acquisition member has an invalid relative order");
             }
-            prepared.unresolved = acquisition.disposition
+            unresolved = acquisition.disposition
                 == polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict;
-            prepared.order = base
-                .checked_add(prepared.order)
+            record.order = base
+                .checked_add(record.order)
                 .ok_or_else(|| Error::Invalid("acquisition queue order exhausted".into()))?;
         }
-        let frame = prepared.frame_encoding.descriptor()?;
-        if frame.hash.to_string() != prepared.frame_hash
-            || frame.decoded_len != prepared.frame_length
-        {
-            return invalid("frame encoding differs from its immutable identity");
-        }
-        check_length(&directory.join("frame.zst"), frame.stored_len)?;
-        if let Some(body) = &prepared.body {
+        check_length(
+            &directory.join("frame.zst"),
+            record.frame.descriptor()?.stored_len,
+        )?;
+        if let Some(body) = record.body() {
             check_length(&directory.join("body.zst"), body.descriptor()?.stored_len)?;
         }
-        if let Some(captured) = &prepared.captured {
+        if let Some(captured) = record.captured() {
             check_length(
                 &directory.join("captured.zst"),
                 captured.descriptor()?.stored_len,
             )?;
         }
-        prepared.revoked = match read_checked::<bool>(&directory.join("revoked.json"))? {
+        let revoked = match read_checked::<bool>(&directory.join("revoked.json"))? {
             Some(true) => true,
             Some(false) => return invalid("canonical revocation cannot be reversed"),
             None => false,
         };
-        if let Some(receipt) = self.receipt(identity)? {
-            prepared.acknowledged = receipt.conflict.is_none();
-            prepared.commit_seq = receipt.commit_seq;
-            prepared.refused = receipt.refused;
-        }
-        Ok(Some(prepared))
+        let phase = self
+            .receipt(identity)?
+            .map_or(Phase::Pending, |receipt| receipt.phase);
+        Ok(Some(Prepared {
+            record,
+            phase,
+            revoked,
+            unresolved,
+        }))
     }
 
     /// Decode the original immutable common encoding without collecting the frame.
@@ -377,7 +519,7 @@ impl Spool {
         let prepared = self.required(identity)?;
         Ok(hashed_blobs::Prepared::from_encoded(
             regular(&self.operation(identity)?.join("frame.zst"))?,
-            prepared.frame_encoding.descriptor()?,
+            prepared.frame.descriptor()?,
             None,
             ReadLimits::default(),
         )?)
@@ -397,7 +539,7 @@ impl Spool {
     pub fn encoded_body(&self, identity: &str) -> Result<(PathBuf, EncodedBlob)> {
         let prepared = self.required(identity)?;
         let body = prepared
-            .body
+            .body()
             .ok_or_else(|| Error::Invalid("operation has no material body".into()))?;
         let descriptor = body.descriptor()?;
         let path = self.operation(identity)?.join("body.zst");
@@ -423,6 +565,9 @@ impl Spool {
         }
         let receipt = read_checked::<Receipt>(&directory.join("receipt.json"))?;
         if let Some(receipt) = &receipt {
+            if receipt.phase.is_pending() {
+                return invalid("published acknowledgment has no settled outcome");
+            }
             check_length(
                 &directory.join("payload.zst"),
                 receipt.payload.descriptor()?.stored_len,
@@ -437,7 +582,7 @@ impl Spool {
         let Some(receipt) = self.receipt(identity)? else {
             return Ok(None);
         };
-        if receipt.conflict.is_some() {
+        if matches!(receipt.phase, Phase::Conflicted { .. }) {
             self.conflict_receipt(identity)?;
             return Ok(None);
         }
@@ -447,9 +592,7 @@ impl Spool {
         )?)?;
         let prepared = self.required(identity)?;
         validate_ack(&prepared, &acknowledgment)?;
-        if receipt.commit_seq != acknowledgment.commit_seq
-            || receipt.refused != acknowledgment.refusal.is_some()
-        {
+        if receipt.phase != Phase::settled_by(&acknowledgment) {
             return invalid("acknowledgment summary differs from its immutable receipt");
         }
         Ok(Some(acknowledgment))
@@ -458,11 +601,8 @@ impl Spool {
     pub fn prepare(&self, frame: Ingress) -> Result<Prepared> {
         if let Some(prepared) = self.get(frame.frame())? {
             let desired = encoded_hash(&frame)?;
-            if desired != (prepared.frame_hash.clone(), prepared.frame_length) {
+            if desired != (prepared.frame.blob.clone(), prepared.frame.length) {
                 return invalid("prepared identity changed immutable frame contents");
-            }
-            if prepared.kind == Kind::Material && prepared.body.is_none() {
-                return invalid("material must have its immutable body prepared before sending");
             }
             return Ok(prepared);
         }
@@ -577,31 +717,17 @@ impl Spool {
             return Ok(None);
         }
         for member in fs::read_dir(staged.temporary.path().join("operations"))? {
-            let desired = read_checked::<Prepared>(&member?.path().join("metadata.json"))?
+            let desired = read_checked::<Record>(&member?.path().join("metadata.json"))?
                 .ok_or_else(|| {
                     Error::Invalid("staged acquisition member has no metadata".into())
                 })?;
             let Some(original) = self.get(&desired.identity)? else {
                 return Ok(None);
             };
-            if original.frame_hash != desired.frame_hash
-                || original.frame_length != desired.frame_length
-                || original
-                    .body
-                    .as_ref()
-                    .map(|bytes| (&bytes.blob, bytes.length))
-                    != desired
-                        .body
-                        .as_ref()
-                        .map(|bytes| (&bytes.blob, bytes.length))
-                || original
-                    .captured
-                    .as_ref()
-                    .map(|bytes| (&bytes.blob, bytes.length))
-                    != desired
-                        .captured
-                        .as_ref()
-                        .map(|bytes| (&bytes.blob, bytes.length))
+            if original.frame.identity() != desired.frame.identity()
+                || original.body().map(Bytes::identity) != desired.body().map(Bytes::identity)
+                || original.captured().map(Bytes::identity)
+                    != desired.captured().map(Bytes::identity)
             {
                 return Ok(None);
             }
@@ -667,7 +793,7 @@ impl Spool {
             write_index(&self.index("locations", name), &batch)?;
         }
         for entry in fs::read_dir(operations)? {
-            let metadata = read_checked::<Prepared>(&entry?.path().join("metadata.json"))?
+            let metadata = read_checked::<Record>(&entry?.path().join("metadata.json"))?
                 .ok_or_else(|| {
                     Error::Invalid("published acquisition member has no metadata".into())
                 })?;
@@ -696,11 +822,13 @@ impl Spool {
     }
 
     pub fn pin_capture(&self, identity: &str) -> Result<PinnedCapture> {
-        let prepared = self.required(identity)?;
-        let header = prepared
+        let Payload::Material(material) = self.required(identity)?.record.payload else {
+            return invalid("operation has no captured facts");
+        };
+        let header = material
             .capture
             .ok_or_else(|| Error::Invalid("operation has no captured facts".into()))?;
-        let bytes = prepared
+        let bytes = material
             .captured
             .map(|captured| -> Result<_> {
                 Ok((
@@ -711,9 +839,9 @@ impl Spool {
             .transpose()?;
         Ok(PinnedCapture {
             header,
-            control: prepared.control,
-            exports: prepared.exports,
-            exports_unknown: prepared.exports_unknown,
+            control: material.control,
+            exports: material.exports,
+            exports_unknown: material.exports_unknown,
             bytes,
         })
     }
@@ -744,11 +872,11 @@ impl Spool {
         }
         for identity in &captures {
             let raw = self.required(identity)?;
-            if raw.kind != Kind::Material || raw.body.is_none() {
+            if raw.material().is_none() {
                 return invalid("capture group member is not a durable material");
             }
             if let Some(existing) = self.capture_group(identity)?
-                && existing.group.as_ref().map(|group| &group.captures_hash) != Some(&group_hash)
+                && existing.group().map(|group| &group.captures_hash) != Some(&group_hash)
             {
                 return invalid("capture already belongs to another canonical product group");
             }
@@ -774,12 +902,7 @@ impl Spool {
         let prepared = self.get(&identity)?.ok_or_else(|| {
             Error::Invalid("capture group index names a missing operation".into())
         })?;
-        if prepared
-            .group
-            .as_ref()
-            .map(|group| group.captures_hash.as_str())
-            != Some(captures_hash)
-        {
+        if prepared.group().map(|group| group.captures_hash.as_str()) != Some(captures_hash) {
             return invalid("capture group index differs from its authoritative group");
         }
         Ok(Some(prepared))
@@ -882,7 +1005,7 @@ impl Spool {
         while ordinal < acquisition.count {
             if let Some(identity) = read_json::<String>(&root.join(format!("{ordinal:020}")))? {
                 let prepared = self.required(&identity)?;
-                if !matches!(&prepared.capture, Some(Capture::Input(input)) if input.parsed.is_empty()
+                if !matches!(prepared.capture(), Some(Capture::Input(input)) if input.parsed.is_empty()
                     && input.group.as_ref().is_some_and(|header| header.identity == group && header.ordinal == ordinal && header.count == acquisition.count))
                 {
                     return invalid("acquisition index differs from its immutable member header");
@@ -916,6 +1039,7 @@ impl Spool {
             }
             return Ok(());
         }
+        let phase = prepared.phase.advance(Phase::settled_by(&acknowledgment))?;
         let directory = self.operation(&prepared.identity)?;
         let temporary = tempfile::Builder::new()
             .prefix(".ack-preparing-")
@@ -923,12 +1047,7 @@ impl Spool {
         let payload = write_encoded_json(&temporary.path().join("payload.zst"), &acknowledgment)?;
         write_checked(
             &temporary.path().join("receipt.json"),
-            &Receipt {
-                payload,
-                commit_seq: acknowledgment.commit_seq,
-                refused: acknowledgment.refusal.is_some(),
-                conflict: None,
-            },
+            &Receipt { payload, phase },
         )?;
         sync(temporary.path())?;
         boundary("ack_synced");
@@ -955,9 +1074,9 @@ impl Spool {
             }
             return Ok(());
         }
-        if self.receipt(identity)?.is_some() {
-            return invalid("an acknowledged immutable operation cannot change disposition");
-        }
+        let phase = prepared.phase.advance(Phase::Conflicted {
+            offered: offered_hash.into(),
+        })?;
         let directory = self.operation(identity)?;
         let temporary = tempfile::Builder::new()
             .prefix(".ack-preparing-")
@@ -965,12 +1084,7 @@ impl Spool {
         let payload = write_encoded_json(&temporary.path().join("payload.zst"), receipt)?;
         write_checked(
             &temporary.path().join("receipt.json"),
-            &Receipt {
-                payload,
-                commit_seq: None,
-                refused: true,
-                conflict: Some(offered_hash.into()),
-            },
+            &Receipt { payload, phase },
         )?;
         sync(temporary.path())?;
         boundary("ack_synced");
@@ -985,7 +1099,7 @@ impl Spool {
         let Some(summary) = self.receipt(identity)? else {
             return Ok(None);
         };
-        let Some(offered) = summary.conflict else {
+        let Phase::Conflicted { offered } = summary.phase else {
             return Ok(None);
         };
         let prepared = self.required(identity)?;
@@ -994,9 +1108,6 @@ impl Spool {
             summary.payload.descriptor()?,
         )?)?;
         validate_conflict(&prepared, &offered, &receipt)?;
-        if summary.commit_seq.is_some() || !summary.refused {
-            return invalid("conflict evidence claims acceptance");
-        }
         Ok(Some(receipt))
     }
 
@@ -1009,7 +1120,7 @@ impl Spool {
             }
             for prepared in page {
                 after = Some(prepared.order);
-                if (!prepared.canonical && !prepared.private) || prepared.revoked {
+                if !prepared.is_revocable() || prepared.revoked {
                     continue;
                 }
                 let directory = self.operation(&prepared.identity)?;
@@ -1051,23 +1162,19 @@ impl Spool {
             if prepared.order != order {
                 return invalid("pending queue order differs from its operation");
             }
-            if prepared.refused
-                || prepared.private
+            if prepared.is_private()
                 || prepared.revoked
-                || !prepared.acknowledged
-                || prepared
-                    .commit_seq
-                    .is_none_or(|position| position > applied)
+                || !prepared.phase.confirmed_through(applied)
             {
                 continue;
             }
-            if prepared.group.is_some() {
+            if prepared.group().is_some() {
                 self.visit_captures(&prepared.identity, |identity| {
                     self.remove(identity)?;
                     boundary("group_member_retired");
                     Ok(())
                 })?;
-            } else if prepared.kind == Kind::Material {
+            } else if prepared.material().is_some() {
                 continue;
             }
             self.remove(&prepared.identity)?;
@@ -1101,7 +1208,7 @@ impl Spool {
                 return invalid("tombstone cleanup omits the canonical capture group");
             }
             if let Some(prepared) = self.get(identity)?
-                && prepared.group.is_some()
+                && prepared.group().is_some()
             {
                 self.visit_captures(identity, |member| {
                     if identities.binary_search(&member).is_err() {
@@ -1140,7 +1247,7 @@ impl Spool {
         for groups in [false, true] {
             for identity in &identities {
                 if let Some(prepared) = self.get(identity)?
-                    && prepared.group.is_some() == groups
+                    && prepared.group().is_some() == groups
                 {
                     self.remove(identity)?;
                     boundary("discard_member_retired");
@@ -1164,10 +1271,10 @@ impl Spool {
             }
             after = page.last().map(|entry| entry.order);
             for prepared in page {
-                match prepared.kind {
-                    Kind::Material => materials += 1,
-                    Kind::Events | Kind::ReplaySequence => writes += 1,
-                    _ => {}
+                if prepared.material().is_some() {
+                    materials += 1;
+                } else if prepared.is_write() {
+                    writes += 1;
                 }
                 for file in fs::read_dir(self.operation(&prepared.identity)?)? {
                     let file = file?;
@@ -1194,7 +1301,8 @@ impl Spool {
     ) -> Result<()> {
         let prepared = self.required(identity)?;
         let group = prepared
-            .group
+            .group()
+            .cloned()
             .ok_or_else(|| Error::Invalid("operation is not a capture group".into()))?;
         let descriptor = group.encoding.descriptor()?;
         if descriptor.hash.to_string() != group.captures_hash {
@@ -1237,18 +1345,13 @@ impl Spool {
         let identity = frame.frame().to_owned();
         if let Some(previous) = self.get(&identity)? {
             let desired = encoded_hash(&frame)?;
-            if (previous.frame_hash.as_str(), previous.frame_length)
-                != (desired.0.as_str(), desired.1)
-            {
+            if previous.frame.identity() != (desired.0.as_str(), desired.1) {
                 return invalid("prepared identity changed immutable frame contents");
             }
-            if previous.body.is_some() != (body.is_some() || encoded_body.is_some()) {
+            if previous.body().is_some() != (body.is_some() || encoded_body.is_some()) {
                 return invalid("prepared identity changed its body contract");
             }
-            if previous
-                .group
-                .as_ref()
-                .map(|group| group.captures_hash.as_str())
+            if previous.group().map(|group| group.captures_hash.as_str())
                 != captures.as_ref().map(|(_, digest)| digest.as_str())
             {
                 return invalid("prepared identity changed its capture group");
@@ -1257,12 +1360,7 @@ impl Spool {
                 let mut output = HashWriter::new(std::io::sink());
                 std::io::copy(input, &mut output)?;
                 let (blob, length) = output.finish();
-                if previous
-                    .body
-                    .as_ref()
-                    .map(|bytes| (bytes.blob.as_str(), bytes.length))
-                    != Some((blob.as_str(), length))
-                {
+                if previous.body().map(Bytes::identity) != Some((blob.as_str(), length)) {
                     return invalid("prepared identity changed immutable body contents");
                 }
             }
@@ -1275,20 +1373,14 @@ impl Spool {
                     ReadLimits::default(),
                 )?;
                 let blob = descriptor.hash.to_string();
-                if previous
-                    .body
-                    .as_ref()
-                    .map(|bytes| (bytes.blob.as_str(), bytes.length))
+                if previous.body().map(Bytes::identity)
                     != Some((blob.as_str(), descriptor.decoded_len))
                 {
                     return invalid("prepared identity changed immutable encoded body contents");
                 }
             }
             let desired_capture = full_capture.map(encoded_hash).transpose()?;
-            if previous
-                .captured
-                .as_ref()
-                .map(|bytes| (bytes.blob.as_str(), bytes.length))
+            if previous.captured().map(Bytes::identity)
                 != desired_capture
                     .as_ref()
                     .map(|(blob, length)| (blob.as_str(), *length))
@@ -1302,24 +1394,20 @@ impl Spool {
             .prefix(&prefix)
             .tempdir_in(self.root.join("operations"))?;
         let frame_bytes = write_encoded_json(&temporary.path().join("frame.zst"), &frame)?;
-        let frame_hash = frame_bytes.blob;
-        let frame_length = frame_bytes.length;
-        let frame_encoding = frame_bytes.encoding;
-        let (kind, material, mut capture, request) = describe(&frame)?;
+        let mut facts = material_facts(&frame)?;
         let captured = full_capture
             .map(|full| -> Result<Bytes> {
                 let header = capture_header(full);
-                if capture.as_ref() != Some(&header) {
+                if facts.as_ref().and_then(|facts| facts.capture.as_ref()) != Some(&header) {
                     return invalid("capture header differs from its material manifest");
                 }
-                capture = Some(header);
                 let bytes = write_encoded_json(&temporary.path().join("captured.zst"), full)?;
                 boundary("capture_synced");
                 Ok(bytes)
             })
             .transpose()?;
         let body = if body.is_some() || encoded_body.is_some() {
-            let descriptor = material
+            let descriptor = facts
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("body has no material descriptor".into()))?;
             let path = temporary.path().join("body.zst");
@@ -1368,62 +1456,62 @@ impl Spool {
             .transpose()?;
         let order = self.next.get();
         let export_bindings = exports::bindings(&frame, full_capture)?;
-        let exports_unknown =
-            full_capture.is_some_and(|capture| exports::unknown(capture, &export_bindings));
-        let prepared = Prepared {
+        let payload = match (&frame, facts.take()) {
+            (Ingress::Material { .. }, Some(facts)) => Payload::Material(Material {
+                id: facts.id,
+                blob: facts.blob,
+                length: facts.length,
+                body: body.ok_or_else(|| {
+                    Error::Invalid("material must have its immutable body prepared".into())
+                })?,
+                capture: facts.capture,
+                captured,
+                control: full_capture.and_then(control),
+                exports_unknown: full_capture
+                    .is_some_and(|capture| exports::unknown(capture, &export_bindings)),
+                exports: export_bindings,
+                named: facts.named,
+                request: facts.request,
+                private: facts.private,
+            }),
+            (
+                Ingress::Events {
+                    source, coverage, ..
+                },
+                _,
+            ) => Payload::Events {
+                canonical: source.is_none().then(|| Canonical {
+                    coverage: coverage.as_ref().map(|proof| Coverage {
+                        scope: proof.scope.clone(),
+                        epoch: proof.policy_epoch,
+                    }),
+                }),
+                group,
+            },
+            (Ingress::ReplaySequence { .. }, _) => Payload::ReplaySequence { group },
+            (Ingress::Signals { .. }, _) => Payload::Signals,
+            (Ingress::RegisterKinds { .. }, _) => Payload::RegisterKinds,
+            (Ingress::Chunk { .. }, _) => Payload::Chunk,
+            (Ingress::LargeFrame { .. }, _) => Payload::LargeFrame,
+            (Ingress::Material { .. }, None) => return invalid("material has no descriptor"),
+        };
+        let prepared = Record {
             order,
             identity: identity.clone(),
-            kind,
-            frame_hash,
-            frame_length,
-            frame_encoding,
-            body,
-            material,
-            capture,
-            captured,
-            control: full_capture.and_then(control),
-            exports: export_bindings,
-            exports_checked: true,
-            exports_unknown,
-            named: named(&frame),
-            canonical: matches!(&frame, Ingress::Events { source: None, .. }),
-            canonical_scope: match &frame {
-                Ingress::Events {
-                    source: None,
-                    coverage: Some(proof),
-                    ..
-                } => Some(proof.scope.clone()),
-                _ => None,
-            },
-            canonical_epoch: match &frame {
-                Ingress::Events {
-                    source: None,
-                    coverage: Some(proof),
-                    ..
-                } => Some(proof.policy_epoch),
-                _ => None,
-            },
-            private: matches!(&frame,Ingress::Material{material,..}
-                if material.manifest.details.get("polylogue_private_canonical").and_then(serde_json::Value::as_bool)==Some(true)),
-            revoked: false,
-            request,
-            group,
-            unresolved: false,
-            acknowledged: false,
-            commit_seq: None,
-            refused: false,
+            frame: frame_bytes,
+            payload,
         };
         write_checked(&temporary.path().join("metadata.json"), &prepared)?;
         sync(temporary.path())?;
         boundary("operation_synced");
-        if prepared.group.is_some() {
+        if prepared.group().is_some() {
             boundary("group_synced");
         }
         self.index_dirty.set(true);
         fs::rename(temporary.path(), self.operation(&identity)?)?;
         sync(&self.root.join("operations"))?;
         boundary("operation_published");
-        if prepared.group.is_some() {
+        if prepared.group().is_some() {
             boundary("group_published");
         }
         self.next.set(
@@ -1431,6 +1519,12 @@ impl Spool {
                 .checked_add(1)
                 .ok_or_else(|| Error::Invalid("producer queue order exhausted".into()))?,
         );
+        let prepared = Prepared {
+            record: prepared,
+            phase: Phase::Pending,
+            revoked: false,
+            unresolved: false,
+        };
         self.index_entry(&prepared)?;
         self.index_dirty.set(false);
         Ok(prepared)
@@ -1512,7 +1606,6 @@ impl Spool {
             "raw-roots",
             "raw-children",
             "export-readings",
-            "export-unknown",
         ] {
             fs::create_dir_all(index.join(name))?;
         }
@@ -1543,7 +1636,7 @@ impl Spool {
                     "producer spool contains plaintext pending payloads; preserve them before an explicit transition",
                 );
             }
-            let metadata = read_checked::<Prepared>(&path.join("metadata.json"))?
+            let metadata = read_checked::<Record>(&path.join("metadata.json"))?
                 .ok_or_else(|| Error::Invalid("published operation has no metadata".into()))?;
             if hash(metadata.identity.as_bytes()) != name {
                 return invalid("spool directory has another operation identity");
@@ -1641,7 +1734,7 @@ impl Spool {
             return invalid("two pending operations have the same queue order");
         }
         write_index(&order, &prepared.identity)?;
-        if let Some(group) = &prepared.group {
+        if let Some(group) = prepared.group() {
             let index = self.index("groups", &group.captures_hash);
             if read_json::<String>(&index)?.is_some_and(|identity| identity != prepared.identity) {
                 return invalid("two canonical frames claim the same capture group");
@@ -1682,19 +1775,6 @@ fn control(capture: &Capture) -> Option<Control> {
         })
 }
 
-fn named(frame: &Ingress) -> bool {
-    match frame {
-        Ingress::Events { .. } => true,
-        Ingress::Material { frame, material } => {
-            matches!(
-                material.parser.as_str(),
-                "polylogue-products" | "polylogue-request-restore" | "polylogue-canonical-custody"
-            ) && frame.ends_with(":observation")
-        }
-        _ => false,
-    }
-}
-
 pub(crate) fn capture_header(capture: &Capture) -> Capture {
     match capture {
         Capture::Input(input) => {
@@ -1722,43 +1802,56 @@ pub(crate) fn capture_header(capture: &Capture) -> Capture {
     }
 }
 
-fn describe(frame: &Ingress) -> Result<(Kind, Option<Material>, Option<Capture>, bool)> {
-    if let Ingress::Material { material, .. } = frame
-        && let Some(value) = material.manifest.details.get("polylogue_capture")
+/// What a material frame says about itself before its bytes are stored.
+struct MaterialFacts {
+    id: String,
+    blob: String,
+    length: u64,
+    capture: Option<Capture>,
+    named: bool,
+    request: bool,
+    private: bool,
+}
+
+fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
+    let Ingress::Material {
+        frame: name,
+        material,
+    } = frame
+    else {
+        return Ok(None);
+    };
+    let capture: Option<Capture> = material
+        .manifest
+        .details
+        .get("polylogue_capture")
+        .map(|capture| serde_json::from_value(capture.clone()))
+        .transpose()?;
+    if let Some(capture) = &capture
+        && *capture != capture_header(capture)
     {
-        let capture: Capture = serde_json::from_value(value.clone())?;
-        if capture != capture_header(&capture) {
-            return invalid(
-                "raw material manifest must keep parser facts in the private capture sidecar",
-            );
-        }
+        return invalid(
+            "raw material manifest must keep parser facts in the private capture sidecar",
+        );
     }
-    Ok(match frame {
-        Ingress::Material { material, .. } => (
-            Kind::Material,
-            Some(Material {
-                id: material.id.to_string(),
-                blob: material.blob.clone(),
-                length: material.length,
-            }),
-            material
-                .manifest
-                .details
-                .get("polylogue_capture")
-                .map(|capture| serde_json::from_value(capture.clone()))
-                .transpose()?,
-            matches!(
-                material.parser.as_str(),
-                "polylogue-request" | "polylogue-request-restore"
-            ),
-        ),
-        Ingress::Events { .. } => (Kind::Events, None, None, false),
-        Ingress::Signals { .. } => (Kind::Signals, None, None, false),
-        Ingress::ReplaySequence { .. } => (Kind::ReplaySequence, None, None, false),
-        Ingress::RegisterKinds { .. } => (Kind::RegisterKinds, None, None, false),
-        Ingress::Chunk { .. } => (Kind::Chunk, None, None, false),
-        Ingress::LargeFrame { .. } => (Kind::LargeFrame, None, None, false),
-    })
+    let parser = material.parser.as_str();
+    Ok(Some(MaterialFacts {
+        id: material.id.to_string(),
+        blob: material.blob.clone(),
+        length: material.length,
+        capture,
+        named: matches!(
+            parser,
+            "polylogue-products" | "polylogue-request-restore" | "polylogue-canonical-custody"
+        ) && name.ends_with(":observation"),
+        request: matches!(parser, "polylogue-request" | "polylogue-request-restore"),
+        private: material
+            .manifest
+            .details
+            .get("polylogue_private_canonical")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+    }))
 }
 
 fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
@@ -1776,7 +1869,7 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
 }
 fn validate_conflict(prepared: &Prepared, offered: &str, receipt: &Acknowledgment) -> Result<()> {
     if receipt.frame != prepared.identity
-        || offered != prepared.frame_hash
+        || offered != prepared.frame.blob
         || receipt.number.is_none_or(|number| number <= 0)
         || receipt.content_hash() == Some(offered)
     {
@@ -1801,10 +1894,10 @@ fn validate_ack_header(
         return invalid("acknowledgment has a negative confirmed position");
     }
     if !refused {
-        if matches!(prepared.kind, Kind::Events | Kind::ReplaySequence) && position.is_none() {
+        if prepared.is_write() && position.is_none() {
             return invalid("canonical frame acknowledgment has no confirmed position");
         }
-        if let Some(expected) = &prepared.material
+        if let Some(expected) = prepared.material()
             && material != Some(expected.id.as_str())
         {
             return invalid("material acknowledgment has another material identity");

@@ -126,9 +126,7 @@ fn held_canonical_body_survives_restart_and_revocation_without_publication_autho
         .get(&receipt.identity)
         .unwrap()
         .unwrap();
-    assert!(private.private && !private.canonical && !private.acknowledged);
-    assert_eq!(private.canonical_scope, None);
-    assert_eq!(private.canonical_epoch, None);
+    assert!(private.is_private() && private.canonical().is_none() && private.phase.is_pending());
     drop(sinex);
     let sinex = client(root.path());
     let mut restored = Vec::<CanonicalCustody>::new();
