@@ -7,6 +7,7 @@ use polylogue_model::{
     user::{UserOutcome, UserRequest},
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use shared_signals::notifications::Outlets;
 use std::collections::BTreeSet;
 
 pub(crate) fn checkpoint(
@@ -49,6 +50,8 @@ fn identity(value: &Metadata) -> Result<()> {
     if fired.id != fired.trigger.delivery_id()
         || value.notice.delivery_id != fired.id
         || value.notice.product != fired.trigger.rule.product
+        || value.notice.current != fired.current
+        || value.notice.outlets != Outlets::of(&value.delivery.decision)
     {
         return Err(StoreError::Invalid(
             "signal outbox identity disagrees with its trigger".into(),

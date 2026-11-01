@@ -239,3 +239,19 @@ fn signal_numeric_host_decision_survives_tagged_request_round_trip() {
     let prepared = prepare_pending(&conn, &request, &[]).unwrap();
     super::validate(&prepared).unwrap();
 }
+
+#[test]
+fn signal_outbox_notice_must_follow_its_route_decision() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let mut shown_on_desktop = initial();
+    shown_on_desktop.outbox[0].metadata.notice.outlets.desktop = true;
+    let mut current = initial();
+    current.outbox[0].metadata.notice.current = true;
+    for (id, commit) in [("outlets", shown_on_desktop), ("current", current)] {
+        let tx = conn.transaction().unwrap();
+        assert!(crate::user_writes::apply(&tx, &request(id, commit), 1).is_err());
+    }
+    let tx = conn.transaction().unwrap();
+    crate::user_writes::apply(&tx, &request("agreeing", initial()), 1).unwrap();
+}

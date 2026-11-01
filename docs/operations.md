@@ -114,7 +114,7 @@ What is Polylogue's:
 - **Imports only:** a rule whose query reads only imported exports can fire no earlier than the next import, and writing it says so.
 - **Incomplete:** a rule is `incomplete` while `status` does not say "up to date" for the data it reads.
 - **Outlets:** `status` (count and latest), the next session-start brief whose scope the notice concerns, a desktop notification for interrupting notices, the change feed, and `query:notices`. Notices addressed to sessions reach them at their next context-accepting hook event ([agents.md#notices-to-sessions](agents.md#notices-to-sessions)).
-- **One deliverer per host.** Standalone, Polylogue's daemon shows its own desktop notifications. In primary mode its interrupting notices travel to Sinex with its deliveries and Sinex's deliverer shows them under the one interrupt budget and quiet hours; Polylogue notifies directly only for `Sinex blocked`.
+- **One deliverer per host.** Standalone, Polylogue's daemon shows its own desktop notifications. In primary mode its evaluator sends its reports (firings, cleared conditions, rule revisions and progress) to Sinex, whose deliverer routes them under the one interrupt budget and quiet hours; Polylogue notifies directly only for `Sinex blocked`.
 - **Value and action deliveries** run only targets and commands the deployment configured. No rule starts or resumes an agent session ([agents.md](agents.md#pings)).
 
 **What interrupts.** A notice interrupts only when the operator would want to stop what he is doing for it; everything else is passive (status, briefs, the feed). "Agent waiting on you" is passive unless the operator makes it interrupting.

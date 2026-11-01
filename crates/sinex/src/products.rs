@@ -485,11 +485,11 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 kind: KindRef {
                     name: (*name).into(),
                     version: if *name == "polylogue.assertion" {
-                        1
+                        2
                     } else {
                         match *product {
                             "message" => 5,
-                            "request" | "restored_request" => 5,
+                            "request" | "restored_request" => 6,
                             "input" | "session" | "document" | "event" | "link" | "background"
                             | "repository" | "parse_progress" => 4,
                             "fragment" => 2,

@@ -443,14 +443,13 @@ fn unavailable_assertion_closure_preserves_pending_state_without_author_exemptio
             }],
         })
         .unwrap();
-    let host = checkpoint.host.as_mut().unwrap();
     assert!(
-        checkpoint
+        !checkpoint
             .evaluator
-            .advance(now, &calendar, host)
+            .reports(now, &calendar)
             .unwrap()
-            .deliveries
-            .is_empty()
+            .iter()
+            .any(|report| matches!(report, shared_signals::Report::Fired(_)))
     );
     assert_eq!(checkpoint.evaluator.pending_count(), 1);
     checkpoint.rules = vec![active];

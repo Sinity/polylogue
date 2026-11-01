@@ -80,7 +80,6 @@ fn operation(d: &Daemon) -> Result<Arc<crate::operation::Context>, Held> {
 struct LocalAttention {
     quiet: Option<shared_signals::QuietHours>,
     budget: usize,
-    identity: String,
 }
 fn local_attention(
     reader: &polylogue_store::Reader<'_>,
@@ -89,15 +88,12 @@ fn local_attention(
     let catalog = reader
         .settings_catalog(&context.machine)
         .map_err(|e| e.to_string())?;
-    let encoded =
-        serde_json::to_vec(&(context.clock.day.wire(), &catalog)).map_err(|e| e.to_string())?;
     let (quiet, budget) = polylogue_model::settings::Snapshot::new(catalog)
         .standalone_attention()
         .map_err(|e| e.to_string())?;
     Ok(LocalAttention {
         quiet: quiet.map(|[from, to]| shared_signals::QuietHours { from, to }),
         budget,
-        identity: blake3::hash(&encoded).to_hex().to_string(),
     })
 }
 fn initial(

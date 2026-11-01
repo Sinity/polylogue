@@ -26,8 +26,7 @@ fn seed(d: &Daemon) -> Notice {
         .transpose()
         .unwrap();
     let checkpoint = previous.unwrap_or_else(|| initial(d, &context, Some(&attention)).unwrap());
-    // This fixture only records an outbox. It supplies no assertion closure,
-    // inferred rule revision, actor privilege or native eligibility proof.
+    // This fixture only records an outbox; no rule fired it.
     assert!(
         persist(d, &context, prior, checkpoint, vec![outbox], vec![])
             .unwrap()
