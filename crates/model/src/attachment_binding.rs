@@ -107,6 +107,41 @@ impl AttachmentBinding {
     }
 }
 
+/// One attachment of a source message that names bytes it does not carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentSlot {
+    /// Original block ordinal in the complete source message.
+    pub block: u64,
+    pub attachment: u64,
+    pub source_id: String,
+}
+
+/// The unresolved attachments of a message's blocks. `ordinals[i]` is the
+/// original ordinal of `blocks[i]`.
+pub fn attachment_slots(blocks: &[crate::Block], ordinals: &[u64]) -> Vec<AttachmentSlot> {
+    use crate::Block;
+    let mut slots = Vec::new();
+    for (block, ordinal) in blocks.iter().zip(ordinals) {
+        let attachments: &[crate::Attachment] = match block {
+            Block::Image(attachment) | Block::File(attachment) => std::slice::from_ref(attachment),
+            Block::ToolResult { attachments, .. } => attachments,
+            _ => &[],
+        };
+        for (index, attachment) in attachments.iter().enumerate() {
+            if attachment.blob.is_none()
+                && let Some(source_id) = attachment.source_id.as_deref().filter(|id| !id.is_empty())
+            {
+                slots.push(AttachmentSlot {
+                    block: *ordinal,
+                    attachment: index as u64,
+                    source_id: source_id.to_owned(),
+                });
+            }
+        }
+    }
+    slots
+}
+
 pub(crate) fn validate_record(
     record: &crate::bundle::MessageRecord,
 ) -> Result<(), crate::bundle::BundleError> {

@@ -352,7 +352,7 @@ fn prepare(
                 decoded.push(new);
                 files.extend(file);
             }
-            let (mut step, cursor) = item.into_parse(plan)?;
+            let (mut step, cursor) = item.into_parse(plan, blobs)?;
             polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
                 reading.push(&mut step)
             })?;

@@ -354,16 +354,8 @@ impl Engine {
             }
         }
         let done = item.done;
-        let (mut parse, cursor) = item.into_parse(plan)?;
+        let (mut parse, cursor) = item.into_parse(plan, &self.blobs)?;
         if done && plan.origin.is_row_dump(&plan.path) {
-            let pool::Bytes::Stored(chain) = &plan.source else {
-                return Err(
-                    std::io::Error::other("a row dump must be stored before comparison").into(),
-                );
-            };
-            parse.compare_reader(std::io::BufReader::new(
-                chain.reader(Arc::clone(&self.blobs)),
-            ))?;
             pass.bytes_read += plan.size;
         }
         parse.prepare();
@@ -415,9 +407,13 @@ pub(crate) struct ExportStep {
 impl ExportStep {
     /// Extracted blobs are prepared by the caller before sealing. Delivery
     /// metadata is identical for ordinary parsing and archived replacement.
+    /// The completing step of a row dump also commits the comparison of the
+    /// whole stored chain, whether the rows were parsed on arrival or again
+    /// for a replacement reading.
     pub(crate) fn into_parse(
         self,
         plan: &Plan,
+        blobs: &Arc<polylogue_store::blobs::Blobs>,
     ) -> Result<(ParseStep, Option<ExportCursor>), EngineError> {
         let mut step = ParseStep::new(
             self.output,
@@ -425,6 +421,14 @@ impl ExportStep {
             0..if self.done { plan.size } else { 0 },
             self.done,
         );
+        if self.done && plan.origin.is_row_dump(&plan.path) {
+            let pool::Bytes::Stored(chain) = &plan.source else {
+                return Err(
+                    std::io::Error::other("a row dump must be stored before comparison").into(),
+                );
+            };
+            step.compare_reader(std::io::BufReader::new(chain.reader(Arc::clone(blobs))))?;
+        }
         step.order_from = Some(self.order_from);
         step.repeats_whole_conversations = self.repeats;
         step.reset = self.reset;

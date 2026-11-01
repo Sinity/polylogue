@@ -170,13 +170,21 @@ pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {
 
 /// Typed operation decoding precedes this builder; decode again at the direct
 /// CLI boundary so a structural value cannot become an unchecked write.
-fn assertion_arguments<T: serde::de::DeserializeOwned>(v: &Values) -> Result<T, String> {
-    let mut value = v.0.clone();
-    value.remove("request_id");
-    serde_json::from_value(serde_json::Value::Object(value)).map_err(|error| error.to_string())
+/// Only the operation's declared arguments reach the decoder; output options
+/// such as `json` and the request ID are not part of the operation.
+fn assertion_arguments<T: serde::de::DeserializeOwned>(
+    command: &Command,
+    v: &Values,
+) -> Result<T, String> {
+    let declared =
+        v.0.iter()
+            .filter(|(name, _)| command.args.iter().any(|argument| argument.name == *name))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+    serde_json::from_value(serde_json::Value::Object(declared)).map_err(|error| error.to_string())
 }
-pub fn assert(_: &Command, v: &Values, _: &Caller) -> Built {
-    let args: crate::protocol::assertion::Assert = assertion_arguments(v)?;
+pub fn assert(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::Assert = assertion_arguments(command, v)?;
     if args.assertions.is_empty() {
         return Err("assertions must not be empty".into());
     }
@@ -185,8 +193,8 @@ pub fn assert(_: &Command, v: &Values, _: &Caller) -> Built {
         assertions: args.assertions,
     })
 }
-pub fn assert_query(_: &Command, v: &Values, _: &Caller) -> Built {
-    let args: crate::protocol::assertion::AssertQuery = assertion_arguments(v)?;
+pub fn assert_query(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::AssertQuery = assertion_arguments(command, v)?;
     if args.query.trim().is_empty() {
         return Err("query must not be empty".into());
     }
@@ -196,8 +204,8 @@ pub fn assert_query(_: &Command, v: &Values, _: &Caller) -> Built {
         assertion: args.assertion,
     })
 }
-pub fn revise(_: &Command, v: &Values, _: &Caller) -> Built {
-    let args: crate::protocol::assertion::Revise = assertion_arguments(v)?;
+pub fn revise(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::Revise = assertion_arguments(command, v)?;
     if args.bases.is_empty() {
         return Err("bases must not be empty".into());
     }
@@ -207,8 +215,8 @@ pub fn revise(_: &Command, v: &Values, _: &Caller) -> Built {
         patch: args.patch,
     })
 }
-pub fn withdraw(_: &Command, v: &Values, _: &Caller) -> Built {
-    let args: crate::protocol::assertion::Withdraw = assertion_arguments(v)?;
+pub fn withdraw(command: &Command, v: &Values, _: &Caller) -> Built {
+    let args: crate::protocol::assertion::Withdraw = assertion_arguments(command, v)?;
     if args.targets.is_empty() {
         return Err("targets must not be empty".into());
     }

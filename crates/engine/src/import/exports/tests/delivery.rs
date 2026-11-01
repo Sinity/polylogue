@@ -32,7 +32,7 @@ fn parser(plan: &Plan) -> Box<dyn ExportParser> {
 fn collect(engine: &Engine, plan: &Plan) -> Vec<ParseStep> {
     let mut steps = Vec::new();
     parse_export(plan, &mut *parser(plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(plan)?;
+        let (mut step, cursor) = item.into_parse(plan, &engine.blobs)?;
         step.prepare();
         steps.push(step);
         Ok(cursor)
@@ -113,7 +113,7 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
     let mut prefix = Vec::new();
     let mut first_item = true;
     let result = parse_export(&plan, &mut *parser(&plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(&plan)?;
+        let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
         step.prepare();
         let delivery = step.delivery.unwrap();
         if matches!(delivery.source, ExportDeliverySource::Item { .. }) {
@@ -312,7 +312,7 @@ fn successful_short_scans_cannot_complete_even_after_a_full_rewound_pass() {
         let (engine, _lock, plan) = plan(&home, &raw);
         let mut steps = Vec::new();
         let read = parse_export(&plan, &mut ShortSuccess { rewind }, &engine.blobs, |item| {
-            let (mut step, cursor) = item.into_parse(&plan)?;
+            let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
             step.prepare();
             steps.push(step);
             Ok(cursor)

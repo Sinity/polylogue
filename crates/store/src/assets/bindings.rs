@@ -368,7 +368,7 @@ fn observed_pin(
     Ok(Some((chain, length as u64)))
 }
 
-fn hash_member(
+pub(super) fn hash_member(
     reader: &Reader<'_>,
     input: &str,
     chain: i64,
