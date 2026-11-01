@@ -19,7 +19,7 @@ CREATE TABLE primary_pending (
 ) STRICT;
 CREATE INDEX primary_pending_position ON primary_pending(position,n);
 CREATE TABLE primary_complete(position INTEGER PRIMARY KEY, evidence BLOB) STRICT;
-", include_str!("projection/refused.sql"), "
+", include_str!("../schema/primary_refused.sql"), "
 CREATE TABLE source_material (
  id TEXT NOT NULL, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,
  length INTEGER NOT NULL, hash BLOB NOT NULL, source_length INTEGER, blob_offset INTEGER NOT NULL,
@@ -29,7 +29,7 @@ CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
 ", include_str!("projection/reference_index.sql"));
 pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_index.sql");
-pub(crate) const REFUSED: &str = include_str!("projection/refused.sql");
+pub(crate) const REFUSED: &str = include_str!("../schema/primary_refused.sql");
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;

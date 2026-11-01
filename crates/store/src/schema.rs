@@ -130,7 +130,7 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
         target: IndexTarget::Index(include_str!("schema/index_17.sql")),
     },
     IndexMigration {
-        version: 18,
+        version: 21,
         target: IndexTarget::PrimaryIndex(&[crate::primary::projection::REFUSED]),
     },
 ];
