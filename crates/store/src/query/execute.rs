@@ -312,7 +312,9 @@ pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
 /// keep: `repo:other → 0 of 5`.
 /// How many rows one clause of an empty query matches, of the rows its
 /// unit has.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Explanation {
     pub clause: String,

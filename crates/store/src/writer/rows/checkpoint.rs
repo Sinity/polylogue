@@ -127,7 +127,9 @@ impl Update {
             .waiting_at()
             .map(i64::try_from)
             .transpose()
-            .map_err(|_| StoreError::Invalid("a waiting length exceeds SQLite's integer range".into()))?;
+            .map_err(|_| {
+                StoreError::Invalid("a waiting length exceeds SQLite's integer range".into())
+            })?;
         tx.prepare_cached("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,records,used,skipped,unreadable,waiting_at,reading_version,commit_seq,checkpoint)
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
             ON CONFLICT(input_pk,chain) DO UPDATE SET status=excluded.status,parsed_upto=excluded.parsed_upto,

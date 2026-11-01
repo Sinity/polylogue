@@ -5,9 +5,7 @@
 //! projection. Receipts supply order, identity and optional time explicitly.
 use crate::{ParseStep, Result, StoreError};
 use polylogue_model::WireShape;
-use polylogue_model::batch::{
-    ExportCursor, ExportDeliverySource, ReadingFootprint, StepProgress,
-};
+use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadingFootprint, StepProgress};
 mod export;
 pub(crate) use export::{
     ExportPrefix, admit_export, advance_prefix, is_refusal, load_prefix, migrate_receipts,

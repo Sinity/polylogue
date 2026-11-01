@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 
 pub mod export;
 mod progress;
-pub use progress::{ParseProgress, StepProgress};
 pub use export::{
     ExportCursor, ExportDelivery, ExportDeliveryError, ExportDeliverySource, ReadingFootprint,
 };
+pub use progress::{ParseProgress, StepProgress};
 
 /// Native parser continuation at one exact admitted cursor. This is not source,
 /// revision or receipt evidence; the containing reading supplies that identity.

@@ -1426,6 +1426,7 @@ fn a_query_document_carries_its_kind_in_its_fields_and_no_outcome() {
     assert!(measured.get("outcome").is_none(), "{measured}");
     assert!(matches!(
         serde_json::from_value(measured).unwrap(),
-        crate::protocol::query::Answer::Measure(_) | crate::protocol::query::Answer::PagedMeasure(_)
+        crate::protocol::query::Answer::Measure(_)
+            | crate::protocol::query::Answer::PagedMeasure(_)
     ));
 }

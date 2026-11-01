@@ -141,7 +141,8 @@ impl Reader<'_> {
                                 missing.insert(CompletenessReason::MissingSourcePrefix);
                             }
                             Some(ParseProgress::Waiting { .. }) if progress.waiting => {}
-                            Some(ParseProgress::Done) if progress.parsed_upto >= progress.length => {}
+                            Some(ParseProgress::Done)
+                                if progress.parsed_upto >= progress.length => {}
                             _ => {
                                 missing.insert(CompletenessReason::ParserBehind);
                             }

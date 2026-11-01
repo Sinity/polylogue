@@ -5,9 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 /// How far one parse step read the chain's stored bytes.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StepProgress {
     /// The step stopped before the end of the stored bytes; more remain.

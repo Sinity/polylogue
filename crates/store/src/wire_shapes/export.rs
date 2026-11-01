@@ -77,14 +77,15 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
         ExportDeliverySource::Complete {
             length: scanned, ..
         } => {
-            if scanned != length || step.start != 0 || step.parsed_upto != length
+            if scanned != length
+                || step.start != 0
+                || step.parsed_upto != length
                 || !step.progress.reached_end()
             {
                 return invalid("export completion differs from its verified source length");
             }
         }
-        _ if step.start != 0 || step.parsed_upto != 0
-            || step.progress.reached_end() => {
+        _ if step.start != 0 || step.parsed_upto != 0 || step.progress.reached_end() => {
             return invalid("an export callback cannot acknowledge a partial byte cursor");
         }
         _ => {}

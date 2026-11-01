@@ -210,11 +210,8 @@ fn frozen_unshaped_saved_scope_keeps_native_relations_without_persisting_them_as
             .iter()
             .any(|field| field.name == "codex")
     );
-    polylogue_query::plan::replay(
-        &scoped_object,
-        polylogue_query::plan::catalog_fingerprint(),
-    )
-    .unwrap();
+    polylogue_query::plan::replay(&scoped_object, polylogue_query::plan::catalog_fingerprint())
+        .unwrap();
     options.kept.insert(
         "artifact".into(),
         Kept {

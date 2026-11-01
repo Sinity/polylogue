@@ -614,10 +614,7 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(
-        state,
-        ("waiting".into(), 100, "synthetic=1".into())
-    );
+    assert_eq!(state, ("waiting".into(), 100, "synthetic=1".into()));
     let mut append = batch("metadata", 0, 40, Vec::new(), &[]);
     append.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
         at_end: append.parse[0].progress.reached_end(),

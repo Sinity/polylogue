@@ -508,7 +508,8 @@ pub(crate) fn stored_parse_progress(
         .map(u64::try_from)
         .transpose()
         .map_err(|_| StoreError::Invalid("a stored waiting length is negative".into()))?;
-    polylogue_model::batch::ParseProgress::from_stored(status, waiting_at).map_err(StoreError::Invalid)
+    polylogue_model::batch::ParseProgress::from_stored(status, waiting_at)
+        .map_err(StoreError::Invalid)
 }
 
 impl Reader<'_> {

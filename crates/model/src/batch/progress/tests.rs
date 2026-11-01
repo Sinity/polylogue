@@ -3,7 +3,11 @@ use super::*;
 #[test]
 fn a_step_that_reaches_the_end_before_the_stored_length_waits_at_that_length() {
     let cases = [
-        (StepProgress::AtEnd, 90, ParseProgress::Waiting { length: 100 }),
+        (
+            StepProgress::AtEnd,
+            90,
+            ParseProgress::Waiting { length: 100 },
+        ),
         (StepProgress::AtEnd, 100, ParseProgress::Done),
         (StepProgress::Partway, 90, ParseProgress::Parsing),
         (

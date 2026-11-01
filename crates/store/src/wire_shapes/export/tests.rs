@@ -193,7 +193,11 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_ca
     apply_step(&mut conn, 1, &refused).unwrap();
     let original = state(&conn);
     let reading: Reading = serde_json::from_str(&original).unwrap();
-    assert!(reading.refused_export && reading.export_cursor.is_none() && !reading.progress.reached_end());
+    assert!(
+        reading.refused_export
+            && reading.export_cursor.is_none()
+            && !reading.progress.reached_end()
+    );
     assert_eq!(reading.status(), CoverageStatus::Unreadable);
     assert_eq!(reading.parsed_upto, 0);
     conn.execute_batch("CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,reading_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO parse_state VALUES(1,1,'crate::export::VERSION=2','parsing',0);").unwrap();
