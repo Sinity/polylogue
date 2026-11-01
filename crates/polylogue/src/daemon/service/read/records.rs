@@ -463,13 +463,12 @@ pub(super) fn message_record(
     .into_iter()
     .filter(|slot| !covered.contains(&(slot.block, slot.attachment)))
     .collect();
-    for claim in reader
-        .current_attachment_claims(&message.id, projection.source_version, &uncovered)
-        .map_err(|e| store_error(&e))?
+    for claim in
+        reader.current_attachment_claims(&message.id, projection.source_version, &uncovered)?
     {
         claim
             .validate()
-            .map_err(|e| store_error(&polylogue_store::StoreError::Invalid(e.to_string())))?;
+            .map_err(|e| Failure::from(polylogue_store::StoreError::Invalid(e.to_string())))?;
         if seen.insert(claim.clone()) {
             bindings.push(claim);
         }
