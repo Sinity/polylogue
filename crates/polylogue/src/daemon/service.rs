@@ -380,16 +380,14 @@ fn context(
             at: request.at,
             seq: written_up_to,
         };
-        match writes.enqueue_user(request, Some(selected_scope)) {
-            Ok(committed) => {
-                if let Some(recipient) = ask.recipient() {
-                    d.queued_deliveries
-                        .add(recipient.to_string(), since, committed);
-                }
-                delivery = Some(request_id);
-            }
-            Err(e) => return store_error(&e),
+        let recipient = ask.recipient().map(|r| (r.to_string(), since));
+        if let Err(e) = d
+            .queued_deliveries
+            .submit(writes, request, Some(selected_scope), recipient)
+        {
+            return store_error(&e);
         }
+        delivery = Some(request_id);
     }
     crate::protocol::written(
         serde_json::json!({ "delivery": delivery, "prepared": prepared }),
@@ -412,8 +410,13 @@ fn delivery_event(
         Ok(writes) => writes,
         Err(failure) => return failure.answer(),
     };
-    match writes.enqueue_user(invocation.request(request_id.clone(), write), None) {
-        Ok(_) => crate::protocol::written(
+    match d.queued_deliveries.submit(
+        writes,
+        invocation.request(request_id.clone(), write),
+        None,
+        None,
+    ) {
+        Ok(()) => crate::protocol::written(
             serde_json::json!({ "id": request_id, "queued": true }),
             false,
         ),

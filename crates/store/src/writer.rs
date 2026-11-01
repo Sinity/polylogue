@@ -241,6 +241,27 @@ impl WriterQueue {
         Ok(())
     }
 
+    /// As [`Self::send_user`], but a full queue hands the message back
+    /// instead of waiting for room.
+    fn try_send_user(&self, message: UserMsg) -> std::result::Result<(), Option<UserMsg>> {
+        self.users
+            .lock()
+            .map_err(|_| None)?
+            .as_ref()
+            .ok_or(None)?
+            .try_send(message)
+            .map_err(|error| match error {
+                std::sync::mpsc::TrySendError::Full(message) => Some(message),
+                std::sync::mpsc::TrySendError::Disconnected(_) => None,
+            })?;
+        if let Ok(bulk) = self.bulk.try_lock()
+            && let Some(bulk) = bulk.as_ref()
+        {
+            let _ = bulk.try_send(Msg::Wake);
+        }
+        Ok(())
+    }
+
     fn stop(&self) {
         if let Ok(mut users) = self.users.lock() {
             users.take();
@@ -715,6 +736,17 @@ impl Drop for Writer {
     }
 }
 
+/// Where [`WriterSender::try_enqueue_user`] left a request.
+pub enum Queued {
+    /// In the queue; the receiver gets its outcome once committed.
+    Committing(Receiver<Result<polylogue_model::user::UserOutcome>>),
+    /// The queue was full: the request and its read scope, handed back.
+    Full(
+        polylogue_model::user::UserRequest,
+        Option<crate::ReadScopeToken>,
+    ),
+}
+
 /// A clonable sender into the writer, for worker threads.
 #[derive(Clone)]
 pub struct WriterSender(WriterQueue);
@@ -884,27 +916,29 @@ impl WriterSender {
         user_via(&self.0, request, Some(scope), None, None)
     }
 
-    /// Queues a user request without waiting for its commit. The writer
-    /// applies queued requests in order, so a later request (a delivery's
-    /// outcome after the delivery) finds an earlier one. The receiver gets the
-    /// outcome once committed; when nobody waits for it, a failure is kept in
-    /// the writer's report.
-    pub fn enqueue_user(
+    /// Queues a user request without waiting for its commit or for room in
+    /// the queue. The writer applies queued requests in order, so a later
+    /// request (a delivery's outcome after the delivery) finds an earlier one.
+    /// [`Queued::Committing`] receives the outcome once committed; when
+    /// nobody waits for it, a failure is kept in the writer's report. A full
+    /// queue hands the request back as [`Queued::Full`].
+    pub fn try_enqueue_user(
         &self,
         request: polylogue_model::user::UserRequest,
         scope: Option<crate::ReadScopeToken>,
-    ) -> Result<Receiver<Result<polylogue_model::user::UserOutcome>>> {
+    ) -> Result<Queued> {
         let (reply, wait) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::Request(
-                Box::new(request),
-                scope,
-                None,
-                None,
-                reply,
-            ))
-            .map_err(|_| StoreError::WriterGone)?;
-        Ok(wait)
+        match self.0.try_send_user(UserMsg::Request(
+            Box::new(request),
+            scope,
+            None,
+            None,
+            reply,
+        )) {
+            Ok(()) => Ok(Queued::Committing(wait)),
+            Err(Some(UserMsg::Request(request, scope, ..))) => Ok(Queued::Full(*request, scope)),
+            Err(_) => Err(StoreError::WriterGone),
+        }
     }
 
     /// As [`Writer::user_preparing`].

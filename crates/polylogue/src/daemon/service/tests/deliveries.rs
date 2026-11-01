@@ -288,3 +288,93 @@ fn a_compaction_brief_right_after_a_startup_brief_reports_only_what_changed_sinc
     barrier.release();
     held.join().unwrap();
 }
+
+/// law: brief-never-waits-for-the-writer-queue
+#[test]
+fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_later() {
+    use polylogue_model::user::UserWrite;
+    use polylogue_store::writer::Queued;
+    use std::time::{Duration, Instant};
+    let d = daemon_with_a_project();
+    let (barrier, held) = hold_writer(&d, "held-with-a-full-queue");
+    let writes = d.daemon.writes.as_ref().unwrap();
+    let invocation = d
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    let mut filling = Vec::new();
+    loop {
+        let keep = invocation.request(
+            polylogue_store::user_writes::new_request_id(),
+            UserWrite::KeepResult {
+                name: None,
+                query: "sessions".into(),
+                rows_json: "[]".into(),
+                read_at: "{}".into(),
+            },
+        );
+        match writes.try_enqueue_user(keep, None).unwrap() {
+            Queued::Committing(committed) => filling.push(committed),
+            Queued::Full(..) => break,
+        }
+        assert!(filling.len() < 10_000, "the writer's queue never filled");
+    }
+    let id = polylogue_store::user_writes::new_request_id();
+    let started = Instant::now();
+    let answer = brief(&d, &id, StartSource::Startup);
+    assert!(
+        started.elapsed() < Duration::from_millis(1_500),
+        "a full queue delayed the brief by {:?}",
+        started.elapsed()
+    );
+    assert_eq!(answer["delivery"], id.as_str());
+    // Its outcome waits behind it, in order.
+    let event = crate::test_answers::ok(handle(
+        Request::DeliveryEvent {
+            request_id: polylogue_store::user_writes::new_request_id(),
+            delivery: id.clone(),
+            what: polylogue_model::DeliveryOutcome::Delivered,
+            detail: None,
+        },
+        &d.daemon,
+    ));
+    assert_eq!(event["queued"], true);
+    barrier.release();
+    held.join().unwrap();
+    for committed in filling {
+        committed.recv().unwrap().unwrap();
+    }
+    let recorded = || {
+        d.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .delivery(&id)
+            .unwrap()
+            .map(|(row, _)| row.events)
+    };
+    let until = Instant::now() + Duration::from_secs(20);
+    let events = loop {
+        match recorded() {
+            Some(events) if !events.is_empty() => break events,
+            _ => {
+                assert!(
+                    Instant::now() < until,
+                    "the waiting delivery never committed"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    };
+    assert_eq!(events, ["delivered"]);
+    let reader = d.daemon.reads.reader().unwrap();
+    let rows = reader
+        .query(
+            "SELECT count(*) AS n FROM source_delivery WHERE id=?1",
+            &[polylogue_store::SqlValue::Text(id)],
+        )
+        .unwrap();
+    assert_eq!(rows[0]["n"], 1);
+}

@@ -75,7 +75,9 @@ impl SharedScopeIndex {
     }
 }
 
-/// The worker that keeps [`SharedScopeIndex`] current.
+/// The worker that keeps [`SharedScopeIndex`] current and, after each
+/// commit, hands delivery records that found the writer's queue full to the
+/// writer.
 pub(crate) struct ScopeWorker {
     stop: Arc<AtomicBool>,
     expected_exit: Arc<AtomicBool>,
@@ -130,6 +132,13 @@ impl ScopeWorker {
                         continue;
                     }
                     last_error = None;
+                    // A commit leaves room in the writer's queue for records
+                    // that found it full.
+                    if let Some(writes) = &daemon.writes
+                        && let Err(error) = daemon.queued_deliveries.hand_over(writes)
+                    {
+                        eprintln!("polylogue: queued deliveries: {error}");
+                    }
                     match &subscription {
                         Some(subscription) => {
                             if subscription.recv().is_err() {
