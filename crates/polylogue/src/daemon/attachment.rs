@@ -1,6 +1,6 @@
 //! Checked attachment bytes through the ordinary application operation.
-use super::service::{Daemon, error, store_error};
 use super::Request;
+use super::service::{Daemon, error, store_error};
 use base64::Engine as _;
 use command_surface::Answer;
 use serde::{Deserialize, Serialize};
