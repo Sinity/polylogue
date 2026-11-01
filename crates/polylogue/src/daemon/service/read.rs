@@ -111,7 +111,9 @@ fn prepared<T>(
                     ..
                 } => {
                     polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
-                    options.validate().map_err(|e| Failure::new("bad_request", e))?;
+                    options
+                        .validate()
+                        .map_err(|e| Failure::new("bad_request", e))?;
                     let format = Format::parse(format)
                         .ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
                     let logical_budget = if *delivery == ReadDelivery::Page {
@@ -314,10 +316,7 @@ fn prepared<T>(
                 || d.config.requests.now(),
                 || {
                     polylogue_store::read::limit::ReadLimit::set_stage("read snapshot");
-                    let caught_up = d
-                        .warm
-                        .caught_up(reader, &positions.to_string())
-                        ?;
+                    let caught_up = d.warm.caught_up(reader, &positions.to_string())?;
                     let snapshot = ReadSnapshot {
                         query: format!("query:{}", selection.question_id()),
                         query_text: execution.target.clone(),
@@ -332,10 +331,9 @@ fn prepared<T>(
                     };
                     let (title, kind) = match selection.direct_target() {
                         Some(ReadTarget::Session(id)) => {
-                            let session = reader
-                                .session(id)
-                                ?
-                                .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
+                            let session = reader.session(id)?.ok_or_else(|| {
+                                Failure::new("not_found", format!("no session {id}"))
+                            })?;
                             let title = reader
                                 .display_title(id)?
                                 .map(ValueState::known)

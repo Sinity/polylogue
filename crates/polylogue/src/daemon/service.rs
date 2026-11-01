@@ -1420,9 +1420,9 @@ fn query_targets_in(
                     let mut targets = Vec::new();
                     let mut seen = HashSet::new();
                     reader.visit_selection::<Failure>(&selection, None, Some(near), |row| {
-                        row_count = row_count
-                            .checked_add(1)
-                            .ok_or_else(|| Failure::new("internal", "selected row count exceeds u64"))?;
+                        row_count = row_count.checked_add(1).ok_or_else(|| {
+                            Failure::new("internal", "selected row count exceeds u64")
+                        })?;
                         let reference = row
                             .target
                             .as_ref()

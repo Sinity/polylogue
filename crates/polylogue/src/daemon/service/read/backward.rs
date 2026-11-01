@@ -40,10 +40,7 @@ fn adjacent(
     ];
     let length = match target {
         ReadTarget::Session(id) => {
-            let Some(physical) = reader
-                .physical_record_counts(id)
-                ?
-            else {
+            let Some(physical) = reader.physical_record_counts(id)? else {
                 return if current.is_some() {
                     Err(stale())
                 } else {
@@ -73,12 +70,10 @@ fn adjacent(
         }
         ReadTarget::MessageRange { first, last } => {
             let mut count = 0_u64;
-            reader
-                .visit_message_range(first, last, 0, |_| {
-                    count += 1;
-                    Ok(std::ops::ControlFlow::Continue(()))
-                })
-                ?;
+            reader.visit_message_range(first, last, 0, |_| {
+                count += 1;
+                Ok(std::ops::ControlFlow::Continue(()))
+            })?;
             families[0] = (Message, count);
             1
         }

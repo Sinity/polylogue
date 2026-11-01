@@ -170,12 +170,12 @@ pub fn refusal(
     let mut notes = vec![format!(
         "stopped during {stage} after {steps} SQLite steps; rows scanned are unknown"
     )];
-    notes.extend(limit.stage_timings().into_iter().map(|(stage, spent)| {
-        format!(
-            "{stage} took {:.1} ms",
-            spent.as_secs_f64() * 1000.0
-        )
-    }));
+    notes.extend(
+        limit
+            .stage_timings()
+            .into_iter()
+            .map(|(stage, spent)| format!("{stage} took {:.1} ms", spent.as_secs_f64() * 1000.0)),
+    );
     Answer::Error {
         error: failure,
         notes,

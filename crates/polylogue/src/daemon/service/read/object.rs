@@ -106,10 +106,7 @@ fn execute<T>(
         || {
             reader.check()?;
             scope.check()?;
-            let caught_up = d
-                .warm
-                .caught_up(reader, &positions.to_string())
-                ?;
+            let caught_up = d.warm.caught_up(reader, &positions.to_string())?;
             let run_reference = format!("run:{id}");
             let snapshot = ReadSnapshot {
                 query: run_reference.clone(),
@@ -192,8 +189,9 @@ pub(super) fn page(
         operation,
         reference,
         |record, snapshot, header, format, budget, id, footer, evidence| {
-            let mut budget = budget
-                .ok_or_else(|| Failure::new("bad_request", "streaming reads require stream delivery"))?;
+            let mut budget = budget.ok_or_else(|| {
+                Failure::new("bad_request", "streaming reads require stream delivery")
+            })?;
             let framing_size = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
                 .map_err(|error| Failure::new("internal", error))?
                 .len();

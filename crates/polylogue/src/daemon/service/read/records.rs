@@ -104,7 +104,7 @@ pub(super) fn reference(
                         }
                     })
                 })
-                ?;
+                .map_err(Failure::from)?;
             if !seen && start.is_some() {
                 return Err(stale_record());
             }
@@ -113,10 +113,14 @@ pub(super) fn reference(
         ReadTarget::Document(id) => {
             let at = single(ReadRecordKind::Document)?;
             let document = reader
-                .document(id)?
+                .document(id)
+                .map_err(Failure::from)?
                 .ok_or_else(|| Failure::new("not_found", format!("no document {id}")))?;
             let reference = format!("document:{id}");
-            let commit = admission(reader.document_commit(id)?, &reference)?;
+            let commit = admission(
+                reader.document_commit(id).map_err(Failure::from)?,
+                &reference,
+            )?;
             visit(
                 Record::Document(DocumentRecord {
                     reference,
@@ -132,7 +136,7 @@ pub(super) fn reference(
             let at = single(ReadRecordKind::Event)?;
             let record = reader
                 .event_record(id)
-                ?
+                .map_err(Failure::from)?
                 .ok_or_else(|| Failure::new("not_found", format!("no event {id}")))?;
             visit(
                 Record::Event(record).into(),
@@ -157,16 +161,16 @@ fn message(
 ) -> Result<Record, Failure> {
     let (mut message, mut projection) = reader
         .message_with_projection(id)
-        ?
+        .map_err(Failure::from)?
         .ok_or_else(|| Failure::new("not_found", format!("no message {id}")))?;
     let reference = format!("message:{id}");
     let commit = admission(
-        reader.message_admission(id)?,
+        reader.message_admission(id).map_err(Failure::from)?,
         &reference,
     )?;
     let order = reader
         .message_order(id)
-        ?
+        .map_err(Failure::from)?
         .ok_or_else(|| {
             Failure::new(
                 "not_yet_available",
@@ -204,13 +208,19 @@ fn session(
     }) {
         return Err(stale_record());
     }
-    let selected = reader.select_messages(id, inherited)?;
+    let selected = reader
+        .select_messages(id, inherited)
+        .map_err(Failure::from)?;
     let reference = format!("session:{id}");
     if start.is_none_or(|start| start.kind == Session) {
         let session = reader
-            .session(id)?
+            .session(id)
+            .map_err(Failure::from)?
             .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
-        let commit = admission(reader.session_commit(id)?, &reference)?;
+        let commit = admission(
+            reader.session_commit(id).map_err(Failure::from)?,
+            &reference,
+        )?;
         if !visit(
             Record::Session(SessionRecord {
                 reference,
@@ -271,7 +281,10 @@ fn session(
             .filter(|start| start.kind == Message)
             .map_or(0, |s| s.ordinal);
         let from = if start.is_some_and(|start| start.kind == Message) {
-            selected.locate_ordinal(ordinal)?.ok_or_else(stale_record)?
+            selected
+                .locate_ordinal(ordinal)
+                .map_err(Failure::from)?
+                .ok_or_else(stale_record)?
         } else {
             Default::default()
         };
@@ -301,8 +314,8 @@ fn session(
                         ControlFlow::Break(())
                     }
                 }
-            }
-        })?;
+            })
+            .map_err(Failure::from)?;
         if !result? {
             return Ok(false);
         }
@@ -337,8 +350,8 @@ fn session(
                         ControlFlow::Break(())
                     }
                 }
-            }
-        })?;
+            })
+            .map_err(Failure::from)?;
         if !result? {
             return Ok(false);
         }
@@ -382,8 +395,8 @@ fn session(
                     ControlFlow::Break(())
                 }
             }
-        }
-    })?;
+        })
+        .map_err(Failure::from)?;
     if !result? {
         return Ok(false);
     }
@@ -402,14 +415,18 @@ pub(super) fn message_record(
     order: u64,
 ) -> Result<Record, Failure> {
     use polylogue_model::attachment_binding::AttachmentNamespace;
-    let mut injections = reader.injection_evidence(&message.id, projection.source_version)?;
+    let mut injections = reader
+        .injection_evidence(&message.id, projection.source_version)
+        .map_err(Failure::from)?;
     injections.retain(|evidence| {
         projection
             .block_ordinals
             .binary_search(&evidence.block)
             .is_ok()
     });
-    let retained = reader.attachment_binding_claims(&message.id, projection.source_version)?;
+    let retained = reader
+        .attachment_binding_claims(&message.id, projection.source_version)
+        .map_err(Failure::from)?;
     let mut bindings = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for record in retained {
