@@ -245,8 +245,7 @@ impl Archive {
     }
 
     /// The caller holds the archive lock. An index built by another version
-    /// or with another schema, left unsynced by a stop in the middle of a
-    /// first build, or missing an excision the archive holds is deleted and
+    /// or with another schema, or missing an excision the archive holds, is deleted and
     /// created again empty; the loop then rebuilds it from the stored inputs.
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let archive = open_read(&self.archive_db())?;
@@ -273,8 +272,7 @@ impl Archive {
             return Ok(false);
         }
         Ok(found != schema::INDEX_VERSION
-            || !schema::same_schema(&index, &[schema::INDEX])?
-            || schema::unsynced(&index)?
+            || !schema::same_index_schema(&index)?
             || crate::excise::index_behind(archive, &index)?)
     }
 }
@@ -365,10 +363,11 @@ pub mod cache {
     pub const SETUP: i64 = 16;
 }
 
-/// Pages of write-ahead log after which a write connection copies the log
-/// into the database file: about 1 GB rather than 4 MB, so a page written by
-/// many transactions reaches the database file once.
-pub(crate) const WAL_AUTOCHECKPOINT: i64 = 262_144;
+/// Steady-state checkpoints cover about 16 MiB. A first build uses larger
+/// batches, then returns to this value when its deferred indexes are built.
+pub(crate) const WAL_AUTOCHECKPOINT: i64 = 4096;
+pub(crate) const WAL_SIZE_LIMIT: i64 = 16 << 20;
+pub(crate) const BUILD_WAL_AUTOCHECKPOINT: i64 = 262_144;
 
 /// A connection the writer (or setup) uses. Each connection belongs to one
 /// thread, so SQLite's own mutexes are off (they cost about 3% of the
@@ -387,6 +386,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     // writer's reads go through its page cache.
     conn.pragma_update(None, "mmap_size", 0)?;
     conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT)?;
+    conn.pragma_update(None, "journal_size_limit", WAL_SIZE_LIMIT)?;
     Ok(conn)
 }
 

@@ -23,10 +23,10 @@ fn insert_event(conn: &Connection, id: &str) -> i64 {
 #[test]
 fn a_key_finds_the_row_written_under_it() {
     let conn = index();
-    let keys = FirstBuild::default();
+    let keys = FirstBuild;
     assert_eq!(keys.event(&conn, "first").unwrap(), None);
     let pk = insert_event(&conn, "first");
-    keys.add_event("first", pk);
+    keys.add_event(&conn, "first", pk).unwrap();
     assert_eq!(keys.event(&conn, "first").unwrap(), Some(pk));
     assert_eq!(keys.event(&conn, "second").unwrap(), None);
 }
@@ -34,20 +34,20 @@ fn a_key_finds_the_row_written_under_it() {
 #[test]
 fn a_row_rolled_back_or_replaced_under_its_key_is_not_found() {
     let mut conn = index();
-    let keys = FirstBuild::default();
+    let keys = FirstBuild;
     let tx = conn.transaction().unwrap();
     let pk = insert_event(&tx, "gone");
-    keys.add_event("gone", pk);
+    keys.add_event(&tx, "gone", pk).unwrap();
     tx.rollback().unwrap();
     assert_eq!(keys.event(&conn, "gone").unwrap(), None);
     // The same row number, now holding another key.
     let reused = insert_event(&conn, "other");
     assert_eq!(reused, pk);
-    keys.add_event("other", reused);
+    keys.add_event(&conn, "other", reused).unwrap();
     assert_eq!(keys.event(&conn, "gone").unwrap(), None);
     assert_eq!(keys.event(&conn, "other").unwrap(), Some(reused));
     let again = insert_event(&conn, "gone");
-    keys.add_event("gone", again);
+    keys.add_event(&conn, "gone", again).unwrap();
     assert_eq!(keys.event(&conn, "gone").unwrap(), Some(again));
 }
 
@@ -56,26 +56,27 @@ fn keys_sharing_a_hash_each_find_their_own_row() {
     let conn = index();
     let first = insert_event(&conn, "one");
     let second = insert_event(&conn, "two");
-    let mut rows = Rows::default();
-    rows.add(7, first);
-    rows.add(7, second);
-    let check = "SELECT id FROM event WHERE pk = ?1";
-    assert_eq!(rows.find(&conn, check, 7, b"one").unwrap(), Some(first));
-    assert_eq!(rows.find(&conn, check, 7, b"two").unwrap(), Some(second));
-    assert_eq!(rows.find(&conn, check, 7, b"three").unwrap(), None);
+    let keys = FirstBuild;
+    keys.add_event(&conn, "one", first).unwrap();
+    keys.add_event(&conn, "two", second).unwrap();
+    let hash = blake3::hash(b"one");
+    conn.execute("UPDATE build_key SET hash=?1 WHERE row=?2",
+        rusqlite::params![&hash.as_bytes()[..8], second]).unwrap();
+    assert_eq!(keys.event(&conn, "one").unwrap(), Some(first));
+    assert_eq!(keys.event(&conn, "three").unwrap(), None);
 }
 
 #[test]
 fn texts_and_messages_are_found_by_their_keys() {
     let conn = index();
-    let keys = FirstBuild::default();
+    let keys = FirstBuild;
     let hash = *blake3::hash(b"walrus").as_bytes();
     conn.execute(
         "INSERT INTO text(hash, body) VALUES (?1, X'00')",
         [&hash[..]],
     )
     .unwrap();
-    keys.add_text(&hash, conn.last_insert_rowid());
+    keys.add_text(&conn, &hash, conn.last_insert_rowid()).unwrap();
     assert_eq!(
         keys.text(&conn, &hash).unwrap(),
         Some(conn.last_insert_rowid())
@@ -91,7 +92,7 @@ fn texts_and_messages_are_found_by_their_keys() {
         [],
     )
     .unwrap();
-    keys.add_message("claude-code:m", conn.last_insert_rowid());
+    keys.add_message(&conn, "claude-code:m", conn.last_insert_rowid()).unwrap();
     assert_eq!(
         keys.message(&conn, "claude-code:m").unwrap(),
         Some(conn.last_insert_rowid())

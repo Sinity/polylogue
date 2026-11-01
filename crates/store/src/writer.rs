@@ -68,6 +68,7 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
+    Idle(SyncSender<Result<()>>),
     InputsChecked(SyncSender<Result<()>>),
     RepositoriesChecked(SyncSender<Result<()>>),
     Stop,
@@ -202,7 +203,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
 ];
 
 /// Unique indexes on natural keys, which the writer's statements use: a first
-/// build drops them too, finds rows by key in memory meanwhile
+/// build drops them too, finds rows through disk-backed key hashes meanwhile
 /// ([`crate::first_build`]), and builds them first when it ends.
 const KEY_INDEXES: &[&str] = &["message_id", "event_id", "text_hash"];
 
@@ -217,12 +218,9 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// An empty index is built without syncs: every row in it can be
-    /// recomputed, and syncing a first build of tens of GB through a busy
-    /// drive costs more than the build. The first derive (the end of the
-    /// pass), or an excision, ends the build: it builds what the build
-    /// deferred, syncs the index and clears the mark; an index still marked
-    /// when the archive is next opened is set aside and rebuilt.
+    /// A first build defers search and read-only indexes. Its parsed rows,
+    /// positions and key lookups commit together, so a restart continues it.
+    /// The first derive or an excision finishes the deferred indexes.
     pub fn start(archive: &Archive) -> Result<Self> {
         Self::start_with(archive, None)
     }
@@ -245,58 +243,43 @@ impl Writer {
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
             })?;
-        if empty {
-            // Make the rebuild marker durable before unsynchronized writes.
-            // Keep WAL throughout: an open read transaction must not prevent the
-            // first build from finishing or the writer from stopping.
-            index.pragma_update(None, "synchronous", "full")?;
-            index.execute(
-                "INSERT INTO meta(key, value) VALUES ('unsynced', '1')
-                 ON CONFLICT(key) DO UPDATE SET value = '1'",
-                [],
-            )?;
-            index.pragma_update(None, "synchronous", "off")?;
-            // The log is not copied into the database file until the rows
-            // are written: each copy read every page back from the log and
-            // wrote it again, which cost more than writing the rows.
-            index.pragma_update(None, "wal_autocheckpoint", 0)?;
-        }
-        // A first build inserts rows without maintaining the indexes only
-        // reads use, or the unique indexes on natural keys; each is built
-        // once from a sorted scan when the build ends. The writer's other
-        // indexes stay, and an index missing from these lists is kept, which
-        // is the safe default.
-        let deferred_indexes = if empty {
+        let building = empty || crate::schema::building(&index)?;
+        let deferred_indexes = if empty && !crate::schema::building(&index)? {
+            let tx = index.unchecked_transaction()?;
             let mut defs = Vec::new();
             for name in KEY_INDEXES.iter().chain(READ_ONLY_INDEXES) {
-                let sql: Option<String> = index
-                    .query_row(
-                        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
-                        [name],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
+                let sql: Option<String> = tx.query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                    [name], |r| r.get(0)).optional()?;
                 if let Some(sql) = sql {
-                    index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                    tx.execute(&format!("DROP INDEX \"{name}\""), [])?;
                     defs.push(sql);
                 }
             }
+            tx.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('building','1'), ('build_indexes',?1)",
+                [serde_json::to_string(&defs)?])?;
+            tx.commit()?;
             defs
+        } else if building {
+            crate::schema::deferred_indexes(&index)?
         } else {
             Vec::new()
         };
+        if building {
+            index.pragma_update(None, "wal_autocheckpoint", crate::archive::BUILD_WAL_AUTOCHECKPOINT)?;
+        }
         let archive_conn = crate::archive::open_archive_writer(archive)?;
         let excisions = crate::excise::any_excision(&archive_conn)?;
         let mut inner = Inner {
             archive: archive_conn,
             index,
             report: WriteReport::default(),
-            first_build: empty.then(crate::first_build::FirstBuild::default),
+            first_build: building.then_some(crate::first_build::FirstBuild),
             deferred_indexes,
             derive_due: true,
             derived_version: None,
             logs_hold_excised: false,
-            search: Search::start(archive.index_db(), !empty)?,
+            search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
             excisions,
             sinex,
@@ -322,6 +305,14 @@ impl Writer {
     /// Whether the index was empty when the writer started.
     pub fn started_empty(&self) -> bool {
         self.started_empty
+    }
+
+    /// Finish a quiet pass by shrinking both WAL files when readers permit.
+    pub fn idle(&self) -> Result<()> {
+        let (reply, done) = sync_channel(1);
+        self.tx.as_ref().ok_or(StoreError::WriterGone)?
+            .send(Msg::Idle(reply)).map_err(|_| StoreError::WriterGone)?;
+        done.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     /// A successful engine pass checked every stored chain. Only the
@@ -560,7 +551,7 @@ struct Inner {
     archive: Connection,
     index: Connection,
     report: WriteReport,
-    /// Set while the index is being built from nothing, without syncs
+    /// Set while the index defers its search and secondary indexes
     /// ([`Writer::start`]).
     first_build: Option<crate::first_build::FirstBuild>,
     /// Secondary indexes dropped for a first build, recreated when it ends.
@@ -605,6 +596,7 @@ impl Inner {
         let mut blobs = Vec::new();
         let mut input_checks = Vec::new();
         let mut repository_checks = Vec::new();
+        let mut idle_checks = Vec::new();
         loop {
             // While a log still holds excised text, the writer wakes to
             // empty it even when no work comes.
@@ -656,6 +648,10 @@ impl Inner {
                     }
                     Msg::StoreBlob(blob, reply) => {
                         blobs.push((blob, reply));
+                        false
+                    }
+                    Msg::Idle(reply) => {
+                        idle_checks.push(reply);
                         false
                     }
                     Msg::RepositoriesChecked(reply) => {
@@ -807,11 +803,34 @@ impl Inner {
             if self.logs_hold_excised {
                 self.empty_logs_or_report();
             }
+            for reply in idle_checks.drain(..) {
+                let result = if self.first_build.is_none() {
+                    self.checkpoint_idle()
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(result);
+            }
             if stopping {
                 break;
             }
         }
         let _ = self.finish_build();
+    }
+
+    fn checkpoint_idle(&self) -> Result<()> {
+        for conn in [&self.index, &self.archive] {
+            conn.busy_timeout(std::time::Duration::ZERO)?;
+            let result = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+            conn.busy_timeout(std::time::Duration::from_secs(30))?;
+            match result {
+                Ok(()) => {}
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::DatabaseBusy => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
     }
 
     fn empty_logs_or_report(&mut self) {
@@ -842,37 +861,19 @@ impl Inner {
         Ok(derived)
     }
 
-    /// Ends an unsynced build: makes the index durable, then clears the mark
-    /// and returns to normal syncing.
+    /// Finishes deferred indexes and clears the build marker after their
+    /// durable commits. An interrupted finish repeats this work on restart.
     fn finish_build(&mut self) -> Result<()> {
         if self.first_build.is_none() {
             return Ok(());
         }
-        // The rows' log is copied into the database file once, before the
-        // scans that build the deferred indexes: read through a log of tens
-        // of GB, every page costs a search of the whole log's index. The
-        // usual checkpoints resume for what those builds write.
-        let copied = std::time::Instant::now();
-        self.index
-            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-        self.index.pragma_update(
-            None,
-            "wal_autocheckpoint",
-            crate::archive::WAL_AUTOCHECKPOINT,
-        )?;
-        crate::timing::add(crate::timing::Stage::Sync, copied.elapsed());
         self.build_deferred()?;
-        let synced = std::time::Instant::now();
-        let i = &self.index;
-        i.pragma_update(None, "synchronous", "full")?;
-        // A FULL checkpoint syncs the database file, with every page the
-        // unsynced checkpoints wrote, then the FULL commit syncs the log
-        // with the marker's removal. No journal-mode switch can wait on old
-        // readers.
-        i.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
-        i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
-        i.pragma_update(None, "synchronous", "normal")?;
-        crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
+        let tx = self.index.unchecked_transaction()?;
+        tx.execute("DELETE FROM build_key", [])?;
+        tx.execute("DELETE FROM meta WHERE key='build_indexes'", [])?;
+        tx.execute("UPDATE meta SET value='0' WHERE key='building'", [])?;
+        tx.commit()?;
+        self.index.pragma_update(None, "wal_autocheckpoint", crate::archive::WAL_AUTOCHECKPOINT)?;
         self.first_build = None;
         self.search.ready();
         Ok(())
@@ -896,9 +897,12 @@ impl Inner {
         )?;
         add(Stage::TrigramIndex, started.elapsed());
         let started = std::time::Instant::now();
-        for sql in std::mem::take(&mut self.deferred_indexes) {
+        for sql in &self.deferred_indexes {
+            let sql = sql.replacen("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS ", 1)
+                .replacen("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1);
             self.index.execute(&sql, [])?;
         }
+        self.deferred_indexes.clear();
         add(Stage::SecondaryIndexes, started.elapsed());
         Ok(())
     }

@@ -38,11 +38,12 @@ pub struct Captures {
     pending: bool,
     available: HashMap<PathBuf, PathBuf>,
     retry: Vec<PathBuf>,
+    waiting: HashMap<PathBuf, (PathBuf, Option<crate::Observation>)>,
 }
 
 impl Captures {
     pub fn pending(&self) -> bool {
-        self.pending
+        self.pending || !self.waiting.is_empty()
     }
 
     /// Databases observed changing get one further look after they settle.
@@ -54,7 +55,10 @@ impl Captures {
     /// Each unit is one row, replayed line or 64 KiB prefix-verification block.
     /// A SQLite call, one record and the final commit can exceed it.
     pub fn turn(&mut self, inputs: Inputs, limit: usize) -> Result<CaptureTurn, ExportError> {
-        if !self.pending && inputs.is_empty() {
+        for (db, out, observation) in inputs {
+            self.waiting.insert(db, (out, observation));
+        }
+        if !self.pending() {
             return Ok(CaptureTurn::default());
         }
         if self.worker.is_none() {
@@ -64,6 +68,7 @@ impl Captures {
         let command = if self.pending {
             Command::Continue(limit.max(1))
         } else {
+            let inputs = self.waiting.drain().map(|(db, (out, observation))| (db, out, observation)).collect();
             Command::Start(inputs, limit.max(1))
         };
         let reply = worker
@@ -87,12 +92,12 @@ impl Captures {
                 self.pending = true;
                 updates
             }
-            Reply::Finished(updates) => {
+            Reply::Finished(mut updates) => {
                 self.pending = false;
+                self.retry = std::mem::take(&mut updates.retry);
                 updates
             }
         };
-        self.retry = updates.retry;
         for (db, out) in updates.paths {
             if let Some(out) = out {
                 self.available.insert(db, out);
@@ -101,7 +106,7 @@ impl Captures {
             }
         }
         Ok(CaptureTurn {
-            pending: self.pending,
+            pending: self.pending(),
             errors: updates.errors,
         })
     }

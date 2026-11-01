@@ -70,16 +70,40 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
     }
 }
 
-/// Whether the index was being built without syncs and never finished
-/// (`meta.unsynced = 1`): after a crash such a file may be damaged, so it is
-/// rebuilt rather than trusted.
-pub fn unsynced(conn: &Connection) -> Result<bool> {
-    let v: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'unsynced'", [], |r| {
-            r.get(0)
-        })
-        .optional()?;
-    Ok(v.as_deref() == Some("1"))
+/// A first build defers search and secondary indexes, but every parsed
+/// transaction is durable and can be continued after a restart.
+pub(crate) fn building(conn: &Connection) -> Result<bool> {
+    let value: Option<String> = conn.query_row(
+        "SELECT value FROM meta WHERE key='building'", [], |r| r.get(0)).optional()?;
+    Ok(value.as_deref() == Some("1"))
+}
+
+pub(crate) fn deferred_indexes(conn: &Connection) -> Result<Vec<String>> {
+    let value: Option<String> = conn.query_row(
+        "SELECT value FROM meta WHERE key='build_indexes'", [], |r| r.get(0)).optional()?;
+    Ok(value.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or_default())
+}
+
+/// A pending build can lack only the exact indexes it recorded deferring.
+pub(crate) fn same_index_schema(conn: &Connection) -> Result<bool> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch(INDEX)?;
+    if building(conn)? {
+        for sql in deferred_indexes(conn)? {
+            let defined = shape(&expected)?;
+            let Some((_, name, _)) = defined.iter().find(|(kind, _, definition)|
+                kind == "index" && *definition == statement(&sql)) else {
+                return Ok(false);
+            };
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+                [name], |r| r.get(0))?;
+            if !exists {
+                expected.execute(&format!("DROP INDEX \"{}\"", name.replace('"', "\"\"")), [])?;
+            }
+        }
+    }
+    Ok(shape(conn)? == shape(&expected)?)
 }
 
 /// Creates `archive.db` in an empty file and brings an older one forward.

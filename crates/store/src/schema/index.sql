@@ -1,6 +1,13 @@
+CREATE TABLE build_key (
+    kind TEXT NOT NULL,
+    hash BLOB NOT NULL,
+    row INTEGER NOT NULL,
+    PRIMARY KEY(kind, hash, row)
+) WITHOUT ROWID;
+
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 -- INDEX_VERSION, generation, cursor_key (the generation's secret that seals read
--- cursors), the write counter, unsynced, facts_version,
+-- cursors), the write counter, building, build_indexes, facts_version,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
 -- always starts a new generation, including after a clean shutdown.
 -- No cursors for derived products: a product's work is the sessions whose

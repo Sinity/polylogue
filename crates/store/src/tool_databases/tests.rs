@@ -240,11 +240,8 @@ fn exports_without_a_marker_replay_rows_and_removals_without_repeating_them() {
     fs::remove_file(synced_prefix::checkpoint(&out)).unwrap();
     source.execute("DELETE FROM t WHERE id=2", []).unwrap();
     assert_eq!(
-        Exporter::default()
-            .export(&db, &out, None)
-            .unwrap()
-            .unwrap(),
-        Exported::default()
+        Exporter::default().export(&db, &out, None).unwrap(),
+        None
     );
     assert_eq!(fs::read_to_string(&out).unwrap(), bytes);
 }
@@ -321,11 +318,8 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
     );
     let length = fs::metadata(&out).unwrap().len();
     assert_eq!(
-        Exporter::default()
-            .export(&db, &out, None)
-            .unwrap()
-            .unwrap(),
-        Exported::default()
+        Exporter::default().export(&db, &out, None).unwrap(),
+        None
     );
     assert_eq!(fs::metadata(&out).unwrap().len(), length);
     source
@@ -342,11 +336,8 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
         Exported { rows: 20, gone: 20 }
     );
     assert_eq!(
-        Exporter::default()
-            .export(&db, &out, None)
-            .unwrap()
-            .unwrap(),
-        Exported::default()
+        Exporter::default().export(&db, &out, None).unwrap(),
+        None
     );
 }
 

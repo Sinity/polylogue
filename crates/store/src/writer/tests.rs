@@ -925,7 +925,7 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
     );
     assert_eq!(
         reader
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "1"
     );
@@ -950,14 +950,14 @@ fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
     let current = reader_pool.reader().unwrap();
     assert_eq!(
         current
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "0"
     );
     assert_eq!(current.status().unwrap().messages, 1);
     assert_eq!(
         reader
-            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .query("SELECT value FROM meta WHERE key='building'", &[])
             .unwrap()[0]["value"],
         "1"
     );

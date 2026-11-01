@@ -125,13 +125,9 @@ fn an_existing_batch_cannot_be_displaced_by_new_discovery() {
             1,
         )
         .unwrap();
-    while turn.pending {
-        assert!(turn.errors.is_empty());
-        // A newly supplied batch does not replace the remaining second DB.
-        turn = captures
-            .turn(vec![(db.clone(), out.clone(), None)], 7)
-            .unwrap();
-    }
+    // New discovery is saved until the current view finishes.
+    turn = captures.turn(vec![(db.clone(), out.clone(), None)], 7).unwrap();
+    finish(&mut captures, turn);
     assert!(fs::read_to_string(second_out).unwrap().contains("42"));
 }
 

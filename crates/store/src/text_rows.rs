@@ -44,7 +44,7 @@ pub(crate) fn intern(
                 .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
             let id = conn.last_insert_rowid();
             if let Some(first_build) = first_build {
-                first_build.add_text(hash.as_bytes(), id);
+                first_build.add_text(conn, hash.as_bytes(), id)?;
             }
             (id, claimed)
         }
@@ -197,9 +197,9 @@ fn folded_text(packed: &[u8]) -> Result<(String, usize)> {
 
 fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()> {
     let sql = if bit == 1 {
-        "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
+        "INSERT OR REPLACE INTO text_fts(rowid, body) VALUES (?1, ?2)"
     } else {
-        "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
+        "INSERT OR REPLACE INTO output_fts(rowid, body) VALUES (?1, ?2)"
     };
     conn.prepare_cached(sql)?.execute(params![id, folded])?;
     Ok(())

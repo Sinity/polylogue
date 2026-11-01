@@ -14,22 +14,25 @@ fn a_second_open_is_refused_while_the_lock_is_held() {
 }
 
 #[test]
-fn an_index_left_unsynced_is_rebuilt() {
+fn an_interrupted_first_build_keeps_its_generation_rows_and_key_lookups() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
-    let writer = crate::Writer::start(&archive).unwrap();
-    writer.flush().unwrap();
-    drop(writer);
-    // A stop in the middle of a first build leaves the mark set.
-    open_write(&archive.index_db(), cache::SETUP)
-        .unwrap()
-        .execute("UPDATE meta SET value = '1' WHERE key = 'unsynced'", [])
-        .unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    index.execute_batch("INSERT INTO meta(key,value) VALUES ('building','1'), ('build_indexes','[]'), ('saved-progress','kept');").unwrap();
+    let generation: String = index.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| r.get(0)).unwrap();
+    drop(index);
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    assert!(!root.join("index.db.unsynced").exists());
-    assert!(!schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
+    let index = open_read(&archive.index_db()).unwrap();
+    assert!(schema::building(&index).unwrap());
+    assert_eq!(index.query_row("SELECT value FROM meta WHERE key='saved-progress'", [], |r| r.get::<_,String>(0)).unwrap(), "kept");
+    assert_eq!(index.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| r.get::<_,String>(0)).unwrap(), generation);
+    drop(index);
+    let writer = crate::Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    writer.idle().unwrap();
+    assert!(!schema::building(&open_read(&archive.index_db()).unwrap()).unwrap());
 }
 
 #[test]

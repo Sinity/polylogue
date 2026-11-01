@@ -57,8 +57,8 @@ rebuilds from stored imports.
 
 Derived products declare their inputs and rule version in
 [derive](../crates/store/src/derive.rs); a changed rule recomputes what depends
-on it. An index build in progress is marked on disk and starts over on
-reopen; [`Archive::prepare_index`](../crates/store/src/archive.rs) also
+on it. A first build commits its parser positions and disk-backed key
+lookups with each batch and continues from those positions on reopen; [`Archive::prepare_index`](../crates/store/src/archive.rs) also
 rebuilds an index that holds fewer excisions than the archive. An index
 rebuild or a reboot starts a new index generation, which the change feed
 reports.
@@ -78,15 +78,18 @@ session-change index. Repository lookups similarly visit only changed
 sessions and are collected before the pass ends. These markers belong to the disposable index and
 disappear with it; interrupted or failed work leaves them behind the data.
 
-A first build, into an empty index, writes without syncs, without copying
-its write-ahead log into the database file until its rows are written, and
-without the
-indexes only reads use or those on natural keys (message and event IDs, text
-hashes); the writer finds rows by key through hashes it keeps in memory. When
-the build ends it writes the search entries, rebuilds the trigram index and
-creates each dropped index once from a sorted scan, then derives, one session
-at a time through every derivation. Until then a
-read that needs one of those indexes scans instead.
+A first build defers search entries and secondary indexes, including those
+on natural keys. Disk-backed key hashes find existing messages, events and
+texts meanwhile; their memory use follows SQLite's page-cache target. Every
+batch commits its rows and parser state durably. The build ends by writing
+search entries, rebuilding the trigram index and creating each deferred
+index once from a sorted scan, then deriving one session at a time. A restart
+keeps committed work, including builds interrupted while creating indexes.
+Until the build ends, a read that needs a deferred index scans instead.
+
+Steady-state WAL autocheckpoints cover 16 MiB, with the same journal size
+target. A completed quiet pass asks the writer to truncate both WAL files;
+an active reader can postpone truncation without blocking collection.
 
 ## Storing bytes
 

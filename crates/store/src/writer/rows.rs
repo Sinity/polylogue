@@ -457,7 +457,7 @@ impl RowWriter<'_, '_> {
         else {
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
             if let Some(first_build) = self.first_build {
-                first_build.add_message(&id, pk);
+                first_build.add_message(self.tx, &id, pk)?;
             }
             self.upsert_source(pk, &new, true)?;
             self.insert_blocks(pk, session_pk, m, prepared)?;
@@ -1067,7 +1067,7 @@ impl RowWriter<'_, '_> {
                     ])?;
                 let pk = self.tx.last_insert_rowid();
                 if let Some(first_build) = self.first_build {
-                    first_build.add_event(&id, pk);
+                    first_build.add_event(self.tx, &id, pk)?;
                 }
                 pk
             }

@@ -4,9 +4,6 @@
 use crate::plan::{FailedChain, InputState, Plan, span, whole};
 use crate::*;
 
-/// Parser state stays in memory for inputs written within this long.
-const KEEP_STATE_NS: i128 = 6 * 3600 * 1_000_000_000;
-
 /// The longest a burst of file events delays the next pass.
 const COALESCE: Duration = Duration::from_secs(2);
 /// Jobs queued in the parse pool per worker; the rest of a pass's plans
@@ -348,6 +345,9 @@ impl Engine {
         {
             self.writer.inputs_checked()?;
         }
+        if !pass.capture_pending {
+            self.writer.idle()?;
+        }
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
     }
@@ -526,6 +526,9 @@ impl Engine {
             // committed prefix after an interrupted import.
             *from = st.stored;
             let mut rewritten = false;
+            if st.chain.is_none() {
+                st.chain = self.reads.reader()?.input_progress(&st.input_id)?.map(|p| p.chain);
+            }
             if st.parser_state.is_none()
                 && st.parsed
                 && let Some(chain) = st.chain
@@ -711,7 +714,7 @@ impl Engine {
                 &state,
                 None,
                 false,
-            );
+            )?;
             let round = chains_per_path.entry(plan.path.clone()).or_default();
             if *round == rounds.len() {
                 rounds.push(Vec::new());
@@ -766,13 +769,12 @@ impl Engine {
             &state,
             facts,
             true,
-        )))
+        )?))
     }
 
     /// A parse-only plan over a chain's stored bytes. A capture log resumes
-    /// at its last parsed record; anything else parses from the start, so a
-    /// line parser rebuilds its state. `None` while the bytes are still
-    /// being written.
+    /// at its last parsed record; line inputs load the state committed at
+    /// their position. Documents start from their first byte.
     fn reparse_plan(
         &self,
         path: PathBuf,
@@ -781,15 +783,20 @@ impl Engine {
         state: &polylogue_store::read::ChainProgress,
         facts: Option<FileFacts>,
         tracked: bool,
-    ) -> Plan {
+    ) -> Result<Plan, EngineError> {
         let parser = (origin.open)(&path);
-        let parse_pos = if state.parsed && parser.as_ref().is_some_and(|p| p.is_capture_log()) {
+        let cursor = if state.parsed && matches!(&parser, Some(polylogue_sources::Parse::Lines(_))) {
+            self.reads.reader()?.parser_cursor(&input.id, state.chain, state.parsed_upto, state.length)?
+        } else {
+            None
+        };
+        let parse_pos = if state.parsed && (cursor.is_some() || parser.as_ref().is_some_and(|p| p.is_capture_log())) {
             state.parsed_upto
         } else {
             0
         };
         let export = matches!(parser, Some(polylogue_sources::Parse::Export(_)));
-        Plan::stored(
+        let mut plan = Plan::stored(
             path,
             origin,
             input,
@@ -804,7 +811,9 @@ impl Engine {
             },
             self.config.chunk,
             tracked,
-        )
+        );
+        plan.parser_state = cursor.map(|c| c.state);
+        Ok(plan)
     }
 
     /// Loads a plan's stored bytes as it starts ([`pool::Bytes::Unloaded`]).
@@ -970,8 +979,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Records what a finished plan leaves for the next pass. Older files
-    /// release their parser state; an append loads it from the committed rows.
+    /// Records a finished plan's file facts. Parser state stays on disk and
+    /// an append loads it from the committed rows.
     fn finish_plan(&mut self, plan: Plan) {
         if !plan.tracked {
             if let Change::Reparse { chain } = plan.change
@@ -998,15 +1007,12 @@ impl Engine {
                 return;
             }
             st.failed = None;
-            let recent = plan
-                .facts
-                .is_some_and(|f| i128::from(now_ms()) * 1_000_000 - f.mtime_ns < KEEP_STATE_NS);
             st.facts = plan.facts;
             st.parsed_upto = plan.parse_pos.min(plan.size);
             st.parsed = true;
             st.waiting = plan.waiting;
-            st.parser_state = if recent { plan.parser_state } else { None };
-            st.tail = plan.tail;
+            st.parser_state = None;
+            st.tail = None;
         }
     }
 
