@@ -131,7 +131,13 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
             denominator: None,
         },
     );
-    w.writer.user(saved).unwrap();
+    w.writer
+        .user_preparing(
+            saved,
+            PreparationContext::new(vec!["codex".into()], Vec::new()),
+            None,
+        )
+        .unwrap();
 }
 
 #[test]
