@@ -60,10 +60,12 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     text.as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[high, low]| {
             let digit = |byte: u8| (byte as char).to_digit(16);
-            Some(((digit(pair[0])? << 4) | digit(pair[1])?) as u8)
+            Some(((digit(high)? << 4) | digit(low)?) as u8)
         })
         .collect()
 }
