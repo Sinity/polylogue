@@ -141,7 +141,7 @@ struct ItemUniverse {
 }
 impl ItemUniverse {
     fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
-        let child: crate::protocol::operations::McpArguments<Value> =
+        let child: crate::protocol::operations::ToolCall =
             serde_json::from_value(next.mcp["arguments"].clone()).unwrap();
         let crate::protocol::read::Arguments::Resume(resume) =
             serde_json::from_value(child.arguments).unwrap()
@@ -383,7 +383,7 @@ pub(super) fn collect(
             break;
         };
         let envelope = &ready.mcp["arguments"];
-        let child: crate::protocol::operations::McpArguments<Value> =
+        let child: crate::protocol::operations::ToolCall =
             serde_json::from_value(envelope.clone()).unwrap();
         assert_eq!(
             child.deadline, expected_deadline,
@@ -472,8 +472,8 @@ pub(super) fn collect(
 /// Whole-byte reconstruction uses the documented lifted deadline at the root.
 /// Children retain that accepted choice; the client never edits their deadlines.
 pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Result<String, String> {
-    let command = crate::commands::command("read").unwrap();
-    let envelope = serde_json::to_value(crate::protocol::operations::McpArguments {
+    let envelope = serde_json::to_value(crate::protocol::operations::ToolCall {
+        operation: Some("read".into()),
         arguments,
         request_id: uuid::Uuid::now_v7().to_string(),
         deadline: command_surface::Deadline::None,
@@ -482,7 +482,7 @@ pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Resu
     assert_eq!(envelope.get("deadline"), Some(&Value::Null));
     let (text, _, failed) = call_with_limit(
         archive,
-        &command.mcp_name(),
+        Tool::Read.name(),
         envelope.as_object().unwrap().clone(),
         None,
         &tokio_util::sync::CancellationToken::new(),
@@ -598,7 +598,7 @@ fn an_omitted_read_deadline_stays_default_in_the_acknowledged_root_and_next_call
         envelope.get("deadline").is_none(),
         "default is represented by omission"
     );
-    let child: crate::protocol::operations::McpArguments<Value> =
+    let child: crate::protocol::operations::ToolCall =
         serde_json::from_value(envelope.clone()).unwrap();
     assert_eq!(child.deadline, command_surface::Deadline::Default);
     let crate::protocol::read::Arguments::Resume(resume) =

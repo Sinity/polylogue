@@ -52,6 +52,9 @@ pub struct Arg {
     pub global: bool,
     /// Acts on the calling machine (`--out`, `--exec`): command line only.
     pub cli_only: bool,
+    /// Accepted over MCP but left out of the tool's input schema, which
+    /// every agent session pays for; `explain capabilities` lists it.
+    pub unlisted: bool,
 }
 
 const fn arg(name: &'static str, kind: Kind, help: &'static str) -> Arg {
@@ -65,6 +68,16 @@ const fn arg(name: &'static str, kind: Kind, help: &'static str) -> Arg {
         short: None,
         global: false,
         cli_only: false,
+        unlisted: false,
+    }
+}
+
+/// An option agents rarely need, accepted over MCP and described by
+/// `explain capabilities` rather than by the tool's input schema.
+const fn unlisted(arg: Arg) -> Arg {
+    Arg {
+        unlisted: true,
+        ..arg
     }
 }
 
@@ -94,6 +107,52 @@ const fn pos_opt(name: &'static str, kind: Kind, help: &'static str) -> Arg {
 /// A flag that may be left out.
 const fn opt(name: &'static str, kind: Kind, help: &'static str) -> Arg {
     arg(name, kind, help)
+}
+
+/// An MCP tool: a family of commands offered as its operations. Every
+/// command of a tool writes, or every one reads, so its hints hold for
+/// each operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tool {
+    Read,
+    Context,
+    Note,
+    Chat,
+}
+
+impl Tool {
+    pub const ALL: [Tool; 4] = [Tool::Read, Tool::Context, Tool::Note, Tool::Chat];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Tool::Read => "polylogue_read",
+            Tool::Context => "polylogue_context",
+            Tool::Note => "polylogue_note",
+            Tool::Chat => "polylogue_chat",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Tool::Read => "Query and read the archive",
+            Tool::Context => "Briefs, recall and takeovers",
+            Tool::Note => "Assertions, saved queries, watches, settings",
+            Tool::Chat => "Web chats via the browser extension",
+        }
+    }
+
+    pub fn writes(self) -> bool {
+        matches!(self, Tool::Note | Tool::Chat)
+    }
+
+    /// Its operations act outside the archive (a web chat).
+    pub fn open_world(self) -> bool {
+        self == Tool::Chat
+    }
+
+    pub fn named(name: &str) -> Option<Tool> {
+        Tool::ALL.into_iter().find(|tool| tool.name() == name)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,16 +216,16 @@ pub struct Command {
         fn(std::sync::Arc<crate::daemon::service::Daemon>, &mut command_surface::OperationTable),
     >,
     pub typed_schemas: Option<fn() -> (Value, Value)>,
-    pub typed_mcp_schema: Option<fn() -> Value>,
     pub build_typed: Option<TypedRequestBuilder>,
-    /// The command-line words (`assert-query`); the MCP tool joins them with
-    /// `_`, the HTTP route with `/`.
+    /// The command-line words (`assert-query`), also the operation's name
+    /// within its MCP tool; the HTTP route joins them with `/`.
     pub name: &'static str,
     pub help: &'static str,
     pub args: &'static [Arg],
     pub action: Action,
     pub cli: Cli,
-    pub mcp: bool,
+    /// The MCP tool that offers this command as an operation.
+    pub tool: Option<Tool>,
     pub http: bool,
     /// Mutates state: POST over HTTP, where the origin is checked.
     /// Requests built from arguments may supply `request_id`; typed bodies
@@ -181,14 +240,6 @@ pub struct Command {
 }
 
 impl Command {
-    pub fn mcp_name(&self) -> String {
-        if self.register.is_some() {
-            format!("polylogue_{}", self.cli_words().join("_"))
-        } else {
-            self.name.replace(' ', "_")
-        }
-    }
-
     pub fn cli_words(&self) -> Vec<String> {
         if self.cli == Cli::NoSubcommand {
             vec!["find".into()]
@@ -336,14 +387,13 @@ const CLI: Command = Command {
     failures: &command_surface::FailureKind::ALL,
     register: None,
     typed_schemas: None,
-    typed_mcp_schema: None,
     build_typed: None,
     name: "",
     help: "",
     args: &[],
     action: Action::Local(local::not_built),
     cli: Cli::Subcommand,
-    mcp: false,
+    tool: None,
     http: false,
     writes: false,
     print: print::json,
@@ -394,7 +444,6 @@ macro_rules! typed_command {
             register: Some(crate::protocol::operations::register::<$marker>),
             build_typed: Some(crate::protocol::operations::build::<$marker>),
             typed_schemas: Some(|| (schemars::schema_for!($arguments).to_value(), schemars::schema_for!(command_surface::Answer<$answer>).to_value())),
-            typed_mcp_schema: Some(|| schemars::schema_for!(crate::protocol::operations::McpArguments<$arguments>).to_value()),
             $($fields)*
         }
     }};
@@ -472,27 +521,27 @@ const WRITTEN: &[Command] = &[
         help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            opt("all", Kind::Bool, "Select every origin"),
-            opt(
+            unlisted(opt("all", Kind::Bool, "Select every origin")),
+            unlisted(opt(
                 "input",
                 Kind::List,
                 "Explicit stored input IDs (repeatable)",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "since",
                 Kind::Text,
                 "Observation time lower bound, RFC 3339 with an offset",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "revision",
                 Kind::Integer,
                 "Exact revision (default: latest for each input)",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "field",
                 Kind::List,
                 "Keep these field names instead of grouping them as dynamic keys",
-            ),
+            )),
             Arg {
                 cli_only: true,
                 ..opt(
@@ -504,7 +553,7 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::schema_infer),
         output: Some(crate::cli::schema::output),
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     }),
@@ -515,7 +564,7 @@ const WRITTEN: &[Command] = &[
         help: "Show stored wire paths neither read nor kept, with drift and coverage",
         args: &[
             pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            opt("all", Kind::Bool, "Select every origin"),
+            unlisted(opt("all", Kind::Bool, "Select every origin")),
             Arg {
                 cli_only: true,
                 ..opt(
@@ -527,7 +576,7 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::schema_unread),
         output: Some(crate::cli::schema::output),
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     }),
@@ -568,22 +617,22 @@ const WRITTEN: &[Command] = &[
             ),
             opt("session", Kind::Text, "Calling session for self references"),
             opt("expression", Kind::Text, "Required for subject query"),
-            opt("unit", Kind::Text, "List fields for this unit"),
-            opt(
+            unlisted(opt("unit", Kind::Text, "List fields for this unit")),
+            unlisted(opt(
                 "page_size",
                 Kind::Integer,
                 "Declarations per page (default 20)",
-            ),
+            )),
             CURSOR,
         ],
         action: Action::Request(requests::explain),
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     },
     Command {
         name: "manual",
-        help: "Agent guidance and the current MCP command reference (available without a daemon)",
+        help: "The agent card and the MCP operation reference, every argument named (available without a daemon)",
         action: Action::Local(local::manual),
         ..CLI
     },
@@ -613,7 +662,7 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::query),
         print: print::query,
         cli: Cli::NoSubcommand,
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     }),
@@ -623,7 +672,7 @@ const WRITTEN: &[Command] = &[
         reason: "Orient the caller with measured archive and daemon state",
         latency: command_surface::LatencyClass::Status,
         action: Action::Request(requests::status),
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     }),
@@ -640,7 +689,7 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Aggregate,
         args: &[pos_opt("paths", Kind::List, "Files or directories on the daemon host; relative paths require a native caller working directory")],
         action: Action::Request(requests::import),
-        mcp: true,
+        tool: Some(Tool::Note),
         http: true,
         writes: true,
         ..CLI
@@ -653,7 +702,6 @@ const WRITTEN: &[Command] = &[
         args: QUERY_ARGS,
         action: Action::Request(requests::list),
         print: print::query,
-        mcp: true,
         http: true,
         ..CLI
     }),
@@ -662,20 +710,20 @@ const WRITTEN: &[Command] = &[
         help: "Page prompt, tool failure, compaction and branch references without loading message bodies",
         args: &[
             pos("session", Kind::Text, "Session ID"),
-            opt(
+            unlisted(opt(
                 "with_parents",
                 Kind::Bool,
                 "Include inherited parent messages",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "page_size",
                 Kind::Integer,
                 "Number of outline entries per page (default 50)",
-            ),
+            )),
             CURSOR,
         ],
         action: Action::Request(requests::outline),
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     },
@@ -686,28 +734,28 @@ const WRITTEN: &[Command] = &[
         help: "Read a query or reference; write a consistent bundle with --to DIR",
         args: &[
             pos_opt("target", Kind::Text, "A query or canonical reference; omitted only for a read continuation"),
-            opt("root_run", Kind::Text, "Original read run for an authenticated continuation"),
+            unlisted(opt("root_run", Kind::Text, "Original read run for an authenticated continuation")),
             Arg { default: Some("transcript"), ..opt("view", Kind::Choice(VIEWS), "The reading view") },
-            opt("format", Kind::Choice(FORMATS), "The output format"),
-            opt("delivery", Kind::Choice(&["page", "stream"]), "Page or finite SSE transfer"),
+            unlisted(opt("format", Kind::Choice(FORMATS), "The output format")),
+            unlisted(opt("delivery", Kind::Choice(&["page", "stream"]), "Page or finite SSE transfer")),
             opt("budget", Kind::Integer, "Page budget in estimated tokens"), CURSOR,
-            opt("tools", Kind::Choice(&["none", "headers", "full"]), "Tool output expansion"),
-            opt("thinking", Kind::Choice(&["none", "headers", "full"]), "Thinking expansion"),
-            opt("harness", Kind::Choice(&["none", "headers", "full"]), "Harness expansion"),
-            Arg { default: Some("100"), ..opt("output_lines", Kind::Integer, "Tool output head and tail lines; zero keeps all lines") },
-            opt("inherited", Kind::Bool, "Include inherited messages"),
-            opt("branches", Kind::Bool, "Include branches"),
-            opt("turns", Kind::Bool, "Show turn boundaries"),
-            opt("assertions", Kind::Bool, "Include assertions (default true)"),
-            opt("for_others", Kind::Bool, "Prepare a reading for another caller"),
-            opt("variant", Kind::List, "Ordered variant layers"),
-            opt("with_blobs", Kind::Bool, "Include stored blob bytes in a stream"),
+            unlisted(opt("tools", Kind::Choice(&["none", "headers", "full"]), "Tool output expansion")),
+            unlisted(opt("thinking", Kind::Choice(&["none", "headers", "full"]), "Thinking expansion")),
+            unlisted(opt("harness", Kind::Choice(&["none", "headers", "full"]), "Harness expansion")),
+            unlisted(Arg { default: Some("100"), ..opt("output_lines", Kind::Integer, "Tool output head and tail lines; zero keeps all lines") }),
+            unlisted(opt("inherited", Kind::Bool, "Include inherited messages")),
+            unlisted(opt("branches", Kind::Bool, "Include branches")),
+            unlisted(opt("turns", Kind::Bool, "Show turn boundaries")),
+            unlisted(opt("assertions", Kind::Bool, "Include assertions (default true)")),
+            unlisted(opt("for_others", Kind::Bool, "Prepare a reading for another caller")),
+            unlisted(opt("variant", Kind::List, "Ordered variant layers")),
+            unlisted(opt("with_blobs", Kind::Bool, "Include stored blob bytes in a stream")),
             Arg { cli_only: true, ..opt("to", Kind::Text, "Write a bundle directory") },
             Arg { cli_only: true, ..opt("no_inherited", Kind::Bool, "Omit inherited messages from the bundle") },
             Arg { cli_only: true, ..opt("no_assertions", Kind::Bool, "Omit assertions from the bundle") },
         ],
         action: Action::Stream { build: requests::read, produce: crate::daemon::service::read::produce, cli: crate::cli::write_out::run },
-        print: print::read, mcp: true, http: true,
+        print: print::read, tool: Some(Tool::Read), http: true,
         ..CLI
     }),
     typed_command!(AttachmentCommand, crate::protocol::attachment::Arguments, crate::protocol::attachment::Answer, {
@@ -718,21 +766,21 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos("message", Kind::Text, "The message ID"),
             pos("block", Kind::Integer, "Zero-based source block index"),
-            opt(
+            unlisted(opt(
                 "attachment",
                 Kind::Integer,
                 "Zero-based attachment within a tool result (default 0)",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "input",
                 Kind::Text,
                 "The stored input to read when several match",
-            ),
+            )),
             opt("cursor", Kind::Text, "Continue a previous byte range"),
-            Arg {
+            unlisted(Arg {
                 default: Some("65536"),
                 ..opt("length", Kind::Integer, "Bytes per retrieval range")
-            },
+            }),
             Arg {
                 cli_only: true,
                 ..opt("out", Kind::Text, "Write the verified bytes to FILE")
@@ -741,7 +789,7 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::attachment),
         output: Some(crate::cli::attachment::output),
         print: print::json,
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     }),
@@ -762,7 +810,7 @@ const WRITTEN: &[Command] = &[
         ],
         args: &[pos("assertions", Kind::Json, "JSON array of canonical assertions")],
         action: Action::Request(requests::assert),
-        mcp: true, http: true, writes: true,
+        tool: Some(Tool::Note), http: true, writes: true,
         ..CLI
     }),
     typed_command!(AssertQueryOperation, crate::protocol::assertion::AssertQuery, polylogue_model::user::AssertQueryOutcome, {
@@ -782,7 +830,7 @@ const WRITTEN: &[Command] = &[
         ],
         args: &[pos("query", Kind::Text, "Query selecting the assertion targets"), Arg { required:true, ..opt("assertion", Kind::Json, "Canonical assertion JSON without about links") }],
         action: Action::Request(requests::assert_query),
-        mcp: true, http: true, writes: true,
+        tool: Some(Tool::Note), http: true, writes: true,
         ..CLI
     }),
     typed_command!(ReviseOperation, crate::protocol::assertion::Revise, polylogue_model::user::UserOutcome, {
@@ -802,7 +850,7 @@ const WRITTEN: &[Command] = &[
         ],
         args: &[pos("bases", Kind::List, "Exact assertion:<root>@<revision> references"), Arg { required:true, ..opt("patch", Kind::Json, "Canonical assertion patch JSON") }],
         action: Action::Request(requests::revise),
-        mcp: true, http: true, writes: true,
+        tool: Some(Tool::Note), http: true, writes: true,
         ..CLI
     }),
     typed_command!(WithdrawOperation, crate::protocol::assertion::Withdraw, polylogue_model::user::UserOutcome, {
@@ -822,7 +870,7 @@ const WRITTEN: &[Command] = &[
         ],
         args: &[pos("targets", Kind::List, "Natural assertion or variant references"), opt("reason", Kind::Text, "Why")],
         action: Action::Request(requests::withdraw),
-        mcp: true, http: true, writes: true,
+        tool: Some(Tool::Note), http: true, writes: true,
         ..CLI
     }),
     Command {
@@ -846,7 +894,7 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::brief),
         print: print::context,
-        mcp: true,
+        tool: Some(Tool::Context),
         ..CLI
     },
     Command {
@@ -855,7 +903,7 @@ const WRITTEN: &[Command] = &[
         args: &[pos("session", Kind::Text, "`origin:native_id`")],
         action: Action::Request(requests::takeover),
         print: print::context,
-        mcp: true,
+        tool: Some(Tool::Context),
         ..CLI
     },
     Command {
@@ -877,7 +925,7 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::resume),
         print: print::resume,
         output: Some(crate::cli::resume_output),
-        mcp: true,
+        tool: Some(Tool::Context),
         http: true,
         ..CLI
     },
@@ -891,7 +939,7 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::recall),
         print: print::context,
-        mcp: true,
+        tool: Some(Tool::Context),
         ..CLI
     },
     typed_command!(SettingOperation, crate::protocol::setting::Arguments, crate::protocol::setting::Answer, {
@@ -902,10 +950,10 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos_opt("key", Kind::Text, "The setting; without it, list catalog, defaults, scopes and values"),
             pos_opt("value", Kind::Text, "The new value; without it, read the current value"),
-            opt("machine", Kind::Text, "A named host for host-scoped settings; default: the accepting machine"),
+            unlisted(opt("machine", Kind::Text, "A named host for host-scoped settings; default: the accepting machine")),
         ],
         action: Action::Request(requests::setting),
-        mcp: true,
+        tool: Some(Tool::Note),
         http: true,
         writes: true,
         ..CLI
@@ -975,14 +1023,14 @@ const WRITTEN: &[Command] = &[
                 required: true,
                 ..pos("query", Kind::Rest, "The query")
             },
-            opt(
+            unlisted(opt(
                 "denominator",
                 Kind::Text,
                 "The denominator query required for a measure or aggregate figure",
-            ),
+            )),
         ],
         action: Action::Request(requests::save),
-        mcp: true,
+        tool: Some(Tool::Note),
         http: true,
         writes: true,
         ..CLI
@@ -996,23 +1044,23 @@ const WRITTEN: &[Command] = &[
                 Kind::Text,
                 "What the notices are called (default: the query)",
             ),
-            opt(
+            unlisted(opt(
                 "for",
                 Kind::Text,
                 "How long a row must keep matching before it is a notice, such as 20m",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "notify",
                 Kind::Bool,
                 "Also show each notice as a desktop notification",
-            ),
+            )),
             Arg {
                 required: true,
                 ..pos("query", Kind::Rest, "The query")
             },
         ],
         action: Action::Request(requests::watch),
-        mcp: true,
+        tool: Some(Tool::Note),
         http: true,
         writes: true,
         ..CLI
@@ -1028,7 +1076,7 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::keep),
-        mcp: true,
+        tool: Some(Tool::Note),
         http: true,
         writes: true,
         ..CLI
@@ -1078,21 +1126,21 @@ const WRITTEN: &[Command] = &[
                     "The model, as the provider's model menu names it",
                 )
             },
-            opt(
+            unlisted(opt(
                 "effort",
                 Kind::Text,
                 "The reasoning effort, as the provider's menu names it",
-            ),
+            )),
             opt(
                 "conversation",
                 Kind::Text,
                 "Reply in this conversation (its ID); without it a new conversation starts",
             ),
-            opt(
+            unlisted(opt(
                 "project",
                 Kind::Text,
                 "Start the conversation in this project",
-            ),
+            )),
             opt(
                 "submit",
                 Kind::Bool,
@@ -1104,7 +1152,7 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::chat_send),
-        mcp: true,
+        tool: Some(Tool::Chat),
         http: true,
         writes: true,
         ..CLI
@@ -1114,7 +1162,7 @@ const WRITTEN: &[Command] = &[
         help: "Chat actions and what happened to each",
         action: Action::Request(requests::chat_list),
         print: print::chat_actions,
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     },
@@ -1151,7 +1199,7 @@ const WRITTEN: &[Command] = &[
         ],
         action: Action::Request(requests::backfill_start),
         print: print::backfill_jobs,
-        mcp: true,
+        tool: Some(Tool::Chat),
         http: true,
         writes: true,
         ..CLI
@@ -1161,7 +1209,7 @@ const WRITTEN: &[Command] = &[
         help: "Backfill jobs and how far each got",
         action: Action::Request(requests::backfill_list),
         print: print::backfill_jobs,
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     },
@@ -1171,7 +1219,7 @@ const WRITTEN: &[Command] = &[
         args: &[pos("id", Kind::Text, "The job")],
         action: Action::Request(requests::backfill_cancel),
         print: print::backfill_jobs,
-        mcp: true,
+        tool: Some(Tool::Chat),
         http: true,
         writes: true,
         ..CLI
@@ -1264,21 +1312,21 @@ const WRITTEN: &[Command] = &[
                 Kind::Text,
                 "Logical date YYYY-MM-DD (default today)",
             ),
-            opt(
+            unlisted(opt(
                 "across_years",
                 Kind::Bool,
                 "This month and day in recorded years through the chosen date",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "undated",
                 Kind::Bool,
                 "Records with unknown or unrepresentable time",
-            ),
+            )),
             CURSOR,
             LIMIT,
         ],
         action: Action::Request(requests::timeline),
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     },
@@ -1292,31 +1340,31 @@ const WRITTEN: &[Command] = &[
                 Kind::Text,
                 "Restrict source record times to this logical date",
             ),
-            opt(
+            unlisted(opt(
                 "model",
                 Kind::Text,
                 "Show response details for this model; totals include all selected models",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "undated",
                 Kind::Bool,
                 "Only source records with unknown or unrepresentable times",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "unknown_model",
                 Kind::Bool,
                 "Response details with no recorded model name",
-            ),
-            opt(
+            )),
+            unlisted(opt(
                 "month",
                 Kind::Text,
                 "Calendar month for daily response subtotals, as YYYY-MM-DD (default selected day or today)",
-            ),
+            )),
             CURSOR,
             LIMIT,
         ],
         action: Action::Request(requests::cost),
-        mcp: true,
+        tool: Some(Tool::Read),
         http: true,
         ..CLI
     },
@@ -1336,7 +1384,6 @@ const WRITTEN: &[Command] = &[
         action: Action::Request(requests::complete),
         cli: Cli::Hidden,
         http: true,
-        mcp: true,
         ..CLI
     }),
 ];
@@ -1520,7 +1567,8 @@ fn describe(kind: Kind) -> String {
     }
 }
 
-/// The JSON Schema of a command's arguments, for an MCP tool.
+/// The complete JSON Schema of a command's arguments, with every argument
+/// described, as `explain capabilities` publishes it.
 pub fn schema(command: &Command) -> Map<String, Value> {
     use serde_json::json;
     if let Some(schemas) = command.typed_schemas {

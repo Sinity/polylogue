@@ -100,22 +100,24 @@ fn the_command_line_has_nothing_outside_the_table() {
 }
 
 #[test]
-fn mcp_offers_exactly_the_table_commands_marked_for_it() {
+fn mcp_offers_one_tool_per_family_over_the_commands_marked_for_it() {
     let tools: Vec<String> = crate::mcp::tools()
         .into_iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
-    let declared: Vec<String> = COMMANDS
-        .iter()
-        .filter(|c| c.mcp)
-        .map(Command::mcp_name)
-        .collect();
-    assert_eq!(tools, declared);
+    assert_eq!(tools, Tool::ALL.map(|tool| tool.name().to_owned()).to_vec());
+    for tool in Tool::ALL {
+        assert!(
+            crate::mcp::operations(tool).next().is_some(),
+            "{}",
+            tool.name()
+        );
+    }
 }
 
 #[test]
 fn only_daemon_requests_go_over_mcp_and_http() {
-    for c in COMMANDS.iter().filter(|c| c.mcp || c.http) {
+    for c in COMMANDS.iter().filter(|c| c.tool.is_some() || c.http) {
         assert!(
             matches!(c.action, Action::Request(_) | Action::Stream { .. }),
             "{} runs locally",
@@ -281,22 +283,29 @@ fn http_callers_name_their_directory() {
 #[test]
 fn mcp_schemas_follow_the_arguments() {
     let tools = crate::mcp::tools();
-    for command in COMMANDS.iter().filter(|command| command.mcp) {
+    for command in COMMANDS.iter().filter(|command| command.tool.is_some()) {
         let tool = tools
             .iter()
-            .find(|tool| tool["name"] == command.mcp_name())
+            .find(|tool| tool["name"] == command.tool.unwrap().name())
             .unwrap();
-        let expected = command
-            .typed_mcp_schema
-            .map(|schema| schema())
-            .unwrap_or_else(|| Value::Object(schema(command)));
-        assert_eq!(tool["inputSchema"], expected, "{}", command.name);
-        assert_eq!(expected["additionalProperties"], false, "{}", command.name);
+        let schema = &tool["inputSchema"];
+        assert_eq!(schema["additionalProperties"], false, "{}", command.name);
+        for arg in command
+            .args_for(Surface::Mcp)
+            .filter(|arg| !arg.unlisted && arg.name != "request_id")
+        {
+            assert!(
+                schema["properties"]["arguments"]["properties"]
+                    .get(arg.name)
+                    .is_some(),
+                "{} {}",
+                command.name,
+                arg.name
+            );
+        }
     }
     let read = command("read").unwrap();
-    let s = read.typed_mcp_schema.unwrap()();
-    assert!(s["properties"]["arguments"].is_object());
-    assert!(s["properties"]["request_id"].is_object());
+    let s = read.typed_schemas.unwrap()().0;
     assert!(
         serde_json::to_string(&s)
             .unwrap()
@@ -450,8 +459,12 @@ fn request_id_is_declared_for_all_write_surfaces() {
                 command.name
             );
         }
-        if let Some(schema) = command.typed_mcp_schema {
-            let schema = schema();
+        if let Some(tool) = command.tool {
+            let listed = crate::mcp::tools()
+                .into_iter()
+                .find(|listed| listed["name"] == tool.name())
+                .unwrap();
+            let schema = &listed["inputSchema"];
             assert!(schema["properties"]["request_id"].is_object());
             assert!(
                 schema["required"]

@@ -9,12 +9,15 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{marker::PhantomData, sync::Arc};
 
-/// MCP carries the same operation arguments and admission metadata as the socket.
-#[derive(serde::Serialize, serde::Deserialize, JsonSchema)]
+/// An MCP tool call: the operation of the tool it runs (needed when the
+/// tool has several), with the same arguments and admission fields as the
+/// socket.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpArguments<T> {
-    pub arguments: T,
-    #[schemars(length(min = 1))]
+pub struct ToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    pub arguments: Value,
     pub request_id: String,
     #[serde(default, skip_serializing_if = "default_deadline")]
     pub deadline: command_surface::Deadline,

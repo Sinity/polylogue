@@ -35,21 +35,31 @@ fn the_manual_gives_working_example_queries() {
         assert!(answer.is_ok(), "{query}: {answer:?}");
     }
     let manual = text();
+    assert!(manual.starts_with(card()));
+    for tool in crate::commands::Tool::ALL {
+        assert!(
+            manual.contains(&format!("## `{}`", tool.name())),
+            "{} has no section",
+            tool.name()
+        );
+    }
     for command in crate::mcp::tool_commands() {
-        let tool = command.mcp_name();
-        assert!(
-            crate::mcp::tools()
-                .iter()
-                .any(|entry| entry["name"] == tool),
-            "no tool {tool}"
+        let prefix = format!(
+            "- `{}` (CLI `{}`)",
+            command.name,
+            command.cli_words().join(" ")
         );
-        assert!(
-            manual.contains(&format!("`{tool}`")),
-            "{tool} is not described"
-        );
-        assert!(
-            manual.contains(&format!("CLI `{}`", command.cli_words().join(" "))),
-            "{tool} has no runnable CLI spelling"
-        );
+        let line = manual
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("{} has no runnable CLI spelling", command.name));
+        // Every argument is named, unlisted ones included.
+        let (_, named) = line.rsplit_once("; arguments: ").unwrap();
+        let named: Vec<&str> = named.split(", ").collect();
+        for arg in command.args_for(crate::commands::Surface::Mcp) {
+            if arg.name != "request_id" {
+                assert!(named.contains(&arg.name), "{} {}", command.name, arg.name);
+            }
+        }
     }
 }

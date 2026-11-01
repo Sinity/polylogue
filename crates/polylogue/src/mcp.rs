@@ -1,30 +1,127 @@
-//! MCP over stdio, as a proxy to the daemon: one tool per command the
-//! table offers over MCP, named by its words joined with `_`. Each call is
-//! checked against the table, sent as the same request the CLI sends, and
-//! answered with the daemon's JSON; context (briefs, takeovers, recalls) is
-//! answered with its text and recorded as a delivery from `mcp`. Refusals
-//! are tool errors.
+//! MCP over stdio, as a proxy to the daemon. The commands the table offers
+//! over MCP are grouped into four tools; a call names the operation (the
+//! command) and carries its arguments, which are checked against the table
+//! and sent as the same request the CLI sends. Answers are the daemon's
+//! JSON; context (briefs, takeovers, recalls) is answered with its text and
+//! recorded as a delivery from `mcp`. Refusals are tool errors.
 
 mod completion;
 
-use crate::commands::{self, Action, COMMANDS, Caller, Command, Surface, Values};
+use crate::commands::{Action, COMMANDS, Caller, Command, Kind, Surface, Tool, Values};
 use crate::daemon::Request;
-use command_surface::Answer;
+use crate::protocol::operations::ToolCall;
+use command_surface::{Answer, Deadline};
 use polylogue_store::Archive;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, Write};
 
-/// The commands offered as tools.
+/// The commands offered as tool operations.
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
-    COMMANDS
-        .iter()
-        .filter(|c| c.mcp && matches!(c.action, Action::Request(_) | Action::Stream { .. }))
+    COMMANDS.iter().filter(|c| {
+        c.tool.is_some() && matches!(c.action, Action::Request(_) | Action::Stream { .. })
+    })
 }
 
+/// The operations of one tool.
+pub fn operations(tool: Tool) -> impl Iterator<Item = &'static Command> {
+    tool_commands().filter(move |c| c.tool == Some(tool))
+}
+
+// The tool listing follows command-surface's tool families exactly; it is
+// replaced by `OperationTable::mcp_tools` when Polylogue adopts them.
 pub fn tools() -> Vec<Value> {
-    tool_commands()
-        .map(|c| json!({"name": c.mcp_name(), "description": c.help, "inputSchema": c.typed_mcp_schema.map(|schema|schema()).unwrap_or_else(|| Value::Object(commands::schema(c))), "outputSchema": c.typed_schemas.map(|schemas| schemas().1).unwrap_or_else(|| schemars::schema_for!(command_surface::Answer<Value>).to_value()), "annotations": {"readOnlyHint": !c.writes}}))
+    Tool::ALL
+        .into_iter()
+        .map(|tool| {
+            json!({
+                "name": tool.name(),
+                "description": tool.description(),
+                "inputSchema": input_schema(tool),
+                "annotations": {
+                    "readOnlyHint": !tool.writes(),
+                    "destructiveHint": false,
+                    "idempotentHint": true,
+                    "openWorldHint": tool.open_world(),
+                },
+            })
+        })
         .collect()
+}
+
+fn argument_schema(kind: Kind) -> Value {
+    match kind {
+        Kind::Json => json!({}),
+        Kind::Integer => json!({"type": "integer"}),
+        Kind::Bool => json!({"type": "boolean"}),
+        Kind::List => json!({"type": "array", "items": {"type": "string"}}),
+        Kind::Choice(choices) => json!({"enum": choices}),
+        Kind::Text | Kind::Words | Kind::Rest => json!({"type": "string"}),
+    }
+}
+
+/// A tool's input: `operation` naming the command (required when the tool
+/// has several), `arguments` holding the listed arguments of its operations
+/// merged by name, and the request's identity and deadline. An argument two
+/// operations type differently is a choice of its types, naming the
+/// operations that use each. Each operation checks its own arguments,
+/// unlisted ones included, when it is called.
+fn input_schema(tool: Tool) -> Value {
+    let rows: Vec<&Command> = operations(tool).collect();
+    let mut fields: Vec<(&str, Vec<(Value, Vec<&str>)>)> = Vec::new();
+    for row in &rows {
+        for arg in row
+            .args_for(Surface::Mcp)
+            .filter(|arg| !arg.unlisted && arg.name != "request_id")
+        {
+            let schema = argument_schema(arg.kind);
+            let index = match fields.iter().position(|(name, _)| *name == arg.name) {
+                Some(index) => index,
+                None => {
+                    fields.push((arg.name, Vec::new()));
+                    fields.len() - 1
+                }
+            };
+            let kinds = &mut fields[index].1;
+            match kinds.iter_mut().find(|(kind, _)| *kind == schema) {
+                Some((_, users)) => users.push(row.name),
+                None => kinds.push((schema, vec![row.name])),
+            }
+        }
+    }
+    let arguments: Map<String, Value> = fields
+        .into_iter()
+        .map(|(name, mut kinds)| {
+            let schema = if kinds.len() == 1 {
+                kinds.pop().expect("one kind").0
+            } else {
+                let used_by = kinds
+                    .iter()
+                    .map(|(_, users)| users.join(", "))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                json!({
+                    "anyOf": kinds.into_iter().map(|(kind, _)| kind).collect::<Vec<_>>(),
+                    "description": format!("typed per operation: {used_by}"),
+                })
+            };
+            (name.to_owned(), schema)
+        })
+        .collect();
+    let mut required = vec![json!("arguments"), json!("request_id")];
+    if rows.len() > 1 {
+        required.insert(0, json!("operation"));
+    }
+    json!({
+        "type": "object",
+        "properties": {
+            "operation": {"enum": rows.iter().map(|row| row.name).collect::<Vec<_>>()},
+            "arguments": {"type": "object", "properties": arguments},
+            "request_id": {"type": "string"},
+            "deadline": {"type": ["integer", "null"], "description": "ms; null: none"},
+        },
+        "required": required,
+        "additionalProperties": false,
+    })
 }
 
 /// An error as tool text, with the corrected query when the daemon formed
@@ -47,27 +144,44 @@ fn error_text(failure: &command_surface::Failure) -> String {
     polylogue_render::terminal::escape(&text)
 }
 
-fn build_request(
-    name: &str,
-    arguments: serde_json::Map<String, serde_json::Value>,
-) -> Result<Request, String> {
-    let command = tool_commands()
-        .find(|c| c.mcp_name() == name)
-        .ok_or_else(|| {
-            polylogue_render::terminal::escape(&format!("error (bad_request): no tool {name}"))
-        })?;
+fn bad_request(message: &str) -> String {
+    polylogue_render::terminal::escape(&format!("error (bad_request): {message}"))
+}
+
+/// The request an untyped command builds from a call's arguments. Its
+/// retry identity is the call's `request_id`.
+fn build_request(command: &Command, call: &ToolCall) -> Result<Request, String> {
     let build = match command.action {
         Action::Request(build) | Action::Stream { build, .. } => build,
-        Action::Local(_) | Action::ConfiguredLocal(_) => return Err(format!("no tool {name}")),
+        Action::Local(_) | Action::ConfiguredLocal(_) => {
+            return Err(bad_request(&format!(
+                "`{}` is not a tool operation",
+                command.name
+            )));
+        }
     };
-    let bad = |e: String| polylogue_render::terminal::escape(&format!("error (bad_request): {e}"));
-    let values = Values::from_json(command, Surface::Mcp, arguments).map_err(bad)?;
+    let Value::Object(mut arguments) = call.arguments.clone() else {
+        return Err(bad_request("arguments must be an object"));
+    };
+    if arguments.contains_key("request_id") {
+        return Err(bad_request(
+            "request_id goes beside arguments, not inside them",
+        ));
+    }
+    if command
+        .args_for(Surface::Mcp)
+        .any(|arg| arg.name == "request_id")
+    {
+        arguments.insert("request_id".into(), Value::String(call.request_id.clone()));
+    }
+    let values =
+        Values::from_json(command, Surface::Mcp, arguments).map_err(|e| bad_request(&e))?;
     let caller = Caller {
         surface: Surface::Mcp,
         cwd: std::env::current_dir().ok(),
         json: true,
     };
-    build(command, &values, &caller).map_err(bad)
+    build(command, &values, &caller).map_err(|e| bad_request(&e))
 }
 
 /// The text content beside the structured answer. A value stays parseable
@@ -102,31 +216,73 @@ fn format_answer(
     }
 }
 
+/// A `tools/call`: the tool's operation named by the call, run with its
+/// arguments.
 fn call_with_limit(
     archive: &Archive,
     name: &str,
-    arguments: serde_json::Map<String, Value>,
+    arguments: Map<String, Value>,
     deadline_ms: Option<i64>,
     cancelled: &tokio_util::sync::CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
-    let command = tool_commands()
-        .find(|command| command.mcp_name() == name)
-        .ok_or_else(|| polylogue_render::terminal::escape(&format!("no tool {name}")))?;
-    let canonical = if command.register.is_some() {
-        let envelope: crate::protocol::operations::McpArguments<Value> =
-            serde_json::from_value(Value::Object(arguments.clone()))
-                .map_err(|error| error.to_string())?;
-        Some(command_surface::Request {
-            operation: command.name.into(),
-            arguments: envelope.arguments,
-            request_id: envelope.request_id,
-            deadline: envelope.deadline,
-        })
-    } else {
-        None
+    let tool = Tool::named(name).ok_or_else(|| bad_request(&format!("no tool {name}")))?;
+    let call: ToolCall = serde_json::from_value(Value::Object(arguments))
+        .map_err(|error| bad_request(&format!("{name}: {error}")))?;
+    let names = || {
+        operations(tool)
+            .map(|c| c.name)
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-    let request = if let Some(call) = &canonical {
+    let command = match call.operation.as_deref() {
+        Some(operation) => operations(tool)
+            .find(|c| c.name == operation)
+            .ok_or_else(|| {
+                bad_request(&format!(
+                    "{name} has no operation `{operation}`; it has: {}",
+                    names()
+                ))
+            })?,
+        None => {
+            let mut rows = operations(tool);
+            match (rows.next(), rows.next()) {
+                (Some(only), None) => only,
+                _ => {
+                    return Err(bad_request(&format!(
+                        "{name} needs `operation`: one of {}",
+                        names()
+                    )));
+                }
+            }
+        }
+    };
+    run(archive, command, call, deadline_ms, cancelled, tool_call_id)
+}
+
+/// Runs one operation: a typed command as its canonical request, any other
+/// as the request its arguments build.
+fn run(
+    archive: &Archive,
+    command: &Command,
+    call: ToolCall,
+    deadline_ms: Option<i64>,
+    cancelled: &tokio_util::sync::CancellationToken,
+    tool_call_id: Option<String>,
+) -> Result<(String, Value, bool), String> {
+    if call.request_id.is_empty() {
+        return Err(bad_request("request_id must not be empty"));
+    }
+    let canonical = command
+        .register
+        .is_some()
+        .then(|| command_surface::Request {
+            operation: command.name.into(),
+            arguments: call.arguments.clone(),
+            request_id: call.request_id.clone(),
+            deadline: call.deadline,
+        });
+    let request = if let Some(canonical) = &canonical {
         let caller = Caller {
             surface: Surface::Mcp,
             cwd: None,
@@ -135,9 +291,9 @@ fn call_with_limit(
         match command
             .build_typed
             .expect("registered commands validate typed arguments")(
-            call.arguments.clone(),
+            canonical.arguments.clone(),
             &caller,
-            &call.request_id,
+            &canonical.request_id,
         ) {
             Ok(request) => request,
             Err(failure) => {
@@ -151,7 +307,22 @@ fn call_with_limit(
             }
         }
     } else {
-        build_request(name, arguments.clone())?
+        build_request(command, &call)?
+    };
+    // An untyped request carries an absolute deadline; a lifted one is
+    // expressed only by the typed envelope.
+    let deadline_ms = match call.deadline {
+        Deadline::Default => deadline_ms,
+        Deadline::Milliseconds(ms) => Some(crate::daemon::execution::deadline(
+            std::time::Duration::from_millis(ms),
+        )),
+        Deadline::None if canonical.is_some() => deadline_ms,
+        Deadline::None => {
+            return Err(bad_request(&format!(
+                "`{}` takes its deadline in milliseconds; it cannot be lifted",
+                command.name
+            )));
+        }
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -161,9 +332,9 @@ fn call_with_limit(
     if tool_call_id.is_some() {
         caller.tool_call_id = tool_call_id;
     }
-    let answer = if let Some(call) = canonical {
+    let answer = if let Some(canonical) = canonical {
         runtime.block_on(crate::client::call_ready_as(
-            archive, &call, cancelled, caller,
+            archive, &canonical, cancelled, caller,
         ))
     } else {
         runtime.block_on(crate::client::send_ready_as(
@@ -274,7 +445,7 @@ impl Session {
                 json!({
                     "protocolVersion": version, "capabilities": {"tools": {}, "completions": {}},
                     "serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": crate::manual::text(),
+                    "instructions": crate::manual::card(),
                 }),
             ));
         }
@@ -318,7 +489,7 @@ impl Session {
                 id,
                 json!({
                     "resultType": "complete", "supportedVersions": VERSIONS,
-                    "capabilities": {"tools": {}, "completions": {}}, "instructions": crate::manual::text(),
+                    "capabilities": {"tools": {}, "completions": {}}, "instructions": crate::manual::card(),
                     "ttlMs": 0, "cacheScope": "private",
                     "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")}},
                 }),

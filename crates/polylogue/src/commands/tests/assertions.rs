@@ -28,7 +28,9 @@ fn canonical_assertion_operations_share_typed_arguments_and_envelope_identity() 
         ),
     ] {
         let command = crate::commands::command(name).unwrap();
-        assert!(command.mcp && command.http && command.writes);
+        assert!(
+            command.tool == Some(crate::commands::Tool::Note) && command.http && command.writes
+        );
         let build = command.build_typed.unwrap();
         let cli = build(args.clone(), &cli_caller(), "same-id").unwrap();
         let mcp = build(args.clone(), &mcp_caller(), "same-id").unwrap();
@@ -138,7 +140,7 @@ fn predecessor_note_commands_are_retired_in_favor_of_the_canonical_operations() 
         let command = crate::commands::command(name).unwrap();
         assert!(command.register.is_some() && command.typed_schemas.is_some());
         assert_eq!(command.http_path(), format!("/{name}"));
-        assert_eq!(command.mcp_name(), format!("polylogue_{name}"));
+        assert_eq!(command.tool, Some(crate::commands::Tool::Note));
     }
 }
 
