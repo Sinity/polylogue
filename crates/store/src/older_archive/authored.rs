@@ -230,8 +230,6 @@ pub struct RequestRows {
     pub requests: Vec<MappedRequest>,
     /// Deliveries no request carries, with the reason.
     pub deliveries: Vec<(String, String)>,
-    /// Delivery events no request carries, as `delivery what at`, with the reason.
-    pub delivery_events: Vec<(String, String)>,
     /// Kept results no request carries, with the reason.
     pub kept_results: Vec<(String, String)>,
 }
@@ -585,15 +583,6 @@ pub fn requests(
             _ => "no request with a kept body wrote it".to_owned(),
         };
         rows.deliveries.push((row.id.clone(), reason));
-    }
-    for event in events {
-        if carried_deliveries.contains(&event.delivery) {
-            continue;
-        }
-        rows.delivery_events.push((
-            format!("{} {} {}", event.delivery, event.what, event.at),
-            "its delivery is not carried".to_owned(),
-        ));
     }
     for row in kept {
         if !carried_kept.contains(&row.id) {

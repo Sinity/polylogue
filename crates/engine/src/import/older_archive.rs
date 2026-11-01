@@ -67,6 +67,9 @@ pub struct OlderArchiveReport {
     /// The imported input keeping every row other than the stored bytes'
     /// verbatim, by its ID.
     pub rows_input: Option<String>,
+    /// What a dry run cannot tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dry_run_limits: Option<String>,
 }
 
 impl OlderArchiveReport {
@@ -165,6 +168,12 @@ impl Engine {
             path: root.to_path_buf(),
             version: older.version(),
             dry_run,
+            dry_run_limits: dry_run.then(|| {
+                "writer-side refusals are only known on import: an input this archive holds \
+                 differently, an observation ID already taken, an assertion or request that \
+                 conflicts with one held, and a vector of the wrong size or different from one held"
+                    .to_owned()
+            }),
             ..Default::default()
         };
         let counts = older.row_counts()?;
@@ -575,6 +584,15 @@ impl Engine {
             &events,
             &older.kept_results()?,
         );
+        // Which deliveries and events were here before: the rest that are
+        // here afterwards were stored by this import, whichever of the
+        // requests carrying a delivery's record stored it.
+        let before = match current {
+            Some(_) => Some(self.reads.reader()?.stored_deliveries()?),
+            None => None,
+        };
+        // Why each delivery's own request did not store it.
+        let mut not_stored: BTreeMap<String, String> = rows.deliveries.iter().cloned().collect();
         for mapped in rows.requests {
             let outcome = match mapped.request {
                 Err(reason) => Restored::Refused(reason),
@@ -584,14 +602,7 @@ impl Engine {
                 }
                 Ok(Some(prepared)) => {
                     let carried = &prepared.effect;
-                    let delivery = (mapped.class == Some(authored::RequestClass::Delivery))
-                        .then(|| {
-                            carried
-                                .deliveries
-                                .first()
-                                .map(|d| d.delivery.events.len() as u64)
-                        })
-                        .flatten();
+                    let delivery = mapped.class == Some(authored::RequestClass::Delivery);
                     let kept = (mapped.class == Some(authored::RequestClass::KeptResult))
                         .then(|| carried.kept_results.first().map(|k| k.id.clone()))
                         .flatten();
@@ -604,9 +615,9 @@ impl Engine {
                             }
                         }
                     };
-                    if let Some(events) = delivery {
-                        report.tally("delivery", 1, &outcome, &mapped.id);
-                        report.tally_with("delivery_event", events, &outcome);
+                    if delivery && let Restored::Refused(reason) = &outcome
+                    {
+                        not_stored.insert(mapped.id.clone(), reason.clone());
                     }
                     if let Some(kept) = kept {
                         report.tally("kept_result", 1, &outcome, &kept);
@@ -616,11 +627,56 @@ impl Engine {
             };
             report.tally("client_request", 1, &outcome, &mapped.id);
         }
-        for (id, reason) in rows.deliveries {
-            report.tally("delivery", 1, &Restored::Refused(reason), &id);
-        }
-        for (row, reason) in rows.delivery_events {
-            report.tally("delivery_event", 1, &Restored::Refused(reason), &row);
+        let after = match current {
+            Some(_) => Some(self.reads.reader()?.stored_deliveries()?),
+            None => None,
+        };
+        for delivery in &deliveries {
+            let outcome = match (&before, &after) {
+                (Some((held, _)), Some((stored, _))) => {
+                    if !stored.contains(&delivery.id) {
+                        Restored::Refused(not_stored.get(&delivery.id).cloned().unwrap_or_else(
+                            || "no request carrying it stored it".to_owned(),
+                        ))
+                    } else if held.contains(&delivery.id) {
+                        Restored::Present
+                    } else {
+                        Restored::Stored
+                    }
+                }
+                // A dry run: carried unless its mapping refused it.
+                _ => match not_stored.get(&delivery.id) {
+                    Some(reason) => Restored::Refused(reason.clone()),
+                    None => Restored::Stored,
+                },
+            };
+            report.tally("delivery", 1, &outcome, &delivery.id);
+            for event in events.iter().filter(|e| e.delivery == delivery.id) {
+                let key = (event.delivery.clone(), event.what.clone(), event.at);
+                let event_outcome = match (&before, &after, &outcome) {
+                    // An event is refused with its delivery.
+                    (_, _, Restored::Refused(_)) | (None, _, _) | (_, None, _) => outcome.clone(),
+                    (Some((_, held)), Some((_, stored)), _) => {
+                        if !stored.contains(&key) {
+                            Restored::Refused("no request carrying its delivery stored it".into())
+                        } else if held.contains(&key) {
+                            Restored::Present
+                        } else {
+                            Restored::Stored
+                        }
+                    }
+                };
+                if matches!(outcome, Restored::Refused(_)) {
+                    report.tally_with("delivery_event", 1, &event_outcome);
+                } else {
+                    report.tally(
+                        "delivery_event",
+                        1,
+                        &event_outcome,
+                        &format!("{} {} {}", event.delivery, event.what, event.at),
+                    );
+                }
+            }
         }
         for (id, reason) in rows.kept_results {
             report.tally("kept_result", 1, &Restored::Refused(reason), &id);

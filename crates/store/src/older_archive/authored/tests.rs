@@ -188,7 +188,6 @@ fn deliveries_events_and_kept_results_become_the_requests_that_wrote_them() {
     assert_eq!(rows.deliveries.len(), 1);
     assert_eq!(rows.deliveries[0].0, "d3");
     assert!(rows.deliveries[0].1.contains("no request"));
-    assert!(rows.delivery_events.is_empty());
     assert!(rows.kept_results.is_empty());
 }
 

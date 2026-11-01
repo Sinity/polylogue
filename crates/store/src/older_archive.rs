@@ -982,6 +982,24 @@ impl OlderArchive {
     }
 }
 
+impl crate::read::Reader<'_> {
+    /// The deliveries this archive holds, and their events as
+    /// `(delivery, outcome, time)`: what an older archive's import actually
+    /// stored, whichever request carried it.
+    pub fn stored_deliveries(&self) -> Result<(BTreeSet<String>, BTreeSet<(String, String, i64)>)> {
+        let conn = self.conn()?;
+        let ids = conn
+            .prepare("SELECT id FROM source_delivery")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let events = conn
+            .prepare("SELECT delivery, what, at FROM source_delivery_event")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok((ids, events))
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

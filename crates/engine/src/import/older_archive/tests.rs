@@ -418,6 +418,12 @@ fn a_dry_run_counts_every_class_and_writes_nothing_here() {
     let before = empty(&w.root);
     let report = import(&mut w, true);
     assert!(report.dry_run);
+    assert!(
+        report
+            .dry_run_limits
+            .as_deref()
+            .is_some_and(|limits| limits.contains("writer-side refusals are only known on import"))
+    );
     assert_eq!(empty(&w.root), before);
     assert_eq!(before, ["0", "0", "0", "0", "0"]);
     let older = OlderArchive::open(&w.older.root, &w.root.join("copies")).unwrap();
@@ -526,4 +532,53 @@ fn a_location_this_archive_already_watches_as_another_input_is_refused() {
     let input = report.refused.iter().find(|r| r.class == "input").unwrap();
     assert_eq!(input.row, "0190f000-0000-7000-8000-000000000009");
     assert!(input.reason.contains("already watches"), "{}", input.reason);
+}
+
+/// law: older-archive-every-row-accounted
+#[test]
+fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as_stored() {
+    let mut w = setup();
+    // This archive already holds another request under the delivery's
+    // request ID, so restoring that request conflicts; the request that
+    // reported the delivery's event carries the whole delivery and stores it.
+    w.engine
+        .writer()
+        .unwrap()
+        .user(polylogue_model::user::UserRequest {
+            id: "d1".into(),
+            machine: "test-machine".into(),
+            authorship: polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
+            at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            write: polylogue_model::user::UserWrite::SetSetting {
+                key: "fetch-links".into(),
+                value: "on".into(),
+                machine: None,
+            },
+        })
+        .unwrap();
+    let report = import(&mut w, false);
+    let request = report
+        .refused
+        .iter()
+        .find(|r| r.class == "client_request" && r.row == "d1")
+        .unwrap();
+    assert!(!request.reason.is_empty());
+    assert!(!report.refused.iter().any(|r| r.class == "delivery" && r.row == "d1"));
+    assert!(!report.refused.iter().any(|r| r.class == "delivery_event"));
+    assert_eq!(report.classes["delivery"].stored, 2);
+    assert_eq!(report.classes["delivery_event"].stored, 2);
+    let target = read_only(&w.root.join("archive.db"));
+    assert_eq!(
+        rows(&target, "SELECT id FROM delivery ORDER BY id"),
+        [["d1"], ["d2"]].map(|row| row.map(str::to_owned).to_vec())
+    );
+    let older = OlderArchive::open(&w.older.root, &w.root.join("copies")).unwrap();
+    for (table, n) in older.row_counts().unwrap() {
+        let count = report.classes.get(&table).copied().unwrap_or_default();
+        assert_eq!(count.found, n, "{table}");
+        assert_eq!(count.found, count.stored + count.present + count.refused + count.kept, "{table}");
+    }
 }
