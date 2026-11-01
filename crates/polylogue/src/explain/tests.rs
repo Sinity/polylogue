@@ -1,15 +1,6 @@
 use super::*;
 use crate::daemon::{Request, service::handle};
 
-fn data(response: command_surface::Answer<serde_json::Value>) -> Value {
-    match response {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data,
-        other => panic!("{other:?}"),
-    }
-}
-
 fn explain(expression: Option<&str>) -> Request {
     Request::Explain {
         subject: "query".into(),
@@ -115,10 +106,10 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         )),
         via: polylogue_model::authorship::Channel::Mcp,
     };
-    data(crate::daemon::service::handle_with_caller(
+    crate::test_answers::ok(crate::daemon::service::handle_with_caller(
         save, &w.daemon, &limit, &caller,
     ));
-    let kept = data(handle(
+    let kept = crate::test_answers::ok(handle(
         Request::Keep {
             request_id: "keep-explain".into(),
             text: "sessions".into(),
@@ -137,7 +128,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "query:mine".into(),
         format!("result:{}", kept["id"].as_str().unwrap()),
     ] {
-        let result = data(handle(explain(Some(&expression)), &w.daemon));
+        let result = crate::test_answers::ok(handle(explain(Some(&expression)), &w.daemon));
         let explanation = &result["explanation"];
         let program = &explanation["program"];
         assert!(!program["sql"].as_str().unwrap().is_empty());

@@ -13,12 +13,7 @@ fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value 
         },
         sender: Some(polylogue_model::DeliverySender::Hook.as_str().into()),
     };
-    match handle(request, &d.daemon) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data,
-        other => panic!("{other:?}"),
-    }
+    crate::test_answers::ok(handle(request, &d.daemon))
 }
 
 fn deliveries(d: &test_daemon::TestDaemon) -> u64 {
@@ -30,12 +25,9 @@ fn deliveries(d: &test_daemon::TestDaemon) -> u64 {
         session: None,
         fields: vec![],
     };
-    match handle(request, &d.daemon) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data["count"].as_u64().unwrap(),
-        other => panic!("{other:?}"),
-    }
+    crate::test_answers::ok(handle(request, &d.daemon))["count"]
+        .as_u64()
+        .unwrap()
 }
 
 #[test]

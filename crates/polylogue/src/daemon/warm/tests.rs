@@ -43,20 +43,17 @@ fn count_failures_are_visible_and_a_success_clears_them() {
 #[test]
 fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
-    let values = |word: &str| match crate::daemon::service::handle(
-        crate::daemon::Request::Complete {
-            text: word.into(),
-            position: word.len(),
-        },
-        &d.daemon,
-    ) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data,
-        other => panic!("{other:?}"),
+    let values = |word: &str| {
+        crate::daemon::service::handle(
+            crate::daemon::Request::Complete {
+                text: word.into(),
+                position: word.len(),
+            },
+            &d.daemon,
+        )
     };
     assert!(
-        values("live:")
+        crate::test_answers::ok(values("live:"))
             .as_array()
             .unwrap()
             .iter()
@@ -64,8 +61,9 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
                 && v["replace"]["start"] == 5
                 && v["replace"]["end"] == 5)
     );
+    // No session names a model yet, so nothing is offered.
     assert!(
-        !values("model:")
+        !crate::test_answers::empty(values("model:"))
             .as_array()
             .unwrap()
             .iter()
@@ -87,14 +85,17 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
     .unwrap();
     d.wait_for(|s| {
         s["store"]["messages"] == 2
-            && values("model:model")
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|value| value["value"] == "\"model with spaces\"")
+            && matches!(
+                values("model:model"),
+                command_surface::Answer::Ok { value, .. } if value
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value["value"] == "\"model with spaces\"")
+            )
     });
     assert!(
-        values("model:model")
+        crate::test_answers::ok(values("model:model"))
             .as_array()
             .unwrap()
             .iter()
@@ -114,9 +115,7 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
         },
         &daemon.daemon,
     ) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => {
+        command_surface::Answer::Ok { value: data, .. } => {
             let candidate = data
                 .as_array()
                 .unwrap()

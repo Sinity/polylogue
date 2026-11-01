@@ -263,10 +263,9 @@ fn send(
         files,
     };
     match crate::daemon::service::handle(request, &w.daemon) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => Ok(data["action"].clone()),
+        command_surface::Answer::Ok { value: data, .. } => Ok(data["action"].clone()),
         command_surface::Answer::Error { error, .. } => Err(error.code.unwrap_or_default()),
+        other => panic!("a queued action is ok or refused, got {other:?}"),
     }
 }
 

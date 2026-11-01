@@ -6,8 +6,16 @@ fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
 }
 
 fn ok_as(d: &test_daemon::TestDaemon, request: Request, author: Author) -> serde_json::Value {
+    crate::test_answers::ok(send_as(d, request, author))
+}
+
+fn send_as(
+    d: &test_daemon::TestDaemon,
+    request: Request,
+    author: Author,
+) -> command_surface::Answer<serde_json::Value> {
     let limit = crate::daemon::execution::limit(None, Default::default());
-    match handle_with_caller(
+    handle_with_caller(
         request,
         &d.daemon,
         &limit,
@@ -15,12 +23,7 @@ fn ok_as(d: &test_daemon::TestDaemon, request: Request, author: Author) -> serde
             author,
             via: polylogue_model::authorship::Channel::Cli,
         },
-    ) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data,
-        other => panic!("{other:?}"),
-    }
+    )
 }
 
 fn assertion(targets: Vec<Reference>, body: &str) -> polylogue_model::assertion::NewAssertion {
@@ -40,8 +43,9 @@ fn assertion(targets: Vec<Reference>, body: &str) -> polylogue_model::assertion:
     }
 }
 
-fn query(d: &test_daemon::TestDaemon, text: &str) -> serde_json::Value {
-    ok(
+/// A query's whole answer; the caller names the outcome it expects.
+fn query(d: &test_daemon::TestDaemon, text: &str) -> command_surface::Answer<serde_json::Value> {
+    send_as(
         d,
         Request::Query {
             text: text.into(),
@@ -51,6 +55,7 @@ fn query(d: &test_daemon::TestDaemon, text: &str) -> serde_json::Value {
             session: None,
             fields: vec![],
         },
+        Author::Operator,
     )
 }
 
@@ -75,7 +80,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         },
     );
     assert_eq!(
-        query(&d, "assertions where agent:true judged:unknown")["count"],
+        crate::test_answers::ok(query(&d, "assertions where agent:true judged:unknown"))["count"],
         1
     );
     // The operator's own notes are revised or withdrawn, not judged.
@@ -101,9 +106,12 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
             reason: Some("checked".into()),
         },
     );
-    assert_eq!(query(&d, "assertions where judged:accepted")["count"], 1);
     assert_eq!(
-        query(&d, "assertions where agent:true judged:unknown")["count"],
+        crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
         0
     );
     // A recorded acceptance stays visible; it does not certify native origin.
@@ -145,8 +153,14 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
             reason: None,
         },
     );
-    assert_eq!(query(&d, "assertions where judged:rejected")["count"], 1);
-    assert_eq!(query(&d, "assertions where judged:accepted")["count"], 0);
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "assertions where judged:rejected"))["count"],
+        1
+    );
+    assert_eq!(
+        crate::test_answers::empty(query(&d, "assertions where judged:accepted"))["count"],
+        0
+    );
 }
 
 #[test]
@@ -181,7 +195,7 @@ fn a_note_applies_to_every_row_of_a_query() {
     };
     assert_eq!(resolved.len(), 1);
     assert_eq!(
-        query(&d, "assertions where kind:tag key:reviewed")["count"],
+        crate::test_answers::ok(query(&d, "assertions where kind:tag key:reviewed"))["count"],
         1
     );
     let refused = handle(

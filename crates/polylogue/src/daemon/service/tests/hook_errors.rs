@@ -59,9 +59,8 @@ fn message_id(item: &ReadItem) -> polylogue_model::MessageId {
     else {
         panic!("message header must name its actual canonical message")
     };
-    if let Some(message) = &item.source.message {
-        assert_eq!(message, &id);
-    }
+    // A header's reference is its message; only block sources name a containing message.
+    assert_eq!(item.source.message, None, "{item:?}");
     id
 }
 fn mcp_page(archive: &Archive, arguments: serde_json::Value) -> ReadPage {
