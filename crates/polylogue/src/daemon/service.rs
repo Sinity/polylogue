@@ -1019,10 +1019,11 @@ fn handle_inner(
                     selected_at,
                 },
             };
-            let (session, message) = match input.references() {
+            let (session, message_id) = match input.references() {
                 Ok(references) => references,
                 Err(response) => return response,
             };
+            let message = polylogue_model::Reference::Message(message_id.clone());
             let intended = UserWrite::Assert {
                 assertions: vec![input.assertion(session.clone(), message.clone())],
             };
@@ -1041,9 +1042,11 @@ fn handle_inner(
                 Ok(None) => {}
                 Err(response) => return response,
             }
+            // A message reference names exactly one message whatever its
+            // reachability; `id:` takes the native ID, not the reference text.
             let query = format!(
-                "messages where id:{} active:* duplicate:* hidden:*",
-                serde_json::to_string(&message.to_string()).expect("reference string")
+                "messages where message:{}",
+                polylogue_query::quoted(&message_id.to_string())
             );
             let targets = match query_targets_in(d, &reader, &query, invocation, Some(&session)) {
                 Ok(targets) => targets,

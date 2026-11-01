@@ -50,7 +50,7 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Response {
 }
 
 impl SelectionNote {
-    pub(crate) fn references(&self) -> Result<(Reference, Reference), Response> {
+    pub(crate) fn references(&self) -> Result<(Reference, MessageId), Response> {
         let source = &self.source;
         if uuid::Uuid::parse_str(&self.request_id).is_err()
             || self.body.trim().is_empty()
@@ -94,7 +94,7 @@ impl SelectionNote {
         let Ok(message) = MessageId::parse(&format!("{origin}:{}", source.message_id)) else {
             return Err(invalid("the supplied message ID is invalid"));
         };
-        Ok((Reference::Session(session), Reference::Message(message)))
+        Ok((Reference::Session(session), message))
     }
     pub(crate) fn assertion(
         &self,
