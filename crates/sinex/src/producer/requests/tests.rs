@@ -54,7 +54,7 @@ fn prepare(queue: &Spool, parser: &str, body: &[u8]) -> (Prepared, QueuedPublica
         producer_identity: "polylogue-test".into(),
         receipt_number: 17,
         frame: identity.into(),
-        frame_content_hash: BlobHash::parse(prepared.frame_hash.strip_prefix("blake3:").unwrap())
+        frame_content_hash: BlobHash::parse(prepared.frame.blob.strip_prefix("blake3:").unwrap())
             .unwrap(),
         material: material.id.to_string(),
         blob: BlobHash::of(body),
@@ -81,7 +81,7 @@ fn retained_source3_body_reopens_as_queued_history_without_a_fetched_event_or_ne
     let client = crate::tests::client(directory.path());
     let queue = client.queue().unwrap();
     let entry = queue.get(&custody.frame).unwrap().unwrap();
-    let before = entry.frame_hash.clone();
+    let before = entry.frame.blob.clone();
     let mut count = 0;
     visit(
         &queue,
@@ -130,7 +130,7 @@ fn retained_source3_body_reopens_as_queued_history_without_a_fetched_event_or_ne
     .unwrap();
     assert_eq!(count, 1);
     assert_eq!(
-        queue.get(&custody.frame).unwrap().unwrap().frame_hash,
+        queue.get(&custody.frame).unwrap().unwrap().frame.blob,
         before
     );
     assert_eq!(queue.pending_after(None, 64).unwrap().len(), 1);

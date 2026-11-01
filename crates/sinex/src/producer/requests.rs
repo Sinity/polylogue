@@ -124,7 +124,7 @@ fn validate(
     if custody.producer_identity != producer
         || custody.frame != entry.identity
         || custody.frame != frame.frame()
-        || expected_frame != entry.frame_hash
+        || expected_frame != entry.frame.blob
         || expected_frame
             != sinex_transport::producer::content_hash(frame)
                 .map_err(crate::client::submit_error)?
@@ -137,9 +137,9 @@ fn validate(
         || custody.source_version != material.source.version
         || custody.parser != material.parser
         || custody.parser_version != material.parser_version
-        || entry.refused
+        || entry.phase.is_refused()
         || entry.unresolved
-        || !entry.request
+        || !entry.is_request()
     {
         return Err(Error::Refused {
             name: entry.identity.clone(),

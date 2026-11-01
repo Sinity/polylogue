@@ -216,7 +216,7 @@ impl Client {
             }
             for prepared in page {
                 after = Some(prepared.order);
-                if prepared.acknowledged || prepared.unresolved {
+                if !prepared.phase.is_pending() || prepared.unresolved {
                     continue;
                 }
                 if !self.publication_allowed(&prepared) {
@@ -239,13 +239,17 @@ impl Client {
             let current = spool
                 .get(&prepared.identity)?
                 .ok_or_else(|| Error::Invalid("prepared operation disappeared".into()))?;
-            if current.revoked || current.private || current.unresolved || current.refused {
+            if current.revoked
+                || current.is_private()
+                || current.unresolved
+                || current.phase.is_refused()
+            {
                 return Err(Error::Refused {
                     name: prepared.identity.clone(),
                     reason: "the original operation is not publishable".into(),
                 });
             }
-            if prepared.canonical && prepared.group.is_some() {
+            if prepared.canonical().is_some() && prepared.group().is_some() {
                 let mut revoked = false;
                 spool.visit_captures(&prepared.identity, |identity| {
                     revoked |= spool.get(identity)?.is_none_or(|member| member.revoked);
@@ -261,7 +265,7 @@ impl Client {
             (
                 spool.acknowledgment(&prepared.identity)?,
                 spool.prepared_frame(&prepared.identity)?,
-                if prepared.body.is_some() {
+                if prepared.body().is_some() {
                     Some(spool.prepared_body(&prepared.identity)?)
                 } else {
                     None
@@ -301,7 +305,8 @@ impl Client {
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         }
         let body = if prepared
-            .frame_length
+            .frame
+            .length
             .saturating_add(MESSAGE_OVERHEAD as u64)
             <= self.max_message as u64
         {
@@ -319,8 +324,8 @@ impl Client {
             .map_err(|error| Error::Invalid(error.to_string()))?;
             serde_json::to_vec(&Ingress::LargeFrame {
                 frame: prepared.identity.clone(),
-                blob: prepared.frame_hash,
-                length: prepared.frame_length,
+                blob: prepared.frame.blob,
+                length: prepared.frame.length,
             })?
         };
         let acknowledgment = match self.transmit(&prepared.identity, body).await {
@@ -353,16 +358,15 @@ impl Client {
 
     fn publication_allowed(&self, prepared: &crate::spool::Prepared) -> bool {
         !prepared.unresolved
-            && !prepared.refused
-            && !prepared.private
+            && !prepared.phase.is_refused()
+            && !prepared.is_private()
             && !prepared.revoked
-            && (!prepared.canonical
-                || prepared
-                    .canonical_scope
-                    .as_ref()
-                    .is_some_and(|scope| self.publication_scope.as_ref() == Some(scope))
-                    && prepared.canonical_epoch == self.publication_epoch
-                    && prepared.canonical_epoch.is_some())
+            && prepared.canonical().is_none_or(|canonical| {
+                canonical.coverage.as_ref().is_some_and(|coverage| {
+                    self.publication_scope.as_ref() == Some(&coverage.scope)
+                        && self.publication_epoch == Some(coverage.epoch)
+                })
+            })
     }
 
     /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
@@ -494,8 +498,8 @@ pub(crate) fn verified_receipt(
 ) -> Result<Acknowledgment> {
     let frame = Ingress::LargeFrame {
         frame: prepared.identity.clone(),
-        blob: prepared.frame_hash.clone(),
-        length: prepared.frame_length,
+        blob: prepared.frame.blob.clone(),
+        length: prepared.frame.length,
     };
     if receipt.frame != prepared.identity {
         return Err(Error::Invalid(

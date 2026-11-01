@@ -69,25 +69,11 @@ pub(super) fn unknown(capture: &Capture, bindings: &[ExportBinding]) -> bool {
 }
 
 pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
-    if !prepared.exports_checked
-        && prepared.captured.is_some()
-        && let Some(Capture::Input(input)) = &prepared.capture
-    {
-        let root = spool.index(
-            "export-unknown",
-            &input_key(&input.rows.input, &input.rows.format)?,
-        );
-        insert_order(&root, prepared)?;
-    }
-    for binding in &prepared.exports {
+    for binding in prepared.exports() {
         let path = spool.index("export-readings", &binding.key.identity().to_string());
         insert_order(&path, prepared)?;
     }
     Ok(())
-}
-
-fn input_key(input: &str, format: &str) -> Result<String> {
-    Ok(hash(&serde_json::to_vec(&(input, format))?))
 }
 
 fn insert_order(root: &Path, prepared: &Prepared) -> Result<()> {
@@ -108,7 +94,6 @@ impl Spool {
         through: u64,
     ) -> Result<Option<Prepared>> {
         self.ensure_indexes()?;
-        self.require_export_binding_history(key, through)?;
         let path = self.index("export-readings", &key.identity().to_string());
         if !path.try_exists()? {
             return Ok(None);
@@ -116,7 +101,7 @@ impl Spool {
         let mut found = None;
         raw_ranges::walk(&path, 0, 0, after, through, 1, &mut |order, identity| {
             let entry = self.required(identity)?;
-            if entry.order != order || !entry.exports.iter().any(|binding| &binding.key == key) {
+            if entry.order != order || !entry.exports().iter().any(|binding| &binding.key == key) {
                 return invalid("export index differs from its immutable custody key");
             }
             found = Some(entry);
@@ -125,52 +110,12 @@ impl Spool {
         Ok(found)
     }
 
-    fn require_export_binding_history(&self, key: &ExportReadingKey, through: u64) -> Result<()> {
-        let path = self.index(
-            "export-unknown",
-            &input_key(&key.input.id, &key.input.format)?,
-        );
-        if !path.try_exists()? {
-            return Ok(());
-        }
-        raw_ranges::walk(
-            &path,
-            0,
-            0,
-            None,
-            through,
-            usize::MAX,
-            &mut |order, identity| {
-                let entry = self.required(identity)?;
-                if entry.order != order || (entry.exports_checked && !entry.exports_unknown) {
-                    return invalid("unknown export index differs from its immutable metadata");
-                }
-                if entry.unresolved || entry.refused {
-                    return Ok(());
-                }
-                if entry
-                    .control
-                    .as_ref()
-                    .is_none_or(|control| control.reading_version == key.reading_version)
-                {
-                    return Err(Error::Refused {
-                        name: key.identity().to_string(),
-                        reason: "pending legacy parser custody has no exact export reading binding"
-                            .into(),
-                    });
-                }
-                Ok(())
-            },
-        )?;
-        Ok(())
-    }
-
     pub fn export_material_key(&self, identity: &str) -> Result<Option<ExportReadingKey>> {
         let entry = self.required(identity)?;
         let frame = self.decode_frame(identity)?;
         let actual = bindings(&frame, None)?;
         let expected = entry
-            .exports
+            .exports()
             .iter()
             .filter(|binding| binding.captured.is_none())
             .cloned()

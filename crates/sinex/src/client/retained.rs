@@ -99,18 +99,18 @@ pub(crate) fn selector(
         || material.length != body.length
         || frame.frame() != entry.identity
         || sinex_transport::producer::content_hash(&frame).map_err(super::submit_error)?
-            != entry.frame_hash
-        || entry.refused
+            != entry.frame.blob
+        || entry.phase.is_refused()
         || entry.unresolved
         || entry.revoked
-        || entry.private
+        || entry.is_private()
     {
         return Err(unavailable(&entry.identity));
     }
     std::io::copy(&mut queue.body(&entry.identity)?, &mut std::io::sink())?;
     Ok(RecordedContinuationRequest {
         frame: entry.identity.clone(),
-        frame_content_hash: entry.frame_hash.clone(),
+        frame_content_hash: entry.frame.blob.clone(),
         material: material.id,
         blob: material.blob.clone(),
         length: material.length,
@@ -173,7 +173,7 @@ pub(crate) fn observation(
             .number
             .ok_or_else(|| unavailable(&entry.identity))?,
         frame: entry.identity.clone(),
-        frame_content_hash: hash(&entry.frame_hash)?,
+        frame_content_hash: hash(&entry.frame.blob)?,
         material: binding.material.to_string(),
         blob: hash(&binding.blob)?,
         length: binding.length,
@@ -302,7 +302,7 @@ impl Client {
         };
         for (entry, material, request) in materials {
             let reply = self.retained(&request).await?;
-            if entry.request {
+            if entry.is_request() {
                 let observed =
                     observation(&self.producer, &entry, &material, &request, reply.clone())?;
                 let queue = self

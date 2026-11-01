@@ -138,7 +138,7 @@ fn offline_raw_cursor_checks_many_bodies_and_restarts_without_source_or_parser_a
             .pending_after(None, 64)
             .unwrap()
             .iter()
-            .all(|entry| !entry.acknowledged)
+            .all(|entry| entry.phase.is_pending())
     );
     drop(sinex);
     let reopened = client(root.path());

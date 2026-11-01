@@ -181,7 +181,7 @@ fn acknowledgment_is_not_the_confirmed_application_barrier() {
     drop(spool);
     let spool = Spool::open(directory.path(), "host-a").unwrap();
     let page = spool.pending_after(None, 1).unwrap();
-    assert!(page[0].acknowledged);
+    assert!(page[0].phase.is_acknowledged());
     spool.retire(17).unwrap();
     assert!(spool.get("write").unwrap().is_some());
     spool.retire(18).unwrap();
@@ -257,7 +257,12 @@ fn malformed_receipts_and_group_members_never_authorize_retirement() {
     fs::remove_file(&receipt).unwrap();
     assert!(spool.get("group").is_err());
     fs::write(&receipt, original).unwrap();
-    assert_eq!(spool.get("group").unwrap().unwrap().commit_seq, Some(12));
+    assert_eq!(
+        spool.get("group").unwrap().unwrap().phase,
+        Phase::Acknowledged {
+            commit_seq: Some(12)
+        }
+    );
     fs::write(
         spool.operation("group").unwrap().join("captures.zst"),
         b"\"other\"\n",
@@ -317,7 +322,8 @@ fn pending_metadata_stays_small_with_large_immutable_frames_and_streamed_bodies(
         )
         .unwrap();
     let page = spool.pending_after(None, 2).unwrap();
-    assert!(serde_json::to_vec(&page).unwrap().len() < 4096);
+    let records: Vec<_> = page.iter().map(|entry| &entry.record).collect();
+    assert!(serde_json::to_vec(&records).unwrap().len() < 4096);
     assert!(
         spool
             .operation("large-frame")
@@ -469,7 +475,7 @@ fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
             "body_synced" | "operation_synced" => assert!(all(&spool, 1).is_empty()),
             "operation_published" => {
                 let prepared = spool.get("raw").unwrap().unwrap();
-                assert!(prepared.body.is_some());
+                assert!(prepared.body().is_some());
                 assert_eq!(
                     spool
                         .body("raw")
@@ -480,13 +486,13 @@ fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
                 );
             }
             "ack_synced" => {
-                assert!(!spool.get("write").unwrap().unwrap().acknowledged);
+                assert!(spool.get("write").unwrap().unwrap().phase.is_pending());
                 assert!(spool.acknowledgment("write").unwrap().is_none());
                 spool.acknowledge(ack("write", false, Some(9))).unwrap();
-                assert!(spool.get("write").unwrap().unwrap().acknowledged);
+                assert!(spool.get("write").unwrap().unwrap().phase.is_acknowledged());
             }
             "ack_published" => {
-                assert!(spool.get("write").unwrap().unwrap().acknowledged);
+                assert!(spool.get("write").unwrap().unwrap().phase.is_acknowledged());
                 spool.retire(8).unwrap();
                 assert!(spool.get("write").unwrap().is_some());
             }
@@ -568,14 +574,14 @@ fn request_and_blob_visitors_can_use_small_metadata_until_application() {
     spool.acknowledge(ack("request", true, None)).unwrap();
     spool.acknowledge(ack("blob", true, None)).unwrap();
     let page = spool.pending_after(None, 10).unwrap();
-    assert_eq!(page.iter().filter(|entry| entry.request).count(), 1);
+    assert_eq!(page.iter().filter(|entry| entry.is_request()).count(), 1);
     assert_eq!(
         page.iter()
-            .filter(|entry| matches!(entry.capture, Some(Capture::Blob { .. })))
+            .filter(|entry| matches!(entry.capture(), Some(Capture::Blob { .. })))
             .count(),
         1
     );
-    assert!(page.iter().all(|entry| entry.acknowledged));
+    assert!(page.iter().all(|entry| entry.phase.is_acknowledged()));
     spool.retire(999).unwrap();
     assert_eq!(spool.pending_after(None, 10).unwrap().len(), 2);
     let mut body = String::new();
@@ -700,7 +706,10 @@ fn replay_capture_group_retains_its_material_until_applied() {
     let prepared = spool
         .prepare_group(replay.clone(), &["raw".into()])
         .unwrap();
-    assert_eq!(prepared.kind, Kind::ReplaySequence);
+    assert!(matches!(
+        prepared.payload,
+        Payload::ReplaySequence { group: Some(_) }
+    ));
     assert_eq!(spool.decode_frame("replacement").unwrap(), replay);
     spool
         .acknowledge(ack("replacement", false, Some(21)))
@@ -764,9 +773,9 @@ fn complete_parser_facts_are_immutable_sidecars_and_queue_headers_stay_small() {
     let prepared = spool
         .prepare_capture(frame.clone(), bytes.as_slice(), &capture)
         .unwrap();
-    assert!(serde_json::to_vec(&prepared).unwrap().len() < 4096);
-    assert!(prepared.captured.as_ref().unwrap().length > 1_000_000);
-    assert_eq!(prepared.capture, Some(capture_header(&capture)));
+    assert!(serde_json::to_vec(&prepared.record).unwrap().len() < 4096);
+    assert!(prepared.captured().unwrap().length > 1_000_000);
+    assert_eq!(prepared.capture(), Some(&capture_header(&capture)));
     assert_eq!(spool.capture("captured").unwrap(), capture);
     spool
         .prepare_capture(frame.clone(), bytes.as_slice(), &capture)
@@ -835,7 +844,7 @@ fn request_restore_metadata_remains_discoverable_after_acknowledgment_and_restar
             spool
                 .prepare_material(frame, b"[]".as_slice())
                 .unwrap()
-                .request,
+                .is_request(),
             expected
         );
         spool.acknowledge(ack(identity, true, None)).unwrap();
@@ -846,8 +855,8 @@ fn request_restore_metadata_remains_discoverable_after_acknowledgment_and_restar
         .pending_after(None, 10)
         .unwrap()
         .into_iter()
-        .filter(|entry| entry.request)
-        .map(|entry| entry.identity)
+        .filter(|entry| entry.is_request())
+        .map(|entry| entry.identity.clone())
         .collect();
     assert_eq!(requests, ["live", "restore"]);
 }
@@ -1074,9 +1083,7 @@ fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_rest
         Err(Error::Refused { .. })
     ));
     let terminal = spool.get("same-frame").unwrap().unwrap();
-    assert!(!terminal.acknowledged);
-    assert!(terminal.refused);
-    assert_eq!(terminal.commit_seq, None);
+    assert!(matches!(terminal.phase, Phase::Conflicted { .. }));
     assert!(spool.acknowledgment("same-frame").unwrap().is_none());
     assert_eq!(
         spool.conflict_receipt("same-frame").unwrap(),
@@ -1086,7 +1093,7 @@ fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_rest
     let spool = Spool::open(root.path(), "host").unwrap();
     spool.retire(i64::MAX).unwrap();
     let retained = spool.get("same-frame").unwrap().unwrap();
-    assert!(retained.refused && !retained.acknowledged);
+    assert!(matches!(retained.phase, Phase::Conflicted { .. }));
     let mut observed = Vec::new();
     spool
         .body("same-frame")
@@ -1095,7 +1102,7 @@ fn receipt_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_rest
         .unwrap();
     assert_eq!(observed, bytes);
     spool
-        .record_conflict("same-frame", &prepared.frame_hash, &receipt)
+        .record_conflict("same-frame", &prepared.frame.blob, &receipt)
         .unwrap();
     assert_eq!(spool.conflict_receipt("same-frame").unwrap(), Some(receipt));
 }
@@ -1108,10 +1115,69 @@ fn conflict_evidence_for_another_frame_cannot_change_private_disposition() {
     let receipt = ack("foreign", false, Some(2));
     assert!(
         spool
-            .record_conflict("owned", &prepared.frame_hash, &receipt)
+            .record_conflict("owned", &prepared.frame.blob, &receipt)
             .is_err()
     );
     let unchanged = spool.get("owned").unwrap().unwrap();
-    assert!(!unchanged.acknowledged && !unchanged.refused);
+    assert!(unchanged.phase.is_pending());
     assert!(spool.conflict_receipt("owned").unwrap().is_none());
+}
+
+#[test]
+fn only_a_pending_operation_can_settle_and_a_settled_one_never_changes() {
+    let settled = [
+        Phase::Acknowledged {
+            commit_seq: Some(3),
+        },
+        Phase::Acknowledged { commit_seq: None },
+        Phase::Refused,
+        Phase::Conflicted {
+            offered: "blake3:offered".into(),
+        },
+    ];
+    for next in &settled {
+        assert_eq!(Phase::Pending.advance(next.clone()).unwrap(), *next);
+    }
+    assert!(Phase::Pending.advance(Phase::Pending).is_err());
+    for from in &settled {
+        for next in settled.iter().chain([&Phase::Pending]) {
+            assert!(from.advance(next.clone()).is_err(), "{from:?} to {next:?}");
+        }
+    }
+}
+
+#[test]
+fn a_settled_operation_refuses_a_different_outcome_through_the_spool() {
+    let root = tempfile::tempdir().unwrap();
+    let spool = Spool::open(root.path(), "host").unwrap();
+    let prepared = spool.prepare(events("write", "frozen")).unwrap();
+    let foreign = ack("write", false, Some(2));
+    spool
+        .record_conflict("write", &prepared.frame.blob, &{
+            let mut receipt = foreign.clone();
+            receipt.outcome = serde_json::json!({"frame_content_hash":"blake3:other"});
+            receipt
+        })
+        .unwrap();
+    assert!(spool.acknowledge(foreign).is_err());
+    assert!(matches!(
+        spool.get("write").unwrap().unwrap().phase,
+        Phase::Conflicted { .. }
+    ));
+
+    let accepted = spool.prepare(events("accepted", "frozen")).unwrap();
+    spool.acknowledge(ack("accepted", false, Some(5))).unwrap();
+    let receipt = ack("accepted", false, Some(6));
+    assert!(
+        spool
+            .record_conflict("accepted", &accepted.frame.blob, &receipt)
+            .is_err()
+    );
+    assert!(spool.acknowledge(ack("accepted", false, Some(6))).is_err());
+    assert_eq!(
+        spool.get("accepted").unwrap().unwrap().phase,
+        Phase::Acknowledged {
+            commit_seq: Some(5)
+        }
+    );
 }

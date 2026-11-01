@@ -134,11 +134,10 @@ impl Sinex {
     pub(super) fn drain_readings(&self) -> Result<()> {
         let mut ready = Vec::new();
         self.visit_prepared(|queue, entry| {
-            if entry.kind == crate::spool::Kind::Material
-                && entry.acknowledged
-                && !entry.refused
-                && entry.capture.is_none()
-                && !entry.request
+            if entry.material().is_some()
+                && entry.phase.is_acknowledged()
+                && entry.capture().is_none()
+                && !entry.is_request()
                 && queue.capture_group(&entry.identity)?.is_none()
                 && let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)?
                 && let Some(replacement) = material.manifest.details.get("polylogue_replacement")

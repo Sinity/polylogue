@@ -10,10 +10,10 @@ use std::collections::BTreeMap;
 
 fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result<PendingCapture> {
     let captured = entry
-        .capture
-        .clone()
+        .capture()
+        .cloned()
         .ok_or_else(|| Error::Invalid("source operation has no capture header".into()))?;
-    let acknowledged = if entry.refused {
+    let acknowledged = if entry.phase.is_refused() {
         None
     } else {
         Sinex::capture_material(queue, &entry)?
@@ -58,7 +58,7 @@ impl Sinex {
         let mut heads = BTreeMap::new();
         for basis in &plan.bases {
             if let Some(entry) = queue.source_heads(&basis.source, "")?.head {
-                let Some(Capture::Input(input)) = entry.capture.as_ref() else {
+                let Some(Capture::Input(input)) = entry.capture() else {
                     return Err(Error::Invalid("pending source head has no input".into()));
                 };
                 heads.insert(
@@ -371,7 +371,7 @@ impl Sinex {
         let heads = queue.source_heads(source, reading_version)?;
         let mut result = PendingSource::default();
         if let Some(head) = heads.head {
-            if let Some(Capture::Input(input)) = &head.capture {
+            if let Some(Capture::Input(input)) = head.capture() {
                 result.status = input
                     .basis
                     .as_ref()
@@ -394,11 +394,12 @@ impl Sinex {
             result.status = SourceStatus::MissingEvidence;
         }
         if let Some(entry) = heads.control {
-            let Some(Capture::Input(header)) = entry.capture else {
+            let Some(Capture::Input(header)) = entry.capture().cloned() else {
                 return Err(Error::Invalid("parser control has no source header".into()));
             };
             let index = entry
-                .control
+                .control()
+                .cloned()
                 .ok_or_else(|| Error::Invalid("parser control index is missing".into()))?;
             let Capture::Input(full) = queue.capture(&entry.identity)? else {
                 return Err(Error::Invalid(

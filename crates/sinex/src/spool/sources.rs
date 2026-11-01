@@ -43,7 +43,7 @@ pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
     if prepared.unresolved {
         return Ok(());
     }
-    let Some(Capture::Input(input)) = &prepared.capture else {
+    let Some(Capture::Input(input)) = prepared.capture() else {
         return Ok(());
     };
     let Some(basis) = &input.basis else {
@@ -55,7 +55,7 @@ pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
     if input.raw_range.is_some() {
         latest(&root.join("raw"), prepared)?;
     }
-    if let Some(control) = &prepared.control {
+    if let Some(control) = prepared.control() {
         latest(
             &root
                 .join("control")
@@ -72,7 +72,7 @@ fn resolve(spool: &Spool, path: &Path, source: &SourceSelector) -> Result<Option
     };
     let prepared = spool.required(&pointer.identity)?;
     if prepared.order != pointer.order
-        || !matches!(&prepared.capture, Some(Capture::Input(input)) if input.basis.as_ref().is_some_and(|basis| &basis.source == source))
+        || !matches!(prepared.capture(), Some(Capture::Input(input)) if input.basis.as_ref().is_some_and(|basis| &basis.source == source))
     {
         return invalid("pending source index differs from its immutable operation");
     }
@@ -92,11 +92,10 @@ pub(super) fn get(spool: &Spool, source: &SourceSelector, version: &str) -> Resu
         unattributed: spool.index("pending-source", "unattributed").try_exists()?,
     };
     if heads.raw.as_ref().is_some_and(
-        |entry| !matches!(&entry.capture, Some(Capture::Input(input)) if input.raw_range.is_some()),
+        |entry| !matches!(entry.capture(), Some(Capture::Input(input)) if input.raw_range.is_some()),
     ) || heads.control.as_ref().is_some_and(|entry| {
         entry
-            .control
-            .as_ref()
+            .control()
             .is_none_or(|control| control.reading_version != version)
     }) {
         return invalid("pending source index points to another capture role");
