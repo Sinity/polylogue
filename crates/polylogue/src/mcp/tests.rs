@@ -21,7 +21,12 @@ pub(crate) fn call(
     operation: &str,
     arguments: serde_json::Map<String, Value>,
 ) -> Result<String, String> {
-    call_as(archive, operation, arguments, &uuid::Uuid::now_v7().to_string())
+    call_as(
+        archive,
+        operation,
+        arguments,
+        &uuid::Uuid::now_v7().to_string(),
+    )
 }
 
 /// [`call`] with the caller's retry identity.
@@ -438,7 +443,13 @@ fn typed_operations_declare_every_field_of_their_arguments() {
             let name = reference.strip_prefix("#/$defs/").unwrap();
             return fields(&root["$defs"][name], root, names);
         }
-        names.extend(schema["properties"].as_object().into_iter().flatten().map(|(k, _)| k.clone()));
+        names.extend(
+            schema["properties"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, _)| k.clone()),
+        );
         for key in ["anyOf", "oneOf"] {
             for choice in schema[key].as_array().into_iter().flatten() {
                 fields(choice, root, names);

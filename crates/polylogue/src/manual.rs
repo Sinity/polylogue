@@ -11,7 +11,11 @@ pub fn card() -> &'static str {
 /// The card, the guide, and every tool operation with its CLI spelling,
 /// help and arguments, unlisted ones included.
 pub fn text() -> String {
-    let mut text = format!("{}\n{}", card(), include_str!("../../../docs/agent-guide.md"));
+    let mut text = format!(
+        "{}\n{}",
+        card(),
+        include_str!("../../../docs/agent-guide.md")
+    );
     for tool in crate::commands::Tool::ALL {
         let _ = writeln!(text, "\n## `{}`\n", tool.name());
         for command in crate::mcp::operations(tool) {
