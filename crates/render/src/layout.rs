@@ -89,7 +89,13 @@ pub fn visit_record(
     options.validate()?;
     let reference = record.reference().unwrap_or("manifest");
     let source = Source::record(reference);
-    if options.view == View::Raw {
+    // A retained historical run is its own original record; it has no input bytes.
+    let run_record = matches!(
+        record,
+        Record::Historical(row)
+            if matches!(row.evidence, polylogue_model::historical::HistoricalRecord::Run(_))
+    );
+    if options.view == View::Raw && !run_record {
         if evidence.raw.is_empty() {
             return Err(ReadError::MissingEvidence {
                 view: View::Raw,
