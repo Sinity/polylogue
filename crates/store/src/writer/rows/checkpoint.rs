@@ -27,7 +27,8 @@ impl Stored {
 pub(super) fn read(tx: &Transaction<'_>, input: i64, chain: i64) -> Result<Option<Stored>> {
     let row = tx.query_row("SELECT parsed_upto,reading_version,status,waiting_at,records,used,skipped,unreadable,commit_seq,checkpoint,reason FROM parse_state WHERE input_pk=?1 AND chain=?2",
         params![input,chain],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<i64>>(3)?,[r.get::<_,i64>(4)?,r.get(5)?,r.get(6)?,r.get(7)?],r.get::<_,Option<i64>>(8)?,r.get::<_,Option<Vec<u8>>>(9)?,r.get::<_,Option<String>>(10)?))).optional()?;
-    let Some((cursor, version, status, waiting_at, counts, commit, checkpoint, reason)) = row else {
+    let Some((cursor, version, status, waiting_at, counts, commit, checkpoint, reason)) = row
+    else {
         return Ok(None);
     };
     Ok(Some(Stored {

@@ -443,7 +443,9 @@ pub const GROUPS: &[Group] = &[
 
 /// Whether `value` decodes as the declared answer type `T`.
 fn decodes<T: serde::de::DeserializeOwned>(value: &Value) -> Result<(), String> {
-    T::deserialize(value).map(drop).map_err(|error| error.to_string())
+    T::deserialize(value)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 macro_rules! typed_command {

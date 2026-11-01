@@ -586,7 +586,10 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 /// A failure made here, before or instead of a daemon answer.
 /// Refuses an answer whose value is not its operation's declared type, the
 /// same way for every operation, before anything reads it.
-pub(crate) fn decoded(cmd: &Command, answer: &Answer<Value>) -> Result<(), command_surface::Failure> {
+pub(crate) fn decoded(
+    cmd: &Command,
+    answer: &Answer<Value>,
+) -> Result<(), command_surface::Failure> {
     match (cmd.decode_answer, answer.value()) {
         (Some(decode), Some(value)) => {
             decode(value).map_err(|error| crate::protocol::protocol_mismatch(cmd.name, error))

@@ -365,7 +365,10 @@ fn a_waiting_length_moves_from_text_into_its_typed_column() {
         .is_err()
     );
     // Every designed standing is storable, and a refusal or failure keeps its reason.
-    for (status, reason) in [("refused", "synthetic reason"), ("failed", "synthetic error")] {
+    for (status, reason) in [
+        ("refused", "synthetic reason"),
+        ("failed", "synthetic error"),
+    ] {
         conn.execute(
             "UPDATE parse_state SET status=?1,reason=?2 WHERE input_pk=2",
             [status, reason],

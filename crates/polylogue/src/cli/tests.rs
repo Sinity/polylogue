@@ -445,8 +445,16 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
     for name in ["query", "list", "measure sessions"] {
         let command = crate::commands::command(name).unwrap_or_else(|| panic!("{name}"));
         let refused = super::decoded(command, &older).unwrap_err();
-        assert_eq!(refused.code.as_deref(), Some("daemon_protocol_mismatch"), "{name}");
-        assert_eq!(refused.kind, command_surface::FailureKind::NotRunning, "{name}");
+        assert_eq!(
+            refused.code.as_deref(),
+            Some("daemon_protocol_mismatch"),
+            "{name}"
+        );
+        assert_eq!(
+            refused.kind,
+            command_surface::FailureKind::NotRunning,
+            "{name}"
+        );
     }
     let failed: Answer<serde_json::Value> =
         Answer::error(crate::protocol::failure("not_found", "nothing"));
