@@ -11,6 +11,7 @@ mod authored;
 mod bundle;
 pub(crate) mod exports;
 mod legacy;
+pub(crate) mod older_archive;
 mod package;
 mod recognition;
 
@@ -30,6 +31,24 @@ impl Engine {
     ) -> Result<ImportReport, EngineError> {
         let started = Instant::now();
         let mut report = ImportReport::default();
+        if let Some(root) = &options.from_archive {
+            if !paths.is_empty() || options.format.is_some() || options.explain {
+                return Err(std::io::Error::other(
+                    "--from-archive names one archive and takes no other paths, --format or --explain",
+                )
+                .into());
+            }
+            report.older_archive = Some(self.import_older_archive(
+                root,
+                options.dry_run,
+                options.authorship.as_ref(),
+            )?);
+            report.pass.seconds = started.elapsed().as_secs_f64();
+            return Ok(report);
+        }
+        if options.dry_run {
+            return Err(std::io::Error::other("--dry-run applies to --from-archive").into());
+        }
         for path in paths {
             let members = match package::stage(path, &self.archive, options.format.as_deref()) {
                 Ok(members) => members,

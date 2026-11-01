@@ -183,6 +183,14 @@ pub enum Request {
         request_id: String,
         paths: Vec<PathBuf>,
     },
+    /// An archive in the older format, imported once; with `dry_run` only
+    /// read and checked.
+    ImportArchive {
+        request_id: String,
+        path: PathBuf,
+        #[serde(default)]
+        dry_run: bool,
+    },
     /// Validate and record an extension selection in one pinned operation.
     BrowserSelectionNote {
         request_id: String,
@@ -357,6 +365,7 @@ impl Request {
             | Self::ChatReport { .. }
             | Self::ChatDecide { .. }
             | Self::Import { .. }
+            | Self::ImportArchive { .. }
             | Self::BrowserSelectionNote { .. }
             | Self::Assert { .. }
             | Self::AssertQuery { .. }

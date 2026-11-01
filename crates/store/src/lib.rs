@@ -33,6 +33,7 @@ pub mod input_rows;
 pub mod legacy_import;
 mod live;
 pub mod measure;
+pub mod older_archive;
 mod ordered_blocks;
 pub mod primary;
 pub mod query;

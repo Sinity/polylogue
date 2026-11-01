@@ -38,6 +38,7 @@ mod acquisition;
 mod collectors;
 mod databases;
 mod import;
+pub use import::older_archive::{ClassCount, OlderArchiveReport, RefusedRow};
 mod parser_checkpoint;
 mod pass;
 mod plan;
@@ -261,6 +262,10 @@ pub struct LoopStatus {
 pub struct ImportOptions {
     pub format: Option<String>,
     pub explain: bool,
+    /// An archive in the older format to import, in place of paths.
+    pub from_archive: Option<PathBuf>,
+    /// With `from_archive`: read and check it, write nothing.
+    pub dry_run: bool,
     /// Computed by the accepting channel; imported bytes never supply it.
     #[serde(skip)]
     pub authorship: Option<polylogue_model::authorship::Authorship>,
@@ -300,6 +305,9 @@ pub struct ImportReport {
     /// The user state Polylogue exports carried.
     pub user_state: UserStateReport,
     pub pass: Pass,
+    /// What became of each row of an archive in the older format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub older_archive: Option<OlderArchiveReport>,
 }
 
 /// Historical authored records restored through the frozen import ingress.
@@ -329,6 +337,9 @@ pub enum LoopMsg {
     Changed,
     Import {
         paths: Vec<PathBuf>,
+        /// An archive in the older format to import, in place of paths.
+        from_archive: Option<PathBuf>,
+        dry_run: bool,
         authorship: polylogue_model::authorship::Authorship,
         parent: Option<Arc<polylogue_store::writer::ParentLifetime>>,
         reply: SyncSender<Result<ImportReport, ImportFailure>>,

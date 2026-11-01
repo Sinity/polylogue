@@ -635,10 +635,14 @@ const WRITTEN: &[Command] = &[
     },
     typed_command!(ImportOperation, crate::protocol::import::Arguments, crate::protocol::import::Answer, {
         name: "import",
-        help: "Store explicit files, directories and bundles through the daemon. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts. Primary authored restores awaiting confirmation are pending",
+        help: "Store explicit files, directories and bundles through the daemon, or with --from-archive an archive written before the version 1 baseline. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts, and for an older archive what became of each class of row. Primary authored restores awaiting confirmation are pending",
         reason: "Capture explicitly selected source bytes and restore frozen authored records",
         latency: command_surface::LatencyClass::Aggregate,
-        args: &[pos_opt("paths", Kind::List, "Files or directories on the daemon host; relative paths require a native caller working directory")],
+        args: &[
+            pos_opt("paths", Kind::List, "Files or directories on the daemon host; relative paths require a native caller working directory"),
+            opt("from_archive", Kind::Text, "The folder of an archive written before the version 1 baseline, imported once in place of paths"),
+            opt("dry_run", Kind::Bool, "With --from-archive: read and check the archive, write nothing, and report counts per class"),
+        ],
         action: Action::Request(requests::import),
         mcp: true,
         http: true,

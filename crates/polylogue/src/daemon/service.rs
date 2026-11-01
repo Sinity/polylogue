@@ -812,8 +812,13 @@ fn handle_inner(
             &request,
             operation.as_ref().expect("read operation context"),
         ),
-        Request::Import { paths, .. } => {
+        request @ (Request::Import { .. } | Request::ImportArchive { .. }) => {
             drop(reader);
+            let (paths, from_archive, dry_run) = match request {
+                Request::Import { paths, .. } => (paths, None, false),
+                Request::ImportArchive { path, dry_run, .. } => (Vec::new(), Some(path), dry_run),
+                _ => unreachable!("an import request"),
+            };
             let (reply, wait) = sync_channel(1);
             let tx = match d.loop_tx.lock() {
                 Ok(tx) => tx,
@@ -825,6 +830,8 @@ fn handle_inner(
             let sent = tx
                 .send(LoopMsg::Import {
                     paths,
+                    from_archive,
+                    dry_run,
                     authorship: invocation.authorship.clone(),
                     parent: invocation.parent_lifetime(),
                     reply,
