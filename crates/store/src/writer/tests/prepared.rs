@@ -304,7 +304,7 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             let pool = ReadPool::open(&w.archive).unwrap();
             let reader = pool.reader().unwrap();
             assert_eq!(reader.events(&sid("s")).unwrap()[0].data, data);
-            let rows=reader.query("SELECT s.live_waiting_on AS waiting,s.live_todo AS todo,t.call_id FROM session s LEFT JOIN tool_call t ON t.pk=s.live_open_tool_pk WHERE s.id='claude-code:s'",&[]).unwrap();
+            let rows=reader.query("SELECT json_extract(s.live_facts,'$.hook_waiting_on.value') AS waiting,json_extract(s.live_facts,'$.todo') AS todo,json_extract(s.live_facts,'$.open_call.call_id') AS call_id FROM session s WHERE s.id='claude-code:s'",&[]).unwrap();
             assert_eq!(
                 rows[0]["waiting"].as_str(),
                 waiting,

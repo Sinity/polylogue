@@ -89,7 +89,7 @@ pub struct OpenItems {
     pub open_tool_call: bool,
     /// The harness's in-progress todo item.
     pub todo: Option<String>,
-    /// What the session is waiting on: permission, question, notification.
+    /// What the session's hooks say it waits on: permission, question, plan, input.
     pub waiting_on: Option<String>,
 }
 
@@ -212,7 +212,9 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let row = conn
             .prepare_cached(
-                "SELECT s.live_open_tool_pk IS NOT NULL, s.live_todo, s.live_waiting_on,
+                "SELECT json_extract(s.live_facts, '$.open_call') IS NOT NULL,
+                        json_extract(s.live_facts, '$.todo'),
+                        json_extract(s.live_facts, '$.hook_waiting_on.value'),
                         (SELECT m.written_by FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
                           ORDER BY m.order_input_id DESC, m.seq DESC, m.record_position DESC, m.id DESC LIMIT 1),
                         (SELECT m.prompt_kind FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
@@ -421,7 +423,7 @@ impl Reader<'_> {
             work.pull_requests.push(format!("{repo}#{number}"));
         }
         work.task = conn
-            .prepare_cached("SELECT live_task FROM session WHERE pk = ?1")?
+            .prepare_cached("SELECT json_extract(live_facts, '$.task') FROM session WHERE pk = ?1")?
             .query_row([pk], |r| r.get(0))?;
         Ok(Some(work))
     }
@@ -431,8 +433,9 @@ impl Reader<'_> {
     pub fn open_beads(&self, dirs: &[String], since: i64) -> Result<Vec<OpenBead>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT s.live_task, s.id, s.last_activity_at FROM session s
-              WHERE s.live_task IS NOT NULL AND s.last_activity_at >= ?2
+            "SELECT json_extract(s.live_facts, '$.task'), s.id, s.last_activity_at FROM session s
+              WHERE s.live_last_at IS NOT NULL AND json_extract(s.live_facts, '$.task') IS NOT NULL
+                AND s.last_activity_at >= ?2
                 AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
                             OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
               ORDER BY s.last_activity_at DESC, s.pk DESC",

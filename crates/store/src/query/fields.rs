@@ -360,13 +360,17 @@ f(Sessions,"source").sql("CASE WHEN {s}.stub = 1 THEN 'missing' ELSE 'present' E
 f(Sessions,"live").custom(custom::live).sql_clock(sessions_live),
 f(Sessions,"waiting").custom(custom::waiting).sql_clock(sessions_waiting),
 f(Sessions,"running").custom(custom::running).sql_clock(sessions_running),
-f(Sessions,"waiting_on").sql("{s}.live_waiting_on"),
-f(Sessions,"task").sql("{s}.live_task"),
+f(Sessions,"waiting_on").sql_clock(sessions_waiting_on),
+f(Sessions,"stall").sql_clock(sessions_stall),
+f(Sessions,"process_alive").sql_clock(sessions_process_alive),
+f(Sessions,"harness_status").sql("json_extract({s}.live_facts, '$.harness_status.word')"),
+f(Sessions,"open_tool").sql("json_extract({s}.live_facts, '$.open_call.tool')"),
+f(Sessions,"footprint").sql("(SELECT group_concat(fp.value, char(10)) FROM json_each({s}.live_facts, '$.footprint') fp)"),
+f(Sessions,"task").sql("json_extract({s}.live_facts, '$.task')"),
 f(Sessions,"live_until").sql_clock(sessions_live_until),
-f(Sessions,"last_event").sql("{s}.live_last_event"),
-f(Sessions,"last_event_at").sql("{s}.live_last_event_at"),
-f(Sessions,"waiting_since").sql("{s}.live_waiting_since"),
-f(Sessions,"todo").sql("{s}.live_todo"),
+f(Sessions,"live_since").sql_clock(sessions_live_since),
+f(Sessions,"last_event_at").sql("{s}.live_last_at"),
+f(Sessions,"todo").sql("json_extract({s}.live_facts, '$.todo')"),
 f(Sessions,"live_rank").sql_clock(sessions_live_rank),
 f(Sessions,"peers").sql_clock(sessions_peers),
 f(Sessions,"repo_root").sql("{s}.repo_root"),
@@ -615,52 +619,23 @@ pub use crate::session_sql::{counts_as_action, own_messages};
 /// The live states.
 pub use polylogue_query::fields::LIVE_STATES;
 
-/// The live window: hook evidence this recent makes a session live.
-pub const LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
-/// Evidence older than this, with nothing newer, means the session ended.
-pub const LIVE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
-
-/// The live state of session alias `s` at `now`: computed when asked from
-/// the stored live facts and the time, never written by a clock. Rules apply in order and the result is total.
-/// A fact dated after `now` counts as at `now`.
-pub fn live_state(s: &str, now: i64) -> String {
-    let w = LIVE_WINDOW_MS;
-    let d = LIVE_DAY_MS;
-    let ev = format!("MIN({s}.live_last_event_at, {now})");
-    let grew = format!("MIN({s}.last_activity_at, {now})");
-    let live = format!("({s}.live_last_event_at IS NOT NULL AND {now} - {ev} <= {w})");
-    format!(
-        "(CASE \
-         WHEN {s}.live_last_event = 'hook_session_end' THEN 'ended' \
-         WHEN {s}.live_last_event_at IS NULL AND {s}.last_activity_at IS NULL THEN 'unknown' \
-         WHEN {live} AND {s}.live_waiting_on IS NOT NULL THEN 'waiting' \
-         WHEN {live} AND {s}.live_last_event IN ('hook_stop', 'hook_notification') THEN 'idle' \
-         WHEN {live} THEN 'working' \
-         WHEN {s}.live_last_event IS NULL \
-              AND {s}.last_activity_at IS NOT NULL AND {now} - {grew} <= {w} THEN 'unknown' \
-         WHEN COALESCE({s}.live_last_event_at, {s}.last_activity_at) IS NOT NULL \
-              AND {now} - MAX(COALESCE({ev}, 0), COALESCE({grew}, 0)) <= {d} THEN 'stale' \
-         ELSE 'ended' END)"
-    )
+/// One part of session alias `s`'s live view at `now`, computed by
+/// [`polylogue_model::live::view`] through the `pl_live` SQL function:
+/// `state`, `until`, `since`, `waiting_on`, `stall`, `process_alive` or
+/// `rank`.
+pub fn live_part(s: &str, part: &str, now: i64) -> String {
+    format!("pl_live({s}.live_facts, {s}.last_activity_at, {now}, '{part}')")
 }
 
-/// When `s`'s live state changes with no new fact: the end of the live
-/// window or of the 24 hours after the last evidence; NULL when only a new
-/// fact can change it.
+/// The live state of session alias `s` at `now`.
+pub fn live_state(s: &str, now: i64) -> String {
+    live_part(s, "state", now)
+}
+
+/// When `s`'s live state or stall changes with no new evidence; NULL when
+/// only new evidence can change them.
 pub fn live_until(s: &str, now: i64) -> String {
-    let w = LIVE_WINDOW_MS;
-    let d = LIVE_DAY_MS;
-    let ev = format!("MIN({s}.live_last_event_at, {now})");
-    let grew = format!("MIN({s}.last_activity_at, {now})");
-    let last = format!("MAX(COALESCE({ev}, 0), COALESCE({grew}, 0))");
-    format!(
-        "(CASE {state} \
-         WHEN 'ended' THEN NULL \
-         WHEN 'stale' THEN {last} + {d} \
-         WHEN 'unknown' THEN {grew} + {w} \
-         ELSE {ev} + {w} END)",
-        state = live_state(s, now)
-    )
+    live_part(s, "until", now)
 }
 
 /// The value of a field over `a` at `now`.
@@ -759,40 +734,44 @@ fn sessions_running(a: &Aliases, now: i64) -> String {
     )
 }
 
+fn sessions_waiting_on(a: &Aliases, now: i64) -> String {
+    live_part(&a.s, "waiting_on", now)
+}
+
+fn sessions_stall(a: &Aliases, now: i64) -> String {
+    live_part(&a.s, "stall", now)
+}
+
+fn sessions_process_alive(a: &Aliases, now: i64) -> String {
+    live_part(&a.s, "process_alive", now)
+}
+
 fn sessions_live_until(a: &Aliases, now: i64) -> String {
     live_until(&a.s, now)
 }
 
-fn sessions_live_rank(a: &Aliases, now: i64) -> String {
-    format!(
-        "(CASE {} WHEN 'waiting' THEN 0 WHEN 'working' THEN 1 WHEN 'idle' THEN 2 \
-         WHEN 'unknown' THEN 3 WHEN 'stale' THEN 4 ELSE 5 END)",
-        live_state(&a.s, now)
-    )
+fn sessions_live_since(a: &Aliases, now: i64) -> String {
+    live_part(&a.s, "since", now)
 }
 
-/// Peers: the other sessions working, waiting or idle that
-/// share a repository, or, when either has no git evidence, a
-/// working directory where one lies at or below the other, by whole path
-/// components. Symmetric by construction.
+fn sessions_live_rank(a: &Aliases, now: i64) -> String {
+    live_part(&a.s, "rank", now)
+}
+
+/// Peers: the other sessions working, waiting or idle in the same
+/// repository (by its identity) or, when either has no repository
+/// identity, in the same working directory. Symmetric by construction.
 fn sessions_peers(a: &Aliases, now: i64) -> String {
     let s = &a.s;
     let active = |x: &str| format!("{} IN ('working', 'waiting', 'idle')", live_state(x, now));
-    let below = |outer: &str, inner: &str| {
-        format!(
-            "({inner}.cwd = rtrim({outer}.cwd, '/') OR substr({inner}.cwd, 1, length(rtrim({outer}.cwd, '/')) + 1) = rtrim({outer}.cwd, '/') || '/')"
-        )
-    };
     format!(
         "(SELECT group_concat(pe.id, ' ') FROM (SELECT pp.id FROM session pp WHERE pp.pk <> {s}.pk \
-         AND {mine} AND {theirs} AND ((pp.repo_root IS NOT NULL AND pp.repo_root = {s}.repo_root) \
-         OR ((pp.repo_root IS NULL OR {s}.repo_root IS NULL) \
-             AND pp.cwd IS NOT NULL AND {s}.cwd IS NOT NULL AND ({a_in_b} OR {b_in_a}))) \
+         AND pp.live_last_at IS NOT NULL AND {mine} AND {theirs} \
+         AND ((pp.repo_root IS NOT NULL AND pp.repo_root = {s}.repo_root) \
+         OR ((pp.repo_root IS NULL OR {s}.repo_root IS NULL) AND pp.cwd = {s}.cwd)) \
          ORDER BY pp.id) pe)",
         mine = active(s),
         theirs = active("pp"),
-        a_in_b = below(s, "pp"),
-        b_in_a = below("pp", s),
     )
 }
 

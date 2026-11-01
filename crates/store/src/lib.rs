@@ -32,6 +32,7 @@ mod fragment;
 pub mod input_rows;
 pub mod legacy_import;
 mod live;
+pub use live::LiveRoot;
 pub mod measure;
 mod ordered_blocks;
 pub mod primary;

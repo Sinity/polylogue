@@ -51,28 +51,22 @@ CREATE TABLE session (
   compaction_count INTEGER,
   tool_call_count INTEGER,
   error_count INTEGER,
-  -- Live facts: updated in the session's write transaction
-  -- when a hook line for it is written, so they follow data, not
-  -- the clock; the live state itself is computed at read time from these and now.
-  live_last_event   TEXT,                   -- type of the latest hook event
-  live_last_event_at INTEGER,
-  live_open_tool_pk INTEGER,                -- tool_call with a pre-tool event and no post-tool event yet
-  live_waiting_on   TEXT,                   -- permission | question | notification | NULL
-  live_waiting_since INTEGER,
-  live_todo         TEXT,                   -- the harness's in-progress todo item, as text (Claude Code: the last TodoWrite)
-  live_task         TEXT,                   -- job ID or Bead ID
-  live_task_evidence TEXT,                  -- job_env | claim_command
   changed           INTEGER NOT NULL,       -- write counter of the last change to its rows or derived values
                                             --   or derived products (not its live columns)
   live_reparse      INTEGER NOT NULL DEFAULT 0,
-  live_changed      INTEGER                 -- write counter value of the last change to its live columns
+  live_changed      INTEGER,                -- write counter value of the last change to its live columns
+  -- Live facts: the fold of the session's live evidence (hook, process and
+  -- registry lines), written in the transaction that stores each line; the
+  -- live state is computed at read time from these and now (`pl_live`).
+  live_facts TEXT,                          -- polylogue_model::live::LiveFacts as JSON
+  live_last_at INTEGER                      -- time of the latest folded evidence
 ) STRICT;
 CREATE INDEX session_activity ON session(last_activity_at);   -- default order, since:
 CREATE INDEX session_started  ON session(started_at);         -- started between, until:
 CREATE INDEX session_changed  ON session(changed);            -- change feed; derive step
 CREATE INDEX session_cwd      ON session(cwd);                -- cwd: prefix as a range; briefings; resume
 CREATE INDEX session_repo     ON session(repo) WHERE repo IS NOT NULL;
-CREATE INDEX session_live ON session(live_last_event_at) WHERE live_last_event_at IS NOT NULL;   -- running:, waiting:, the overview
+CREATE INDEX session_live ON session(live_last_at) WHERE live_last_at IS NOT NULL;   -- running:, waiting:, the overview
 CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL;   -- repo: by identity
 
 CREATE TABLE message (
@@ -753,3 +747,34 @@ CREATE TABLE tool_database (
     length INTEGER NOT NULL,
     schema TEXT NOT NULL
 );
+
+-- Closed intervals of a session's activity, wait or stall, folded from its
+-- live evidence; an interval stays open (in the session's live facts) until
+-- evidence closes it.
+CREATE TABLE live_interval (
+  session_pk INTEGER NOT NULL REFERENCES session(pk),
+  aspect     TEXT NOT NULL,                 -- activity | waiting_on | stall
+  value      TEXT NOT NULL,
+  start_at   INTEGER NOT NULL,
+  end_at     INTEGER NOT NULL,
+  closed_by  TEXT NOT NULL,                 -- the kind of the evidence that closed it
+  PRIMARY KEY (session_pk, aspect, start_at)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX live_interval_end ON live_interval(end_at);
+
+-- Processes of live sessions from the process watcher's lines: the harness
+-- root and its descendants, one row per process identity.
+CREATE TABLE process (
+  session_pk INTEGER NOT NULL REFERENCES session(pk),
+  boot_id    TEXT NOT NULL,
+  pid        INTEGER NOT NULL,
+  start      INTEGER NOT NULL,              -- clock ticks after boot (field 22 of /proc/<pid>/stat)
+  parent_pid INTEGER,
+  comm       TEXT,
+  argv       TEXT,                          -- JSON array
+  cwd        TEXT,
+  started_at INTEGER,
+  ended_at   INTEGER,
+  role       TEXT NOT NULL,                 -- harness | child
+  PRIMARY KEY (session_pk, boot_id, pid, start)
+) STRICT, WITHOUT ROWID;

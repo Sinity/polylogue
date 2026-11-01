@@ -17,6 +17,12 @@
 //! an export provides it, its events wait on a placeholder that reads do
 //! not show, and a transcript a payload carries is not read.
 //!
+//! The daemon's process watcher and harness registry readers write lines of
+//! the same shape under `process/` and `registry/`, with `route` naming
+//! them; their events are `process_<event>` and `registry_<event>` instead
+//! of `hook_<event>`, and together with hook events they are a session's
+//! live evidence (`polylogue_model::live`).
+//!
 //! An event is one hook invocation. The producer gives each invocation its
 //! own `event_id`, so equal payloads and timestamps still name two events.
 //! That ID, the line's time and its process stay in its data; storing the
@@ -46,6 +52,7 @@ const ENVELOPE_FIELDS: &[&str] = &[
     "event_id",
     "at_ns",
     "harness_pid",
+    "harness_start",
     "git_identity",
     "terminal_identity",
     "repository",
@@ -84,6 +91,8 @@ pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/*.jsonl",
     "polylogue/hooks/carriers/*/*/*.ndjson",
     "polylogue/hooks/*.ndjson",
+    "polylogue/hooks/process/*.ndjson",
+    "polylogue/hooks/registry/*.ndjson",
 ];
 
 fn is_spool_file(path: &Path) -> bool {
@@ -113,6 +122,8 @@ static FIELDS: Fields = Fields::new(&[
     ("event", Rule::Read(T::String)),
     ("at_ns", Rule::Read(T::Number)),
     ("harness_pid", Rule::Read(T::Number)),
+    ("harness_start", Rule::Read(T::Number)),
+    ("route", Rule::Read(T::String)),
     ("observed_at_ms", Rule::Read(T::Number)),
     ("timestamp", Rule::Read(T::StringOrNumber)),
     ("provider", Rule::Read(T::String)),
@@ -140,6 +151,20 @@ static FIELDS: Fields = Fields::new(&[
 
 /// `PreToolUse` → `hook_pre_tool_use`.
 fn event_kind(event_type: &str) -> String {
+    routed_kind(polylogue_model::live::HOOK_PREFIX, event_type)
+}
+
+/// The event kind of a line of `route`, or `None` for an unknown route.
+fn route_prefix(route: Option<&str>) -> Option<&'static str> {
+    match route {
+        None | Some("hook") => Some(polylogue_model::live::HOOK_PREFIX),
+        Some("process") => Some(polylogue_model::live::PROCESS_PREFIX),
+        Some("registry") => Some(polylogue_model::live::REGISTRY_PREFIX),
+        Some(_) => None,
+    }
+}
+
+fn routed_kind(prefix: &str, event_type: &str) -> String {
     let mut snake = String::new();
     for c in event_type.chars() {
         if c.is_ascii_uppercase() {
@@ -153,7 +178,7 @@ fn event_kind(event_type: &str) -> String {
             snake.push(c);
         }
     }
-    format!("hook_{snake}")
+    format!("{prefix}{snake}")
 }
 
 impl Parser for HookSpool {
@@ -182,6 +207,9 @@ impl Parser for HookSpool {
         };
         // The hook command's lines from before it named the harness are
         // Claude Code's.
+        let Some(prefix) = route_prefix(str_of(value, "route")) else {
+            return RecordOutcome::unreadable("unknown route");
+        };
         let provider = match str_of(value, "provider") {
             Some(p) => p,
             None if value.get("at_ns").is_some() => "claude-code",
@@ -222,7 +250,7 @@ impl Parser for HookSpool {
             let (at, time_evidence) = crate::time::parts(at);
             Event {
                 session: Some(sid),
-                kind: event_kind(event_type),
+                kind: routed_kind(prefix, event_type),
                 at,
                 at_quality: time_evidence.quality,
                 at_precision: time_evidence.precision,

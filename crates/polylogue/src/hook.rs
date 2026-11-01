@@ -4,13 +4,15 @@
 //!
 //! Every event is appended as one line to the hook spool file of the calling
 //! harness process, with `O_APPEND` and no fsync, naming the harness's
-//! origin and session; the daemon reads those files like any other growing
-//! file. Some events also ask the daemon for context:
+//! origin and session and the harness process's identity (pid, start time
+//! and boot), which the live fold uses as the session's root process; the
+//! daemon reads those files like any other growing file. Some events also
+//! ask the daemon for context:
 //!
 //! - the session's start (`SessionStart`; Hermes: `pre_llm_call` on its
-//!   first turn): the session-start brief, injected by default; the
-//!   `briefing.session_start` setting turns it off. After compaction it
-//!   carries every prompt the operator typed in the session.
+//!   first turn): the session-start brief. Removing the hooks is the only
+//!   off switch. After compaction it carries every prompt the operator
+//!   typed in the session.
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
 //!   or supported web link pasted into it brings that session's takeover context.
 //!
@@ -34,10 +36,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// How long a hook that brings context waits for the daemon: a brief
-/// during a first build over a large archive takes a few seconds. The
-/// harnesses' hook timeouts are longer.
-const CONTEXT_BUDGET: Duration = Duration::from_secs(8);
+/// How long a hook that brings context waits for the daemon. A brief the
+/// daemon cannot prepare in time is recorded `not_sent:timeout` and the
+/// harness carries on without it.
+const CONTEXT_BUDGET: Duration = Duration::from_millis(300);
 
 /// A harness that calls the hook command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +152,7 @@ fn append_record(
         "at_ns": ns.to_string(),
         "event": event,
         "harness_pid": process,
+        "harness_start": crate::live_evidence::identity(process).map(|i| i.start),
         "provider": harness.origin(),
         "payload": payload,
     });

@@ -326,15 +326,20 @@ fn apply_rows(
             .as_ref()
             .map(|id| rows.session_pk(&mut sessions, id))
             .transpose()?;
-        if let Some(session_pk) = session_pk.filter(|_| e.kind.starts_with("hook_")) {
-            tx.prepare_cached(
-                "UPDATE session SET live_reparse=1 WHERE pk=?1 AND ?2<=live_last_event_at",
-            )?
-            .execute(params![session_pk, ms(e.at)])?;
+        if let Some(session_pk) =
+            session_pk.filter(|_| polylogue_model::live::is_evidence(&e.kind))
+        {
             // Prepared events release their JSON payload before writing. Live
             // facts must read the same payload as the stored event.
-            let event = choices.live_events[i].clone();
-            crate::live::apply(tx, session_pk, &event, counter)?;
+            let event = &choices.live_events[i];
+            crate::live::apply(
+                tx,
+                session_pk,
+                &event.kind,
+                event.at.map(|t| t.unix_ms()),
+                &event.data,
+                counter,
+            )?;
         }
     }
     for u in &p.output.background {

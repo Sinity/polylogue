@@ -216,43 +216,54 @@ Ruling, 2026-10-18: "CLAUDE/AGENTS/skills -- yes … almost defintely we do want
 
 ## Live sessions
 
-Live state is computed at read time from stored facts and `now`. Nothing live is kept only in memory, so a rebuild reproduces every past live state. It rests on evidence only (a process alive, a harness event), never on text.
+Live state is computed at read time from stored facts and `now`. Nothing live is kept only in memory, so a rebuild reproduces every past live state. It rests on evidence only (a process alive, a harness event, the harness's own registry), never on text.
+
+**Live evidence** arrives by three routes, each a captured input in the hook spool: `hook` (the hook command's lines), `process` (the daemon's process watcher, below) and `registry` (harness registries: Claude Code's `sessions/<pid>.json`, one line per change, the file kept whole). Each line becomes an event on its session (`hook_*`, `process_*`, `registry_*`).
+
+**The live fold.** Each session's live facts are the fold of its live evidence in (time, line) order, written in the transaction that stores each line: the root process, its exit, the hook-derived activity (`working`, `idle`, `waiting`) and wait (`permission`, `question`, `plan`, `input`), the harness registry's own status word, the open tool call, a stall the evidence states, open subagents, the footprint, the task and the in-progress todo text. A line older than what the session has already folded makes the session fold again from all its stored lines, so arrival order never changes the result.
 
 **Live state**, the first rule that applies:
 
 | State | Rule | Evidence shown |
 |---|---|---|
-| `ended` | last hook event is `SessionEnd`, or the root process is gone after a `Stop` | the event or process line |
-| `stale` | root process gone with no `SessionEnd` (killed, crashed, rebooted) | "process gone at T, no end event" |
-| `waiting` | root alive (or no process evidence) and waiting on the operator: a `PermissionRequest` or `Notification` with nothing after it; a `Stop` whose turn ended with a question; a Codex approval request with no decision | what it waits for, since when |
-| `working` | root alive, and an open tool call, or a hook event or transcript growth in the last 2 minutes | the open tool or last event |
-| `idle` | root alive, last event `Stop`, nothing waiting | since when |
-| `unknown` | no hook lines and no process evidence; the file grew in the last 15 minutes | "inferred from file growth" |
+| `ended` | a `SessionEnd`, or the root process gone after a `Stop` | the event or process line |
+| `stale` | root process gone with no `SessionEnd` (killed, crashed, rebooted); or, with no process evidence, no hook evidence for 15 minutes | "process gone at T, no end event" |
+| `waiting` | waiting on the operator: a `PermissionRequest` or a permission or elicitation notification with nothing after it; an `AskUserQuestion` or `ExitPlanMode` call open; a `Stop` whose turn ended with a question (`ending: question`); the registry says `blocked` | what it waits for, since when |
+| `working` | a turn in progress: a prompt, a tool call or a subagent after the last stop; or the registry says `busy` | the open tool or last event |
+| `idle` | the last turn stopped, nothing waiting; or the registry says `idle` | since when |
+| `unknown` | no live evidence, and the transcript grew in the last 15 minutes or no time is recorded | "inferred from file growth" |
 
-A subagent's live state is its parent's process plus its own `SubagentStart`/`SubagentStop`. Query fields on sessions: `live`, `running` (`live` in `working`, `waiting`, `idle`, `unknown`), `waiting_on`, `peers_live`, `task`, `process_alive`.
+- **The registry outranks hook inference**: when the harness's own word (`busy`, `idle`, `blocked`; Codex `active`, `idle`, `waitingOnApproval`, `waitingOnUserInput`) states an activity, that is the state shown, with the hook evidence kept beside it.
+- **Without process evidence** (lines from before hook lines carried the process identity), hook evidence holds for 15 minutes after the last line; afterwards the session is `stale`. With a known root process, no passage of time changes the state; only evidence does.
+- **Stalls** are waits on something other than the operator: `rate_limit` and `api_error` (a `StopFailure`, by its error type), `long_call` (a tool call open for 30 minutes), `queue`. A stall is shown with the state and never counts as waiting.
+- `live_until` is the next instant at which the state or stall changes with no new evidence; empty when only evidence can change them.
 
-**Process identity.** Each hook line carries the harness's process identity: its pid, its start time (field 22 of `/proc/<pid>/stat`) and the boot ID. Pid reuse and reboots never make a new process inherit an old session, and a control never acts on a pid whose start time or boot differs.
+A subagent's live state is its parent's process plus its own `SubagentStart`/`SubagentStop`. Query fields on sessions: `live`, `running` (`live` in `working`, `waiting`, `idle`, `unknown`), `waiting`, `waiting_on`, `stall`, `process_alive`, `harness_status`, `open_tool`, `footprint`, `task`, `todo`, `live_since`, `live_until`, `last_event_at`, `live_rank`, `peers`.
 
-**The sampler.**
-- The daemon keeps the set of **live roots**: process identities from hook lines of the last 24 hours whose process still exists with the same start time.
-- Every 10 seconds while any root is live (with none, nothing runs), it reads each root's descendants and writes only the differences to the process spool, `procs/<UTC date>.ndjson`: `started` (pid, ppid, start, `comm`, `argv`, `cwd`), `ended`, `root_gone`. At daemon start, a new boot ID writes `root_gone` for every root of the previous boot, at the boot time.
-- Its cost is proportional to live roots and changes: a sample with no change writes nothing.
-- Only descendants of harness processes are read; `argv` and `cwd` are stored; `environ` is never read.
-- The process spool is a captured input like the hook spool.
-- **`processes` rows:** session, identity, parent pid, `comm`, `argv`, `cwd`, `started_at`, `ended_at`, `role` (`harness` or `child`), linked tool call. A child links to a tool call only when the harness is its ancestor and its start falls between that call's pre-tool and post-tool hook events, never by command text.
+**Live intervals.** The fold also closes intervals of each session's activity, wait and stall: `(session, aspect, value, start, end, closing evidence)`, kept in `live_interval`. They depend only on evidence: an interval stays open until evidence closes it, and a rebuild gives the same intervals.
 
-**Peers** are other sessions whose live state is `working`, `waiting` or `idle` in the same repository (same Git common directory) or worktree. Peers are a query, symmetric at any `now`.
+**Process identity.** Each hook line carries the harness's process identity: its pid, its start time (field 22 of `/proc/<pid>/stat`, `harness_start`) and the boot ID. A process or registry line whose pid matches but whose start time or boot differs never attaches to the session, and a control never acts on a pid whose start time or boot differs.
 
-**Task.** A session's live task is the latest claim established by explicit structured task evidence that names the tracker item and the claiming session, with no later explicit close or release. The linkage records the evidence and the field that established it. A command's name or arguments, including a tracker's exact claim command, establish no task state. A tracker ID mentioned in prose stays a reference. The harness's in-progress todo item is shown as text, never as a task. Without explicit task evidence, the session has no live task.
+**The process watcher.**
+- Its **roots** are the root processes that sessions' evidence says are alive. Each root gets a pidfd; its exit writes `RootGone` at once. A root already gone when first seen is written gone then; a root of an earlier boot is written gone at that boot's end.
+- **Descendants** are read from `/proc/<pid>/task/*/children`, every second while the session has an open tool call and every 15 seconds otherwise; only differences are written to the process spool (`process/<boot>.ndjson`): `Started` (pid, parent pid, start, `comm`, `argv`, `cwd`, role), `Ended`, `RootGone`.
+- With no roots nothing under `/proc` is read; a sample with no change writes nothing; `environ` is never read.
+- **`processes` rows:** session, identity, parent pid, `comm`, `argv`, `cwd`, `started_at`, `ended_at`, `role` (`harness` or `child`).
+
+**Peers** are other sessions whose live state is `working`, `waiting` or `idle` in the same repository (by its identity) or, when either has no repository identity, the same working directory. Peers are a query, symmetric at any `now`.
+
+**Footprint.** Per live session, the files it changed through structured edit tools (Claude Code `Edit`, `Write`, `MultiEdit`, `NotebookEdit`; Gemini CLI `write_file`, `replace`; the file headers of Codex's `apply_patch`), from the finished call's structured input. Shell commands contribute nothing. The footprint is cleared at the session's end and when its root process exits.
+
+**Task.** A session's live task is set only by explicit structured task evidence: a hook line `TaskClaimed` with `{"task": ID}` sent for the session (`polylogue hook TaskClaimed`), cleared by `TaskReleased` naming the same task. A command's name or arguments, including a tracker's exact claim command, establish no task state. A tracker ID mentioned in prose stays a reference. The harness's in-progress todo item is shown as text (`todo`), never as a task.
 
 **Surfaces.**
-- The live list is the shipped saved query `query:running` (short ID, state, since, repository and worktree, model, open tool or todo, cost so far, task), waiting first.
+- `polylogue live` lists sessions that have not ended, waiting first (`sessions where -live:ended | sort by live_rank, last_event_at desc`); `polylogue waiting` lists what waits on the operator, the longest wait first (`sessions where waiting:true | sort by live_since`).
 - `polylogue QUERY follow` prints a line per new message or tool call and per live-state change (`→ waiting: permission for Bash`).
-- `read --view live` shows the process tree: harness, children with argv and age, linked tool calls.
-- MCP `status` lists running sessions, waiting first.
+- `read --view live` shows the process tree: harness, children with argv and age.
+- The brief's other-agents section lists each live session here with its state, wait, directory, task and the number of uncommitted edits.
 - Live-state changes are session changes on the change feed, so followers see `waiting` without polling.
 
-**Latency:** from a hook line or transcript append to the change being visible in `follow`, `query:running` and an open web view: 1 s p95, warm.
+**Latency:** from a hook line or transcript append to the change being visible in `follow`, the live list and an open web view: 1 s p95, warm.
 
 ## Live-session control
 
@@ -349,9 +360,15 @@ Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that recor
 - **mcp-detail-on-demand**: `explain capabilities` gives each row's tool, complete argument schema, unlisted arguments and answer schema, and the answer envelope's schema once.
 - **live-state-reproducible**: live state is a function of stored inputs and `now`; after a rebuild every session has the same state at the same `now`.
 - **live-state-rules**: a fixture Claude session with a `permission_prompt` notification and nothing after it is `waiting` with `waiting_on: permission`; after `root_gone` without `SessionEnd` it is `stale`; after `SessionEnd`, `ended`.
-- **sampler-proportional**: a sample with no process change writes nothing; with no live roots no sample runs; `environ` is never opened (syscall trace).
-- **process-identity-not-reused**: a process line with the same pid but a different start time or boot ID never attaches to the earlier session.
-- **child-linked-by-interval**: a child process whose start falls between a tool call's pre and post hook events links to it; one outside stays unlinked.
+- **pl.live.fold**: folding a session's live evidence line by line through its stored facts equals folding it at once; the stored facts equal the fold over the stored lines after a refold.
+- **pl.live.state-total**: the live view is total, returns `until`, and is constant between `until` instants with no new evidence.
+- **pl.live.wait-not-stall**: a `StopFailure` rate-limit stop is a stall, never waiting.
+- **pl.live.registry-outranks**: a registry `busy` with hook-derived `idle` shows `working`, both kept in the facts.
+- **pl.live.no-text-state**: no live fact, footprint path or task comes from prose or shell-command text; a `bash` call `sed -i x file` adds nothing to the footprint, an `Edit` of `file` does.
+- **pl.live.intervals-replay**: intervals close only on evidence and a refold gives the same bytes.
+- **pl.live.root-gone-prompt**: a root's exit is seen through its pidfd within 100 ms.
+- **pl.live.sampler-proportional**: a sample with no process change writes nothing; with no live roots nothing under `/proc` is read.
+- **pl.live.pid-reuse**: a process or registry line with the same pid but a different start time or boot ID never attaches to the earlier session.
 - **peers-symmetric**: peers are symmetric at a given `now`.
 - **task-from-explicit-evidence**: a tracker ID in a prompt or an exact tracker claim command creates no task; explicit structured evidence naming the item and claiming session does, and later explicit close or release evidence clears it.
 - **ping-to-working-at-next-hook**: a ping to a working fixture session is injected at its next `PostToolUse` and never earlier.

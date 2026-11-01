@@ -1,9 +1,7 @@
 //! Session links from tool calls, found by their structure: the commits and
 //! pull requests a session's commands made (from the output of `git commit` and
-//! `gh pr create`), and the session's live task, its latest Bead claim that is
-//! still open. A Bead is claimed only by a successful `bd update <id> --claim`
-//! (or `--status in_progress`) and ends at a successful `bd close` or release in
-//! the same session; an ID mentioned in a prompt or a message never makes a claim.
+//! `gh pr create`). A session's live task never comes from here: a command's
+//! name or arguments establish no task (`polylogue_model::live`).
 
 use crate::Result;
 use crate::encoding::{unpack_block, unpack_text};
@@ -15,86 +13,15 @@ pub(crate) const DERIVATION: super::Derivation = super::Derivation {
     name: "links",
     // Bumped when the rules change; every session is derived again.
     products: &[],
-    version: super::Version::Rules(1),
+    version: super::Version::Rules(2),
     // Reads tool calls' commands and outcomes.
     after: &["tool_calls"],
     run: |tx, session_pk, _| derive_session(tx, session_pk),
     finish: None,
 };
 
-/// What a successful `bd` stage does to the Beads it names.
-enum BeadChange {
-    Claim,
-    Close,
-    Release,
-}
-
-fn bead_change(stage: &Stage) -> Option<(BeadChange, Vec<String>)> {
-    if stage.program != "bd" {
-        return None;
-    }
-    let sub = stage.subcommand()?;
-    let ops = stage.operands();
-    let mut ids = Vec::new();
-    let mut status: Option<&str> = None;
-    let mut claim = false;
-    let mut it = ops.iter();
-    while let Some(a) = it.next() {
-        if let Some(v) = a
-            .strip_prefix("--status=")
-            .or_else(|| a.strip_prefix("-s="))
-        {
-            status = Some(v);
-        } else if a == "--status" || a == "-s" {
-            status = it.next().map(String::as_str);
-        } else if a == "--claim" {
-            claim = true;
-        } else if a.starts_with('-') {
-            // Options with values this rule does not need are skipped with
-            // their value when they take one.
-            if matches!(
-                a.as_str(),
-                "--actor"
-                    | "--reason"
-                    | "-r"
-                    | "--assignee"
-                    | "-a"
-                    | "--notes"
-                    | "--title"
-                    | "-t"
-                    | "--description"
-                    | "-d"
-                    | "--priority"
-                    | "-p"
-                    | "--append-notes"
-                    | "--parent"
-                    | "--body-file"
-                    | "--design-file"
-                    | "--acceptance"
-                    | "-l"
-                    | "--label"
-            ) {
-                it.next();
-            }
-        } else {
-            ids.push(a.clone());
-        }
-    }
-    if ids.is_empty() {
-        return None;
-    }
-    let change = match sub {
-        "close" => BeadChange::Close,
-        "update" if claim || status == Some("in_progress") => BeadChange::Claim,
-        "update" if matches!(status, Some("open" | "blocked" | "deferred")) => BeadChange::Release,
-        "reopen" => BeadChange::Release,
-        _ => return None,
-    };
-    Some((change, ids))
-}
-
 /// The stored output of a call. Only commands that make a commit or pull
-/// request read it; claims use the recorded command and outcome alone.
+/// request read it.
 fn result(tx: &Transaction<'_>, call_pk: i64) -> Result<Option<String>> {
     let (text, body): (Option<Vec<u8>>, Option<Vec<u8>>) = tx
         .prepare_cached(
@@ -155,8 +82,6 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    // Beads claimed and not yet closed or released, in claim order.
-    let mut open: Vec<String> = Vec::new();
     for (call_pk, command) in calls {
         let stages = effective_stages(&command);
         let output = if stages.iter().any(makes_artifact) {
@@ -165,14 +90,6 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
             None
         };
         for stage in &stages {
-            if let Some((change, ids)) = bead_change(stage) {
-                for id in ids {
-                    open.retain(|held| *held != id);
-                    if matches!(change, BeadChange::Claim) {
-                        open.push(id);
-                    }
-                }
-            }
             match (stage.program.as_str(), stage.subcommand()) {
                 ("git", Some("commit")) => {
                     for hash in committed(output.as_deref().unwrap_or("")) {
@@ -196,13 +113,6 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
             }
         }
     }
-    let task = open.last();
-    tx.prepare_cached(
-        "UPDATE session SET live_task = ?2,
-             live_task_evidence = CASE WHEN ?2 IS NULL THEN NULL ELSE 'claim_command' END
-         WHERE pk = ?1",
-    )?
-    .execute(params![session_pk, task])?;
     Ok(())
 }
 

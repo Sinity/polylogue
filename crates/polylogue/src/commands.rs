@@ -306,6 +306,8 @@ impl Caller {
 
 /// The live view as a query: what `polylogue live` runs.
 pub const LIVE: &str = "sessions where -live:ended | sort by live_rank, last_event_at desc";
+/// Sessions waiting on the operator, the longest wait first.
+pub const WAITING: &str = "sessions where waiting:true | sort by live_since";
 /// Signal notices as a query: what `polylogue notices` runs.
 pub const NOTICES: &str = "deliveries where sender:signal | sort by at desc";
 
@@ -997,6 +999,16 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Read,
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::live),
+        print: print::query,
+        ..CLI
+    }),
+    typed_command!(WaitingOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
+        name: "waiting",
+        help: "Sessions waiting on you (a permission, a question, a plan or input), the longest wait first: the query `sessions where waiting:true | sort by live_since`",
+        reason: "Show what blocks an agent now",
+        latency: command_surface::LatencyClass::Read,
+        args: &[WHY, CURSOR, FIELDS],
+        action: Action::Request(requests::waiting),
         print: print::query,
         ..CLI
     }),

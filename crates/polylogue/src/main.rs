@@ -15,6 +15,7 @@ mod demo;
 mod embeddings;
 mod explain;
 mod hook;
+mod live_evidence;
 mod manual;
 mod mcp;
 mod operation;

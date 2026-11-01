@@ -1,6 +1,6 @@
 //! The daemon request each command sends, built from its checked values.
 
-use super::{Caller, Command, LIVE, NOTICES, Values};
+use super::{Caller, Command, LIVE, NOTICES, Values, WAITING};
 use crate::briefing::{Ask, StartSource};
 use crate::browser::actions::{ChatFile, ChatRequest};
 use crate::daemon::Request;
@@ -324,6 +324,10 @@ pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
 
 pub fn live(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(LIVE.into(), None, v))
+}
+
+pub fn waiting(_: &Command, v: &Values, _: &Caller) -> Built {
+    Ok(query_request(WAITING.into(), None, v))
 }
 
 pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {

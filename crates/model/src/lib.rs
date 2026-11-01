@@ -27,6 +27,7 @@ pub mod export;
 pub mod historical;
 mod id;
 pub mod injection;
+pub mod live;
 pub mod native;
 pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;

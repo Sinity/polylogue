@@ -429,6 +429,10 @@ fn live_here(
         "id".to_owned(),
         "title".to_owned(),
         "live".to_owned(),
+        "waiting_on".to_owned(),
+        "cwd".to_owned(),
+        "task".to_owned(),
+        "footprint".to_owned(),
         "todo".to_owned(),
         "last_event_at".to_owned(),
     ];
@@ -466,6 +470,22 @@ fn live_here(
                 "- {id}  {title}: {}",
                 row["live"].as_str().unwrap_or("unknown")
             );
+            if let Some(on) = row["waiting_on"].as_str() {
+                let _ = write!(line, " ({on})");
+            }
+            if let Some(cwd) = row["cwd"].as_str() {
+                let _ = write!(line, ", in {cwd}");
+            }
+            if let Some(task) = row["task"].as_str() {
+                let _ = write!(line, ", task {task}");
+            }
+            if let Some(files) = row["footprint"].as_str() {
+                let _ = write!(
+                    line,
+                    ", uncommitted edits to {}",
+                    files.lines().count()
+                );
+            }
             if let Some(todo) = row["todo"].as_str() {
                 let _ = write!(line, ", doing \"{}\"", one_line(todo, 100));
             }

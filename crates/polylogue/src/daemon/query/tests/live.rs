@@ -100,9 +100,13 @@ fn st(s: &str, state: &str, until: Option<i64>) -> (String, String, Option<i64>)
     (s.to_owned(), state.to_owned(), until)
 }
 
+/// law: live-state-reproducible
 #[test]
 fn live_state_is_a_function_of_stored_facts_and_the_time() {
-    // Live state on hook evidence alone (no process lines).
+    // Live state on hook evidence alone (no process lines). Without
+    // process evidence, hook evidence holds for the live window and the
+    // session is stale afterwards; no time rule ends it (live-sessions
+    // design §8: "Time-only inference survives only as the `unknown` row").
     let mut w = WriterArchive::new();
     hooks(
         &mut w,
@@ -131,7 +135,7 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
         vec![
             st("v1", "waiting", Some(56)),
             st("v2", "working", Some(70)),
-            st("v3", "stale", Some(20 + 24 * 60)),
+            st("v3", "stale", None),
         ]
     );
     // Asking twice at different times with no write between gives the
@@ -139,9 +143,9 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
     assert_eq!(
         states(&w, 60),
         vec![
-            st("v1", "stale", Some(41 + 24 * 60)),
+            st("v1", "stale", None),
             st("v2", "working", Some(70)),
-            st("v3", "stale", Some(20 + 24 * 60)),
+            st("v3", "stale", None),
         ]
     );
     // A Stop makes it idle; a SessionEnd ends it for good.
@@ -152,11 +156,14 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
     // A line applied late (older than the stored one) changes nothing.
     hooks(&mut w, &[("v2", "pre_tool_use", 58, json!({}))]);
     assert_eq!(states(&w, 64)[1], st("v2", "ended", None));
-    // A day after the last evidence, everything has ended.
-    assert!(
-        states(&w, 26 * 60)
-            .iter()
-            .all(|(_, s, u)| s == "ended" && u.is_none())
+    // A day later nothing has changed: only evidence ends a session.
+    assert_eq!(
+        states(&w, 26 * 60),
+        vec![
+            st("v1", "stale", None),
+            st("v2", "ended", None),
+            st("v3", "stale", None),
+        ]
     );
 }
 
@@ -191,7 +198,9 @@ fn a_wait_ends_with_the_next_event_and_an_idle_notice_is_not_a_wait() {
 #[test]
 fn live_state_is_total_for_sessions_without_hooks() {
     // Historical sessions with no hook or process evidence have
-    // ended; one whose transcript grew within the window is `unknown`.
+    // ended; one whose transcript grew within the window is `unknown`, and
+    // ended once the window has passed (live-sessions design §8: "Time-only
+    // inference survives only as the `unknown` row").
     use polylogue_store::fixture::{Fixture, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
@@ -223,7 +232,7 @@ fn live_state_is_total_for_sessions_without_hooks() {
     assert_eq!(
         at(60),
         vec![
-            json!({"id": "new", "live": "stale"}),
+            json!({"id": "new", "live": "ended"}),
             json!({"id": "old", "live": "ended"})
         ]
     );
@@ -236,6 +245,7 @@ fn live_state_is_total_for_sessions_without_hooks() {
     );
 }
 
+/// law: peers-symmetric
 #[test]
 fn peers_are_symmetric() {
     // Peers are symmetric, through the live query.
@@ -246,14 +256,8 @@ fn peers_are_symmetric() {
     // (id, latest event, waiting on, repo_root, cwd)
     let rows = [
         ("a", "hook_pre_tool_use", None, None, "/src/tide"),
-        (
-            "b",
-            "hook_notification",
-            Some("permission"),
-            None,
-            "/src/tide/web",
-        ),
-        ("c", "hook_stop", None, None, "/src/tidepool"),
+        ("b", "hook_notification", Some("permission"), None, "/src/tide"),
+        ("c", "hook_stop", None, None, "/src/tide/web"),
         ("d", "hook_pre_tool_use", None, Some("r1"), "/x"),
         ("e", "hook_stop", None, Some("r1"), "/y"),
         ("f", "hook_stop", None, Some("r1"), "/y"),
@@ -305,7 +309,7 @@ fn peers_are_symmetric() {
     assert_eq!(peers["b"], ["a"]);
     assert!(
         peers["c"].is_empty(),
-        "/src/tide and /src/tidepool are not peers"
+        "a directory below another with no repository identity is not the same worktree"
     );
     assert_eq!(peers["d"], ["e"]);
     assert!(peers["f"].is_empty(), "an ended session has no peers");

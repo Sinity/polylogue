@@ -1523,6 +1523,8 @@ pub struct Runtime {
     signals: Option<JoinHandle<()>>,
     counts_stop: Option<Sender<()>>,
     counts: Option<JoinHandle<()>>,
+    live_evidence_stop: Option<Sender<()>>,
+    live_evidence: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
@@ -1587,6 +1589,13 @@ impl Runtime {
         if self.counts.as_ref().is_some_and(JoinHandle::is_finished) {
             return Some("count worker terminated");
         }
+        if self
+            .live_evidence
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            return Some("live evidence worker terminated");
+        }
         self.completion
             .as_ref()
             .and_then(|worker| worker.worker_failure())
@@ -1612,6 +1621,14 @@ impl Runtime {
             && counts.join().is_err()
         {
             failure.get_or_insert_with(|| std::io::Error::other("count worker panicked"));
+        }
+        if let Some(stop) = self.live_evidence_stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(worker) = self.live_evidence.take()
+            && worker.join().is_err()
+        {
+            failure.get_or_insert_with(|| std::io::Error::other("live evidence worker panicked"));
         }
         if let Some(signals) = self.signals.take()
             && signals.join().is_err()
@@ -1832,6 +1849,8 @@ pub fn start(
         signals: None,
         counts_stop: None,
         counts: None,
+        live_evidence_stop: None,
+        live_evidence: None,
         completion: None,
         completion_scope: Some(completion_scope),
         engine: None,
@@ -1926,6 +1945,29 @@ pub fn start(
                     None,
                 );
                 daemon.warm.count_worker(&daemon.reads, &stopped)
+            })?,
+    );
+    let (stop, stopped) = channel();
+    runtime.live_evidence_stop = Some(stop);
+    let daemon = Arc::clone(&runtime.daemon);
+    let worker_events = runtime.worker_events.clone();
+    let paths = crate::live_evidence::Paths {
+        spool: settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
+        claude_sessions: polylogue_sources::origin::by_name("claude-code")
+            .map(|origin| settings.root(origin.root).join("sessions"))
+            .unwrap_or_default(),
+    };
+    let clock = settings.clock.clone();
+    runtime.live_evidence = Some(
+        std::thread::Builder::new()
+            .name("polylogue-live".into())
+            .spawn(move || {
+                let _exit = super::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "live evidence worker terminated",
+                    None,
+                );
+                crate::live_evidence::run(daemon, paths, clock, stopped)
             })?,
     );
     // Load the vectors `similar:` ranks by before the first query needs them.

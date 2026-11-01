@@ -11,6 +11,9 @@
 //! - `pl_random(text_key, decimal_seed)`: a seeded integer order value;
 //! - `pl_day(ms)`, `pl_week(ms)`, `pl_month(ms)`: the
 //!   logical date, ISO week or month label of an instant;
+//! - `pl_live(live_facts, grew_at, now, part)`: one part of a session's live
+//!   view at `now` ([`polylogue_model::live::view`]): `state`, `until`,
+//!   `since`, `waiting_on`, `stall`, `process_alive` or `rank`;
 //! - `pl_similarity(text_hash)`: the text's similarity to the query text of
 //!   a `near:` ranking ([`with_similarity`]), NULL for a text with no
 //!   vector or outside such a query.
@@ -28,6 +31,35 @@ const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQL
 
 pub fn register(conn: &Connection) -> rusqlite::Result<()> {
     temporal::register(conn)?;
+    conn.create_scalar_function("pl_live", 4, FLAGS, |ctx| {
+        use polylogue_model::live::{LiveFacts, view};
+        use rusqlite::types::Value;
+        let facts: Option<LiveFacts> = ctx
+            .get::<Option<String>>(0)?
+            .map(|text| serde_json::from_str(&text))
+            .transpose()
+            .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+        let grew_at: Option<i64> = ctx.get(1)?;
+        let now: i64 = ctx.get(2)?;
+        let part: String = ctx.get(3)?;
+        let v = view(facts.as_ref(), grew_at, now);
+        let text = |t: Option<&'static str>| t.map_or(Value::Null, |t| Value::Text(t.into()));
+        let int = |n: Option<i64>| n.map_or(Value::Null, Value::Integer);
+        Ok(match part.as_str() {
+            "state" => text(Some(v.state.as_str())),
+            "until" => int(v.until),
+            "since" => int(v.since),
+            "waiting_on" => text(v.waiting_on.map(|w| w.as_str())),
+            "stall" => text(v.stall.map(|s| s.as_str())),
+            "process_alive" => int(v.process_alive.map(i64::from)),
+            "rank" => Value::Integer(i64::from(v.state.rank())),
+            other => {
+                return Err(rusqlite::Error::UserFunctionError(
+                    format!("pl_live has no part {other:?}").into(),
+                ));
+            }
+        })
+    })?;
     conn.create_scalar_function("pl_assertion_ref", 2, FLAGS, |ctx| {
         let root: String = ctx.get(0)?;
         let id: String = ctx.get(1)?;

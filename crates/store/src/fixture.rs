@@ -143,22 +143,34 @@ impl Fixture {
         Ok(self.index.last_insert_rowid())
     }
 
-    /// Sets a session's live facts and git identity: `event` is the latest
-    /// hook event (`hook_stop`, …) at `at`; `waiting_on` marks a wait.
+    /// Sets a session's live facts and git identity: the facts are the fold
+    /// of one live evidence line of `kind` (`hook_stop`, …) at `at`, with no
+    /// process identity; `waiting_on` adds the hook line that starts that
+    /// wait at the same instant.
     pub fn live(
         &mut self,
         session_pk: i64,
-        event: &str,
+        kind: &str,
         at: i64,
         waiting_on: Option<&str>,
         repo_root: Option<&str>,
     ) -> Result<()> {
+        use polylogue_model::live::{LiveFacts, fold};
+        let mut facts = LiveFacts::default();
+        let none = serde_json::json!({});
+        fold(&mut facts, kind, at, &none);
+        match waiting_on {
+            Some("permission") => {
+                fold(&mut facts, "hook_permission_request", at, &none);
+            }
+            Some("question") => {
+                fold(&mut facts, "hook_elicitation", at, &none);
+            }
+            _ => {}
+        }
         self.index.execute(
-            "UPDATE session SET live_last_event = ?2, live_last_event_at = ?3,
-                 live_waiting_on = ?4, live_waiting_since = CASE WHEN ?4 IS NULL THEN NULL ELSE ?3 END,
-                 repo_root = ?5
-             WHERE pk = ?1",
-            params![session_pk, event, at, waiting_on, repo_root],
+            "UPDATE session SET live_facts = ?2, live_last_at = ?3, repo_root = ?4 WHERE pk = ?1",
+            params![session_pk, serde_json::to_string(&facts)?, at, repo_root],
         )?;
         Ok(())
     }
