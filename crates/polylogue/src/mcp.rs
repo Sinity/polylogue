@@ -63,7 +63,11 @@ fn input_schema(tool: Tool) -> Value {
             .args_for(Surface::Mcp)
             .filter(|arg| !arg.unlisted && arg.name != "request_id")
         {
-            let schema = commands::kind_schema(arg.kind);
+            // A list is listed by its bare type, as command-surface lists it.
+            let schema = match arg.kind {
+                commands::Kind::List => json!({"type": "array"}),
+                kind => commands::kind_schema(kind),
+            };
             let index = match fields.iter().position(|(name, _)| *name == arg.name) {
                 Some(index) => index,
                 None => {
