@@ -968,3 +968,55 @@ fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
         .unwrap();
     assert_eq!(values, vec![serde_json::json!("quoted \"body\"\nnext")]);
 }
+
+/// The prepared selection that assertion writes use and the listing the query
+/// command shows must select the same rows for one question.
+#[test]
+fn prepared_selection_and_listing_select_the_same_rows_for_an_id_with_every_row_admitted() {
+    let (_dir, f) = fixture();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.page_size = Some(10);
+    let selected = |text: &str| {
+        let prepared = reader.prepare_query_selection(text, &options).unwrap();
+        let mut targets = vec![];
+        reader
+            .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+                targets.push(row.target.unwrap().to_string());
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        targets
+    };
+    let listed = |text: &str| {
+        let plan = reader.prepare_query_plan(text, &options).unwrap();
+        let program = crate::query::lower(&plan, &options).unwrap();
+        reader
+            .query_page(&program, None)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|row| row_target(&program, row).unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    for (text, expected) in [
+        (
+            "messages where id:\"test:two:m\" active:* duplicate:* hidden:*",
+            vec!["message:test:two:m"],
+        ),
+        (
+            "messages where message:\"test:two:m\"",
+            vec!["message:test:two:m"],
+        ),
+        // A typed reference is not a native ID; the message reference form
+        // above is how a caller holding a reference names the message.
+        (
+            "messages where id:\"message:test:two:m\" active:* duplicate:* hidden:*",
+            vec![],
+        ),
+    ] {
+        assert_eq!(selected(text), expected, "{text}");
+        assert_eq!(listed(text), expected, "{text}");
+    }
+}
