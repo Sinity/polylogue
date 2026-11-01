@@ -1,6 +1,6 @@
 use super::*;
 use crate::fixture::Fixture;
-use query_language::cursor::Continuation;
+use query_language::cursor::{Continuation, CursorSeal};
 
 fn options() -> Options {
     Options {
@@ -172,6 +172,79 @@ fn foreign_seals_cannot_authorize_even_an_acknowledged_root_execution() {
             ..
         })
     ));
+}
+
+/// A cursor from an earlier index generation is `stale_cursor`, never
+/// `invalid_query` (docs/query.md, Paging, Refusals). The earlier
+/// generation's key is gone, so its seal does not authenticate here.
+#[test]
+fn a_cursor_sealed_by_an_earlier_index_generation_is_stale() {
+    let (_dir, _lock, pool, options, run, mut continuation) = acknowledged_execution();
+    let reader = pool.reader().unwrap();
+    let current = reader.change_position().unwrap().generation;
+    assert_eq!(continuation.context.read_positions["generation"], current);
+    continuation
+        .context
+        .read_positions
+        .insert("generation".into(), "an-earlier-generation".into());
+    let mut earlier_key = reader.cursor_key().unwrap();
+    earlier_key[0] ^= 1;
+    let cursor = CursorSeal::new(earlier_key).seal(&continuation).unwrap();
+    let error = reader
+        .prepare_authenticated_run_selection(
+            &cursor,
+            &run.id,
+            None,
+            RunReplayContext {
+                current_clock: &options.clock,
+                current_versions: &BTreeMap::new(),
+                ranking_identity: None,
+                page_size: None,
+                near: None,
+            },
+        )
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        SelectionError::Language(query_language::Error {
+            kind: query_language::ErrorKind::StaleCursor,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn malformed_cursors_are_invalid_not_stale() {
+    let (_dir, _lock, pool, options, run, _continuation) = acknowledged_execution();
+    let reader = pool.reader().unwrap();
+    for text in ["broken", "", "01", &"00".repeat(40)] {
+        let error = reader
+            .prepare_authenticated_run_selection(
+                &SealedCursor::from_wire(text),
+                &run.id,
+                None,
+                RunReplayContext {
+                    current_clock: &options.clock,
+                    current_versions: &BTreeMap::new(),
+                    ranking_identity: None,
+                    page_size: None,
+                    near: None,
+                },
+            )
+            .err()
+            .unwrap();
+        assert!(
+            matches!(
+                error,
+                SelectionError::Language(query_language::Error {
+                    kind: query_language::ErrorKind::InvalidQuery,
+                    ..
+                })
+            ),
+            "{text:?}: {error:?}"
+        );
+    }
 }
 
 #[test]

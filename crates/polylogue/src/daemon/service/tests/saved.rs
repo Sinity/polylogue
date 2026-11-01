@@ -7,13 +7,14 @@ fn answer(
     handle(request, &d.daemon)
 }
 
+#[track_caller]
 fn ok(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
-    match answer(d, request) {
-        command_surface::Answer::Ok { value: data, .. }
-        | command_surface::Answer::Empty { value: data, .. }
-        | command_surface::Answer::Degraded { value: data, .. } => data,
-        other => panic!("{other:?}"),
-    }
+    crate::test_answers::ok(answer(d, request))
+}
+
+#[track_caller]
+fn empty(d: &test_daemon::TestDaemon, request: Request) -> serde_json::Value {
+    crate::test_answers::empty(answer(d, request))
 }
 
 fn save(id: &str, name: &str, text: &str) -> Request {
@@ -44,7 +45,7 @@ fn a_saved_query_runs_by_name_and_saving_again_revises_it() {
     assert_eq!(v["count"], 1, "{v}");
     assert_eq!(v["definitions"][0]["revision"], first["id"]);
     let second = ok(&d, save("r2", "everything", "kind:subagent"));
-    let v = ok(&d, query("query:everything"));
+    let v = empty(&d, query("query:everything"));
     assert_eq!(v["count"], 0, "the newer revision runs: {v}");
     assert_eq!(v["definitions"][0]["revision"], second["id"]);
     let assertions = ok(&d, query("assertions where kind:saved_query"));
@@ -88,7 +89,7 @@ fn keep_retries_return_the_original_rows_after_membership_changes() {
     d.restart();
     let repeated = ok(&d, keep("kept", "assertions", "before"));
     assert_eq!(repeated["repeat"], true);
-    let rows = ok(&d, query("result:kept"));
+    let rows = empty(&d, query("result:kept"));
     assert_eq!(rows["count"], 0);
     for request in [
         keep("kept", "sessions", "before"),
@@ -178,12 +179,7 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
             authorship,
         )
     };
-    assert!(matches!(
-        call(&caller),
-        command_surface::Answer::Ok { .. }
-            | command_surface::Answer::Empty { .. }
-            | command_surface::Answer::Degraded { .. }
-    ));
+    crate::test_answers::ok(call(&caller));
     let reads = d.daemon.reads.reader().unwrap();
     let original = reads.user_request("caller-request").unwrap().unwrap();
     assert_eq!(original.authorship, caller);

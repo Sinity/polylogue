@@ -155,15 +155,7 @@ fn actual_no_effect_request_read_records_one_object_run_and_roundtrips_through_d
         &limit,
         &actor(),
     );
-    assert!(
-        matches!(
-            imported,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{imported:?}"
-    );
+    crate::test_answers::ok(imported);
     let reader = receiver.daemon.reads.reader().unwrap();
     let Some(polylogue_store::read::authored_evidence::AuthoredReadEvidence::Local {
         record, ..

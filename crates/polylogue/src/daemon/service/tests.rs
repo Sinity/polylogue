@@ -191,12 +191,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     let mut runtime =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
-    assert!(matches!(
-        handle(Request::Status, &old),
-        command_surface::Answer::Ok { .. }
-            | command_surface::Answer::Empty { .. }
-            | command_surface::Answer::Degraded { .. }
-    ));
+    crate::test_answers::ok(handle(Request::Status, &old));
     runtime.shutdown().unwrap();
     assert!(matches!(
         old.reads.reader(),
@@ -204,12 +199,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     ));
     let mut next =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
-    assert!(matches!(
-        handle(Request::Status, &next.daemon),
-        command_surface::Answer::Ok { .. }
-            | command_surface::Answer::Empty { .. }
-            | command_surface::Answer::Degraded { .. }
-    ));
+    crate::test_answers::ok(handle(Request::Status, &next.daemon));
     next.shutdown().unwrap();
     assert!(
         matches!(handle(Request::Status, &old), command_surface::Answer::Error { ref error, .. } if error.code.as_deref() == Some("shutting_down"))
@@ -393,6 +383,7 @@ mod judgments;
 mod saved;
 
 mod deliveries;
+mod outcomes;
 
 #[test]
 fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
@@ -484,15 +475,7 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
         },
         selected_scope,
     );
-    assert!(
-        matches!(
-            response,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{response:?}"
-    );
+    crate::test_answers::ok(response);
     assert!(
         daemon
             .daemon

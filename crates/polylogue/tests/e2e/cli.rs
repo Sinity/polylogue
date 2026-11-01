@@ -30,12 +30,16 @@ pub(super) fn start_daemon(env: &crate::Fixture) -> Daemon {
 }
 
 /// Polls `status` until `ready` holds and the loop is idle, so whatever pass
-/// made `ready` true has also derived from its rows. A state that never comes
-/// is ended by the test runner's timeout.
+/// made `ready` true has also derived from its rows. Polls pause briefly so
+/// the CLI processes do not compete with the daemon for the host; a state
+/// that has not come within the deadline fails with the last status seen.
 pub(super) fn wait_status(
     env: &crate::Fixture,
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
+    const DEADLINE: Duration = Duration::from_secs(60);
+    const PAUSE: Duration = Duration::from_millis(25);
+    let started = Instant::now();
     loop {
         let out = cli(env, &["--json", "status"]);
         assert!(out.status.success(), "{out:?}");
@@ -44,6 +48,11 @@ pub(super) fn wait_status(
         if status["busy"] == false && status["store"].is_object() && ready(&status) {
             return status;
         }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the awaited status did not come within {DEADLINE:?}; last status: {status}"
+        );
+        std::thread::sleep(PAUSE);
     }
 }
 

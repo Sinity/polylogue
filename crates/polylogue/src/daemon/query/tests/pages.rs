@@ -62,10 +62,9 @@ fn count_execution_plans_do_not_change_page_cursor_binding() {
         .prepare_query_plan(request.text, &opts)
         .unwrap()
         .question_id();
-    let seal = CursorSeal::new(reader.cursor_key().unwrap());
     let cursor = page::open(
         first["next"].as_str().unwrap(),
-        &seal,
+        &reader,
         question,
         &reader.change_position().unwrap(),
         reader.index_identity().unwrap(),
@@ -456,11 +455,10 @@ fn random_selection_count_rows_and_pages_use_one_resolved_seed() {
         let reader = pool.reader().unwrap();
         let request = ask(query);
         let options = options(&reader, &request, 0).unwrap();
-        let seal = CursorSeal::new(reader.cursor_key().unwrap());
         let question = page::identity(query, &options).unwrap();
         let seed = page::open(
             first["next"].as_str().unwrap(),
-            &seal,
+            &reader,
             question,
             &reader.change_position().unwrap(),
             reader.index_identity().unwrap(),

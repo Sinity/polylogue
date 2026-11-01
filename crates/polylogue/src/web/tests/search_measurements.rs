@@ -56,22 +56,12 @@ fn search_measurements() {
             fields: vec![],
         };
         let started = Instant::now();
-        assert!(matches!(
-            handle(request.clone(), &r.web.daemon),
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ));
+        crate::test_answers::ok(handle(request.clone(), &r.web.daemon));
         let first_ms = started.elapsed().as_secs_f64() * 1000.0;
         let mut samples = Vec::new();
         for _ in 0..30 {
             let started = Instant::now();
-            assert!(matches!(
-                handle(request.clone(), &r.web.daemon),
-                command_surface::Answer::Ok { .. }
-                    | command_surface::Answer::Empty { .. }
-                    | command_surface::Answer::Degraded { .. }
-            ));
+            crate::test_answers::ok(handle(request.clone(), &r.web.daemon));
             samples.push(started.elapsed().as_secs_f64() * 1000.0);
         }
         eprintln!(

@@ -1,10 +1,7 @@
 //! Replay authority comes from this index's existing seal and durable run custody.
 use super::*;
 use polylogue_model::{RunId, query_objects::ExecutionBinding};
-use query_language::{
-    cursor::{CursorSeal, SealedCursor},
-    time::Clock,
-};
+use query_language::{cursor::SealedCursor, time::Clock};
 
 /// Inputs captured once by the accepting operation. No default context is implied.
 pub struct RunReplayContext<'a> {
@@ -72,7 +69,7 @@ impl Reader<'_> {
                 "exact object readings require their own object binding, not query replay",
             )
         })?;
-        let opened = CursorSeal::new(self.cursor_key()?).open(
+        let opened = self.open_cursor(
             cursor,
             question,
             |name| {

@@ -21,15 +21,7 @@ fn add(w: &test_daemon::TestDaemon, id: &str, authored: (Author, NewAssertion)) 
             via: polylogue_model::authorship::Channel::Cli,
         },
     );
-    assert!(
-        matches!(
-            response,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{response:?}"
-    );
+    crate::test_answers::ok(response);
 }
 
 fn operator(
@@ -106,15 +98,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
             },
         },
     );
-    assert!(
-        matches!(
-            revised,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{revised:?}"
-    );
+    crate::test_answers::ok(revised);
     let agent = Author::Agent(Some(SessionId::parse("codex:x").unwrap()));
     add(
         &w,
@@ -150,15 +134,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
             reason: Some("superseded".into()),
         },
     );
-    assert!(
-        matches!(
-            withdrawn,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{withdrawn:?}"
-    );
+    crate::test_answers::ok(withdrawn);
     let reader = w.daemon.reads.reader().unwrap();
     assert_eq!(
         values(&list(&reader, &about, &context).unwrap()),

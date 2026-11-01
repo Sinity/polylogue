@@ -24,6 +24,8 @@ mod row_numbers;
 mod runtime_dir;
 mod signals;
 #[cfg(test)]
+mod test_answers;
+#[cfg(test)]
 mod test_daemon;
 mod web;
 

@@ -107,15 +107,7 @@ fn public_raw_historical_run_exports_imports_and_rebuilds_without_replay_authori
         &limit,
         &actor(),
     );
-    assert!(
-        matches!(
-            imported,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{imported:?}"
-    );
+    crate::test_answers::ok(imported);
     let restored = retained(&receiver.daemon, &original.id);
     assert_eq!(restored.encoded_run, original.encoded_run);
     assert_eq!(restored.source, original.source);

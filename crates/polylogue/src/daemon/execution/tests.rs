@@ -156,12 +156,10 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
             assert!(ReadLimit::current().is_none());
             super::super::service::ok(serde_json::json!({"done": true}))
         });
-        assert!(matches!(
-            response,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ));
+        assert_eq!(
+            crate::test_answers::ok(response),
+            serde_json::json!({"done": true})
+        );
     }
 }
 
@@ -238,15 +236,7 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
         &daemon.daemon,
         &limit,
     );
-    assert!(
-        matches!(
-            response,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{response:?}"
-    );
+    crate::test_answers::ok(response);
     assert!(
         daemon
             .daemon

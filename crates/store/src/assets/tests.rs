@@ -252,12 +252,7 @@ fn member_discovery_filters_before_decoding_and_propagates_visitor_refusal() {
 #[test]
 fn import_members_and_asset_rows_move_their_import_counters() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(
-        "CREATE TABLE import_member (observation TEXT PRIMARY KEY, import_id TEXT NOT NULL,
-           input TEXT NOT NULL, member TEXT NOT NULL, source_id TEXT, sidecar TEXT) STRICT;
-         CREATE TABLE import_change (import_id TEXT PRIMARY KEY, changed INTEGER NOT NULL) STRICT, WITHOUT ROWID;",
-    )
-    .unwrap();
+    crate::schema::ensure_index(&conn).unwrap();
     let counter = |import: &str| -> Option<i64> {
         conn.query_row(
             "SELECT changed FROM import_change WHERE import_id=?1",

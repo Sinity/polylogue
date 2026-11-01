@@ -69,15 +69,7 @@ fn day_and_cost_measurements() {
     let daemon = |request| {
         let start = Instant::now();
         let answer = handle(request, &r.web.daemon);
-        assert!(
-            matches!(
-                answer,
-                command_surface::Answer::Ok { .. }
-                    | command_surface::Answer::Empty { .. }
-                    | command_surface::Answer::Degraded { .. }
-            ),
-            "{answer:?}"
-        );
+        crate::test_answers::ok(answer.clone());
         let elapsed = start.elapsed().as_secs_f64() * 1000.;
         (elapsed, serde_json::to_vec(&answer).unwrap().len())
     };

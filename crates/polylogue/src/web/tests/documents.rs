@@ -129,12 +129,7 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
         },
         &r.web.daemon,
     );
-    assert!(matches!(
-        note,
-        command_surface::Answer::Ok { .. }
-            | command_surface::Answer::Empty { .. }
-            | command_surface::Answer::Degraded { .. }
-    ));
+    crate::test_answers::ok(note);
     let kept = handle(
         Request::Keep {
             request_id: "web-kept-group".into(),
@@ -143,15 +138,7 @@ fn message_note_group_and_string_columns_do_not_become_session_links() {
         },
         &r.web.daemon,
     );
-    assert!(
-        matches!(
-            kept,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{kept:?}"
-    );
+    crate::test_answers::ok(kept);
     rt().block_on(async {
         let (status, _, messages) = send(
             &r,

@@ -101,15 +101,7 @@ fn archive_with_notes() -> Morrow {
             },
             &runtime.daemon,
         );
-        assert!(
-            matches!(
-                response,
-                command_surface::Answer::Ok { .. }
-                    | command_surface::Answer::Empty { .. }
-                    | command_surface::Answer::Degraded { .. }
-            ),
-            "{response:?}"
-        );
+        crate::test_answers::ok(response);
     }
     runtime.shutdown().unwrap();
     archive
