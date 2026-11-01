@@ -91,7 +91,7 @@ fn a_union_of_ranked_rows_fuses_their_orders() {
             .iter()
             .map(|n| n.as_u64().unwrap())
             .collect();
-        let expected = if text.starts_with("m1p") { 1 } else { 2 };
+        let expected = if text.contains(":m1p") { 1 } else { 2 };
         assert_eq!(lists, [expected], "{r}");
     }
     // Both first places tie, and each list's later places follow them.

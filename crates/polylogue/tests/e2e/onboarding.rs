@@ -97,13 +97,11 @@ fn public_morrow_tour_matches_current_query_examples() {
         .collect();
     assert_eq!(unknown, expected_unknown);
     assert_eq!(steps[8]["result"]["rows"].as_array().unwrap().len(), 1);
-    assert!(
-        steps[9]["result"]
-            .to_string()
-            .contains("Use chrono for date parsing."),
-        "{}",
-        steps[9]["result"]
-    );
+    // A takeover holds assertions without trusted native-origin proof
+    // (docs/agents.md, Brief) and says so; they stay readable by query.
+    let takeover = steps[9]["result"].to_string();
+    assert!(takeover.contains("Assertions held: 1."), "{takeover}");
+    assert!(!takeover.contains("Use chrono for date parsing."), "{takeover}");
     assert!(
         steps
             .iter()

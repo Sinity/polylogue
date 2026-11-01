@@ -183,7 +183,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         let status = command().args(["status", "--json"]).output().unwrap();
         assert!(status.status.success(), "{status:?}");
         let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-        if status["store"]["messages"] == 1 {
+        if status["value"]["store"]["messages"] == 1 {
             break;
         }
         assert!(
@@ -217,7 +217,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let notes = &answer["rows"];
+    let notes = &answer["value"]["rows"];
     assert_eq!(notes.as_array().unwrap().len(), 1);
     assert_eq!(notes[0]["id"], note["request_id"]);
     assert_eq!(notes[0]["author"], "operator");
