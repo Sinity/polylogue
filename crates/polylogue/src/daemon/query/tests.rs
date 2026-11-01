@@ -137,11 +137,26 @@ fn morrow() -> TestArchive {
     .unwrap();
     fx.message(
         s2,
-        msg(&scoped(&ids[1], "m2p1"), "user", "human", "now run the tests", at(2, 10)),
+        msg(
+            &scoped(&ids[1], "m2p1"),
+            "user",
+            "human",
+            "now run the tests",
+            at(2, 10),
+        ),
     )
     .unwrap();
-    fx.message(s2, msg(&scoped(&ids[1], "m2p2"), "user", "human", "ship it", at(2, 11)))
-        .unwrap();
+    fx.message(
+        s2,
+        msg(
+            &scoped(&ids[1], "m2p2"),
+            "user",
+            "human",
+            "ship it",
+            at(2, 11),
+        ),
+    )
+    .unwrap();
     let a2 = fx
         .message(
             s2,
@@ -254,7 +269,13 @@ fn morrow() -> TestArchive {
             s4,
             MessageFacts {
                 cost_nusd: Some(1_590_000_000),
-                ..msg(&scoped(&ids[3], "m4a0"), "assistant", "model", "continuing", at(3, 10))
+                ..msg(
+                    &scoped(&ids[3], "m4a0"),
+                    "assistant",
+                    "model",
+                    "continuing",
+                    at(3, 10),
+                )
             },
         )
         .unwrap();
@@ -289,7 +310,13 @@ fn morrow() -> TestArchive {
         s5,
         MessageFacts {
             cost_nusd: None,
-            ..msg(&scoped("codex:01a20000-0005-7000-8000-000000000005", "m5a0"), "assistant", "model", "codex answer five", at(5, 9))
+            ..msg(
+                &scoped("codex:01a20000-0005-7000-8000-000000000005", "m5a0"),
+                "assistant",
+                "model",
+                "codex answer five",
+                at(5, 9),
+            )
         },
     )
     .unwrap();
@@ -304,7 +331,13 @@ fn morrow() -> TestArchive {
         .unwrap();
     fx.message(
         s6,
-        msg(&scoped("codex:01a20000-0006-7000-8000-000000000006", "m6a0"), "assistant", "model", "codex answer six", at(6, 9)),
+        msg(
+            &scoped("codex:01a20000-0006-7000-8000-000000000006", "m6a0"),
+            "assistant",
+            "model",
+            "codex answer six",
+            at(6, 9),
+        ),
     )
     .unwrap();
     fx.link(
@@ -323,13 +356,28 @@ fn morrow() -> TestArchive {
             ..SessionFacts::default()
         })
         .unwrap();
-    fx.message(s7, msg(&scoped("chatgpt:abc-7", "m7p0"), "user", "human", "dates", at(4, 9)))
-        .unwrap();
+    fx.message(
+        s7,
+        msg(
+            &scoped("chatgpt:abc-7", "m7p0"),
+            "user",
+            "human",
+            "dates",
+            at(4, 9),
+        ),
+    )
+    .unwrap();
     fx.message(
         s7,
         MessageFacts {
             on_active_path: Some(false),
-            ..msg(&scoped("chatgpt:abc-7", "m7p1"), "user", "human", "edited dates", at(4, 9))
+            ..msg(
+                &scoped("chatgpt:abc-7", "m7p1"),
+                "user",
+                "human",
+                "edited dates",
+                at(4, 9),
+            )
         },
     )
     .unwrap();
@@ -337,7 +385,13 @@ fn morrow() -> TestArchive {
         s7,
         MessageFacts {
             on_active_path: Some(false),
-            ..msg(&scoped("chatgpt:abc-7", "m7a1"), "assistant", "model", "abandoned", at(4, 9))
+            ..msg(
+                &scoped("chatgpt:abc-7", "m7a1"),
+                "assistant",
+                "model",
+                "abandoned",
+                at(4, 9),
+            )
         },
     )
     .unwrap();
