@@ -24,10 +24,11 @@ nix build github:Sinity/polylogue      # the package, at ./result/bin/polylogue
 nix develop                             # a development shell
 ```
 
-The flake provides Home Manager and NixOS modules for named archive services
-and their command aliases. See [development](docs/development.md#deployment-modules)
-for module use and [operations](docs/operations.md#deployment) for the deployment
-contract. Managed harness and browser registrations remain to be connected.
+The flake also provides a Home Manager module (the user service, hooks, MCP
+registration, the browser extension's host, completions) and a NixOS module,
+each serving one or more named archives; see
+[development](docs/development.md#deployment-modules) for their use and
+[operations](docs/operations.md#deployment) for the deployment contract.
 
 With Cargo, from a checkout:
 

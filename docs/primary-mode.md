@@ -10,9 +10,8 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 
 - **Bytes go to Sinex as materials** through Sinex's producer client: each captured input, each appended step of a growing file as a part, export ZIPs whole. No source byte is stored outside Sinex.
 - **Polylogue parses once** and sends complete, versioned `polylogue.*` facts keyed by Polylogue's stable IDs, together with its authored records and deliveries.
-- **Native work attribution travels with session facts.** Explicit task and pull-request references, recorded repository identity, captured Git identity and a terminal adapter's host, boot, process and window identity are typed metadata. Each contributing snapshot keeps its material and record anchor in `native_sources`. Conflicting identities stay unknown with a recorded reason; goal prose, shell commands and cwd lookup supply no objective or repository identity. A session reading carrying hook-only metadata is anchored at a contributing hook record.
 - **Authored records originate from request materials.** Each authored write is a request material (the write as received, with its request ID and computed author) plus its event. Its targets (sessions, messages, blocks, assertions, pages) are references in the payload with their `seen_hash`, never Sinex parents. A parser-upgrade replay of a session therefore archives the session's readings and their derived chain but never a note, judgment, highlight or page slot about it; those references resolve to the new readings by natural key. Marker assertions travel with their derived IDs, so the same marker sent from two hosts is one record.
-- **The confirmed-stream consumer is the only way into `index.db`.** One durable subscription applies committed `polylogue.*` records to `index.db` in commit order, saving its stream position in the same transaction. It covers this host's writes, other hosts' writes and a rebuild alike. Sinex provisions the consumer for this authenticated identity's grants. Payloads are fetched through its public grant-checked API; large replies use the ordinary bounded framed transport.
+- **The confirmed-stream consumer is the only way into `index.db`.** One durable subscription applies committed `polylogue.*` records to `index.db` in commit order, saving its stream position in the same transaction. It covers this host's writes, other hosts' writes and a rebuild alike. Polylogue's consumer has its own grant under Sinex's output rules, so it receives its own payloads whole; payloads too large for a message travel as material references and are fetched through the same client.
 - **Lifecycle changes arrive on the stream** and are applied by the same consumer in commit order: an archived reading's rows leave `index.db`, so the index shows what Sinex shows as live; a restored reading's rows return; a newer reading replaces the old one's rows; a tombstoned reading keeps its reference and shows "tombstoned". Session tables recompute for the sessions touched ([measures.md#rules](measures.md#rules)).
 - **Sinex's lifecycle applies to Polylogue's materials** as to any source's, through Sinex's own surfaces. Polylogue itself offers no deletion in either mode ([architecture.md#deletion](architecture.md#deletion)).
 - **Settings shared with Sinex.** The logical day, quiet hours and the interrupt budget are Sinex's settings; Polylogue has no value of its own for them, and its interrupting notices are shown by Sinex's deliverer ([operations.md#notices](operations.md#notices)).
@@ -21,270 +20,28 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 
 Before writing frame bytes, Polylogue checks Sinex's producer welcome with an
 empty hello. This checks the protocol and sealing configuration before its
-producer-owned kinds exist. It then registers its complete `polylogue.*` declarations
+producer-owned kinds exist. It then registers its `polylogue.*` declarations
 and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
 version. A refused hello returns Sinex's reason.
 
-The current adapter artifact is `polylogue` source version 4. Its complete
-declarations include input observations at kind version 4, authored request
-wrappers at version 5, native assertions and assertion restoration at version 1,
-messages at version 5, fragments at version 2 and work snapshots at version 5. Sessions, documents, events, links, background updates, repositories
-and parse-progress controls use version 4. Every parsed fact carries its typed
-export delivery when present. Query-run begins use version 2 because their
-typed continuation positions include lineage issues. Outcome records retain
-version 1; their ready calls contain strings and JSON rather than typed read
-positions. Source versions 1, 2 and 3 and their definition
-hashes remain immutable.
-Fragments enter the full index projection; they cannot establish complete
-message coverage or membership in the ten semantic raw-input classes. A new
-certificate binds the exact current declaration hashes; an earlier certificate
-is never reinterpreted under the new source catalog.
-
-Export delivery ordinals identify receiver groups independently of display
-order and the provider byte cursor. Header and item deliveries retain zero
-parsed bytes; only a verified complete delivery can establish export byte
-completion. The prefix and body hashes travel unchanged with the full reading
-and its control. The actual source length is part of every export reading and
-its key. They do not attest a native invocation or source acceptance.
-
-The primary writer folds the confirmed export cursor and matching pending
-callbacks before staging semantic products. Pending callbacks are retrieved
-from the existing producer spool by the exact input, chain, reading version
-and source length. The lookup verifies the immutable body and preserves
-custody order. Replay must match the retained prefix; gaps or forks refuse
-extension. A new actual source length identifies a new immutable reading.
-Generic parsed-product methods refuse export deliveries; the bound export
-method and replacement-reading method retain the full key with their bodies.
-Missing delivery metadata remains a byte control or an unknown historical
-export, according to its actual reading contract. Historical Source2 and
-parse-progress version 3 require their exact frozen declaration to decode;
-unsupported definitions produce explicit unavailable coverage. An upgrade
-never guesses a historical hash or manufactures a complete export prefix.
-
-`cargo run -p polylogue-sinex --example source_declaration`
-exports the exact adapter declaration and its fingerprint for owner review.
-Installing the artifact and granting canonical publication are separate owner
-operations.
-
-Parsed-fact and work-snapshot declarations request no Sinex text index. Their field
+Message and tool-call declarations request no Sinex text index. Their field
 hints describe defaults for operator-configured output rules; they impose no
 kind-wide admission class floor. Event frame names include declaration hashes.
 A producer replay selects the exact declarations and parser/build identities
 for its complete material sequence, and waits for the replacement acknowledgment
-before its replacement becomes visible through the confirmed stream.
-
-### Complete work snapshots
-
-One explicitly configured canonical publisher emits `polylogue.work_snapshot`.
-It is a complete typed set for a logical session and reducer version, containing
-operator messages, tool calls, turns, source copies and native attribution.
-It is derived from full confirmed reading facts using the selection from the
-same confirmed transaction. Its output intent and input position commit
-together. There is no later scan of the read index to send these products.
-
-Snapshot kind version 5 uses reducer version 3 and requires typed membership
-provenance. Explicit Fork, Spawn, Continuation and Copy facts determine its
-logical root and physical members; every physical member retains its native
-event evidence. The selection version is a closed supported value. The
-membership hash records Polylogue's derivation provenance and grants no owner
-authority. Earlier snapshot versions remain unsupported historical evidence.
-
-An ambiguous or cyclic component has an unavailable routing status keyed by
-its sorted typed physical session IDs. It cannot invent a logical root. A
-previously established root can carry an unavailable snapshot with no computed
-entries and `complete: false`. Resolving a component replaces its routing status
-under the same key, in the same owner batch as the established root snapshots
-and old-root retirements.
-
-A replacement omits retired members atomically. An empty retirement snapshot
-carries the session ID and no copied erased session metadata. Historical
-snapshots remain immutable. Snapshot kinds cannot become reducer inputs.
-The durable request identity binds the causal reading, selected policy and
-reducer versions, completed position and read scope. Retries reuse that exact
-identity and contents.
-
-Canonical publication also requires Sinex's proof that the publisher can read
-the required input family, kinds and classes through that completed position.
-Write authority alone does not establish this coverage. Incomplete, locked or
-unavailable coverage suppresses publication and retains the changed sessions
-for a later complete snapshot, preserving the previous canonical output.
+before updating its local index.
 
 ## Local state
 
 What a host keeps locally in primary mode:
 - `index.db`, a cache holding its stream position;
 - the embeddings store, local and backed up, since recomputing it costs money;
-- the producer client's spool, where immutable bytes and prepared writes remain until their canonical events have been applied through a confirmed completion barrier; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
-
-The cache records the confirmed consumer's grant scope alongside its persistent
-identity. When Sinex reports a changed scope, Polylogue first invalidates active
-reads and prepared output, then atomically clears cached facts and search data,
-rotates read cursors and saves the new scope. Queries interrupted by this change
-return `scope_changed`; streams end with that error and no completion record.
-Dependent cache publishers register after acquiring the archive writer lock and
-before index generation setup. A second starter that fails the lock cannot alter
-the active cache pointer. Publishers invalidate their pointer synchronously under
-the same fence used to activate it, so an
-older publisher cannot reactivate retired data after the transition. Native index
-generation changes use this fence in standalone mode too.
-The same consumer identity replays the history Sinex authorizes. Its position
-remains unknown until a complete confirmed barrier arrives, including an explicit
-zero barrier for an accessible empty store. Raw producer spools, pending authored
-intent and content-addressed paid embeddings survive this cache reset. The owner
-control is saved before clearing the cache; if clearing fails, reopening still
-blocks reads until retry succeeds. Failure to save that control blocks current
-readers and leaves the control unacknowledged; it provides no durable reset record.
+- the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is a Cargo feature outside the default build.
 
-Raw capture and complete parser output enter durable custody together before
-capture answers `pending`. Queue metadata stays small; parser facts hydrate
-one capture at a time. Shared encoded preparations carry bytes through staging,
-spooling and transport without plaintext disk copies. Material receipts make
-dependent writes ready; they do not retire unconfirmed source custody.
-
-Private canonical intents retain their original full body and optional historical
-proof in the existing producer spool before acknowledgment. Held bodies reserve
-no publisher sequence and remain private. The index caches their references and
-status; startup recovers one immutable intent per callback. A historical proof
-remains provenance and cannot restore current publication eligibility.
-
-A scope or policy reset durably revokes held and already-prepared canonical
-intents before adopting the new cache scope. Their original identities, bodies
-and historical receipts survive index replacement. Recovery preserves revocation;
-new authority requires a freshly validated, generation-bound intent.
-
-Confirmed pages may end inside one owner transaction. Their facts, signed replay
-cursor and actual native delivery receipt commit together in private cache
-staging. Delivery acknowledgments release broker credit for those staged pages;
-producer custody retires only through the applied complete position. A full
-indexed snapshot certificate commits with its projected facts. Its original
-position remains the snapshot basis while real native completion markers extend
-the applied prefix. The checkpoint is unknown until the first real completion,
-including an explicit zero for an empty owner store.
-
-Raw-input snapshot coverage is a separate request basis. Canonical publication
-uses the write proof returned by the owner for the actual completed position,
-policy epoch and scope. Retaining a snapshot basis never grants publication.
-Original kind definitions, projected identities and optional receiver-authenticated
-origin metadata are stored with each fact at first admission. Missing origin
-metadata remains unknown when the fact is replayed or restored.
-
-An owner invalidation blocks existing read generations and publication before
-it becomes observable. It preserves cached payload custody until the owner
-directs a replay reset. An observed erasure at position Q keeps output fenced
-until an actual completed prefix reaches Q. Neither control advances the applied
-position. An invalidated certificate cannot be revived by an old completion or
-publication proof.
-
-Read completeness is evaluated on the pinned Reader snapshot from declared
-native reading contracts, source lengths and parser checkpoints, current
-derivations and pending search work. A parser waiting on a trailing record is
-current only at its recorded observed source length. Intentionally kept sources
-are identified separately from parsed products. Declared raw-only origins need
-no parser version; their presence reports known nonparsed coverage and keeps
-parsing incomplete. A raw-only declaration for an absent origin does not make
-unrelated reads incomplete. Generic row dumps retain their actual declared
-reading version. Independent source and index
-write counters do not establish completeness. Primary full-projection evidence
-is a separate requirement; scalar stream progress or raw-input coverage alone
-leaves it unknown.
-
-The applied checkpoint is bound to the owner-authoritative grant scope. A scope
-change makes the previous read generation unavailable atomically, cancels its
-readers and cursors, and replays the newly authorized scope. Raw custody,
-pending authored intents and paid embeddings retain their own durability.
-Complete-set intents from the previous scope cannot publish under the new one.
-
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).
-
-### Frozen authored writes
-
-Preparation resolves a user request once against the applied canonical view
-plus this host's durable pending requests, in a private overlay. It retains
-the original request, exact outcome and typed authored effect together. The
-effect carries resolved note families, revisions, targets, attachment references
-and complete chat, backfill and delivery histories. Pending attachment metadata
-comes from verified spool material; it never makes the write visible to reads.
-
-A retry with the same request identity and authored intent reuses that frozen
-record. A changed intent or accepting machine conflicts; a retry timestamp does
-not change the admitted write. Confirmation applies the frozen records directly,
-without selecting another claim or revision base. Event histories merge by their
-original request identities, including when a bundle contains only a later state.
-An unconfirmed request remains `pending`, with no external action authorized.
-
-Historical bundle restoration preserves stored authors and outcomes and records
-the importing channel's computed attribution separately from historical claims.
-Repeated ingress is identified by input, chain, receiving machine and importing
-actor, retaining its first observed time. Imported chat actions
-and backfill jobs retain their historical statuses with execution eligibility
-`historical`; dequeue requires `live`. A new explicit action uses a new identity.
-
-### Retained Source3 readings
-
-Confirmed replay recognizes the frozen Source3 declaration before decoding
-current request types. Its seven request kinds at version 4 enter the one-way
-accepted-history converter. Retired actions remain historical; representable
-actions enter restoration with their stored outcome and effect. Neither route
-accepts a new request or authorizes another execution.
-
-The history keeps the exact available projection encoding and the actual
-fetched event, material anchor, parents, source declaration, record hash and
-policy projection identity. An old semantic intent hash is labeled as derived
-under that frozen encoding. Original ingress spelling and an unreported
-accepted-content hash remain unknown. Import observations carried by the old
-payload remain declared claims, separate from the fetched owner envelope.
-
-Historical request declarations are exported separately for read and rebuild.
-They never enter producer registration. Unchanged Source3 facts use the current
-codec only when the frozen source contract and current kind definition match
-exactly. An unknown or mismatched contract refuses projection without changing
-the index. Source2 needs its own verified artifact and remains unsupported.
-This historical subset does not establish a complete indexed projection catalog.
-
-Stored Query1 definitions use the exact frozen Source3 declaration and the
-unchanged data codec. Their metadata reader checks semantic identity without
-binding a current executable catalog. A retired unit such as Notes remains an
-intact definition; current native admission and replay reject it through ordinary
-catalog validation. Metadata custody supplies no execution or native-origin proof.
-
-The frozen Source3 Run2 contract is read before current Run deserialization.
-Its exact available nested run JSON and fetched native envelope remain in the
-existing run row. Optional payload binding and run hashes remain declared claims;
-missing values stay unknown. A current-compatible run retains the same complete
-JSON value. Retired references and unsupported locators remain readable history
-with a typed unavailable replay result. They acquire no aliases or default
-positions. Exact-object runs belong to the successor contract and cannot enter
-through an optional question or new binding under Source3.
-
-Pending Source3 requests use a distinct scratch-only queued history after the
-SDK matches their immutable frame and complete material body to an authenticated
-own-Recorded binding. This history retains the original producer, source
-fingerprint, material and receipt number without an event or policy epoch.
-Carried importing metadata remains declared. A derived old semantic hash cannot
-become a current request retry or canonical acceptance.
-
-The original encoded spool is the publication authority. Continuation requires
-current owner permission for the exact original source and desired kind,
-definition hash and class. Historical write prefixes are provenance only.
-Header permission is an online observation; ordinary submission rechecks the
-body, material ownership and current grants atomically. Missing, scrubbed,
-legacy or conflicting original evidence remains unknown custody. An already
-recorded final event frame is reconciled from its original receipt, without a
-new publication or acknowledgment. Current producer registration stays separate
-from this private continuation path.
-
-The own-Recorded observer shares authentication and Hello validation with the
-writer, but does not register kinds or require a current write family. A retained
-binding with current permission denied remains observable queued history. A
-receiver that lacks the comparison extension cannot establish that binding.
-
-Unstaged request and restore envelopes use their original stored metadata and
-the frozen codec. An attachment needs its actual original staged group; a
-matching blob alone cannot recover that dependency. Already staged groups keep
-their original bytes, source, locations, parents and output indices.
 
 ## Write identity
 
@@ -293,73 +50,16 @@ their original bytes, source, locations, parents and output indices.
 - The reading order for a stable key is assigned or checked by Sinex, never taken from a host clock.
 - Material digests keep deduplicating bytes.
 
-Immutable imports are content-idempotent. A mutable sample compares with the
-latest durable observation, including this host's pending captures. Its
-identity includes that predecessor and the observed generation or content;
-an unchanged retry reuses the original capture, while A → B → A records the
-second A as a later observation. Sampling and preparation validate this basis
-under the source's custody owner; observer timestamps do not assign revisions.
-
-A source basis that changes during acquisition leaves the actual bytes and
-private parser facts in durable raw custody with an unresolved-basis receipt.
-That receipt grants no source revision, byte cursor or parser progress. Its
-members remain outside accepted source heads and automatic publication; a
-later observation needs its own actual basis. Exact retries preserve the first
-accepted or unresolved receipt. Conflict custody identity binds the receiving
-producer and frozen observation, so subsequent head changes do not rename it.
-
-An original `raw_range` retains the actual encoded provider body even when
-there is no new logical extent. A metadata-only capture has no raw range and
-keeps its observation JSON as metadata. Neither case may substitute observation
-JSON for provider bytes or invent a whole-blob address for a retained range.
-
-Physical resumption uses a separate raw acquisition cursor built from committed
-body references in one exact provider generation and stream. Its ranges must
-be contiguous and cite their actual predecessor bodies. The cursor can include
-unresolved raw custody, but grants no source revision, parser progress or native
-admission. A changed or unproved generation remains unknown. Group-page
-exhaustion is not provider EOF; total length requires actual end-of-stream
-evidence, including the opened file size for provider bytes.
-
-## Shared temporal and policy context
-
-Each operation uses one typed Sinex public context snapshot: the logical day,
-quiet hours, interrupt budget, committed owner revision and settings identity.
-The application boundary explicitly resolves any configured named zone.
-Queries, rendering and signals receive that same validated snapshot; libraries
-perform no settings or timezone I/O. Missing, pending, refused and stale
-contexts remain typed failures. A cached earlier context retains its identity
-and age without becoming a current fallback.
-
-The producer observes this context when connecting and while polling confirmed
-changes. Reading the cached context performs no network request. An operation
-captures its resolved day and public policy together with the settings identity,
-owner revision, owner observation time and local receipt age. The private issued
-context token is excluded from serialized read answers and debug output.
-
 ## Degraded primary
 
 When Sinex is unreachable or refuses this producer:
-- status reports the retained index position and its known lag; data reads wait while the current policy and scope basis cannot be verified;
+- reads answer from `index.db`, marked with the stream position they reflect and its lag;
 - capture keeps collecting into the producer client's spool, and the sender retries with the same write identities;
 - an authored write is prepared in the spool and answered with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it;
 - the verdict is `degraded` with the reason `sinex blocked` and the error in plain words, and the shipped `Sinex blocked` rule fires after 10 minutes;
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
 
-An authoritative basis invalidation revokes the current operation and publication
-generation. An unverified basis also fences current data output, while retaining
-the private cache for a later verified continuation. Neither uncertainty nor an
-invalid partial cursor supplies a new policy epoch, scope or zero position. Cache
-replacement follows the existing authoritative scope and replay transition;
-raw custody, pending authored intent and paid embeddings remain durable.
-
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgement; prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
-
-Read-derived authored actions retain the pinned reader's opaque scope token in
-an internal writer envelope. The serialized writer checks the token's archive
-and generation before the authored transaction or durable producer preparation
-commits. A revoked read returns `scope_changed` without committing its action.
-The token does not supply native parent or coverage evidence.
 
 ## Rebuild and parser upgrades
 
@@ -416,21 +116,3 @@ The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, becaus
 - **lifecycle-reaches-index**: on a test Sinex stack, archiving a session's readings removes the session from answers, restoring brings it back, and tombstoning leaves its reference marked tombstoned; a note, judgment and page slot on the session survive a parser-upgrade replay of it, still resolving to the new readings.
 - **user-state-moves**: an archive with assertions, revisions, a withdrawal, a pass, a variant and a page, written out with `read --to DIR` and imported into a fresh archive with the same inputs, gives identical reads; importing twice changes nothing.
 - **mixed-answer-reports-positions**: a mixed query's answer names the position it read in each product and their lag.
-
-Canonical query objects retain the semantic body and frozen dependency closure
-as `polylogue.query` facts. An execution retains its accepted binding in an
-immutable `polylogue.query_run` Begin fact before a continuation call is
-returned. Completion is a separate `polylogue.query_run_outcome` fact under
-the same Run ID. Its phase key cannot replace the Begin body. Named producer
-custody supports immediate exact-hash and unambiguous prefix lookup while
-confirmation is pending; that state is reported as queued. The local index
-changes only from the confirmed stream.
-
-Attachment binding claims preserve their declared namespace independently from
-validated receiving members. Primary mode projects binding facts only at a confirmed barrier, after source
-observations, actual member associations and parsed rows. New publication needs
-the canonical outbox and an authenticated owner basis; without that basis the
-writer refuses publication while neutral declarations remain in source facts. Serialized witnesses remain retained data;
-primary availability stays unknown until their original receiving admission can
-be authenticated in the current grant. Standalone reads use the validated bytes
-and exact member namespace. Binding claim hashes do not request source materials.
