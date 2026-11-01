@@ -43,7 +43,8 @@ impl StepProgress {
 }
 
 /// Where one chain's parse stands, recorded by the writer after each step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// A failure is a parse-state fact of its input, with its error or reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ParseProgress {
     /// Stored bytes past the parsed position still need parsing.
@@ -58,6 +59,10 @@ pub enum ParseProgress {
     NoParserYet,
     /// Confirmed facts omit part of the source this reading needs.
     Partial,
+    /// The parser declined the bytes, for the stated reason.
+    Refused { reason: String },
+    /// The parser failed, with its error.
+    Failed { error: String },
 }
 
 impl ParseProgress {
@@ -74,35 +79,52 @@ impl ParseProgress {
     }
 
     /// The stored status word.
-    pub fn status(self) -> &'static str {
+    pub fn status(&self) -> &'static str {
         match self {
             Self::Parsing => "parsing",
             Self::Waiting { .. } => "waiting",
             Self::Done => "done",
             Self::NoParserYet => "no_parser_yet",
             Self::Partial => "partial",
+            Self::Refused { .. } => "refused",
+            Self::Failed { .. } => "failed",
         }
     }
 
     /// The stored length a waiting chain waits at.
-    pub fn waiting_at(self) -> Option<u64> {
+    pub fn waiting_at(&self) -> Option<u64> {
         match self {
-            Self::Waiting { length } => Some(length),
+            Self::Waiting { length } => Some(*length),
             _ => None,
         }
     }
 
-    /// The standing from its stored status word and waiting length.
-    pub fn from_stored(status: &str, waiting_at: Option<u64>) -> Result<Self, String> {
-        Ok(match (status, waiting_at) {
-            ("parsing", None) => Self::Parsing,
-            ("waiting", Some(length)) => Self::Waiting { length },
-            ("done", None) => Self::Done,
-            ("no_parser_yet", None) => Self::NoParserYet,
-            ("partial", None) => Self::Partial,
-            (status, waiting_at) => {
+    /// The stored reason of a refusal or the error of a failure.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Refused { reason } => Some(reason),
+            Self::Failed { error } => Some(error),
+            _ => None,
+        }
+    }
+
+    /// The standing from its stored status word, waiting length and reason.
+    pub fn from_stored(
+        status: &str,
+        waiting_at: Option<u64>,
+        reason: Option<String>,
+    ) -> Result<Self, String> {
+        Ok(match (status, waiting_at, reason) {
+            ("parsing", None, None) => Self::Parsing,
+            ("waiting", Some(length), None) => Self::Waiting { length },
+            ("done", None, None) => Self::Done,
+            ("no_parser_yet", None, None) => Self::NoParserYet,
+            ("partial", None, None) => Self::Partial,
+            ("refused", None, Some(reason)) => Self::Refused { reason },
+            ("failed", None, Some(error)) => Self::Failed { error },
+            (status, waiting_at, reason) => {
                 return Err(format!(
-                    "parse status {status:?} with waiting length {waiting_at:?} is not a parse standing"
+                    "parse status {status:?} with waiting length {waiting_at:?} and reason {reason:?} is not a parse standing"
                 ));
             }
         })

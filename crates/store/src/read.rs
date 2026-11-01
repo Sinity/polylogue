@@ -499,16 +499,18 @@ struct MessageContent<'a> {
     visibility: Option<&'a parents::Visibility>,
 }
 
-/// A chain's parse standing from its stored status word and waiting length.
+/// A chain's parse standing from its stored status word, waiting length and
+/// reason.
 pub(crate) fn stored_parse_progress(
     status: &str,
     waiting_at: Option<i64>,
+    reason: Option<String>,
 ) -> Result<polylogue_model::batch::ParseProgress> {
     let waiting_at = waiting_at
         .map(u64::try_from)
         .transpose()
         .map_err(|_| StoreError::Invalid("a stored waiting length is negative".into()))?;
-    polylogue_model::batch::ParseProgress::from_stored(status, waiting_at)
+    polylogue_model::batch::ParseProgress::from_stored(status, waiting_at, reason)
         .map_err(StoreError::Invalid)
 }
 
@@ -1461,24 +1463,25 @@ impl Reader<'_> {
             });
         }
         let mut stmt = self.conn()?.prepare_cached(
-            "SELECT p.parsed_upto, p.status, p.waiting_at FROM parse_state p
+            "SELECT p.parsed_upto, p.status, p.waiting_at, p.reason FROM parse_state p
              JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2",
         )?;
         for k in &mut out {
             if let Some(chain) = k.chain
-                && let Some((upto, status, waiting_at)) = stmt
+                && let Some((upto, status, waiting_at, reason)) = stmt
                     .query_row(params![k.input_id, chain], |r| {
                         Ok((
                             r.get::<_, i64>(0)?,
                             r.get::<_, String>(1)?,
                             r.get::<_, Option<i64>>(2)?,
+                            r.get::<_, Option<String>>(3)?,
                         ))
                     })
                     .optional()?
             {
                 k.parsed_upto = upto as u64;
                 k.parsed = true;
-                k.waiting = stored_parse_progress(&status, waiting_at)?
+                k.waiting = stored_parse_progress(&status, waiting_at, reason)?
                     == polylogue_model::batch::ParseProgress::Waiting { length: k.stored };
             }
         }

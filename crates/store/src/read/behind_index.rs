@@ -50,7 +50,7 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.waiting_at = c.length, 0), p.reading_version, p.status, p.waiting_at
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.waiting_at = c.length, 0), p.reading_version, p.status, p.waiting_at, p.reason
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN source_revision l ON l.input = c.input AND l.number = s.number
@@ -132,7 +132,9 @@ impl Reader<'_> {
                 version,
                 progress: row
                     .get::<_, Option<String>>(11)?
-                    .map(|status| crate::read::stored_parse_progress(&status, row.get(12)?))
+                    .map(|status| {
+                        crate::read::stored_parse_progress(&status, row.get(12)?, row.get(13)?)
+                    })
                     .transpose()?,
             };
             if visit(state)?.is_break() {

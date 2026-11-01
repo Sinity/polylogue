@@ -132,7 +132,7 @@ impl Reader<'_> {
                         missing.insert(CompletenessReason::ReadingVersionChanged);
                     } else {
                         use polylogue_model::batch::ParseProgress;
-                        match state.progress {
+                        match &state.progress {
                             Some(ParseProgress::NoParserYet) => {
                                 raw_only_chains += 1;
                                 missing.insert(CompletenessReason::KnownRawOnly);

@@ -364,6 +364,25 @@ fn a_waiting_length_moves_from_text_into_its_typed_column() {
         )
         .is_err()
     );
+    // Every designed standing is storable, and a refusal or failure keeps its reason.
+    for (status, reason) in [("refused", "synthetic reason"), ("failed", "synthetic error")] {
+        conn.execute(
+            "UPDATE parse_state SET status=?1,reason=?2 WHERE input_pk=2",
+            [status, reason],
+        )
+        .unwrap();
+        assert!(
+            conn.execute("UPDATE parse_state SET reason=NULL WHERE input_pk=2", [])
+                .is_err()
+        );
+    }
+    assert!(
+        conn.execute(
+            "UPDATE parse_state SET status='done',reason='stray' WHERE input_pk=2",
+            []
+        )
+        .is_err()
+    );
     let progress: Vec<String> = conn
         .prepare("SELECT json_extract(state,'$.progress') FROM wire_reading ORDER BY input_pk")
         .unwrap()

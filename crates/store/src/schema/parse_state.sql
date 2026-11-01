@@ -1,10 +1,11 @@
 -- A waiting chain keeps the stored length it waits at in its own integer
+-- column, a refused or failed chain its reason or error in its own text
 -- column, and the status is one of the parse standings.
 CREATE TABLE parse_state_typed (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   reading_version   TEXT NOT NULL DEFAULT '',
-  status            TEXT NOT NULL CHECK(status IN ('parsing','waiting','done','no_parser_yet','partial')),
+  status            TEXT NOT NULL CHECK(status IN ('parsing','waiting','done','no_parser_yet','partial','refused','failed')),
   parsed_upto       INTEGER NOT NULL,
   waiting_at        INTEGER CHECK(waiting_at >= 0),
   records           INTEGER NOT NULL DEFAULT 0,
@@ -13,13 +14,15 @@ CREATE TABLE parse_state_typed (
   unreadable        INTEGER NOT NULL DEFAULT 0,
   commit_seq INTEGER CHECK(commit_seq > 0),
   checkpoint BLOB,
+  reason            TEXT,
   PRIMARY KEY (input_pk, chain),
-  CHECK((status = 'waiting') = (waiting_at IS NOT NULL))
+  CHECK((status = 'waiting') = (waiting_at IS NOT NULL)),
+  CHECK((status IN ('refused','failed')) = (reason IS NOT NULL))
 ) STRICT, WITHOUT ROWID;
-INSERT INTO parse_state_typed(input_pk,chain,reading_version,status,parsed_upto,waiting_at,records,used,skipped,unreadable,commit_seq,checkpoint)
+INSERT INTO parse_state_typed(input_pk,chain,reading_version,status,parsed_upto,waiting_at,records,used,skipped,unreadable,commit_seq,checkpoint,reason)
   SELECT input_pk,chain,reading_version,status,parsed_upto,
     CASE WHEN status='waiting' THEN CAST(detail AS INTEGER) END,
-    records,used,skipped,unreadable,commit_seq,checkpoint
+    records,used,skipped,unreadable,commit_seq,checkpoint,NULL
   FROM parse_state;
 DROP TABLE parse_state;
 ALTER TABLE parse_state_typed RENAME TO parse_state;

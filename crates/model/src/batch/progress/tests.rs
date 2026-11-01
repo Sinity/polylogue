@@ -43,15 +43,27 @@ fn every_standing_round_trips_through_its_stored_columns() {
         ParseProgress::Done,
         ParseProgress::NoParserYet,
         ParseProgress::Partial,
+        ParseProgress::Refused {
+            reason: "synthetic refusal".into(),
+        },
+        ParseProgress::Failed {
+            error: "synthetic error".into(),
+        },
     ] {
         assert_eq!(
-            ParseProgress::from_stored(progress.status(), progress.waiting_at()),
+            ParseProgress::from_stored(
+                progress.status(),
+                progress.waiting_at(),
+                progress.reason().map(str::to_owned)
+            ),
             Ok(progress)
         );
     }
-    assert!(ParseProgress::from_stored("waiting", None).is_err());
-    assert!(ParseProgress::from_stored("done", Some(7)).is_err());
-    assert!(ParseProgress::from_stored("waiting at", Some(7)).is_err());
+    assert!(ParseProgress::from_stored("waiting", None, None).is_err());
+    assert!(ParseProgress::from_stored("done", Some(7), None).is_err());
+    assert!(ParseProgress::from_stored("waiting at", Some(7), None).is_err());
+    assert!(ParseProgress::from_stored("failed", None, None).is_err());
+    assert!(ParseProgress::from_stored("done", None, Some("why".into())).is_err());
 }
 
 #[test]
