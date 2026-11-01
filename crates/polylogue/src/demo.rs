@@ -211,7 +211,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     )?;
     step(
         "Prepare takeover context",
-        "Takeover carries the session's prompts and last answer for the next reader. It holds the assertion back, because the archive cannot yet prove the note's native origin; the previous step still reads it.",
+        "Takeover carries the session's prompts and last answer for the next reader. It names the assertion without quoting it, because another author wrote it and the operator has not accepted it; the previous step still reads it.",
         "takeover",
         json!({"session": PARSER}),
     )?;

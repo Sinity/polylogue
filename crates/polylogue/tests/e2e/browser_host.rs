@@ -183,7 +183,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         let status = command().args(["status", "--json"]).output().unwrap();
         assert!(status.status.success(), "{status:?}");
         let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-        if status["value"]["store"]["messages"] == 1 {
+        if status["value"]["store"]["messages"] == 1 && status["value"]["busy"] == false {
             break;
         }
         assert!(

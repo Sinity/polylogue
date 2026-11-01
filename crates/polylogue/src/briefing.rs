@@ -350,13 +350,6 @@ fn note_line(n: &Assertion) -> String {
     )
 }
 
-fn write_notes(out: &mut String, refs: &mut Vec<String>, notes: &[Assertion]) {
-    for n in notes {
-        let _ = writeln!(out, "{}", note_line(n));
-        refs.push(format!("assertion:{}@{}", n.fact.root, n.fact.id));
-    }
-}
-
 /// One line (or a few) of a brief section, with what it cites.
 struct Item {
     text: String,
@@ -941,7 +934,9 @@ fn takeover(
         ),
         context,
     )?;
-    let notes: Vec<Assertion> = Vec::new();
+    let session_reference = Reference::Session(session.clone());
+    let other_assertions =
+        unjudged_other_assertions(reader, std::slice::from_ref(&session_reference), context)?;
     let open_items = reader.open_items(&id)?.unwrap_or_default();
 
     let mut text = String::new();
@@ -972,6 +967,21 @@ fn takeover(
             reason: "held: trusted native-origin proof is unavailable; retained assertions remain readable".into(),
         });
     }
+    if other_assertions > 0 {
+        let _ = writeln!(
+            text,
+            "Assertions by other authors, not yet accepted: {other_assertions}; list them with `polylogue query {}`.",
+            polylogue_render::shell_quote(&format!(
+                "assertions where NOT author:operator judged:unknown about:{}",
+                serde_json::to_string(&session_reference.to_string())
+                    .expect("reference serializes")
+            ))
+        );
+        left_out.push(LeftOut {
+            what: format!("{other_assertions} assertions by other authors"),
+            reason: "an assertion by another author needs an eligible operator judgment before injection".into(),
+        });
+    }
     for issue in &selected.parents().issues {
         let _ = writeln!(text, "Parents incomplete: {issue}");
         left_out.push(LeftOut {
@@ -994,10 +1004,6 @@ fn takeover(
             open.push(format!("waiting on {w}"));
         }
         let _ = writeln!(text, "Left open: {}.", open.join("; "));
-    }
-    if !notes.is_empty() {
-        let _ = writeln!(text, "\nNotes from the operator on it:");
-        write_notes(&mut text, &mut refs, &notes);
     }
     if !prompts.is_empty() {
         let _ = writeln!(text, "\nThe operator's prompts in it, oldest first:");
