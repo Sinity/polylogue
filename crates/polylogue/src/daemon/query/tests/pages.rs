@@ -277,9 +277,11 @@ fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
             assert!(reopened.run_pass().unwrap().errors.is_empty());
+            // A cursor from an earlier index generation is `stale_cursor`
+            // (docs/query.md, Paging, Refusals).
             assert_eq!(
                 page(&home, Some(cursor)).unwrap_err().code(),
-                "invalid_query"
+                "stale_cursor"
             );
             assert_eq!(page(&home, None).unwrap()["rows"][0]["id"], "claude-code:a");
         } else {
