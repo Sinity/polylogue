@@ -295,7 +295,7 @@ impl Client {
         }
         if !self.publication_allowed(&prepared) {
             return Err(Error::Refused {
-                name: prepared.record.identity,
+                name: prepared.identity.clone(),
                 reason: "canonical output belongs to another or unknown confirmed read scope"
                     .into(),
             });
@@ -324,8 +324,8 @@ impl Client {
             .map_err(|error| Error::Invalid(error.to_string()))?;
             serde_json::to_vec(&Ingress::LargeFrame {
                 frame: prepared.identity.clone(),
-                blob: prepared.record.frame.blob,
-                length: prepared.record.frame.length,
+                blob: prepared.frame.blob.clone(),
+                length: prepared.frame.length,
             })?
         };
         let acknowledgment = match self.transmit(&prepared.identity, body).await {
