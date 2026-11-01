@@ -6,6 +6,7 @@ pub use conserve::conserve;
 pub(crate) use conserve::{conserve_local, merge_cached, merge_original, same_historical};
 pub(crate) use conserve::{restored_contains, same_prepared};
 mod records;
+pub(crate) use records::insert_kept;
 #[cfg(test)]
 mod tests;
 

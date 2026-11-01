@@ -314,13 +314,16 @@ pub(crate) fn apply_using(
             rows_json,
             read_at,
         } => {
-            crate::selection::check_kept_body(tx, &r.id, rows_json)?;
-            tx.execute(
-                &source.sql(
-                    "INSERT INTO @source.kept_result(id, name, query, ran_at, read_at, rows_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                ),
-                params![r.id, name, query, at, read_at, rows_json],
+            crate::primary::authored::insert_kept(
+                tx,
+                &polylogue_model::authored::KeptResult {
+                    id: r.id.clone(),
+                    name: name.clone(),
+                    query: query.clone(),
+                    ran_at: r.at,
+                    read_at: read_at.clone(),
+                    rows_json: rows_json.clone(),
+                },
             )?;
             Ok(UserOutcome {
                 pending: false,
