@@ -68,7 +68,7 @@ impl Walk<'_, '_, '_, '_> {
     ) -> Result<bool, Response> {
         let start = position.map(|position| position.selection.record);
         let anchor_item = position.map(|position| position.item);
-        let Some(reference) = row.reference else {
+        let Some(target) = row.target else {
             let record = ReadRecordLocator {
                 kind: ReadRecordKind::Presentation,
                 ordinal: 0,
@@ -85,7 +85,7 @@ impl Walk<'_, '_, '_, '_> {
                 Some(0),
             );
         };
-        if let polylogue_model::Reference::Document(id) = &reference {
+        if let ReadTarget::Document(id) = &target {
             let selected = |_: &Source| Ok(false);
             let evidence = ProjectionEvidence::default();
             let layout = evidence::Layout {
@@ -97,9 +97,9 @@ impl Walk<'_, '_, '_, '_> {
                 anchor: None,
             };
             if let Some(record) = output::document_omission(
-                &reference.to_string(),
+                &target.to_string(),
                 self.rendering.options,
-                self.selection.direct_reference().is_none(),
+                self.selection.direct_target().is_none(),
                 self.footer,
             )? {
                 let at = SelectionLocator {
@@ -121,9 +121,7 @@ impl Walk<'_, '_, '_, '_> {
         }
         let mut current = match start {
             Some(start) => Some(start),
-            None => {
-                backward::last_record(self.reader, &reference, self.rendering.options.inherited)?
-            }
+            None => backward::last_record(self.reader, &target, self.rendering.options.inherited)?,
         };
         let mut required_anchor = start.is_some();
         while let Some(record_position) = current {
@@ -131,7 +129,7 @@ impl Walk<'_, '_, '_, '_> {
             let mut keep = true;
             records::reference(
                 self.reader,
-                &reference,
+                &target,
                 self.rendering.options.inherited,
                 Some(&record_position),
                 &mut |record, evidence, actual| {
@@ -146,7 +144,7 @@ impl Walk<'_, '_, '_, '_> {
                         record,
                         self.rendering.options,
                         &evidence,
-                        self.selection.direct_reference().is_none(),
+                        self.selection.direct_target().is_none(),
                         self.footer,
                     )?;
                     if let Some(record) = projected {
@@ -158,7 +156,7 @@ impl Walk<'_, '_, '_, '_> {
                             selected_source(
                                 self.reader,
                                 self.selection,
-                                Some(&reference),
+                                Some(&target),
                                 self.rendering.options,
                                 near,
                                 source,
@@ -194,7 +192,7 @@ impl Walk<'_, '_, '_, '_> {
             }
             current = backward::previous_record(
                 self.reader,
-                &reference,
+                &target,
                 self.rendering.options.inherited,
                 &record_position,
             )?;

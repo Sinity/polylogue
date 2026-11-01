@@ -25,8 +25,8 @@ impl PreparedSelection<'_> {
                 "execution options differ from the prepared selection",
             ));
         }
-        if query_options.direct_reference.is_some() && query_options.direct_reference != self.direct
-        {
+        let direct = self.direct.as_ref().map(ReadTarget::reference);
+        if query_options.direct_reference.is_some() && query_options.direct_reference != direct {
             return Err(invalid(
                 "conflict",
                 "direct presentation differs from the accepted selection",
@@ -46,14 +46,14 @@ impl PreparedSelection<'_> {
             source
                 .validate()
                 .map_err(|error| invalid("invalid_query", error.to_string()))?;
-            if self.direct.as_ref() != Some(&source.origin().reference) {
+            if direct.as_ref() != Some(&source.origin().reference) {
                 return Err(invalid(
                     "conflict",
                     "span source differs from the accepted direct target",
                 ));
             }
         }
-        query_options.direct_reference = self.direct.clone();
+        query_options.direct_reference = direct;
         let object = self.query_object()?;
         let definitions = self
             .definitions()
@@ -212,26 +212,22 @@ impl Reader<'_> {
             ));
         }
         if let Some(reference) = &binding.query_options.direct_reference {
+            let target = ReadTarget::try_from(reference.clone())
+                .map_err(|error| invalid("conflict", error.to_string()))?;
             let expected = polylogue_query::plan::prepare(
-                &reference_query(reference)?,
+                &reference_query(&target),
                 selection.plan.bindings(),
                 |_| Ok(()),
             )?;
             if expected.question_id() != selection.question_id()
-                || reference_unit(reference) != Some(selection.program.unit)
+                || target_unit(&target) != selection.program.unit
             {
                 return Err(invalid(
                     "conflict",
                     "direct presentation names another bound question",
                 ));
             }
-            if matches!(reference,Reference::Assertion(revision) if revision.revision.is_none()) {
-                return Err(invalid(
-                    "not_yet_available",
-                    "direct assertion has no pinned revision",
-                ));
-            }
-            selection.direct = Some(reference.clone());
+            selection.direct = Some(target);
         }
         Ok(selection)
     }

@@ -115,8 +115,9 @@ fn execute<T>(
         || {
             reader.check().map_err(|error| store_error(&error))?;
             scope.check().map_err(|error| store_error(&error))?;
-            let completeness = reader
-                .completeness(&polylogue_engine::reading_contracts())
+            let caught_up = d
+                .warm
+                .caught_up(reader, &positions.to_string())
                 .map_err(|error| store_error(&error))?;
             let run_reference = format!("run:{id}");
             let snapshot = ReadSnapshot {
@@ -124,7 +125,7 @@ fn execute<T>(
                 query_text: reference.to_string(),
                 ran_at: operation.ran_at,
                 read_at: positions,
-                caught_up: completeness.caught_up(),
+                caught_up,
                 currency: d.currency(reader).map_err(|error| store_error(&error))?,
                 enabled_variants: vec![],
                 author: operation.authorship.author.clone(),

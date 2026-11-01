@@ -703,51 +703,55 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    /// Available tool-bearing keys in this exact selection, including a usable
-    /// tail with parent issues. Plain-message payloads and callbacks are skipped.
-    pub(crate) fn visit_available_tool_message_ids(
+    /// Tool-bearing messages that parents contribute to this selection. Their
+    /// pairs can bind results past the inherited prefix, which the parent rows
+    /// alone do not show; the read session's own pairs move its write counter.
+    pub(crate) fn visit_inherited_tool_message_ids(
         &self,
         mut visit: impl FnMut(&str) -> Result<()>,
     ) -> Result<()> {
         self.reader.check()?;
-        if let Some(keys) = &self.with_parents {
-            let mut tooling = self.reader.conn()?.prepare_cached(
-                "SELECT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=?1 AND b.kind IN ('tool_call','tool_result')
-                 AND EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=b.pk OR t.result_block_pk=b.pk))",
-            )?;
-            for key in keys {
-                self.reader.check()?;
-                if tooling.query_row([key.message_pk], |row| row.get::<_, bool>(0))? {
-                    visit(&key.id)?;
-                }
-            }
-        } else if let Some((session, _)) = &self.own {
-            let mut statement = self.reader.conn()?.prepare_cached(
-                "SELECT m.id FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
-                 AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ('tool_call','tool_result')
-                   AND EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=b.pk OR t.result_block_pk=b.pk))
-                 ORDER BY m.order_input_id,m.seq,m.record_position,m.id",
-            )?;
-            let mut rows = statement.query([session])?;
-            while let Some(row) = rows.next()? {
-                self.reader.check()?;
-                visit(&row.get::<_, String>(0)?)?;
+        let (Some(keys), Some((own, _))) = (&self.with_parents, &self.own) else {
+            return Ok(());
+        };
+        let mut tooling = self.reader.conn()?.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=?1 AND b.kind IN ('tool_call','tool_result')
+             AND EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=b.pk OR t.result_block_pk=b.pk))",
+        )?;
+        for key in keys.iter().filter(|key| key.session_pk != *own) {
+            self.reader.check()?;
+            if tooling.query_row([key.message_pk], |row| row.get::<_, bool>(0))? {
+                visit(&key.id)?;
             }
         }
         self.reader.check()
     }
+}
 
-    /// What the selected content is: parents status; for the session read,
-    /// the write counter of its last change (`session.changed`, which every
-    /// change to its messages, their versions and blocks, or its derived rows
-    /// moves); for each parent, the row and shown version of each message it
-    /// contributes, since a parent's later messages are not selected. No
-    /// block or text is read: blocks are written only with a new shown
-    /// version, whose content hash names them.
-    pub fn fingerprint(&self) -> Result<String> {
+impl MessageSelection<'_, '_> {
+    /// Folds what the selected content is, from owner counters and stored
+    /// version identities: the read session's write counter (`session.changed`,
+    /// which every change to its messages, versions, blocks, tool calls,
+    /// events, links and derived rows moves); with parents, the parents status
+    /// and the row and shown version of each message a parent contributes,
+    /// since a parent's later messages are not selected; and the change counter
+    /// of every import holding an input parsed into the selected sessions,
+    /// which moves with their attachment custody. No block, text or import
+    /// member is read.
+    pub fn content_version(&self) -> Result<String> {
         let mut hash = blake3::Hasher::new();
+        self.fold_content_version(&mut hash)?;
+        Ok(hash.finalize().to_hex().to_string())
+    }
+
+    pub(crate) fn fold_content_version(&self, hash: &mut blake3::Hasher) -> Result<()> {
+        let (own, id) = self
+            .own
+            .as_ref()
+            .ok_or_else(|| StoreError::NotFound("the selected session".into()))?;
+        fold_serialized(hash, &id.to_string())?;
         if self.with_parents.is_some() {
-            hash.update(&serde_json::to_vec(&self.parents)?);
+            fold_serialized(hash, &self.parents)?;
         }
         let conn = self.reader.conn()?;
         let mut changed = conn.prepare_cached("SELECT changed FROM session WHERE pk = ?1")?;
@@ -755,64 +759,27 @@ impl MessageSelection<'_, '_> {
         let mut version = conn.prepare_cached(
             "SELECT version_hash FROM message_source WHERE message_pk = ?1 AND shown = 1",
         )?;
-        let own = self.own.as_ref().map(|(pk, _)| *pk);
+        let mut sessions = Vec::new();
         for (session, members) in self.sessions() {
-            hash.update(b"session");
-            hash.update(&session.to_le_bytes());
-            if Some(session) == own {
+            self.reader.check()?;
+            sessions.push(session);
+            fold_serialized(hash, &session)?;
+            if session == *own {
                 let counter: i64 = changed.query_row([session], |r| r.get(0))?;
-                hash.update(&counter.to_le_bytes());
+                fold_serialized(hash, &counter)?;
                 continue;
             }
             for pk in members.iter().flatten() {
                 for statement in [&mut facts, &mut version] {
                     let mut rows = statement.query([pk])?;
                     while let Some(row) = rows.next()? {
-                        hash_row(&mut hash, row)?;
+                        hash_row(hash, row)?;
                     }
                 }
             }
         }
-        Ok(hash.finalize().to_hex().to_string())
-    }
-
-    /// Fold only import metadata and current byte catalogs associated
-    /// with the selected message versions. No message or asset body is loaded.
-    pub fn attachment_fingerprint(&self) -> Result<String> {
-        let conn = self.reader.conn()?;
-        let mut scopes = std::collections::BTreeSet::new();
-        // The imports of every input parsed into the selected sessions: a
-        // superset of those holding the selected versions, read without
-        // visiting each message.
-        let mut selected = conn.prepare_cached(
-            "SELECT DISTINCT own.import_id FROM parsed p
-            JOIN input_ref ir ON ir.pk=p.input_pk JOIN source_input i ON i.id=ir.id
-            JOIN import_member own ON own.input=ir.id
-            WHERE p.session_pk=?1",
-        )?;
-        for (session, _) in self.sessions() {
-            for scope in selected.query_map([session], |row| row.get::<_, String>(0))? {
-                scopes.insert(scope?);
-            }
-        }
-        let mut hash = blake3::Hasher::new();
-        let mut stmt=conn.prepare_cached("SELECT m.observation,m.input,m.member,m.source_id,r.chain,r.length,e.offset,e.length,e.blob,e.blob_offset,b.storage,
-            metadata.ordinal,metadata.source_id,metadata.name,metadata.media_type,metadata.size,s.version,s.error
-            FROM import_member m
-            LEFT JOIN source_revision r ON r.input=m.input AND r.number=(SELECT max(latest.number) FROM source_revision latest WHERE latest.input=m.input)
-            LEFT JOIN source_extent e ON e.input=r.input AND e.chain=r.chain LEFT JOIN source_blob b ON b.hash=e.blob
-            LEFT JOIN import_asset_metadata metadata ON metadata.input=m.input AND metadata.sidecar=m.sidecar
-            LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
-            WHERE m.import_id=?1 ORDER BY m.observation,e.offset,metadata.ordinal")?;
-        for scope in scopes {
-            hash.update(&(scope.len() as u64).to_le_bytes());
-            hash.update(scope.as_bytes());
-            let mut rows = stmt.query([scope])?;
-            while let Some(row) = rows.next()? {
-                hash_row(&mut hash, row)?;
-            }
-        }
-        Ok(hash.finalize().to_hex().to_string())
+        crate::assets::fold_session_import_versions(conn, &sessions, hash)?;
+        self.reader.check()
     }
 }
 

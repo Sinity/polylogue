@@ -168,23 +168,20 @@ fn a_selected_parent_call_binds_its_result_beyond_the_inherited_prefix() {
         evidence: "explicit fork".into(),
     });
     archive.write("child", prose("child", 1, 3, "own available tail"));
-    let (own_before, rows_before) = {
+    let rows_before = {
         let pool = crate::ReadPool::open(&archive.archive).unwrap();
         let reader = pool.reader().unwrap();
         let selected = reader.select_messages(&sid("child"), true).unwrap();
         let mut ids = Vec::new();
         selected
-            .visit_available_tool_message_ids(|id| {
+            .visit_inherited_tool_message_ids(|id| {
                 ids.push(id.to_owned());
                 Ok(())
             })
             .unwrap();
         assert_eq!(ids, [call.id.to_string()]);
         assert!(!ids.contains(&result.id.to_string()));
-        (
-            selected.fingerprint().unwrap(),
-            prefix_rows(&reader, &call, &anchor),
-        )
+        prefix_rows(&reader, &call, &anchor)
     };
     assert_eq!(rows_before.len(), 2);
     let before = fingerprint(&archive, "session:claude-code:child", true);
@@ -208,14 +205,13 @@ fn a_selected_parent_call_binds_its_result_beyond_the_inherited_prefix() {
     let selected = reader.select_messages(&sid("child"), true).unwrap();
     let mut ids = Vec::new();
     selected
-        .visit_available_tool_message_ids(|id| {
+        .visit_inherited_tool_message_ids(|id| {
             ids.push(id.to_owned());
             Ok(())
         })
         .unwrap();
     assert_eq!(ids, [call.id.to_string()]);
     assert!(!ids.contains(&result_id.to_string()));
-    assert_eq!(selected.fingerprint().unwrap(), own_before);
     drop(selected);
     drop(reader);
     assert_ne!(

@@ -1,9 +1,9 @@
 //! Hydrate canonical rows lazily after the shared selector has resolved refs.
 use super::super::{Response, error, store_error};
 use polylogue_model::{
-    Reference, SessionId,
+    SessionId,
     bundle::*,
-    read::{ProjectionEvidence, ReadRecordKind, ReadRecordLocator},
+    read::{ProjectionEvidence, ReadRecordKind, ReadRecordLocator, ReadTarget},
 };
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
@@ -43,76 +43,75 @@ fn admission(commit: Option<u64>, reference: &str) -> Result<u64, Response> {
 
 pub(super) fn reference(
     reader: &Reader<'_>,
-    reference: &Reference,
+    target: &ReadTarget,
     inherited: bool,
     start: Option<&ReadRecordLocator>,
     visit: &mut Visit<'_>,
 ) -> Result<bool, Response> {
-    if let Reference::Session(id) = reference {
-        return session(reader, id, inherited, start, visit);
-    }
-    let kind = match reference {
-        Reference::Message(_) | Reference::Block { .. } => ReadRecordKind::Message,
-        Reference::Document(_) => ReadRecordKind::Document,
-        Reference::Event(_) => ReadRecordKind::Event,
-        Reference::Request(_)
-        | Reference::Assertion(_)
-        | Reference::Result { .. }
-        | Reference::Delivery(_)
-        | Reference::Variant { .. } => ReadRecordKind::Authored,
-        _ => {
-            return Err(error(
-                "not_built",
-                format!("the selected reference {reference} has no canonical read adapter"),
-            ));
+    let single = |kind| {
+        let at = locator(kind, 0);
+        if start.is_some_and(|start| *start != at) {
+            Err(stale_record())
+        } else {
+            Ok(at)
         }
     };
-    let at = locator(kind, 0);
-    if start.is_some_and(|start| *start != at) {
-        return Err(stale_record());
-    }
-    let mut visit = |record: Record, evidence| visit(record.into(), evidence, at);
-    match reference {
-        Reference::Message(id) | Reference::Block { message: id, .. } => {
-            let (message, mut projection) = reader
-                .message_with_projection(id)
-                .map_err(|e| store_error(&e))?
-                .ok_or_else(|| error("not_found", format!("no message {id}")))?;
-            let reference_text = format!("message:{id}");
-            let commit = admission(
-                reader.message_admission(id).map_err(|e| store_error(&e))?,
-                &reference_text,
-            )?;
-            let order = reader
-                .message_order(id)
-                .map_err(|e| store_error(&e))?
-                .ok_or_else(|| {
-                    error(
-                        "not_yet_available",
-                        format!("{reference_text} has no physical reading position"),
-                    )
-                })?;
-            let mut message = message;
-            if let Reference::Block { n, .. } = reference {
-                let Some(position) = projection
-                    .block_ordinals
-                    .iter()
-                    .position(|ordinal| ordinal == n)
-                else {
-                    return Err(error(
-                        "not_yet_available",
-                        format!("block:{id}#{n} is not recorded in the selected source version"),
-                    ));
-                };
-                message.blocks = vec![message.blocks.swap_remove(position)];
-                projection.block_ordinals = vec![*n];
-            }
+    match target {
+        ReadTarget::Session(id) => session(reader, id, inherited, start, visit),
+        ReadTarget::Message(id) => {
+            let at = single(ReadRecordKind::Message)?;
             visit(
-                message_record(reader, message, projection, commit, order)?,
+                message(reader, id, None)?.into(),
                 ProjectionEvidence::default(),
+                at,
             )
         }
-        Reference::Document(id) => {
+        ReadTarget::Block { message: id, n } => {
+            let at = single(ReadRecordKind::Message)?;
+            visit(
+                message(reader, id, Some(*n))?.into(),
+                ProjectionEvidence::default(),
+                at,
+            )
+        }
+        ReadTarget::MessageRange { first, last } => {
+            if start.is_some_and(|start| start.kind != ReadRecordKind::Message) {
+                return Err(stale_record());
+            }
+            let mut ordinal = start.map_or(0, |start| start.ordinal);
+            let mut seen = false;
+            let mut result = Ok(true);
+            reader
+                .visit_message_range(first, last, ordinal, |id| {
+                    seen = true;
+                    let current = locator(ReadRecordKind::Message, ordinal);
+                    let next = ordinal
+                        .checked_add(1)
+                        .ok_or_else(stale_record)
+                        .and_then(|next| {
+                            ordinal = next;
+                            visit(
+                                message(reader, &id, None)?.into(),
+                                ProjectionEvidence::default(),
+                                current,
+                            )
+                        });
+                    Ok(match next {
+                        Ok(true) => ControlFlow::Continue(()),
+                        other => {
+                            result = other;
+                            ControlFlow::Break(())
+                        }
+                    })
+                })
+                .map_err(|e| store_error(&e))?;
+            if !seen && start.is_some() {
+                return Err(stale_record());
+            }
+            result
+        }
+        ReadTarget::Document(id) => {
+            let at = single(ReadRecordKind::Document)?;
             let document = reader
                 .document(id)
                 .map_err(|e| store_error(&e))?
@@ -127,27 +126,72 @@ pub(super) fn reference(
                     reference,
                     commit,
                     document,
-                }),
+                })
+                .into(),
                 ProjectionEvidence::default(),
+                at,
             )
         }
-        Reference::Event(id) => {
+        ReadTarget::Event(id) => {
+            let at = single(ReadRecordKind::Event)?;
             let record = reader
                 .event_record(id)
                 .map_err(|e| store_error(&e))?
                 .ok_or_else(|| error("not_found", format!("no event {id}")))?;
-            visit(Record::Event(record), ProjectionEvidence::default())
+            visit(
+                Record::Event(record).into(),
+                ProjectionEvidence::default(),
+                at,
+            )
         }
-        Reference::Request(_)
-        | Reference::Assertion(_)
-        | Reference::Result { .. }
-        | Reference::Delivery(_)
-        | Reference::Variant { .. } => super::authored::reference(reader, reference, &mut visit),
-        _ => Err(error(
-            "not_built",
-            format!("the selected reference {reference} has no canonical read adapter"),
-        )),
+        ReadTarget::Assertion { .. } | ReadTarget::Delivery(_) => {
+            let at = single(ReadRecordKind::Authored)?;
+            super::authored::reference(reader, &target.reference(), &mut |record, evidence| {
+                visit(record.into(), evidence, at)
+            })
+        }
     }
+}
+
+/// One message, or one of its blocks, with its admission and reading order.
+fn message(
+    reader: &Reader<'_>,
+    id: &polylogue_model::MessageId,
+    block: Option<u64>,
+) -> Result<Record, Response> {
+    let (mut message, mut projection) = reader
+        .message_with_projection(id)
+        .map_err(|e| store_error(&e))?
+        .ok_or_else(|| error("not_found", format!("no message {id}")))?;
+    let reference = format!("message:{id}");
+    let commit = admission(
+        reader.message_admission(id).map_err(|e| store_error(&e))?,
+        &reference,
+    )?;
+    let order = reader
+        .message_order(id)
+        .map_err(|e| store_error(&e))?
+        .ok_or_else(|| {
+            error(
+                "not_yet_available",
+                format!("{reference} has no physical reading position"),
+            )
+        })?;
+    if let Some(n) = block {
+        let Some(position) = projection
+            .block_ordinals
+            .iter()
+            .position(|ordinal| *ordinal == n)
+        else {
+            return Err(error(
+                "not_yet_available",
+                format!("block:{id}#{n} is not recorded in the selected source version"),
+            ));
+        };
+        message.blocks = vec![message.blocks.swap_remove(position)];
+        projection.block_ordinals = vec![n];
+    }
+    message_record(reader, message, projection, commit, order)
 }
 
 fn session(

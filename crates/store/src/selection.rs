@@ -1,8 +1,9 @@
 //! Prepared questions and streaming rows bound to one Reader and access scope.
 pub use crate::query::{Param, Program, RowBasis};
 use crate::{ReadScopeToken, Reader, SqlValue, StoreError};
+use polylogue_model::read::ReadTarget;
 use polylogue_model::{DocumentId, MessageId, Reference, SessionId};
-use polylogue_query::catalog::reference_unit;
+use polylogue_query::catalog::{reference_unit, target_unit};
 pub use polylogue_query::plan::{Plan, ResolvedDefinition};
 use polylogue_query::{
     Options, QueryError, Shape,
@@ -95,7 +96,7 @@ pub struct PreparedSelection<'read> {
     program: Program,
     scope: ReadScopeToken,
     context: CursorContext,
-    direct: Option<Reference>,
+    direct: Option<ReadTarget>,
     execution_options: polylogue_model::query_objects::QueryExecutionOptions,
     replay_authority: Option<replay::ReplayAuthority>,
 }
@@ -108,7 +109,7 @@ impl PreparedSelection<'_> {
     pub fn plan(&self) -> &Plan {
         &self.plan
     }
-    pub fn direct_reference(&self) -> Option<&Reference> {
+    pub fn direct_target(&self) -> Option<&ReadTarget> {
         self.direct.as_ref()
     }
     pub fn question_id(&self) -> QuestionId {
@@ -139,13 +140,13 @@ pub struct SelectionFactKey {
 }
 
 impl SelectionFactKey {
-    pub fn reference(&self) -> Option<Reference> {
-        identity_reference(self.unit, &self.values)
+    pub fn target(&self) -> Option<ReadTarget> {
+        identity_target(self.unit, &self.values)
     }
 }
 #[derive(Debug, Clone)]
 pub struct SelectionRow {
-    pub reference: Option<Reference>,
+    pub target: Option<ReadTarget>,
     pub values: Value,
     pub position: OrderPosition,
     pub identity: Option<RowIdentity>,
@@ -258,24 +259,22 @@ impl Reader<'_> {
         let direct = direct
             .map(|reference| self.bind_direct_reference(reference))
             .transpose()?;
-        if let Some(reference) = &direct
-            && !matches!(reference, Reference::Span { .. })
-        {
-            let unit = reference_unit(reference).expect("readable native reference");
+        if let Some(target) = &direct {
             let mut params = Vec::new();
-            let members = membership(unit, reference, &mut params)?
-                .ok_or_else(|| invalid("not_built", "reference has no retained membership"))?;
-            if self
-                .query(&format!("SELECT 1 FROM ({members}) LIMIT 1"), &params)?
-                .is_empty()
-            {
+            // A reference outside its unit's membership names no stored row.
+            let present = match membership(target_unit(target), &target.reference(), &mut params)? {
+                Some(members) => !self
+                    .query(&format!("SELECT 1 FROM ({members}) LIMIT 1"), &params)?
+                    .is_empty(),
+                None => false,
+            };
+            if !present {
                 return Err(invalid("not_found", "referenced source is unavailable"));
             }
         }
         let text = direct
             .as_ref()
             .map(reference_query)
-            .transpose()?
             .unwrap_or_else(|| target.to_owned());
         let mut program = crate::query::compile(&text, &options)?;
         self.validate_selection(&program)?;
@@ -321,23 +320,24 @@ impl Reader<'_> {
         })
     }
 
-    fn bind_direct_reference(&self, reference: Reference) -> Result<Reference, SelectionError> {
-        if let Reference::Assertion(revision) = &reference
-            && revision.revision.is_none()
-        {
-            let found = self
-                .assertion_evidence(revision)?
-                .ok_or_else(|| invalid("not_found", "assertion family has no current revision"))?;
-            return Ok(found.reference());
-        }
-        Ok(reference)
+    /// The one point where a selected reference becomes a read target: an
+    /// assertion family binds its current revision, other kinds are refused.
+    fn bind_direct_reference(&self, reference: Reference) -> Result<ReadTarget, SelectionError> {
+        let reference = match reference {
+            Reference::Assertion(revision) if revision.revision.is_none() => self
+                .assertion_evidence(&revision)?
+                .ok_or_else(|| invalid("not_found", "assertion family has no current revision"))?
+                .reference(),
+            reference => reference,
+        };
+        ReadTarget::try_from(reference).map_err(|error| invalid("invalid_query", error.to_string()))
     }
 
     fn finish_selection<'read>(
         &'read self,
         plan: Plan,
         program: Program,
-        direct: Option<Reference>,
+        direct: Option<ReadTarget>,
         options: &Options,
     ) -> Result<PreparedSelection<'read>, SelectionError> {
         let scope = self.scope_token();
@@ -447,8 +447,7 @@ impl Reader<'_> {
                 "selection belongs to another access scope",
             )));
         }
-        self.validate_selection(&selection.program)
-            .map_err(E::from)?;
+        // The enclosing selection context has validated the program once.
         let program = &selection.program;
         if after.is_some_and(|after| after.values.len() != program.order.len()) {
             return Err(E::from(invalid(
@@ -491,14 +490,14 @@ impl Reader<'_> {
                 .iter()
                 .map(|key| row[&key.column].clone())
                 .collect::<Vec<_>>();
-            let reference = selection
+            let target = selection
                 .direct
                 .clone()
-                .or_else(|| row_reference(program, &row));
+                .or_else(|| row_target(program, &row));
             let identity = RowIdentity::from_row(program, &row);
             let first_seen = row["_first_seen"].as_i64();
             let aggregates = aggregate_values(program, &row);
-            let row_identity = reference
+            let row_identity = target
                 .as_ref()
                 .map(ToString::to_string)
                 .or_else(|| {
@@ -509,7 +508,7 @@ impl Reader<'_> {
                 .unwrap_or_else(|| serde_json::to_string(&order).expect("order position is JSON"));
             crate::query::execute::present(program, &mut row).map_err(VisitError::Selection)?;
             match visit(SelectionRow {
-                reference,
+                target,
                 values: row,
                 identity,
                 first_seen,
@@ -691,17 +690,18 @@ impl Reader<'_> {
             ));
         }
         if selection.program.shape != Shape::Rows {
-            return Ok(false);
+            return Err(invalid(
+                "invalid_query",
+                "grouped or summarized rows have no member records",
+            ));
         }
         if let Some(direct) = &selection.direct {
-            if direct == reference {
+            let direct = direct.reference();
+            if &direct == reference {
                 return Ok(true);
             }
-            if let Reference::Span { container, .. } = direct {
-                return self.selection_reference_contains(container, reference);
-            }
             if matches!(direct, Reference::MessageRange { .. }) {
-                return self.selection_reference_contains(direct, reference);
+                return self.selection_reference_contains(&direct, reference);
             }
         }
         let mut params = values(&selection.program.params);
@@ -898,8 +898,8 @@ pub fn sql_value(value: &Value) -> SqlValue {
     }
 }
 
-fn reference_atom(reference: &Reference) -> String {
-    let text = reference.to_string();
+fn reference_atom(target: &ReadTarget) -> String {
+    let text = target.to_string();
     let (kind, value) = text
         .split_once(':')
         .expect("native reference has a namespace");
@@ -958,42 +958,41 @@ fn direct_reference(
         Ok(None)
     }
 }
-fn reference_query(reference: &Reference) -> Result<String, SelectionError> {
-    let unit = reference_unit(reference)
-        .ok_or_else(|| invalid("invalid_query", "reference has no readable row"))?;
-    Ok(format!(
+fn reference_query(target: &ReadTarget) -> String {
+    format!(
         "{} where {}",
-        unit.name(),
-        reference_atom(reference)
-    ))
+        target_unit(target).name(),
+        reference_atom(target)
+    )
 }
 
-fn identity_reference(unit: Unit, values: &[Value]) -> Option<Reference> {
+fn identity_target(unit: Unit, values: &[Value]) -> Option<ReadTarget> {
     let text = |at: usize| values.get(at)?.as_str();
     match unit {
-        Unit::Sessions => SessionId::parse(text(0)?).ok().map(Reference::Session),
-        Unit::Messages => MessageId::parse(text(0)?).ok().map(Reference::Message),
-        Unit::Documents => DocumentId::parse(text(0)?).ok().map(Reference::Document),
-        Unit::Events => Some(Reference::Event(text(0)?.to_owned())),
-        Unit::Assertions => Some(Reference::Assertion(
-            polylogue_model::RevisionReference::exact(text(1)?.to_owned(), text(0)?.to_owned()),
-        )),
-        Unit::Deliveries => Some(Reference::Delivery(text(0)?.to_owned())),
-        Unit::Blocks | Unit::ToolCalls => Some(Reference::Block {
+        Unit::Sessions => SessionId::parse(text(0)?).ok().map(ReadTarget::Session),
+        Unit::Messages => MessageId::parse(text(0)?).ok().map(ReadTarget::Message),
+        Unit::Documents => DocumentId::parse(text(0)?).ok().map(ReadTarget::Document),
+        Unit::Events => Some(ReadTarget::Event(text(0)?.to_owned())),
+        Unit::Assertions => Some(ReadTarget::Assertion {
+            root: text(1)?.to_owned(),
+            revision: text(0)?.to_owned(),
+        }),
+        Unit::Deliveries => Some(ReadTarget::Delivery(text(0)?.to_owned())),
+        Unit::Blocks | Unit::ToolCalls => Some(ReadTarget::Block {
             message: MessageId::parse(text(0)?).ok()?,
             n: values.get(1)?.as_u64()?,
         }),
         _ => None,
     }
 }
-fn row_reference(program: &Program, row: &Value) -> Option<Reference> {
+fn row_target(program: &Program, row: &Value) -> Option<ReadTarget> {
     if program.shape != Shape::Rows {
         return None;
     }
     let RowBasis::Native { unit, columns } = &program.row_basis else {
         return None;
     };
-    identity_reference(
+    identity_target(
         *unit,
         &columns
             .iter()

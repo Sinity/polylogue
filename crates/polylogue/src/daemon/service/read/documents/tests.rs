@@ -1,7 +1,5 @@
 use super::*;
-use polylogue_model::{
-    BlobHash, Document, DocumentPurpose, DocumentRow, Output, Reference, read::*,
-};
+use polylogue_model::{BlobHash, Document, DocumentPurpose, DocumentRow, Output, read::*};
 use polylogue_render::pager::{PageBuilder, Push};
 use polylogue_store::{ReadPool, StoreError, fixture::writer::WriterArchive};
 
@@ -146,7 +144,7 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
     assert!(
         super::super::records::reference(
             &reader,
-            &Reference::Document(id),
+            &polylogue_model::read::ReadTarget::Document(id),
             false,
             None,
             &mut |_, _, _| {

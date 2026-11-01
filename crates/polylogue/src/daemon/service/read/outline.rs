@@ -88,7 +88,7 @@ pub(super) fn run(
         Ok(s) => s,
         Err(e) => return store_error(&e),
     };
-    let content = match selected.fingerprint() {
+    let content = match selected.content_version() {
         Ok(s) => s,
         Err(e) => return store_error(&e),
     };

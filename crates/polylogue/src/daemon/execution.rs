@@ -156,6 +156,11 @@ pub fn refusal(
             "count": null,
             "rows_scanned": null,
             "sqlite_steps": limit.sqlite_steps(),
+            "stage_timings": limit
+                .stage_timings()
+                .into_iter()
+                .map(|(stage, spent)| serde_json::json!({"stage": stage, "milliseconds": spent.as_secs_f64() * 1000.0}))
+                .collect::<Vec<_>>(),
             "suggestion": suggestion,
             "hint": "restrict the query to a shorter time range or one session",
             "retryable": true,

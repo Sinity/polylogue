@@ -563,6 +563,12 @@ CREATE TABLE document_block (
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
 CREATE INDEX document_block_blob ON document_block(blob_hash) WHERE blob_hash IS NOT NULL;
 
+-- One counter per import that moves whenever its members, asset metadata or
+-- sidecars change; a read binds it instead of re-reading the members.
+CREATE TABLE import_change (
+  import_id TEXT PRIMARY KEY,
+  changed INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
 -- Import membership is projected from the engine-authored observation details.
 CREATE TABLE import_member (
   observation TEXT PRIMARY KEY,

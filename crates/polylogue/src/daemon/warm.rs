@@ -86,6 +86,8 @@ pub struct Counted {
 pub struct Warm {
     vectors: Mutex<Option<Arc<Loaded>>>,
     archive_counts: Mutex<Option<Counted>>,
+    /// Whether the index had caught up, with the change position it was read at.
+    caught_up: Mutex<Option<(String, bool)>>,
     count_error: Mutex<Option<String>>,
     /// Wakes the count worker: a request saw counts older than its read.
     recount: std::sync::Condvar,
@@ -99,6 +101,7 @@ impl Default for Warm {
         Self {
             vectors: Mutex::new(None),
             archive_counts: Mutex::new(None),
+            caught_up: Mutex::new(None),
             count_error: Mutex::new(None),
             recount: std::sync::Condvar::new(),
             // The first count starts with the daemon.
@@ -217,6 +220,29 @@ impl Warm {
         }
     }
 
+    /// Whether the index has caught up at `position`. The answer is computed
+    /// once per change position, by the count worker or by the first read at
+    /// a new position; later pages and reads at that position reuse it.
+    pub fn caught_up(&self, reader: &Reader<'_>, position: &str) -> polylogue_store::Result<bool> {
+        if let Some((known, caught_up)) = self
+            .caught_up
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            && known == position
+        {
+            return Ok(*caught_up);
+        }
+        let caught_up = reader
+            .completeness(&polylogue_engine::reading_contracts())?
+            .caught_up();
+        *self
+            .caught_up
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some((position.to_owned(), caught_up));
+        Ok(caught_up)
+    }
+
     fn request_count(&self) {
         self.recount_wanted.store(true, Ordering::Release);
         self.recount.notify_one();
@@ -271,7 +297,10 @@ impl Warm {
             let position = reader
                 .change_position()
                 .map_err(|error| error.to_string())?;
-            count(&reader, &position.to_string())
+            let position = position.to_string();
+            self.caught_up(&reader, &position)
+                .map_err(|error| error.to_string())?;
+            count(&reader, &position)
         })();
         self.record_count(result);
     }
@@ -315,6 +344,9 @@ impl Warm {
             q.clear();
         }
         if let Ok(mut c) = self.archive_counts.lock() {
+            *c = None;
+        }
+        if let Ok(mut c) = self.caught_up.lock() {
             *c = None;
         }
         self.recount.notify_all();

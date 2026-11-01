@@ -59,13 +59,13 @@ fn breaking_message_visit_does_not_decode_later_bodies() {
         "the reference case must decode the corrupt later record"
     );
     assert!(
-        reader.message_fingerprint(&id, false).is_ok(),
-        "fingerprinting does not decode packed bodies"
+        reader.session_content_version(&id, false).is_ok(),
+        "a content version does not decode packed bodies"
     );
 }
 
 #[test]
-fn message_visits_and_fingerprints_include_the_same_logical_history() {
+fn message_visits_and_content_versions_include_the_same_logical_history() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let parent = fixture
@@ -121,8 +121,8 @@ fn message_visits_and_fingerprints_include_the_same_logical_history() {
     let pool = fixture.reads().unwrap();
     let id = SessionId::parse("claude-code:child").unwrap();
     let reader = pool.reader().unwrap();
-    let own = reader.message_fingerprint(&id, false).unwrap();
-    let with_parents = reader.message_fingerprint(&id, true).unwrap();
+    let own = reader.session_content_version(&id, false).unwrap();
+    let with_parents = reader.session_content_version(&id, true).unwrap();
     let mut messages = Vec::new();
     reader
         .visit_messages(&id, true, |m| {
@@ -145,15 +145,21 @@ fn message_visits_and_fingerprints_include_the_same_logical_history() {
         )
         .unwrap();
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.message_fingerprint(&id, false).unwrap(), own);
-    assert_eq!(reader.message_fingerprint(&id, true).unwrap(), with_parents);
+    assert_eq!(reader.session_content_version(&id, false).unwrap(), own);
+    assert_eq!(
+        reader.session_content_version(&id, true).unwrap(),
+        with_parents
+    );
     drop(reader);
     crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
         .execute("UPDATE link SET branch_point='claude-code:p2'", [])
         .unwrap();
     let reader = pool.reader().unwrap();
-    assert_ne!(reader.message_fingerprint(&id, true).unwrap(), with_parents);
+    assert_ne!(
+        reader.session_content_version(&id, true).unwrap(),
+        with_parents
+    );
 }
 
 #[test]

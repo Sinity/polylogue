@@ -1465,12 +1465,16 @@ fn query_targets_in(
                         row_count = row_count
                             .checked_add(1)
                             .ok_or_else(|| error("internal", "selected row count exceeds u64"))?;
-                        let reference = row.reference.ok_or_else(|| {
-                            error(
-                                "not_yet_available",
-                                "the selected row has no authoritative source reference",
-                            )
-                        })?;
+                        let reference = row
+                            .target
+                            .as_ref()
+                            .map(polylogue_model::read::ReadTarget::reference)
+                            .ok_or_else(|| {
+                                error(
+                                    "not_yet_available",
+                                    "the selected row has no authoritative source reference",
+                                )
+                            })?;
                         if seen.insert(reference.clone()) {
                             targets.push(reference);
                         }

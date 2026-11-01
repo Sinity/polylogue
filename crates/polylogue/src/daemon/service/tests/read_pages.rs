@@ -141,7 +141,7 @@ fn selected_fingerprint(d: &test_daemon::TestDaemon, session: &str) -> String {
     reader
         .select_messages(&polylogue_model::SessionId::parse(session).unwrap(), false)
         .unwrap()
-        .fingerprint()
+        .content_version()
         .unwrap()
 }
 

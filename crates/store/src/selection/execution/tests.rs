@@ -222,7 +222,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
         .unwrap();
     assert_eq!(
         binding.query_options.direct_reference,
-        direct.direct_reference().cloned()
+        direct.direct_target().map(ReadTarget::reference)
     );
     let object = direct.query_object().unwrap();
     let run = QueryRun {
@@ -246,7 +246,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
     let replay = reader
         .prepare_query_run_selection(&object, &run, &options.clock, None, None)
         .unwrap();
-    assert_eq!(replay.direct_reference(), direct.direct_reference());
+    assert_eq!(replay.direct_target(), direct.direct_target());
     let mut forged = run.clone();
     forged
         .binding
