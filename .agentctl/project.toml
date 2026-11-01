@@ -96,11 +96,14 @@ cap = "cargo"
 description = "Run a command in the Nix development shell"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
-pool = "bulk"
+pool = "normal"
 result = "exit"
-timeout_seconds = 1800
-scratch = "nvme"
+timeout_seconds = 10800
+scratch = "tmpfs"
 cache = "none"
+
+cap = "cargo"
+unit_properties = ["MemoryHigh=8G"]
 
 [operations.bench]
 description = "Run the corpus benchmark through the shared job queue"
