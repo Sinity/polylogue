@@ -1,16 +1,23 @@
 {
   "counts": {
     "records": 7,
+    "skipped": {},
+    "unread_fields": {
+      "assistant.quotaLimits.rateLimitType": 1,
+      "assistant.quotaLimits.resetsAt": 1,
+      "assistant.quotaLimits.status": 1,
+      "user.permissionDecision.decision": 1,
+      "user.permissionDecision.reasonType": 1,
+      "user.permissionDecision.source": 1
+    },
+    "unreadable": {},
     "used": {
       "api-request": 1,
       "api-request-blob": 1,
       "api-request-shape": 1,
       "assistant": 2,
       "user": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

@@ -337,6 +337,18 @@ impl Rollout {
         if let Some(url) = p.get("git").and_then(|g| str_field(g, "repository_url")) {
             s.repo = Some(url.to_owned());
         }
+        s.instructions = str_field(p, "instructions")
+            .or_else(|| p.pointer("/base_instructions/text").and_then(Json::as_str))
+            .map(str::to_owned)
+            .or(s.instructions.take());
+        s.model_provider = str_field(p, "model_provider")
+            .map(str::to_owned)
+            .or(s.model_provider.take());
+        s.git_commit = p
+            .pointer("/git/commit_hash")
+            .and_then(Json::as_str)
+            .map(str::to_owned)
+            .or(s.git_commit.take());
         if let Some(name) = str_field(p, "agent_nickname") {
             s.offer_title(name, TitleSource::AgentName);
         }
@@ -381,7 +393,7 @@ impl Rollout {
                 Self::unknown_boundaries(parent, out);
             }
         }
-        RecordOutcome::Used
+        self.event(parser_state, p, "session_meta", None, out)
     }
 
     fn older_header(&self, parser_state: &mut ParserState, v: &Json) -> RecordOutcome {
@@ -511,6 +523,10 @@ impl Rollout {
             stop_reason: None,
             reported_cost_usd: None,
             duration_ms: None,
+            attrs: item
+                .get("phase")
+                .map(|phase| [("phase".into(), phase.clone())].into_iter().collect())
+                .unwrap_or_default(),
             production: Production {
                 response_boundary_unknown: (role == Role::Assistant).then_some(true),
                 effort: (role == Role::Assistant && !copied)
@@ -806,6 +822,7 @@ impl Rollout {
                         stop_reason: None,
                         reported_cost_usd: None,
                         duration_ms: duration,
+                        attrs: Default::default(),
                         production: Production::default(),
                     },
                 });
@@ -1164,6 +1181,11 @@ impl Parser for Rollout {
                 }
                 if let (Some(cwd), Some(s)) = (str_field(p, "cwd"), parser_state.session.as_mut()) {
                     s.offer_cwd(cwd);
+                }
+                if let Some(s) = parser_state.session.as_mut() {
+                    if s.instructions.is_none() {
+                        s.instructions = str_field(p, "user_instructions").map(str::to_owned);
+                    }
                 }
                 // Settings repeat every turn; only a change is stored.
                 let mut settings = p.clone();

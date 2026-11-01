@@ -36,6 +36,9 @@ CREATE TABLE session (
   record_repo       TEXT,                   -- the repository the session's own records name
   repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup (derived)
   branch            TEXT,
+  git_commit        TEXT,
+  model_provider    TEXT,
+  instructions      TEXT,
   harness           TEXT,
   harness_version   TEXT,
   -- Live facts: updated in the session's write transaction

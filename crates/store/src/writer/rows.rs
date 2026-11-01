@@ -623,6 +623,12 @@ impl RowWriter<'_, '_> {
             .sum();
         let attrs = {
             let mut a = serde_json::Map::new();
+            if !m.attrs.is_empty() {
+                a.insert(
+                    "provider".into(),
+                    serde_json::Value::Object(m.attrs.clone()),
+                );
+            }
             if let Some(c) = &m.reported_cost_usd {
                 a.insert("reported_cost_usd".into(), c.clone().into());
             }

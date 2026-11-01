@@ -1,20 +1,47 @@
 {
   "counts": {
     "records": 6,
+    "skipped": {},
+    "unread_fields": {
+      "response_item/custom_tool_call_output.output[].text": 1,
+      "response_item/custom_tool_call_output.output[].type": 1
+    },
+    "unreadable": {},
     "used": {
       "event_msg/item_completed": 3,
       "response_item/custom_tool_call": 1,
       "response_item/custom_tool_call_output": 1,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "base_instructions": {
+            "text": "You are a coding agent."
+          },
+          "cli_version": "0.160.0",
+          "cwd": "/work/repo",
+          "git": {
+            "branch": "main",
+            "commit_hash": "abc"
+          },
+          "id": "019a0000-0000-7000-8000-000000000001",
+          "model_provider": "openai",
+          "originator": "codex_cli_rs",
+          "source": "cli",
+          "timestamp": "2026-03-01T10:00:00.000Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          380
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",
@@ -182,8 +209,11 @@
           "/work/repo"
         ],
         "git_branch": "main",
+        "git_commit": "abc",
         "id": "codex:019a0000-0000-7000-8000-000000000001",
+        "instructions": "You are a coding agent.",
         "kind": "main",
+        "model_provider": "openai",
         "started": "2026-03-01T10:00:00Z",
         "tool_version": "0.160.0"
       }

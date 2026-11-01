@@ -1,21 +1,34 @@
 {
   "counts": {
     "records": 6,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "response_item/function_call": 1,
       "response_item/function_call_output": 1,
       "response_item/message": 2,
       "response_item/token_count": 1,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "id": "tool-call-session-1",
+          "instructions": "Use tools.",
+          "timestamp": "2025-01-15T11:00:00Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          125
+        ],
+        "session": "codex:tool-call-session-1"
+      },
       {
         "data": {
           "input_tokens": 42,
@@ -122,6 +135,7 @@
     "sessions": [
       {
         "id": "codex:tool-call-session-1",
+        "instructions": "Use tools.",
         "kind": "main",
         "started": "2025-01-15T11:00:00Z"
       }

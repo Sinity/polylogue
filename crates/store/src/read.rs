@@ -766,6 +766,12 @@ impl Reader<'_> {
                     .and_then(serde_json::Value::as_number)
                     .cloned(),
                 duration_ms: n(duration),
+                attrs: attrs
+                    .as_ref()
+                    .and_then(|a| a.get("provider"))
+                    .and_then(|a| a.as_object())
+                    .cloned()
+                    .unwrap_or_default(),
                 production: attrs
                     .as_ref()
                     .and_then(|a| a.get("production"))

@@ -1,13 +1,13 @@
 {
   "counts": {
     "records": 2,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "conversation": 1,
       "text": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -73,6 +73,56 @@
         "end": 3623,
         "message": {
           "at": "1970-01-01T00:00:01Z",
+          "attrs": {
+            "channel": "synthetic-channel",
+            "metadata": {
+              "_cite_metadata": [],
+              "ada_visualizations": [],
+              "aggregate_result": {},
+              "args": {},
+              "async_task_id": "synthetic-async_task_id",
+              "async_task_title": "synthetic-async_task_title",
+              "async_task_type": "synthetic-async_task_type",
+              "attachments": [],
+              "canvas": {},
+              "citations": [],
+              "command": "synthetic-command",
+              "content_references": [],
+              "conversation_context_citation_metadata": [],
+              "dalle": {},
+              "default_model_slug": "synthetic-conversation-default-slug",
+              "durationMs": 1.0,
+              "duration_ms": 1.0,
+              "finish_details": {
+                "type": "max_tokens"
+              },
+              "finished_duration_sec": 1.0,
+              "finished_text": "synthetic-finished_text",
+              "image_results": [],
+              "initial_text": "synthetic-initial_text",
+              "inline_cot_expandable_content": [],
+              "is_visually_hidden_from_conversation": false,
+              "jit_plugin_data": {},
+              "model_effort": "synthetic-model_effort",
+              "name": "synthetic-name",
+              "reasoning_effort": "synthetic-reasoning_effort",
+              "reasoning_end_time": 1.0,
+              "reasoning_start_time": 1.0,
+              "reasoning_title": "synthetic-reasoning_title",
+              "request_id": "synthetic-request_id",
+              "search_display_string": "synthetic-search_display_string",
+              "search_queries": [],
+              "search_result_groups": [],
+              "selected_sources": [],
+              "targeted_reply": {
+                "text": "the earlier line the user quoted"
+              },
+              "targeted_reply_label": "Replying to",
+              "thinking_effort": "synthetic-thinking_effort",
+              "user_context_message_data": {}
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "action": "other",

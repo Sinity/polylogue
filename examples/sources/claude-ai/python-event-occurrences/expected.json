@@ -1,13 +1,15 @@
 {
   "counts": {
     "records": 3,
+    "skipped": {},
+    "unread_fields": {
+      "assistant.compaction_summary[].text": 2
+    },
+    "unreadable": {},
     "used": {
       "assistant": 2,
       "conversation": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -64,6 +66,14 @@
         "end": 987,
         "message": {
           "at": "2026-01-01T00:00:00Z",
+          "attrs": {
+            "metadata": {
+              "thinking_config": {
+                "budget_tokens": 100,
+                "type": "enabled"
+              }
+            }
+          },
           "blocks": [
             {
               "text": "first occurrence",
@@ -81,6 +91,14 @@
         "end": 987,
         "message": {
           "at": "2026-01-01T00:02:00Z",
+          "attrs": {
+            "metadata": {
+              "thinking_config": {
+                "budget_tokens": 200,
+                "type": "enabled"
+              }
+            }
+          },
           "blocks": [
             {
               "text": "second occurrence",

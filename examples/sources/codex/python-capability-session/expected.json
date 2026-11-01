@@ -1,18 +1,30 @@
 {
   "counts": {
     "records": 3,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "response_item/message": 2,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "id": "origin-matrix-codex",
+          "timestamp": "2026-08-01T10:00:00Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          97
+        ],
+        "session": "codex:origin-matrix-codex"
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",

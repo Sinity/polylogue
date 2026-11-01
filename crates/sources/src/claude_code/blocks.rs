@@ -148,7 +148,16 @@ fn tool_result(
         call_id: string(item, "tool_use_id"),
         outcome: outcome(record, item, meta, output.as_deref()),
         output,
-        data: meta.cloned(),
+        data: match item.get("content").and_then(Json::as_array) {
+            Some(parts)
+                if parts
+                    .iter()
+                    .any(|part| !matches!(ty(part), "text" | "image")) =>
+            {
+                Some(serde_json::json!({"toolUseResult":meta,"content":parts}))
+            }
+            _ => meta.cloned(),
+        },
         attachments,
     }
 }

@@ -43,6 +43,7 @@ fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&s
         stop_reason: stop.map(Into::into),
         reported_cost_usd: None,
         duration_ms: None,
+        attrs: Default::default(),
         production: Default::default(),
     }
 }
@@ -1031,4 +1032,29 @@ fn a_user_write_goes_ahead_of_queued_batches() {
         setting < batches,
         "the setting committed at {setting}, the queued batches from {batches}"
     );
+}
+
+#[test]
+fn provider_metadata_and_session_fields_survive_store_reads() {
+    let w = test_archive();
+    let mut message = text_message("a", "s", Role::Assistant, "Answer", Some("end_turn"));
+    message.attrs = serde_json::json!({"phase":"final_answer","metadata":{"citations":[{"url":"https://example.test/source","extra":{"range":[0,7]}}]}}).as_object().unwrap().clone();
+    let mut session = Session::new(sid("s"), SessionKind::Main);
+    session.instructions = Some("Follow the brief".into());
+    session.git_commit = Some("abc123".into());
+    session.model_provider = Some("provider".into());
+    let mut b = batch("i", 0, 0, vec![row(0, message.clone())], &["s"]);
+    b.parse[0].output.sessions = vec![session.clone()];
+    w.writer.send(b).unwrap();
+    w.writer.derive().unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader.messages(&sid("s"), false).unwrap()[0].attrs,
+        message.attrs
+    );
+    let read = reader.session(&sid("s")).unwrap().unwrap();
+    assert_eq!(read.instructions, session.instructions);
+    assert_eq!(read.git_commit, session.git_commit);
+    assert_eq!(read.model_provider, session.model_provider);
 }

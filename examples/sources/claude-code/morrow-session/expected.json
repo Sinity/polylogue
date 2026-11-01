@@ -1,14 +1,14 @@
 {
   "counts": {
     "records": 13,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "ai-title": 1,
       "assistant": 6,
       "user": 6
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -176,6 +176,13 @@
         "end": 4292,
         "message": {
           "at": "2026-10-01T07:15:16Z",
+          "attrs": {
+            "toolUseResult": {
+              "interrupted": false,
+              "stderr": "",
+              "stdout": "   Compiling morrow v0.1.0\n    Finished `dev` profile in 1.84s"
+            }
+          },
           "blocks": [
             {
               "call_id": "toolu_0104",

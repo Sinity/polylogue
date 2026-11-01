@@ -1,19 +1,36 @@
 {
   "counts": {
     "records": 4,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "response_item/message": 2,
       "response_item/token_count": 1,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "git": {
+            "branch": "main",
+            "commit_hash": "deadbeef"
+          },
+          "id": "text-only-session-1",
+          "instructions": "You are helpful.",
+          "timestamp": "2025-01-15T10:00:00Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          180
+        ],
+        "session": "codex:text-only-session-1"
+      },
       {
         "data": {
           "input_tokens": 12,
@@ -75,7 +92,9 @@
     "sessions": [
       {
         "git_branch": "main",
+        "git_commit": "deadbeef",
         "id": "codex:text-only-session-1",
+        "instructions": "You are helpful.",
         "kind": "main",
         "started": "2025-01-15T10:00:00Z"
       }

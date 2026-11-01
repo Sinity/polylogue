@@ -1,6 +1,9 @@
 {
   "counts": {
     "records": 13,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "compacted": 1,
       "response_item/function_call": 2,
@@ -9,15 +12,27 @@
       "response_item/token_count": 1,
       "session_meta": 1,
       "turn_context": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "git": {
+            "branch": "feature/x"
+          },
+          "id": "interleaved-session-1",
+          "timestamp": "2025-01-15T12:00:00Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          128
+        ],
+        "session": "codex:interleaved-session-1"
+      },
       {
         "data": {
           "cwd": "/repo/polylogue"

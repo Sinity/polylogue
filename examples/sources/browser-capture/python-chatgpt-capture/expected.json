@@ -1,6 +1,217 @@
 {
   "counts": {
     "records": 10,
+    "skipped": {},
+    "unread_fields": {
+      "capture.provenance.adapter_name": 1,
+      "capture.provenance.adapter_version": 1,
+      "capture.provenance.browser_profile": 1,
+      "capture.provenance.capture_mode": 1,
+      "capture.provenance.captured_at": 1,
+      "capture.provenance.extension_id": 1,
+      "capture.provenance.extension_instance_id": 1,
+      "capture.provenance.page_title": 1,
+      "capture.provenance.source_url": 1,
+      "capture.provider_meta.capture_fidelity": 1,
+      "capture.raw_provider_payload.conversation_id": 1,
+      "capture.raw_provider_payload.create_time": 1,
+      "capture.raw_provider_payload.current_node": 1,
+      "capture.raw_provider_payload.default_model_slug": 1,
+      "capture.raw_provider_payload.id": 1,
+      "capture.raw_provider_payload.mapping.answer-active.children": 1,
+      "capture.raw_provider_payload.mapping.answer-active.id": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.content.parts[]": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.content.parts[].asset_pointer": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.content.parts[].content_type": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.content.parts[].height": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.content.parts[].size_bytes": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.content.parts[].width": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.id": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.metadata.duration_ms": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.metadata.finished_duration_sec": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.metadata.model_slug": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.metadata.reasoning_start_time": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.metadata.thinking_effort": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.status": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.answer-active.message.weight": 1,
+      "capture.raw_provider_payload.mapping.answer-active.parent": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.children": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.id": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.content.parts[]": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.id": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.metadata.model_slug": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.metadata.thinking_effort": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.status": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.message.weight": 1,
+      "capture.raw_provider_payload.mapping.answer-inactive.parent": 1,
+      "capture.raw_provider_payload.mapping.context.children[]": 1,
+      "capture.raw_provider_payload.mapping.context.id": 1,
+      "capture.raw_provider_payload.mapping.context.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.context.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.context.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.context.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.context.message.content.user_instructions": 1,
+      "capture.raw_provider_payload.mapping.context.message.content.user_profile": 1,
+      "capture.raw_provider_payload.mapping.context.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.context.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.context.message.id": 1,
+      "capture.raw_provider_payload.mapping.context.message.metadata": 1,
+      "capture.raw_provider_payload.mapping.context.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.context.message.status": 1,
+      "capture.raw_provider_payload.mapping.context.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.context.message.weight": 1,
+      "capture.raw_provider_payload.mapping.context.parent": 1,
+      "capture.raw_provider_payload.mapping.recap-active.children[]": 1,
+      "capture.raw_provider_payload.mapping.recap-active.id": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.content.parts[]": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.id": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.metadata.durationMs": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.metadata.finished_duration_sec": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.metadata.model_slug": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.metadata.reasoning_end_time": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.metadata.reasoning_start_time": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.metadata.thinking_effort": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.status": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.recap-active.message.weight": 1,
+      "capture.raw_provider_payload.mapping.recap-active.parent": 1,
+      "capture.raw_provider_payload.mapping.root.children[]": 1,
+      "capture.raw_provider_payload.mapping.root.id": 1,
+      "capture.raw_provider_payload.mapping.root.message": 1,
+      "capture.raw_provider_payload.mapping.root.parent": 1,
+      "capture.raw_provider_payload.mapping.thought-active.children[]": 1,
+      "capture.raw_provider_payload.mapping.thought-active.id": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.content.parts[]": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.id": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.metadata.durationMs": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.metadata.model_slug": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.metadata.reasoning_start_time": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.metadata.thinking_effort": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.status": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.thought-active.message.weight": 1,
+      "capture.raw_provider_payload.mapping.thought-active.parent": 1,
+      "capture.raw_provider_payload.mapping.tool-call.children[]": 1,
+      "capture.raw_provider_payload.mapping.tool-call.id": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.content.parts[]": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.id": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.metadata.duration_ms": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.metadata.model_slug": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.metadata.reasoning_start_time": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.metadata.thinking_effort": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.status": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.tool-call.message.weight": 1,
+      "capture.raw_provider_payload.mapping.tool-call.parent": 1,
+      "capture.raw_provider_payload.mapping.tool-result.children[]": 1,
+      "capture.raw_provider_payload.mapping.tool-result.id": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.content.text": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.id": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.metadata.durationMs": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.metadata.reasoning_start_time": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.status": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.tool-result.message.weight": 1,
+      "capture.raw_provider_payload.mapping.tool-result.parent": 1,
+      "capture.raw_provider_payload.mapping.user.children[]": 2,
+      "capture.raw_provider_payload.mapping.user.id": 1,
+      "capture.raw_provider_payload.mapping.user.message.author.metadata": 1,
+      "capture.raw_provider_payload.mapping.user.message.author.name": 1,
+      "capture.raw_provider_payload.mapping.user.message.author.role": 1,
+      "capture.raw_provider_payload.mapping.user.message.content.content_type": 1,
+      "capture.raw_provider_payload.mapping.user.message.content.parts[]": 1,
+      "capture.raw_provider_payload.mapping.user.message.content.parts[].asset_pointer": 1,
+      "capture.raw_provider_payload.mapping.user.message.content.parts[].content_type": 1,
+      "capture.raw_provider_payload.mapping.user.message.content.parts[].height": 1,
+      "capture.raw_provider_payload.mapping.user.message.content.parts[].size_bytes": 1,
+      "capture.raw_provider_payload.mapping.user.message.content.parts[].width": 1,
+      "capture.raw_provider_payload.mapping.user.message.create_time": 1,
+      "capture.raw_provider_payload.mapping.user.message.end_turn": 1,
+      "capture.raw_provider_payload.mapping.user.message.id": 1,
+      "capture.raw_provider_payload.mapping.user.message.metadata.attachments[].file_id": 1,
+      "capture.raw_provider_payload.mapping.user.message.metadata.attachments[].id": 1,
+      "capture.raw_provider_payload.mapping.user.message.metadata.attachments[].mime_type": 1,
+      "capture.raw_provider_payload.mapping.user.message.metadata.attachments[].name": 1,
+      "capture.raw_provider_payload.mapping.user.message.metadata.attachments[].size": 1,
+      "capture.raw_provider_payload.mapping.user.message.recipient": 1,
+      "capture.raw_provider_payload.mapping.user.message.status": 1,
+      "capture.raw_provider_payload.mapping.user.message.update_time": 1,
+      "capture.raw_provider_payload.mapping.user.message.weight": 1,
+      "capture.raw_provider_payload.mapping.user.parent": 1,
+      "capture.raw_provider_payload.title": 1,
+      "capture.raw_provider_payload.update_time": 1,
+      "capture.session.attachments[].inline_base64": 1,
+      "capture.session.attachments[].message_provider_id": 1,
+      "capture.session.attachments[].mime_type": 1,
+      "capture.session.attachments[].name": 1,
+      "capture.session.attachments[].provider_attachment_id": 1,
+      "capture.session.attachments[].provider_meta.asset_kind": 1,
+      "capture.session.attachments[].provider_meta.capture_source": 1,
+      "capture.session.attachments[].size_bytes": 1,
+      "capture.session.created_at": 1,
+      "capture.session.model": 1,
+      "capture.session.provider": 1,
+      "capture.session.provider_meta.capture_fidelity": 1,
+      "capture.session.provider_session_id": 1,
+      "capture.session.session_kind": 1,
+      "capture.session.title": 1,
+      "capture.session.turns[].ordinal": 2,
+      "capture.session.turns[].provider_turn_id": 2,
+      "capture.session.turns[].role": 2,
+      "capture.session.turns[].text": 2,
+      "capture.session.turns[].timestamp": 2,
+      "capture.session.updated_at": 1,
+      "multimodal_text.content.parts[].asset_pointer": 2,
+      "multimodal_text.content.parts[].content_type": 2,
+      "multimodal_text.content.parts[].height": 2,
+      "multimodal_text.content.parts[].size_bytes": 2,
+      "multimodal_text.content.parts[].width": 2
+    },
+    "unreadable": {},
     "used": {
       "capture": 1,
       "conversation": 1,
@@ -10,10 +221,7 @@
       "text": 2,
       "thoughts": 1,
       "user_editable_context": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -80,6 +288,10 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:00Z",
+          "attrs": {
+            "metadata": {},
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Privacy-safe fixture profile.\n\nPreserve structured provider evidence.",
@@ -96,6 +308,20 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:40Z",
+          "attrs": {
+            "metadata": {
+              "attachments": [
+                {
+                  "file_id": "file-fixture-upload-1",
+                  "id": "fixture-upload-1",
+                  "mime_type": "text/plain",
+                  "name": "input.txt",
+                  "size": 42
+                }
+              ]
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Analyze the attached fixture and create an artifact.",
@@ -129,6 +355,13 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:42Z",
+          "attrs": {
+            "metadata": {
+              "model_slug": "gpt-5-6-pro",
+              "thinking_effort": "standard"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Superseded answer.",
@@ -150,6 +383,15 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:44.946Z",
+          "attrs": {
+            "metadata": {
+              "durationMs": 5190000,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Privacy-safe reasoning trace.",
@@ -171,6 +413,15 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:45Z",
+          "attrs": {
+            "metadata": {
+              "duration_ms": 5190000,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "action": "web",
@@ -197,6 +448,13 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T01:15:46Z",
+          "attrs": {
+            "metadata": {
+              "durationMs": 5190000,
+              "reasoning_start_time": 1784164541.690012
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "call_id": "tool-call-message",
@@ -219,6 +477,17 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T02:42:12.588194Z",
+          "attrs": {
+            "metadata": {
+              "durationMs": 5190000,
+              "finished_duration_sec": 5190,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_end_time": 1784169732.588194,
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Privacy-safe reasoning summary.",
@@ -241,6 +510,16 @@
         "end": 10211,
         "message": {
           "at": "2026-07-16T02:42:13Z",
+          "attrs": {
+            "metadata": {
+              "duration_ms": 5190000,
+              "finished_duration_sec": 5190,
+              "model_slug": "gpt-5-6-pro",
+              "reasoning_start_time": 1784164541.690012,
+              "thinking_effort": "extended"
+            },
+            "weight": 1.0
+          },
           "blocks": [
             {
               "text": "Final answer. [Download artifact](sandbox:/mnt/data/fixture-result.zip)",

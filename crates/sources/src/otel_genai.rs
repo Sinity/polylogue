@@ -285,6 +285,7 @@ fn model_span(
                 (true, Some(a), Some(b)) if b >= a => Some((b - a) / 1_000_000),
                 _ => None,
             },
+            attrs: Default::default(),
             production: Default::default(),
         };
         let offset = sink.position();

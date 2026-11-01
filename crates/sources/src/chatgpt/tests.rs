@@ -289,3 +289,32 @@ fn recognizes_the_export_and_its_shards_only() {
         b"[{\"uuid\": \"3b33\", \"name\": \"x\"}]"
     ));
 }
+
+#[test]
+fn citations_search_groups_and_canvas_keep_every_nested_field() {
+    let metadata = json!({
+        "citations":[{"start_ix":0,"end_ix":7,"metadata":{"title":"Brief","extra":{"url":"https://example.test/brief"}}}],
+        "content_references":[{"type":"grouped_webpages","items":[{"url":"https://example.test/primary"}],"fallback_items":[{"url":"https://example.test/backup"}]}],
+        "search_result_groups":[{"domain":"example.test","entries":[{"title":"Page","url":"https://example.test/page","snippet":"A snippet","ref_id":{"turn_index":0,"ref_type":"search","ref_index":4}}]}],
+        "inline_cot_expandable_content":{"search_result_groups":[{"entries":[{"url":"https://example.test/thought"}]}]},
+        "canvas":{"textdoc_id":"doc-1","title":"Notes","content":"Canvas text"},
+        "search_queries":["query",{"query":"another"}],"selected_sources":[{"id":"source"}],
+        "image_results":[{"url":"https://example.test/image"}],
+        "async_task_id":"task-1","async_task_type":"research","async_task_title":"Research"
+    });
+    let mut answer = msg(
+        "a",
+        "assistant",
+        1.0,
+        text(&["Per brief. \u{e200}cite\u{e202}turn0search4\u{e201}"]),
+    );
+    answer["metadata"] = metadata.clone();
+    answer["channel"] = json!("final");
+    answer["weight"] = json!(0);
+    let step = export(&[conv("c", "a", vec![node("a", None, answer)])]);
+    let message = &step.output.messages[0].message;
+    assert_eq!(message.attrs["metadata"], metadata);
+    assert_eq!(message.attrs["channel"], "final");
+    assert_eq!(message.attrs["weight"], 0);
+    assert!(!message.text().contains('\u{e200}'));
+}

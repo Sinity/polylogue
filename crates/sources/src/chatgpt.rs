@@ -100,7 +100,10 @@ impl crate::export::ExportParser for Export {
 /// A mapping node's own fields.
 static NODE_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read),
-    ("message", Rule::Read),
+    (
+        "message",
+        Rule::Indexed("accounted separately as a message"),
+    ),
     ("parent", Rule::Read),
     (
         "children",
@@ -124,21 +127,28 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
     ("content", Rule::Read),
+    ("content.content_type", Rule::Read),
+    ("content.parts[]", Rule::Read),
+    ("content.text", Rule::Read),
+    ("content.language", Rule::Read),
+    ("content.thoughts", Rule::Read),
+    ("content.thoughts[].summary", Rule::Read),
+    ("content.thoughts[].content", Rule::Read),
+    ("content.model_set_context", Rule::Read),
+    ("content.user_profile", Rule::Read),
+    ("content.user_instructions", Rule::Read),
     ("status", Rule::Read),
     (
         "end_turn",
         Rule::Excluded("turn boundaries follow from the roles"),
     ),
-    (
-        "weight",
-        Rule::Kept("0 marks a message hidden from the visible thread"),
-    ),
+    ("weight", Rule::Indexed("message attrs weight")),
     (
         "metadata",
-        Rule::Kept("dozens of provider keys; the ones about the message are read"),
+        Rule::Indexed("provider metadata in message attrs"),
     ),
     ("recipient", Rule::Read),
-    ("channel", Rule::Kept("reasoning-model output channel")),
+    ("channel", Rule::Indexed("message attrs channel")),
 ]);
 
 /// One conversation object: its session, messages and events. Shared by
@@ -513,8 +523,21 @@ fn message(
             // u64::MAX rounds to 2^64 as f64, so that boundary is exclusive.
             .filter(|ms| ms.is_finite() && *ms < u64::MAX as f64)
             .map(|ms| ms as u64),
+        attrs: message_attrs(msg),
         production: production(meta),
     })
+}
+
+/// Provider metadata keeps the original nested references, groups and canvas
+/// data, including fields added by the provider after this parser was written.
+fn message_attrs(msg: &Json) -> serde_json::Map<String, Json> {
+    let mut attrs = serde_json::Map::new();
+    for key in ["metadata", "channel", "weight"] {
+        if let Some(value) = msg.get(key) {
+            attrs.insert(key.into(), value.clone());
+        }
+    }
+    attrs
 }
 
 /// The request settings ChatGPT recorded beside a response.

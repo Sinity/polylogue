@@ -1,20 +1,36 @@
 {
   "counts": {
     "records": 14,
+    "skipped": {},
+    "unread_fields": {
+      "response_item/custom_tool_call_output.output[].text": 5,
+      "response_item/custom_tool_call_output.output[].type": 5
+    },
+    "unreadable": {},
     "used": {
       "event_msg/item_completed": 5,
       "response_item/custom_tool_call": 4,
       "response_item/custom_tool_call_output": 4,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "cwd": "/repo",
+          "id": "codex-item-completed",
+          "timestamp": "2026-09-02T10:00:00Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          120
+        ],
+        "session": "codex:codex-item-completed"
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",

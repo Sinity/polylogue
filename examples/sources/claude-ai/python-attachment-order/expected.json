@@ -1,13 +1,21 @@
 {
   "counts": {
     "records": 3,
+    "skipped": {},
+    "unread_fields": {
+      "human.attachments[].extracted_content": 3,
+      "human.attachments[].file_name": 3,
+      "human.attachments[].file_size": 3,
+      "human.attachments[].file_type": 3,
+      "human.files[].file_name": 1,
+      "human.files[].file_type": 1,
+      "human.files[].file_uuid": 1
+    },
+    "unreadable": {},
     "used": {
       "conversation": 1,
       "human": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

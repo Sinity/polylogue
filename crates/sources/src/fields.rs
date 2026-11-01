@@ -1,37 +1,36 @@
-//! Every wire field is read, or excluded with a declared reason. An origin
-//! declares its fields per record kind; [`unaccounted`] lists the fields a
-//! record carries that the declaration does not mention.
+//! Wire fields are read at their exact path, indexed whole, kept in the
+//! stored input, or deliberately ignored with a reason.
 
 use polylogue_model::Json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
-    /// The parser reads it into a row.
+    /// The parser reads this value. Objects and arrays still need rules
+    /// for their children.
     Read,
-    /// Kept whole in the stored record or an event's data, not parsed
-    /// yet, for the stated reason.
+    /// The complete value is stored in an index row, including its children.
+    Indexed(&'static str),
+    /// Kept in the stored input, with no parsed representation yet.
     Kept(&'static str),
     /// Not read, for the stated reason.
     Excluded(&'static str),
 }
 
-/// Paths are dotted object keys; `[]` stands for every element of an array
-/// (`message.content[].text`). A declared path covers everything below it
-/// unless deeper paths are declared too.
+/// Dotted object keys; `[]` stands for each array element. Only `Indexed`,
+/// `Kept` and `Excluded` cover descendants. `Read` never hides unread children.
 pub struct Fields {
     rules: &'static [(&'static str, Rule)],
     compiled: OnceLock<Compiled>,
 }
 
 struct Compiled {
-    exact: HashSet<&'static str>,
+    exact: HashMap<&'static str, Rule>,
     deeper: HashSet<&'static str>,
 }
 
 impl Fields {
-    /// Declare as `static` so parsing threads share the lookup.
     pub const fn new(rules: &'static [(&'static str, Rule)]) -> Self {
         Self {
             rules,
@@ -41,10 +40,10 @@ impl Fields {
 
     fn compiled(&self) -> &Compiled {
         self.compiled.get_or_init(|| {
-            let mut exact = HashSet::new();
+            let mut exact = HashMap::new();
             let mut deeper = HashSet::new();
-            for &(path, _) in self.rules {
-                exact.insert(path);
+            for &(path, rule) in self.rules {
+                exact.insert(path, rule);
                 for (at, ch) in path.char_indices() {
                     if matches!(ch, '.' | '[') {
                         deeper.insert(&path[..at]);
@@ -62,6 +61,26 @@ pub fn unaccounted(value: &Json, fields: &Fields) -> Vec<String> {
     out
 }
 
+fn visit(value: &Json, path: &str, fields: &Compiled, out: &mut Vec<String>) {
+    let rule = fields.exact.get(path);
+    if matches!(
+        rule,
+        Some(Rule::Indexed(_) | Rule::Kept(_) | Rule::Excluded(_))
+    ) {
+        return;
+    }
+    let container = match value {
+        Json::Object(map) => !map.is_empty(),
+        Json::Array(items) => !items.is_empty(),
+        _ => false,
+    };
+    if container {
+        walk(value, path, fields, out);
+    } else if rule.is_none() && !fields.deeper.contains(path) {
+        out.push(path.to_owned());
+    }
+}
+
 fn walk(value: &Json, path: &str, fields: &Compiled, out: &mut Vec<String>) {
     match value {
         Json::Object(map) => {
@@ -71,19 +90,13 @@ fn walk(value: &Json, path: &str, fields: &Compiled, out: &mut Vec<String>) {
                 } else {
                     format!("{path}.{key}")
                 };
-                if fields.deeper.contains(child_path.as_str()) {
-                    walk(child, &child_path, fields, out);
-                } else if !fields.exact.contains(child_path.as_str()) {
-                    out.push(child_path);
-                }
+                visit(child, &child_path, fields, out);
             }
         }
         Json::Array(items) => {
             let element = format!("{path}[]");
-            if fields.deeper.contains(element.as_str()) {
-                for item in items {
-                    walk(item, &element, fields, out);
-                }
+            for item in items {
+                visit(item, &element, fields, out);
             }
         }
         _ => {}

@@ -1,14 +1,14 @@
 {
   "counts": {
     "records": 4,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "assistant": 1,
       "continued-in": 1,
       "user": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

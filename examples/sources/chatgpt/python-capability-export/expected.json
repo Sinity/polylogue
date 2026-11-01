@@ -1,13 +1,13 @@
 {
   "counts": {
     "records": 2,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "conversation": 1,
       "text": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

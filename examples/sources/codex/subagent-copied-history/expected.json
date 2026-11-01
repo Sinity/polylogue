@@ -1,19 +1,19 @@
 {
   "counts": {
     "records": 8,
-    "used": {
-      "inter_agent_communication_metadata": 1,
-      "response_item/agent_message": 1,
-      "response_item/message": 2,
-      "session_meta": 1
-    },
-    "unreadable": {},
     "skipped": {
       "compacted: copied from the parent thread, which stores it": 1,
       "response_item/message: copied from the parent thread, which stores it": 1,
       "turn_context: copied from the parent thread, which stores it": 1
     },
-    "unread_fields": {}
+    "unread_fields": {},
+    "unreadable": {},
+    "used": {
+      "inter_agent_communication_metadata": 1,
+      "response_item/agent_message": 1,
+      "response_item/message": 2,
+      "session_meta": 1
+    }
   },
   "output": {
     "background": [],
@@ -23,6 +23,45 @@
         "data": {},
         "kind": "response_boundaries_unknown",
         "session": "codex:019a0000-0000-7000-8000-0000000000aa"
+      },
+      {
+        "data": {
+          "agent_nickname": "Volta",
+          "agent_path": "/root/check",
+          "base_instructions": {
+            "text": "You are a coding agent."
+          },
+          "cli_version": "0.160.0",
+          "cwd": "/work/repo",
+          "forked_from_id": "019a0000-0000-7000-8000-0000000000aa",
+          "git": {
+            "branch": "main",
+            "commit_hash": "abc"
+          },
+          "id": "019a0000-0000-7000-8000-000000000001",
+          "model_provider": "openai",
+          "originator": "codex_cli_rs",
+          "parent_thread_id": "019a0000-0000-7000-8000-0000000000aa",
+          "source": {
+            "subagent": {
+              "thread_spawn": {
+                "agent_nickname": "Volta",
+                "agent_path": "/root/check",
+                "depth": 1,
+                "parent_thread_id": "019a0000-0000-7000-8000-0000000000aa"
+              }
+            }
+          },
+          "subagent_history_start_ordinal": 6,
+          "thread_source": "subagent",
+          "timestamp": "2026-03-01T10:00:00.000Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          754
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
       },
       {
         "at": "2026-03-01T10:00:06Z",
@@ -122,8 +161,11 @@
           "/work/repo"
         ],
         "git_branch": "main",
+        "git_commit": "abc",
         "id": "codex:019a0000-0000-7000-8000-000000000001",
+        "instructions": "You are a coding agent.",
         "kind": "subagent",
+        "model_provider": "openai",
         "started": "2026-03-01T10:00:00Z",
         "title": {
           "source": "agent_name",

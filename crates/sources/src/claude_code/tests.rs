@@ -374,3 +374,87 @@ fn usage_keeps_one_hour_cache_writes_and_the_speed() {
     assert_eq!(u.service_tier.as_deref(), Some("standard"));
     assert_eq!(u.speed.as_deref(), Some("fast"));
 }
+
+#[test]
+fn thinking_tokens_and_server_usage_keep_zero_and_absence_distinct() {
+    for thinking in [json!(0), json!(27), Json::Null] {
+        let mut record = assistant("a", "m", json!({"type":"text","text":"Answer"}));
+        record["message"]["usage"] = json!({"input_tokens":10,"output_tokens":30,"output_tokens_details":{"thinking_tokens":thinking,"extra":4},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":2},"iterations":[{"type":"message","input_tokens":3}],"inference_geo":"us"});
+        let step = run(
+            &main_file("s1"),
+            &mut ParserState::default(),
+            &jsonl(&[record.clone()]),
+            0,
+        )
+        .unwrap();
+        let message = &step.output.messages[0].message;
+        assert_eq!(message.usage.reasoning, thinking.as_u64());
+        assert_eq!(
+            message.attrs["usage"]["server_tool_use"],
+            record["message"]["usage"]["server_tool_use"]
+        );
+        assert_eq!(
+            message.attrs["usage"]["iterations"],
+            record["message"]["usage"]["iterations"]
+        );
+        assert_eq!(message.attrs["usage"]["output_tokens_details"]["extra"], 4);
+    }
+}
+
+#[test]
+fn progress_only_agent_messages_use_the_transcript_identity_across_appends() {
+    let progress = |agent: &str, message: Json| json!({"type":"progress","uuid":format!("p-{agent}"),"sessionId":"parent","parentToolUseID":"call","data":{"type":"agent_progress","agentId":agent,"message":message}});
+    let child = assistant(
+        "child-a",
+        "child-response",
+        json!({"type":"text","text":"Child answer"}),
+    );
+    let first = jsonl(&[
+        assistant(
+            "parent-a",
+            "parent-response",
+            json!({"type":"text","text":"Parent answer"}),
+        ),
+        progress("worker", child.clone()),
+        progress(
+            "other",
+            assistant(
+                "other-a",
+                "other-response",
+                json!({"type":"text","text":"Other answer"}),
+            ),
+        ),
+    ]);
+    let mut state = ParserState::default();
+    let step = run(&main_file("parent"), &mut state, &first, 0).unwrap();
+    let by_id: HashMap<_, _> = step
+        .output
+        .messages
+        .iter()
+        .map(|row| (row.message.id.native().as_str(), &row.message))
+        .collect();
+    assert_eq!(by_id["parent-a"].text(), "Parent answer");
+    assert_eq!(by_id["child-a"].session.native().as_str(), "agent-worker");
+    assert_eq!(by_id["child-a"].text(), "Child answer");
+    assert_eq!(by_id["other-a"].session.native().as_str(), "agent-other");
+    assert!(
+        step.output
+            .sessions
+            .iter()
+            .any(|s| s.id.native().as_str() == "agent-worker" && s.kind == SessionKind::Subagent)
+    );
+    let state: ParserState = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+    let mut state = state;
+    let next = jsonl(&[progress(
+        "worker",
+        json!({"type":"user","uuid":"child-u","message":{"role":"user","content":"Follow-up"}}),
+    )]);
+    let step = run(&main_file("parent"), &mut state, &next, first.len() as u64).unwrap();
+    assert!(
+        step.output
+            .messages
+            .iter()
+            .any(|row| row.message.id.native().as_str() == "child-u"
+                && row.message.session.native().as_str() == "agent-worker")
+    );
+}

@@ -286,12 +286,44 @@ fn message(
         stop_reason: string_of(m, "stop_reason"),
         reported_cost_usd: None,
         duration_ms: None,
+        attrs: content_attrs(m),
         production: Default::default(),
     })
 }
 
-/// One content block. `token_budget` notes how much context remained; it
-/// is not content and is left in the stored record.
+fn content_attrs(message: &Json) -> serde_json::Map<String, Json> {
+    let mut attrs = serde_json::Map::new();
+    if let Some(value) = message.get("metadata") {
+        attrs.insert("metadata".into(), value.clone());
+    }
+    let details: Vec<Json> = message
+        .get("content")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter_map(|(position, block)| {
+            let fields: serde_json::Map<String, Json> = block
+                .as_object()?
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_str(),
+                        "type" | "text" | "thinking" | "signature" | "input" | "content" | "source"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            (!fields.is_empty()).then(|| serde_json::json!({"position":position,"fields":fields}))
+        })
+        .collect();
+    if !details.is_empty() {
+        attrs.insert("content".into(), Json::Array(details));
+    }
+    attrs
+}
+
+/// One content block. Provider-only kinds remain structured index blocks.
 fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
     let kind = str_of(b, "type").unwrap_or("");
     Some(match kind {
@@ -338,7 +370,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
         "image" => Block::Image(media_attachment(b, direction)),
         "document" => Block::File(media_attachment(b, direction)),
         "tool_result" => tool_result(b, direction),
-        "token_budget" => return None,
+
         other => Block::Other {
             type_name: other.to_owned(),
             data: b.clone(),
@@ -435,10 +467,20 @@ fn tool_result(b: &Json, direction: AttachmentDirection) -> Block {
         _ => {}
     }
     let error = b.get("is_error").and_then(Json::as_bool) == Some(true);
-    let structured = b
+    let mut structured = b
         .get("structured_content")
         .filter(|v| !v.is_null())
         .cloned();
+    if let Some(items) = b.get("content").and_then(Json::as_array) {
+        let other: Vec<_> = items
+            .iter()
+            .filter(|item| !matches!(str_of(item, "type"), Some("text" | "image" | "document")))
+            .cloned()
+            .collect();
+        if !other.is_empty() {
+            structured = Some(serde_json::json!({"structured_content":structured,"content":other}));
+        }
+    }
     Block::ToolResult {
         call_id: string_of(b, "tool_use_id"),
         outcome: if error {
@@ -613,6 +655,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             stop_reason: None,
             reported_cost_usd: None,
             duration_ms: None,
+            attrs: Default::default(),
             production: Default::default(),
         };
         let offset = sink.position();

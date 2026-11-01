@@ -28,7 +28,7 @@ use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
-    version: Version::Rules(4),
+    version: Version::Rules(5),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -136,6 +136,9 @@ fn merge(inputs: &[Input]) -> Session {
             .map(|(v, _)| v.clone())
     };
     s.git_branch = latest(|f| &f.git_branch);
+    s.git_commit = latest(|f| &f.git_commit);
+    s.model_provider = latest(|f| &f.model_provider);
+    s.instructions = latest(|f| &f.instructions);
     s.tool_version = latest(|f| &f.tool_version);
     s.mode = latest(|f| &f.mode);
     s.repo = latest(|f| &f.repo);

@@ -1,14 +1,22 @@
 {
   "counts": {
     "records": 5,
+    "skipped": {},
+    "unread_fields": {
+      "user.driveDocument.id": 1,
+      "user.driveDocument.mimeType": 1,
+      "user.driveDocument.name": 1,
+      "user.driveDocument.sizeBytes": 1,
+      "user.inlineFile.data": 1,
+      "user.inlineFile.mimeType": 1,
+      "user.youtubeVideo.id": 1
+    },
+    "unreadable": {},
     "used": {
       "model": 1,
       "prompt": 1,
       "user": 3
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

@@ -1,6 +1,12 @@
 {
   "counts": {
     "records": 23,
+    "skipped": {},
+    "unread_fields": {
+      "response_item/custom_tool_call_output.output[].text": 5,
+      "response_item/custom_tool_call_output.output[].type": 5
+    },
+    "unreadable": {},
     "used": {
       "response_item/custom_tool_call": 4,
       "response_item/custom_tool_call_output": 4,
@@ -8,15 +14,25 @@
       "response_item/function_call_output": 6,
       "response_item/message": 2,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "cwd": "/workspace/sample",
+          "id": "tool-result-headers",
+          "timestamp": "2026-09-02T10:00:00.000Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          166
+        ],
+        "session": "codex:tool-result-headers"
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",

@@ -1,12 +1,18 @@
 {
   "counts": {
     "records": 3,
-    "used": {
-      "atof": 3
+    "skipped": {},
+    "unread_fields": {
+      "atof.data.approved": 1,
+      "atof.data.command": 1,
+      "atof.data.duration_ms": 1,
+      "atof.data.reason": 1,
+      "atof.data.stdout": 1
     },
     "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    "used": {
+      "atof": 3
+    }
   },
   "output": {
     "background": [],

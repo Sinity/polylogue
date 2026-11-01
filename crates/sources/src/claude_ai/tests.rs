@@ -63,7 +63,7 @@ fn a_turn_with_a_server_tool_keeps_call_and_result_together() {
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["thinking", "call", "result", "text"]);
+    assert_eq!(kinds, ["thinking", "call", "result", "other", "text"]);
     match &msgs[1].blocks[0] {
         Block::Thinking { text, redacted, .. } => {
             assert_eq!(text.as_deref(), Some("planning"));
@@ -251,4 +251,46 @@ fn a_compaction_summary_marks_the_discontinuity_before_its_message() {
         "{:?}",
         step.counts.unread_fields
     );
+}
+
+#[test]
+fn citations_budget_thinking_summaries_and_search_results_are_indexed() {
+    let content = json!([
+        {"type":"thinking","thinking":"Plan","summaries":[{"summary":"Summary"}],"start_timestamp":"2026-01-01T00:00:00Z"},
+        {"type":"text","text":"Answer","citations":[{"url":"https://example.test/source","start_index":0,"end_index":0,"extra":{"value":true}}]},
+        {"type":"token_budget","remaining":0,"total":200000},
+        {"type":"tool_result","tool_use_id":"search","content":[{"type":"web_search_result","url":"https://example.test/page","title":"Page","encrypted_content":"opaque"}],"structured_content":{"ok":true}},
+        {"type":"tool_use","name":"artifacts","id":"canvas","input":{"command":"create","id":"doc","content":"Canvas"}}
+    ]);
+    let step = run(vec![conv(vec![m(
+        "a",
+        "assistant",
+        ROOT_PARENT,
+        "2026-01-01T00:00:01Z",
+        content.clone(),
+    )])]);
+    let message = &step.output.messages[0].message;
+    assert_eq!(
+        message.attrs["content"][0]["fields"]["summaries"],
+        content[0]["summaries"]
+    );
+    assert_eq!(
+        message.attrs["content"][1]["fields"]["citations"],
+        content[1]["citations"]
+    );
+    assert!(
+        matches!(&message.blocks[2], Block::Other {type_name,data} if type_name == "token_budget" && data == &content[2])
+    );
+    let Block::ToolResult {
+        data: Some(data), ..
+    } = &message.blocks[3]
+    else {
+        panic!("search result missing")
+    };
+    assert_eq!(data["content"], content[3]["content"]);
+    assert_eq!(data["structured_content"], content[3]["structured_content"]);
+    let Block::ToolCall { input, .. } = &message.blocks[4] else {
+        panic!("canvas missing")
+    };
+    assert_eq!(input, &content[4]["input"]);
 }

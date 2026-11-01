@@ -1,14 +1,31 @@
 {
   "counts": {
     "records": 5,
+    "skipped": {},
+    "unread_fields": {
+      "assistant.content[].id": 1,
+      "assistant.content[].input.query": 1,
+      "assistant.content[].name": 1,
+      "assistant.content[].remaining": 1,
+      "assistant.content[].signature": 1,
+      "assistant.content[].text": 2,
+      "assistant.content[].thinking": 1,
+      "assistant.content[].type": 5,
+      "human.content[].content[].source.data": 2,
+      "human.content[].content[].source.media_type": 2,
+      "human.content[].content[].source.type": 2,
+      "human.content[].content[].text": 2,
+      "human.content[].content[].type": 4,
+      "human.content[].is_error": 1,
+      "human.content[].tool_use_id": 2,
+      "human.content[].type": 2
+    },
+    "unreadable": {},
     "used": {
       "assistant": 2,
       "conversation": 1,
       "human": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -38,6 +55,17 @@
         "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:01Z",
+          "attrs": {
+            "content": [
+              {
+                "fields": {
+                  "id": "toolu-1",
+                  "name": "web_search"
+                },
+                "position": 2
+              }
+            ]
+          },
           "blocks": [
             {
               "text": "Let me search.",
@@ -68,6 +96,17 @@
         "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:02Z",
+          "attrs": {
+            "content": [
+              {
+                "fields": {
+                  "is_error": true,
+                  "tool_use_id": "toolu-1"
+                },
+                "position": 0
+              }
+            ]
+          },
           "blocks": [
             {
               "attachments": [
@@ -97,6 +136,16 @@
         "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:03Z",
+          "attrs": {
+            "content": [
+              {
+                "fields": {
+                  "tool_use_id": "toolu-2"
+                },
+                "position": 0
+              }
+            ]
+          },
           "blocks": [
             {
               "attachments": [
@@ -126,10 +175,28 @@
         "end": 1768,
         "message": {
           "at": "2026-01-01T00:00:04Z",
+          "attrs": {
+            "content": [
+              {
+                "fields": {
+                  "remaining": 5
+                },
+                "position": 1
+              }
+            ]
+          },
           "blocks": [
             {
               "text": "Complete.",
               "type": "text"
+            },
+            {
+              "data": {
+                "remaining": 5,
+                "type": "token_budget"
+              },
+              "type": "other",
+              "type_name": "token_budget"
             }
           ],
           "id": "claude-ai:assistant-2",

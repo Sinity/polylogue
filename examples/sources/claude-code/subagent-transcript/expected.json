@@ -1,14 +1,14 @@
 {
   "counts": {
     "records": 3,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "assistant": 1,
       "fork-context-ref": 1,
       "user": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

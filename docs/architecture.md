@@ -346,3 +346,43 @@ commands run independently of the engine, parsing jobs and the daemon.
 The observer reports field names, structural paths and counts, grouping dynamic
 map keys under `*`. Observed values stay out. Reads use read-only database
 and blob handles, including while the daemon holds the archive lock. `xtask schema` delegates to the same command table.
+
+## Provider fields and parser accounting
+
+A field declared `Read` accounts for that exact value. Its object members and
+array elements need their own declarations. `Indexed` accounts for a complete
+JSON value stored in the index; `Kept` and `Excluded` give the reason a value
+stays only in the original input. Unknown descendants, including empty objects
+and arrays, appear by their full path in `unused`. Repeated array elements
+contribute separately to their path's count.
+
+The message's `attrs` holds provider fields as JSON. Store writes these under
+`provider` in `message.attrs_json` and reads them back for exports. ChatGPT's
+`metadata` includes citations (including grouped and fallback sources), search
+results, canvas, image results and task data. Claude content details name their
+block position and preserve citations, thinking summaries and timestamps.
+Structured web-search result items stay in tool-result data, and token-budget
+blocks stay as structured blocks. These values can be inspected with read-only
+SQL, for example `json_extract(attrs_json,'$.provider.metadata.citations')`.
+
+Codex session instructions, model provider and commit have session columns.
+Its header is also an event, so additional header fields remain indexed.
+Claude usage stores thinking tokens in the reasoning-token column and keeps
+server-tool counts and other usage details in message attributes. Messages in
+Claude agent-progress records use the same child session and message IDs as
+separate subagent transcripts; each child's split responses assemble separately.
+
+The `unused` example reparses the exact latest revisions selected by
+`polylogue-live sql`, using Store's read-only byte readers. It writes field
+paths and counts, with no message contents or source paths:
+
+```
+agentctl job start polylogue exec --workspace WORKTREE -- \
+  cargo run --locked -q -p polylogue --example unused -- \
+  polylogue-live OUTPUT.json
+```
+
+Each reported undeclared field stays in its stored input and has no declared
+parsed representation. A nonzero `unavailable` count means that part of the
+archive was not audited. Counts describe selected revisions at audit time,
+not every earlier version of every input.

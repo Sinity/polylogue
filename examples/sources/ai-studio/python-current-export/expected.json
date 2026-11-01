@@ -1,16 +1,55 @@
 {
   "counts": {
     "records": 16,
+    "skipped": {
+      "user: empty chunk": 1
+    },
+    "unread_fields": {
+      "model.codeExecutionResult.outcome": 1,
+      "model.codeExecutionResult.output": 1,
+      "model.executableCode.code": 1,
+      "model.executableCode.language": 1,
+      "prompt.runSettings.enableAgentCollaborativePlanningControl": 1,
+      "prompt.runSettings.enableAgentThinkingSummariesControl": 1,
+      "prompt.runSettings.enableAgentVisualizationControl": 1,
+      "prompt.runSettings.enableAutoFunctionResponse": 1,
+      "prompt.runSettings.enableBrowseAsATool": 1,
+      "prompt.runSettings.enableCodeExecution": 1,
+      "prompt.runSettings.enableEnhancedCivicAnswers": 1,
+      "prompt.runSettings.enableGoogleMaps": 1,
+      "prompt.runSettings.enableImageSearch": 1,
+      "prompt.runSettings.enableSearchAsATool": 1,
+      "prompt.runSettings.googleSearch": 1,
+      "prompt.runSettings.maxOutputTokens": 1,
+      "prompt.runSettings.model": 1,
+      "prompt.runSettings.outputResolution": 1,
+      "prompt.runSettings.responseMimeType": 1,
+      "prompt.runSettings.responseModalities": 1,
+      "prompt.runSettings.safetySettings[].category": 1,
+      "prompt.runSettings.safetySettings[].threshold": 1,
+      "prompt.runSettings.temperature": 1,
+      "prompt.runSettings.thinkingBudget": 1,
+      "prompt.runSettings.thinkingLevel": 1,
+      "prompt.runSettings.topK": 1,
+      "prompt.runSettings.topP": 1,
+      "prompt.systemInstruction.text": 1,
+      "user.branchParent.id": 1,
+      "user.driveAudio.id": 1,
+      "user.driveDocument.id": 1,
+      "user.driveImage.id": 1,
+      "user.driveVideo.id": 1,
+      "user.inlineFile.data": 1,
+      "user.inlineFile.mimeType": 1,
+      "user.inlineImage.data": 1,
+      "user.inlineImage.mimeType": 1,
+      "user.youtubeVideo.url": 1
+    },
+    "unreadable": {},
     "used": {
       "model": 6,
       "prompt": 1,
       "user": 8
-    },
-    "unreadable": {},
-    "skipped": {
-      "user: empty chunk": 1
-    },
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

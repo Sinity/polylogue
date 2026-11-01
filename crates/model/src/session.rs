@@ -59,6 +59,12 @@ pub struct Session {
     pub cwd: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     /// The repository the session worked in, as the tool names it (a
     /// remote URL), when it records one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +88,9 @@ impl Session {
             title: None,
             cwd: Vec::new(),
             git_branch: None,
+            git_commit: None,
+            model_provider: None,
+            instructions: None,
             repo: None,
             tool_version: None,
             started: None,
@@ -137,6 +146,15 @@ impl Session {
         }
         if other.git_branch.is_some() {
             self.git_branch.clone_from(&other.git_branch);
+        }
+        if other.git_commit.is_some() {
+            self.git_commit.clone_from(&other.git_commit);
+        }
+        if other.model_provider.is_some() {
+            self.model_provider.clone_from(&other.model_provider);
+        }
+        if other.instructions.is_some() {
+            self.instructions.clone_from(&other.instructions);
         }
         if other.repo.is_some() {
             self.repo.clone_from(&other.repo);

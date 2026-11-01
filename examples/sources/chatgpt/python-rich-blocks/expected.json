@@ -1,6 +1,12 @@
 {
   "counts": {
     "records": 7,
+    "skipped": {},
+    "unread_fields": {
+      "multimodal_text.content.parts[].asset_pointer": 2,
+      "multimodal_text.content.parts[].content_type": 2
+    },
+    "unreadable": {},
     "used": {
       "code": 1,
       "conversation": 1,
@@ -8,10 +14,7 @@
       "multimodal_text": 1,
       "text": 2,
       "thoughts": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -47,6 +50,9 @@
         "end": 2818,
         "message": {
           "at": "1970-01-01T00:00:01Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "text": "compute 6 * 7",
@@ -64,6 +70,9 @@
         "end": 2818,
         "message": {
           "at": "1970-01-01T00:00:02Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "action": "code",
@@ -85,6 +94,9 @@
         "end": 2818,
         "message": {
           "at": "1970-01-01T00:00:03Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "call_id": "call",
@@ -107,6 +119,9 @@
         "end": 2818,
         "message": {
           "at": "1970-01-01T00:00:04Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "text": "Weighing options\n\nFirst I considered X, then Y.",
@@ -124,6 +139,9 @@
         "end": 2818,
         "message": {
           "at": "1970-01-01T00:00:05Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "action": "web",
@@ -146,6 +164,9 @@
         "end": 2818,
         "message": {
           "at": "1970-01-01T00:00:06Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "text": "Files sandbox:/mnt/data/a.md. and sandbox:/mnt/data/a.md,",

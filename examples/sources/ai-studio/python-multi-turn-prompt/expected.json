@@ -1,14 +1,17 @@
 {
   "counts": {
     "records": 6,
+    "skipped": {},
+    "unread_fields": {
+      "user.driveDocument.id": 1,
+      "user.driveDocument.name": 1
+    },
+    "unreadable": {},
     "used": {
       "model": 3,
       "prompt": 1,
       "user": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

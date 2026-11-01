@@ -1,6 +1,18 @@
 {
   "counts": {
     "records": 17,
+    "skipped": {
+      "agent-color: terminal colour only; names no agent": 1,
+      "atis-latch: always empty in observed data": 1,
+      "brand-new-record: unrecognized record type": 1,
+      "mode: always \"normal\" in observed data": 1,
+      "progress/bash_progress: progress tick; the tool's own result supersedes it": 1,
+      "system: system record without a subtype": 1
+    },
+    "unread_fields": {},
+    "unreadable": {
+      "?: malformed JSON: key must be a string at line 1 column 18": 1
+    },
     "used": {
       "ai-title": 1,
       "custom-title": 1,
@@ -12,19 +24,7 @@
       "system/compact_boundary": 1,
       "system/turn_duration": 1,
       "user": 1
-    },
-    "unreadable": {
-      "?: malformed JSON: key must be a string at line 1 column 18": 1
-    },
-    "skipped": {
-      "agent-color: terminal colour only; names no agent": 1,
-      "atis-latch: always empty in observed data": 1,
-      "brand-new-record: unrecognized record type": 1,
-      "mode: always \"normal\" in observed data": 1,
-      "progress/bash_progress: progress tick; the tool's own result supersedes it": 1,
-      "system: system record without a subtype": 1
-    },
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [
@@ -114,6 +114,23 @@
         "range": [
           656,
           720
+        ],
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "data": {
+            "agentId": "ab12",
+            "type": "agent_progress"
+          },
+          "parentToolUseID": "toolu_9",
+          "sessionId": "s1",
+          "type": "progress"
+        },
+        "kind": "agent_progress",
+        "range": [
+          721,
+          835
         ],
         "session": "claude-code:s1"
       },

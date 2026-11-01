@@ -623,3 +623,57 @@ fn absent_quota_facts_remain_absent_and_extreme_resets_do_not_overflow() {
 }
 
 mod reports;
+
+#[test]
+fn instructions_provider_commit_and_phase_survive_parsing() {
+    for instructions in [
+        json!({"instructions":"Follow the brief"}),
+        json!({"base_instructions":{"text":"Follow the brief"}}),
+    ] {
+        let step = run(&rollout(), &mut ParserState::default(), &jsonl(&[
+            meta(instructions),
+            env(2,"response_item",json!({"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Working"}]})),
+        ]),0).unwrap();
+        let session = &step.output.sessions[0];
+        assert_eq!(session.instructions.as_deref(), Some("Follow the brief"));
+        assert_eq!(session.model_provider.as_deref(), Some("openai"));
+        assert_eq!(session.git_commit.as_deref(), Some("abc"));
+        assert_eq!(step.output.messages[0].message.attrs["phase"], "commentary");
+        assert!(
+            step.output
+                .events
+                .iter()
+                .any(|e| e.kind == "session_meta" && e.data["originator"] == "codex_cli_rs")
+        );
+    }
+}
+
+#[test]
+fn changing_turn_instructions_remain_in_events() {
+    let step = run(
+        &rollout(),
+        &mut ParserState::default(),
+        &jsonl(&[
+            meta(json!({"base_instructions":null})),
+            env(
+                2,
+                "turn_context",
+                json!({"user_instructions":"First","developer_instructions":"Role"}),
+            ),
+            env(
+                3,
+                "turn_context",
+                json!({"user_instructions":"Second","developer_instructions":"New role"}),
+            ),
+        ]),
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        step.output.sessions[0].instructions.as_deref(),
+        Some("First")
+    );
+    assert!(step.output.events.iter().any(|e| e.kind == "turn_context"
+        && e.data["user_instructions"] == "Second"
+        && e.data["developer_instructions"] == "New role"));
+}

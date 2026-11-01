@@ -1,66 +1,64 @@
 use super::*;
 use std::time::Instant;
 
-// The original scanner is the reference, including literal path spelling.
+// Independent declaration scan used to check the compiled lookup.
 fn reference(value: &Json, rules: &[(&str, Rule)], checks: &mut usize) -> Vec<String> {
-    fn deeper(path: &str, rules: &[(&str, Rule)], checks: &mut usize) -> bool {
-        rules.iter().any(|(p, _)| {
-            *checks += 1;
-            p.len() > path.len()
-                && p.starts_with(path)
-                && matches!(p.as_bytes()[path.len()], b'.' | b'[')
-        })
-    }
     fn scan(
         value: &Json,
         path: &str,
         rules: &[(&str, Rule)],
-        out: &mut Vec<String>,
         checks: &mut usize,
+        out: &mut Vec<String>,
     ) {
+        *checks += rules.len();
+        let exact = rules.iter().rev().find(|(p, _)| *p == path).map(|(_, r)| r);
+        if matches!(
+            exact,
+            Some(Rule::Indexed(_) | Rule::Kept(_) | Rule::Excluded(_))
+        ) {
+            return;
+        }
         match value {
-            Json::Object(map) => {
-                for (key, child) in map {
-                    let child_path = if path.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{path}.{key}")
-                    };
-                    let declared = rules.iter().any(|(p, _)| {
-                        *checks += 1;
-                        *p == child_path
-                    });
-                    if declared {
-                        if deeper(&child_path, rules, checks) {
-                            scan(child, &child_path, rules, out, checks);
-                        }
-                    } else if deeper(&child_path, rules, checks) {
-                        scan(child, &child_path, rules, out, checks);
-                    } else {
-                        out.push(child_path);
-                    }
+            Json::Object(map) if !map.is_empty() => {
+                for (k, v) in map {
+                    scan(
+                        v,
+                        &if path.is_empty() {
+                            k.clone()
+                        } else {
+                            format!("{path}.{k}")
+                        },
+                        rules,
+                        checks,
+                        out,
+                    );
                 }
             }
-            Json::Array(items) => {
-                let element = format!("{path}[]");
-                if deeper(&element, rules, checks) {
-                    for item in items {
-                        scan(item, &element, rules, out, checks);
-                    }
+            Json::Array(items) if !items.is_empty() => {
+                for v in items {
+                    scan(v, &format!("{path}[]"), rules, checks, out);
                 }
             }
-            _ => {}
+            _ => {
+                let deeper = rules.iter().any(|(p, _)| {
+                    p.strip_prefix(path)
+                        .is_some_and(|s| s.starts_with('.') || s.starts_with('['))
+                });
+                if exact.is_none() && !deeper && !path.is_empty() {
+                    out.push(path.into());
+                }
+            }
         }
     }
     let mut out = Vec::new();
-    scan(value, "", rules, &mut out, checks);
+    scan(value, "", rules, checks, &mut out);
     out
 }
 
 #[test]
 fn compiled_paths_match_the_original_scanner_for_nested_and_literal_keys() {
     const PATHS: &[&str] = &[
-        "a", "a.b", "a[].x", "a[]", "ab", "a.b[].x", "a[odd", "a[", "[].x", "☺.x", "", "a[][].x",
+        "a", "a.b", "a[].x", "a[]", "ab", "a.b[].x", "a[odd", "a[", "[].x", "☺.x", "a[][].x",
     ];
     let cases = [
         json!({"a":{"b":1,"x":2,"other":null},"ab":{"y":[]},"unknown":{"x":1}}),
@@ -68,7 +66,7 @@ fn compiled_paths_match_the_original_scanner_for_nested_and_literal_keys() {
         json!({"a.b":[{"x":1,"u":2}],"a":{"b":[{"x":3,"u":4}]}}),
         json!({"a[]":{"x":1,"u":2},"a[odd":1,"a[":{"x":2},"a":{"b.c":4}}),
         json!([{"x":1,"y":2},{"x":3,"y":4}]),
-        json!({"☺":{"x":"yes","extra":[]},"☺.x":false,"":null}),
+        json!({"☺":{"x":"yes","extra":[]},"☺.x":false}),
         json!({"a":[],"ab":{},"a.b":null}),
         json!(null),
     ];
@@ -80,10 +78,11 @@ fn compiled_paths_match_the_original_scanner_for_nested_and_literal_keys() {
             .map(|(n, path)| {
                 (
                     *path,
-                    match n % 3 {
+                    match n % 4 {
                         0 => Rule::Read,
                         1 => Rule::Kept("synthetic"),
-                        _ => Rule::Excluded("synthetic"),
+                        2 => Rule::Excluded("synthetic"),
+                        _ => Rule::Indexed("synthetic"),
                     },
                 )
             })

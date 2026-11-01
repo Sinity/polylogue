@@ -429,6 +429,7 @@ fn message(
         duration_ms: meta
             .and_then(|x| x.get("generateDuration"))
             .and_then(Json::as_u64),
+        attrs: Default::default(),
         production,
     })
 }

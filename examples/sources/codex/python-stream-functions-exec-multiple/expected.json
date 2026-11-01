@@ -1,19 +1,35 @@
 {
   "counts": {
     "records": 3,
+    "skipped": {},
+    "unread_fields": {
+      "response_item/function_call_output.output[].text": 11,
+      "response_item/function_call_output.output[].type": 11
+    },
+    "unreadable": {},
     "used": {
       "response_item/function_call": 1,
       "response_item/function_call_output": 1,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "cwd": "/repo",
+          "id": "codex-functions-exec-multiple",
+          "timestamp": "2026-07-15T11:00:00Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          121
+        ],
+        "session": "codex:codex-functions-exec-multiple"
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",

@@ -290,3 +290,10 @@ the same change.
 
 Excision, epoch and sealed are kept. **Receipt** is only the provider's
 record of a chat action's result, as the extension saw it.
+
+- **message attributes** (`Message.attrs`): nested provider fields stored in
+  `message.attrs_json` under `provider`, including citations and content details.
+- **phase**: Codex's recorded message phase, such as `commentary` or
+  `final_answer`, kept in message attributes.
+- **indexed field** (`fields::Rule::Indexed`): a complete JSON value placed in
+  an index row; its children remain available without individual projections.

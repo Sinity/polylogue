@@ -1,19 +1,35 @@
 {
   "counts": {
     "records": 3,
+    "skipped": {},
+    "unread_fields": {
+      "response_item/custom_tool_call_output.output[].text": 2,
+      "response_item/custom_tool_call_output.output[].type": 2
+    },
+    "unreadable": {},
     "used": {
       "response_item/custom_tool_call": 1,
       "response_item/custom_tool_call_output": 1,
       "session_meta": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "cwd": "/repo",
+          "id": "codex-functions-exec-single",
+          "timestamp": "2026-07-15T10:00:00Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          119
+        ],
+        "session": "codex:codex-functions-exec-single"
+      },
       {
         "data": {},
         "kind": "response_boundaries_unknown",

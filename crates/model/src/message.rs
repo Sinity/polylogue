@@ -98,6 +98,9 @@ pub struct Message {
     /// How the harness produced the message, beyond its content.
     #[serde(default, skip_serializing_if = "Production::is_empty")]
     pub production: Production,
+    /// Provider fields indexed as given, including nested citations and content details.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub attrs: serde_json::Map<String, serde_json::Value>,
 }
 
 /// What the harness recorded about producing a message: the settings it

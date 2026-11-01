@@ -30,9 +30,34 @@ fn lists_fields_nobody_declared() {
         [
             "extra",
             "message.content[].citations",
-            "message.stop_reason"
+            "message.stop_reason",
+            "message.usage.anything",
+            "message.usage.input_tokens"
         ]
     );
 }
 
 mod equivalence;
+
+#[test]
+fn unread_descendants_include_nested_arrays_and_empty_values() {
+    static RULES: Fields = Fields::new(&[
+        ("read", Rule::Read),
+        ("read.used", Rule::Read),
+        ("indexed", Rule::Indexed("index JSON")),
+        ("kept", Rule::Kept("raw input")),
+        ("ignored", Rule::Excluded("UI setting")),
+    ]);
+    let value = json!({"read":{"used":1,"nested":[{"empty":{},"values":[[1,2]]}],"array":[]},"indexed":{"any":[{"depth":1}]},"kept":{"any":2},"ignored":{"any":3}});
+    let mut got = unaccounted(&value, &RULES);
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            "read.array",
+            "read.nested[].empty",
+            "read.nested[].values[][]",
+            "read.nested[].values[][]"
+        ]
+    );
+}

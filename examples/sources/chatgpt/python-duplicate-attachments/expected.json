@@ -1,13 +1,18 @@
 {
   "counts": {
     "records": 3,
+    "skipped": {},
+    "unread_fields": {
+      "multimodal_text.content.parts[].asset_pointer": 2,
+      "multimodal_text.content.parts[].content_type": 2,
+      "multimodal_text.content.parts[].mime_type": 2,
+      "multimodal_text.content.parts[].name": 2
+    },
+    "unreadable": {},
     "used": {
       "conversation": 1,
       "multimodal_text": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -32,6 +37,9 @@
         "end": 1234,
         "message": {
           "at": "1970-01-01T00:00:01Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "text": "User image",
@@ -56,6 +64,9 @@
         "end": 1234,
         "message": {
           "at": "1970-01-01T00:00:02Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "text": "Assistant image",

@@ -1,6 +1,11 @@
 {
   "counts": {
     "records": 15,
+    "skipped": {
+      "event_msg/agent_message: mirrors a response item, which is stored": 1
+    },
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "event_msg/item_completed": 1,
       "event_msg/task_complete": 1,
@@ -12,17 +17,36 @@
       "response_item/reasoning": 1,
       "session_meta": 1,
       "turn_context": 1
-    },
-    "unreadable": {},
-    "skipped": {
-      "event_msg/agent_message: mirrors a response item, which is stored": 1
-    },
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
     "blobs": [],
     "events": [
+      {
+        "data": {
+          "base_instructions": {
+            "text": "You are a coding agent."
+          },
+          "cli_version": "0.160.0",
+          "cwd": "/work/repo",
+          "git": {
+            "branch": "main",
+            "commit_hash": "abc"
+          },
+          "id": "019a0000-0000-7000-8000-000000000001",
+          "model_provider": "openai",
+          "originator": "codex_cli_rs",
+          "source": "cli",
+          "timestamp": "2026-03-01T10:00:00.000Z"
+        },
+        "kind": "session_meta",
+        "range": [
+          0,
+          380
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
       {
         "at": "2026-03-01T10:00:02Z",
         "data": {
@@ -89,12 +113,12 @@
       {
         "at": "2026-03-01T10:00:09Z",
         "data": {
-          "measured_completion": null,
           "input_including_cache": 5000,
-          "model": "gpt-6.1-sol",
-          "report_id": "b415c383eeb67002c0bce67b9ff2d267a52abd4f7267a5dbb5a1e0e2621ab800",
           "measured_at": null,
+          "measured_completion": null,
+          "model": "gpt-6.1-sol",
           "output_including_reasoning": 80,
+          "report_id": "b415c383eeb67002c0bce67b9ff2d267a52abd4f7267a5dbb5a1e0e2621ab800",
           "response": null,
           "usage": {
             "cache_write": null,
@@ -114,7 +138,6 @@
       {
         "at": "2026-03-01T10:00:09Z",
         "data": {
-          "report_id": "514524aab8c68e71f46c4e8f7397192545fed67294291020645972980b363375",
           "measured_at": null,
           "reading": {
             "windows": [
@@ -125,7 +148,8 @@
                 "used_percent": 4.0
               }
             ]
-          }
+          },
+          "report_id": "514524aab8c68e71f46c4e8f7397192545fed67294291020645972980b363375"
         },
         "kind": "quota_report",
         "range": [
@@ -165,12 +189,12 @@
       {
         "at": "2026-03-01T10:00:14Z",
         "data": {
-          "measured_completion": null,
           "input_including_cache": 5200,
-          "model": "gpt-6.1-sol",
-          "report_id": "7fb4309c88521a5bdb3401c8aa9070ca4714c284ed256c2ccc1d636d948317ce",
           "measured_at": null,
+          "measured_completion": null,
+          "model": "gpt-6.1-sol",
           "output_including_reasoning": 12,
+          "report_id": "7fb4309c88521a5bdb3401c8aa9070ca4714c284ed256c2ccc1d636d948317ce",
           "response": null,
           "usage": {
             "cache_write": null,
@@ -267,6 +291,7 @@
           "at": "2026-03-01T10:00:07Z",
           "blocks": [
             {
+              "signature": "gAAAA",
               "text": "Check the build.",
               "type": "thinking"
             }
@@ -342,6 +367,9 @@
         "end": 3432,
         "message": {
           "at": "2026-03-01T10:00:13Z",
+          "attrs": {
+            "phase": "final_answer"
+          },
           "blocks": [
             {
               "text": "`x` is undefined in main.rs.",
@@ -366,8 +394,11 @@
           "/work/repo"
         ],
         "git_branch": "main",
+        "git_commit": "abc",
         "id": "codex:019a0000-0000-7000-8000-000000000001",
+        "instructions": "You are a coding agent.",
         "kind": "main",
+        "model_provider": "openai",
         "started": "2026-03-01T10:00:00Z",
         "tool_version": "0.160.0"
       }

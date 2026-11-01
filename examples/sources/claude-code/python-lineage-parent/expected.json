@@ -1,13 +1,15 @@
 {
   "counts": {
     "records": 2,
+    "skipped": {},
+    "unread_fields": {
+      "user.origin.kind": 1
+    },
+    "unreadable": {},
     "used": {
       "assistant": 1,
       "user": 1
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

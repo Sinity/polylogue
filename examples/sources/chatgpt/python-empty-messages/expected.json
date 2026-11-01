@@ -1,13 +1,13 @@
 {
   "counts": {
     "records": 5,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "conversation": 1,
       "text": 4
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -47,6 +47,9 @@
         "end": 2417,
         "message": {
           "at": "2023-11-14T22:13:20Z",
+          "attrs": {
+            "metadata": {}
+          },
           "blocks": [
             {
               "text": "Neutral question",
@@ -64,6 +67,16 @@
         "end": 2417,
         "message": {
           "at": "2023-11-14T22:13:21Z",
+          "attrs": {
+            "metadata": {
+              "reasoning_status": "in_progress",
+              "reasoning_title": "Neutral stage",
+              "reasoning_titles": [
+                "Neutral first",
+                "Neutral second"
+              ]
+            }
+          },
           "blocks": [],
           "id": "chatgpt:assistant-message",
           "parent": "chatgpt:user-message",
@@ -75,6 +88,16 @@
       {
         "end": 2417,
         "message": {
+          "attrs": {
+            "metadata": {
+              "reasoning_status": "in_progress",
+              "reasoning_title": "Neutral stage",
+              "reasoning_titles": [
+                "Neutral first",
+                "Neutral second"
+              ]
+            }
+          },
           "blocks": [
             {
               "call_id": "assistant-message",
@@ -98,6 +121,16 @@
         "end": 2417,
         "message": {
           "at": "2023-11-14T22:13:22Z",
+          "attrs": {
+            "metadata": {
+              "reasoning_status": "in_progress",
+              "reasoning_title": "Neutral stage",
+              "reasoning_titles": [
+                "Neutral first",
+                "Neutral second"
+              ]
+            }
+          },
           "blocks": [],
           "id": "chatgpt:branch-message",
           "parent": "chatgpt:user-message",

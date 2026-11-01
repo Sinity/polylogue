@@ -47,10 +47,7 @@ static MESSAGE: Fields = Fields::new(&[
         "content[].logprobs",
         Excluded("not read yet; stays in the stored bytes"),
     ),
-    (
-        "phase",
-        Excluded("commentary or final answer; not used by any view yet"),
-    ),
+    ("phase", Read),
     ("status", Excluded("always \"completed\" when written")),
     (
         "end_turn",
@@ -80,9 +77,9 @@ static CALL: Fields = Fields::new(&[
     ("call_id", Read),
     ("name", Read),
     ("namespace", Read),
-    ("arguments", Read),
-    ("input", Read),
-    ("action", Read),
+    ("arguments", Indexed("tool call input")),
+    ("input", Indexed("tool call input")),
+    ("action", Indexed("tool call input")),
     (
         "execution",
         Excluded("client or server side; the tool name already says"),
@@ -117,7 +114,7 @@ static WEB_SEARCH: Fields = Fields::new(&[
     ("type", Read),
     ("id", Read),
     ("status", Read),
-    ("action", Read),
+    ("action", Indexed("tool call input")),
     PASSTHROUGH,
 ]);
 

@@ -1,12 +1,12 @@
 {
   "counts": {
     "records": 2,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "prompt": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],

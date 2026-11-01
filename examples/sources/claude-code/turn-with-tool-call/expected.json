@@ -1,13 +1,13 @@
 {
   "counts": {
     "records": 9,
+    "skipped": {},
+    "unread_fields": {},
+    "unreadable": {},
     "used": {
       "assistant": 4,
       "user": 5
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
@@ -71,6 +71,13 @@
         "end": 1178,
         "message": {
           "at": "2026-03-01T10:00:05Z",
+          "attrs": {
+            "toolUseResult": {
+              "interrupted": false,
+              "stderr": "error[E0425]",
+              "stdout": ""
+            }
+          },
           "blocks": [
             {
               "call_id": "toolu_1",

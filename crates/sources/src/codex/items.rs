@@ -140,7 +140,7 @@ pub fn reasoning_block(item: &Json) -> Block {
     let encrypted = str_field(item, "encrypted_content").is_some();
     Block::Thinking {
         text: (!parts.is_empty()).then(|| parts.join("\n\n")),
-        signature: None,
+        signature: str_field(item, "encrypted_content").map(str::to_owned),
         redacted: parts.is_empty() && encrypted,
     }
 }

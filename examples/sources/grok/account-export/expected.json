@@ -1,14 +1,31 @@
 {
   "counts": {
     "records": 4,
+    "skipped": {},
+    "unread_fields": {
+      "conversation wrapper.conversation.create_time.$date.$numberLong": 1,
+      "conversation wrapper.conversation.id": 1,
+      "conversation wrapper.conversation.title": 1,
+      "conversation wrapper.responses[].response.create_time": 2,
+      "conversation wrapper.responses[].response.message": 2,
+      "conversation wrapper.responses[].response.model": 1,
+      "conversation wrapper.responses[].response.parentResponseId": 1,
+      "conversation wrapper.responses[].response.responseId": 2,
+      "conversation wrapper.responses[].response.sender": 2,
+      "conversation.create_time.$date.$numberLong": 1,
+      "response wrapper.response.create_time": 2,
+      "response wrapper.response.message": 2,
+      "response wrapper.response.model": 1,
+      "response wrapper.response.parentResponseId": 1,
+      "response wrapper.response.responseId": 2,
+      "response wrapper.response.sender": 2
+    },
+    "unreadable": {},
     "used": {
       "conversation": 1,
       "export": 1,
       "response": 2
-    },
-    "unreadable": {},
-    "skipped": {},
-    "unread_fields": {}
+    }
   },
   "output": {
     "background": [],
