@@ -269,10 +269,14 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         1
     );
 
-    // Delete the local copy and the index; rebuild with no provider file.
-    for name in ["index.db", "index.db-wal", "index.db-shm"] {
-        let _ = fs::remove_file(example.root.join(name));
-    }
+    // Delete every local file Polylogue derived (the archive directory with
+    // its index, and the producer spool), then rebuild from Sinex alone with
+    // no provider file.
+    drop(sinex);
+    fs::remove_dir_all(&example.root).unwrap();
+    fs::create_dir_all(&example.root).unwrap();
+    fs::remove_dir_all(running.config.store.join("producer-spool")).unwrap();
+    let sinex = connect(&running.config);
     let empty = example.dir.path().join("empty-home");
     fs::create_dir_all(&empty).unwrap();
     build_on_sinex(&example, &empty, &sinex, &running.config);

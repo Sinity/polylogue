@@ -252,6 +252,9 @@ impl Client {
             .await
             .map_err(|error| Error::Unreachable(error.to_string()))?;
         let mut page = Vec::new();
+        if let Some(position) = reply.position {
+            page.push(control_fact(ReplayControl::Head { position }));
+        }
         let mut last = None;
         while let Some(message) = messages.next().await {
             let message = message.map_err(|error| Error::Unreachable(error.to_string()))?;

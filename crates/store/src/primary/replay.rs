@@ -18,6 +18,9 @@ pub struct ReplayState {
     pub applied_position: Option<i64>,
     /// The read scope Sinex provisioned the consumer under.
     pub scope: Option<String>,
+    /// Sinex's commit position when the stream was last read.
+    #[serde(default)]
+    pub head: Option<i64>,
     pub staged_delivery: Option<NativeDeliveryCursor>,
 }
 
@@ -27,6 +30,8 @@ pub enum ReplayControl {
     /// The consumer's read scope differs from the one the index was built
     /// under: the index is cleared and read again from position 0.
     Reset { scope: String },
+    /// Sinex's commit position when this page was read.
+    Head { position: i64 },
     /// Every change committed at `position` has been delivered.
     Completion { position: i64 },
     /// The stream messages up to this cursor are staged in the index.

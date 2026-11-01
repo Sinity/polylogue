@@ -99,6 +99,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     let state = primary::ReplayState {
         applied_position: Some(42),
         scope: Some("old-scope".into()),
+        head: None,
         staged_delivery: None,
     };
     let control = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
@@ -112,6 +113,7 @@ fn authenticated_private_reply_and_complete_registration_receipt_establish_famil
     let state = primary::ReplayState {
         applied_position: None,
         scope: Some("test-scope".into()),
+        head: None,
         staged_delivery: None,
     };
     let refused = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();

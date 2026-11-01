@@ -46,6 +46,9 @@ pub enum CompletenessReason {
     FirstBuild,
     /// Primary mode: the index has not yet applied the confirmed stream.
     StreamNotApplied,
+    /// Primary mode: the index is behind Sinex's commit position; the lag is
+    /// in the read's position report.
+    StreamBehind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -185,10 +188,18 @@ impl Reader<'_> {
             CompletenessDimension::Incomplete(search_missing)
         };
         let projection = if self.pool.archive.is_primary() {
-            if crate::primary::projection::checkpoint(conn)?.is_some() {
-                CompletenessDimension::Complete
-            } else {
-                CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied])
+            let state = crate::primary::projection::replay_state(conn)?;
+            match (state.applied_position, state.head) {
+                (None, _) => {
+                    CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied])
+                }
+                (Some(applied), Some(head)) if applied >= head => CompletenessDimension::Complete,
+                (Some(_), Some(_)) => {
+                    CompletenessDimension::Incomplete(vec![CompletenessReason::StreamBehind])
+                }
+                (Some(_), None) => {
+                    CompletenessDimension::Unknown(vec![CompletenessReason::StreamBehind])
+                }
             }
         } else {
             CompletenessDimension::NotApplicable

@@ -15,6 +15,7 @@ pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
         None => ReplayState {
             applied_position: checkpoint(conn)?,
             scope: super::super::scope::current(conn)?,
+            head: None,
             staged_delivery: None,
         },
     })
@@ -79,6 +80,12 @@ pub(super) fn stage_control(
     match control {
         ReplayControl::Reset { .. } => {
             return Err(invalid("a scope reset must be a separate control page"));
+        }
+        ReplayControl::Head { position } => {
+            if *position < 0 {
+                return Err(invalid("Sinex's commit position cannot be negative"));
+            }
+            state.head = Some(*position);
         }
         ReplayControl::Delivered { delivery } => {
             if delivery.stream_instance.is_empty() || delivery.stream_sequence == 0 {

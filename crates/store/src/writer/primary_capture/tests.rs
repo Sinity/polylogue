@@ -715,3 +715,26 @@ fn pending_export_fork_is_refused_before_semantic_preparation_or_publication() {
     );
     assert!(!producer_root.join("capture.json").exists());
 }
+
+#[test]
+fn an_idle_primary_writer_records_a_failed_stream_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) =
+        Archive::open_primary(&directory.path().join("cache"), &directory.path().join("bytes"))
+            .unwrap();
+    let producer = Arc::new(OfflineProducer {
+        root: directory.path().join("producer"),
+    });
+    let writer = Writer::start_on_sinex(&archive, producer).unwrap();
+    for _ in 0..10 {
+        // Each flush is work, so the writer must stay idle past its poll first.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let report = writer.flush().unwrap();
+        if let Some(error) = report.errors.first() {
+            assert!(error.starts_with("confirmed stream:"), "{error}");
+            assert!(error.contains("synthetic offline transport"), "{error}");
+            return;
+        }
+    }
+    panic!("the idle writer never recorded its failed stream read");
+}

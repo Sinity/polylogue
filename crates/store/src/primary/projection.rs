@@ -32,6 +32,8 @@ pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_inde
 use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
 use crate::{Result, StoreError};
+#[cfg(test)]
+pub(crate) use replay::save as save_replay;
 pub(crate) use replay::{native_context, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};

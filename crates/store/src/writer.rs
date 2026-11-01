@@ -298,6 +298,8 @@ const QUEUE: usize = 4;
 /// How long a primary writer waits for work before it reads the confirmed
 /// stream on its own, so other hosts' writes and a rebuild arrive unasked.
 const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+/// The longest wait between reads while reading the stream keeps failing.
+const STREAM_POLL_LONGEST: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Input bytes a transaction covers before committing. A batch's bytes
 /// stay counted against the parse pool's limit until its transaction
@@ -411,6 +413,8 @@ impl Writer {
             search: Search::start(archive.index_db(), !building)?,
             location: archive.clone(),
             sinex,
+            stream_wait: STREAM_POLL,
+            stream_error: None,
         };
         // Senders block once a few batches wait. The writer is the slowest
         // stage of a first build, and a parsed batch holds its rows and
@@ -1078,6 +1082,11 @@ struct Inner {
     location: Archive,
     /// In primary mode, where every register row goes before it commits.
     sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
+    /// How long an idle primary writer waits before reading the stream;
+    /// it grows while reading fails.
+    stream_wait: std::time::Duration,
+    /// The last stream error recorded, so a lasting outage is recorded once.
+    stream_error: Option<String>,
 }
 
 impl Inner {
@@ -1132,7 +1141,7 @@ impl Inner {
             return rx.recv().ok();
         }
         loop {
-            match rx.recv_timeout(STREAM_POLL) {
+            match rx.recv_timeout(self.stream_wait) {
                 Ok(message) => return Some(message),
                 Err(RecvTimeoutError::Disconnected) => return None,
                 Err(RecvTimeoutError::Timeout) => self.follow_stream(),
@@ -1141,18 +1150,38 @@ impl Inner {
     }
 
     /// Sends what waits in the spool, applies what Sinex confirmed and
-    /// derives from it. Sinex's health keeps a connection error for status.
+    /// derives from it. A failure is recorded in the write report (Sinex's
+    /// health also shows it in status) and the next read waits longer.
     fn follow_stream(&mut self) {
         let _busy = crate::timing::writer_started();
         let turn = Arc::clone(&self.search.turn);
         let _turn = turn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.synchronize_primary().is_ok()
-            && self.derive_due
-            && let Err(error) = self.derive()
-        {
-            self.report.errors.push(format!("derive: {error}"));
+        let result = self.synchronize_primary().and_then(|_| {
+            if self.derive_due {
+                self.derive().map(drop)
+            } else {
+                Ok(())
+            }
+        });
+        self.stream_wait = self.next_stream_wait(result);
+    }
+
+    fn next_stream_wait(&mut self, result: Result<()>) -> std::time::Duration {
+        match result {
+            Ok(()) => {
+                self.stream_error = None;
+                STREAM_POLL
+            }
+            Err(error) => {
+                let error = format!("confirmed stream: {error}");
+                if self.stream_error.as_ref() != Some(&error) {
+                    self.report.errors.push(error.clone());
+                    self.stream_error = Some(error);
+                }
+                (self.stream_wait * 2).min(STREAM_POLL_LONGEST)
+            }
         }
     }
 
