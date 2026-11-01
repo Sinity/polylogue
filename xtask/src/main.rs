@@ -56,9 +56,10 @@ enum Cli {
     Boundaries,
     /// Offline schema commands from the application's command table.
     Schema {
-        /// The Polylogue binary to run, built by the normal compile operation.
-        #[arg(long, default_value = "target/debug/polylogue")]
-        binary: std::path::PathBuf,
+        /// The Polylogue binary to run, built by the normal compile operation;
+        /// by default `debug/polylogue` in Cargo's target directory.
+        #[arg(long)]
+        binary: Option<std::path::PathBuf>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -497,6 +498,11 @@ fn main() -> ExitCode {
             })
         }
         Cli::Schema { binary, args } => {
+            let binary = binary.unwrap_or_else(|| {
+                std::env::var_os("CARGO_TARGET_DIR")
+                    .map_or_else(|| "target".into(), std::path::PathBuf::from)
+                    .join("debug/polylogue")
+            });
             match std::process::Command::new(binary)
                 .arg("schema")
                 .args(args)

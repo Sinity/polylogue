@@ -172,6 +172,7 @@ fn million_message_measurements() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/timeline-million.json")
         });
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     eprintln!("TIMELINE_MEASUREMENTS={report}");
 }
