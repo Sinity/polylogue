@@ -581,6 +581,9 @@ impl OlderArchive {
             // The older format wrote paths as display text, which replaces
             // bytes that are not UTF-8 with U+FFFD; such a path no longer
             // names its location exactly.
+            if refusal.is_none() && !self.machines.iter().any(|m| m.id == machine) {
+                refusal = Some(format!("its machine {machine} is not in the machine table"));
+            }
             let exact = !path.contains('\u{FFFD}');
             if !exact {
                 inexact_locations += 1;

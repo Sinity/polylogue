@@ -289,7 +289,7 @@ fn an_input_keeps_every_revision_extent_and_observation_in_insertion_order() {
         ["first", "appended", "rewritten", "deleted", "back", "back"]
     );
     let ids: Vec<_> = input.observations.iter().map(|o| o.id.as_str()).collect();
-    assert_eq!(ids, ["o1", "o2", "o3", "o4", "o5", "o9"]);
+    assert_eq!(ids, ["o1", "o2", "o3", "o4", "o5", "o0"]);
     let first = &input.observations[0];
     assert_eq!(
         first.path_bytes.as_deref(),

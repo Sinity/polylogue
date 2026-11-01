@@ -429,7 +429,7 @@ pub fn standard(root: &Path) -> Standard {
             8_000,
         ),
         (
-            "o9",
+            "o0",
             watched,
             WATCHED_PATH,
             "back",

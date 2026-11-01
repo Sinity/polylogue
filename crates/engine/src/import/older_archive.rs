@@ -119,6 +119,19 @@ fn restored(outcome: &polylogue_model::user::UserOutcome) -> Restored {
     }
 }
 
+/// A store error about the row itself (its content conflicts with what is
+/// here, is invalid, or names something missing) refuses that row; any
+/// other error (the writer, the disk, SQLite) stops the import, so a
+/// failure of this host is never reported as a refused row.
+fn refusal(error: polylogue_store::StoreError) -> Result<Restored, EngineError> {
+    match error {
+        polylogue_store::StoreError::Conflict(_)
+        | polylogue_store::StoreError::Invalid(_)
+        | polylogue_store::StoreError::NotFound(_) => Ok(Restored::Refused(error.to_string())),
+        error => Err(error.into()),
+    }
+}
+
 /// What is known of each blob the import has met.
 enum BlobState {
     /// Held here, or prepared in the current group.
@@ -522,13 +535,7 @@ impl Engine {
                 Ok(
                     match writer.restore_assertion(fact, Vec::new(), current.clone()) {
                         Ok(outcome) => restored(&outcome),
-                        Err(
-                            error @ (polylogue_store::StoreError::WriterGone
-                            | polylogue_store::StoreError::Io(_)),
-                        ) => {
-                            return Err(error.into());
-                        }
-                        Err(error) => Restored::Refused(error.to_string()),
+                        Err(error) => refusal(error)?,
                     },
                 )
             };
@@ -593,13 +600,7 @@ impl Engine {
                         Some(current) => {
                             match writer.restore_authored(prepared, Vec::new(), current.clone()) {
                                 Ok(outcome) => restored(&outcome),
-                                Err(
-                                    error @ (polylogue_store::StoreError::WriterGone
-                                    | polylogue_store::StoreError::Io(_)),
-                                ) => {
-                                    return Err(error.into());
-                                }
-                                Err(error) => Restored::Refused(error.to_string()),
+                                Err(error) => refusal(error)?,
                             }
                         }
                     };
