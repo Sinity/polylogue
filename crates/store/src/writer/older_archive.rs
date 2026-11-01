@@ -45,40 +45,34 @@ pub(super) fn restore_via(queue: &WriterQueue, group: OlderGroup) -> Result<Grou
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
-type ObservationFacts = (
-    String,
-    String,
-    String,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<String>,
-    String,
-    i64,
-    Option<Vec<u8>>,
-);
+/// An observation's recorded facts, compared field by field.
+#[derive(PartialEq)]
+struct ObservationFacts {
+    input: String,
+    machine: String,
+    path: String,
+    class: String,
+    numbers: [Option<i64>; 7],
+    details_json: Option<String>,
+    polylogue_version: String,
+    seen_at: i64,
+    path_bytes: Option<Vec<u8>>,
+}
 
-fn facts(o: &crate::input_rows::ObservationRow) -> ObservationFacts {
-    (
-        o.machine.clone(),
-        o.path.clone(),
-        o.class.clone(),
-        o.revision,
-        o.length,
-        o.device,
-        o.inode,
-        o.size,
-        o.mtime_ns,
-        o.ctime_ns,
-        o.details_json.clone(),
-        o.polylogue_version.clone(),
-        o.seen_at,
-        o.path_bytes.clone(),
-    )
+fn facts(input: &str, o: &crate::input_rows::ObservationRow) -> ObservationFacts {
+    ObservationFacts {
+        input: input.to_owned(),
+        machine: o.machine.clone(),
+        path: o.path.clone(),
+        class: o.class.clone(),
+        numbers: [
+            o.revision, o.length, o.device, o.inode, o.size, o.mtime_ns, o.ctime_ns,
+        ],
+        details_json: o.details_json.clone(),
+        polylogue_version: o.polylogue_version.clone(),
+        seen_at: o.seen_at,
+        path_bytes: o.path_bytes.clone(),
+    }
 }
 
 /// Whether this archive holds every row of `input` (`Some(None)`), holds an
@@ -138,14 +132,14 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
          FROM observation WHERE id = ?1",
     )?;
     for o in &input.observations {
-        let found: Option<(String, ObservationFacts)> = observation
+        let found: Option<ObservationFacts> = observation
             .query_row([&o.id], |row| {
-                Ok((
-                    row.get(0)?,
-                    (
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
+                Ok(ObservationFacts {
+                    input: row.get(0)?,
+                    machine: row.get(1)?,
+                    path: row.get(2)?,
+                    class: row.get(3)?,
+                    numbers: [
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
@@ -153,15 +147,15 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
                         row.get(8)?,
                         row.get(9)?,
                         row.get(10)?,
-                        row.get(11)?,
-                        row.get(12)?,
-                        row.get(13)?,
-                        row.get(14)?,
-                    ),
-                ))
+                    ],
+                    details_json: row.get(11)?,
+                    polylogue_version: row.get(12)?,
+                    seen_at: row.get(13)?,
+                    path_bytes: row.get(14)?,
+                })
             })
             .optional()?;
-        if found != Some((input.id.clone(), facts(o))) {
+        if found.as_ref() != Some(&facts(&input.id, o)) {
             return Ok(Some(Some(format!(
                 "this archive holds its observation {} differently",
                 o.id

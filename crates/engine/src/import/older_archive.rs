@@ -615,8 +615,7 @@ impl Engine {
                             }
                         }
                     };
-                    if delivery && let Restored::Refused(reason) = &outcome
-                    {
+                    if delivery && let Restored::Refused(reason) = &outcome {
                         not_stored.insert(mapped.id.clone(), reason.clone());
                     }
                     if let Some(kept) = kept {
@@ -635,9 +634,12 @@ impl Engine {
             let outcome = match (&before, &after) {
                 (Some((held, _)), Some((stored, _))) => {
                     if !stored.contains(&delivery.id) {
-                        Restored::Refused(not_stored.get(&delivery.id).cloned().unwrap_or_else(
-                            || "no request carrying it stored it".to_owned(),
-                        ))
+                        Restored::Refused(
+                            not_stored
+                                .get(&delivery.id)
+                                .cloned()
+                                .unwrap_or_else(|| "no request carrying it stored it".to_owned()),
+                        )
                     } else if held.contains(&delivery.id) {
                         Restored::Present
                     } else {

@@ -566,7 +566,12 @@ fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as
         .find(|r| r.class == "client_request" && r.row == "d1")
         .unwrap();
     assert!(!request.reason.is_empty());
-    assert!(!report.refused.iter().any(|r| r.class == "delivery" && r.row == "d1"));
+    assert!(
+        !report
+            .refused
+            .iter()
+            .any(|r| r.class == "delivery" && r.row == "d1")
+    );
     assert!(!report.refused.iter().any(|r| r.class == "delivery_event"));
     assert_eq!(report.classes["delivery"].stored, 2);
     assert_eq!(report.classes["delivery_event"].stored, 2);
@@ -579,6 +584,10 @@ fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as
     for (table, n) in older.row_counts().unwrap() {
         let count = report.classes.get(&table).copied().unwrap_or_default();
         assert_eq!(count.found, n, "{table}");
-        assert_eq!(count.found, count.stored + count.present + count.refused + count.kept, "{table}");
+        assert_eq!(
+            count.found,
+            count.stored + count.present + count.refused + count.kept,
+            "{table}"
+        );
     }
 }

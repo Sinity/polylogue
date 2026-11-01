@@ -455,6 +455,7 @@ pub fn requests(
                             .collect();
                         Ok(Some(PreparedRequest {
                             request: self::request(&request.id, &body, write),
+                            original: None,
                             outcome: outcome(&request.id),
                             effect: AuthoredEffect {
                                 deliveries: vec![DeliveryChange {
@@ -503,6 +504,7 @@ pub fn requests(
                                     detail,
                                 },
                             ),
+                            original: None,
                             outcome: outcome(&delivery),
                             effect: AuthoredEffect {
                                 deliveries: vec![DeliveryChange {
@@ -544,6 +546,7 @@ pub fn requests(
                                     read_at: row.read_at.clone(),
                                 },
                             ),
+                            original: None,
                             outcome: outcome(&request.id),
                             effect: AuthoredEffect {
                                 kept_results: vec![RestoredKept {
