@@ -212,22 +212,13 @@ pub fn prepare(
     context: &std::sync::Arc<crate::operation::Context>,
     ranking_identity: Option<&str>,
     near: Option<&NearFn<'_>>,
-    check_history: &Path,
 ) -> Result<Prepared, StoreError> {
     match ask {
         Ask::SessionStart {
             cwd,
             session,
             source,
-        } => session_start(
-            reader,
-            cwd,
-            session.as_ref(),
-            *source,
-            delivery_id,
-            context,
-            check_history,
-        ),
+        } => session_start(reader, cwd, session.as_ref(), *source, delivery_id, context),
         Ask::Takeover { session, .. } => takeover(reader, session, delivery_id, context),
         Ask::Recall {
             text, cwd, cursor, ..
@@ -595,7 +586,6 @@ fn session_start(
     source: StartSource,
     delivery_id: &str,
     context: &std::sync::Arc<crate::operation::Context>,
-    check_history: &Path,
 ) -> Result<Prepared, StoreError> {
     let now: Timestamp = context.clock.now.into();
     let dirs = scope_dirs(cwd);
@@ -759,44 +749,6 @@ fn session_start(
         sessions,
         "recent sessions",
         &format!("polylogue list cwd:{here}"),
-    );
-    let since = previous
-        .as_ref()
-        .map_or(now.unix_ms() - FAILING_WINDOW_MS, |p| p.at.unix_ms());
-    // Check runs the development tooling recorded for this checkout (what
-    // AgentCTL's check and test jobs run) come first; checks a session ran
-    // itself follow.
-    let failing: Vec<Item> =
-        polylogue_store::check_runs::failed_since(check_history, &dirs, since)?
-            .into_iter()
-            .map(|f| {
-                let mut text = format!(
-                    "- `{}` failed {} in {}",
-                    f.check,
-                    day(Timestamp::from_unix_ms(f.started_ms)),
-                    f.checkout
-                );
-                if f.times > 1 {
-                    let _ = write!(text, " ({} failures)", f.times);
-                }
-                if let Some(job) = &f.job {
-                    let _ = write!(text, ", job {job}");
-                }
-                if let Some(why) = &f.failure {
-                    let _ = write!(text, ": {}", one_line(why, 120));
-                }
-                let _ = write!(text, "; `xtask history failures {}`", f.run);
-                Item {
-                    text,
-                    refs: vec![format!("check_run:{}", f.run)],
-                }
-            })
-            .collect();
-    fit.section(
-        "Verifications that failed here since their last pass:",
-        failing,
-        "failing checks",
-        "xtask history failures",
     );
     let notices: Vec<Item> = reader
         .notices_since(

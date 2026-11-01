@@ -19,7 +19,6 @@ assert files(sys.argv[1]) == {
             "auth_token_file": "/run/credentials/http",
         },
         "day": {"zone": "Europe/Warsaw", "start": "03:00:00"},
-        "check_history": "/var/lib/checks/history.sqlite",
     },
     "signals": {
         "notifications": {

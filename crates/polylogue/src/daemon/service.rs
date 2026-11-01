@@ -252,7 +252,6 @@ fn context(
             operation,
             ranking_identity.as_deref(),
             near,
-            &d.config.paths.check_history,
         );
         if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
             && let Err(error) = limit.check()

@@ -42,7 +42,6 @@ let
           };
         };
       }) "Standalone logical day. Primary mode obtains its day from Sinex.";
-      check_history = optional absolutePath "Development check history database.";
     };
   };
   sinexType = types.submodule {
