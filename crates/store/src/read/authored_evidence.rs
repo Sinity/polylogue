@@ -23,8 +23,6 @@ pub enum AuthoredReadIssue {
     LocalAdmissionUnavailable,
     #[error("the accepted request has incomplete retained body, outcome or effects")]
     MissingContent,
-    #[error("the native fact lacks its retained full owner projection and origin proof")]
-    NativeOwnerProofUnavailable,
 }
 
 /// Local admission is not a Sinex event or a certificate for a native source.
@@ -136,13 +134,6 @@ impl Reader<'_> {
             });
         }
         self.conn()?;
-        // Selected-row access does not authorize the whole native request or
-        // certify absence. Require the full owner proof before either lookup.
-        if self.pool.archive.is_primary() {
-            return Ok(Some(AuthoredReadEvidence::Incomplete {
-                issue: AuthoredReadIssue::NativeOwnerProofUnavailable,
-            }));
-        }
         if let Reference::Request(id) = reference {
             let result = self.exact_authored_request(id);
             self.check()?;

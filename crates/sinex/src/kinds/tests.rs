@@ -62,34 +62,8 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
 #[test]
 fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
     for declaration in declarations("polylogue") {
-        assert_eq!(
-            declaration.kind.version,
-            match declaration.kind.name.as_str() {
-                "polylogue.message"
-                | "polylogue.kept_result"
-                | "polylogue.delivery"
-                | "polylogue.delivery_outcome"
-                | "polylogue.request"
-                | "polylogue.request_restore" => 5,
-                "polylogue.input_observation"
-                | "polylogue.session"
-                | "polylogue.document"
-                | "polylogue.event"
-                | "polylogue.link"
-                | "polylogue.background"
-                | "polylogue.repository"
-                | "polylogue.parse_progress" => 4,
-                "polylogue.query_run" | "polylogue.blob" | "polylogue.coverage" => 3,
-                "polylogue.fragment" => 2,
-                "polylogue.assertion"
-                | "polylogue.assertion_restore"
-                | "polylogue.historical_restore"
-                | "polylogue.attachment_binding"
-                | "polylogue.query"
-                | "polylogue.query_run_outcome" => 1,
-                other => panic!("undeclared successor kind/version expectation: {other}"),
-            }
-        );
+        // The adapter starts at version 1; no earlier version was deployed.
+        assert_eq!(declaration.kind.version, 1, "{}", declaration.kind.name);
         assert!(
             declaration
                 .field_hints
@@ -164,7 +138,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         .into_iter()
         .find(|declaration| declaration.kind.name == "polylogue.fragment")
         .unwrap();
-    assert_eq!(declaration.kind.version, 2);
+    assert_eq!(declaration.kind.version, 1);
     jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
         .unwrap()
         .validate(&payload)

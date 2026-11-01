@@ -65,21 +65,6 @@ pub(crate) struct Group {
     encoding: Encoding,
 }
 
-/// The canonical scope and policy epoch a canonical Events frame was proven
-/// against.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Coverage {
-    pub scope: String,
-    pub epoch: i64,
-}
-
-/// A canonical Events frame carries no source. Without coverage it is never
-/// published.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Canonical {
-    pub coverage: Option<Coverage>,
-}
-
 /// A captured material and the facts the queue keeps about its custody.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Material {
@@ -94,10 +79,8 @@ pub(crate) struct Material {
     pub exports_unknown: bool,
     /// Its observation is found by logical name.
     pub named: bool,
-    /// Carries a retained authored request.
+    /// Carries an authored request.
     pub request: bool,
-    /// Holds private canonical custody that is never published.
-    pub private: bool,
 }
 
 /// What an operation is. Each variant owns exactly the facts that variant has.
@@ -106,7 +89,6 @@ pub(crate) struct Material {
 pub(crate) enum Payload {
     Material(Material),
     Events {
-        canonical: Option<Canonical>,
         group: Option<Group>,
     },
     ReplaySequence {
@@ -125,8 +107,8 @@ pub(crate) enum Payload {
 pub(crate) enum Phase {
     /// No receipt yet.
     Pending,
-    /// The owner accepted the operation; canonical writes carry the position
-    /// that confirmed them.
+    /// The owner accepted the operation; writes carry the position that
+    /// confirmed them.
     Acknowledged { commit_seq: Option<i64> },
     /// The owner refused the operation.
     Refused,
@@ -218,12 +200,6 @@ impl Record {
             _ => None,
         }
     }
-    pub(crate) fn canonical(&self) -> Option<&Canonical> {
-        match &self.payload {
-            Payload::Events { canonical, .. } => canonical.as_ref(),
-            _ => None,
-        }
-    }
     /// A write the owner confirms with a queue position.
     pub(crate) fn is_write(&self) -> bool {
         matches!(
@@ -233,13 +209,6 @@ impl Record {
     }
     pub(crate) fn is_request(&self) -> bool {
         self.material().is_some_and(|material| material.request)
-    }
-    pub(crate) fn is_private(&self) -> bool {
-        self.material().is_some_and(|material| material.private)
-    }
-    /// Only canonical and private custody can be revoked.
-    fn is_revocable(&self) -> bool {
-        self.canonical().is_some() || self.is_private()
     }
     pub(crate) fn is_named(&self) -> bool {
         match &self.payload {
@@ -267,9 +236,6 @@ impl Record {
 pub(crate) struct Prepared {
     pub record: Record,
     pub phase: Phase,
-    /// Canonical or private custody was revoked (`revoked.json`). It is
-    /// independent of the receipt: an acknowledged operation can be revoked.
-    pub revoked: bool,
     /// Its acquisition was accepted with an unresolved basis conflict.
     pub unresolved: bool,
 }
@@ -492,18 +458,12 @@ impl Spool {
                 captured.descriptor()?.stored_len,
             )?;
         }
-        let revoked = match read_checked::<bool>(&directory.join("revoked.json"))? {
-            Some(true) => true,
-            Some(false) => return invalid("canonical revocation cannot be reversed"),
-            None => false,
-        };
         let phase = self
             .receipt(identity)?
             .map_or(Phase::Pending, |receipt| receipt.phase);
         Ok(Some(Prepared {
             record,
             phase,
-            revoked,
             unresolved,
         }))
     }
@@ -863,7 +823,7 @@ impl Spool {
             return invalid("capture group is empty");
         }
         self.ensure_indexes()?;
-        let captures = canonical(captures)?;
+        let captures = sorted_members(captures)?;
         let group_hash = captures_hash(&captures)?;
         if let Some(existing) = self.group_for_sorted(&group_hash)?
             && existing.identity != frame.frame()
@@ -878,7 +838,7 @@ impl Spool {
             if let Some(existing) = self.capture_group(identity)?
                 && existing.group().map(|group| &group.captures_hash) != Some(&group_hash)
             {
-                return invalid("capture already belongs to another canonical product group");
+                return invalid("capture already belongs to another product group");
             }
         }
         self.prepare_operation(
@@ -892,7 +852,7 @@ impl Spool {
 
     pub fn group_for(&self, captures: &[String]) -> Result<Option<Prepared>> {
         self.ensure_indexes()?;
-        self.group_for_sorted(&captures_hash(&canonical(captures)?)?)
+        self.group_for_sorted(&captures_hash(&sorted_members(captures)?)?)
     }
 
     fn group_for_sorted(&self, captures_hash: &str) -> Result<Option<Prepared>> {
@@ -1111,34 +1071,6 @@ impl Spool {
         Ok(Some(receipt))
     }
 
-    pub fn revoke_canonical(&self) -> Result<()> {
-        let mut after = None;
-        loop {
-            let page = self.pending_after(after, 64)?;
-            if page.is_empty() {
-                return Ok(());
-            }
-            for prepared in page {
-                after = Some(prepared.order);
-                if !prepared.is_revocable() || prepared.revoked {
-                    continue;
-                }
-                let directory = self.operation(&prepared.identity)?;
-                let temporary = tempfile::Builder::new()
-                    .prefix(".revoking-")
-                    .tempdir_in(&directory)?;
-                write_checked(&temporary.path().join("revoked.json"), &true)?;
-                sync(temporary.path())?;
-                fs::rename(
-                    temporary.path().join("revoked.json"),
-                    directory.join("revoked.json"),
-                )?;
-                sync(&directory)?;
-                boundary("canonical_revoked");
-            }
-        }
-    }
-
     pub fn retire(&self, applied: i64) -> Result<()> {
         if applied < 0 {
             return invalid("confirmed position is negative");
@@ -1162,10 +1094,7 @@ impl Spool {
             if prepared.order != order {
                 return invalid("pending queue order differs from its operation");
             }
-            if prepared.is_private()
-                || prepared.revoked
-                || !prepared.phase.confirmed_through(applied)
-            {
+            if !prepared.phase.confirmed_through(applied) {
                 continue;
             }
             if prepared.group().is_some() {
@@ -1183,82 +1112,6 @@ impl Spool {
         self.last_retired.set(Some(applied));
         self.retirement_dirty.set(false);
         Ok(())
-    }
-
-    /// Exact identities come from the confirmed tombstone transaction's
-    /// existing outbox. Target references of authored records are not causal
-    /// parents and must never be selected merely because their target died.
-    pub fn discard_confirmed(
-        &self,
-        identities: &[String],
-        tombstone_position: i64,
-        applied: i64,
-    ) -> Result<()> {
-        if tombstone_position < 0 || tombstone_position > applied {
-            return invalid(
-                "tombstone cleanup is not authorized by the applied confirmed position",
-            );
-        }
-        self.ensure_indexes()?;
-        let identities = canonical(identities)?;
-        for identity in &identities {
-            if let Some(group) = self.capture_group(identity)?
-                && identities.binary_search(&group.identity.as_str()).is_err()
-            {
-                return invalid("tombstone cleanup omits the canonical capture group");
-            }
-            if let Some(prepared) = self.get(identity)?
-                && prepared.group().is_some()
-            {
-                self.visit_captures(identity, |member| {
-                    if identities.binary_search(&member).is_err() {
-                        return invalid("tombstone cleanup omits a capture group member");
-                    }
-                    Ok(())
-                })?;
-            }
-        }
-        let authorized: std::collections::BTreeSet<_> = identities
-            .iter()
-            .map(|identity| hash(identity.as_bytes()))
-            .collect();
-        let mut staged = Vec::new();
-        for entry in fs::read_dir(self.root.join("operations"))? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let Some(suffix) = name
-                .to_str()
-                .and_then(|name| name.strip_prefix(".preparing-"))
-            else {
-                continue;
-            };
-            if suffix.len() > 65
-                && suffix.as_bytes().get(64) == Some(&b'-')
-                && suffix.get(..64).is_some_and(|id| authorized.contains(id))
-            {
-                if !entry.file_type()?.is_dir() {
-                    return invalid("prepared payload staging is not a directory");
-                }
-                staged.push(entry.path());
-            }
-        }
-        // Keep the authoritative group until all of its authorized raw and
-        // request copies are gone. The owner's outbox retries after a crash.
-        for groups in [false, true] {
-            for identity in &identities {
-                if let Some(prepared) = self.get(identity)?
-                    && prepared.group().is_some() == groups
-                {
-                    self.remove(identity)?;
-                    boundary("discard_member_retired");
-                }
-            }
-        }
-        for path in staged {
-            self.retire_path(&path)?;
-        }
-        self.index_dirty.set(true);
-        self.ensure_indexes()
     }
 
     pub fn counts(&self) -> Result<(u64, u64, u64)> {
@@ -1472,22 +1325,8 @@ impl Spool {
                 exports: export_bindings,
                 named: facts.named,
                 request: facts.request,
-                private: facts.private,
             }),
-            (
-                Ingress::Events {
-                    source, coverage, ..
-                },
-                _,
-            ) => Payload::Events {
-                canonical: source.is_none().then(|| Canonical {
-                    coverage: coverage.as_ref().map(|proof| Coverage {
-                        scope: proof.scope.clone(),
-                        epoch: proof.policy_epoch,
-                    }),
-                }),
-                group,
-            },
+            (Ingress::Events { .. }, _) => Payload::Events { group },
             (Ingress::ReplaySequence { .. }, _) => Payload::ReplaySequence { group },
             (Ingress::Signals { .. }, _) => Payload::Signals,
             (Ingress::RegisterKinds { .. }, _) => Payload::RegisterKinds,
@@ -1522,7 +1361,6 @@ impl Spool {
         let prepared = Prepared {
             record: prepared,
             phase: Phase::Pending,
-            revoked: false,
             unresolved: false,
         };
         self.index_entry(&prepared)?;
@@ -1544,7 +1382,7 @@ impl Spool {
                 return invalid("retiring acquisition has another identity");
             }
             // A crash may have retired this member before its acquisition
-            // header. The confirmed canonical group still owns the cleanup.
+            // header. The confirmed group still owns the cleanup.
             path = batch.join("operations").join(hash(identity.as_bytes()));
         }
         self.retire_path(&path)?;
@@ -1737,7 +1575,7 @@ impl Spool {
         if let Some(group) = prepared.group() {
             let index = self.index("groups", &group.captures_hash);
             if read_json::<String>(&index)?.is_some_and(|identity| identity != prepared.identity) {
-                return invalid("two canonical frames claim the same capture group");
+                return invalid("two frames claim the same capture group");
             }
             write_index(&index, &prepared.identity)?;
             self.visit_captures(&prepared.identity, |capture| {
@@ -1745,7 +1583,7 @@ impl Spool {
                 if read_json::<String>(&index)?
                     .is_some_and(|identity| identity != prepared.identity)
                 {
-                    return invalid("capture belongs to two canonical frames");
+                    return invalid("capture belongs to two frames");
                 }
                 write_index(&index, &prepared.identity)?;
                 boundary("group_indexed_member");
@@ -1810,7 +1648,6 @@ struct MaterialFacts {
     capture: Option<Capture>,
     named: bool,
     request: bool,
-    private: bool,
 }
 
 fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
@@ -1840,17 +1677,9 @@ fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
         blob: material.blob.clone(),
         length: material.length,
         capture,
-        named: matches!(
-            parser,
-            "polylogue-products" | "polylogue-request-restore" | "polylogue-canonical-custody"
-        ) && name.ends_with(":observation"),
+        named: matches!(parser, "polylogue-products" | "polylogue-request-restore")
+            && name.ends_with(":observation"),
         request: matches!(parser, "polylogue-request" | "polylogue-request-restore"),
-        private: material
-            .manifest
-            .details
-            .get("polylogue_private_canonical")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true),
     }))
 }
 
@@ -1895,7 +1724,7 @@ fn validate_ack_header(
     }
     if !refused {
         if prepared.is_write() && position.is_none() {
-            return invalid("canonical frame acknowledgment has no confirmed position");
+            return invalid("a write acknowledgment has no confirmed position");
         }
         if let Some(expected) = prepared.material()
             && material != Some(expected.id.as_str())
@@ -1906,11 +1735,11 @@ fn validate_ack_header(
     Ok(())
 }
 
-fn canonical(captures: &[String]) -> Result<Vec<&str>> {
+fn sorted_members(captures: &[String]) -> Result<Vec<&str>> {
     let mut sorted: Vec<_> = captures.iter().map(String::as_str).collect();
     sorted.sort_unstable();
     if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
-        return invalid("canonical capture group repeats a member");
+        return invalid("a capture group repeats a member");
     }
     Ok(sorted)
 }

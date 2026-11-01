@@ -32,7 +32,6 @@ pub(crate) const REFERENCE_INDEX: &str = include_str!("projection/reference_inde
 use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
 use crate::{Result, StoreError};
-pub(crate) use replay::save as save_replay;
 pub(crate) use replay::{native_context, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -59,51 +58,7 @@ pub(crate) fn position(index: &Connection) -> Result<i64> {
     Ok(checkpoint(index)?.unwrap_or(0))
 }
 
-fn merge_conserved_product(previous: &[u8], incoming: &mut Product) -> Result<bool> {
-    if let Product::HistoricalQueryRun { run } = incoming {
-        let Product::HistoricalQueryRun { run: mut known } = unpacked(previous)? else {
-            return Ok(false);
-        };
-        crate::query_objects::merge_historical_run(&mut known, run)?;
-        *run = known;
-        return Ok(true);
-    }
-    let Product::ConservedRequest { accepted, claims } = incoming else {
-        return Ok(false);
-    };
-    let Product::ConservedRequest {
-        accepted: old,
-        claims: prior_claims,
-    } = unpacked(previous)?
-    else {
-        return Ok(false);
-    };
-    super::authored::merge_cached(&old, accepted)?;
-    let mut merged = prior_claims;
-    for claim in claims.iter() {
-        if !merged.contains(claim) {
-            merged.push(claim.clone());
-        }
-    }
-    *claims = merged;
-    Ok(true)
-}
-
-fn conserved_context(old: &Option<Vec<u8>>, new: &Option<Vec<u8>>) -> Result<bool> {
-    Ok(match (old, new) {
-        (Some(old), Some(new)) => {
-            let old: super::NativeFactContext = unpacked(old)?;
-            let new: super::NativeFactContext = unpacked(new)?;
-            old.kind == new.kind
-                && old.kind_definition_hash == new.kind_definition_hash
-                && old.origin == new.origin
-        }
-        (None, Some(_)) => true,
-        _ => old == new,
-    })
-}
-
-/// Each successfully staged page may be acknowledged. Only a complete position is visible.
+/// Each staged page may be acknowledged. Only a complete position is visible.
 fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let applied = position(&tx)?;
@@ -112,30 +67,14 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
         if let ConfirmedChange::Control(control) = &event.change {
             if !event.event.is_empty() || event.native.is_some() || event.output_index != 0 {
                 return Err(StoreError::Invalid(
-                    "owner replay controls cannot carry a fact identity".into(),
+                    "stream controls cannot carry a fact identity".into(),
                 ));
             }
             replay::stage_control(&tx, &mut state, control)?;
             continue;
         }
         if let Some(context) = &event.native {
-            replay::validate_context(context, state.policy_epoch)?;
-        }
-        if matches!(event.change, ConfirmedChange::ScopeReset { .. }) {
-            return Err(StoreError::Invalid(
-                "scope reset must precede confirmed data application".into(),
-            ));
-        }
-        if matches!(event.change, ConfirmedChange::PositionComplete) && state.policy_epoch.is_some()
-        {
-            return Err(StoreError::Invalid(
-                "a native replay requires its delivered owner completion receipt".into(),
-            ));
-        }
-        if event.position == 0 && matches!(event.change, ConfirmedChange::PositionComplete) {
-            tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position','0') ON CONFLICT(key) DO NOTHING",[])?;
-            state.applied_position = Some(0);
-            continue;
+            replay::validate_context(context)?;
         }
         if event.position <= 0 {
             return Err(StoreError::Invalid(
@@ -144,25 +83,6 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
         }
         if event.position <= applied {
             continue;
-        }
-        if matches!(event.change, ConfirmedChange::PositionComplete) {
-            tx.execute(
-                "INSERT OR IGNORE INTO primary_complete(position) VALUES (?1)",
-                [event.position],
-            )?;
-            continue;
-        }
-        if matches!(event.change, ConfirmedChange::Ignored) {
-            if state.policy_epoch.is_some() {
-                return Err(StoreError::Invalid(
-                    "an indexed owner replay cannot ignore an unsupported fact".into(),
-                ));
-            }
-            continue;
-        }
-        if state.policy_epoch.is_some() {
-            state.availability = super::ProjectionAvailability::Unknown;
-            state.publication = None;
         }
         if event.event.is_empty() {
             return Err(StoreError::Invalid(
@@ -174,7 +94,7 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             ConfirmedChange::Archived => "archived",
             ConfirmedChange::Restored => "restored",
             ConfirmedChange::Tombstoned => "tombstoned",
-            _ => unreachable!(),
+            ConfirmedChange::Control(_) => unreachable!(),
         };
         let bytes = packed(&event.change)?;
         let native = event.native.as_ref().map(packed).transpose()?;
@@ -184,51 +104,24 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             )
         })?;
         let existing:Option<(Vec<u8>,i64,Option<Vec<u8>>)>=tx.query_row("SELECT product,source_order,native_context FROM primary_pending WHERE position=?1 AND event=?2 AND change=?3",params![event.position,event.event,change],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
-        if let Some((old, order, context)) = existing {
-            let mut merged_bytes = None;
-            if (old != bytes || context != native)
-                && let ConfirmedChange::Live(product) = &event.change
-                && matches!(
-                    product.as_ref(),
-                    Product::ConservedRequest { .. } | Product::HistoricalQueryRun { .. }
-                )
-            {
-                let previous: ConfirmedChange = unpacked(&old)?;
-                if let ConfirmedChange::Live(previous) = previous {
-                    let mut incoming = product.as_ref().clone();
-                    if merge_conserved_product(&packed(&previous)?, &mut incoming)?
-                        && conserved_context(&context, &native)?
-                    {
-                        merged_bytes = Some(packed(&ConfirmedChange::Live(Box::new(incoming)))?);
-                    }
+        match existing {
+            Some((old, order, context)) => {
+                if order != source_order || old != bytes || context != native {
+                    return Err(StoreError::Invalid(
+                        "a redelivered confirmed change has different contents".into(),
+                    ));
                 }
             }
-            if order != source_order
-                || (merged_bytes.is_none() && (old != bytes || context != native))
-            {
-                return Err(StoreError::Invalid(
-                    "a redelivered confirmed change has different contents".into(),
-                ));
+            None => {
+                tx.execute("INSERT INTO primary_pending(position,event,change,product,source_order,native_context) VALUES (?1,?2,?3,?4,?5,?6)",params![event.position,event.event,change,bytes,source_order,native])?;
             }
-            if let Some(bytes) = merged_bytes {
-                tx.execute("UPDATE primary_pending SET product=?4,native_context=?5 WHERE position=?1 AND event=?2 AND change=?3",params![event.position,event.event,change,bytes,native])?;
-            }
-        } else {
-            tx.execute("INSERT INTO primary_pending(position,event,change,product,source_order,native_context) VALUES (?1,?2,?3,?4,?5,?6)",params![event.position,event.event,change,bytes,source_order,native])?;
         }
     }
     replay::save(&tx, &state)?;
-    if events.iter().any(|event| matches!(&event.change, ConfirmedChange::Control(control)
-        if matches!(control.as_ref(), super::ReplayControl::Coverage { coverage: super::RawInputCoverage::Complete { .. } })))
-        && let Some(position) = state.certified_position()
-    {
-        super::derived::confirmed(&tx, position)?;
-    }
     crate::fault::check("primary.stage_commit", "")?;
     tx.commit()?;
     Ok(())
 }
-
 #[derive(Clone)]
 struct Fact {
     event: String,
@@ -271,6 +164,25 @@ impl Fact {
         index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session,native_context) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.native])?;
         Ok(())
     }
+    fn tombstoned(event: String, position: i64, order: i64) -> Self {
+        Self {
+            event,
+            admitted: position,
+            changed: position,
+            order,
+            state: "tombstoned".into(),
+            product: None,
+            input: None,
+            chain: None,
+            reference: None,
+            kind: "tombstoned".into(),
+            start: None,
+            end: None,
+            version: None,
+            session: None,
+            native: None,
+        }
+    }
     fn product(&self) -> Result<Option<Product>> {
         self.product.as_deref().map(unpacked).transpose()
     }
@@ -286,7 +198,6 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
         Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
         Product::Request(request) => Some(format!("request:{}", request.request.id)),
-        Product::ConservedRequest { accepted, .. } => Some(format!("request:{}", accepted.id())),
         Product::RestoredRequest { prepared, .. } => {
             Some(format!("request:{}", prepared.request.id))
         }
@@ -297,7 +208,6 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         Product::Query { object } => Some(format!("query:{}", object.id)),
         Product::QueryRun { run } => Some(format!("query-run:{}", run.id)),
-        Product::HistoricalQueryRun { run } => Some(format!("query-run:{}", run.id)),
         Product::QueryRunOutcome { outcome } => Some(format!("query-run-outcome:{}", outcome.run)),
         _ => None,
     };
@@ -327,15 +237,13 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         ),
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_)
-        | Product::ConservedRequest { .. }
         | Product::RestoredRequest { .. }
         | Product::RestoredHistory { .. }
         | Product::RestoredAssertion { .. } => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
-        Product::Query { .. }
-        | Product::HistoricalQueryRun { .. }
-        | Product::QueryRun { .. }
-        | Product::QueryRunOutcome { .. } => (None, None, reference, "query"),
+        Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. } => {
+            (None, None, reference, "query")
+        }
         _ => unreachable!(),
     }
 }
@@ -366,38 +274,17 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
             )
             .optional()?;
         let next = match change {
-            ConfirmedChange::Live(mut product) => {
-                let conserved =
-                    if let Some(previous) = old.as_ref().and_then(|old| old.product.as_ref()) {
-                        merge_conserved_product(previous, product.as_mut())?
-                    } else {
-                        false
-                    };
+            ConfirmedChange::Live(product) => {
                 let bytes = packed(&product)?;
                 if let Some(old) = &old {
-                    if old
-                        .product
-                        .as_ref()
-                        .is_some_and(|previous| previous != &bytes)
-                        && !conserved
-                    {
-                        return Err(StoreError::Invalid(
-                            "a Sinex event changed its immutable product facts".into(),
-                        ));
-                    }
                     if old.state == "tombstoned" {
                         return Err(StoreError::Invalid(
                             "a tombstoned Sinex event cannot become live".into(),
                         ));
                     }
-                }
-                if let Some(old) = &old
-                    && old.native != native
-                {
-                    let compatible = conserved && conserved_context(&old.native, &native)?;
-                    if !compatible {
+                    if old.product.as_ref() != Some(&bytes) || old.native != native {
                         return Err(StoreError::Invalid(
-                            "a fact changed its original owner context".into(),
+                            "a Sinex event changed its immutable product facts".into(),
                         ));
                     }
                 }
@@ -463,16 +350,17 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 }
                 None => None,
             },
-            ConfirmedChange::Tombstoned => old.map(|mut fact| {
-                fact.state = "tombstoned".into();
-                fact.product = None;
-                fact.changed = position;
-                fact
+            // An event erased before this index read it keeps its reference.
+            ConfirmedChange::Tombstoned => Some(match old {
+                Some(mut fact) => {
+                    fact.state = "tombstoned".into();
+                    fact.product = None;
+                    fact.changed = position;
+                    fact
+                }
+                None => Fact::tombstoned(event, position, order),
             }),
-            ConfirmedChange::Ignored
-            | ConfirmedChange::PositionComplete
-            | ConfirmedChange::ScopeReset { .. }
-            | ConfirmedChange::Control(_) => None,
+            ConfirmedChange::Control(_) => None,
         };
         if let Some(next) = next {
             next.insert(index, "primary_candidate")?;
@@ -521,10 +409,53 @@ struct Plan {
     inputs: BTreeSet<String>,
     materials: BTreeSet<polylogue_model::BlobHash>,
     available: HashMap<polylogue_model::BlobHash, Option<u64>>,
-    requests: bool,
-    queries: bool,
+    requests: StateChange,
+    queries: StateChange,
     binding_messages: BTreeSet<String>,
-    coverage: bool,
+    coverage: StateChange,
+}
+
+/// How authored, query or coverage state takes one position's facts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StateChange {
+    Unchanged,
+    /// Only new live facts: each is applied after the ones already applied.
+    Appended,
+    /// A lifecycle change touched an applied fact: the state is cleared and
+    /// every live fact is applied again in commit order.
+    Rewritten,
+}
+
+impl StateChange {
+    fn of(index: &Connection, kind: &str) -> Result<Self> {
+        let rewritten: bool = index.query_row(
+            "SELECT EXISTS(SELECT 1 FROM primary_candidate c JOIN main.primary_fact f ON f.event=c.event WHERE f.kind=?1 AND f.state!=c.state)",
+            [kind],
+            |row| row.get(0),
+        )?;
+        if rewritten {
+            return Ok(Self::Rewritten);
+        }
+        let appended: bool = index.query_row(
+            "SELECT EXISTS(SELECT 1 FROM primary_candidate c WHERE c.kind=?1 AND c.state='live' AND NOT EXISTS(SELECT 1 FROM main.primary_fact f WHERE f.event=c.event))",
+            [kind],
+            |row| row.get(0),
+        )?;
+        Ok(if appended {
+            Self::Appended
+        } else {
+            Self::Unchanged
+        })
+    }
+
+    /// The facts to apply, in commit order, or `None` when nothing changed.
+    fn selection(self, kind: &str) -> Option<String> {
+        match self {
+            Self::Unchanged => None,
+            Self::Appended => Some(format!("SELECT c.product,c.admitted,c.source_order FROM primary_candidate c WHERE c.kind='{kind}' AND c.state='live' AND NOT EXISTS(SELECT 1 FROM main.primary_fact f WHERE f.event=c.event) ORDER BY c.admitted,c.source_order,c.event")),
+            Self::Rewritten => Some(format!("SELECT product,admitted,source_order FROM primary_next WHERE kind='{kind}' AND state='live' ORDER BY admitted,source_order,event")),
+        }
+    }
 }
 
 fn attachments(
@@ -610,10 +541,10 @@ fn plan(index: &Connection) -> Result<Plan> {
         inputs: BTreeSet::new(),
         materials: BTreeSet::new(),
         available: HashMap::new(),
-        requests: false,
-        queries: false,
+        requests: StateChange::of(index, "request")?,
+        queries: StateChange::of(index, "query")?,
         binding_messages: BTreeSet::new(),
-        coverage: false,
+        coverage: StateChange::of(index, "coverage")?,
     };
     let mut chains = BTreeMap::<(String, i64), crate::InputKey>::new();
     let mut new_materials = HashMap::new();
@@ -634,28 +565,6 @@ fn plan(index: &Connection) -> Result<Plan> {
             }
             if let Product::Input { rows, .. } = &product {
                 out.inputs.insert(rows.input.clone());
-            }
-            if matches!(
-                product,
-                Product::Request(_)
-                    | Product::ConservedRequest { .. }
-                    | Product::RestoredRequest { .. }
-                    | Product::RestoredHistory { .. }
-                    | Product::RestoredAssertion { .. }
-            ) {
-                out.requests = true;
-            }
-            if matches!(
-                product,
-                Product::Query { .. }
-                    | Product::HistoricalQueryRun { .. }
-                    | Product::QueryRun { .. }
-                    | Product::QueryRunOutcome { .. }
-            ) {
-                out.queries = true;
-            }
-            if matches!(product, Product::Coverage(_)) {
-                out.coverage = true;
             }
             if let Some(material) = material(&product) {
                 descriptor(material)?;
@@ -939,43 +848,19 @@ fn bindings(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
 }
 
 fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
-    if !plan.requests {
+    let Some(selection) = plan.requests.selection("request") else {
         return Ok(());
+    };
+    if plan.requests == StateChange::Rewritten {
+        super::authored::clear(tx)?;
     }
-    super::authored::clear(tx)?;
-    let mut q=tx.prepare("SELECT product,admitted FROM primary_next WHERE state='live' AND kind='request' ORDER BY admitted,source_order,event")?;
+    let mut q = tx.prepare(&selection)?;
     let mut rows = q.query([])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(0)?;
         let admitted: i64 = row.get(1)?;
         match unpacked(&bytes)? {
             Product::Request(prepared) => super::authored::apply(tx, &prepared, admitted)?,
-            Product::ConservedRequest { accepted, claims } => {
-                let source = match &accepted {
-                    polylogue_model::historical::ConservedAccepted::Compatible(prepared) => {
-                        &prepared
-                            .original
-                            .as_ref()
-                            .ok_or_else(|| {
-                                StoreError::Invalid(
-                                    "conserved request has no original source encoding".into(),
-                                )
-                            })?
-                            .source
-                    }
-                    polylogue_model::historical::ConservedAccepted::Historical(record) => {
-                        &record.source
-                    }
-                };
-                if matches!(
-                    source,
-                    polylogue_model::historical::SourceSchema::LocalProjection { .. }
-                ) {
-                    super::authored::conserve_local(tx, &accepted, &claims, admitted)?;
-                } else {
-                    super::authored::conserve(tx, &accepted, &claims, admitted)?;
-                }
-            }
             Product::RestoredRequest {
                 prepared,
                 claims,
@@ -1006,24 +891,18 @@ fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
 }
 
 fn queries(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
-    if !plan.queries {
+    let Some(selection) = plan.queries.selection("query") else {
         return Ok(());
+    };
+    if plan.queries == StateChange::Rewritten {
+        crate::query_objects::clear(tx)?;
     }
-    crate::query_objects::clear(tx)?;
-    let mut query = tx.prepare("SELECT product,admitted,source_order FROM primary_next WHERE state='live' AND kind='query' ORDER BY admitted,source_order,event")?;
+    let mut query = tx.prepare(&selection)?;
     let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
         let bytes: Vec<u8> = row.get(0)?;
         match unpacked(&bytes)? {
             Product::Query { object } => crate::query_objects::apply_object(tx, &object)?,
-            Product::HistoricalQueryRun { run } => {
-                crate::query_objects::apply_historical_run(
-                    tx,
-                    &run,
-                    row.get(1)?,
-                    Some(unsigned_column(row, 2)?),
-                )?;
-            }
             Product::QueryRun { run } => {
                 crate::query_objects::apply_run(tx, &run, row.get(1)?, unsigned_column(row, 2)?)?;
             }
@@ -1033,9 +912,24 @@ fn queries(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
             _ => unreachable!(),
         }
     }
-    // A filtered live projection cannot establish the first execution in full
-    // history. Keep that claim unknown until complete historical proof exists.
-    tx.execute("UPDATE source_query SET first_run=NULL", [])?;
+    Ok(())
+}
+
+fn coverage(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
+    let Some(selection) = plan.coverage.selection("coverage") else {
+        return Ok(());
+    };
+    if plan.coverage == StateChange::Rewritten {
+        crate::coverage::clear(tx)?;
+    }
+    let mut query = tx.prepare(&selection)?;
+    let mut rows = query.query([])?;
+    while let Some(row) = rows.next()? {
+        let bytes: Vec<u8> = row.get(0)?;
+        if let Product::Coverage(coverage) = unpacked(&bytes)? {
+            crate::coverage::apply(tx, &coverage)?;
+        }
+    }
     Ok(())
 }
 
@@ -1097,27 +991,19 @@ pub(crate) fn apply(
         members(&tx, &plan)?;
         requests(&tx, &plan)?;
         queries(&tx, &plan)?;
-        if plan.coverage {
-            crate::coverage::clear(&tx)?;
-            let mut q=tx.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='coverage' ORDER BY admitted,source_order,event")?;
-            let mut rows = q.query([])?;
-            while let Some(row) = rows.next()? {
-                let bytes: Vec<u8> = row.get(0)?;
-                if let Product::Coverage(coverage) = unpacked(&bytes)? {
-                    crate::coverage::apply(&tx, &coverage)?;
-                }
-            }
-        }
+        coverage(&tx, &plan)?;
         crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter)?;
         bindings(&tx, &plan)?;
-        crate::variants::project(&tx)?;
+        // Variants are authored records, so only a request can change them.
+        if plan.requests != StateChange::Unchanged {
+            crate::variants::project(&tx)?;
+        }
         tx.execute(
             "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
             [],
         )?;
         remember_blobs(&tx)?;
         replay::complete(&tx, next)?;
-        super::derived::confirmed(&tx, next)?;
         tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;

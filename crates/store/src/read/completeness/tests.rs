@@ -117,10 +117,19 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     assert!(!raw.caught_up());
 }
 
+/// law: rebuild-from-stream
 #[test]
-fn primary_scalar_zero_is_not_a_full_projection_certificate() {
+fn primary_projection_is_complete_once_the_stream_has_been_applied() {
     let root = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_primary_cache(root.path()).unwrap();
+    let pool = ReadPool::open(&archive).unwrap();
+    let fresh = pool.reader().unwrap().completeness(&[]).unwrap();
+    assert_eq!(
+        fresh.projection,
+        CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied])
+    );
+    assert!(fresh.degraded());
+    drop(pool);
     let conn = Connection::open(archive.index_db()).unwrap();
     conn.execute(
         "INSERT INTO meta(key,value) VALUES('confirmed_position','0')",
@@ -128,12 +137,8 @@ fn primary_scalar_zero_is_not_a_full_projection_certificate() {
     )
     .unwrap();
     let pool = ReadPool::open(&archive).unwrap();
-    let proof = pool.reader().unwrap().completeness(&[]).unwrap();
-    assert_eq!(
-        proof.projection,
-        CompletenessDimension::Unknown(vec![CompletenessReason::OwnerProofUnavailable])
-    );
-    assert!(proof.degraded());
+    let applied = pool.reader().unwrap().completeness(&[]).unwrap();
+    assert_eq!(applied.projection, CompletenessDimension::Complete);
 }
 
 #[test]

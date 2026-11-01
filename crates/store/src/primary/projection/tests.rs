@@ -9,9 +9,6 @@ fn cache(path: &std::path::Path) -> Connection {
         .unwrap();
     index.execute_batch(SCHEMA).unwrap();
     index
-        .execute_batch(crate::primary::derived::SCHEMA)
-        .unwrap();
-    index
 }
 
 fn input(position: i64, id: &str) -> Confirmed {
@@ -39,7 +36,9 @@ fn barrier(position: i64) -> Confirmed {
         position,
         output_index: 0,
         event: String::new(),
-        change: ConfirmedChange::PositionComplete,
+        change: ConfirmedChange::Control(Box::new(
+            crate::primary::ReplayControl::Completion { position },
+        )),
     }
 }
 
@@ -215,6 +214,101 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
         )
         .unwrap();
     assert_eq!(body, None);
+}
+
+fn setting(index: &Connection, id: &str, key: &str) -> Product {
+    use polylogue_model::user::{UserRequest, UserWrite};
+    let request = UserRequest {
+        authorship: polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        },
+        id: id.into(),
+        machine: "machine".into(),
+        at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+        write: UserWrite::SetSetting {
+            key: key.into(),
+            value: "on".into(),
+            machine: None,
+        },
+    };
+    Product::Request(
+        crate::primary::authored::prepare(index, &request, None, None, |_| Ok(()), |_| Ok(()))
+            .unwrap(),
+    )
+}
+fn settings(index: &Connection) -> Vec<String> {
+    index
+        .prepare("SELECT key FROM source_assertion WHERE kind='setting' ORDER BY key")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// law: user-state-rebuilds-from-stream
+#[test]
+fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_authored_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let fact = |position, event: &str, product| Confirmed {
+        native: None,
+        position,
+        output_index: 0,
+        event: event.into(),
+        change: ConfirmedChange::Live(Box::new(product)),
+    };
+    let first = setting(&index, "first-request", "browser.actions");
+    apply(
+        &mut index,
+        &resolver,
+        &[fact(2, "first", first), barrier(2)],
+    )
+    .unwrap();
+    assert_eq!(settings(&index), ["browser.actions"]);
+    let second = setting(&index, "second-request", "browser.capture");
+    apply(
+        &mut index,
+        &resolver,
+        &[fact(3, "second", second), barrier(3)],
+    )
+    .unwrap();
+    assert_eq!(settings(&index), ["browser.actions", "browser.capture"]);
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            Confirmed {
+                native: None,
+                position: 4,
+                output_index: 0,
+                event: "first".into(),
+                change: ConfirmedChange::Archived,
+            },
+            barrier(4),
+        ],
+    )
+    .unwrap();
+    assert_eq!(settings(&index), ["browser.capture"]);
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            Confirmed {
+                native: None,
+                position: 5,
+                output_index: 0,
+                event: "first".into(),
+                change: ConfirmedChange::Restored,
+            },
+            barrier(5),
+        ],
+    )
+    .unwrap();
+    assert_eq!(settings(&index), ["browser.actions", "browser.capture"]);
 }
 
 #[test]
@@ -603,5 +697,3 @@ mod receipts;
 mod source_memberships;
 
 mod replay;
-
-mod conserved;

@@ -44,7 +44,8 @@ pub enum CompletenessReason {
     DerivationBehind,
     SearchPending,
     FirstBuild,
-    OwnerProofUnavailable,
+    /// Primary mode: the index has not yet applied the confirmed stream.
+    StreamNotApplied,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -184,13 +185,10 @@ impl Reader<'_> {
             CompletenessDimension::Incomplete(search_missing)
         };
         let projection = if self.pool.archive.is_primary() {
-            if crate::primary::projection::replay_state(conn)?
-                .certified_position()
-                .is_some()
-            {
+            if crate::primary::projection::checkpoint(conn)?.is_some() {
                 CompletenessDimension::Complete
             } else {
-                CompletenessDimension::Unknown(vec![CompletenessReason::OwnerProofUnavailable])
+                CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied])
             }
         } else {
             CompletenessDimension::NotApplicable

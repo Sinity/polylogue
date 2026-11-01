@@ -20,7 +20,7 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -295,6 +295,9 @@ const KEY_INDEXES: &[&str] = &["message_id", "event_id", "text_hash"];
 
 /// Batches waiting for the writer before senders block.
 const QUEUE: usize = 4;
+/// How long a primary writer waits for work before it reads the confirmed
+/// stream on its own, so other hosts' writes and a rebuild arrive unasked.
+const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Input bytes a transaction covers before committing. A batch's bytes
 /// stay counted against the parse pool's limit until its transaction
@@ -409,7 +412,6 @@ impl Writer {
             location: archive.clone(),
             sinex,
         };
-        inner.restore_canonical_custody()?;
         // Senders block once a few batches wait. The writer is the slowest
         // stage of a first build, and a parsed batch holds its rows and
         // packed bodies; a deep queue let finished batches pile up past
@@ -1123,6 +1125,37 @@ impl Inner {
         }
     }
 
+    /// The next queued message. An idle primary writer follows the confirmed
+    /// stream while it waits.
+    fn next_message(&mut self, rx: &Receiver<Msg>) -> Option<Msg> {
+        if self.sinex.is_none() {
+            return rx.recv().ok();
+        }
+        loop {
+            match rx.recv_timeout(STREAM_POLL) {
+                Ok(message) => return Some(message),
+                Err(RecvTimeoutError::Disconnected) => return None,
+                Err(RecvTimeoutError::Timeout) => self.follow_stream(),
+            }
+        }
+    }
+
+    /// Sends what waits in the spool, applies what Sinex confirmed and
+    /// derives from it. Sinex's health keeps a connection error for status.
+    fn follow_stream(&mut self) {
+        let _busy = crate::timing::writer_started();
+        let turn = Arc::clone(&self.search.turn);
+        let _turn = turn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.synchronize_primary().is_ok()
+            && self.derive_due
+            && let Err(error) = self.derive()
+        {
+            self.report.errors.push(format!("derive: {error}"));
+        }
+    }
+
     fn run(&mut self, rx: &Receiver<Msg>, users: &Receiver<UserMsg>) {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
@@ -1144,9 +1177,8 @@ impl Inner {
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
-            let first = match rx.recv() {
-                Ok(first) => first,
-                Err(_) => break,
+            let Some(first) = self.next_message(rx) else {
+                break;
             };
             let _busy = crate::timing::writer_started();
             self.serve_users(users);

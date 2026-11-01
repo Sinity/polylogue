@@ -635,15 +635,12 @@ fn session_start(
     recent.truncate(RECENT_SESSIONS as usize);
     // Handoffs and blockers on the sessions listed belong with them.
     targets.extend(recent.iter().map(|s| Reference::Session(s.id.clone())));
-    let held_notes = operator_notes(
+    let notes = operator_notes(
         reader,
         targets.clone(),
         previous.as_ref().map(|p| p.seq),
         context,
     )?;
-    // Stored authorship and judgments remain readable evidence. Neither is a
-    // trusted native-admission proof, which the current Reader cannot supply.
-    let notes: Vec<Assertion> = Vec::new();
 
     let mut header = format!("Polylogue brief for {here} (delivery {delivery_id})\n");
     if let Some(p) = &previous {
@@ -670,21 +667,8 @@ fn session_start(
             }
         }
     }
-    if !held_notes.is_empty() {
-        let _ = writeln!(
-            header,
-            "Assertions held: {}. Trusted native-origin proof is unavailable; inspect them with `{operator_notes_command}`.",
-            held_notes.len()
-        );
-    }
     let mut fit = Fitter::new(DEFAULT_BUDGET, header);
     fit.refs.extend(prompt_refs);
-    if !held_notes.is_empty() {
-        fit.left_out.push(LeftOut {
-            what: format!("{} authored assertions",held_notes.len()),
-            reason: "held: trusted native-origin proof is unavailable; author labels and import claims do not establish eligibility".into(),
-        });
-    }
 
     fit.section(
         "Notes from the operator:",
@@ -820,7 +804,7 @@ fn takeover(
                 .join("\n")
         })
     });
-    let held_notes = assertions::list(
+    let notes = assertions::list(
         reader,
         &format!(
             "{} author:operator",
@@ -850,17 +834,6 @@ fn takeover(
         what: "tool calls and their output".into(),
         reason: "a takeover carries prompts, notes and the last answer".into(),
     }];
-    if !held_notes.is_empty() {
-        let _ = writeln!(
-            text,
-            "Assertions held: {}. Trusted native-origin proof is unavailable.",
-            held_notes.len()
-        );
-        left_out.push(LeftOut {
-            what: format!("{} authored assertions",held_notes.len()),
-            reason: "held: trusted native-origin proof is unavailable; retained assertions remain readable".into(),
-        });
-    }
     if other_assertions > 0 {
         let _ = writeln!(
             text,
@@ -898,6 +871,13 @@ fn takeover(
             open.push(format!("waiting on {w}"));
         }
         let _ = writeln!(text, "Left open: {}.", open.join("; "));
+    }
+    if !notes.is_empty() {
+        let _ = writeln!(text, "\nNotes from the operator on it:");
+        for n in &notes {
+            let _ = writeln!(text, "{}", note_line(n));
+            refs.push(format!("assertion:{}@{}", n.fact.root, n.fact.id));
+        }
     }
     if !prompts.is_empty() {
         let _ = writeln!(text, "\nThe operator's prompts in it, oldest first:");

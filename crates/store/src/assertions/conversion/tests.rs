@@ -308,12 +308,6 @@ fn retained_publication_uses_the_same_decoder_without_fetched_event_or_acceptanc
         record.original.as_ref().unwrap().request.as_deref(),
         Some(bytes.as_slice())
     );
-    let mut conn = Connection::open_in_memory().unwrap();
-    let tx = conn.transaction().unwrap();
-    assert!(
-        crate::primary::authored::conserve(&tx, &accepted, &[], 1).is_err(),
-        "retained custody is not a fetched canonical event"
-    );
     let mut unsupported = source;
     if let SourceSchema::RetainedPublication { parser_version, .. } = &mut unsupported {
         *parser_version = 4;

@@ -18,7 +18,7 @@ impl Sinex {
                 return Ok(());
             };
             after = Some(entry.order);
-            if entry.unresolved || entry.phase.is_refused() || entry.is_private() || entry.revoked {
+            if entry.unresolved || entry.phase.is_refused() {
                 continue;
             }
             if entry.capture().is_some() {

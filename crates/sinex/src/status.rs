@@ -8,7 +8,6 @@ pub(crate) struct Health {
     pub context: crate::context::Cache,
     pub reachable: Option<bool>,
     pub family: Option<String>,
-    pub canonical_publisher: bool,
     pub error: Option<String>,
     pub last_ack: Option<Instant>,
     pub owner_position: Option<i64>,
@@ -20,7 +19,6 @@ pub(crate) struct Health {
 pub struct Status {
     pub endpoint: String,
     pub family: Option<String>,
-    pub canonical_publisher: bool,
     pub producer: String,
     pub reachable: Option<bool>,
     pub error: Option<String>,
@@ -69,7 +67,6 @@ impl Sinex {
             owner_position,
             owner_position_seconds_ago,
             family,
-            canonical_publisher,
         ) = {
             let health = self
                 .health
@@ -84,7 +81,6 @@ impl Sinex {
                     .position_observed
                     .map(|at| at.elapsed().as_secs_f64()),
                 health.family.clone(),
-                health.canonical_publisher,
             )
         };
         let queue = self
@@ -116,7 +112,6 @@ impl Sinex {
         Ok(Status {
             endpoint: self.config.nats.clone(),
             family,
-            canonical_publisher,
             producer: self.config.producer.clone(),
             reachable,
             error,

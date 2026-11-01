@@ -1,4 +1,4 @@
-//! Canonical, complete Polylogue facts built from parser output. The source
+//! Complete Polylogue facts built from parser output. The source
 //! reading is part of every parsed fact; indexed summaries are never an input.
 use crate::{Error, Result};
 use polylogue_model::user::UserWrite;
@@ -6,41 +6,13 @@ use polylogue_model::{Block, WrittenBy};
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
 
-pub(crate) fn canonical(product: &Product) -> bool {
-    match product {
-        Product::AttachmentBinding { .. } => true,
-        Product::Request(prepared) | Product::RestoredRequest { prepared, .. } => {
-            signal_content(prepared)
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn signal_content(prepared: &polylogue_model::authored::PreparedRequest) -> bool {
-    matches!(prepared.request.write, UserWrite::SignalCommit(_))
-        || !prepared.effect.signal_checkpoints.is_empty()
-        || !prepared.effect.signal_events.is_empty()
-        || prepared
-            .effect
-            .deliveries
-            .iter()
-            .any(|change| change.delivery.signal.is_some())
-}
-
 pub(crate) fn require_source(product: &Product) -> Result<()> {
-    kind(product)?;
-    if canonical(product) {
-        return Err(Error::Refused {
-            name: kind(product)?.into(),
-            reason: "derived products require an owner-certified publication".into(),
-        });
-    }
     if product
         .reading()
         .is_some_and(|reading| reading.delivery.is_some())
     {
         return Err(Error::Refused {
-            name: kind(product)?.into(),
+            name: kind(product).into(),
             reason: "export products require their bound immutable reading key".into(),
         });
     }
@@ -51,9 +23,6 @@ pub(crate) fn require_export(
     product: &Product,
     key: &polylogue_store::primary::ExportReadingKey,
 ) -> Result<()> {
-    if canonical(product) {
-        return require_source(product);
-    }
     key.validate()?;
     require_reading(product, key)?;
     if product
@@ -71,10 +40,6 @@ pub(crate) fn require_reading(
     product: &Product,
     key: &polylogue_store::primary::ExportReadingKey,
 ) -> Result<()> {
-    kind(product)?;
-    if canonical(product) {
-        return require_source(product);
-    }
     let reading = product.reading().ok_or_else(|| {
         Error::Invalid("export custody contains a product without a reading".into())
     })?;
@@ -99,18 +64,8 @@ pub(crate) fn require_reading(
     Ok(())
 }
 
-fn receive_only() -> Error {
-    Error::Refused {
-        name: "conserved request".into(),
-        reason: "versioned historical projection is receive-only".into(),
-    }
-}
-
-pub(crate) fn kind(product: &Product) -> Result<&'static str> {
-    Ok(match product {
-        Product::ConservedRequest { .. } | Product::HistoricalQueryRun { .. } => {
-            return Err(receive_only());
-        }
+pub(crate) fn kind(product: &Product) -> &'static str {
+    match product {
         Product::AttachmentBinding { .. } => "polylogue.attachment_binding",
         Product::Input { .. } => "polylogue.input_observation",
         Product::Blob(_) => "polylogue.blob",
@@ -142,16 +97,13 @@ pub(crate) fn kind(product: &Product) -> Result<&'static str> {
             UserWrite::DeliveryEvent { .. } => "polylogue.delivery_outcome",
             _ => "polylogue.request",
         },
-    })
+    }
 }
 
 /// Source copies remain separate readings of one natural record. This retains
 /// every source rank and provider attribute when another copy arrives.
 pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
     let natural = match product {
-        Product::ConservedRequest { .. } | Product::HistoricalQueryRun { .. } => {
-            return Err(receive_only());
-        }
         Product::AttachmentBinding { record } => json!([record.selection()]),
         Product::Input { rows, .. } => json!([
             rows.input,
@@ -227,7 +179,7 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         None => json!([reading.input.id, reading.chain]),
     });
     Ok(
-        blake3::hash(&serde_json::to_vec(&(kind(product)?, source, natural))?)
+        blake3::hash(&serde_json::to_vec(&(kind(product), source, natural))?)
             .to_hex()
             .to_string(),
     )
@@ -237,9 +189,6 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
 /// to its other domains without understanding Polylogue's internal model.
 pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
     let mut payload = match product {
-        Product::ConservedRequest { .. } | Product::HistoricalQueryRun { .. } => {
-            return Err(receive_only());
-        }
         Product::Session { facts, .. } => json!({
             "session": facts.id, "origin": facts.id.origin().as_str(), "kind": facts.kind,
             "title": facts.title.as_ref().map(|title| &title.text), "cwd": facts.cwd,
@@ -378,7 +327,7 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
             ));
         }
     }
-    if kind(&product)? != event_type {
+    if kind(&product) != event_type {
         return Err(Error::Invalid(format!(
             "confirmed {event_type} carries another product kind"
         )));
@@ -484,21 +433,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
-                    version: if *name == "polylogue.assertion" {
-                        1
-                    } else {
-                        match *product {
-                            "message" => 5,
-                            "request" | "restored_request" => 5,
-                            "input" | "session" | "document" | "event" | "link" | "background"
-                            | "repository" | "parse_progress" => 4,
-                            "fragment" => 2,
-                            "query_run" => 3,
-                            "restored_history" | "restored_assertion" | "attachment_binding"
-                            | "query" | "query_run_outcome" => 1,
-                            _ => 3,
-                        }
-                    },
+                    version: 1,
                 },
                 declaring_producer: producer.into(),
                 payload_schema: Some(schema),
@@ -613,7 +548,7 @@ pub(crate) fn events(
                 .transpose()?;
             let output_index = write.output_index;
             Ok(sinex_protocol::ProducerEvent {
-                kind: crate::kinds::kind_reference(kind(&write.product)?)?,
+                kind: crate::kinds::kind_reference(kind(&write.product))?,
                 payload,
                 location,
                 output_index,

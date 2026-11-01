@@ -5,7 +5,7 @@ mod local;
 use super::*;
 #[cfg(test)]
 pub(crate) use local::migrate_query_runs;
-pub(crate) use local::{migrate_cached_products, migrate_source};
+pub(crate) use local::migrate_source;
 use polylogue_model::{
     authored::{AuthoredEffect, PreparedRequest},
     historical::{

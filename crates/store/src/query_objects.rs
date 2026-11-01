@@ -1,10 +1,11 @@
-//! Canonical questions and executions, shared by the writer and confirmed replay.
+//! Questions and their executions, shared by the writer and the confirmed stream.
 mod historical;
 pub use historical::conserve_historical_run;
 pub(crate) use historical::{
-    apply_historical_run, historical_run_on, merge_historical_run, prepare_historical_run_restore,
-    restore_historical_run,
+    historical_run_on, prepare_historical_run_restore, restore_historical_run,
 };
+#[cfg(test)]
+use historical::apply_historical_run;
 
 use crate::{Reader, Result, StoreError, primary::Product, source::Source};
 use polylogue_model::query_objects::{
