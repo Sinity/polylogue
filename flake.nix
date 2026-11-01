@@ -32,6 +32,7 @@
         # 169 s of linking with ld and 37 s with mold.
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
         shellHook = ''
+          export CARGO_TARGET_DIR="/realm/tmp/work/codex/r-devloop-2/shell-targets/polylogue"
           # Optional host placement; an explicitly set target directory is kept.
           if [ -z "''${CARGO_TARGET_DIR:-}" ] && command -v sinnix-cargo-target >/dev/null 2>&1; then
             if cargo_target="$(sinnix-cargo-target)"; then
