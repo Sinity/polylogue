@@ -34,6 +34,7 @@ use polylogue_model::{
 use polylogue_store::search;
 use polylogue_store::{Reader, StoreError};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -450,26 +451,27 @@ fn live_here(
                 fields: &fields,
             },
         )
-        .map(|answer| answer.value)
+        .and_then(|answer| answer.value.into_rows())
         .map_err(|f| StoreError::Invalid(format!("live sessions {text:?}: {}", f.message)))?;
-        for row in page["rows"].as_array().into_iter().flatten() {
-            let Some(id) = row["id"].as_str() else {
+        for row in &page.rows {
+            let field = |name: &str| row.get(name).unwrap_or(&Value::Null);
+            let Some(id) = field("id").as_str() else {
                 continue;
             };
             if me.is_some_and(|m| m.to_string() == id) {
                 continue;
             }
-            let title = row["title"]
+            let title = field("title")
                 .as_str()
                 .map_or("untitled".into(), |t| one_line(t, 80));
             let mut line = format!(
                 "- {id}  {title}: {}",
-                row["live"].as_str().unwrap_or("unknown")
+                field("live").as_str().unwrap_or("unknown")
             );
-            if let Some(todo) = row["todo"].as_str() {
+            if let Some(todo) = field("todo").as_str() {
                 let _ = write!(line, ", doing \"{}\"", one_line(todo, 100));
             }
-            if let Some(at) = row["last_event_at"].as_str() {
+            if let Some(at) = field("last_event_at").as_str() {
                 let _ = write!(
                     line,
                     ", last event {}",
@@ -481,8 +483,8 @@ fn live_here(
                 refs: vec![format!("session:{id}")],
             });
         }
-        match page["next"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
+        match page.next {
+            Some(next) => cursor = Some(next),
             None => return Ok(items),
         }
     }
@@ -1015,7 +1017,12 @@ fn recall(
             },
         );
         match answer {
-            Ok(page) => break Some((page.value, indexes)),
+            Ok(page) => {
+                let rows = page.value.into_rows().map_err(|f| {
+                    StoreError::Invalid(format!("recall query {query:?}: {}", f.message))
+                })?;
+                break Some((rows, indexes));
+            }
             // The provider could not embed the text: the words still search.
             Err(f) if similarity && f.code() == "embed" => {
                 similarity = false;
@@ -1034,7 +1041,8 @@ fn recall(
     let mut next = None;
     if let Some((answer, names)) = found {
         let mut exhausted = false;
-        for row in answer["rows"].as_array().into_iter().flatten() {
+        for row in &answer.rows {
+            let field = |name: &str| row.get(name).unwrap_or(&Value::Null);
             // Without fusion one list ranks every row it ranks at all.
             let found_in: Vec<&'static str> = match row.get("found_in") {
                 Some(lists) => lists
@@ -1043,7 +1051,7 @@ fn recall(
                     .flatten()
                     .filter_map(|n| names.get(n.as_u64()? as usize - 1).copied())
                     .collect(),
-                None if row["rank"].is_null() => vec![],
+                None if field("rank").is_null() => vec![],
                 None => vec![names[0]],
             };
             // Rows no list ranks (messages with no vector and no word)
@@ -1052,7 +1060,7 @@ fn recall(
                 exhausted = true;
                 break;
             }
-            let (Some(session), Some(message)) = (row["session"].as_str(), row["id"].as_str())
+            let (Some(session), Some(message)) = (field("session").as_str(), field("id").as_str())
             else {
                 continue;
             };
@@ -1060,11 +1068,11 @@ fn recall(
                 session: session.to_owned(),
                 message: message.to_owned(),
                 found_in,
-                snippet: row["snippet"]["text"].as_str().map(str::to_owned),
+                snippet: field("snippet")["text"].as_str().map(str::to_owned),
             });
         }
         if !exhausted {
-            next = answer["next"].as_str().map(str::to_owned);
+            next = answer.next;
         }
         indexes = names;
     }

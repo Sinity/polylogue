@@ -60,8 +60,8 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
             "INSERT INTO input_ref(id) VALUES ('a');
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,2,'parsing',12 FROM input_ref WHERE id='a';
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,detail)
-         SELECT pk,3,'waiting',2,'30' FROM input_ref WHERE id='a';
+         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,waiting_at)
+         SELECT pk,3,'waiting',2,30 FROM input_ref WHERE id='a';
          INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
          SELECT pk,5,'done',50 FROM input_ref WHERE id='a';",
         )
@@ -193,8 +193,8 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('metadata');
-        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,detail,reading_version)
-        SELECT pk,1,'waiting',40,'100','metadata=1' FROM input_ref;",
+        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,waiting_at,reading_version)
+        SELECT pk,1,'waiting',40,100,'metadata=1' FROM input_ref;",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();

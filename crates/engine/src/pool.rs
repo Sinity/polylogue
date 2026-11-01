@@ -522,8 +522,11 @@ pub(crate) fn run(
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);
-                        p.no_parser_yet =
-                            job.origin.support == polylogue_sources::Support::NoParser;
+                        if job.origin.support == polylogue_sources::Support::NoParser {
+                            p.progress = polylogue_model::batch::StepProgress::NoParserYet {
+                                at_end: job.at_end,
+                            };
+                        }
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
                         if job.origin.is_row_dump(&job.path) {
                             let start = step.start as usize;
@@ -538,7 +541,7 @@ pub(crate) fn run(
                         parsed.push(p);
                     }
                     if let Some(last) = parsed.last_mut()
-                        && !last.no_parser_yet {
+                        && !matches!(last.progress, polylogue_model::batch::StepProgress::NoParserYet { .. }) {
                         last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
                             last.reading_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
                     }
@@ -562,7 +565,9 @@ pub(crate) fn run(
                 job.start..job.end,
                 job.at_end,
             );
-            step.no_parser_yet = true;
+            step.progress = polylogue_model::batch::StepProgress::NoParserYet {
+                at_end: job.at_end,
+            };
             step.reading_version = job.origin.reading_version();
             if prepare {
                 step.prepare();

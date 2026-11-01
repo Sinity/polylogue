@@ -52,16 +52,11 @@ impl SelectionError {
             },
         }
     }
-    pub fn kind(&self) -> &str {
+    /// The product failure code: the store's one mapping for a store error,
+    /// and the diagnostic's own code otherwise.
+    pub fn code(&self) -> &'static str {
         match self {
-            Self::Store(StoreError::ReadDeadlineExceeded) => "deadline_exceeded",
-            Self::Store(StoreError::ReadCancelled) => "cancelled",
-            Self::Store(StoreError::ScopeChanged) => "scope_changed",
-            Self::Store(StoreError::NotFound(_)) => "not_found",
-            Self::Store(StoreError::Ambiguous { .. }) => "ambiguous",
-            Self::Store(StoreError::Query(error)) => error.kind(),
-            Self::Store(StoreError::Selection { code, .. }) => code,
-            Self::Store(_) => "store",
+            Self::Store(error) => error.code(),
             Self::Query(error) => error.kind(),
             Self::Language(error) => error.kind.code(),
             Self::Invalid { kind, .. } => kind,
@@ -338,7 +333,7 @@ impl Reader<'_> {
             ("compiler".into(), "shared-query-v1".into()),
             (
                 "catalog".into(),
-                polylogue_query::plan::catalog_fingerprint(),
+                polylogue_query::plan::catalog_fingerprint().to_owned(),
             ),
             ("definitions".into(), plan.question_id().to_string()),
         ]);

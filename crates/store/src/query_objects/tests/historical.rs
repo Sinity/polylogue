@@ -247,7 +247,7 @@ fn old_notes_question_retains_its_identity_but_is_not_current_native_or_replay_i
     let replay = reader.prepare_query_object_selection(
         &retained.value,
         &options,
-        &polylogue_query::plan::catalog_fingerprint(),
+        polylogue_query::plan::catalog_fingerprint(),
     );
     let error = replay
         .err()

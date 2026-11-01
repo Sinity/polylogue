@@ -114,7 +114,7 @@ fn new_messages_do_not_read_a_previous_source() {
         })
         .collect();
     let mut b = batch("input1", 0, 100, rows, &["main"]);
-    b.parse[0].at_end = false;
+    b.parse[0].progress = polylogue_model::batch::StepProgress::Partway;
     assert_eq!(
         write_test_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first_build)).unwrap(),
         messages

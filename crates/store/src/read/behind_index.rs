@@ -26,7 +26,7 @@ pub(super) struct ChainState {
     pub plan: BehindChain,
     pub origin: String,
     pub version: Option<String>,
-    pub status: Option<String>,
+    pub progress: Option<polylogue_model::batch::ParseProgress>,
 }
 
 const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
@@ -50,7 +50,7 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.detail = CAST(c.length AS TEXT), 0), p.reading_version, p.status
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.waiting_at = c.length, 0), p.reading_version, p.status, p.waiting_at
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN source_revision l ON l.input = c.input AND l.number = s.number
@@ -61,7 +61,7 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
             WHERE (?2 OR (c.length > 0
               AND (p.input_pk IS NULL
-                OR (NOT COALESCE(p.status = 'waiting' AND p.detail = CAST(c.length AS TEXT), 0) AND p.parsed_upto < c.length)
+                OR (NOT COALESCE(p.waiting_at = c.length, 0) AND p.parsed_upto < c.length)
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
                       AND json_extract(expected.value, '$[1]') IS NOT p.reading_version))))
@@ -130,7 +130,10 @@ impl Reader<'_> {
                 },
                 origin,
                 version,
-                status: row.get(11)?,
+                progress: row
+                    .get::<_, Option<String>>(11)?
+                    .map(|status| crate::read::stored_parse_progress(&status, row.get(12)?))
+                    .transpose()?,
             };
             if visit(state)?.is_break() {
                 break;

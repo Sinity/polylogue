@@ -19,11 +19,15 @@ fn native_catalog() -> Catalog {
 
 /// A supported native declaration version, independent of transport vocabulary.
 /// This belongs in execution bindings, never in semantic question identity.
-pub fn catalog_fingerprint() -> String {
-    // Catalog has no arbitrary JSON maps; derived struct serialization has stable
-    // field order even when serde_json's preserve_order feature is enabled.
-    let bytes = serde_json::to_vec(&native_catalog()).expect("native catalog is serializable");
-    blake3::hash(&bytes).to_hex().to_string()
+/// The native catalog is fixed for the life of the process, so it is hashed once.
+pub fn catalog_fingerprint() -> &'static str {
+    static FINGERPRINT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        // Catalog has no arbitrary JSON maps; derived struct serialization has stable
+        // field order even when serde_json's preserve_order feature is enabled.
+        let bytes = serde_json::to_vec(&native_catalog()).expect("native catalog is serializable");
+        blake3::hash(&bytes).to_hex().to_string()
+    });
+    &FINGERPRINT
 }
 fn catalog(outputs: &[SourceOutput]) -> Catalog {
     let mut catalog = native_catalog();

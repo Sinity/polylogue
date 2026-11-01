@@ -310,22 +310,38 @@ pub fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), SelectionError> {
 
 /// Each top-level condition counted alone against the rows the defaults
 /// keep: `repo:other → 0 of 5`.
+/// How many rows one clause of an empty query matches, of the rows its
+/// unit has.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Explanation {
+    pub clause: String,
+    pub matches: u64,
+    pub of: u64,
+}
+
 pub fn why(
     reader: &Reader<'_>,
     program: &Program,
     params: &[SqlValue],
-) -> Result<Value, SelectionError> {
+) -> Result<Vec<Explanation>, SelectionError> {
     reader.with_clock(&program.clock, || {
         let count = |sql: &str| -> Result<u64, SelectionError> {
             let r = reader.query(sql, params)?;
             Ok(r.first().and_then(|r| r["count(*)"].as_u64()).unwrap_or(0))
         };
         let of = count(&program.why_of)?;
-        let mut out = vec![];
-        for w in &program.why {
-            out.push(json!({ "clause": w.clause, "matches": count(&w.sql)?, "of": of }));
-        }
-        Ok(Value::Array(out))
+        program
+            .why
+            .iter()
+            .map(|w| {
+                Ok(Explanation {
+                    clause: w.clause.clone(),
+                    matches: count(&w.sql)?,
+                    of,
+                })
+            })
+            .collect()
     })
 }
 

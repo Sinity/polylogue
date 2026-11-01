@@ -435,7 +435,7 @@ fn wire_shape_no_parser_and_failed_refused_coverage_are_visible() {
     let mut conn = database();
     let mut marker = step("", 0..0, true, vec![]);
     marker.counts = RecordCounts::default();
-    marker.no_parser_yet = true;
+    marker.progress = polylogue_model::batch::StepProgress::NoParserYet { at_end: true };
     store(&mut conn, source(1, 1, 10, 1), &marker);
     conn.execute_batch(
         "INSERT INTO parse_state VALUES(2,1,'v1','failed',0),(3,1,'v1','refused',0);",
@@ -881,7 +881,11 @@ fn wire_coverage_diagnostics_survive_parser_activity_without_completion_promotio
                 &polylogue_model::RecordOutcome::unreadable("retained source diagnostic"),
             );
         }
-        reading.no_parser_yet = wire == CoverageStatus::NoParserYet;
+        if wire == CoverageStatus::NoParserYet {
+            reading.progress = polylogue_model::batch::StepProgress::NoParserYet {
+                at_end: reading.progress.reached_end(),
+            };
+        }
         store(&mut conn, source(1, 1, 10, 1), &reading);
         let original: String = conn
             .query_row("SELECT state FROM wire_reading", [], |row| row.get(0))

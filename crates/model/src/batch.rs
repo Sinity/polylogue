@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod export;
+mod progress;
+pub use progress::{ParseProgress, StepProgress};
 pub use export::{
     ExportCursor, ExportDelivery, ExportDeliveryError, ExportDeliverySource, ReadingFootprint,
 };

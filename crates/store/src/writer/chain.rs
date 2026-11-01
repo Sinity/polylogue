@@ -573,7 +573,7 @@ impl Inner {
             }
             version.get_or_insert_with(|| step.reading_version.clone());
             ordinary |= step.delivery.is_none();
-            complete = step.at_end && step.parsed_upto == length;
+            complete = step.progress.reached_end() && step.parsed_upto == length;
             Ok(())
         })?;
         if ordinary && !complete {

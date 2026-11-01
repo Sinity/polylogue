@@ -176,16 +176,16 @@ pub enum Outcome {
     Measure,
 }
 
-/// A query's answer document with its outcome and the notes that explain it.
+/// A query's answer with its outcome and the notes that explain it.
 #[derive(Debug)]
 pub struct QueryAnswer {
-    pub value: Value,
+    pub value: crate::protocol::query::Answer,
     pub outcome: Outcome,
     pub notes: Vec<String>,
 }
 
 impl QueryAnswer {
-    fn measure(value: Value) -> Self {
+    fn measure(value: crate::protocol::query::Answer) -> Self {
         Self {
             value,
             outcome: Outcome::Measure,
@@ -209,7 +209,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
     let mut operation_versions = ask.context.cursor_versions();
     operation_versions.insert(
         "catalog".into(),
-        polylogue_query::plan::catalog_fingerprint(),
+        polylogue_query::plan::catalog_fingerprint().to_owned(),
     );
     if let Some(identity) = &ask.ranking_identity {
         operation_versions.insert(
@@ -257,7 +257,11 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
         context,
     };
     let evaluation = ask.context.replay_clock(program.clock.clone())?;
-    let mut output = with_similarity(reader, &program, ask.near, || {
+    let resolved = crate::protocol::query::Resolved {
+        context: evaluation.provenance(),
+        times: program.resolved_times.clone(),
+    };
+    with_similarity(reader, &program, ask.near, || {
         answer(
             reader,
             &program,
@@ -265,11 +269,9 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
             after,
             &paging,
             ask.why,
+            resolved,
         )
-    })?;
-    output.value["resolved"] =
-        json!({"context":evaluation.provenance(),"times":program.resolved_times});
-    Ok(output)
+    })
 }
 
 /// The answer to a compiled program: its count and one page after `after`.
@@ -281,7 +283,9 @@ fn answer(
     after: Option<Vec<Value>>,
     paging: &page::Paging<'_>,
     why_asked: bool,
+    resolved: crate::protocol::query::Resolved,
 ) -> Result<QueryAnswer, Failure> {
+    use crate::protocol::query::{Answer, Measure, PagedMeasure, Rows};
     let params = values(&program.params);
     let read_at = read_at(reader)?;
     if let Some(m) = &program.measure {
@@ -363,9 +367,14 @@ fn answer(
                     data
                 }
             };
-            return Ok(QueryAnswer::measure(
-                json!({"outcome":"measure","measure":m.what,"data":data,"count":count,"next":next,"read_at":read_at}),
-            ));
+            return Ok(QueryAnswer::measure(Answer::PagedMeasure(PagedMeasure {
+                measure: m.what.clone(),
+                data,
+                read_at,
+                resolved,
+                count,
+                next,
+            })));
         }
         let sessions = if m.everything {
             None
@@ -391,9 +400,12 @@ fn answer(
             day,
             population,
         )?;
-        return Ok(QueryAnswer::measure(
-            json!({ "outcome": "measure", "measure": m.what, "data": data, "read_at": read_at }),
-        ));
+        return Ok(QueryAnswer::measure(Answer::Measure(Measure {
+            measure: m.what.clone(),
+            data,
+            read_at,
+            resolved,
+        })));
     }
     let (mut rows, count, next, without) = read_page(reader, program, &after, paging)?;
 
@@ -406,14 +418,14 @@ fn answer(
         present(program, row)?;
     }
     let mut notes = program.notes.clone();
-    let mut unknown = serde_json::Map::new();
+    let mut unknown = std::collections::BTreeMap::new();
     if program.counts_near {
         if without > 0 {
             notes.push(format!(
                 "{without} of {count} rows have no vector; their semantic similarity is unknown"
             ));
         }
-        unknown.insert("near".into(), json!(without));
+        unknown.insert("near".to_owned(), without);
     }
     let outcome = if !program.incomplete.is_empty() {
         Outcome::Incomplete
@@ -429,35 +441,40 @@ fn answer(
             .iter()
             .map(|part| format!("incomplete: {part}")),
     );
-    let mut out = json!({
-        "outcome": match outcome {
-            Outcome::Incomplete => "incomplete",
-            Outcome::Empty => "empty",
-            _ => "rows",
-        },
-        "unit": if program.shape == Shape::Matches { "matches" } else { program.unit.name() },
-        "shape": program.shape,
-        "columns": program.columns,
-        "rows": rows,
-        "count": count,
-        "next": next,
-        "ranked": program.ranked,
-        "notes": notes,
-        "incomplete": program.incomplete,
-        "read_at": read_at,
-    });
-    if !program.definitions.is_empty() {
-        out["definitions"] = json!(program.definitions);
-    }
-    if !unknown.is_empty() {
-        out["unknown"] = Value::Object(unknown);
-    }
-    if why_asked && count == 0 {
+    let why = if why_asked && count == 0 {
         polylogue_store::read::limit::ReadLimit::set_stage("explanation counts");
-        out["why"] = why(reader, program, &params)?;
-    }
+        Some(why(reader, program, &params)?)
+    } else {
+        None
+    };
+    let rows = rows
+        .into_iter()
+        .map(|row| match row {
+            Value::Object(fields) => Ok(fields),
+            _ => Err(Failure::new("store", "a query row is not a record")),
+        })
+        .collect::<Result<_, _>>()?;
     Ok(QueryAnswer {
-        value: out,
+        value: Answer::Rows(Box::new(Rows {
+            read_at,
+            unit: if program.shape == Shape::Matches {
+                "matches".to_owned()
+            } else {
+                program.unit.name().to_owned()
+            },
+            shape: program.shape,
+            columns: program.columns.clone(),
+            rows,
+            count,
+            next,
+            ranked: program.ranked,
+            notes,
+            incomplete: program.incomplete.clone(),
+            resolved,
+            definitions: program.definitions.clone(),
+            unknown,
+            why,
+        })),
         outcome,
         notes: answer_notes,
     })
@@ -494,11 +511,18 @@ fn read_page(
 
 /// What one read transaction read: the index generation and the
 /// counters, scoped to the current index.
-fn read_at(reader: &Reader<'_>) -> Result<Value, Failure> {
+fn read_at(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Failure> {
     let position = reader.change_position()?;
-    Ok(
-        json!({ "generation": position.generation, "index": position.index, "archive": position.archive, "cursor": position.to_string() }),
-    )
+    let counter = |value: i64| {
+        u64::try_from(value).map_err(|_| Failure::new("store", "a change counter is negative"))
+    };
+    Ok(crate::protocol::query::Position {
+        currency: None,
+        cursor: position.to_string(),
+        index: counter(position.index)?,
+        archive: counter(position.archive)?,
+        generation: position.generation,
+    })
 }
 
 pub(crate) use polylogue_store::selection::values;

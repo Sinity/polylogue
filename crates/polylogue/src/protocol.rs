@@ -147,33 +147,6 @@ pub fn kind(code: &str) -> FailureKind {
         .unwrap_or(FailureKind::Io)
 }
 
-/// Every store boundary uses this code before the shared transport mapping.
-pub fn store_code(error: &polylogue_store::StoreError) -> &'static str {
-    use polylogue_store::StoreError;
-    match error {
-        StoreError::ScopeChanged => "scope_changed",
-        StoreError::Conflict(_) | StoreError::ReadIndexReplaced => "conflict",
-        StoreError::Ambiguous { .. } => "ambiguous",
-        StoreError::Stale { .. } => "stale",
-        StoreError::ReferenceUnavailable { .. } => "not_yet_available",
-        StoreError::Projection(issue) => match issue {
-            polylogue_model::bundle::BundleError::ProjectionConflict
-            | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
-            _ => "bad_request",
-        },
-        StoreError::ReadDeadlineExceeded => "deadline_exceeded",
-        StoreError::ReadCancelled => "cancelled",
-        StoreError::ReadPoolClosed => "shutting_down",
-        StoreError::NotFound(_) => "not_found",
-        StoreError::Invalid(_) => "bad_request",
-        StoreError::Query(error) => error.kind(),
-        StoreError::Selection { code, .. } => code,
-        StoreError::IncompleteParents(_) => "incomplete_parents",
-        StoreError::PrimaryPending { .. } => "degraded",
-        _ => "store",
-    }
-}
-
 /// A product failure code, classified once into the shared kind.
 pub fn failure(code: &str, message: impl Into<String>) -> Failure {
     let mut failure = Failure::new(kind(code), message);
@@ -214,9 +187,9 @@ pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     match error {
         polylogue_store::StoreError::Query(error) => query_failure(error),
         polylogue_store::StoreError::Ambiguous { candidates, .. } => {
-            failure(store_code(error), error.to_string()).with_candidates(candidates.clone())
+            failure(error.code(), error.to_string()).with_candidates(candidates.clone())
         }
-        error => failure(store_code(error), error.to_string()),
+        error => failure(error.code(), error.to_string()),
     }
 }
 

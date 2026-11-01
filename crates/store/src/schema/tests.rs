@@ -19,10 +19,10 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn numbered_source_and_index_migrations_keep_the_embedding_baseline() {
     assert_eq!(ARCHIVE_VERSION, 5);
-    assert_eq!(INDEX_VERSION, 17);
+    assert_eq!(INDEX_VERSION, 18);
     for (create, expected) in [
         (ensure_archive as fn(&Connection) -> Result<()>, 5),
-        (ensure_index, 17),
+        (ensure_index, 18),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();
@@ -313,4 +313,75 @@ fn cursor_checkpoint_migration_keeps_prior_cursor_without_manufacturing_state() 
     let prior:(String,i64,i64,Option<Vec<u8>>)=conn.query_row("SELECT reading_version,parsed_upto,commit_seq,checkpoint FROM parse_state WHERE input_pk=1 AND chain=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
     assert_eq!(prior, ("prior-reading".into(), 2, 17, None));
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+}
+
+#[test]
+fn a_waiting_length_moves_from_text_into_its_typed_column() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(include_str!("fixtures/index_5.sql"))
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO input_ref(pk,id,format) VALUES(1,'waiting','synthetic'),(2,'done','synthetic'),(3,'collected','synthetic');
+        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,detail) VALUES
+          (1,1,'v1','waiting',40,'100'),(2,1,'v1','done',90,NULL),(3,1,'v1','no_parser_yet',30,NULL);
+        INSERT INTO wire_reading(input_pk,chain,reading_version,format,active,state) VALUES
+          (1,1,'v1','synthetic',1,'{\"input\":\"waiting\",\"at_end\":true,\"no_parser_yet\":false}'),
+          (2,1,'v1','synthetic',1,'{\"input\":\"done\",\"at_end\":false,\"no_parser_yet\":false}'),
+          (3,1,'v1','synthetic',1,'{\"input\":\"collected\",\"at_end\":true,\"no_parser_yet\":true}');
+        PRAGMA user_version=5;",
+    )
+    .unwrap();
+    ensure_index(&conn).unwrap();
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+    let rows: Vec<(String, i64, Option<i64>)> = conn
+        .prepare("SELECT status,parsed_upto,waiting_at FROM parse_state ORDER BY input_pk")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("waiting".to_owned(), 40, Some(100)),
+            ("done".to_owned(), 90, None),
+            ("no_parser_yet".to_owned(), 30, None),
+        ]
+    );
+    let detail: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('parse_state') WHERE name='detail')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!detail);
+    // A waiting status always names its length.
+    assert!(
+        conn.execute(
+            "UPDATE parse_state SET waiting_at=NULL WHERE input_pk=1",
+            []
+        )
+        .is_err()
+    );
+    let progress: Vec<String> = conn
+        .prepare("SELECT json_extract(state,'$.progress') FROM wire_reading ORDER BY input_pk")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(r.get::<_, Option<String>>(0)?.unwrap_or_default())
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(progress[0], "at_end");
+    assert_eq!(progress[1], "partway");
+    assert_eq!(progress[2], r#"{"no_parser_yet":{"at_end":true}}"#);
+    let flags: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM wire_reading WHERE json_type(state,'$.at_end') IS NOT NULL OR json_type(state,'$.no_parser_yet') IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(flags, 0);
 }

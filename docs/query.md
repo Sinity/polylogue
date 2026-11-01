@@ -222,7 +222,6 @@ Every surface returns one answer shape, rendered from types:
 
 ```json
 {
-  "outcome": "rows",
   "unit": "sessions", "shape": "rows",
   "columns": [{"name": "id", "kind": "text", "reference": "session"}],
   "rows": [], "count": 3, "next": null, "ranked": true,
@@ -237,7 +236,7 @@ Every surface returns one answer shape, rendered from types:
 }
 ```
 
-- `outcome` is `rows`, `empty`, `incomplete` or `measure`; errors are `{"error": {…}}`. `positions` is filled only for cross-system answers ([primary-mode.md](primary-mode.md#cross-system-queries)).
+- The document carries no outcome of its own: the answer's outcome ([interfaces.md](interfaces.md#output)) says `ok`, `empty` or `degraded`, and a measurement is the document with `measure` and `data` in place of the row fields. Errors are `{"error": {…}}`. `positions` is filled only for cross-system answers ([primary-mode.md](primary-mode.md#cross-system-queries)).
 - `empty` comes only from a read that succeeded and matched nothing; a failure never produces `empty`.
 - An answer assembled from parts (the two sides of a hybrid search, recall lists, cross-system parts) is `incomplete` if any part failed, naming each.
 - `up_to_date` is false while files have unparsed growth, inputs wait, derived products are behind, or the index is held; `notes` say which.

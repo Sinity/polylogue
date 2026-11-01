@@ -39,7 +39,7 @@ fn semantic_preparation_does_not_certify_replay_custody() {
             .authenticated_execution(&reader)
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "not_yet_available"
     );
 }
@@ -270,7 +270,7 @@ fn an_authentic_cursor_without_root_custody_binding_is_refused() {
         )
         .err()
         .unwrap();
-    assert_eq!(error.kind(), "invalid_cursor");
+    assert_eq!(error.code(), "invalid_cursor");
     assert!(error.to_string().contains("read_root_run"));
 }
 
@@ -329,7 +329,7 @@ fn an_authentic_root_seal_cannot_authorize_an_unbounded_legacy_position() {
         )
         .err()
         .unwrap();
-    assert_eq!(error.kind(), "invalid_cursor");
+    assert_eq!(error.code(), "invalid_cursor");
 }
 
 #[test]
@@ -364,5 +364,5 @@ fn authenticated_reverse_intent_is_preserved_and_flat_positions_are_refused() {
         &run.id
     );
     continuation.after.values = vec![serde_json::to_value(seek.anchor).unwrap()];
-    assert_eq!(open(&continuation).err().unwrap().kind(), "invalid_cursor");
+    assert_eq!(open(&continuation).err().unwrap().code(), "invalid_cursor");
 }

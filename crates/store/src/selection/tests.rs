@@ -531,7 +531,7 @@ fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
         .prepare_query_object_selection(
             &object,
             &unrelated,
-            &polylogue_query::plan::catalog_fingerprint(),
+            polylogue_query::plan::catalog_fingerprint(),
         )
         .unwrap();
     let mut references = vec![];
@@ -607,7 +607,7 @@ fn selected_assertion_reference_retains_its_actual_family_and_revision() {
             .prepare_selection(&format!("assertion:{first}"), &options)
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "ambiguous"
     );
     let family = reader
@@ -721,7 +721,7 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
                 .prepare_selection(&target, &options)
                 .err()
                 .unwrap()
-                .kind(),
+                .code(),
             "not_found"
         );
     }
@@ -746,7 +746,7 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
             .prepare_selection("block:test:a#999", &options)
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "not_found"
     );
     let ordinary = reader
@@ -1018,5 +1018,26 @@ fn prepared_selection_and_listing_select_the_same_rows_for_an_id_with_every_row_
     ] {
         assert_eq!(selected(text), expected, "{text}");
         assert_eq!(listed(text), expected, "{text}");
+    }
+}
+
+#[test]
+fn a_selection_failure_carries_the_store_code_every_surface_uses() {
+    let cases = [
+        (StoreError::Conflict("request-1".into()), "conflict"),
+        (StoreError::ReadIndexReplaced, "conflict"),
+        (
+            StoreError::Stale {
+                reference: "note:1".into(),
+                current: vec!["note:2".into()],
+            },
+            "stale",
+        ),
+        (StoreError::NotFound("session".into()), "not_found"),
+        (StoreError::ReadCancelled, "cancelled"),
+    ];
+    for (error, code) in cases {
+        assert_eq!(error.code(), code, "{error}");
+        assert_eq!(SelectionError::from(error).code(), code);
     }
 }

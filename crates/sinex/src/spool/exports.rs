@@ -56,18 +56,6 @@ pub(super) fn capture_bindings(capture: &Capture) -> Result<Vec<ExportBinding>> 
     Ok(result)
 }
 
-pub(super) fn unknown(capture: &Capture, bindings: &[ExportBinding]) -> bool {
-    let Capture::Input(input) = capture else {
-        return false;
-    };
-    input.parsed.iter().enumerate().any(|(index, reading)| {
-        (reading.delivery.is_some() || reading.export_key.is_some())
-            && !bindings
-                .iter()
-                .any(|binding| binding.captured == Some(index))
-    })
-}
-
 pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
     for binding in prepared.exports() {
         let path = spool.index("export-readings", &binding.key.identity().to_string());

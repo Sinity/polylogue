@@ -334,17 +334,19 @@ CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   reading_version   TEXT NOT NULL DEFAULT '',
-  status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at
+  status            TEXT NOT NULL CHECK(status IN ('parsing','waiting','done','no_parser_yet','partial')),
+                                            -- parsing: more stored bytes need parsing; waiting: incomplete record at
                                             --   observed EOF; done: at the stored length
   parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
-  detail            TEXT,                   -- waiting: the stored length it waits at
+  waiting_at        INTEGER CHECK(waiting_at >= 0),  -- waiting: the stored length it waits at
   records           INTEGER NOT NULL DEFAULT 0,  -- every record of this chain read so far:
   used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
   skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
   unreadable        INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
   commit_seq INTEGER CHECK(commit_seq > 0), -- actual committed parse checkpoint, never a read position
   checkpoint BLOB,                        -- versioned opaque parser state at this exact cursor
-  PRIMARY KEY (input_pk, chain)
+  PRIMARY KEY (input_pk, chain),
+  CHECK((status = 'waiting') = (waiting_at IS NOT NULL))
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work
 

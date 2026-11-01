@@ -168,7 +168,8 @@ impl Engine {
                             0..prepared.len(),
                             true,
                         );
-                        step.no_parser_yet = true;
+                        step.progress =
+                            polylogue_model::batch::StepProgress::NoParserYet { at_end: true };
                         step.reading_version = origin.reading_version();
                         vec![step]
                     },

@@ -1757,7 +1757,11 @@ impl Inner {
                         Some(&receipt),
                     )?;
                 }
-                if b.parse.iter().any(|p| p.at_end) {
+                if b
+                    .parse
+                    .iter()
+                    .any(|p| p.progress.reached_end())
+                {
                     rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
                 }
             }

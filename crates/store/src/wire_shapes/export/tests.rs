@@ -193,7 +193,7 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_ca
     apply_step(&mut conn, 1, &refused).unwrap();
     let original = state(&conn);
     let reading: Reading = serde_json::from_str(&original).unwrap();
-    assert!(reading.refused_export && reading.export_cursor.is_none() && !reading.at_end);
+    assert!(reading.refused_export && reading.export_cursor.is_none() && !reading.progress.reached_end());
     assert_eq!(reading.status(), CoverageStatus::Unreadable);
     assert_eq!(reading.parsed_upto, 0);
     conn.execute_batch("CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,reading_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO parse_state VALUES(1,1,'crate::export::VERSION=2','parsing',0);").unwrap();
@@ -257,7 +257,7 @@ fn index14_preserves_byte_receipt_geometry_and_marks_legacy_export_controls_unkn
     )
     .unwrap();
     let receipt = serde_json::json!({"sequence":3,"id":"original","input":"input","chain":1,"start":0,"end":0,"observation":"old","observed_at_ms":null});
-    let reading = serde_json::json!({"input":"input","parsed_upto":2,"length":2,"at_end":true,"unreadable":0,"no_parser_yet":false,"prefix_missing":false,"first":receipt,"last":receipt,"last_start":0,"last_end":2,"last_hash":"original-hash"});
+    let reading = serde_json::json!({"input":"input","parsed_upto":2,"length":2,"progress":"at_end","unreadable":0,"prefix_missing":false,"first":receipt,"last":receipt,"last_start":0,"last_end":2,"last_hash":"original-hash"});
     conn.execute(
         "INSERT INTO wire_reading VALUES(1,1,'crate::export::VERSION=1','fixture',1,?1)",
         [reading.to_string()],
@@ -367,7 +367,7 @@ fn header_line_failures_preserve_counts_and_allow_valid_items_and_complete() {
     let saved = state(&conn);
     let finished: Reading = serde_json::from_str(&saved).unwrap();
     assert!(!finished.refused_export);
-    assert!(finished.at_end);
+    assert!(finished.progress.reached_end());
     assert_eq!(finished.parsed_upto, 2);
     assert_eq!(finished.export_cursor.unwrap().last_ordinal, 2);
     assert_eq!(finished.unreadable, 1);

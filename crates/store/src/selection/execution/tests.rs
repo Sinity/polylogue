@@ -134,7 +134,7 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
             )
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "stale_cursor"
     );
     let mut changed = run.clone();
@@ -157,7 +157,7 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
             )
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "not_built"
     );
     let mut wrong = run.binding.original().unwrap().query_options.clone();
@@ -167,7 +167,7 @@ fn execution_binding_replays_captured_options_and_refuses_a_changed_basis() {
             .execution_binding(wrong, ExecutionPresentation::Query, None)
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "invalid_query"
     );
 }
@@ -259,7 +259,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             .prepare_query_run_selection(&object, &forged, &options.clock, None, None)
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "conflict"
     );
     let mut old_scope = run;
@@ -274,7 +274,7 @@ fn acknowledged_direct_range_restores_presentation_without_changing_question_ide
             .prepare_query_run_selection(&object, &old_scope, &options.clock, None, None)
             .err()
             .unwrap()
-            .kind(),
+            .code(),
         "scope_changed"
     );
 }

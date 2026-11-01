@@ -114,7 +114,7 @@ impl<'a> SavedPreparation<'a> {
         self.context()?;
         let object = self.object(hash)?;
         let plan =
-            polylogue_query::plan::replay(&object, &polylogue_query::plan::catalog_fingerprint())?;
+            polylogue_query::plan::replay(&object, polylogue_query::plan::catalog_fingerprint())?;
         self.admit_plan(&plan)?;
         Ok(plan)
     }

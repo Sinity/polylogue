@@ -5,7 +5,9 @@
 //! projection. Receipts supply order, identity and optional time explicitly.
 use crate::{ParseStep, Result, StoreError};
 use polylogue_model::WireShape;
-use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadingFootprint};
+use polylogue_model::batch::{
+    ExportCursor, ExportDeliverySource, ReadingFootprint, StepProgress,
+};
 mod export;
 pub(crate) use export::{
     ExportPrefix, admit_export, advance_prefix, is_refusal, load_prefix, migrate_receipts,
@@ -205,9 +207,8 @@ struct Reading {
     input: String,
     parsed_upto: u64,
     length: u64,
-    at_end: bool,
+    progress: StepProgress,
     unreadable: u64,
-    no_parser_yet: bool,
     prefix_missing: bool,
     first: Receipt,
     last: Receipt,
@@ -247,14 +248,15 @@ impl Reading {
     fn status(&self) -> CoverageStatus {
         if self.legacy_export {
             CoverageStatus::Unknown
-        } else if self.no_parser_yet {
-            CoverageStatus::NoParserYet
-        } else if self.unreadable > 0 {
-            CoverageStatus::Unreadable
-        } else if !self.prefix_missing && self.at_end && self.parsed_upto >= self.length {
-            CoverageStatus::Complete
         } else {
-            CoverageStatus::Partial
+            match self.progress {
+                StepProgress::NoParserYet { .. } => CoverageStatus::NoParserYet,
+                _ if self.unreadable > 0 => CoverageStatus::Unreadable,
+                StepProgress::AtEnd if !self.prefix_missing && self.parsed_upto >= self.length => {
+                    CoverageStatus::Complete
+                }
+                StepProgress::AtEnd | StepProgress::Partway => CoverageStatus::Partial,
+            }
         }
     }
 }
@@ -315,7 +317,7 @@ fn apply_inner(
             .values()
             .copied()
             .try_fold(0u64, add)?,
-        step.no_parser_yet,
+        matches!(step.progress, StepProgress::NoParserYet { .. }),
     ))?)
     .to_hex()
     .to_string();
@@ -367,13 +369,15 @@ fn apply_inner(
             };
             let coverage_changed = prefix_missing != old.prefix_missing;
             old.prefix_missing = prefix_missing;
+            let reaches_end = step.progress.reached_end() && step.parsed_upto >= source.length;
             if coverage_changed
                 || (step.parsed_upto == old.parsed_upto
-                    && step.at_end
-                    && !old.at_end
-                    && step.parsed_upto >= source.length)
+                    && reaches_end
+                    && !old.progress.reached_end())
             {
-                old.at_end |= step.at_end && step.parsed_upto >= source.length;
+                if reaches_end {
+                    old.progress = old.progress.with_end(true);
+                }
                 old.length = source.length;
                 old.last = receipt.clone();
                 tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?.execute(params![source.input_pk,source.chain,step.reading_version,serde_json::to_string(&old)?])?;
@@ -403,7 +407,7 @@ fn apply_inner(
         input: source.input.to_owned(),
         parsed_upto: step.parsed_upto,
         length: source.length,
-        at_end: step.at_end,
+        progress: step.progress,
         prefix_missing: step.source_prefix_missing
             || if reset {
                 false
@@ -412,7 +416,6 @@ fn apply_inner(
                     old.prefix_missing || (!export_delivery && step.start != old.parsed_upto)
                 })
             },
-        no_parser_yet: step.no_parser_yet,
         unreadable: step
             .counts
             .unreadable
@@ -450,7 +453,7 @@ fn apply_inner(
     }
     // A missing prefix is incomplete even if this suffix reached EOF.
     if previous.is_none() && step.start != 0 && !step.reset && !export_delivery {
-        reading.at_end = false;
+        reading.progress = reading.progress.with_end(false);
     }
     tx.prepare_cached(
         "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2 AND active=1",

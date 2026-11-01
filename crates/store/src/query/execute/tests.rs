@@ -100,7 +100,7 @@ fn zero_transfer_size_is_a_typed_refusal() {
     options.page_size = Some(0);
     let program = crate::query::compile("messages", &options).unwrap();
     let error = reader.query_page(&program, None).err().unwrap();
-    assert_eq!(error.kind(), "bad_request");
+    assert_eq!(error.code(), "bad_request");
 }
 
 #[test]

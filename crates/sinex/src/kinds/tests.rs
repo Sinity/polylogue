@@ -18,8 +18,7 @@ fn reading(input: &str, start: u64) -> Reading {
         repeats_whole_conversations: false,
         start,
         parsed_upto: 100,
-        at_end: true,
-        no_parser_yet: false,
+        progress: polylogue_model::batch::StepProgress::AtEnd,
     }
 }
 fn message(input: &str, start: u64) -> Product {

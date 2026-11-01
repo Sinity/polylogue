@@ -464,9 +464,28 @@ fn run_q(w: &TestArchive, a: Ask<'_>) -> Result<Value, Failure> {
     run(&r, a)
 }
 
-/// The answer document of a query; the outcome is checked where it matters.
+/// The answer document of a query, with the answer's typed outcome beside
+/// it under `outcome` so one value carries both for comparison. The product
+/// never puts the outcome in the document; [`document`] is the document alone.
 fn run(r: &Reader<'_>, a: Ask<'_>) -> Result<Value, Failure> {
-    super::run(r, a).map(|answer| answer.value)
+    super::run(r, a).map(|answer| {
+        let mut value = serde_json::to_value(&answer.value).unwrap();
+        value["outcome"] = json!(match answer.outcome {
+            Outcome::Rows => "rows",
+            Outcome::Empty => "empty",
+            Outcome::Incomplete => "incomplete",
+            Outcome::Measure => "measure",
+        });
+        value
+    })
+}
+
+/// The answer document of a query exactly as surfaces receive it.
+fn document(w: &TestArchive, text: &str) -> Value {
+    let pool = w.fx.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let answer = super::run(&r, ask(text)).unwrap_or_else(|f| panic!("{text}: {}", f.message));
+    serde_json::to_value(&answer.value).unwrap()
 }
 
 fn q(w: &TestArchive, text: &str) -> Value {
@@ -1395,3 +1414,18 @@ fn shared_query_diagnostics_keep_correction_and_byte_position_at_the_operation_b
 }
 
 mod metadata;
+
+#[test]
+fn a_query_document_carries_its_kind_in_its_fields_and_no_outcome() {
+    let w = morrow();
+    let empty = document(&w, "model:claude-opus-5-5");
+    assert!(empty.get("outcome").is_none(), "{empty}");
+    let typed: crate::protocol::query::Answer = serde_json::from_value(empty).unwrap();
+    assert_eq!(typed.rows().unwrap().len(), 0);
+    let measured = document(&w, "sessions | measure sessions");
+    assert!(measured.get("outcome").is_none(), "{measured}");
+    assert!(matches!(
+        serde_json::from_value(measured).unwrap(),
+        crate::protocol::query::Answer::Measure(_) | crate::protocol::query::Answer::PagedMeasure(_)
+    ));
+}

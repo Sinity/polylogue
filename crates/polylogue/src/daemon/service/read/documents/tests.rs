@@ -293,7 +293,7 @@ fn document_block_decode_obeys_cancellation_and_generation_changes_between_items
             } else {
                 StoreError::ReadCancelled
             };
-            assert_eq!(kind, crate::protocol::store_code(&expected));
+            assert_eq!(kind, expected.code());
             assert_eq!(emitted, 1);
         });
     }

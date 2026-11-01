@@ -131,16 +131,17 @@ impl Reader<'_> {
                     } else if state.version.as_ref() != Some(version) {
                         missing.insert(CompletenessReason::ReadingVersionChanged);
                     } else {
-                        match state.status.as_deref() {
-                            Some("no_parser_yet") => {
+                        use polylogue_model::batch::ParseProgress;
+                        match state.progress {
+                            Some(ParseProgress::NoParserYet) => {
                                 raw_only_chains += 1;
                                 missing.insert(CompletenessReason::KnownRawOnly);
                             }
-                            Some("partial") => {
+                            Some(ParseProgress::Partial) => {
                                 missing.insert(CompletenessReason::MissingSourcePrefix);
                             }
-                            Some("waiting") if progress.waiting => {}
-                            Some("done") if progress.parsed_upto >= progress.length => {}
+                            Some(ParseProgress::Waiting { .. }) if progress.waiting => {}
+                            Some(ParseProgress::Done) if progress.parsed_upto >= progress.length => {}
                             _ => {
                                 missing.insert(CompletenessReason::ParserBehind);
                             }

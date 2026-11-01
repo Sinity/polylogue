@@ -47,7 +47,7 @@ fn frozen_native_output_columns_ignore_parser_atoms_and_rebuild_runtime_qualifie
         let bytes = serde_json::to_vec(&object).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains("match_patterns"));
         let decoded = serde_json::from_slice(&bytes).unwrap();
-        let restored = replay(&decoded, &catalog_fingerprint()).unwrap();
+        let restored = replay(&decoded, catalog_fingerprint()).unwrap();
         assert_eq!(restored.question_id(), plan.question_id());
         assert_eq!(
             restored.output_schema().unwrap(),
@@ -68,7 +68,7 @@ fn frozen_native_output_columns_ignore_parser_atoms_and_rebuild_runtime_qualifie
         assert_eq!(serde_json::to_vec(&changed).unwrap(), bytes);
         validate_object(&changed).unwrap();
         assert_eq!(
-            replay(&changed, &catalog_fingerprint())
+            replay(&changed, catalog_fingerprint())
                 .unwrap()
                 .output_schema()
                 .unwrap(),
@@ -168,7 +168,7 @@ fn metadata_preparation_uses_shared_binding_before_value_and_reference_formattin
                 validate_object(&duplicate).is_err(),
                 "semantic duplicate output snapshot"
             );
-            let replayed = replay(&object, &catalog_fingerprint()).unwrap();
+            let replayed = replay(&object, catalog_fingerprint()).unwrap();
             assert_eq!(
                 identity::normal_form(replayed.expanded_query().query(), replayed.catalog())
                     .unwrap(),

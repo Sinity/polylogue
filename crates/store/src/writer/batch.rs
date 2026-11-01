@@ -75,9 +75,6 @@ pub struct ParseStep {
     /// Confirmed surviving facts can omit source ranges despite a scratch reset.
     #[serde(default)]
     pub(crate) source_prefix_missing: bool,
-    /// The bytes are collected, and their origin has no parser yet.
-    #[serde(default)]
-    pub no_parser_yet: bool,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
@@ -90,8 +87,8 @@ pub struct ParseStep {
     pub start: u64,
     /// Offset after the last complete record parsed.
     pub parsed_upto: u64,
-    /// The parse observed source EOF; an unconsumed suffix waits for growth.
-    pub at_end: bool,
+    /// How far the step read the stored bytes.
+    pub progress: polylogue_model::batch::StepProgress,
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
     #[serde(skip)]
@@ -137,14 +134,13 @@ impl ParseStep {
             checkpoint: None,
             receipt: None,
             source_prefix_missing: false,
-            no_parser_yet: false,
             reset: range.start == 0,
             repeats_whole_conversations: false,
             output,
             counts,
             start: range.start,
             parsed_upto: range.end,
-            at_end,
+            progress: polylogue_model::batch::StepProgress::parsed(at_end),
             prepared: PreparedRows::default(),
             comparison: None,
         }

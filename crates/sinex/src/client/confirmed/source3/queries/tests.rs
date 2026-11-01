@@ -44,8 +44,7 @@ fn reading() -> Reading {
         repeats_whole_conversations: false,
         start: 0,
         parsed_upto: 8,
-        at_end: true,
-        no_parser_yet: false,
+        progress: polylogue_model::batch::StepProgress::AtEnd,
     }
 }
 fn raw_products() -> Vec<Product> {

@@ -296,24 +296,28 @@ fn html(
 }
 
 /// The shared continuation line for row and measure text views.
-pub fn next_page(data: &Value) -> Option<String> {
-    data["next"]
-        .as_str()
-        .map(|next| format!("more: --cursor {next}"))
+pub fn continuation(next: &str) -> String {
+    format!("more: --cursor {next}")
+}
+
+fn next_page(data: &Value) -> Option<String> {
+    data["next"].as_str().map(continuation)
 }
 
 fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
     let count = data["count"].as_u64().unwrap_or(0);
     let shown = data["rows"].as_array().map_or(0, Vec::len);
     let mut lines = vec![];
-    match data["outcome"].as_str() {
-        Some("empty") => lines.push("no rows".to_owned()),
-        _ => lines.push(if shown as u64 == count {
-            format!("{count} row{}", if count == 1 { "" } else { "s" })
-        } else {
-            format!("{shown} of {count} rows")
-        }),
-    }
+    let incomplete = data["incomplete"]
+        .as_array()
+        .is_some_and(|parts| !parts.is_empty());
+    lines.push(if count == 0 && !incomplete {
+        "no rows".to_owned()
+    } else if shown as u64 == count {
+        format!("{count} row{}", if count == 1 { "" } else { "s" })
+    } else {
+        format!("{shown} of {count} rows")
+    });
     if let Some(next) = next_page(data) {
         lines.push(next);
     }

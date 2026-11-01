@@ -89,7 +89,7 @@ fn semantic_delivery_order_keeps_nonmonotone_physical_item_ranges() {
                 assert_eq!(item_count, items);
                 assert_eq!(delivery_count, ordinal as u64);
                 assert_eq!(step.parsed_upto, raw.len() as u64);
-                assert!(step.at_end);
+                assert!(step.progress.reached_end());
                 assert!(
                     step.checkpoint
                         .as_ref()
@@ -148,7 +148,7 @@ fn assert_refusal(step: &ParseStep) {
     ));
     step.validate_export().unwrap();
     assert_eq!((step.start, step.parsed_upto), (0, 0));
-    assert!(!step.at_end);
+    assert!(!step.progress.reached_end());
     assert!(step.checkpoint.is_none());
     assert!(step.complete_output().unwrap().messages.is_empty());
     assert!(step.complete_output().unwrap().sessions.is_empty());
@@ -184,7 +184,7 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.at_end')=0 AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.progress')='partway' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
             1
         );
         let wire = engine
@@ -259,7 +259,7 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.at_end')=0 AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.progress')='partway' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
             1
         );
     }

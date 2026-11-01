@@ -42,7 +42,7 @@ fn canonical_object_replays_frozen_names_and_shapes_without_a_clock() {
             .collect::<Vec<_>>(),
         ["origin", "count"]
     );
-    let restored = replay(&object, &catalog_fingerprint()).unwrap();
+    let restored = replay(&object, catalog_fingerprint()).unwrap();
     assert_eq!(restored.question_id(), plan.question_id());
     assert_eq!(
         identity::normal_form(restored.expanded_query().query(), restored.catalog()).unwrap(),
@@ -122,7 +122,7 @@ fn inline_composition_has_complete_frozen_bodies() {
         let plan = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
         let object = plan.query_object().unwrap();
         assert_eq!(object.definitions.len(), 1, "{text}");
-        replay(&object, &catalog_fingerprint()).unwrap();
+        replay(&object, catalog_fingerprint()).unwrap();
     }
 }
 #[test]
@@ -166,7 +166,7 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
     );
     let plan = prepare("result:kept-one | where ready:true", &bindings, |_| Ok(())).unwrap();
     let object = plan.query_object().unwrap();
-    let restored = replay(&object, &catalog_fingerprint()).unwrap();
+    let restored = replay(&object, catalog_fingerprint()).unwrap();
     assert_eq!(restored.bindings().kept, bindings.kept);
     assert_eq!(restored.question_id(), plan.question_id());
 }
@@ -186,7 +186,7 @@ fn native_addresses_bind_in_explicit_row_domains_without_stealing_scoped_fields(
         assert_eq!(unit, expected);
         let object = plan.query_object().unwrap();
         assert_eq!(
-            replay(&object, &catalog_fingerprint())
+            replay(&object, catalog_fingerprint())
                 .unwrap()
                 .question_id(),
             plan.question_id()
@@ -347,3 +347,12 @@ fn saved_name_requirements_follow_typed_nodes_without_rebinding_payloads() {
 }
 
 mod metadata;
+
+#[test]
+fn the_catalog_fingerprint_is_computed_once_per_process() {
+    let first = catalog_fingerprint();
+    // Every caller borrows the same hashed value instead of rebuilding the catalog.
+    assert!(std::ptr::eq(first, catalog_fingerprint()));
+    let bytes = serde_json::to_vec(&crate::catalog::catalog(&[], &[])).unwrap();
+    assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
+}

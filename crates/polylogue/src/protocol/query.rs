@@ -44,19 +44,6 @@ impl Arguments {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RowsOutcome {
-    Rows,
-    Empty,
-    Incomplete,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MeasureOutcome {
-    Measure,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,16 +62,12 @@ pub struct Resolved {
     pub times: Vec<query_language::time::ResolvedTime>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Explanation {
-    pub clause: String,
-    pub matches: u64,
-    pub of: u64,
-}
+pub use polylogue_store::query::execute::Explanation;
 
 /// The query envelope is fixed. Row keys follow the declared columns;
-/// measure data belongs to the named measure's own result contract.
+/// measure data belongs to the named measure's own result contract. The
+/// variants differ by their fields, and whether an answer is empty or
+/// incomplete is the answer's outcome, never a field here.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Answer {
@@ -100,12 +83,32 @@ impl Answer {
             Self::PagedMeasure(_) | Self::Measure(_) => None,
         }
     }
+
+    /// The rows, for callers that only ask row queries.
+    pub fn into_rows(self) -> Result<Rows, crate::daemon::Failure> {
+        match self {
+            Self::Rows(rows) => Ok(*rows),
+            Self::PagedMeasure(PagedMeasure { measure, .. })
+            | Self::Measure(Measure { measure, .. }) => Err(crate::daemon::Failure::new(
+                "bad_request",
+                format!("the query measures {measure}, where rows were expected"),
+            )),
+        }
+    }
+
+    /// The index position the answer was read at.
+    pub fn read_at_mut(&mut self) -> &mut Position {
+        match self {
+            Self::Rows(rows) => &mut rows.read_at,
+            Self::PagedMeasure(measure) => &mut measure.read_at,
+            Self::Measure(measure) => &mut measure.read_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rows {
-    pub outcome: RowsOutcome,
     pub read_at: Position,
     pub unit: String,
     pub shape: polylogue_query::Shape,
@@ -128,7 +131,6 @@ pub struct Rows {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PagedMeasure {
-    pub outcome: MeasureOutcome,
     pub measure: String,
     pub data: Value,
     pub read_at: Position,
@@ -140,7 +142,6 @@ pub struct PagedMeasure {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Measure {
-    pub outcome: MeasureOutcome,
     pub measure: String,
     pub data: Value,
     pub read_at: Position,

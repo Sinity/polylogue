@@ -202,7 +202,7 @@ fn physical_verification_preserves_parent_cancellation_before_byte_work() {
         let kind = failure.code().to_owned();
         assert_eq!(
             kind,
-            crate::protocol::store_code(&StoreError::ReadCancelled)
+            StoreError::ReadCancelled.code()
         );
     });
 }

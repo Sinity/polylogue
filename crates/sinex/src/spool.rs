@@ -91,7 +91,6 @@ pub(crate) struct Material {
     pub captured: Option<Bytes>,
     pub control: Option<Control>,
     pub exports: Vec<exports::ExportBinding>,
-    pub exports_unknown: bool,
     /// Its observation is found by logical name.
     pub named: bool,
     /// Carries a retained authored request.
@@ -347,13 +346,12 @@ pub(crate) struct PinnedCapture {
     header: Capture,
     control: Option<Control>,
     exports: Vec<exports::ExportBinding>,
-    exports_unknown: bool,
     bytes: Option<(File, EncodedBlob)>,
 }
 impl PinnedCapture {
     pub fn decode(self) -> Result<Capture> {
         let Some((file, descriptor)) = self.bytes else {
-            if !self.exports.is_empty() || self.exports_unknown {
+            if !self.exports.is_empty() {
                 return invalid("export custody has no captured body");
             }
             return Ok(self.header);
@@ -364,9 +362,7 @@ impl PinnedCapture {
         if capture_header(&capture) != self.header {
             return invalid("capture sidecar differs from its queue header");
         }
-        if exports::capture_bindings(&capture)? != self.exports
-            || exports::unknown(&capture, &self.exports) != self.exports_unknown
-        {
+        if exports::capture_bindings(&capture)? != self.exports {
             return invalid("export sidecar differs from its immutable reading-key index");
         }
         if control(&capture) != self.control {
@@ -841,7 +837,6 @@ impl Spool {
             header,
             control: material.control,
             exports: material.exports,
-            exports_unknown: material.exports_unknown,
             bytes,
         })
     }
@@ -1467,8 +1462,6 @@ impl Spool {
                 capture: facts.capture,
                 captured,
                 control: full_capture.and_then(control),
-                exports_unknown: full_capture
-                    .is_some_and(|capture| exports::unknown(capture, &export_bindings)),
                 exports: export_bindings,
                 named: facts.named,
                 request: facts.request,
