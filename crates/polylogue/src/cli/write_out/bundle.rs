@@ -632,8 +632,15 @@ fn line(file: &mut File, value: &impl serde::Serialize) -> std::result::Result<(
     serde_json::to_writer(&mut *file, value).map_err(string)?;
     file.write_all(b"\n").map_err(string)
 }
+/// Records follow their admission, and a session's messages follow their
+/// reading order within one admission, not the alphabet of their IDs.
 fn order_key(record: &Record) -> Vec<u8> {
     let mut key = record.commit().unwrap_or(u64::MAX).to_be_bytes().to_vec();
+    if let Record::Message(message) = record {
+        key.extend_from_slice(message.message.session.to_string().as_bytes());
+        key.push(0);
+        key.extend_from_slice(&message.order.to_be_bytes());
+    }
     key.extend_from_slice(record.reference().unwrap_or("").as_bytes());
     key
 }
