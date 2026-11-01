@@ -176,12 +176,11 @@ fn assertion_arguments<T: serde::de::DeserializeOwned>(
     command: &Command,
     v: &Values,
 ) -> Result<T, String> {
-    let declared = v
-        .0
-        .iter()
-        .filter(|(name, _)| command.args.iter().any(|argument| argument.name == *name))
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect();
+    let declared =
+        v.0.iter()
+            .filter(|(name, _)| command.args.iter().any(|argument| argument.name == *name))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
     serde_json::from_value(serde_json::Value::Object(declared)).map_err(|error| error.to_string())
 }
 pub fn assert(command: &Command, v: &Values, _: &Caller) -> Built {

@@ -233,10 +233,7 @@ pub(super) fn scope_matches(
         })? {
             let (name, media, size, input, recorded) = row?;
             if !known.contains_key(&input) {
-                known.insert(
-                    input.clone(),
-                    asset_source(conn, conn, "source_", &input)?,
-                );
+                known.insert(input.clone(), asset_source(conn, conn, "source_", &input)?);
             }
             if known[&input].as_ref().map(|source| source.version.as_str())
                 != Some(recorded.as_str())
@@ -246,9 +243,10 @@ pub(super) fn scope_matches(
             asset.names.extend(name);
             asset.media_types.extend(media);
             if let Some(size) = size {
-                asset.declared_sizes.push(size.parse().map_err(|_| {
-                    StoreError::Invalid("invalid declared asset size".into())
-                })?);
+                asset.declared_sizes.push(
+                    size.parse()
+                        .map_err(|_| StoreError::Invalid("invalid declared asset size".into()))?,
+                );
             }
         }
     }
@@ -281,9 +279,10 @@ impl Reader<'_> {
              WHERE m.id=?1 AND s.version_hash=?2 AND s.shown=1 ORDER BY i.id,s.chain",
         )?;
         let shown = shown
-            .query_map(params![message.to_string(), source_version.0.as_slice()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?
+            .query_map(
+                params![message.to_string(), source_version.0.as_slice()],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut claims = Vec::new();
         for (input, chain) in shown {

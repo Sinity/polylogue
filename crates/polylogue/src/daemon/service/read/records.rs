@@ -456,11 +456,13 @@ pub(super) fn message_record(
         .iter()
         .map(|claim| (claim.block, claim.attachment))
         .collect();
-    let uncovered: Vec<_> =
-        polylogue_model::attachment_binding::attachment_slots(&message.blocks, &projection.block_ordinals)
-            .into_iter()
-            .filter(|slot| !covered.contains(&(slot.block, slot.attachment)))
-            .collect();
+    let uncovered: Vec<_> = polylogue_model::attachment_binding::attachment_slots(
+        &message.blocks,
+        &projection.block_ordinals,
+    )
+    .into_iter()
+    .filter(|slot| !covered.contains(&(slot.block, slot.attachment)))
+    .collect();
     for claim in reader
         .current_attachment_claims(&message.id, projection.source_version, &uncovered)
         .map_err(|e| store_error(&e))?
