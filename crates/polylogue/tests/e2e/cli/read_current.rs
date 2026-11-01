@@ -47,6 +47,13 @@ impl Items {
             }
         }
     }
+    pub(super) fn into_values(self) -> Vec<ReadItem> {
+        assert!(
+            self.partial.is_empty(),
+            "delivery ended within an encoded item"
+        );
+        self.values
+    }
     pub(super) fn text(&self) -> String {
         assert!(
             self.partial.is_empty(),
