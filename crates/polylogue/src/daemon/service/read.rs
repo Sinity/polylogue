@@ -373,15 +373,28 @@ fn prepared<T>(
                                 },
                             )
                         }
-                        _ => (
+                        Some(target) => (
+                            ValueState::NotApplicable,
+                            HeaderKind::Record {
+                                record_type: target
+                                    .to_string()
+                                    .split_once(':')
+                                    .map_or("record", |(kind, _)| kind)
+                                    .into(),
+                            },
+                        ),
+                        None => (
                             ValueState::NotApplicable,
                             HeaderKind::Record {
                                 record_type: "query".into(),
                             },
                         ),
                     };
+                    // A direct read names what it reads; a query read names its question.
                     let header = ReadHeader {
-                        target: snapshot.query.clone(),
+                        target: selection
+                            .direct_target()
+                            .map_or_else(|| snapshot.query.clone(), ToString::to_string),
                         view: execution.options.view,
                         title,
                         kind,

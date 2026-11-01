@@ -27,6 +27,7 @@ fn execute<T>(
         Option<PageBudget>,
         RunId,
         ReadFooter,
+        &ProjectionEvidence,
     ) -> Result<T, Response>,
 ) -> Result<T, Response> {
     let Request::Read {
@@ -166,7 +167,9 @@ fn execute<T>(
                 &mut footer,
             )?;
             let projected = projected.unwrap_or(ReadRecord::Presentation { parts: vec![] });
-            let value = run(projected, snapshot, header, format, budget, id, footer)?;
+            let value = run(
+                projected, snapshot, header, format, budget, id, footer, &evidence,
+            )?;
             reader.check().map_err(|error| store_error(&error))?;
             scope.check().map_err(|error| store_error(&error))?;
             Ok(super::super::execution::Completed {
@@ -189,13 +192,16 @@ pub(super) fn page(
         Ok(reference) => reference,
         Err(error) => return Some(error),
     };
+    let Request::Read { options, .. } = request else {
+        return None;
+    };
     let result = execute(
         reader,
         d,
         request,
         operation,
         reference,
-        |record, snapshot, header, format, budget, id, footer| {
+        |record, snapshot, header, format, budget, id, footer, evidence| {
             let mut budget = budget
                 .ok_or_else(|| error("bad_request", "streaming reads require stream delivery"))?;
             let framing_size = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
@@ -218,16 +224,26 @@ pub(super) fn page(
                     ordinal: 0,
                 },
             };
-            for (ordinal, part) in record.parts().iter().enumerate() {
-                if let ReadPart::Item(item) = part {
-                    pager
-                        .push_at(at, ordinal as u64, item.clone())
-                        .map_err(page_error)?;
-                    if pager.is_full() {
-                        break;
-                    }
-                }
-            }
+            // The record is laid out exactly as a selected record is; an
+            // object reading has no message attachments to open.
+            let selected = |_: &Source| Ok(false);
+            let ready_attachment = |_: &polylogue_model::MessageId, _, _, _: Option<&str>| {
+                Err(error(
+                    "not_yet_available",
+                    "an object reading has no message attachments",
+                ))
+            };
+            let layout = evidence::Layout {
+                options,
+                evidence,
+                selected: &selected,
+                ready_attachment: &ready_attachment,
+                backwards: false,
+                anchor: None,
+            };
+            evidence::visit_parts(reader, &record, &layout, |item, ordinal| {
+                Ok(pager.push_at(at, ordinal, item).map_err(page_error)? != Push::Full)
+            })?;
             let document = pager.finish(footer).map_err(page_error)?;
             if document.footer.position.is_some() {
                 return Err(error(
@@ -277,7 +293,7 @@ pub(super) fn produce(
             request,
             operation,
             reference,
-            |record, snapshot, header, format, _, _, footer| {
+            |record, snapshot, header, format, _, _, footer, _| {
                 let check = || reader.check().map_err(|error| store_error(&error));
                 let begin = ReadBegin {
                     format,
