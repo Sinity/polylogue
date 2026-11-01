@@ -78,17 +78,12 @@ fn document_previous_cost() {
     let source = r.w._dir.path().join("measured-document");
     std::fs::create_dir_all(source.join("projects")).unwrap();
     std::fs::write(source.join("projects/project.json"),serde_json::json!({"uuid":"measured","name":"Synthetic project","docs":[{"uuid":"doc","filename":"Synthetic document","content":"synthetic paragraph λ🙂 "}]}).to_string()).unwrap();
-    assert!(matches!(
-        handle(
-            Request::Import {
-                request_id: "measure-document".into(),
-                paths: vec![source]
-            },
-            &r.web.daemon
-        ),
-        command_surface::Answer::Ok { .. }
-            | command_surface::Answer::Empty { .. }
-            | command_surface::Answer::Degraded { .. }
+    crate::test_answers::ok(handle(
+        Request::Import {
+            request_id: "measure-document".into(),
+            paths: vec![source],
+        },
+        &r.web.daemon,
     ));
     r.w.wait_for(|s| s["store"]["documents"].as_u64().is_some_and(|n| n > 0));
     let id = "claude-ai:project:measured:doc:doc";

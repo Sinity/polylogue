@@ -32,12 +32,10 @@ fn a_starting_daemon_is_waited_for() {
         drop(lock);
     });
     let response = send_with_timeout(&archive, &Request::Status, None).unwrap();
-    assert!(matches!(
-        response,
-        command_surface::Answer::Ok { .. }
-            | command_surface::Answer::Empty { .. }
-            | command_surface::Answer::Degraded { .. }
-    ));
+    assert_eq!(
+        crate::test_answers::ok(response),
+        serde_json::json!({"ready": true})
+    );
     server.join().unwrap();
 }
 

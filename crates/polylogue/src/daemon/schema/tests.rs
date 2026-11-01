@@ -399,15 +399,7 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
         },
         &daemon.daemon,
     );
-    assert!(
-        matches!(
-            imported,
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{imported:?}"
-    );
+    crate::test_answers::ok(imported);
     daemon.wait_for(|status| status["store"]["messages"] == 2);
     std::fs::remove_file(provider).unwrap();
     let request = super::super::Request::SchemaInfer {

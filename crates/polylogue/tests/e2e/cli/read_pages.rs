@@ -93,9 +93,10 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
     wait_status(&env, |status| {
         status["store"]["messages"] == 1 && status["store"]["search_pending"] == 0
     });
-    // Rebuilding the index retires its cursor seal key (docs/query.md, Refusals).
+    // A cursor from an earlier index generation is `stale_cursor`, never
+    // restarted and never confused with a broken one (docs/query.md, Paging).
     let args = next_arguments(&next);
-    let retired = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-    assert!(!retired.status.success());
-    assert_eq!(json(&retired)["error"]["kind"], "invalid_query");
+    let stale = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(!stale.status.success());
+    assert_eq!(json(&stale)["error"]["kind"], "stale_cursor");
 }

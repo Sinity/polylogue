@@ -40,7 +40,9 @@ pub(super) fn open(
     index_file: (u64, u64),
     options: &Options,
 ) -> Result<Continuation, Failure> {
-    seal.open(
+    polylogue_store::read::open_cursor(
+        seal,
+        &position.generation,
         &SealedCursor::from_wire(text),
         question,
         |name| {

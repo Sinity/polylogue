@@ -172,18 +172,27 @@ fn query_answer(
     reader: &polylogue_store::Reader<'_>,
     answer: super::query::QueryAnswer,
 ) -> Answer<Value> {
-    let currency = match d.currency(reader) {
-        Ok(currency) => currency,
-        Err(error) => return store_error(&error),
-    };
+    match d.currency(reader) {
+        Ok(currency) => query_outcome(answer, &currency),
+        Err(error) => store_error(&error),
+    }
+}
+
+/// A query's answer over an index of the given currency: degraded, with a
+/// note, when the index is not current or a part is incomplete; empty when
+/// it matched nothing; ok otherwise.
+fn query_outcome(
+    answer: super::query::QueryAnswer,
+    currency: &polylogue_model::currency::IndexCurrency,
+) -> Answer<Value> {
     let super::query::QueryAnswer {
         mut value,
         outcome,
         notes,
     } = answer;
-    value["read_at"]["currency"] = serde_json::to_value(&currency).expect("currency serializes");
+    value["read_at"]["currency"] = serde_json::to_value(currency).expect("currency serializes");
     let mut notes = notes;
-    notes.extend(crate::protocol::currency_note(&currency).map(str::to_owned));
+    notes.extend(crate::protocol::currency_note(currency).map(str::to_owned));
     let degraded = currency.degraded() || outcome == super::query::Outcome::Incomplete;
     if degraded {
         Answer::Degraded {
@@ -203,6 +212,16 @@ fn query_answer(
             notes,
             next: vec![],
         }
+    }
+}
+
+/// An import whose restored user state Sinex has not confirmed yet is
+/// degraded, with the awaiting-confirmation note.
+fn import_answer(report: polylogue_engine::ImportReport) -> Answer<Value> {
+    let pending = report.user_state.pending > 0;
+    match serde_json::to_value(report) {
+        Ok(value) => crate::protocol::written(value, pending),
+        Err(problem) => error("internal", problem),
     }
 }
 
@@ -816,13 +835,7 @@ fn handle_inner(
                 return error("internal", "the loop has stopped");
             }
             match wait.recv() {
-                Ok(Ok(report)) => {
-                    let pending = report.user_state.pending > 0;
-                    match serde_json::to_value(report) {
-                        Ok(value) => crate::protocol::written(value, pending),
-                        Err(problem) => error("internal", problem),
-                    }
-                }
+                Ok(Ok(report)) => import_answer(report),
                 Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
                 Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
                     self::error("import", error)

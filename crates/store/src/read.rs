@@ -29,6 +29,8 @@ pub use completeness::{
     CompletenessDimension, CompletenessReason, ReadCompleteness, ReadingContract,
 };
 mod captured;
+mod cursor_generation;
+pub use cursor_generation::open_cursor;
 mod fragment;
 mod native_hook_fields;
 pub use fragment::{
@@ -684,6 +686,31 @@ impl Reader<'_> {
             |r| r.get(0),
         )?;
         Ok(*blake3::hash(secret.as_bytes()).as_bytes())
+    }
+
+    /// Opens a read cursor sealed with this index generation's key; see
+    /// [`open_cursor`] for how a cursor from an earlier generation is refused.
+    pub fn open_cursor(
+        &self,
+        cursor: &query_language::cursor::SealedCursor,
+        question: query_language::identity::QuestionId,
+        resolve_zone: impl FnOnce(
+            &str,
+        )
+            -> std::result::Result<jiff::tz::TimeZone, query_language::Error>,
+        available: impl FnOnce(&query_language::cursor::CursorContext) -> bool,
+    ) -> std::result::Result<query_language::cursor::Continuation, crate::selection::SelectionError>
+    {
+        let seal = query_language::cursor::CursorSeal::new(self.cursor_key()?);
+        let generation = self.change_position()?.generation;
+        Ok(open_cursor(
+            &seal,
+            &generation,
+            cursor,
+            question,
+            resolve_zone,
+            available,
+        )?)
     }
 
     /// Both counters and the index identity from this reader's read.

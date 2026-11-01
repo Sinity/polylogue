@@ -507,12 +507,7 @@ fn outline_continuations_cover_every_reference_and_bind_to_selected_content() {
             .collect::<Vec<_>>()
     );
     d.set("browser.actions", "on");
-    assert!(matches!(
-        handle(request(first.clone()), &d.daemon),
-        command_surface::Answer::Ok { .. }
-            | command_surface::Answer::Empty { .. }
-            | command_surface::Answer::Degraded { .. }
-    ));
+    crate::test_answers::ok(handle(request(first.clone()), &d.daemon));
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .append(true)

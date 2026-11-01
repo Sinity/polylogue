@@ -70,13 +70,17 @@ class ClientTests(unittest.TestCase):
         count = 0
         while True:
             page = answer["value"]
-            # Each continuation is a new execution: it keeps the evaluated
-            # query and index position but records its own run time and
-            # archive position (docs/query.md, Queries and clocks).
-            for stable in ("query", "caught_up", "currency"):
-                self.assertEqual(page["snapshot"][stable], snapshot[stable])
-            self.assertEqual(page["snapshot"]["read_at"]["generation"], snapshot["read_at"]["generation"])
-            self.assertEqual(page["snapshot"]["read_at"]["index"], snapshot["read_at"]["index"])
+            # Every executed page writes its own run, which records when it
+            # ran and the archive position its run row advanced; everything
+            # else continues the first page's question and index read
+            # position (docs/query.md, Runs and Paging).
+            ran = dict(page["snapshot"])
+            first = dict(snapshot)
+            self.assertIsInstance(ran.pop("ran_at"), str)
+            first.pop("ran_at")
+            ran["read_at"], first["read_at"] = dict(ran["read_at"]), dict(first["read_at"])
+            self.assertGreaterEqual(ran["read_at"].pop("archive"), first["read_at"].pop("archive"))
+            self.assertEqual(ran, first)
             for read_item in page["document"]["items"]:
                 item = read_item["kind"]
                 if item["kind"] != "fragment":

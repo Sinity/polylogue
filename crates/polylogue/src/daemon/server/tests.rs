@@ -230,14 +230,8 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();
-    assert!(
-        matches!(
-            serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&line).unwrap(),
-            command_surface::Answer::Ok { .. }
-                | command_surface::Answer::Empty { .. }
-                | command_surface::Answer::Degraded { .. }
-        ),
-        "{line}"
+    crate::test_answers::ok(
+        serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&line).unwrap(),
     );
 }
 

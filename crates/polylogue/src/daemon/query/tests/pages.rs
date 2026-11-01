@@ -277,9 +277,11 @@ fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
             assert!(reopened.run_pass().unwrap().errors.is_empty());
+            // A cursor from an earlier index generation is `stale_cursor`
+            // (docs/query.md, Paging, Refusals).
             assert_eq!(
                 page(&home, Some(cursor)).unwrap_err().code(),
-                "invalid_query"
+                "stale_cursor"
             );
             assert_eq!(page(&home, None).unwrap()["rows"][0]["id"], "claude-code:a");
         } else {
@@ -456,8 +458,8 @@ fn random_selection_count_rows_and_pages_use_one_resolved_seed() {
         let reader = pool.reader().unwrap();
         let request = ask(query);
         let options = options(&reader, &request, 0).unwrap();
-        let seal = CursorSeal::new(reader.cursor_key().unwrap());
         let question = page::identity(query, &options).unwrap();
+        let seal = CursorSeal::new(reader.cursor_key().unwrap());
         let seed = page::open(
             first["next"].as_str().unwrap(),
             &seal,
