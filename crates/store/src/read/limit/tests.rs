@@ -77,10 +77,15 @@ fn concurrent_reads_keep_separate_deadlines_and_cancellation() {
     let short = ReadLimit::new(Duration::from_millis(150), Default::default());
     let long = ReadLimit::new(Duration::from_secs(30), Default::default());
     std::thread::scope(|scope| {
-        let a = scope.spawn(|| short.scope(|| pool.reader().unwrap().query(SLOW, &[])));
+        // The short deadline may pass while its reader is still opening; the
+        // law is that it ends that read alone, wherever it is.
+        let a = scope.spawn(|| short.scope(|| pool.reader()?.query(SLOW, &[])));
         let b = scope.spawn(|| long.scope(|| pool.reader().unwrap().query(SLOW, &[])));
         started(&long);
-        assert!(a.join().unwrap().is_err());
+        assert!(matches!(
+            a.join().unwrap(),
+            Err(StoreError::ReadDeadlineExceeded)
+        ));
         assert!(matches!(
             short.check(),
             Err(StoreError::ReadDeadlineExceeded)
