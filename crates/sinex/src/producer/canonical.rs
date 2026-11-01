@@ -13,12 +13,7 @@ impl Sinex {
             || writes.is_empty()
             || writes.iter().any(|write| {
                 write.location.is_some()
-                    || !matches!(
-                        write.product,
-                        Product::WorkSnapshot { .. }
-                            | Product::WorkComponentStatus { .. }
-                            | Product::AttachmentBinding { .. }
-                    )
+                    || !matches!(write.product, Product::AttachmentBinding { .. })
             })
         {
             return Err(Error::Invalid(

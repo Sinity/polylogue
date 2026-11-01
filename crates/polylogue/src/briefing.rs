@@ -1,7 +1,7 @@
 //! Context and briefings. This module is the one scheduler for context
-//! Polylogue puts in front of a model: every brief, takeover, recall and
-//! piece of advice before a tool runs is prepared here, and the daemon
-//! records each one it hands out as a delivery with its exact text.
+//! Polylogue puts in front of a model: every brief, takeover and recall is
+//! prepared here, and the daemon records each one it hands out as a delivery
+//! with its exact text.
 //!
 //! A session-start brief brings an agent up to speed on its directory:
 //! - notes the operator wrote, or agents wrote and the operator accepted:
@@ -23,8 +23,6 @@
 //! bytes; [`DEFAULT_BUDGET`]). Sections fill in the order above and each
 //! names what did not fit and the command that shows it. The operator's
 //! prompts after compaction are never cut.
-
-mod advice;
 
 use crate::daemon::query::{NearFn, assertions};
 use polylogue_model::DeliveryEvent;
@@ -102,19 +100,12 @@ pub enum Ask {
         #[serde(default)]
         cursor: Option<String>,
     },
-    /// A command a session is about to run (a harness's pre-tool hook).
-    ToolUse {
-        cwd: PathBuf,
-        #[serde(default)]
-        session: Option<SessionId>,
-        command: String,
-    },
 }
 
 impl Ask {
     pub fn recipient(&self) -> Option<&SessionId> {
         match self {
-            Self::SessionStart { session, .. } | Self::ToolUse { session, .. } => session.as_ref(),
+            Self::SessionStart { session, .. } => session.as_ref(),
             Self::Takeover { for_session, .. } | Self::Recall { for_session, .. } => {
                 for_session.as_ref()
             }
@@ -123,7 +114,7 @@ impl Ask {
 
     pub fn cwd(&self) -> Option<&Path> {
         match self {
-            Self::SessionStart { cwd, .. } | Self::ToolUse { cwd, .. } => Some(cwd),
+            Self::SessionStart { cwd, .. } => Some(cwd),
             Self::Recall { cwd, .. } => cwd.as_deref(),
             Self::Takeover { .. } => None,
         }
@@ -133,8 +124,6 @@ impl Ask {
 /// Prepared context, not yet delivered.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Prepared {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub advice_id: Option<String>,
     pub event: &'static str,
     pub text: String,
     /// References included, in order.
@@ -225,7 +214,6 @@ pub fn prepare(
     near: Option<&NearFn<'_>>,
     check_history: &Path,
 ) -> Result<Prepared, StoreError> {
-    let now: Timestamp = context.clock.now.into();
     match ask {
         Ask::SessionStart {
             cwd,
@@ -253,12 +241,6 @@ pub fn prepare(
             ranking_identity,
             near,
         ),
-        Ask::ToolUse {
-            cwd,
-            command,
-            session,
-            ..
-        } => advice::advice(reader, cwd, command, session.as_ref(), now),
     }
 }
 
@@ -576,18 +558,8 @@ fn session_item(
             }
         ));
     }
-    if work.checks_passed + work.checks_failed > 0 {
-        did.push(format!(
-            "checks {} passed, {} failed",
-            work.checks_passed, work.checks_failed
-        ));
-    }
-    for (bead, state) in &work.beads {
-        did.push(match state.as_str() {
-            "open" => format!("claimed {bead}, still open"),
-            "" => format!("worked on {bead}"),
-            other => format!("{other} {bead}"),
-        });
+    if let Some(task) = &work.task {
+        did.push(format!("claimed {task}, still open"));
     }
     if !did.is_empty() {
         let _ = write!(text, "\n    did: {}", did.join("; "));
@@ -603,14 +575,6 @@ fn session_item(
         if let Some(w) = &items.waiting_on {
             open.push(format!("waiting on {w}"));
         }
-    }
-    if !work.plan_open.is_empty() {
-        open.push(format!(
-            "plan {} of {} done, next: \"{}\"",
-            work.plan_done,
-            work.plan_done + work.plan_open.len() as u64,
-            one_line(&work.plan_open[0], 100)
-        ));
     }
     if !open.is_empty() {
         let _ = write!(text, "\n    open: {}", open.join("; "));
@@ -776,7 +740,7 @@ fn session_start(
         "Beads claimed here this week and still open:",
         beads,
         "open Beads",
-        "polylogue work kind:attempt state:open",
+        "polylogue list task:",
     );
     let mut sessions = Vec::new();
     for s in &recent {
@@ -802,7 +766,7 @@ fn session_start(
     // Check runs the development tooling recorded for this checkout (what
     // AgentCTL's check and test jobs run) come first; checks a session ran
     // itself follow.
-    let mut failing: Vec<Item> =
+    let failing: Vec<Item> =
         polylogue_store::check_runs::failed_since(check_history, &dirs, since)?
             .into_iter()
             .map(|f| {
@@ -828,33 +792,11 @@ fn session_start(
                 }
             })
             .collect();
-    failing.extend(
-        reader
-            .failing_commands(&dirs, since, None)?
-            .into_iter()
-            .map(|f| {
-                let mut text = format!("- `{}`", f.command);
-                if let Some(code) = f.exit_code {
-                    let _ = write!(text, " exit {code}");
-                }
-                let _ = write!(text, ", last {} in {}", day(f.at), f.session);
-                if f.times > 1 {
-                    let _ = write!(text, " ({} failures)", f.times);
-                }
-                if let Some(latest) = &f.latest {
-                    let _ = write!(text, ": {}", one_line(latest, 120));
-                }
-                Item {
-                    text,
-                    refs: vec![format!("session:{}", f.session)],
-                }
-            }),
-    );
     fit.section(
         "Verifications that failed here since their last pass:",
         failing,
         "failing checks",
-        "polylogue work kind:verification state:error",
+        "xtask history failures",
     );
     let notices: Vec<Item> = reader
         .notices_since(
@@ -888,7 +830,6 @@ fn session_start(
     };
     let (text, refs, left_out) = fit.finish(closing);
     Ok(Prepared {
-        advice_id: None,
         event: match source {
             StartSource::Startup | StartSource::Clear => DeliveryEvent::SessionStart,
             StartSource::Resume => DeliveryEvent::Resume,
@@ -1014,7 +955,6 @@ fn takeover(
         "\nThe full session: `polylogue read {id}`; its tool calls: `polylogue read {id} --view actions`."
     );
     Ok(Prepared {
-        advice_id: None,
         event: DeliveryEvent::Takeover.as_str(),
         text,
         refs,
@@ -1288,7 +1228,6 @@ fn recall(
         }
     );
     Ok(Prepared {
-        advice_id: None,
         event: DeliveryEvent::Recall.as_str(),
         text: out,
         refs,

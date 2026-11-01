@@ -21,14 +21,12 @@ mod active_path;
 mod cost;
 pub(crate) mod counts;
 mod duplicates;
+mod links;
 mod repository;
 mod session;
 mod session_span;
 mod title;
 mod tool_calls;
-mod work;
-
-pub use work::verification_title;
 
 /// Sessions derived per transaction, so a long derive never holds the
 /// writer for minutes.
@@ -79,7 +77,7 @@ const ALL: &[Derivation] = &[
     active_path::DERIVATION,
     repository::DERIVATION,
     title::DERIVATION,
-    work::DERIVATION,
+    links::DERIVATION,
     cost::DERIVATION,
     counts::DERIVATION,
     session_span::DERIVATION,
@@ -102,13 +100,6 @@ pub(crate) fn current_versions() -> Result<BTreeMap<String, String>> {
 
 pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM derive_state d JOIN session s ON s.pk=d.session_pk WHERE d.name=?1 AND s.pk=?2 AND d.from_changed=s.changed AND pl_derived_current(d.name,d.version))", params![name,pk], |r| r.get(0))?)
-}
-
-/// Canonical publication reads the same selected messages as ordinary derivation.
-/// These rules use the just-projected rows inside the position transaction.
-pub(crate) fn select_confirmed(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    duplicates::run(tx, session_pk)?;
-    active_path::run(tx, session_pk)
 }
 
 /// Runs every derivation over the sessions it has not derived at their

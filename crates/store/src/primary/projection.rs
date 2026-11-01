@@ -220,10 +220,9 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     replay::save(&tx, &state)?;
     if events.iter().any(|event| matches!(&event.change, ConfirmedChange::Control(control)
         if matches!(control.as_ref(), super::ReplayControl::Coverage { coverage: super::RawInputCoverage::Complete { .. } })))
-        && let (Some(position), Some(proof)) = (state.certified_position(), state.publication.as_ref())
+        && let Some(position) = state.certified_position()
     {
-        let counter: i64 = tx.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'", [], |row| row.get(0)).optional()?.unwrap_or(0);
-        super::derived::stage(&tx, position, counter, Some(proof))?;
+        super::derived::confirmed(&tx, position)?;
     }
     crate::fault::check("primary.stage_commit", "")?;
     tx.commit()?;
@@ -337,9 +336,6 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         | Product::HistoricalQueryRun { .. }
         | Product::QueryRun { .. }
         | Product::QueryRunOutcome { .. } => (None, None, reference, "query"),
-        Product::WorkSnapshot { .. } | Product::WorkComponentStatus { .. } => {
-            (None, None, reference, "derived")
-        }
         _ => unreachable!(),
     }
 }
@@ -371,7 +367,6 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
             .optional()?;
         let next = match change {
             ConfirmedChange::Live(mut product) => {
-                super::derived::validate_confirmed(&product)?;
                 let conserved =
                     if let Some(previous) = old.as_ref().and_then(|old| old.product.as_ref()) {
                         merge_conserved_product(previous, product.as_mut())?
@@ -407,13 +402,11 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
-                let reference = super::derived::reference(&product)?.or(reference);
                 let session = match product.as_ref() {
                     Product::Session { facts, .. } => Some(facts.id.to_string()),
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
                     Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
                     Product::Background { facts, .. } => Some(facts.session.to_string()),
-                    Product::WorkSnapshot { snapshot } => Some(snapshot.session_id.to_string()),
                     _ => None,
                 };
                 let reading = product.reading();
@@ -1124,8 +1117,7 @@ pub(crate) fn apply(
         )?;
         remember_blobs(&tx)?;
         replay::complete(&tx, next)?;
-        let state = replay_state(&tx)?;
-        super::derived::stage(&tx, next, counter, state.publication.as_ref())?;
+        super::derived::confirmed(&tx, next)?;
         tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
         tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;

@@ -5,7 +5,7 @@ use polylogue_store::primary::{
 use polylogue_store::{Archive, ReadPool, SqlValue, StoreError, Writer};
 use std::sync::Arc;
 
-fn witness() -> polylogue_store::assets::bindings::AttachmentBindingRecord {
+pub(super) fn witness() -> polylogue_store::assets::bindings::AttachmentBindingRecord {
     let version = BlobHash::of(b"original message");
     let hash = BlobHash::of(b"original receiving bytes");
     // Imported serialized metadata is held intact and supplies no admission authority.

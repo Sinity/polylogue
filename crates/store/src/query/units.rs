@@ -298,10 +298,6 @@ fn not_withdrawn(a: &Aliases) -> String {
     format!("NOT {}", fields::withdrawn_assertion(&a.row))
 }
 
-fn work_goal(a: &Aliases) -> String {
-    fields::work_goal(&a.row)
-}
-
 fn turns_from(a: &Aliases) -> String {
     format!(
         "{} {r} JOIN session {s} ON {s}.pk = {r}.session_pk",
@@ -857,42 +853,6 @@ pub static UNITS: &[UnitSpec] = &[
             rel("session", Unit::Sessions, Via::Same),
             rel("recipient", Unit::Sessions, Via::Same),
         ],
-        parents: &[],
-    },
-    UnitSpec {
-        unit: Unit::Work,
-        name: "work",
-        singular: "work",
-        from: Expr::Template("work_node {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk"),
-        key: "{r}.pk",
-        identity: &["{r}.key"],
-        columns: &[
-            ("kind", T("{r}.kind"), Text),
-            ("title", T("{r}.title"), Text),
-            ("state", T("{r}.state"), Text),
-            (
-                "session",
-                Expr::Reference("{s}.id", ColumnReference::Session),
-                Text,
-            ),
-            ("at", T("{r}.at"), Time),
-            ("goal", Expr::Fn(work_goal), Text),
-        ],
-        time: "{r}.at",
-        newest_first: false,
-        session_order: false,
-        since: None,
-        until: None,
-        in_session: true,
-        session_pk: "{r}.session_pk",
-        session_scope: Some(
-            "({r}.session_pk IN ({sessions}) OR EXISTS (SELECT 1 FROM work_edge we \
-             JOIN work_node wa ON wa.pk = we.from_pk \
-             WHERE we.to_pk = {r}.pk AND wa.session_pk IN ({sessions})))",
-        ),
-        search: Search::None,
-        defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
-        relations: &[rel("session", Unit::Sessions, Via::Same)],
         parents: &[],
     },
     UnitSpec {

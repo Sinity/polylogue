@@ -318,8 +318,6 @@ f(Events,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
 f(Events,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
 f(Deliveries,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
 f(Deliveries,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
-f(Work,"at.time_quality").time_attribute("at",NativeTimeAttribute::Quality),
-f(Work,"at.precision").time_attribute("at",NativeTimeAttribute::Precision),
 f(Sessions,"started_at.time_quality").time_attribute("started",NativeTimeAttribute::Quality),
 f(Sessions,"started_at.precision").time_attribute("started",NativeTimeAttribute::Precision),
 f(Documents,"source_time.time_quality").time_attribute("source_time",NativeTimeAttribute::Quality),
@@ -559,16 +557,6 @@ f(Turns,"output_tokens").sql("{r}.output_tokens"),
 f(Turns,"cost").sql("{r}.cost_nusd"),
 f(Turns,"abandoned").sql("{r}.abandoned"),
 f(Turns,"corrected").sql_fn(turns_corrected),
-f(Work,"kind").sql("{r}.kind"),
-f(Work,"title").sql("{r}.title"),
-f(Work,"key").sql("{r}.key"),
-f(Work,"state").sql("{r}.state"),
-f(Work,"at").sql("{r}.at"),
-f(Work,"goal").sql_fn(work_goal_field),
-f(Work,"checks_passed").sql("json_extract({r}.attrs_json, '$.checks_passed')"),
-f(Work,"checks_failed").sql("json_extract({r}.attrs_json, '$.checks_failed')"),
-f(Work,"checks_unknown").sql("json_extract({r}.attrs_json, '$.checks_unknown')"),
-f(Work,"artifacts").sql("json_extract({r}.attrs_json, '$.artifacts')")
 ];
 pub fn lookup(unit: Unit, name: &str) -> Option<&'static Field> {
     FIELDS
@@ -623,21 +611,6 @@ impl Aliases {
 }
 
 pub use crate::session_sql::{counts_as_action, own_messages};
-
-/// The title of the goal a work node belongs to: an attempt's goal, or the
-/// goal of the attempt a verification checks or an artifact was made for.
-pub fn work_goal(r: &str) -> String {
-    format!(
-        "COALESCE(\
-         (SELECT g.title FROM work_edge e JOIN work_node g ON g.pk = e.to_pk \
-          WHERE e.from_pk = {r}.pk AND e.kind = 'pursues'), \
-         (SELECT g.title FROM work_edge e JOIN work_edge p ON p.from_pk = e.to_pk AND p.kind = 'pursues' \
-          JOIN work_node g ON g.pk = p.to_pk WHERE e.from_pk = {r}.pk AND e.kind = 'checks' LIMIT 1), \
-         (SELECT g.title FROM work_edge e JOIN work_edge p ON p.from_pk = e.from_pk AND p.kind = 'pursues' \
-          JOIN work_node g ON g.pk = p.to_pk WHERE e.to_pk = {r}.pk AND e.kind = 'produces' LIMIT 1), \
-         CASE WHEN {r}.kind = 'goal' THEN {r}.title END)"
-    )
-}
 
 /// The live states.
 pub use polylogue_query::fields::LIVE_STATES;
@@ -839,10 +812,6 @@ fn notes_judged(a: &Aliases) -> String {
 
 fn notes_withdrawn(a: &Aliases) -> String {
     format!("({})", withdrawn_assertion(&a.row))
-}
-
-fn work_goal_field(a: &Aliases) -> String {
-    work_goal(&a.row)
 }
 
 pub use crate::assertions::sql::{current_assertion, live_assertion, withdrawn_assertion};

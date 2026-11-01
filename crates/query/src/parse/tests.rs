@@ -157,7 +157,7 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         ("messages where role:user", "messages"),
         ("message where role:user", "messages"),
         ("TOOL_CALLS", "tool_calls"),
-        ("work | count", "work"),
+        ("deliveries | count", "deliveries"),
         ("", "sessions"),
         ("   ", "sessions"),
     ] {

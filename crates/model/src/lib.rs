@@ -49,7 +49,6 @@ mod variant;
 pub use variant::{
     NewVariant, NewVariantPart, Variant, VariantEffect, VariantKind, VariantPart, VariantRelation,
 };
-mod work;
 
 pub use batch::{
     BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, MessageRow, OrderKey, Output,
@@ -77,7 +76,6 @@ pub mod text;
 pub use price::{Catalog, LongContext, Price};
 pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};
 pub use usage::Usage;
-pub use work::{WorkEdgeKind, WorkNodeKind};
 
 /// Opaque JSON kept exactly as the source wrote it. Numbers are lossless
 /// (`serde_json` with `arbitrary_precision`).
@@ -100,7 +98,5 @@ macro_rules! string_schema {
 string_schema!(
     Origin, SessionId, MessageId, DocumentId, BlobHash, RunId, Reference, Author
 );
-
-pub mod work_products;
 
 pub mod signal;

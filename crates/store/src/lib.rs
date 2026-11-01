@@ -68,9 +68,7 @@ pub mod writer;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
-pub use context::{
-    DeliveryRow, FailingCommand, NearbySession, OpenBead, OpenItems, Prompt, SessionWork,
-};
+pub use context::{DeliveryRow, NearbySession, OpenBead, OpenItems, Prompt, SessionWork};
 pub use read::{
     BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
     KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,

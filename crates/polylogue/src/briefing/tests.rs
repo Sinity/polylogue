@@ -304,18 +304,17 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         "parser work",
         "1 commit (abc1234)",
         "changed 1 file: a.rs",
-        "checks 0 passed, 1 failed",
         "claimed pl-1, still open",
         "last answer: \"Finished the parser fix; one test still fails.\"",
         "Beads claimed here this week and still open:\n- pl-1",
         "Verifications that failed here since their last pass:\n- `proj check` failed",
-        "in /home/op/proj, job proj-check: clippy failed; `xtask history failures 1`\n- `cargo test` exit 101",
+        "in /home/op/proj, job proj-check: clippy failed; `xtask history failures 1`",
         "formatting",
     ] {
         assert!(t.contains(expected), "missing {expected:?} in:\n{t}");
     }
-    // `cargo fmt` passed after it failed.
-    assert!(!t.contains("`cargo fmt`"), "{t}");
+    // A session's own failing commands are not reported: only the tooling's run history.
+    assert!(!t.contains("`cargo test`"), "{t}");
     assert!(t.len() <= DEFAULT_BUDGET as usize * 4);
     assert!(p.refs.contains(&"session:claude-code:s1".to_owned()));
 }

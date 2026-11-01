@@ -129,12 +129,6 @@ pub enum Product {
         claims: Vec<polylogue_model::authored::ImportAttribution>,
         current: polylogue_model::authored::ImportAttribution,
     },
-    WorkComponentStatus {
-        status: Box<polylogue_model::work_products::ComponentStatus>,
-    },
-    WorkSnapshot {
-        snapshot: polylogue_model::work_products::WorkSnapshot,
-    },
     Coverage(polylogue_model::capture::Coverage),
     /// Receive-only projections keep their Serde codec, but must not allocate
     /// names or appear in the current producer's generated kind declarations.
@@ -173,9 +167,7 @@ impl Product {
             | Self::RestoredRequest { .. }
             | Self::RestoredAssertion { .. }
             | Self::RestoredHistory { .. }
-            | Self::Coverage(_)
-            | Self::WorkSnapshot { .. }
-            | Self::WorkComponentStatus { .. } => None,
+            | Self::Coverage(_) => None,
         }
     }
 }

@@ -1116,7 +1116,7 @@ fn a_session_query_scopes_a_row_query() {
 }
 
 /// A session that claims a Bead, fails then passes its tests, commits and
-/// closes the Bead; derived into the work graph.
+/// closes the Bead; derived into its task and commit links.
 fn worked() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
@@ -1158,29 +1158,8 @@ fn worked() -> TestArchive {
 }
 
 #[test]
-fn the_work_unit_reads_the_derived_graph() {
+fn a_short_commit_hash_the_command_printed_answers_a_full_hash_query() {
     let w = worked();
-    let attempts = q(&w, "work where kind:attempt");
-    let row = &attempts["rows"][0];
-    assert_eq!(attempts["rows"].as_array().unwrap().len(), 1);
-    assert_eq!(row["title"], "demo-7");
-    assert_eq!(row["state"], "closed");
-    assert_eq!(row["goal"], "demo-7");
-    let checks = q(&w, "work where kind:verification goal:demo-7");
-    let states: Vec<&str> = checks["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["state"].as_str().unwrap())
-        .collect();
-    assert_eq!(states, ["error", "ok"]);
-    assert_eq!(
-        q(&w, "work where checks_failed:1")["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
     // The short hash the commit command printed answers a full-hash query.
     assert_eq!(
         ids(&q(&w, "commit:0123abcd00112233445566778899aabbccddeeff")),
@@ -1297,85 +1276,6 @@ mod titles;
 mod pages;
 
 mod input_events;
-
-#[test]
-fn work_queries_distinguish_unknown_check_totals_from_failures() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
-    let s = fx
-        .session(SessionFacts {
-            id: "claude-code:unknown-work",
-            ..SessionFacts::default()
-        })
-        .unwrap();
-    let m = fx
-        .message(
-            s,
-            msg("unknown-work-call", "assistant", "model", "", at(2, 12)),
-        )
-        .unwrap();
-    for (n, (command, outcome)) in [
-        ("bd update demo-7 --claim", "ok"),
-        ("cargo test", "unknown"),
-        ("cargo check", "error"),
-        ("cargo clippy", "ok"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        fx.tool_call(
-            s,
-            m,
-            CallFacts {
-                tool: "Bash",
-                action: "shell",
-                command: Some(command),
-                outcome,
-                at: at(2, 12).map(|t| t + n as i64 * 60_000),
-                ..CallFacts::default()
-            },
-        )
-        .unwrap();
-    }
-    fx.derive().unwrap();
-    let w = TestArchive { _dir: dir, fx };
-    let fields = ["checks_passed", "checks_failed", "checks_unknown"].map(str::to_owned);
-    let totals = run_q(
-        &w,
-        Ask {
-            fields: &fields,
-            ..ask("work where kind:attempt")
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        totals["rows"],
-        json!([{"checks_passed":1,"checks_failed":1,"checks_unknown":1}])
-    );
-    assert_eq!(
-        q(
-            &w,
-            "work where kind:attempt checks_passed:1 checks_failed:1 checks_unknown:1"
-        )["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(
-        q(&w, "work where kind:attempt checks_failed:2")["rows"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        q(&w, r#"work where kind:verification state:"unknown""#)["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-}
 
 mod composition;
 
