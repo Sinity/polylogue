@@ -63,12 +63,15 @@ fn bind_lone_reference(query: &mut Query) {
     }
     let Source::Unit {
         unit,
-        implicit: true,
+        implicit,
         condition: Some(condition),
     } = &mut query.source
     else {
         return;
     };
+    if !*implicit {
+        return;
+    }
     let text = match &condition.kind {
         ConditionKind::Reference { reference } => reference.clone(),
         ConditionKind::Match {
@@ -81,7 +84,9 @@ fn bind_lone_reference(query: &mut Query) {
         polylogue_model::Reference::parse(&text)
         && revision.revision.is_some()
     {
+        // Explicit, so the unit survives formatting the query back to text.
         *unit = crate::units::Unit::Assertions.name().to_owned();
+        *implicit = false;
     }
 }
 
