@@ -191,7 +191,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
     let question = plan.question_id();
     let cursor = ask
         .cursor
-        .map(|text| page::open(text, reader, question, &position, index_file, &opts))
+        .map(|text| page::open(text, &seal, question, &position, index_file, &opts))
         .transpose()?;
     let mut operation_versions = ask.context.cursor_versions();
     operation_versions.insert(

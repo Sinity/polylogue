@@ -30,6 +30,7 @@ pub use completeness::{
 };
 mod captured;
 mod cursor_generation;
+pub use cursor_generation::open_cursor;
 mod fragment;
 mod native_hook_fields;
 pub use fragment::{
@@ -687,11 +688,8 @@ impl Reader<'_> {
         Ok(*blake3::hash(secret.as_bytes()).as_bytes())
     }
 
-    /// Opens a read cursor sealed with this index generation's key. A cursor
-    /// that does not authenticate is `stale_cursor` when its payload names an
-    /// earlier index generation (that generation's key went with it), and
-    /// `invalid_query` otherwise. The unauthenticated generation only chooses
-    /// between the two refusals; nothing else is read from such a cursor.
+    /// Opens a read cursor sealed with this index generation's key; see
+    /// [`open_cursor`] for how a cursor from an earlier generation is refused.
     pub fn open_cursor(
         &self,
         cursor: &query_language::cursor::SealedCursor,
@@ -703,24 +701,16 @@ impl Reader<'_> {
         available: impl FnOnce(&query_language::cursor::CursorContext) -> bool,
     ) -> std::result::Result<query_language::cursor::Continuation, crate::selection::SelectionError>
     {
-        use query_language::{Error, ErrorKind};
         let seal = query_language::cursor::CursorSeal::new(self.cursor_key()?);
-        match seal.open(cursor, question, resolve_zone, available) {
-            Err(error) if error.kind == ErrorKind::InvalidQuery => {
-                let current = self.change_position()?.generation;
-                match cursor_generation::sealed_generation(cursor) {
-                    Some(generation) if generation != current => Err(Error::new(
-                        ErrorKind::StaleCursor,
-                        "the cursor is from an earlier index generation",
-                        0,
-                    )
-                    .hint("restart the question without its cursor")
-                    .into()),
-                    _ => Err(error.into()),
-                }
-            }
-            opened => Ok(opened?),
-        }
+        let generation = self.change_position()?.generation;
+        Ok(open_cursor(
+            &seal,
+            &generation,
+            cursor,
+            question,
+            resolve_zone,
+            available,
+        )?)
     }
 
     /// Both counters and the index identity from this reader's read.

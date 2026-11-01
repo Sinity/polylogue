@@ -34,48 +34,49 @@ pub(super) fn identity(text: &str, options: &Options) -> Result<QuestionId, Fail
 
 pub(super) fn open(
     text: &str,
-    reader: &polylogue_store::Reader<'_>,
+    seal: &CursorSeal,
     question: QuestionId,
     position: &ChangePosition,
     index_file: (u64, u64),
     options: &Options,
 ) -> Result<Continuation, Failure> {
-    reader
-        .open_cursor(
-            &SealedCursor::from_wire(text),
-            question,
-            |name| {
-                if name == options.clock.day.zone_name() {
-                    Ok(options.clock.day.zone().clone())
-                } else {
-                    Err(Error::new(
-                        ErrorKind::StaleCursor,
-                        "the configured query zone changed",
-                        0,
-                    ))
-                }
-            },
-            |context| {
-                context.clock.day == options.clock.day
-                    && context.read_positions.get("generation") == Some(&position.generation)
-                    && context.read_positions.get("index_file")
-                        == Some(&format!("{}:{}", index_file.0, index_file.1))
-                    && context
-                        .read_positions
-                        .get("index")
-                        .and_then(|n| n.parse::<i64>().ok())
-                        .is_some_and(|n| n <= position.index)
-                    && context
-                        .read_positions
-                        .get("archive")
-                        .and_then(|n| n.parse::<i64>().ok())
-                        .is_some_and(|n| n <= position.archive)
-                    && context.versions.get("ranking").is_none_or(|previous| {
-                        previous == &polylogue_store::vectors::writes().to_string()
-                    })
-            },
-        )
-        .map_err(Failure::from)
+    polylogue_store::read::open_cursor(
+        seal,
+        &position.generation,
+        &SealedCursor::from_wire(text),
+        question,
+        |name| {
+            if name == options.clock.day.zone_name() {
+                Ok(options.clock.day.zone().clone())
+            } else {
+                Err(Error::new(
+                    ErrorKind::StaleCursor,
+                    "the configured query zone changed",
+                    0,
+                ))
+            }
+        },
+        |context| {
+            context.clock.day == options.clock.day
+                && context.read_positions.get("generation") == Some(&position.generation)
+                && context.read_positions.get("index_file")
+                    == Some(&format!("{}:{}", index_file.0, index_file.1))
+                && context
+                    .read_positions
+                    .get("index")
+                    .and_then(|n| n.parse::<i64>().ok())
+                    .is_some_and(|n| n <= position.index)
+                && context
+                    .read_positions
+                    .get("archive")
+                    .and_then(|n| n.parse::<i64>().ok())
+                    .is_some_and(|n| n <= position.archive)
+                && context.versions.get("ranking").is_none_or(|previous| {
+                    previous == &polylogue_store::vectors::writes().to_string()
+                })
+        },
+    )
+    .map_err(Failure::from)
 }
 
 fn context_digest(domain: &str, value: &impl Serialize) -> Result<String, Failure> {

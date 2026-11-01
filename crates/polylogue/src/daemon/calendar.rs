@@ -59,7 +59,9 @@ fn paging(
     let seal = CursorSeal::new(reader.cursor_key()?);
     let continuation = cursor
         .map(|text| {
-            reader.open_cursor(
+            polylogue_store::read::open_cursor(
+                &seal,
+                &position.generation,
                 &SealedCursor::from_wire(text),
                 question,
                 |name| {

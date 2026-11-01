@@ -116,6 +116,43 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
             .code(),
         "stale_cursor"
     );
+    // A rebuilt index has a new sealing key, so the earlier generation's
+    // cursor no longer authenticates; it is still `stale_cursor`, not
+    // `invalid_query` (docs/query.md, Paging, Refusals).
+    let rebuilt_seal = CursorSeal::new([9; 32]);
+    assert_eq!(
+        open(
+            token.as_str(),
+            &rebuilt_seal,
+            question,
+            &newer,
+            (1, 2),
+            &options
+        )
+        .unwrap_err()
+        .code(),
+        "stale_cursor"
+    );
+    assert_eq!(
+        open(
+            token.as_str(),
+            &rebuilt_seal,
+            question,
+            &position(),
+            (1, 2),
+            &options
+        )
+        .unwrap_err()
+        .code(),
+        "invalid_query",
+        "a cursor naming the current generation that does not authenticate was never sealed here"
+    );
+    assert_eq!(
+        open("broken", &rebuilt_seal, question, &newer, (1, 2), &options)
+            .unwrap_err()
+            .code(),
+        "invalid_query"
+    );
     let mut changed = program.clone();
     changed.definitions.push(polylogue_query::Definition {
         name: "saved".into(),
