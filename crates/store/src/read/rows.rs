@@ -5,7 +5,6 @@ use crate::{Result, StoreError};
 impl Reader<'_> {
     /// Two aggregate counts from one statement, read by column position.
     pub fn query_counts(&self, sql: &str, params: &[SqlValue]) -> Result<(u64, u64)> {
-        self.prepare_assertion_currency()?;
         crate::fault::check("read.query", sql)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(sql)?;
@@ -49,7 +48,6 @@ impl Reader<'_> {
         E: From<StoreError>,
     {
         crate::fault::check("read.query", sql).map_err(E::from)?;
-        self.prepare_assertion_currency().map_err(E::from)?;
         let conn = self.conn().map_err(E::from)?;
         let mut stmt = conn.prepare_cached(sql).map_err(StoreError::from)?;
         let names: Vec<String> = stmt

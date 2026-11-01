@@ -127,6 +127,10 @@ struct PoolState {
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
 /// the pool when dropped. Holding a reader slot takes no read lock; the first
 /// database access starts the read on both databases and checks them.
+/// Every SQL access goes through [`Reader::conn`], which also builds the
+/// snapshot's assertion currency (`temp.assertion_about`,
+/// `temp.assertion_currency`) before handing out the connection, so any SQL
+/// a reader runs may name those objects.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
@@ -496,20 +500,10 @@ struct MessageContent<'a> {
 }
 
 impl Reader<'_> {
-    pub(crate) fn prepare_assertion_currency(&self) -> Result<()> {
-        self.check()?;
-        if !self.assertion_currency_ready.get() {
-            crate::assertions::currency::prepare_all(self.conn()?)?;
-            self.check()?;
-            self.assertion_currency_ready.set(true);
-        }
-        Ok(())
-    }
-
     pub(crate) fn prepare_assertion_history(&self, cutoff: i64) -> Result<()> {
-        self.prepare_assertion_currency()?;
+        let conn = self.conn()?;
         if !self.assertion_history_ready.borrow().contains(&cutoff) {
-            crate::assertions::currency::prepare_history(self.conn()?, cutoff)?;
+            crate::assertions::currency::prepare_history(conn, cutoff)?;
             self.check()?;
             self.assertion_history_ready.borrow_mut().insert(cutoff);
         }
@@ -627,6 +621,13 @@ impl Reader<'_> {
                 )?;
                 self.state.set(ReadState::Ready);
             }
+        }
+        // The currency is a pure function of this snapshot. It is built here
+        // once per read, and nowhere else, so no SQL access can see it missing.
+        if !self.assertion_currency_ready.get() {
+            crate::assertions::currency::prepare_all(conn)?;
+            self.check()?;
+            self.assertion_currency_ready.set(true);
         }
         Ok(conn)
     }

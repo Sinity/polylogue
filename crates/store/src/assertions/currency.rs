@@ -40,6 +40,8 @@ CREATE TEMP VIEW IF NOT EXISTS assertion_currency AS
     WHERE f.present=1;
 "#;
 
+/// Builds the currency of every assertion family in the pinned snapshot.
+/// `Reader::conn` is its one caller, at the reader's first SQL access.
 pub(crate) fn prepare_all(conn: &Connection) -> Result<()> {
     if conn.is_autocommit() {
         return Err(invalid(
@@ -58,8 +60,8 @@ pub(crate) fn prepare_all(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Requires the currency that [`prepare_all`] built for this read.
 pub(crate) fn prepare_history(conn: &Connection, cutoff: i64) -> Result<()> {
-    prepare_all(conn)?;
     let until = polylogue_model::Timestamp::from_unix_ms(cutoff)
         .ok_or_else(|| invalid("historical assertion cutoff is out of range"))?;
     let source = crate::source::Source::reading(conn)?;
