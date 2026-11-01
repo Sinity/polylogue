@@ -29,7 +29,7 @@ unit_properties = ["MemoryHigh=8G"]
 priority = 10
 
 [operations.check]
-description = "Formatting, boundaries, both clippy configurations and all tests"
+description = "Formatting, boundaries, both clippy configurations and every test from one workspace build"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
@@ -40,7 +40,7 @@ cap = "cargo"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.baseline]
-description = "Both configurations on the master baseline; the host queues it on each new master head"
+description = "The full check on the master baseline; the host queues it on each new master head"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
@@ -75,7 +75,7 @@ unit_properties = ["MemoryHigh=8G"]
 priority = 20
 
 [operations.focused]
-description = "Selected package or test checks with the normal development queue"
+description = "Selected tests (-p, -E) from the same workspace build as check, in the normal development queue"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
 pool = "normal"
@@ -166,14 +166,3 @@ pool = "codex"
 result = "exit"
 timeout_seconds = 28800
 cache = "none"
-
-[operations.sinex_client]
-description = "Build and test the Sinex client and primary-mode application"
-exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "sinex-client"]
-pool = "bulk"
-result = "exit"
-timeout_seconds = 1200
-scratch = "tmpfs"
-cache = "none"
-cap = "cargo"
-unit_properties = ["MemoryHigh=8G"]

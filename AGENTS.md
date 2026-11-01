@@ -109,12 +109,11 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 
 | Command | Does |
 |---|---|
-| `cargo xtask check` | formatting, crate boundaries, both Clippy configurations, standalone tests and Sinex client/primary-mode tests |
+| `cargo xtask check` | formatting, crate boundaries, both Clippy configurations and every test |
 | `cargo xtask fast` | formatting, boundaries and clippy, without tests |
 | `cargo xtask test -p <crate> -E 'test(<name>)'` | selected tests under nextest |
 | `cargo xtask test --changed` | tests selected through changed packages and their dependents |
 | `cargo xtask test --no-run` | build every test binary without running tests |
-| `cargo xtask sinex-client` | Sinex client and primary-mode application tests |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
@@ -122,12 +121,15 @@ Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
 | `nix flake check` | locked package, source, module and VM checks described in [development](docs/development.md) |
 | `nix build` | the package |
 
-Default tests build the standalone workspace with the fault-test features;
-Sinex client tests use a separate primary-mode build. `test`, `scenarios` and
-`check` reuse these artifacts. Package selectors limit Cargo's test build;
-test filters select execution within that build. Changed-package selection
-enables primary mode when its dependencies are affected; the landing check
-always runs both configurations. Every xtask
+Every test command builds the same thing: the whole workspace's test
+binaries with primary mode and the store's and engine's fault points
+(`polylogue/sinex`, `polylogue-engine/faults`, `polylogue-store/faults`).
+`check`, `test` and `scenarios` therefore reuse each other's artifacts;
+`-p`, `--exclude`, `-E` and `--changed` select which tests run, never what
+is built. Examples are compiled by Clippy and built only when an example
+has tests. The standalone application (no `sinex` feature) is covered by
+its own Clippy run, a compile check; its two differences from primary mode
+are tested directly in the shared build. Every xtask
 run is recorded in devkit's history database.
 
 Designed and not built yet: `cargo xtask compile` and `coverage`;

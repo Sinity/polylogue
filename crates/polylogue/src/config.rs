@@ -769,6 +769,15 @@ pub(crate) fn load_mode(
 }
 #[cfg(not(feature = "sinex"))]
 pub(crate) fn load_mode(path: &Path) -> Result<(crate::daemon::service::ArchiveMode, ()), Error> {
+    refuse_primary_mode(path)?;
+    Ok((crate::daemon::service::ArchiveMode::Standalone, ()))
+}
+
+/// A build without primary-mode support starts standalone only when the
+/// Sinex configuration is absent or asks for standalone. Test builds always
+/// have primary mode, so they test this directly.
+#[cfg(any(test, not(feature = "sinex")))]
+fn refuse_primary_mode(path: &Path) -> Result<(), Error> {
     #[derive(Deserialize)]
     struct Header {
         mode: String,
@@ -783,7 +792,7 @@ pub(crate) fn load_mode(path: &Path) -> Result<(crate::daemon::service::ArchiveM
             )));
         }
     }
-    Ok((crate::daemon::service::ArchiveMode::Standalone, ()))
+    Ok(())
 }
 
 #[cfg(test)]

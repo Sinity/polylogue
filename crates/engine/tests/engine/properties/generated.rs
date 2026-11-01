@@ -175,7 +175,7 @@ proptest! {
     #![proptest_config(ProptestConfig {
         cases: 16,
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
-            "tests/properties/regressions.txt",
+            "tests/engine/properties/regressions.txt",
         ))),
         ..ProptestConfig::default()
     })]

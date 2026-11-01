@@ -23,7 +23,8 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 ## Test layout
 
 - A module's unit tests are in `name/tests.rs` (more files in `name/tests/`), declared last with `#[cfg(test)] mod tests;`.
-- Integration tests are one binary per area: `crates/<crate>/tests/<area>/main.rs`, with the area's other files beside it. For example the engine's `passes` (the loop over files a test writes), `properties` (properties every archive keeps, as property tests over generated archives and Morrow) and `faults`; the sources' `formats`; the daemon's `e2e`.
+- Integration tests are one binary per crate, `crates/<crate>/tests/<name>/main.rs`, because each test binary links the crate's whole dependency graph. Areas are its modules, each with its other files in a directory beside it: the engine's `engine` binary holds `passes` (the loop over files a test writes), `properties` (properties every archive keeps, as property tests over generated archives and Morrow) and `faults`; the daemon's `e2e` holds `cli`, `browser_host`, `onboarding`, `deadlines` and `completion`; the sources' binary is `formats`.
+- The test build leaves out examples, which Clippy compiles; an example with its own unit tests sets `test = true` in its manifest and runs with the tests.
 - Helpers that need a crate's private items stay in that crate behind its test feature. CLI and MCP behaviour is tested through the public commands.
 
 **Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). A test that waits for the daemon to read a change waits until `status` shows it up to date. nextest's slow timeout ends a hung test.
@@ -33,7 +34,7 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 Every area page ends with its laws. Each law has a stable key unique in its page, and its full name is `<page>/<key>`, for example `operations/open-never-deletes`.
 
 - **A test that checks a law carries the key in its name,** in snake case: `open_never_deletes`, with a suffix when several tests check one law. Finding a law's tests is a name search; no table maps them by hand.
-- Integration test binaries are already one per area, so a law's tests sit in the binary of the area that owns it.
+- A law's tests sit in the module of the area that owns it.
 - **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
 - **Coverage is a report:** `cargo xtask laws` (devkit) lists each law key with the tests whose names carry it, and the laws that have none. It fails nothing; a law without a test is a gap for the area's owner.
 - Cross-cutting laws (crash states, parity across CLI, socket, HTTP and MCP) are in [architecture.md](architecture.md) and [interfaces.md](interfaces.md).
@@ -42,7 +43,7 @@ Every area page ends with its laws. Each law has a stable key unique in its page
 
 Crash tests stop the writer at every point between append, sync, commit and truncate, and check that the next open resumes each state a crash can leave, losing only the uncommitted group (the law is [architecture.md#durability](architecture.md#durability)'s).
 
-The store and engine have a `faults` feature that adds a fault registry. It starts empty: only a test's own call to arm a named point activates it, in that process. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
+The store and engine have a `faults` feature that adds a fault registry; every test build enables it. It starts empty: only a test's own call to arm a named point activates it, in that process. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
 
 ## Scenarios
 
