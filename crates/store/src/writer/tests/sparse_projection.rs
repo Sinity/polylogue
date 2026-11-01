@@ -531,10 +531,14 @@ fn rewrite_as_version_one(index: &rusqlite::Connection) {
             .unwrap();
     }
     for view in names("SELECT name FROM main.sqlite_master WHERE type='view'") {
-        index.execute_batch(&format!("DROP VIEW \"{view}\"")).unwrap();
+        index
+            .execute_batch(&format!("DROP VIEW \"{view}\""))
+            .unwrap();
     }
     for table in names(ordinary_tables) {
-        index.execute_batch(&format!("DROP TABLE \"{table}\"")).unwrap();
+        index
+            .execute_batch(&format!("DROP TABLE \"{table}\""))
+            .unwrap();
     }
     index
         .execute_batch(include_str!("../../schema/fixtures/index_1.sql"))
@@ -554,9 +558,11 @@ fn rewrite_as_version_one(index: &rusqlite::Connection) {
             continue;
         }
         let filled: bool = index
-            .query_row(&format!("SELECT EXISTS(SELECT 1 FROM main.\"{table}\")"), [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM main.\"{table}\")"),
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         if filled {
             seeded.push(table);

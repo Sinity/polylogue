@@ -826,7 +826,9 @@ pub(crate) fn check_kept_body(
 
 /// The kept-column query over `stored`, which yields `id` and `rows_json`.
 fn kept_sql(stored: &str) -> String {
-    format!("WITH stored AS ({stored}), kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{{}}' END AS body FROM stored) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid FROM kept")
+    format!(
+        "WITH stored AS ({stored}), kept AS (SELECT id,json_valid(rows_json) AS valid,CASE WHEN json_valid(rows_json) THEN rows_json ELSE '{{}}' END AS body FROM stored) SELECT id,json_extract(body,'$.unit'),json_extract(body,'$.columns'),json_extract(body,'$.match_columns'),json_type(body,'$.match_columns'),valid FROM kept"
+    )
 }
 
 fn decode_kept(

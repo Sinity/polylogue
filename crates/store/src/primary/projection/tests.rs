@@ -190,7 +190,10 @@ fn source_lifecycle_preserves_independent_frozen_authored_effects() {
         ).unwrap();
         let setting: polylogue_model::assertion::values::Setting =
             serde_json::from_str(&setting).unwrap();
-        assert_eq!(setting.value, polylogue_model::settings::Value::Boolean(true));
+        assert_eq!(
+            setting.value,
+            polylogue_model::settings::Value::Boolean(true)
+        );
     }
     assert!(
         apply(
