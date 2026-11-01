@@ -79,7 +79,19 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
             source.title.as_ref().map(|title| title.text.as_str()),
             expected
         );
+        assert_eq!(
+            source.title.as_ref().map(|title| title.source),
+            expected.map(|_| polylogue_model::TitleSource::Generated)
+        );
     }
+    let empty = reader
+        .query(
+            "SELECT title, title_source FROM session WHERE id='claude-code:empty'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(empty[0]["title"], "");
+    assert_eq!(empty[0]["title_source"], "generated");
     assert!(recorded[0]["title"].is_null());
     assert_eq!(recorded[0]["derived_title"], "First human question");
 }

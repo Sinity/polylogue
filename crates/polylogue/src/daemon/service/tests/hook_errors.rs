@@ -53,6 +53,17 @@ impl Items {
             .collect()
     }
 }
+fn message_id(item: &ReadItem) -> polylogue_model::MessageId {
+    let polylogue_model::Reference::Message(id) =
+        polylogue_model::Reference::parse(&item.source.reference).unwrap()
+    else {
+        panic!("message header must name its actual canonical message")
+    };
+    if let Some(message) = &item.source.message {
+        assert_eq!(message, &id);
+    }
+    id
+}
 fn mcp_page(archive: &Archive, arguments: serde_json::Value) -> ReadPage {
     let answer =
         crate::mcp::tests::call(archive, "read", arguments.as_object().unwrap().clone()).unwrap();
@@ -117,10 +128,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         .filter(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
         .collect();
     assert_eq!(headers.len(), 2);
-    assert_eq!(
-        headers[1].source.message.as_ref(),
-        Some(&native_messages[1].id)
-    );
+    assert_eq!(message_id(headers[1]), native_messages[1].id);
     let archive = Archive::at(&daemon.daemon.archive.root);
     let full = mcp_page(
         &archive,
@@ -173,7 +181,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         .values
         .iter()
         .filter(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
-        .map(|item| item.source.message.clone().unwrap())
+        .map(message_id)
         .collect();
     assert_eq!(
         messages,

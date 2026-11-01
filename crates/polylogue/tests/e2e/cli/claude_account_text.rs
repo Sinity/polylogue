@@ -102,10 +102,23 @@ pub(super) fn joined_items(
     reference: &str,
     budget: &str,
 ) -> Vec<polylogue_model::read::ReadItem> {
-    let whole = reading(env, reference, &["--budget", "100000"]);
+    joined_items_with_options(env, reference, budget, &[])
+}
+pub(super) fn joined_items_with_options(
+    env: &crate::Fixture,
+    reference: &str,
+    budget: &str,
+    options: &[&str],
+) -> Vec<polylogue_model::read::ReadItem> {
+    assert!(!options.contains(&"--budget"));
+    let mut whole_options = options.to_vec();
+    whole_options.extend(["--budget", "100000"]);
+    let whole = reading(env, reference, &whole_options);
     assert!(whole.document.footer.next.is_none());
     let bound = serde_json::to_vec(&whole.document.items).unwrap().len();
-    let mut page = reading(env, reference, &["--budget", budget]);
+    let mut page_options = options.to_vec();
+    page_options.extend(["--budget", budget]);
+    let mut page = reading(env, reference, &page_options);
     let mut items = super::read_current::Items::default();
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..=bound {
@@ -243,17 +256,18 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     let imported = cli(&env, &["--json", "import", copy.to_str().unwrap()]);
     let _ = import_report(&imported);
     assert_eq!(document(&env, reference), before);
-    let note = cli(
-        &env,
-        &[
-            "--json",
-            "note",
-            "add",
-            reference,
-            "--body",
-            "Synthetic document note",
-        ],
-    );
+    let notes = serde_json::to_string(&[polylogue_model::assertion::NewAssertion {
+        kind: polylogue_model::assertion::AssertionKind::Note,
+        key: None,
+        value: Some(json!("Synthetic document note")),
+        valid_until: None,
+        links: vec![polylogue_model::assertion::NewAssertionLink {
+            role: polylogue_model::assertion::LinkRole::About,
+            reference: polylogue_model::Reference::parse(reference).unwrap(),
+        }],
+    }])
+    .unwrap();
+    let note = cli(&env, &["--json", "assert", &notes]);
     assert!(note.status.success(), "{note:?}");
     drop(daemon);
     // Rebuild this test archive from its stored bytes after the source file is gone.

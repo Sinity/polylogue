@@ -5,7 +5,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 #[test]
-fn grok_account_import_reads_exact_turns_without_filename_or_export_order_identity() {
+fn grok_account_import_reads_exact_turns_without_path_or_export_order_identity() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -76,18 +76,10 @@ fn grok_account_import_reads_exact_turns_without_filename_or_export_order_identi
             *entry = entry["response"].take();
         }
     }
-    let renamed = dir.path().join("another-name.json");
+    let renamed = dir.path().join("another-location/prod-grok-backend.json");
+    std::fs::create_dir_all(renamed.parent().unwrap()).unwrap();
     std::fs::write(&renamed, serde_json::to_vec(&reordered).unwrap()).unwrap();
-    let import = cli(
-        &env,
-        &[
-            "--json",
-            "import",
-            renamed.to_str().unwrap(),
-            "--format",
-            "grok",
-        ],
-    );
+    let import = cli(&env, &["--json", "import", renamed.to_str().unwrap()]);
     let _ = import_report(&import);
     let query = cli(&env, &["--json", "origin:grok | sort by id"]);
     let rows = json(&query)["rows"].as_array().unwrap().clone();
@@ -117,22 +109,14 @@ fn grok_account_import_reads_exact_turns_without_filename_or_export_order_identi
         .as_array_mut()
         .unwrap()
         .push(json!({"response":{"sender":"assistant", "message":"new appended evidence"}}));
-    let appended = dir.path().join("appended.json");
+    let appended = dir.path().join("appended/prod-grok-backend.json");
+    std::fs::create_dir_all(appended.parent().unwrap()).unwrap();
     std::fs::write(
         &appended,
         serde_json::to_vec(&json!({"conversations":[changed]})).unwrap(),
     )
     .unwrap();
-    let imported = cli(
-        &env,
-        &[
-            "--json",
-            "import",
-            appended.to_str().unwrap(),
-            "--format",
-            "grok",
-        ],
-    );
+    let imported = cli(&env, &["--json", "import", appended.to_str().unwrap()]);
     let _ = import_report(&imported);
     let query = cli(&env, &["--json", "origin:grok"]);
     assert_eq!(
@@ -158,18 +142,10 @@ fn grok_native_ids_blank_content_and_unknown_shapes_are_visible() {
             {"sender":"assistant", "responseId":"native-empty-model", "message":"explicit empty model", "model":"", "create_time":0},
         {"sender":"unrecognized", "message":"unknown authorship"}, {"sender":"human", "message":null}, null
     ]}]});
-    let source = dir.path().join("grok-native.json");
+    let source = dir.path().join("grok-native/prod-grok-backend.json");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
     std::fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
-    let imported = cli(
-        &env,
-        &[
-            "--json",
-            "import",
-            source.to_str().unwrap(),
-            "--format",
-            "grok",
-        ],
-    );
+    let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     let _ = import_report(&imported);
     let messages = messages(&env, "grok:native-account");
     assert_eq!(messages.len(), 4);

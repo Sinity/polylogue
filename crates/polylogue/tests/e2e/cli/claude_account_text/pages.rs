@@ -115,17 +115,18 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
         let result = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(!result.status.success(), "{result:?}");
     }
-    let note = cli(
-        &env,
-        &[
-            "--json",
-            "note",
-            "add",
-            "document:claude-ai:other",
-            "--body",
-            "Unrelated write",
-        ],
-    );
+    let notes = serde_json::to_string(&[polylogue_model::assertion::NewAssertion {
+        kind: polylogue_model::assertion::AssertionKind::Note,
+        key: None,
+        value: Some(json!("Unrelated write")),
+        valid_until: None,
+        links: vec![polylogue_model::assertion::NewAssertionLink {
+            role: polylogue_model::assertion::LinkRole::About,
+            reference: polylogue_model::Reference::parse("document:claude-ai:other").unwrap(),
+        }],
+    }])
+    .unwrap();
+    let note = cli(&env, &["--json", "assert", &notes]);
     assert!(note.status.success(), "{note:?}");
     let continued = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(continued.status.success(), "{continued:?}");

@@ -160,7 +160,7 @@ fn every_surface_refuses_command_words_and_values_outside_a_set() {
             ("messges cargo", command_surface::FailureKind::NotAQuery),
             (
                 "sessin where repo:morrow",
-                command_surface::FailureKind::InvalidQuery,
+                command_surface::FailureKind::NotAQuery,
             ),
             ("statsu", command_surface::FailureKind::NotAQuery),
         ] {

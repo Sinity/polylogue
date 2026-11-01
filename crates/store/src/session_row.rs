@@ -4,7 +4,7 @@
 //! is stored and read in one place.
 
 use crate::Result;
-use polylogue_model::{Session, SessionId, Timestamp, TitleSource};
+use polylogue_model::{Session, SessionId, Timestamp, Title, TitleSource};
 use rusqlite::{Connection, Row, params};
 
 /// The columns [`read`] expects, in order, for a `SELECT`.
@@ -49,7 +49,7 @@ pub(crate) fn read(id: SessionId, r: &Row<'_>) -> rusqlite::Result<Session> {
             .map(|v| decode_name::<TitleSource>(v, 2))
             .transpose()?,
     ) {
-        s.offer_title(&text, source);
+        s.title = Some(Title { text, source });
     }
     s.cwd = r
         .get::<_, Option<String>>(3)?

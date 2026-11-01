@@ -218,6 +218,28 @@ fn a_name_two_saved_queries_share_is_refused() {
     saved(&mut w, "twice", "origin:codex");
     saved(&mut w, "twice", "origin:chatgpt");
     let f = error(&w, "query:twice");
-    assert_eq!(f.kind, "invalid_query");
-    assert!(f.message.contains("2 saved queries"), "{}", f.message);
+    assert_eq!(f.kind, "ambiguous");
+    let expected = q(&w, "assertions where kind:saved_query key:twice");
+    let references: std::collections::BTreeSet<_> = expected["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            polylogue_model::Reference::parse(row["reference"].as_str().unwrap())
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(references.len(), 2);
+    let detail = f.detail.unwrap();
+    assert_eq!(detail["what"], "query:twice");
+    assert_eq!(
+        detail["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate.as_str().unwrap().to_owned())
+            .collect::<std::collections::BTreeSet<_>>(),
+        references
+    );
 }

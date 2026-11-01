@@ -224,7 +224,7 @@ fn saved_relation_errors_reach_the_query_error_path() {
             "invalid_query",
             "has no parameter",
         ),
-        ("twice", "invalid_query", "2 saved queries"),
+        ("twice", "ambiguous", "query:twice"),
     ] {
         for query in [
             format!("query:{call}"),
@@ -232,11 +232,37 @@ fn saved_relation_errors_reach_the_query_error_path() {
         ] {
             let failure = run_q(&w, ask(&query)).unwrap_err();
             assert_eq!(failure.kind, kind, "{query}: {}", failure.message);
-            assert!(
-                failure.message.contains(message),
-                "{query}: {}",
-                failure.message
-            );
+            if call == "twice" {
+                let rows = q(&w, "assertions where kind:saved_query key:twice");
+                let expected: std::collections::BTreeSet<_> = rows["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| {
+                        polylogue_model::Reference::parse(row["reference"].as_str().unwrap())
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect();
+                assert_eq!(expected.len(), 2);
+                let detail = failure.detail.as_ref().unwrap();
+                assert_eq!(detail["what"], "query:twice");
+                assert_eq!(
+                    detail["candidates"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|candidate| candidate.as_str().unwrap().to_owned())
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    expected
+                );
+            } else {
+                assert!(
+                    failure.message.contains(message),
+                    "{query}: {}",
+                    failure.message
+                );
+            }
         }
     }
     let baseline = q(&w, "sessions")["count"].clone();
