@@ -115,24 +115,7 @@ impl Engine {
                 self.capture_checked = Some(Instant::now());
             }
             let next = self.one_pass(false, &Default::default())?;
-            total.full_scans += next.full_scans;
-            total.inputs_seen += next.inputs_seen;
-            total.inputs_changed += next.inputs_changed;
-            total.bytes_read += next.bytes_read;
-            total.bytes_stored += next.bytes_stored;
-            total.segment_syncs += next.segment_syncs;
-            total.segment_bytes_written += next.segment_bytes_written;
-            total.blobs_appended += next.blobs_appended;
-            total.blobs_deduplicated += next.blobs_deduplicated;
-            total.messages_written += next.messages_written;
-            total.authored.applied += next.authored.applied;
-            total.authored.present += next.authored.present;
-            total.authored.pending += next.authored.pending;
-            total.sessions_derived += next.sessions_derived;
-            total.seconds += next.seconds;
-            total.unreadable_roots = next.unreadable_roots;
-            total.errors.extend(next.errors);
-            total.capture_pending = next.capture_pending;
+            total.add(next);
         }
         total.seconds = started.elapsed().as_secs_f64();
         Ok(total)
@@ -156,12 +139,15 @@ impl Engine {
             .collectors_at
             .is_none_or(|at| at.elapsed() >= Duration::from_secs(60));
         let mut errors = Vec::new();
-        if discover || collectors_due {
+        let sources = self.config.reads_sources;
+        if sources && (discover || collectors_due) {
             self.collectors_at = Some(Instant::now());
             errors.extend(self.run_collectors());
             errors.extend(self.refresh_lookups().err());
         }
-        let (mut found, unreadable) = if discover {
+        let (mut found, unreadable) = if !sources {
+            (Vec::new(), Vec::new())
+        } else if discover {
             let scan = collect::scan_with_coverage(&self.config);
             self.writer.coverage(polylogue_model::capture::Coverage {
                 version: 1,
@@ -176,7 +162,7 @@ impl Engine {
         } else {
             collect::scan_paths(&self.config, paths)
         };
-        if !discover && collectors_due {
+        if sources && !discover && collectors_due {
             found.extend(collect::scan_spools(&self.config));
         }
         let mut pass = Pass {
@@ -185,13 +171,16 @@ impl Engine {
             errors,
             ..Pass::default()
         };
-        let (deferred_database, database_changed) =
-            self.capture_databases(&found, discover, &mut pass)?;
+        let (deferred_database, database_changed) = if sources {
+            self.capture_databases(&found, discover, &mut pass)?
+        } else {
+            (false, false)
+        };
         let mut found: Vec<_> = found
             .into_iter()
             .filter(|f| !f.origin.is_row_dump(&f.path))
             .collect();
-        if !discover && self.live_checked.elapsed() >= self.config.live_every {
+        if sources && !discover && self.live_checked.elapsed() >= self.config.live_every {
             self.live_checked = Instant::now();
             let now_ns = i128::from(self.config.clock.now().as_millisecond()) * 1_000_000;
             found.extend(collect::scan_spools(&self.config));
@@ -244,11 +233,13 @@ impl Engine {
         let mut seen = HashSet::new();
         let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
         // Paths seen before and gone now: an observation, never a delete.
+        // Without sources nothing is looked at, so nothing is gone.
         let gone: Vec<PathBuf> = self
             .inputs
             .iter()
             .filter(|(p, s)| {
-                (discover
+                sources
+                    && (discover
                     || s.origin.is_row_dump(p)
                     || paths.iter().any(|path| p.starts_with(path)))
                     && s.facts.is_some()
@@ -408,6 +399,9 @@ impl Engine {
         busy: &HashSet<&Path>,
         pass: &mut Pass,
     ) -> Result<Vec<Plan>, EngineError> {
+        if !self.config.reads_sources {
+            return Ok(Vec::new());
+        }
         let mut changes = watch::Changes::default();
         if let Some(watcher) = &mut self.watcher {
             if let Err(error) = watcher.refresh(&self.config) {
@@ -1342,43 +1336,40 @@ impl Engine {
         }
     }
 
-    /// Runs passes until stopped: after any change under a watched
-    /// location, and at least every `rescan_every`.
+    /// Runs passes after any change under a watched location and at least
+    /// every `rescan_every`, until stopped or, for [`Lifetime::UntilIdle`],
+    /// until a pass ends with no work pending and nothing queued. Without
+    /// sources (`reads_sources` off) nothing is watched: the first pass
+    /// parses and derives what the archive stores, and later passes run only
+    /// for imports.
     pub fn run(
         &mut self,
         tx: Sender<LoopMsg>,
         rx: &Receiver<LoopMsg>,
         status: &Arc<Mutex<LoopStatus>>,
+        lifetime: Lifetime,
         ready: impl FnOnce(),
-    ) -> Result<(), EngineError> {
+    ) -> Result<RunSummary, EngineError> {
         let busy = |busy: bool| {
             if let Ok(mut s) = status.lock() {
                 s.busy = busy;
             }
         };
-        self.watcher = Some(watch::Roots::new(&self.config, tx.clone())?);
+        self.watcher = if self.config.reads_sources {
+            Some(watch::Roots::new(&self.config, tx.clone())?)
+        } else {
+            None
+        };
         self.wake = Some(tx.clone());
         drop(tx);
         ready();
+        let mut summary = RunSummary::default();
         let mut discover = true;
         let mut discovered_at = Instant::now();
         let mut changed = std::collections::BTreeSet::new();
+        let mut watch_errors = Vec::new();
         loop {
-            let mut watch_errors = Vec::new();
-            let watcher = self.watcher.as_mut().expect("running source watcher");
-            if let Err(error) = watcher.refresh(&self.config) {
-                watch_errors.push(format!("source watch: {error}"));
-                discover = true;
-            }
-            let changes = watcher.take();
-            watch_errors.extend(changes.errors);
-            discover |= changes.full;
-            changed.extend(
-                changes
-                    .paths
-                    .into_iter()
-                    .map(|path| collect::database_path(&self.config, &path).unwrap_or(path)),
-            );
+            discover |= self.take_watched(&mut changed, &mut watch_errors);
             discover |= discovered_at.elapsed() >= self.config.rescan_every;
             if discover {
                 discovered_at = Instant::now();
@@ -1400,7 +1391,9 @@ impl Engine {
                     }
                 }
             };
-            finished.errors.extend(watch_errors);
+            finished.errors.append(&mut watch_errors);
+            summary.passes += 1;
+            summary.work.add(finished.clone());
             if let Ok(mut s) = status.lock() {
                 s.full_scans += finished.full_scans;
                 if finished.full_scans > 0
@@ -1417,6 +1410,41 @@ impl Engine {
                 s.busy = pending;
             }
             discover = false;
+            if lifetime == Lifetime::UntilIdle {
+                // Work queued while the pass ran (imports, changes the
+                // watcher saw) is taken now; with none, the loop is idle. A
+                // capture that continues gets `live_every` before the next pass.
+                let mut more = pending;
+                if pending {
+                    match rx.recv_timeout(self.config.live_every) {
+                        Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                            return Ok(self.stopped(summary));
+                        }
+                        Ok(message) => {
+                            summary.imports += u64::from(self.answer(message, &busy, pending));
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                    }
+                }
+                loop {
+                    match rx.try_recv() {
+                        Ok(LoopMsg::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            return Ok(self.stopped(summary));
+                        }
+                        Ok(message) => {
+                            more = true;
+                            summary.imports += u64::from(self.answer(message, &busy, pending));
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    }
+                }
+                more |= self.take_watched(&mut changed, &mut watch_errors);
+                more |= !changed.is_empty();
+                if !more {
+                    return Ok(self.stopped(summary));
+                }
+                continue;
+            }
             let delay = if pending {
                 self.config.live_every
             } else {
@@ -1431,41 +1459,11 @@ impl Engine {
             loop {
                 match msg {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                        self.captures = Databases::default();
-                        self.wake = None;
-                        self.watcher = None;
-                        self.pass_open = false;
-                        return Ok(());
+                        return Ok(self.stopped(summary));
                     }
-                    Ok(LoopMsg::Import {
-                        paths,
-                        authorship,
-                        parent,
-                        reply,
-                    }) => {
-                        // Queue waits belong to the producing transport. After
-                        // admission the engine owns completion and its ACK.
-                        let report = parent
-                            .as_ref()
-                            .map_or(Ok(()), |parent| parent.check())
-                            .map_err(ImportFailure::Parent)
-                            .and_then(|()| {
-                                busy(true);
-                                let report = self
-                                    .import_with_options(
-                                        &paths,
-                                        &ImportOptions {
-                                            authorship: Some(authorship),
-                                            ..Default::default()
-                                        },
-                                    )
-                                    .map_err(|e| ImportFailure::Import(e.to_string()));
-                                busy(pending);
-                                report
-                            });
-                        let _ = reply.send(report);
+                    Ok(message) => {
+                        summary.imports += u64::from(self.answer(message, &busy, pending));
                     }
-                    Ok(LoopMsg::Changed) => {}
                     Err(RecvTimeoutError::Timeout) => {}
                 }
                 if burst.elapsed() > COALESCE {
@@ -1492,6 +1490,76 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Moves what the watcher saw into `changed`; true when it asks for a
+    /// full scan. Without sources there is no watcher and nothing changes.
+    fn take_watched(
+        &mut self,
+        changed: &mut std::collections::BTreeSet<PathBuf>,
+        errors: &mut Vec<String>,
+    ) -> bool {
+        let Some(watcher) = self.watcher.as_mut() else {
+            return false;
+        };
+        let mut full = false;
+        if let Err(error) = watcher.refresh(&self.config) {
+            errors.push(format!("source watch: {error}"));
+            full = true;
+        }
+        let changes = watcher.take();
+        errors.extend(changes.errors);
+        full |= changes.full;
+        changed.extend(
+            changes
+                .paths
+                .into_iter()
+                .map(|path| collect::database_path(&self.config, &path).unwrap_or(path)),
+        );
+        full
+    }
+
+    /// Answers one message other than `Stop`; true when it was an import.
+    fn answer(&mut self, message: LoopMsg, busy: &impl Fn(bool), pending: bool) -> bool {
+        let LoopMsg::Import {
+            paths,
+            authorship,
+            parent,
+            reply,
+        } = message
+        else {
+            return false;
+        };
+        // Queue waits belong to the producing transport. After
+        // admission the engine owns completion and its ACK.
+        let report = parent
+            .as_ref()
+            .map_or(Ok(()), |parent| parent.check())
+            .map_err(ImportFailure::Parent)
+            .and_then(|()| {
+                busy(true);
+                let report = self
+                    .import_with_options(
+                        &paths,
+                        &ImportOptions {
+                            authorship: Some(authorship),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|e| ImportFailure::Import(e.to_string()));
+                busy(pending);
+                report
+            });
+        let _ = reply.send(report);
+        true
+    }
+
+    fn stopped(&mut self, summary: RunSummary) -> RunSummary {
+        self.captures = Databases::default();
+        self.wake = None;
+        self.watcher = None;
+        self.pass_open = false;
+        summary
     }
 }
 

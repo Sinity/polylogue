@@ -255,6 +255,7 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
     assert!(settings["hooks"]["SessionStart"].is_array());
 }
 
+mod rollback;
 mod settings;
 
 #[test]

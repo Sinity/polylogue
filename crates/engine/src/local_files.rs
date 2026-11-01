@@ -55,7 +55,10 @@ impl Engine {
         plan: &crate::plan::Plan,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        if plan.origin.name != "codex" || plan.input.arrival_rank >= 2 {
+        // A loop without sources reads no file outside the archive, a
+        // referenced image included.
+        if !self.config.reads_sources || plan.origin.name != "codex" || plan.input.arrival_rank >= 2
+        {
             return Ok(());
         }
         let Change::Reparse { chain } = plan.change else {

@@ -85,6 +85,10 @@ pub enum Request {
     SchemaUnread {
         origin: Option<String>,
     },
+    /// The on-demand check of stored bytes, with an optional manifest file.
+    Verify {
+        manifest: Option<PathBuf>,
+    },
     Explain {
         subject: String,
         expression: Option<String>,
@@ -326,6 +330,7 @@ impl Request {
             Self::Status
             | Self::SchemaInfer { .. }
             | Self::SchemaUnread { .. }
+            | Self::Verify { .. }
             | Self::Timeline { .. }
             | Self::Cost { .. }
             | Self::Complete { .. }

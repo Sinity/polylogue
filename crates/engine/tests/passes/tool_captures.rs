@@ -88,7 +88,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
     let worker_tx = tx.clone();
     let thread = std::thread::spawn(move || {
         let _lock = lock;
-        engine.run(worker_tx, &rx, &shared, || ready.send(()).unwrap())
+        engine.run(worker_tx, &rx, &shared, polylogue_engine::Lifetime::UntilStopped, || ready.send(()).unwrap())
     });
     started.recv().unwrap();
     let finished = loop {

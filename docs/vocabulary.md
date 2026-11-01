@@ -49,6 +49,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   rows the tool later deleted.
 - **spool**: an append-only file Polylogue's own writers fill (hook events,
   browser captures), synced per line.
+- **sources**: everything the daemon reads inputs from on its own: its roots'
+  locations, the spools, tool databases and collectors. `daemon --no-sources`
+  reads none of them; an `import` is not a source.
 - **hook event**: one event a harness reports to `polylogue hook`, spooled whole.
 - **process identity**: a harness process's pid, start time and boot ID.
 - **capture**: one conversation saved by the browser extension.

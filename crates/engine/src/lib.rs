@@ -121,6 +121,10 @@ pub struct Config {
     /// at this often, and what changed there goes ahead of the pass's
     /// remaining work (two seconds).
     pub live_every: Duration,
+    /// Whether the loop reads capture sources: provider locations, spools,
+    /// tool databases and collectors. Without them it parses and derives
+    /// only what the archive already stores, and imports what it is given.
+    pub reads_sources: bool,
 }
 
 impl Config {
@@ -210,6 +214,7 @@ impl Config {
             chunk: 64 << 20,
             rescan_every: Duration::from_secs(4 * 3600),
             live_every: Duration::from_secs(2),
+            reads_sources: true,
         })
     }
 }
@@ -240,6 +245,56 @@ pub struct Pass {
     pub errors: Vec<String>,
     /// A database reader has queued or pending work.
     pub capture_pending: bool,
+}
+
+impl Pass {
+    /// Adds a later pass's work to this one; unreadable roots and errors
+    /// accumulate.
+    pub fn add(&mut self, next: Pass) {
+        self.authored.applied += next.authored.applied;
+        self.authored.present += next.authored.present;
+        self.authored.pending += next.authored.pending;
+        self.full_scans += next.full_scans;
+        self.inputs_seen += next.inputs_seen;
+        self.inputs_changed += next.inputs_changed;
+        self.bytes_read += next.bytes_read;
+        self.bytes_stored += next.bytes_stored;
+        self.segment_syncs += next.segment_syncs;
+        self.segment_bytes_written += next.segment_bytes_written;
+        self.blobs_appended += next.blobs_appended;
+        self.blobs_deduplicated += next.blobs_deduplicated;
+        self.messages_written += next.messages_written;
+        self.sessions_derived += next.sessions_derived;
+        self.seconds += next.seconds;
+        for root in next.unreadable_roots {
+            if !self.unreadable_roots.contains(&root) {
+                self.unreadable_roots.push(root);
+            }
+        }
+        self.errors.extend(next.errors);
+        self.capture_pending = next.capture_pending;
+    }
+}
+
+/// How long the loop runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lifetime {
+    /// Until it is told to stop: the daemon's service.
+    UntilStopped,
+    /// Until a pass ends with no work pending and nothing queued
+    /// (`daemon --until-idle`).
+    UntilIdle,
+}
+
+/// What a loop did from its start to its end, for `daemon --until-idle`.
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunSummary {
+    /// Passes the loop ran.
+    pub passes: u64,
+    /// Imports it took while running.
+    pub imports: u64,
+    /// The passes' work added together; `seconds` is the time spent in passes.
+    pub work: Pass,
 }
 
 /// What the running loop reports, for `status`. A client that waits for a

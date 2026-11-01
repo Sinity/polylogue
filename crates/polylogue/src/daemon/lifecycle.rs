@@ -306,6 +306,8 @@ impl Drop for Supervisor {
 enum Stop {
     Signal(Signal),
     Listener,
+    /// A loop run until idle has no work left.
+    Idle,
     Failed(io::Error),
 }
 
@@ -344,6 +346,9 @@ async fn supervise(
             }
         }
     };
+    if let Stop::Idle = &stop {
+        eprintln!("polylogue: the loop is idle; stopping");
+    }
     if let Stop::Signal(signal) = &stop {
         if first_signal.is_none() {
             eprintln!("polylogue: stopping on {}", signal.name());
@@ -369,7 +374,7 @@ async fn supervise(
     result?;
     match stop {
         Stop::Failed(error) => Err(error),
-        Stop::Signal(_) | Stop::Listener => Ok(()),
+        Stop::Signal(_) | Stop::Listener | Stop::Idle => Ok(()),
     }
 }
 
@@ -381,8 +386,12 @@ async fn monitor(
     watchdog: Option<Duration>,
 ) -> Stop {
     let mut workers = app.runtime.worker_events();
+    let mut idle = app.runtime.idle();
     if let Some(failure) = *workers.borrow_and_update() {
         return Stop::Failed(io::Error::other(failure));
+    }
+    if idle.borrow_and_update().is_some() {
+        return Stop::Idle;
     }
     if let Some(failure) = app.runtime.worker_failure() {
         return Stop::Failed(io::Error::other(failure));
@@ -392,6 +401,7 @@ async fn monitor(
             signal = signals.next() => return signal.map_or_else(Stop::Failed, Stop::Signal),
             _ = &mut *listener_ended => return Stop::Listener,
             changed = workers.changed() => return worker_stop(changed, &mut workers),
+            _ = idle.changed() => return Stop::Idle,
             responsive = probe(&app.runtime, Duration::from_secs(2)) => responsive,
         };
         if !responsive {
@@ -424,6 +434,7 @@ async fn monitor(
             signal = signals.next() => return signal.map_or_else(Stop::Failed, Stop::Signal),
             _ = &mut *listener_ended => return Stop::Listener,
             changed = workers.changed() => return worker_stop(changed, &mut workers),
+            _ = idle.changed() => return Stop::Idle,
             responsive = pulse => {
                 if let Some(failure) = app.runtime.worker_failure() { return Stop::Failed(io::Error::other(failure)); }
                 if responsive && let Some(notifications) = notifications && let Err(error) = notifications.send(b"WATCHDOG=1") { return Stop::Failed(error); }

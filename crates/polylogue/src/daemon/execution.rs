@@ -63,7 +63,8 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLi
 }
 
 /// Limits cover read phases, including context preparation before its receipt.
-/// Unbudgeted streams and inference have cancellation without a default deadline.
+/// Unbudgeted streams, inference and verification have cancellation without a
+/// default deadline.
 pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i64> {
     if !request.has_read_phase() {
         None
@@ -73,6 +74,7 @@ pub fn request_deadline(request: &Request, deadline_ms: Option<i64>) -> Option<i
             delivery: polylogue_model::read::ReadDelivery::Stream,
             ..
         } | Request::SchemaInfer { .. }
+            | Request::Verify { .. }
     ) {
         deadline_ms
     } else {
@@ -119,6 +121,7 @@ pub fn run(
         Request::Attachment { .. } => ("attachment", None),
         Request::SchemaInfer { .. } => ("schema_infer", None),
         Request::SchemaUnread { .. } => ("schema_unread", None),
+        Request::Verify { .. } => ("verify", None),
         Request::Timeline { .. } => ("timeline", None),
         Request::Cost { .. } => ("cost", None),
         Request::Resumable { .. } => ("resumable", None),

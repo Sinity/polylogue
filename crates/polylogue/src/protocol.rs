@@ -14,6 +14,7 @@ pub mod schema;
 pub mod setting;
 pub mod status;
 pub mod stream;
+pub mod verify;
 pub mod wire;
 use command_surface::{Answer, Failure, FailureKind, Position};
 use serde_json::Value;

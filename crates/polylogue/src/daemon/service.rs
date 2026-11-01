@@ -8,7 +8,7 @@ use super::{Failure, Request};
 use crate::briefing::{self, Ask};
 use crate::operation::{Context, Invocation};
 use command_surface::Answer;
-use polylogue_engine::{Config, Engine, LoopMsg, LoopStatus};
+use polylogue_engine::{Config, Engine, Lifetime, LoopMsg, LoopStatus, RunSummary};
 use polylogue_model::user::{Delivery, UserWrite};
 use polylogue_store::user_writes;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
@@ -41,7 +41,7 @@ pub struct Daemon {
     #[cfg(test)]
     pub(crate) signal_trace: Mutex<Option<Sender<crate::signals::observations::Phase>>>,
     stopping: AtomicBool,
-    pub(super) schema_admission: super::schema::Admission,
+    pub(super) idle_admission: super::schema::Admission,
     #[cfg(test)]
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
@@ -587,10 +587,13 @@ fn handle_inner(
     if let Request::SchemaInfer { selection } = request {
         return super::schema::infer(d, selection);
     }
+    if let Request::Verify { manifest } = &request {
+        return super::verify::run(d, manifest.as_deref());
+    }
     if matches!(&request, Request::Attachment { .. }) {
         return super::attachment::read(request, d);
     }
-    let _foreground = d.schema_admission.foreground();
+    let _foreground = d.idle_admission.foreground();
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
@@ -843,8 +846,8 @@ fn handle_inner(
                 Err(_) => error("internal", "the loop has stopped"),
             }
         }
-        Request::SchemaInfer { .. } => {
-            unreachable!("inference is admitted before acquiring a reader")
+        Request::SchemaInfer { .. } | Request::Verify { .. } => {
+            unreachable!("idle-priority jobs are admitted before acquiring a reader")
         }
         Request::SchemaUnread { origin } => super::schema::unread(&reader, origin.as_deref()),
         Request::Embed {
@@ -1520,6 +1523,8 @@ pub struct Runtime {
     engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
     worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
+    /// Set once by a loop run until idle, when it ends.
+    idle: Arc<tokio::sync::watch::Sender<Option<RunSummary>>>,
 }
 
 impl Runtime {
@@ -1557,12 +1562,19 @@ impl Runtime {
         self.worker_events.subscribe()
     }
 
+    /// Becomes `Some` when a loop run until idle has ended, with what it did.
+    pub(crate) fn idle(&self) -> tokio::sync::watch::Receiver<Option<RunSummary>> {
+        self.idle.subscribe()
+    }
+
     /// A finished continuous worker is a failure; slow work remains live.
     pub fn worker_failure(&self) -> Option<&'static str> {
         if self.daemon.stopping.load(Ordering::Acquire) {
             return None;
         }
-        if self.engine.as_ref().is_some_and(JoinHandle::is_finished) {
+        if self.engine.as_ref().is_some_and(JoinHandle::is_finished)
+            && self.idle.borrow().is_none()
+        {
             return Some("engine worker terminated");
         }
         if self.signals.as_ref().is_some_and(JoinHandle::is_finished) {
@@ -1704,10 +1716,12 @@ impl ModeState {
 
 /// Opens the archive and starts owned application workers. Startup errors
 /// join any workers already started before releasing the archive lock.
+/// A loop run until idle ends the runtime's work when it ends ([`Runtime::idle`]).
 pub fn start(
     deployment: Arc<crate::config::Config>,
     config: Config,
     mode: ArchiveMode,
+    lifetime: Lifetime,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
     let completion_path = deployment.paths.completion_catalog(root);
@@ -1798,7 +1812,7 @@ pub fn start(
         #[cfg(test)]
         signal_trace: Mutex::new(None),
         stopping: AtomicBool::new(false),
-        schema_admission: super::schema::Admission::default(),
+        idle_admission: super::schema::Admission::default(),
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
@@ -1819,6 +1833,7 @@ pub fn start(
         engine: None,
         lock: Some(lock),
         worker_events: tokio::sync::watch::channel(None).0,
+        idle: Arc::new(tokio::sync::watch::channel(None).0),
     };
     // Subscribe before the initial snapshot or starting the ingest loop.
     let completion_commits = runtime
@@ -1834,27 +1849,44 @@ pub fn start(
         )?);
     }
     let Some(mut engine) = engine.take() else {
+        // Without a loop (writes paused) there is no work to wait for.
+        if lifetime == Lifetime::UntilIdle {
+            runtime.idle.send_replace(Some(RunSummary::default()));
+        }
         return Ok(runtime);
     };
     let (ready, wait) = sync_channel(1);
     let worker_events = runtime.worker_events.clone();
+    let idle = Arc::clone(&runtime.idle);
     runtime.engine = Some(
         std::thread::Builder::new()
             .name("polylogue-loop".into())
             .spawn(move || {
+                let expected = Arc::new(AtomicBool::new(false));
                 let _exit = super::lifecycle::WorkerExit::new(
                     worker_events,
                     "engine worker terminated",
-                    None,
+                    Some(Arc::clone(&expected)),
                 );
                 let started = ready.clone();
-                let result = engine.run(tx, &rx, &status, || {
+                let result = engine.run(tx, &rx, &status, lifetime, || {
                     let _ = started.send(Ok(()));
                 });
-                if let Err(error) = &result {
-                    let _ = ready.try_send(Err(error.to_string()));
+                match result {
+                    Ok(summary) => {
+                        // Stopping a service loop is the runtime's own shutdown;
+                        // an idle loop's end is the run's end.
+                        if lifetime == Lifetime::UntilIdle {
+                            expected.store(true, Ordering::Release);
+                            idle.send_replace(Some(summary));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let _ = ready.try_send(Err(error.to_string()));
+                        Err(std::io::Error::other(error.to_string()))
+                    }
                 }
-                result.map_err(|error| std::io::Error::other(error.to_string()))
             })?,
     );
     wait.recv()

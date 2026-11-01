@@ -630,6 +630,18 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "daemon",
         help: "Run the daemon in the foreground",
+        args: &[
+            opt(
+                "until_idle",
+                Kind::Bool,
+                "Stop once the loop has no work, printing what it did",
+            ),
+            opt(
+                "no_sources",
+                Kind::Bool,
+                "Read no provider locations, spools or tool databases: parse and derive only what the archive stores, and import what is given",
+            ),
+        ],
         action: Action::ConfiguredLocal(local::daemon),
         ..CLI
     },
@@ -643,6 +655,20 @@ const WRITTEN: &[Command] = &[
         mcp: true,
         http: true,
         writes: true,
+        ..CLI
+    }),
+    typed_command!(VerifyCommand, crate::protocol::verify::Arguments, crate::protocol::verify::Answer, {
+        name: "verify",
+        reason: "Check every stored byte against its recorded hash without changing anything",
+        latency: command_surface::LatencyClass::Local,
+        help: "Check stored bytes at idle priority: every blob against its name, every extent and revision against the bytes it cites, the kept counters and each database; reports, never repairs",
+        args: &[opt(
+            "manifest",
+            Kind::Text,
+            "Also write each revision's input, number, length and BLAKE3 to this new file on the daemon's host",
+        )],
+        action: Action::Request(requests::verify),
+        print: print::verify,
         ..CLI
     }),
     typed_command!(ListOperation, crate::protocol::query_aliases::List, crate::protocol::query::Answer, {

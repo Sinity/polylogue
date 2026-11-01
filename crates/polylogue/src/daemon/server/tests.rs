@@ -328,3 +328,59 @@ fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
     };
     assert_eq!(error.code.as_deref(), Some("scope_changed"));
 }
+
+/// law: until-idle-ends-after-work
+/// law: no-sources-reads-no-source
+#[test]
+fn a_daemon_run_until_idle_exits_with_its_summary_and_reads_sources_only_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-p");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        polylogue_testkit::claude_user("u1", "s1", "words on disk"),
+    )
+    .unwrap();
+    let mut engine = crate::test_daemon::engine_config(home.clone());
+    engine.tool_dirs.clear();
+    engine.workers = 1;
+    let root = dir.path().join("archive");
+    let startup = crate::config::Startup::for_test(engine, &root);
+    let inputs = || {
+        polylogue_store::ReadPool::open(&Archive::at(&root))
+            .unwrap()
+            .reader()
+            .unwrap()
+            .query("SELECT count(*) AS n FROM a.input", &[])
+            .unwrap()[0]["n"]
+            .as_i64()
+            .unwrap()
+    };
+    let sourceless = serve(
+        &startup,
+        Run {
+            reads_sources: false,
+            lifetime: polylogue_engine::Lifetime::UntilIdle,
+        },
+    )
+    .unwrap()
+    .expect("a run until idle reports what it did");
+    assert!(sourceless.work.errors.is_empty(), "{sourceless:?}");
+    assert_eq!(sourceless.work.inputs_seen, 0);
+    assert_eq!(inputs(), 0);
+    assert!(!root.join("daemon.sock").exists(), "the socket outlived the run");
+    // The archive lock was released: a second run opens the same archive.
+    let read = serve(
+        &startup,
+        Run {
+            reads_sources: true,
+            lifetime: polylogue_engine::Lifetime::UntilIdle,
+        },
+    )
+    .unwrap()
+    .expect("a run until idle reports what it did");
+    assert!(read.work.errors.is_empty(), "{read:?}");
+    assert!(read.work.inputs_changed >= 1, "{read:?}");
+    assert_eq!(inputs(), 1);
+}

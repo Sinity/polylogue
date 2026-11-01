@@ -85,6 +85,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         chunk: 64 << 20,
         rescan_every: Duration::from_secs(60),
         live_every: Duration::from_secs(2),
+        reads_sources: true,
     };
     let day = query_language::time::DaySetting::new(
         jiff::tz::TimeZone::UTC,
@@ -95,7 +96,12 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         .config
         .standalone_for_archive(directory.join("archive"), day)
         .map_err(|e| e.to_string())?;
-    let mut runtime = service::start(deployment, config, service::ArchiveMode::Standalone)
+    let mut runtime = service::start(
+        deployment,
+        config,
+        service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilStopped,
+    )
         .map_err(|e| e.to_string())?;
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =

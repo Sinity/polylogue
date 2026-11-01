@@ -105,7 +105,7 @@ fn watch(dir: &Path, seconds: u64) {
     let thread = std::thread::spawn(move || {
         let _lock = lock;
         engine
-            .run(worker_tx, &rx, &shared, || ready.send(()).unwrap())
+            .run(worker_tx, &rx, &shared, polylogue_engine::Lifetime::UntilStopped, || ready.send(()).unwrap())
             .unwrap();
     });
     started.recv().unwrap();

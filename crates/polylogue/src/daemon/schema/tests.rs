@@ -324,7 +324,7 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         scope.spawn(move || {
             limit.scope(|| {
                 started.send(()).unwrap();
-                let result = admission.infer();
+                let result = admission.background();
                 done.send(result.is_ok()).unwrap();
             })
         });
@@ -334,7 +334,7 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         assert!(!finished.recv_timeout(Duration::from_secs(2)).unwrap());
     });
     drop(foreground);
-    let _lease = admission.infer().unwrap();
+    let _lease = admission.background().unwrap();
     std::thread::scope(|scope| {
         let (first, started) = channel();
         let (next, proceed) = channel();

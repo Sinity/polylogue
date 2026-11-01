@@ -75,8 +75,10 @@ pub struct Inference {
     pub origins: BTreeMap<String, Schema>,
 }
 
-/// Ordinary work enters immediately. One inference waits for it at each
-/// streaming read and before opening a SQL reader; waiting holds no reader.
+/// Ordinary work enters immediately. One idle-priority job (a schema
+/// inference or a verification) runs at a time and waits for ordinary work
+/// at each streaming read and before opening a SQL reader; waiting holds no
+/// reader.
 #[derive(Default)]
 pub(super) struct Admission {
     state: Mutex<Activity>,
@@ -85,7 +87,7 @@ pub(super) struct Admission {
 #[derive(Default)]
 struct Activity {
     foreground: usize,
-    inference: bool,
+    background: bool,
 }
 pub(super) struct Foreground<'a>(&'a Admission);
 impl Drop for Foreground<'_> {
@@ -95,14 +97,14 @@ impl Drop for Foreground<'_> {
         self.0.changed.notify_all();
     }
 }
-struct InferenceLease<'a>(&'a Admission);
-impl Drop for InferenceLease<'_> {
+pub(super) struct BackgroundLease<'a>(&'a Admission);
+impl Drop for BackgroundLease<'_> {
     fn drop(&mut self) {
         self.0
             .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .inference = false;
+            .background = false;
         self.0.changed.notify_all();
     }
 }
@@ -128,10 +130,10 @@ impl Admission {
         }
         check()
     }
-    fn infer(&self) -> Result<InferenceLease<'_>, StoreError> {
+    pub(super) fn background(&self) -> Result<BackgroundLease<'_>, StoreError> {
         // Test and claim under the same lock: two waiters cannot both enter.
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        while state.inference || state.foreground > 0 {
+        while state.background || state.foreground > 0 {
             check()?;
             state = self
                 .changed
@@ -140,10 +142,10 @@ impl Admission {
                 .0;
         }
         check()?;
-        state.inference = true;
-        Ok(InferenceLease(self))
+        state.background = true;
+        Ok(BackgroundLease(self))
     }
-    fn idle(&self) -> Result<(), StoreError> {
+    pub(super) fn idle(&self) -> Result<(), StoreError> {
         self.wait(|s| s.foreground == 0)
     }
 }
@@ -169,11 +171,11 @@ pub(super) fn infer(d: &Daemon, selection: Infer) -> Answer<Value> {
     if let Err(message) = selection.validate() {
         return error("bad_request", message);
     }
-    let _lease = match d.schema_admission.infer() {
+    let _lease = match d.idle_admission.background() {
         Ok(lease) => lease,
         Err(e) => return store_error(&e),
     };
-    match observe(&d.reads, &d.schema_admission, selection) {
+    match observe(&d.reads, &d.idle_admission, selection) {
         Ok(report) => ok(report),
         Err(e) => store_error(&e),
     }
