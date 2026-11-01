@@ -1,5 +1,5 @@
 //! Current canonical bundle records, framed one record at a time.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const ORIGIN: &str = "polylogue-bundle";
 use crate::RecordOutcome;
 use crate::document::Sink;
@@ -162,6 +162,12 @@ impl ExportParser for Bundle {
             }
             Record::Message(record) => {
                 let index = sink.out.messages.len();
+                if !record.injections.is_empty() {
+                    sink.out.declared_injections.insert(
+                        index,
+                        record.injections.into_iter().map(|evidence| evidence.into_declared()).collect(),
+                    );
+                }
                 sink.out.message_order.insert(index, record.order);
                 sink.out.message_projections.insert(
                     index,
