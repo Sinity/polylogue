@@ -72,7 +72,7 @@ pub fn output(
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::to_value(&answer).expect("answer serializes"),
+                &serde_json::to_value(answer).expect("answer serializes"),
                 false
             )
         );
