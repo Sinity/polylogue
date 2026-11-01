@@ -295,7 +295,7 @@ impl Client {
         }
         if !self.publication_allowed(&prepared) {
             return Err(Error::Refused {
-                name: prepared.identity,
+                name: prepared.record.identity,
                 reason: "canonical output belongs to another or unknown confirmed read scope"
                     .into(),
             });
@@ -324,7 +324,7 @@ impl Client {
             .map_err(|error| Error::Invalid(error.to_string()))?;
             serde_json::to_vec(&Ingress::LargeFrame {
                 frame: prepared.identity.clone(),
-                blob: prepared.frame.blob,
+                blob: prepared.record.frame.blob,
                 length: prepared.frame.length,
             })?
         };

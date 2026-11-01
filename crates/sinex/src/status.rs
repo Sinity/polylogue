@@ -104,7 +104,7 @@ impl Sinex {
                 after = Some(entry.order);
                 if entry.phase.is_refused() {
                     refused_operations += 1;
-                    last = Some(entry.identity);
+                    last = Some(entry.record.identity);
                 }
             }
         }

@@ -76,7 +76,7 @@ impl Sinex {
             })?;
             if let Some(entry) = latest.filter(|entry| entry.identity.starts_with(&desired)) {
                 return Ok(PreparedWrite {
-                    identity: entry.identity,
+                    identity: entry.record.identity,
                     pending: true,
                 });
             }
@@ -143,7 +143,7 @@ impl Sinex {
                 && let Some(replacement) = material.manifest.details.get("polylogue_replacement")
             {
                 ready.push((
-                    entry.identity,
+                    entry.record.identity,
                     serde_json::from_value::<ReadingReplacement>(replacement.clone())?,
                 ));
             }

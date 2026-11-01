@@ -88,10 +88,7 @@ pub(crate) fn selector(
             "retained request has no original material".into(),
         ));
     };
-    let body = entry
-        .body
-        .as_ref()
-        .ok_or_else(|| unavailable(&entry.identity))?;
+    let body = entry.body().ok_or_else(|| unavailable(&entry.identity))?;
     if material.source.name != "polylogue"
         || material.source.version != 3
         || material.parser_version != 3

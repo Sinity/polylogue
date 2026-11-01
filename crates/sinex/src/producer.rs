@@ -97,7 +97,7 @@ impl Sinex {
         })?;
         if let Some(entry) = latest.filter(|entry| entry.identity.starts_with(&desired)) {
             return Ok(PreparedWrite {
-                identity: entry.identity,
+                identity: entry.record.identity,
                 pending: true,
             });
         }
@@ -259,7 +259,7 @@ impl Sinex {
                 acknowledged
             };
             pending.push(PendingCapture {
-                identity: entry.identity,
+                identity: entry.record.identity,
                 captured,
                 material,
                 anchor,
@@ -303,7 +303,7 @@ impl Sinex {
         {
             Some(entry) => {
                 return Ok(PreparedWrite {
-                    identity: entry.identity,
+                    identity: entry.record.identity,
                     pending: true,
                 });
             }
@@ -559,7 +559,7 @@ impl Sinex {
                     "polylogue-products" | "polylogue-request-restore"
                 )
             {
-                ready.push(entry.identity);
+                ready.push(entry.record.identity);
             }
             Ok(())
         })?;
@@ -683,7 +683,7 @@ impl Sinex {
         let queue = self.queue()?;
         if let Some(group) = queue.group_for(identities)? {
             return Ok(PreparedWrite {
-                identity: group.identity,
+                identity: group.record.identity,
                 pending: true,
             });
         }
@@ -933,7 +933,7 @@ impl Sinex {
                 )
                 && queue.capture_group(&entry.identity)?.is_none()
             {
-                ready.push(entry.identity);
+                ready.push(entry.record.identity);
             }
             Ok(())
         })?;
@@ -972,7 +972,7 @@ impl Sinex {
                     if matches!(entry.capture(),Some(Capture::Blob{hash,..}) if *hash==attachment.blob) {
                         if let Some(material)=Self::capture_material(queue,&entry)? {
                             writes.push(ProductWrite{location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
-                            if queue.capture_group(&entry.identity)?.is_none() {dependencies.push(entry.identity);}
+                            if queue.capture_group(&entry.identity)?.is_none() {dependencies.push(entry.record.identity);}
                         } else {waiting=true;}
                     }
                     Ok(())

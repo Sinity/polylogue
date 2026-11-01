@@ -115,10 +115,7 @@ fn validate(
     custody: &QueuedPublicationCustody,
 ) -> Result<()> {
     crate::client::confirmed::source3::validate_source(custody)?;
-    let body = entry
-        .body
-        .as_ref()
-        .ok_or_else(|| unavailable(&entry.identity))?;
+    let body = entry.body().ok_or_else(|| unavailable(&entry.identity))?;
     let expected_frame = format!("blake3:{}", custody.frame_content_hash);
     let expected_body = format!("blake3:{}", custody.blob);
     if custody.producer_identity != producer

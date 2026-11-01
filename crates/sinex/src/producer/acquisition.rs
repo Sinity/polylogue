@@ -28,7 +28,7 @@ fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result
         acknowledged
     };
     Ok(PendingCapture {
-        identity: entry.identity,
+        identity: entry.record.identity,
         captured,
         material,
         anchor,
@@ -287,7 +287,7 @@ impl Sinex {
                 if let Some(previous) = input.raw_predecessor.as_ref()
                     && let Some(preceding) = staging.get(previous)?
                     && preceding.order < entry.order
-                    && let Some(Capture::Input(prior)) = preceding.capture
+                    && let Some(Capture::Input(prior)) = preceding.capture().cloned()
                     && prior.generation == input.generation
                     && prior
                         .raw_range
@@ -416,7 +416,7 @@ impl Sinex {
                     Error::Invalid("parser control index differs from its immutable capture".into())
                 })?;
             result.continuation = Some(PendingCheckpoint {
-                capture: entry.identity,
+                capture: entry.record.identity,
                 header: *header,
                 checkpoint: checkpoint.clone(),
             });
