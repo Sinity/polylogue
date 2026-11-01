@@ -64,22 +64,24 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message"
-                | "polylogue.kept_result"
+                "polylogue.message" => 6,
+                "polylogue.kept_result"
                 | "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 5,
-                "polylogue.input_observation"
+                | "polylogue.request_restore"
                 | "polylogue.session"
                 | "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.link"
                 | "polylogue.background"
                 | "polylogue.repository"
-                | "polylogue.parse_progress" => 4,
-                "polylogue.query_run" | "polylogue.blob" | "polylogue.coverage" => 3,
-                "polylogue.fragment" => 2,
+                | "polylogue.parse_progress" => 5,
+                "polylogue.input_observation" => 4,
+                "polylogue.query_run"
+                | "polylogue.blob"
+                | "polylogue.coverage"
+                | "polylogue.fragment" => 3,
                 "polylogue.assertion"
                 | "polylogue.assertion_restore"
                 | "polylogue.historical_restore"
