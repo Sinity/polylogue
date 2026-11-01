@@ -225,12 +225,13 @@ impl Engine {
                     Ok(Some(reply)) => commits.push_back((plan, reply)),
                     Ok(None) => self.release_reading(&mut busy, &plan.path),
                     Err(error) => {
-                        pass.errors
-                            .push(format!("re-parse {}: {error}", plan.path.display()));
                         self.release_reading(&mut busy, &plan.path);
+                        let message = format!("re-parse {}: {error}", plan.path.display());
                         if matches!(error, EngineError::Parse(_)) {
-                            plan.failed = true;
+                            self.record_failure(&mut plan, message, pass);
                             self.finish_plan(plan);
+                        } else {
+                            pass.errors.push(message);
                         }
                     }
                 }
@@ -364,7 +365,7 @@ fn prepare(
             plan.parse_pos = plan.size;
         } else {
             plan.failed = true;
-            plan.parse_failed = true;
+            plan.failure_recorded = true;
         }
     } else {
         while !plan.finished() {

@@ -7,7 +7,7 @@ CREATE TABLE parse_state_typed (
   reading_version   TEXT NOT NULL DEFAULT '',
   status            TEXT NOT NULL CHECK(status IN ('parsing','waiting','done','no_parser_yet','partial','refused','failed')),
   parsed_upto       INTEGER NOT NULL,
-  waiting_at        INTEGER CHECK(waiting_at >= 0),
+  at_length        INTEGER CHECK(at_length >= 0),
   records           INTEGER NOT NULL DEFAULT 0,
   used              INTEGER NOT NULL DEFAULT 0,
   skipped           INTEGER NOT NULL DEFAULT 0,
@@ -16,10 +16,10 @@ CREATE TABLE parse_state_typed (
   checkpoint BLOB,
   reason            TEXT,
   PRIMARY KEY (input_pk, chain),
-  CHECK((status = 'waiting') = (waiting_at IS NOT NULL)),
+  CHECK((status IN ('waiting','refused','failed')) = (at_length IS NOT NULL)),
   CHECK((status IN ('refused','failed')) = (reason IS NOT NULL))
 ) STRICT, WITHOUT ROWID;
-INSERT INTO parse_state_typed(input_pk,chain,reading_version,status,parsed_upto,waiting_at,records,used,skipped,unreadable,commit_seq,checkpoint,reason)
+INSERT INTO parse_state_typed(input_pk,chain,reading_version,status,parsed_upto,at_length,records,used,skipped,unreadable,commit_seq,checkpoint,reason)
   SELECT input_pk,chain,reading_version,status,parsed_upto,
     CASE WHEN status='waiting' THEN CAST(detail AS INTEGER) END,
     records,used,skipped,unreadable,commit_seq,checkpoint,NULL

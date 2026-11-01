@@ -334,7 +334,7 @@ fn a_waiting_length_moves_from_text_into_its_typed_column() {
     ensure_index(&conn).unwrap();
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     let rows: Vec<(String, i64, Option<i64>)> = conn
-        .prepare("SELECT status,parsed_upto,waiting_at FROM parse_state ORDER BY input_pk")
+        .prepare("SELECT status,parsed_upto,at_length FROM parse_state ORDER BY input_pk")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
@@ -358,11 +358,8 @@ fn a_waiting_length_moves_from_text_into_its_typed_column() {
     assert!(!detail);
     // A waiting status always names its length.
     assert!(
-        conn.execute(
-            "UPDATE parse_state SET waiting_at=NULL WHERE input_pk=1",
-            []
-        )
-        .is_err()
+        conn.execute("UPDATE parse_state SET at_length=NULL WHERE input_pk=1", [])
+            .is_err()
     );
     // Every designed standing is storable, and a refusal or failure keeps its reason.
     for (status, reason) in [
@@ -370,7 +367,7 @@ fn a_waiting_length_moves_from_text_into_its_typed_column() {
         ("failed", "synthetic error"),
     ] {
         conn.execute(
-            "UPDATE parse_state SET status=?1,reason=?2 WHERE input_pk=2",
+            "UPDATE parse_state SET status=?1,reason=?2,at_length=90 WHERE input_pk=2",
             [status, reason],
         )
         .unwrap();
@@ -381,7 +378,7 @@ fn a_waiting_length_moves_from_text_into_its_typed_column() {
     }
     assert!(
         conn.execute(
-            "UPDATE parse_state SET status='done',reason='stray' WHERE input_pk=2",
+            "UPDATE parse_state SET status='done',reason='stray',at_length=NULL WHERE input_pk=2",
             []
         )
         .is_err()

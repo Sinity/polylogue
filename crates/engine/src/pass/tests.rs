@@ -8,6 +8,8 @@ use std::os::unix::fs::MetadataExt;
 
 #[cfg(feature = "faults")]
 mod live_queue;
+#[cfg(feature = "faults")]
+mod standings;
 
 #[test]
 fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() {

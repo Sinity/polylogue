@@ -179,7 +179,9 @@ pub struct KnownInput {
     /// whether that chain was parsed at all.
     pub parsed_upto: u64,
     pub parsed: bool,
-    /// A successful parse reached source EOF with only an incomplete suffix.
+    /// The chain's parse standing was decided at its stored length: it waits
+    /// for a record still being written, or the parser refused or failed
+    /// there. It is parsed again once the bytes grow or the reading changes.
     pub waiting: bool,
 }
 
@@ -189,6 +191,7 @@ pub struct KnownInput {
 pub struct ChainProgress {
     pub chain: i64,
     pub arrival_rank: u8,
+    /// As [`KnownInput::waiting`]: the standing was decided at this length.
     pub waiting: bool,
     pub length: u64,
     pub parsed_upto: u64,
@@ -503,14 +506,14 @@ struct MessageContent<'a> {
 /// reason.
 pub(crate) fn stored_parse_progress(
     status: &str,
-    waiting_at: Option<i64>,
+    at_length: Option<i64>,
     reason: Option<String>,
 ) -> Result<polylogue_model::batch::ParseProgress> {
-    let waiting_at = waiting_at
+    let at_length = at_length
         .map(u64::try_from)
         .transpose()
         .map_err(|_| StoreError::Invalid("a stored waiting length is negative".into()))?;
-    polylogue_model::batch::ParseProgress::from_stored(status, waiting_at, reason)
+    polylogue_model::batch::ParseProgress::from_stored(status, at_length, reason)
         .map_err(StoreError::Invalid)
 }
 
@@ -1463,12 +1466,12 @@ impl Reader<'_> {
             });
         }
         let mut stmt = self.conn()?.prepare_cached(
-            "SELECT p.parsed_upto, p.status, p.waiting_at, p.reason FROM parse_state p
+            "SELECT p.parsed_upto, p.status, p.at_length, p.reason FROM parse_state p
              JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2",
         )?;
         for k in &mut out {
             if let Some(chain) = k.chain
-                && let Some((upto, status, waiting_at, reason)) = stmt
+                && let Some((upto, status, at_length, reason)) = stmt
                     .query_row(params![k.input_id, chain], |r| {
                         Ok((
                             r.get::<_, i64>(0)?,
@@ -1481,8 +1484,8 @@ impl Reader<'_> {
             {
                 k.parsed_upto = upto as u64;
                 k.parsed = true;
-                k.waiting = stored_parse_progress(&status, waiting_at, reason)?
-                    == polylogue_model::batch::ParseProgress::Waiting { length: k.stored };
+                k.waiting = stored_parse_progress(&status, at_length, reason)?.at_length()
+                    == Some(k.stored);
             }
         }
         Ok(out)
@@ -1493,7 +1496,7 @@ impl Reader<'_> {
         let row = self
             .conn()?
             .prepare_cached(
-                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.waiting_at = r.length, 0), r.chain
+                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.at_length = r.length, 0), r.chain
              FROM source_revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain

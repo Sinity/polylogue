@@ -12,15 +12,10 @@ pub(crate) struct ExportPrefix {
 }
 
 pub(crate) fn is_refusal(step: &ParseStep) -> bool {
-    step.delivery
-        .as_ref()
-        .is_some_and(|delivery| matches!(delivery.source, ExportDeliverySource::ContainerHeader))
-        // RecordCounts::add owns the "kind: reason" key format. Only the
-        // outer export scan's record kind refuses the whole container; bad
-        // provider lines retain their counts while valid items can continue.
-        && step.counts.unreadable.iter().any(|(kind, count)| {
-            *count > 0 && (kind == "export" || kind.starts_with("export: "))
-        })
+    matches!(
+        step.progress,
+        polylogue_model::batch::StepProgress::Refused { .. }
+    )
 }
 
 pub(crate) fn load_prefix(

@@ -27,7 +27,7 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('watched');
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,waiting_at)
+         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length)
          SELECT pk,1,'waiting',17,20 FROM input_ref WHERE id='watched';",
         )
         .unwrap();

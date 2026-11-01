@@ -1,7 +1,7 @@
 //! One pass of the loop: collect, store, parse, derive; and the loop that
 //! runs passes.
 
-use crate::plan::{FailedChain, InputState, Plan, span, whole};
+use crate::plan::{InputState, Plan, span, whole};
 use crate::*;
 
 /// Parser state stays in memory for inputs written within this long.
@@ -16,6 +16,64 @@ const IN_POOL_PER_WORKER: usize = 16;
 const RECENT_NS: i128 = 10 * 60 * 1_000_000_000;
 
 impl Engine {
+    /// Fails `plan` with `error` and records the failure as its chain's parse
+    /// state, at the position the chain was parsed to. Recording needs stored
+    /// bytes; when it cannot be made, the failure stays the loop's own.
+    pub(crate) fn record_failure(&mut self, plan: &mut Plan, error: String, pass: &mut Pass) {
+        pass.errors.push(error.clone());
+        plan.failed = true;
+        if plan.failure_recorded || plan.stored_upto == 0 {
+            return;
+        }
+        let mut step = polylogue_store::ParseStep::new(
+            Default::default(),
+            Default::default(),
+            plan.parse_pos..plan.parse_pos,
+            false,
+        );
+        step.reset = false;
+        step.progress = polylogue_model::batch::StepProgress::Failed { error };
+        step.reading_version = plan.origin.reading_version();
+        step.prepare();
+        let batch = polylogue_store::Batch {
+            required_disposition: None,
+            input: plan.input.clone(),
+            // The bytes are stored: the record names the chain they are in.
+            change: match plan.change {
+                Change::Reparse { chain } => Change::Reparse { chain },
+                _ => Change::Unchanged,
+            },
+            observation: None,
+            continues: false,
+            new_blob: None,
+            blobs: Vec::new(),
+            length: plan.stored_upto,
+            parse: vec![step],
+            acquisition: None,
+            basis: None,
+            release: Default::default(),
+        };
+        let recorded = self
+            .writer
+            .send(batch)
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                let written = self.flush_writes().map_err(|error| error.to_string())?;
+                if written.errors.is_empty() {
+                    Ok(())
+                } else {
+                    Err(written.errors.join("; "))
+                }
+            });
+        match recorded {
+            Ok(()) => plan.failure_recorded = true,
+            Err(recording) => pass.errors.push(format!(
+                "record the failure of {}: {recording}",
+                plan.path.display()
+            )),
+        }
+    }
+
     /// Writes the repository lookups for the working directories the index
     /// holds, at most once a minute. The files it writes are collected in
     /// this same pass.
@@ -382,8 +440,7 @@ impl Engine {
                 parser_state: None,
                 tail: None,
                 chain: None,
-                failed: None,
-                failed_history: HashMap::new(),
+                unread: None,
                 working: None,
             },
         );
@@ -578,7 +635,7 @@ impl Engine {
             None
         };
         let st = self.inputs.get_mut(path).expect("tracked input");
-        if st.failed == Some(now) {
+        if st.unread == Some(now) {
             return Ok(None);
         }
         if st.parser_state.is_none() {
@@ -664,7 +721,7 @@ impl Engine {
             priority,
             tracked: true,
             failed: false,
-            parse_failed: false,
+            failure_recorded: false,
             replace: false,
             waiting: false,
             source: pool::Bytes::File,
@@ -737,11 +794,10 @@ impl Engine {
                         continue;
                     };
                     let st = &self.inputs[path];
-                    let failed = st.failed_history.get(&state.chain)
-                        == Some(&FailedChain {
-                            length: state.length,
-                        });
-                    if (c.current && (!c.reading_changed || st.failed.is_some())) || failed {
+                    // A chain whose failure or refusal the parse state records
+                    // at this length is not behind; one no record holds waits
+                    // for changed bytes.
+                    if c.current && (!c.reading_changed || st.unread.is_some()) {
                         continue;
                     }
                     (path.clone(), st.origin)
@@ -806,12 +862,7 @@ impl Engine {
         let Some(chain) = st.chain else {
             return Ok(None);
         };
-        if !has_reading(st.origin)
-            || st.stored == 0
-            || !behind
-            || st.failed.is_some()
-            || st.failed_history.get(&chain) == Some(&FailedChain { length: st.stored })
-        {
+        if !has_reading(st.origin) || st.stored == 0 || !behind || st.unread.is_some() {
             return Ok(None);
         }
         let (input_id, origin, facts) = (st.input_id.clone(), st.origin, st.facts);
@@ -971,18 +1022,14 @@ impl Engine {
             }
 
             if let Err(error) = self.restore_captured_authored(&plan, pass, current_import) {
-                pass.errors.push(format!(
-                    "authored restoration {}: {error}",
-                    plan.path.display()
-                ));
-                plan.failed = true;
+                let error = format!("authored restoration {}: {error}", plan.path.display());
+                self.record_failure(&mut plan, error, pass);
                 self.finish_plan(plan);
                 continue;
             }
             if let Err(error) = self.observe_local_references(&plan, pass) {
-                pass.errors
-                    .push(format!("local references {}: {error}", plan.path.display()));
-                plan.failed = true;
+                let error = format!("local references {}: {error}", plan.path.display());
+                self.record_failure(&mut plan, error, pass);
                 self.finish_plan(plan);
                 continue;
             }
@@ -1011,20 +1058,14 @@ impl Engine {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     self.execute_export(&mut plan, &mut *parser, pass)
                 }));
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        pass.errors
-                            .push(format!("parse {}: {error}", plan.path.display()));
-                        plan.failed = true;
-                    }
-                    Err(_) => {
-                        pass.errors.push(format!(
-                            "parse {}: array parser panicked",
-                            plan.path.display()
-                        ));
-                        plan.failed = true;
-                    }
+                let failure = match result {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error.to_string()),
+                    Err(_) => Some("the array parser panicked".to_owned()),
+                };
+                if let Some(error) = failure {
+                    let error = format!("parse {}: {error}", plan.path.display());
+                    self.record_failure(&mut plan, error, pass);
                 }
                 self.finish_plan(plan);
             } else {
@@ -1180,7 +1221,7 @@ impl Engine {
                         state.waiting = known.as_ref().is_some_and(|known| known.waiting);
                         state.parser_state = None;
                         state.tail = None;
-                        state.failed = None;
+                        state.unread = None;
                     }
                 }
                 continue;
@@ -1257,7 +1298,9 @@ impl Engine {
             if let Some(capture) = capture
                 && let Some(state) = self.inputs.get_mut(&plan.path)
             {
-                state.failed = if plan.parse_failed { plan.facts } else { None };
+                state.unread = (plan.failed && !plan.failure_recorded)
+                    .then_some(plan.facts)
+                    .flatten();
                 state.working = Some(crate::plan::WorkingState {
                     capture,
                     group: group.clone(),
@@ -1268,17 +1311,6 @@ impl Engine {
             return;
         }
 
-        if let Change::Reparse { chain } = plan.change
-            && let Some(st) = self.inputs.get_mut(&plan.path)
-            && st.input_id == plan.input.id
-        {
-            if plan.failed {
-                st.failed_history
-                    .insert(chain, FailedChain { length: plan.size });
-            } else {
-                st.failed_history.remove(&chain);
-            }
-        }
         if !plan.tracked {
             return;
         }
@@ -1287,7 +1319,7 @@ impl Engine {
             if new_chain && plan.failed && !plan.storing_started {
                 // Planning a rewrite does not replace the committed checkpoint.
                 // A failed first read leaves its facts, tail and parser intact.
-                st.failed = plan.facts;
+                st.unread = plan.facts;
                 return;
             }
             if new_chain {
@@ -1298,13 +1330,18 @@ impl Engine {
             } else {
                 st.stored = plan.stored_upto.max(st.stored);
             }
-            if plan.parse_failed {
-                st.failed = plan.facts;
+            if plan.failure_recorded {
+                // The parse state holds the failure at the stored length, so
+                // the chain waits for changed bytes or a new reading like a
+                // chain that waits for a record to finish.
+                st.unread = None;
+                st.facts = plan.facts;
+                st.parsed = true;
                 st.parsed_upto = plan.parse_pos;
                 st.parser_state = plan
                     .checkpoint
                     .and_then(|checkpoint| checkpoint.parser_state);
-                st.waiting = false;
+                st.waiting = true;
                 return;
             }
             if plan.failed {
@@ -1312,13 +1349,13 @@ impl Engine {
                 // a change is still seen as one.
                 st.parser_state = None;
                 st.waiting = false;
-                st.failed = plan.facts;
+                st.unread = plan.facts;
                 if plan.tail.is_some() {
                     st.tail = plan.tail;
                 }
                 return;
             }
-            st.failed = None;
+            st.unread = None;
             let recent = plan.facts.is_some_and(|f| {
                 i128::from(self.config.clock.now().as_millisecond()) * 1_000_000 - f.mtime_ns
                     < KEEP_STATE_NS

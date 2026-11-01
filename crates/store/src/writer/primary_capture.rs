@@ -190,7 +190,7 @@ fn capture_group_identity(group: &[PreparedBatch], immutable: bool) -> Result<St
                         &step.reading_version,
                         step.start,
                         step.parsed_upto,
-                        step.progress,
+                        &step.progress,
                         step.reset,
                         step.delivery,
                     )

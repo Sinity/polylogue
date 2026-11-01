@@ -290,7 +290,7 @@ impl CapturedReading {
             counts: step.counts.clone(),
             start: step.start,
             parsed_upto: step.parsed_upto,
-            progress: step.progress,
+            progress: step.progress.clone(),
             order_from: step.order_from,
             reading_version: step.reading_version.clone(),
             repeats_whole_conversations: step.repeats_whole_conversations,
@@ -391,7 +391,7 @@ pub fn parse(
         repeats_whole_conversations: step.repeats_whole_conversations,
         start: step.start,
         parsed_upto: step.parsed_upto,
-        progress: step.progress,
+        progress: step.progress.clone(),
     };
     let mut products = Vec::new();
     products.extend(output.sessions.into_iter().map(|facts| Product::Session {

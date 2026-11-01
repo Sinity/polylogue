@@ -91,6 +91,8 @@ pub struct Done {
     pub stored: u64,
     pub error: Option<String>,
     pub write_failed: bool,
+    /// The batch carries a step that records the parser's failure.
+    pub failure_recorded: bool,
     pub continuation_missing: bool,
     /// Accepted SDK custody; this is neither failure nor confirmed admission.
     pub pending: Option<String>,
@@ -367,6 +369,24 @@ fn flush(
         .is_ok()
 }
 
+/// The record of a parse that failed: no rows, and the chain's cursor stays
+/// where this parse began.
+fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
+    let mut failed = ParseStep::new(
+        Default::default(),
+        Default::default(),
+        job.start..job.start,
+        false,
+    );
+    failed.reset = false;
+    failed.progress = polylogue_model::batch::StepProgress::Failed { error };
+    failed.reading_version = job.origin.reading_version();
+    if prepare {
+        failed.prepare();
+    }
+    failed
+}
+
 pub(crate) fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
@@ -384,6 +404,7 @@ pub(crate) fn run(
         stored: 0,
         error: None,
         write_failed: false,
+        failure_recorded: false,
         continuation_missing: false,
         pending: None,
         checkpoint: None,
@@ -505,8 +526,10 @@ pub(crate) fn run(
                             match time(Stage::Store, || archive.prepare_decoded(&blob.bytes)) {
                                 Ok((p, file)) => {
                                     if p.hash!=blob.hash || p.size!=blob.size {
-                                        out.error=Some("decoded bytes differ from their declared hash or length".into());
-                                        return Vec::new();
+                                        let error = "decoded bytes differ from their declared hash or length";
+                                        out.error = Some(error.into());
+                                        out.failure_recorded = true;
+                                        return vec![failed_step(&job, error.into(), prepare)];
                                     }
                                     files.extend(file);
                                     extra.push(p);
@@ -531,7 +554,11 @@ pub(crate) fn run(
                         if job.origin.is_row_dump(&job.path) {
                             let start = step.start as usize;
                             let end = step.consumed as usize;
-                            if let Err(error) = p.compare_records(&bytes[start..end]) { out.error=Some(error.to_string()); return Vec::new(); }
+                            if let Err(error) = p.compare_records(&bytes[start..end]) {
+                                out.error = Some(error.to_string());
+                                out.failure_recorded = true;
+                                return vec![failed_step(&job, error.to_string(), prepare)];
+                            }
                         }
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
@@ -549,7 +576,8 @@ pub(crate) fn run(
                 }
                 Err(e) => {
                     out.error = Some(format!("parse {}: {e}", job.path.display()));
-                    Vec::new()
+                    out.failure_recorded = true;
+                    vec![failed_step(&job, e, prepare)]
                 }
             }
         })

@@ -354,8 +354,7 @@ impl Engine {
                 parser_state: None,
                 tail: None,
                 chain: Some(progress.chain),
-                failed: None,
-                failed_history: HashMap::new(),
+                unread: None,
                 working: None,
             },
         );

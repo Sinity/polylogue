@@ -4,8 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How far one parse step read the chain's stored bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// How far one parse step read the chain's stored bytes, or why it stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StepProgress {
     /// The step stopped before the end of the stored bytes; more remain.
@@ -16,6 +16,12 @@ pub enum StepProgress {
     /// The origin has no parser yet: the step's bytes are collected and kept,
     /// not parsed, through the end of the stored bytes or not.
     NoParserYet { at_end: bool },
+    /// The parser declined the bytes as a whole, for the stated reason; the
+    /// step carries no rows.
+    Refused { reason: String },
+    /// The parser failed at the step's start, with its error; the step
+    /// carries no rows and the cursor stays where it was.
+    Failed { error: String },
 }
 
 impl StepProgress {
@@ -25,11 +31,11 @@ impl StepProgress {
     }
 
     /// Whether the step read through the end of the stored bytes.
-    pub fn reached_end(self) -> bool {
+    pub fn reached_end(&self) -> bool {
         match self {
-            Self::Partway => false,
+            Self::Partway | Self::Refused { .. } | Self::Failed { .. } => false,
             Self::AtEnd => true,
-            Self::NoParserYet { at_end } => at_end,
+            Self::NoParserYet { at_end } => *at_end,
         }
     }
 
@@ -38,6 +44,7 @@ impl StepProgress {
         match self {
             Self::Partway | Self::AtEnd => Self::parsed(at_end),
             Self::NoParserYet { .. } => Self::NoParserYet { at_end },
+            Self::Refused { .. } | Self::Failed { .. } => self,
         }
     }
 }
@@ -59,10 +66,13 @@ pub enum ParseProgress {
     NoParserYet,
     /// Confirmed facts omit part of the source this reading needs.
     Partial,
-    /// The parser declined the bytes, for the stated reason.
-    Refused { reason: String },
-    /// The parser failed, with its error.
-    Failed { error: String },
+    /// The parser declined the `length` stored bytes, for the stated reason.
+    /// The chain is read again once its stored length or reading version
+    /// changes.
+    Refused { reason: String, length: u64 },
+    /// The parser failed over `length` stored bytes, with its error. The
+    /// chain is read again once its stored length or reading version changes.
+    Failed { error: String, length: u64 },
 }
 
 impl ParseProgress {
@@ -71,6 +81,8 @@ impl ParseProgress {
         // A collection that stopped inside a record still being written waits
         // like a parse does, whether or not the origin has a parser.
         match step {
+            StepProgress::Refused { reason } => Self::Refused { reason, length },
+            StepProgress::Failed { error } => Self::Failed { error, length },
             _ if step.reached_end() && parsed_upto < length => Self::Waiting { length },
             StepProgress::NoParserYet { .. } => Self::NoParserYet,
             StepProgress::AtEnd => Self::Done,
@@ -91,40 +103,48 @@ impl ParseProgress {
         }
     }
 
-    /// The stored length a waiting chain waits at.
-    pub fn waiting_at(&self) -> Option<u64> {
+    /// The stored length the standing was decided at: what a waiting chain
+    /// waits to grow past, or what a refusal or failure read.
+    pub fn at_length(&self) -> Option<u64> {
         match self {
-            Self::Waiting { length } => Some(*length),
+            Self::Waiting { length }
+            | Self::Refused { length, .. }
+            | Self::Failed { length, .. } => Some(*length),
             _ => None,
         }
+    }
+
+    /// A refusal or failure, which waits for different bytes or a new reading.
+    pub fn stopped(&self) -> bool {
+        matches!(self, Self::Refused { .. } | Self::Failed { .. })
     }
 
     /// The stored reason of a refusal or the error of a failure.
     pub fn reason(&self) -> Option<&str> {
         match self {
-            Self::Refused { reason } => Some(reason),
-            Self::Failed { error } => Some(error),
+            Self::Refused { reason, .. } => Some(reason),
+            Self::Failed { error, .. } => Some(error),
             _ => None,
         }
     }
 
-    /// The standing from its stored status word, waiting length and reason.
+    /// The standing from its stored status word, length and reason.
     pub fn from_stored(
         status: &str,
-        waiting_at: Option<u64>,
+        at_length: Option<u64>,
         reason: Option<String>,
     ) -> Result<Self, String> {
-        Ok(match (status, waiting_at, reason) {
+        Ok(match (status, at_length, reason) {
             ("parsing", None, None) => Self::Parsing,
             ("waiting", Some(length), None) => Self::Waiting { length },
             ("done", None, None) => Self::Done,
             ("no_parser_yet", None, None) => Self::NoParserYet,
             ("partial", None, None) => Self::Partial,
-            ("refused", None, Some(reason)) => Self::Refused { reason },
-            ("failed", None, Some(error)) => Self::Failed { error },
-            (status, waiting_at, reason) => {
+            ("refused", Some(length), Some(reason)) => Self::Refused { reason, length },
+            ("failed", Some(length), Some(error)) => Self::Failed { error, length },
+            (status, at_length, reason) => {
                 return Err(format!(
-                    "parse status {status:?} with waiting length {waiting_at:?} and reason {reason:?} is not a parse standing"
+                    "parse status {status:?} at length {at_length:?} with reason {reason:?} is not a parse standing"
                 ));
             }
         })

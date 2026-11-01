@@ -338,7 +338,7 @@ CREATE TABLE parse_state (
                                             -- parsing: more stored bytes need parsing; waiting: incomplete record at
                                             --   observed EOF; done: at the stored length
   parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
-  waiting_at        INTEGER CHECK(waiting_at >= 0),  -- waiting: the stored length it waits at
+  at_length        INTEGER CHECK(at_length >= 0),  -- waiting, refused, failed: the stored length it was decided at
   records           INTEGER NOT NULL DEFAULT 0,  -- every record of this chain read so far:
   used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
   skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
@@ -347,7 +347,7 @@ CREATE TABLE parse_state (
   checkpoint BLOB,                        -- versioned opaque parser state at this exact cursor
   reason            TEXT,                   -- refused: the reason; failed: the error
   PRIMARY KEY (input_pk, chain),
-  CHECK((status = 'waiting') = (waiting_at IS NOT NULL)),
+  CHECK((status IN ('waiting','refused','failed')) = (at_length IS NOT NULL)),
   CHECK((status IN ('refused','failed')) = (reason IS NOT NULL))
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work

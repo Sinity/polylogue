@@ -518,8 +518,7 @@ impl Engine {
                     parser_state: None,
                     tail: None,
                     chain: k.chain,
-                    failed: None,
-                    failed_history: HashMap::new(),
+                    unread: None,
                     working: None,
                 },
             );

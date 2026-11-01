@@ -247,13 +247,15 @@ impl Reading {
         if self.legacy_export {
             CoverageStatus::Unknown
         } else {
-            match self.progress {
+            match &self.progress {
                 StepProgress::NoParserYet { .. } => CoverageStatus::NoParserYet,
                 _ if self.unreadable > 0 => CoverageStatus::Unreadable,
                 StepProgress::AtEnd if !self.prefix_missing && self.parsed_upto >= self.length => {
                     CoverageStatus::Complete
                 }
                 StepProgress::AtEnd | StepProgress::Partway => CoverageStatus::Partial,
+                StepProgress::Refused { .. } => CoverageStatus::Refused,
+                StepProgress::Failed { .. } => CoverageStatus::Failed,
             }
         }
     }
@@ -374,7 +376,7 @@ fn apply_inner(
                     && !old.progress.reached_end())
             {
                 if reaches_end {
-                    old.progress = old.progress.with_end(true);
+                    old.progress = old.progress.clone().with_end(true);
                 }
                 old.length = source.length;
                 old.last = receipt.clone();
@@ -405,7 +407,7 @@ fn apply_inner(
         input: source.input.to_owned(),
         parsed_upto: step.parsed_upto,
         length: source.length,
-        progress: step.progress,
+        progress: step.progress.clone(),
         prefix_missing: step.source_prefix_missing
             || if reset {
                 false
@@ -451,7 +453,7 @@ fn apply_inner(
     }
     // A missing prefix is incomplete even if this suffix reached EOF.
     if previous.is_none() && step.start != 0 && !step.reset && !export_delivery {
-        reading.progress = reading.progress.with_end(false);
+        reading.progress = reading.progress.clone().with_end(false);
     }
     tx.prepare_cached(
         "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2 AND active=1",

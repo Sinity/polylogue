@@ -609,7 +609,7 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
     write_test_rows(&tx, &partial, &partial.parse[0], 1, 1, None).unwrap();
     let state: (String, i64, String) = tx
         .query_row(
-            "SELECT status,waiting_at,reading_version FROM parse_state",
+            "SELECT status,at_length,reading_version FROM parse_state",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -622,7 +622,7 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
     write_test_rows(&tx, &append, &append.parse[0], 1, 2, None).unwrap();
     let state: (String, i64, Option<i64>) = tx
         .query_row(
-            "SELECT status,parsed_upto,waiting_at FROM parse_state",
+            "SELECT status,parsed_upto,at_length FROM parse_state",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )

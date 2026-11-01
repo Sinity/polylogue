@@ -49,7 +49,7 @@ impl ParseStep {
             self.reset,
             self.repeats_whole_conversations,
             matches!(
-                self.progress,
+                &self.progress,
                 polylogue_model::batch::StepProgress::NoParserYet { .. }
             ),
             &self.checkpoint,

@@ -183,6 +183,9 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_ca
     refused
         .counts
         .add("export", &RecordOutcome::unreadable("truncated export"));
+    refused.progress = polylogue_model::batch::StepProgress::Refused {
+        reason: "truncated export".into(),
+    };
     refused
         .seal_export(
             0,

@@ -172,7 +172,13 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             .execute_export(&mut plan, &mut *export, &mut pass)
             .unwrap();
         assert_eq!(plan.parse_pos, 0);
-        assert!(plan.failed && plan.parse_failed);
+        assert!(plan.failed && plan.failure_recorded);
+        assert_eq!(
+            home.count(
+                "SELECT count(*) AS n FROM parse_state WHERE status='refused' AND reason IS NOT NULL AND at_length IS NOT NULL"
+            ),
+            1
+        );
         assert_eq!(home.count("SELECT count(*) AS n FROM message"), 0);
         assert_eq!(home.count("SELECT parsed_upto AS n FROM parse_state"), 0);
         assert_eq!(
@@ -184,7 +190,7 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.progress')='partway' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_type(state,'$.progress.refused')='object' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
             1
         );
         let wire = engine
@@ -259,7 +265,7 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.progress')='partway' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_type(state,'$.progress.refused')='object' AND json_extract(state,'$.last.footprint.source.kind')='container_header'"),
             1
         );
     }
