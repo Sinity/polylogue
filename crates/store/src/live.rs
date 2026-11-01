@@ -181,7 +181,7 @@ pub struct LiveRoot {
     pub open_call: bool,
 }
 
-impl crate::Reader {
+impl crate::Reader<'_> {
     /// Every session whose root process is alive by its evidence.
     pub fn live_roots(&self) -> Result<Vec<LiveRoot>> {
         let conn = self.conn()?;

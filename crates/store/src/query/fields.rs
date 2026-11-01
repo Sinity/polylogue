@@ -537,6 +537,25 @@ f(Deliveries,"refs").custom(custom::refs),
 f(Deliveries,"left_out").custom(custom::left_out),
 f(Deliveries,"at").sql("{r}.at"),
 f(Deliveries,"bytes").sql("{r}.bytes"),
+f(LiveIntervals,"session").sql_ref("{s}.id", ColumnReference::Session),
+f(LiveIntervals,"aspect").sql("{r}.aspect"),
+f(LiveIntervals,"value").sql("{r}.value"),
+f(LiveIntervals,"start").sql("{r}.start_at"),
+f(LiveIntervals,"end").sql("{r}.end_at"),
+f(LiveIntervals,"duration_ms").sql("({r}.end_at - {r}.start_at)"),
+f(LiveIntervals,"closed_by").sql("{r}.closed_by"),
+f(Processes,"session").sql_ref("{s}.id", ColumnReference::Session),
+f(Processes,"boot_id").sql("{r}.boot_id"),
+f(Processes,"pid").sql("{r}.pid"),
+f(Processes,"start").sql("{r}.start"),
+f(Processes,"parent_pid").sql("{r}.parent_pid"),
+f(Processes,"comm").sql("{r}.comm"),
+f(Processes,"argv").sql("{r}.argv"),
+f(Processes,"cwd").sql("{r}.cwd"),
+f(Processes,"started_at").sql("{r}.started_at"),
+f(Processes,"ended_at").sql("{r}.ended_at"),
+f(Processes,"role").sql("{r}.role"),
+f(Processes,"tool_call").sql_fn(processes_tool_call),
 f(Changes,"kind").sql("{r}.kind"),
 f(Changes,"ref").sql("{r}.ref"),
 f(Changes,"seq").sql("{r}.seq"),
@@ -660,6 +679,19 @@ fn sessions_outcome(a: &Aliases) -> String {
         "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 AND max(n.historical IS NOT NULL)=0 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_assertion n JOIN temp.assertion_about nt ON nt.assertion=n.id WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
         s = a.s,
         live = live_assertion("n"),
+    )
+}
+
+/// The tool call a child process started during: the session's call whose
+/// start is at or before the process's first sighting and whose result
+/// came after it (or has not come). Never from command text.
+pub(crate) fn processes_tool_call(a: &Aliases) -> String {
+    format!(
+        "(CASE WHEN {r}.role = 'child' THEN (SELECT tc.call_id FROM tool_call tc \
+         WHERE tc.session_pk = {r}.session_pk AND tc.at <= {r}.started_at \
+         AND (tc.result_at IS NULL OR tc.result_at >= {r}.started_at) \
+         ORDER BY tc.at DESC LIMIT 1) END)",
+        r = a.row
     )
 }
 
