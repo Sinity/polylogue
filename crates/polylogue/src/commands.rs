@@ -177,6 +177,9 @@ pub type StreamProducer = fn(
     &mut dyn std::io::Write,
 ) -> Option<Result<(), crate::daemon::Failure>>;
 
+/// Checks that an answer's value is the operation's declared type.
+pub type AnswerDecoder = fn(&Value) -> Result<(), String>;
+
 pub type TypedRequestBuilder =
     fn(Value, &Caller, &str) -> Result<Request, command_surface::Failure>;
 pub type OutputHandler =
@@ -225,7 +228,7 @@ pub struct Command {
     pub build_typed: Option<TypedRequestBuilder>,
     /// Decodes an answer's value as the operation's declared type, so a
     /// value from a daemon of another build is refused before it is printed.
-    pub decode_answer: Option<fn(&Value) -> Result<(), String>>,
+    pub decode_answer: Option<AnswerDecoder>,
     /// The command-line words (`assert-query`), also the operation's name
     /// within its MCP tool; the HTTP route joins them with `/`.
     pub name: &'static str,
