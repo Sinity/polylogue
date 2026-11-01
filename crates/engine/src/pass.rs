@@ -753,6 +753,11 @@ impl Engine {
                     | polylogue_store::ReadingContract::RawOnly { .. } => None,
                 })
                 .collect::<Vec<_>>(),
+            if std::mem::replace(&mut self.stopped_offered, true) {
+                polylogue_store::StoppedChains::Settled
+            } else {
+                polylogue_store::StoppedChains::Retry
+            },
         )?;
         let mut replacements = Vec::new();
         let mut rounds: Vec<Vec<Plan>> = Vec::new();

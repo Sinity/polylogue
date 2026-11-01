@@ -21,6 +21,15 @@ pub struct ImportedAs {
     pub path: Option<String>,
 }
 
+/// Whether chains whose refusal or failure is recorded at their stored length
+/// count as behind: a daemon offers each one a new read once when it starts,
+/// since the failure may have been transient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoppedChains {
+    Settled,
+    Retry,
+}
+
 /// The existing lag planner and completeness proof read this same row stream.
 pub(super) struct ChainState {
     pub plan: BehindChain,
@@ -50,7 +59,7 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.at_length = c.length, 0), p.reading_version, p.status, p.at_length, p.reason
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.reading_version, p.status, p.at_length, p.reason
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN source_revision l ON l.input = c.input AND l.number = s.number
@@ -61,7 +70,8 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
             WHERE (?2 OR (c.length > 0
               AND (p.input_pk IS NULL
-                OR (NOT COALESCE(p.at_length = c.length, 0) AND p.parsed_upto < c.length)
+                OR (NOT COALESCE(p.at_length = c.length AND (p.status = 'waiting' OR NOT ?3), 0)
+                    AND p.parsed_upto < c.length)
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
                       AND json_extract(expected.value, '$[1]') IS NOT p.reading_version))))
@@ -69,10 +79,15 @@ const CHAIN_STATES: &str = r#"WITH inputs AS MATERIALIZED (
 
 impl Reader<'_> {
     /// Every chain whose index is behind its stored bytes. Waiting at the exact
-    /// recorded source length is current for that reading version.
-    pub fn chains_behind_index(&self, versions: &[(String, String)]) -> Result<Vec<BehindChain>> {
+    /// recorded source length is current for that reading version; a refusal
+    /// or failure recorded there is too, unless `stopped` asks for it again.
+    pub fn chains_behind_index(
+        &self,
+        versions: &[(String, String)],
+        stopped: StoppedChains,
+    ) -> Result<Vec<BehindChain>> {
         let mut chains = Vec::new();
-        self.visit_chains_behind_index(versions, &mut |chain| {
+        self.visit_chains_behind_index(versions, stopped, &mut |chain| {
             chains.push(chain);
             Ok(std::ops::ControlFlow::Continue(()))
         })?;
@@ -83,20 +98,26 @@ impl Reader<'_> {
     pub fn visit_chains_behind_index(
         &self,
         versions: &[(String, String)],
+        stopped: StoppedChains,
         visit: &mut dyn FnMut(BehindChain) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
-        self.visit_chain_states(versions, false, &mut |state| visit(state.plan))
+        self.visit_chain_states(versions, false, stopped, &mut |state| visit(state.plan))
     }
 
     pub(super) fn visit_chain_states(
         &self,
         versions: &[(String, String)],
         all: bool,
+        stopped: StoppedChains,
         visit: &mut dyn FnMut(ChainState) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
         let mut statement = self.conn()?.prepare(CHAIN_STATES)?;
-        let mut rows = statement.query(params![serde_json::to_string(versions)?, all])?;
+        let mut rows = statement.query(params![
+            serde_json::to_string(versions)?,
+            all,
+            stopped == StoppedChains::Retry
+        ])?;
         while let Some(row) = rows.next()? {
             token.check()?;
             let imported: bool = row.get(4)?;

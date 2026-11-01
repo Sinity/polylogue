@@ -106,11 +106,18 @@ impl Update {
             version: step.reading_version.clone(),
             progress,
             counts: totals,
-            checkpoint: step
-                .checkpoint
-                .as_ref()
-                .map(crate::encoding::pack_json)
-                .transpose()?,
+            checkpoint: match (&step.checkpoint, &step.progress, previous) {
+                (Some(checkpoint), _, _) => Some(crate::encoding::pack_json(checkpoint)?),
+                // A refusal or failure leaves the cursor where it was, so the
+                // parser state saved there still resumes it.
+                (None, StepProgress::Refused { .. } | StepProgress::Failed { .. }, Some(prior))
+                    if prior.state.cursor == step.parsed_upto
+                        && prior.state.version == step.reading_version =>
+                {
+                    prior.state.checkpoint.clone()
+                }
+                (None, _, _) => None,
+            },
         };
         let commit = if confirmed {
             receipt

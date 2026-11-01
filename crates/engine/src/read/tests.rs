@@ -564,9 +564,10 @@ fn parser_error_keeps_last_checkpoint_and_quiet_native_raw_eof_across_reopen() {
                 "claude-code",
             )))
             .unwrap();
+        // The parser failure is the chain's parse state (docs/archive.md).
         assert_eq!(
             wire.coverage[0].status(),
-            polylogue_store::wire_shapes::CoverageStatus::Partial
+            polylogue_store::wire_shapes::CoverageStatus::Failed
         );
         drop(reader);
         assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 1);
@@ -575,7 +576,7 @@ fn parser_error_keeps_last_checkpoint_and_quiet_native_raw_eof_across_reopen() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM parse_state WHERE status='parsing'"),
+            home.count("SELECT count(*) AS n FROM parse_state WHERE status='failed' AND reason LIKE '%injected fault at parse%'"),
             1
         );
         drop(engine);

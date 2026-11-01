@@ -72,6 +72,7 @@ pub use context::{DeliveryRow, NearbySession, OpenBead, OpenItems, Prompt, Sessi
 pub use read::{
     BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
     KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,
+    StoppedChains,
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use writer::{

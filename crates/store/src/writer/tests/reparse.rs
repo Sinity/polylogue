@@ -212,7 +212,7 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
         let mut chains: Vec<_> = pool
             .reader()
             .unwrap()
-            .chains_behind_index(&versions)
+            .chains_behind_index(&versions, crate::StoppedChains::Settled)
             .unwrap()
             .into_iter()
             .map(|c| (c.input, c.reading_changed))

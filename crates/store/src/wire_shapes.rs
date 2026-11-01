@@ -284,6 +284,10 @@ fn apply_inner(
     step: &ParseStep,
     replacement: bool,
 ) -> Result<()> {
+    // A failed parse observed no records; its standing is the parse state's.
+    if matches!(step.progress, StepProgress::Failed { .. }) {
+        return Ok(());
+    }
     if step.parsed_upto < step.start || step.parsed_upto > source.length {
         return invalid("wire step lies outside its committed source");
     }

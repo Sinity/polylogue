@@ -32,9 +32,14 @@ fn an_older_chain_parse_failure_waits_without_deleting_bytes_and_retries_after_r
         assert_eq!(w.texts("history"), ["current sibling"]);
         assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 2);
         assert_eq!(
-            w.count("SELECT count(*) AS n FROM parse_state"),
+            w.count("SELECT count(*) AS n FROM parse_state WHERE status<>'failed'"),
             1,
             "failed history is not marked parsed"
+        );
+        // The failure is the older chain's parse state (docs/archive.md).
+        assert_eq!(
+            w.count("SELECT count(*) AS n FROM parse_state WHERE status='failed'"),
+            1
         );
         // The fault was one-shot: retry would now succeed, but unchanged
         // failure still waits rather than silently retrying on every pass.

@@ -17,8 +17,9 @@ pub(crate) struct InputState {
     pub(crate) parsed_upto: u64,
     /// Whether the current chain was parsed at all.
     pub(crate) parsed: bool,
-    /// The index holds this chain's standing at its stored length: waiting
-    /// for a record still being written, or a recorded refusal or failure.
+    /// The chain is not read again until its bytes grow: a parse reached
+    /// source EOF with an incomplete last record, or this engine recorded a
+    /// refusal or failure at the stored length (a restart reads it again).
     pub(crate) waiting: bool,
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,

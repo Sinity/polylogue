@@ -323,11 +323,11 @@ fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
 #[test]
 fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
     use crate::config::OutputConfig;
-    let data = serde_json::json!({
-        "columns":[{"name":"text"}],
-        "rows":[{"text":"stored \x1b[31m λ", "snippet":{"text":"match stored \x1b[31m λ","marks":[[0,5]]}}],
-        "count":1
-    });
+    let data = rows_document(
+        serde_json::json!([{"name":"text","kind":"text"}]),
+        serde_json::json!([{"text":"stored \x1b[31m λ", "snippet":{"text":"match stored \x1b[31m λ","marks":[[0,5]]}}]),
+        1,
+    );
     let original = data.clone();
     for (stdout, stderr, no_color, term) in [
         (false, false, false, Some("xterm")),
@@ -459,4 +459,53 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
     let failed: Answer<serde_json::Value> =
         Answer::error(crate::protocol::failure("not_found", "nothing"));
     assert!(super::decoded(crate::commands::command("query").unwrap(), &failed).is_ok());
+}
+
+/// A query answer document of the declared type, with these columns and rows.
+fn rows_document(
+    columns: serde_json::Value,
+    rows: serde_json::Value,
+    count: u64,
+) -> serde_json::Value {
+    let context = crate::operation::Context::standalone(
+        crate::operation::Invocation::new(
+            polylogue_model::Timestamp::parse_rfc3339("2026-03-01T12:00:00Z").unwrap(),
+            "synthetic-print".into(),
+            polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
+        ),
+        query_language::time::DaySetting::new(
+            jiff::tz::TimeZone::UTC,
+            jiff::civil::Time::constant(4, 0, 0, 0),
+        )
+        .unwrap(),
+    );
+    let rows = crate::protocol::query::Rows {
+        read_at: crate::protocol::query::Position {
+            currency: None,
+            generation: "synthetic".into(),
+            index: 1,
+            archive: 1,
+            cursor: "synthetic:1:1".into(),
+        },
+        unit: "messages".into(),
+        shape: polylogue_query::Shape::Rows,
+        columns: serde_json::from_value(columns).unwrap(),
+        rows: serde_json::from_value(rows).unwrap(),
+        count,
+        next: None,
+        ranked: false,
+        notes: vec![],
+        incomplete: vec![],
+        resolved: crate::protocol::query::Resolved {
+            context: context.provenance(),
+            times: vec![],
+        },
+        definitions: vec![],
+        unknown: Default::default(),
+        why: None,
+    };
+    serde_json::to_value(crate::protocol::query::Answer::Rows(Box::new(rows))).unwrap()
 }

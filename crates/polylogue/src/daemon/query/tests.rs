@@ -1417,12 +1417,13 @@ mod metadata;
 
 #[test]
 fn a_query_document_carries_its_kind_in_its_fields_and_no_outcome() {
-    let w = morrow();
+    let mut w = morrow();
+    w.fx.derive().unwrap();
     let empty = document(&w, "model:claude-opus-5-5");
     assert!(empty.get("outcome").is_none(), "{empty}");
     let typed: crate::protocol::query::Answer = serde_json::from_value(empty).unwrap();
     assert_eq!(typed.rows().unwrap().len(), 0);
-    let measured = document(&w, "sessions | measure sessions");
+    let measured = document(&w, "sessions | measure time");
     assert!(measured.get("outcome").is_none(), "{measured}");
     assert!(matches!(
         serde_json::from_value(measured).unwrap(),

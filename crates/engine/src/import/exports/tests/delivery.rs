@@ -200,9 +200,11 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             .wire_shapes(polylogue_store::wire_shapes::Scope::current(None))
             .unwrap();
         assert_eq!(wire.coverage.len(), 1);
+        // The refusal is the chain's parse state (docs/archive.md), which
+        // coverage names over the source's unreadable record.
         assert_eq!(
             wire.coverage[0].status(),
-            polylogue_store::wire_shapes::CoverageStatus::Unreadable
+            polylogue_store::wire_shapes::CoverageStatus::Refused
         );
         fs::remove_file(&plan.path).unwrap();
         let (progress, stored) = {

@@ -405,9 +405,6 @@ pub fn run(
         }
         Err(e) => return fail(policy, json, "io", &e.to_string(), 1),
     };
-    if let Err(failure) = decoded(cmd, &answer) {
-        return fail_with(policy, json, &failure, &[]);
-    }
     let outcome_code = answer.exit_code();
     if json && cmd.output.is_none() {
         println!(
@@ -421,6 +418,11 @@ pub fn run(
     }
     if let Answer::Error { error, notes, .. } = &answer {
         return fail_with(policy, json, error, notes);
+    }
+    // JSON passes the answer through as received; anything that reads the
+    // value first checks it is the operation's declared type.
+    if let Err(failure) = decoded(cmd, &answer) {
+        return fail_with(policy, json, &failure, &[]);
     }
     let data = answer.value().expect("a non-error answer has a value");
     if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
@@ -585,7 +587,7 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 
 /// A failure made here, before or instead of a daemon answer.
 /// Refuses an answer whose value is not its operation's declared type, the
-/// same way for every operation, before anything reads it.
+/// same way for every operation, before any printer or output handler reads it.
 pub(crate) fn decoded(
     cmd: &Command,
     answer: &Answer<Value>,

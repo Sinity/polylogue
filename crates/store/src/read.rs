@@ -46,7 +46,7 @@ mod revisions;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
 mod tool_pairs;
-pub use behind_index::{BehindChain, ImportedAs};
+pub use behind_index::{BehindChain, ImportedAs, StoppedChains};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod record_seek;
@@ -179,9 +179,7 @@ pub struct KnownInput {
     /// whether that chain was parsed at all.
     pub parsed_upto: u64,
     pub parsed: bool,
-    /// The chain's parse standing was decided at its stored length: it waits
-    /// for a record still being written, or the parser refused or failed
-    /// there. It is parsed again once the bytes grow or the reading changes.
+    /// A successful parse reached source EOF with only an incomplete suffix.
     pub waiting: bool,
 }
 
@@ -191,7 +189,6 @@ pub struct KnownInput {
 pub struct ChainProgress {
     pub chain: i64,
     pub arrival_rank: u8,
-    /// As [`KnownInput::waiting`]: the standing was decided at this length.
     pub waiting: bool,
     pub length: u64,
     pub parsed_upto: u64,
@@ -1484,8 +1481,8 @@ impl Reader<'_> {
             {
                 k.parsed_upto = upto as u64;
                 k.parsed = true;
-                k.waiting = stored_parse_progress(&status, at_length, reason)?.at_length()
-                    == Some(k.stored);
+                k.waiting = stored_parse_progress(&status, at_length, reason)?
+                    == polylogue_model::batch::ParseProgress::Waiting { length: k.stored };
             }
         }
         Ok(out)
@@ -1496,7 +1493,7 @@ impl Reader<'_> {
         let row = self
             .conn()?
             .prepare_cached(
-                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.at_length = r.length, 0), r.chain
+                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status = 'waiting' AND p.at_length = r.length, 0), r.chain
              FROM source_revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
