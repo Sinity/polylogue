@@ -280,3 +280,6 @@ pub fn find_checked(what: &str) -> Result<(&'static Measure, &str), Failure> {
     }
     Ok((m, metric))
 }
+
+#[cfg(test)]
+mod tests;

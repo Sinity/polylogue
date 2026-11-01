@@ -90,7 +90,6 @@ impl Reader<'_> {
         mut visit: impl FnMut(Assertion) -> Result<ControlFlow<()>>,
     ) -> Result<ControlFlow<()>> {
         let conn = self.conn()?;
-        self.prepare_assertion_currency()?;
         let source = Source::reading(conn)?;
         let mut statement = conn.prepare_cached(&source.sql(
             "SELECT a.root,a.id FROM temp.assertion_about l JOIN @source.assertion a ON a.id=l.assertion WHERE l.ref=?1 ORDER BY a.root,a.id",

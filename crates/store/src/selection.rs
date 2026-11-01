@@ -723,7 +723,6 @@ impl Reader<'_> {
         Ok(self.query(&format!("SELECT EXISTS(SELECT 1 FROM ({outer}) a JOIN ({inner}) b ON a.pk=b.pk) AS present"),&params)?.first().and_then(|row|row["present"].as_i64())==Some(1))
     }
     pub fn validate_selection(&self, program: &Program) -> Result<(), SelectionError> {
-        self.prepare_assertion_currency()?;
         for cutoff in &program.assertion_cutoffs {
             self.prepare_assertion_history(*cutoff)?;
         }
