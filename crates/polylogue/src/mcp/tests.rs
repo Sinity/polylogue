@@ -305,10 +305,8 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
     for response in [
         serde_json::to_value(command_surface::Answer::ok(json!({"value":hostile}))).unwrap(),
         serde_json::to_value(command_surface::Answer::<Value>::error(
-            command_surface::Failure {
-                suggestion: Some(Box::new(json!(hostile))),
-                ..command_surface::Failure::new(command_surface::FailureKind::Cancelled, hostile)
-            },
+            command_surface::Failure::new(command_surface::FailureKind::Cancelled, hostile)
+                .with_suggestion(json!(hostile)),
         ))
         .unwrap(),
     ] {
