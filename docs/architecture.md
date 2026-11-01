@@ -136,12 +136,6 @@ Writes reach disk in one order:
 4. Source cursors (how far a growing file has been read) are saved only for
    committed rows.
 
-The first build commits its parsed rows and positions durably in each group. A
-saved `building` marker defers search and secondary indexes; reopening resumes
-the committed build, including an interrupted index finish. The same boot
-retains the index generation and read cursors. A changed boot rotates the
-generation and its cursor secret while keeping rows and parse positions.
-
 A crash therefore leaves at most these states, and ordinary code resumes from
 each: a segment tail past the last committed extent, which is truncated when
 the segment opens; `index.db` behind its saved position, which catches up; a
@@ -163,10 +157,6 @@ Building the archive overlaps every stage:
   parallel, with the archive searchable before the trigram index finishes;
 - live inputs ahead of bulk work.
 
-A worker acquires all the natural keys its group can change as one lease before opening its read snapshot. It holds that lease through the commit result, including a failed commit, so another worker that overlaps those keys reads the resulting committed state. Shared value hashes retain their assigned identities while older snapshots can still resolve them. The writer applies the prepared row identities and selected readings; missing preparation is an error.
-
-Chain replacement uses the same resolver and one index transaction. Its private scratch holds independently compressed steps. Workers keep source memberships and hash-to-offset references in memory and fetch a selected earlier payload from scratch, rather than retaining the chain's decoded content.
-
 **Targets**, on the full corpus of an active user (about 40 GB): at least
 40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input
 byte; no stage idle while another holds a queue for it. Results are reported
@@ -183,14 +173,6 @@ environment or the system time zone, and no component has a default
 constructor for a setting. A time zone is resolved to a named zone or the
 daemon refuses to start; paths are absolute.
 
-The accepting boundary captures one immutable invocation: actual time, configured
-machine and computed authorship. Pure writes can use it while a primary is offline.
-Operations that evaluate a query or logical day extend that same invocation with
-one canonical evaluation clock and one owner-policy snapshot. Missing primary
-context is unavailable; it does not select a local day. Continuation replay changes
-only the authenticated evaluation clock, preserving the actual invocation time.
-Public provenance contains owner references; bearer tokens remain private.
-
 - **The logical day** is one `DaySetting`, a named zone and a start time
   (default 04:00), with one implementation in the common
   [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md)
@@ -201,7 +183,7 @@ Public provenance contains owner references; bearer tokens remain private.
   mode, archive path, the logical day, listen address and authentication, the
   optional notification command, the Sinex endpoint. The changeable settings
   catalog holds what any author may change at run time (quiet hours, the
-  interrupt budget, enabled variants, fetching linked attachments), each key with a
+  interrupt budget, enabled variants, briefing switches), each key with a
   type, default and scope; unknown keys are refused. Keys and defaults will
   be listed in the [planned settings reference](reference/README.md#planned-pages); how
   they are loaded is in

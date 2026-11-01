@@ -77,17 +77,18 @@ copy.
 | `crates/sources` | one declaration and one parser per origin, reading versions, markup extraction |
 | `crates/store` | every SQLite connection and all SQL: inputs, chains, versioned rows, row codecs, plan execution, migrations |
 | `crates/query` | the catalog and units, compilation to a `Plan`. No SQL |
+| `crates/assertions` | the assertion store and variants: author computation, the revision graph, judgments, Pages, pings, annotation passes |
 | `crates/render` | text, markdown and HTML over typed answers |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | primary mode: durable producer custody, the confirmed-stream consumer and Polylogue's kind declarations (behind the `sinex` feature) |
+| `crates/sinex` | primary mode: the ledger over Sinex's producer client, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
 | `crates/polylogue` | the daemon library and thin CLI, MCP, web and browser-host front ends generated from the command table; the pack builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `extension/` | the browser extension |
 | `xtask/` | developer commands, built on `devkit` from polylogue-sinex-common |
 | `nix/` | the NixOS and Home Manager modules and their shared settings library |
 
-Authored types live in `crates/model`, persistence in `crates/store` and
-product operations in `crates/polylogue`.
+`crates/assertions` does not exist yet: until it does, authored records live
+in `crates/store` and `crates/polylogue`.
 `cargo xtask boundaries` enforces which crates may depend on which; only the
 store touches SQLite.
 

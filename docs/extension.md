@@ -76,12 +76,6 @@ A view of a conversation that has not been captured says "Not captured yet".
 
 A web-chat session's provider URL, when its origin records one, is a link in the reader header, the Running row, Home's recent sessions and the popup's recent activity. A provider URL pasted anywhere resolves to the archived session through the one [reference parser](references.md#rules).
 
-## Selection notes
-
-A selection note is one accepting operation. The daemon validates the provider URL and source identifiers, resolves the message globally, and requires its unique recorded conversation membership to match the supplied conversation. Missing or ambiguous membership refuses the write. Selection and assertion admission share one pinned Reader, computed Invocation and writer scope token; a scope change cannot commit the old selection.
-
-The canonical note contains the annotation, quoted selection, page URL and declared selection time as plain text, with About links to the recorded message and session. The declared selection time is source data, not the assertion admission time. A committed draft retry returns its original outcome; changed content under the same draft ID conflicts.
-
 ## Chat actions
 
 The operator or an agent asks the extension to draft or send a turn in a web chat. Direction, 2026-06-29: posting through the extension "might be really REALLY high leverage" (journal 2026-06-29 01:10).

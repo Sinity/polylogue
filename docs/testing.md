@@ -34,7 +34,7 @@ Every area page ends with its laws. Each law has a stable key unique in its page
 
 - **A test that checks a law carries the key in its name,** in snake case: `open_never_deletes`, with a suffix when several tests check one law. Finding a law's tests is a name search; no table maps them by hand.
 - Integration test binaries are already one per area, so a law's tests sit in the binary of the area that owns it.
-- **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) and run against Polylogue's occurrence keys.
+- **Shared laws live with the shared code:** the query-language law suite is in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) and runs against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
 - **Coverage is a report:** `cargo xtask laws` (devkit) lists each law key with the tests whose names carry it, and the laws that have none. It fails nothing; a law without a test is a gap for the area's owner.
 - Cross-cutting laws (crash states, parity across CLI, socket, HTTP and MCP) are in [architecture.md](architecture.md) and [interfaces.md](interfaces.md).
 
@@ -58,16 +58,7 @@ Fuzzing runs as tests. Ruling, 2026-03-12: fuzzing "MUST NOT be a separate comma
 
 Performance is measured by paired `bench` runs: the base and the change built and run together over one sample on the same host, so host load affects both alike. A change is judged by the pair, never by comparing runs from different times.
 
-`cargo xtask bench --root PATH ...` keeps manifests, sample copies, archives,
-reports and the benchmark lock under one directory. Without the flag it uses
-`POLYLOGUE_BENCH_HOME`, then `$XDG_DATA_HOME/polylogue-bench` (the XDG home
-default is `~/.local/share`). Sample names are single directory names.
-
-Selected inputs are copied under the sample root before the manifest hashes
-them. SQLite samples use a consistent read transaction, including committed
-WAL rows and excluding uncommitted writes. Later source changes do not alter
-the sampled bytes. Corpus estimates refuse negative or non-finite predicted
-wall or stage durations; an invalid fit does not establish a performance target.
+`cargo xtask bench --root PATH ...` keeps manifests, sample copies, archives, reports and the benchmark lock under one directory; without the flag it uses `POLYLOGUE_BENCH_HOME`, then `$XDG_DATA_HOME/polylogue-bench`. Selected inputs are copied under that root before the manifest hashes them, and SQLite samples are read in one read transaction, so later changes at the source do not alter a sample. A corpus estimate that predicts a negative or non-finite duration is refused.
 
 What is measured: the first build per stage; incremental updates; interactive reads; the CLI latency classes end to end ([interfaces.md#latency-classes](interfaces.md#latency-classes)); daemon start and restart; idle I/O over 10 minutes; the append-to-view latency of live sessions.
 

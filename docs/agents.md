@@ -89,11 +89,6 @@ The session-start brief is injected by the `SessionStart` hook (and Hermes's fir
 1. Header ([Trust rendering](#trust-rendering)).
 2. The agent manual ([Agent manual](#agent-manual)), on `startup`, `clear` and `compact` only.
 3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, blockers, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. Ruling, 2026-10-18: "for now, I think acutally don't inject those" (cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-18T14:13:05). The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
-   Privileged injection also requires trusted native-admission evidence for the
-   operator action, including any accepting judgment. A stored author label or
-   import history does not supply that proof. When eligibility is unknown, the
-   brief and takeover hold the assertions, name the unavailable proof, and keep
-   their original evidence available to ordinary reads.
 4. **Other agents working in this repository now** ([Live sessions](#live-sessions)): worktree, live state, task, last event; the caller excluded; "⚠ 2 agents in this worktree" when a peer shares the worktree.
 5. **Open tasks here:** tracker items claimed in this repository and not closed or released.
 6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; tasks claimed or closed; plan or todo items left open; the last substantive operator prompt (at least six words, not a command or bare paste); the first lines of the last answer, datamarked.
@@ -334,7 +329,7 @@ Morrow is the fixture; a "fixture harness" is a stub binary on `PATH` that recor
 - **contrary-evidence-included**: a pack including claim C includes every assertion that challenges C.
 - **brief-spans-worktrees**: in a second worktree of the Morrow repository, the brief lists the first worktree's sessions, labelled; the caller never appears under other agents.
 - **resume-delta-from-delivered**: after a resume, the delta starts at the last `delivered` session-start, resume or compaction delivery, not at a prepared or recall delivery.
-- **unjudged-counted-not-inlined**: unjudged agent assertions are counted, not inlined; an operator-accepted agent assertion with trusted native-admission eligibility is inlined with its agent author and "(accepted by the operator)"; unknown eligibility is explicitly held.
+- **unjudged-counted-not-inlined**: unjudged agent assertions are counted, not inlined; an operator-accepted agent assertion is inlined with its agent author and "(accepted by the operator)".
 - **takeover-references**: a prompt with eleven archived session IDs yields one delivery within the budget holding an eleven-line index; an ambiguous prefix yields its candidates; a provider URL yields that conversation's takeover; a predecessor ID yields the successor's takeover, labelled.
 - **takeover-after-compaction**: a takeover of a compacted session shows the summary and the kept tail, not the evicted prefix.
 - **recall-states-method**: on Morrow, `recall "weekday arithmetic"` ranks the subagent's final answer first and states that semantic search is off.

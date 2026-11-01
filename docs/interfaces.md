@@ -7,11 +7,8 @@ The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table
 ## Command table
 
 - **One typed operation table** drives every surface. Each row declares the operation's arguments, answer type, latency class, failure kinds, one-sentence help, its reason for existing ([below](#discipline)) and one to four examples on the Morrow archive. The CLI, socket, HTTP and MCP (with `outputSchema`) are generated from it; a new operation is a row, not code on each surface.
-- **Ready calls are executable envelopes.** The generated CLI form supplies the row's command words, `--request JSON`, `--request-id ID` and an optional `--deadline MS|none`; `find` is the explicit query form. A complete argument object replaces the row's positional arguments and cannot be mixed with operation flags. MCP tools use `polylogue_` plus the explicit command words joined with underscores (`polylogue_find` for a query) and accept `{arguments, request_id, deadline}`. HTTP ready calls carry `{operation, arguments, request_id, deadline}` on that row's route; GET encodes `arguments` and `deadline` as JSON query values. Each adapter validates the same typed arguments before execution. The accepting boundary retains that exact envelope for execution binding, including its request ID and deadline. Internal invocations without a received envelope report that binding source as unavailable. On the read route, `Accept: text/html` renders the same typed page and its ready calls.
-- **Attachment ranges retain their source selection.** The answer's optional `input` names an actual receiving member; it is absent for bytes stored inline in the selected canonical message/block/attachment slot. Inline ranges bind that slot and its recorded blob hash in the private cursor. They never replace an explicit input selection or an ambiguous imported member selection. Initial availability verifies the physical body, including an encoded empty body, and the CLI verifies the complete byte hash before atomically publishing a file.
-- **Finite transfers use shared SSE framing** on the socket and HTTP. Producers deliver begin, record and complete events from one selected snapshot. A failure before HTTP headers uses the shared failure status; a later failure ends with a canonical error answer event and no completion. A client publishes a staged directory bundle only after validating completion. The `changes` CLI renders its validated events as JSON lines and advances its checkpoint only at completion.
-- **Scope-bound output is fenced at publication.** Encoding happens before the native scope fence. Socket responses fence each bounded write and are complete only at their final newline; an interrupted line is never accepted as a value. HTTP bodies fence their bounded frame activation, and stream writers fence their raw data writes. A reset during preparation emits a safe `scope_changed` failure; after a partial response it aborts the unfinished transfer. A stale stream never emits completion, so its staged bundle remains unpublished. A shared in-flight result retains the actual producing caller's captured native scope as well as the receiving caller's scope. Both are checked at publication under the same native fence; a fresh waiter cannot relabel data selected before revocation. Scope is classified from the actual typed request, so a catalog read in a mixed write group is fenced while an accepted pure write keeps its writer admission result.
-- **Read-derived writes retain the selected scope through commit.** Keep, query annotations and recorded context deliveries carry the pinned reader's native token through the internal writer queue. The writer validates that token before durable custody or transaction commit, including request retries. Pure writes use the ordinary clock-free write path.
+- **Ready calls are complete requests.** The CLI form of a row is its command words, with `--request JSON` for a complete argument object (not mixed with operation flags), `--request-id ID` and `--deadline MS|none`; `find` is the explicit query form. MCP tools are named `polylogue_` plus the command words joined with underscores (`polylogue_find` for a query) and take `{arguments, request_id, deadline}`. HTTP takes `{operation, arguments, request_id, deadline}` on the row's route; GET encodes `arguments` and `deadline` as JSON query values. Every surface checks the same typed arguments. On the read route, `Accept: text/html` renders the same typed page and its ready calls.
+- **Finite transfers use the shared server-sent-event framing** on the socket and HTTP: a begin event, record events and a completion event from one read. A failure before HTTP headers uses the shared failure status; a later failure ends with an error event and no completion. A client writes a directory bundle into place, and `changes` advances its saved position, only after the completion event.
 - **Answers are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach.
 - **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. Ruling, 2026-10-27: "the CLI is supposed to be thin client for the daemon, which is supposed to have advanced caching, indexing whatnot to enalbe the CLI to be snappy" (cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:dad489d4-a1b8-48bd-bbc0-26262f34b262). Ruling, 2026-09-14: "there is no requirement or need for CLI to ever work 'standalone'. Daemon is the standard, not some sort of optional addon" (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245). Ruling, 2026-05-03: "we do not do non-daemonic writes" (cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:55).
 - **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker-based ones, and each names its non-interactive form ([Picker](#picker)).
@@ -97,17 +94,7 @@ Commands are not about a query's rows.
 
 Each table row declares a latency class, and the class applies on every surface (CLI, MCP, HTTP, web). Budgets are end to end (process start to the last byte of the first screen, through the real binary and socket), with a warm daemon and a real-shaped archive under ordinary load, at p95. The deadline each request carries comes from its class, in the `command-surface` request envelope.
 
-An HTTP `x-polylogue-deadline-ms` header supplies an outer request bound. The
-server captures its monotonic deadline once and passes it through dispatch
-and blocking read work; it does not rewrite the accepted operation envelope.
-A stream observes the earlier of that parent and its operation deadline.
-Without a header, a typed null deadline gains no implicit parent limit.
-The producing HTTP parent cancellation and deadline are checked before new
-operation admission and again before a writer or import handoff. An expired
-parent cannot admit a new write. The writer checks the same producing parent
-when dispatching queued writes, question custody and run Begins, after queue
-waits. That successful check transfers ownership: later expiry does not suppress
-its effects or acknowledgement. Owned run outcomes are cleanup, not new admission.
+An HTTP `x-polylogue-deadline-ms` header bounds the whole request; a stream ends at the earlier of that bound and its operation's deadline, and without the header a `null` deadline has no limit. A request already past its bound starts no new write; a write the writer has accepted keeps its effects and acknowledgement.
 
 | Class | Members | Budget (p95) | Deadline sent |
 |---|---|---|---|
@@ -160,7 +147,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI in particular _CERTAINLY_ requires advanced autocomplete, otherwise it is going to be ~pointless. Ideally that includes integrated fuzzyfinding somehow" (chatgpt:69f4b473-d540-83eb-b0ad-ad26c9ea32b1:06788182-5f1d-4763-9ee8-139dad3aed1e). Ruling, 2026-09-14, on completion with the daemon down: "yes. everything is supposed to be usable." (cc:652ae14f-a036-496b-abfa-42e7574c9ec9:473cc86c-de9a-40aa-bd32-30659f66bd71).
 
-- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The typed `complete` operation serves MCP `completion/complete`, HTTP and the web query box through the same read-only catalog lookup. MCP supplies the full query in `argument.value`; `_meta["polylogue/position"]` is an optional UTF-8 byte offset, defaulting to the end. Its standard completion values apply each replacement to that full query, preserving the suffix; `_meta["polylogue/completions"]` retains the typed replacement span, kind and help.
+- **It runs in the CLI process,** against a catalog file the daemon publishes, so it never waits on the daemon. The `complete` operation serves MCP `completion/complete`, HTTP and the web query box from the same catalog. MCP supplies the whole query in `argument.value`, with an optional UTF-8 byte offset in `_meta["polylogue/position"]` (the end by default); each completion value is the whole query with the replacement applied, and `_meta["polylogue/completions"]` keeps the typed replacement range, kind and help.
 - **The grammar-position completer** is the shared `query-language` function: it takes the whole query text and a cursor offset and returns candidates with their replace range. Polylogue supplies the catalog.
 - **Never** does completion run a search, open the archive or write.
 
@@ -188,9 +175,8 @@ Completion is advanced and works with the daemon down. Ruling, 2026-05-01: "CLI 
 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
 - **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; saved query names with parameters and help; kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity.
-- **Format:** a canonical pointer to a private generation-specific derived SQLite file with a versioned metadata row, indexed section tables and memory-mapped pages. Completion opens it read-only and loads the active source schemas, field values or session prefixes requested by the shared grammar. A catalog of another format version is ignored, leaving grammar-only completion.
-- **Freshness:** a startup snapshot is written to a private temporary file, synced and renamed. The daemon subscribes to committed index changes before that snapshot, then applies indexed deltas in atomic catalog transactions that commit the published position with their rows, at most every 2 s while writes continue. Idle publishers wait for commit notifications. Candidates may trail by that interval; query answers never do.
-- Access-scope changes and index generation changes revoke the pointer synchronously through the archive's scope guard. A publisher can activate a generation only under that same guard; a completion lookup checks its pointer again before returning. Primary caches remain unavailable until an actual confirmed barrier is known, including a known empty barrier.
+- **Format:** versioned binary with a fixed header and offset tables, memory-mapped. A catalog of another format version is ignored, leaving grammar-only completion.
+- **Freshness:** updated incrementally from each committed batch, written by temporary file, sync and rename, at most every 2 s while writes continue. Candidates may trail by that interval; query answers never do.
 - It is derived and harmless to delete.
 
 ### Registration
@@ -247,7 +233,7 @@ The reference forms are [references.md](references.md#forms)'s. The command line
 - **"Here"** is the terminal, or, for a caller with no terminal, the calling session (its harness session ID), so agents' tool shells get `@N` and `@last` per session. A caller with neither is refused with "rows are remembered per terminal or session; use the ID".
 - `@` forms are rewritten after argument parsing, and only in arguments of reference or query kind; free text (assertion values, titles, setting values) is kept as typed.
 - `@N` sets travel as a list parameter, not as text, and row numbers never leave the command line: the request carries the resolved references.
-- **The row file**, per terminal or session and per archive, holds the list's query hash and text, unit, read position, the displayed rows' references with hit references, and the next cursor. `next` prints the following page with continued row numbers; a cursor whose seal key a rebuild retired answers `invalid_query` and offers to run the query again; an authenticated unavailable read context answers `stale_cursor`.
+- **The row file**, per terminal or session and per archive, holds the list's query hash and text, unit, read position, the displayed rows' references with hit references, and the next cursor. `next` prints the following page with continued row numbers; a cursor invalidated by a rebuild answers `stale_cursor` and offers to run the query again.
 
 ### Footers and affordances
 
@@ -293,7 +279,7 @@ The exit and HTTP table is the common `command-surface`'s, shared with Sinex; ea
 | 2 | `invalid_query`, `unknown_field`, `bad_value`, `not_a_query`, `bad_request`, `ambiguous`, `stale_cursor`, `not_built` |
 | 3 | `refused`, with the operation's stated reason |
 | 4 | `not_found`, `conflict`, `io` |
-| 5 | `degraded`: an `incomplete` answer or an authored write accepted into the local primary spool but awaiting Sinex confirmation; `stopped_early`: an operation that did not finish |
+| 5 | `degraded`: an `incomplete` answer (rows printed, part of what was needed missing), an operation that stopped early, or a write pending in primary mode |
 | 6 | `not_running`: the daemon is down |
 | 7 | `timeout`, `cancelled` |
 
@@ -328,26 +314,9 @@ Exit 78 is used only by the daemon process itself, when it refuses to open an ar
 - **key-parity**: every act in both the picker table and the web key table has the same letter.
 - **at-forms-only-in-references**: `REF assert note "see @2"` stores `see @2`; `@2-4 assert tag x` tags exactly rows 2, 3 and 4; in a harness tool shell without a terminal, `@N` resolves against the calling session's last list.
 - **footer-handle**: every list, search and aggregate printed for a person carries its `query:<hash>` in the footer, and `result:<id>` when kept; `@last read` reproduces the same rows.
-- **next-continues**: `next` after a page prints the following page with continued numbers; after a rebuild it refuses the retired seal with `invalid_query`.
+- **next-continues**: `next` after a page prints the following page with continued numbers; after a rebuild it answers `stale_cursor`.
 - **write-undo**: every write verb prints its undo command, and running it restores the previous current state.
 - **output-gallery**: every command's terminal output on Morrow at widths 60, 80, 120 and 200, with `NO_COLOR=1` and piped, is checked on a terminal-cell model: no ANSI in a pipe, no line over the width, no traceback, no exit code outside the table, and colour never changes the text.
 - **exit-code-per-kind**: one invocation per failure kind exits with its table code.
 - **control-characters-inert**: a fixture with `\x1b]0;pwned\x07` in a title and a message renders inert in lists, reads and previews.
 - **long-read-first-screen**: `read` of a 10,000-message session shows its first screen within the read budget, and quitting the pager ends the command within 100 ms with no read left running.
-
-### Canonical assertion commands
-
-`assert` takes an `assertions` array of the model's checked `NewAssertion`
-values. `assert-query` takes `query` and one `assertion`; the daemon resolves the
-selected references through the ordinary recorded query lifecycle. `revise`
-takes exact natural `assertion:<root>@<revision>` references in `bases` and one
-`AssertionPatch`. `withdraw` takes natural `targets` and an optional `reason`.
-The accepted envelope supplies `request_id`; operation arguments contain no
-actor, resolved target list or caller-supplied source hash.
-
-The CLI accepts the structured values as JSON, for example
-`polylogue assert '[{"kind":"note","value":"Synthetic decision","links":[{"role":"about","reference":"repo:example"}]}]'`.
-The same closed typed values drive MCP, HTTP and their generated schemas.
-Notes, tags and judgments are assertion kinds; the predecessor `note add`,
-`note tag`, `note accept`, `note reject`, `note list` and `note read` commands
-are retired. Read or select them through `read` and the `assertions` query unit.

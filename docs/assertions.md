@@ -18,14 +18,12 @@ CREATE TABLE assertion (
   root        TEXT NOT NULL,     -- the first revision of this assertion; equals id for a first revision
   kind        TEXT NOT NULL,     -- closed list, see Kinds
   key         TEXT,              -- meaning per kind
-  value       TEXT,              -- JSON checked against the kind's shape; ordinary text is a JSON string
-  author      TEXT,              -- computed native author; missing historical authorship stays null
-  via         TEXT,     -- mcp | cli | web | extension | hook | markup | import | daemon
-  machine     TEXT,
-  created_at  TEXT,     -- RFC3339 with full precision: display, age and as-of reads; never revision order
-  valid_until TEXT,              -- optional RFC3339 expiry; shown as expired and left out of briefs
-  imports     TEXT NOT NULL,     -- typed observed/declared import history; never native authority
-  historical  BLOB,              -- typed evidence under its recorded source schema, when not current-schema data
+  value       TEXT,              -- text, or JSON checked against the kind's shape
+  author      TEXT NOT NULL,     -- computed, see Authorship
+  via         TEXT NOT NULL,     -- mcp | cli | web | extension | hook | markup | import | daemon
+  machine     TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,  -- the writer's clock: display, age and as-of reads; never revision order
+  valid_until INTEGER,           -- optional; after it the assertion is shown as expired and left out of briefs
   commit_seq  INTEGER NOT NULL   -- this archive's write counter: change feed and send order only
 ) STRICT;
 
@@ -33,7 +31,7 @@ CREATE TABLE assertion_link (
   assertion   TEXT NOT NULL REFERENCES assertion(id),
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
-  seen_hash   BLOB,              -- BLAKE3 of referenced text; NULL when waiting, unrecorded or not applicable
+  seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
   PRIMARY KEY (assertion, role, ref)
 ) STRICT;
 CREATE INDEX assertion_link_ref ON assertion_link(ref, role);
@@ -41,74 +39,9 @@ CREATE INDEX assertion_kind_key ON assertion(kind, key);
 CREATE INDEX assertion_root     ON assertion(root);
 ```
 
-`AssertionFact` carries the semantic fields and declared original provenance;
-`Assertion` adds this archive's actual local `commit_seq` and typed import history when read. Frozen
-effects and independent restoration facts carry `AssertionFact`, so a private
-preparation counter cannot become semantic identity or a fabricated receipt.
-Native writes stamp the actual accepting author, channel, machine and time.
-For historical assertions without an original native request, unknown channel,
-machine and creation time remain null. Their current importer attribution is
-separate from historical authorship claims; an operator or shipped claim gives
-no privilege. Modern native history retains its whole original prepared
-request, effect and actor. An independent bundle assertion carries its
-exact `assertion:<root>@<revision>` reference, `AssertionFact` and declared
-import claims, without a sender projection counter or an invented original
-request. Restoration enters through the same Writer and confirmed product
-path as other authored facts; retries retain the first receiver-computed
-ingress time for the same input, chain, machine and importing actor.
-
-A predecessor assertion whose recorded shape does not satisfy the current kind
-schema remains `HistoricalAssertionEvidence`, under its original kind, value,
-targets and relations. Its stable identity and explicit graph links share the
-assertion tables. Full object reads expose that recorded form; current-kind
-consumers report unavailable for missing structured fields. Native acceptance
-continues to validate the current schema. An explicit native revision must
-supply a valid current value; historical signal evidence cannot execute.
-
-Retired accepted actions remain read-only `HistoricalAcceptedRequest` records
-in the existing request row. They retain their closed typed historical intent,
-source schema, exact original request and semantic intent bytes, original
-content hash, recorded outcome and resulting fact identities. The numbered
-conversion verifies those bytes before mapping effects. It never constructs a
-current prepared request for an incompatible action. Compatible modern requests
-retain their actual frozen body and effect. Unmappable nonempty effects refuse
-conversion atomically, leaving the source unchanged. Import attribution is
-receiver evidence; historical authorship claims do not grant native authority.
-Receipt reads return the original outcome without executing the old intent.
-
-An absent original request body remains absent even when its outcome or effect
-bytes were retained. Conversion preserves those known bytes and the recorded
-hash with unverified intent integrity. It creates no empty request, synthetic
-actor or replacement timestamp. Original import vectors retain their recorded
-classification inside original-source metadata, separately from the receiving
-row's observations and sender claims. A local cache upgrade also retains its
-exact available predecessor JSON envelopes there; rebuilding and repeated
-restoration preserve these values without multiplying identical evidence.
-Compression-container identity is outside portable accepted evidence.
-
-
 - **One link table.** Target, evidence, scope, origin and every relation are the same fact: this assertion points at that reference, in this role.
 - **Nothing computed is stored.** Currency, conflicts, withdrawal, judgment state, target state and work-item state are computed when read, so they can never disagree with the links they come from.
 - **Nothing expires by itself.** `valid_until` changes how an assertion is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
-
-`withdraws` addresses graph identities, including whole families with conflicting
-heads or no remaining current head. Acceptance checks that the named identity
-exists and that the resulting withdrawal graph is valid. A text hash is not
-applicable to this role and supplying one is invalid. Scope references without
-recorded text likewise have no text hash. Historical unrecorded hashes remain
-unknown; a null hash alone never proves a native waiting observation. An ordinary
-text link resolves the original source or pending authored fact: an absent target
-can wait, while unavailable recorded text returns an error. These states never
-make a null hash a wildcard for later text.
-
-A waiting link's original `seen_hash = NULL` stays immutable. Its later binding
-is a separate typed fact naming the exact target version and text hash, with
-the authoritative admission and availability evidence that makes that version
-readable. Primary mode publishes the binding through its existing confirmed
-product path. Imported declared bindings remain provenance claims, separate
-from a newly observed canonical binding; a claimed earlier timestamp never
-overwrites one. Reads use the binding alongside the original link. Replaying
-the original unbound assertion neither changes nor conflicts with it.
 
 ## Kinds
 
@@ -121,6 +54,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `highlight` | colour name | optional text | many | a `span:` | `::highlight` |
 | `title` | — | text | one per about | a session | `::title` |
 | `outcome` | — | `solved`, `partial` or `abandoned` | one per about | a session | `::outcome` |
+| `hidden` | — | optional reason | one per about | a session | — |
 | `claim` | optional label | text, optional `check` (see Checked claims) | many | anything | `::claim` |
 | `finding` | optional label | text | many | anything; `derived_from` the `result:` or `query:` it rests on | `::finding` |
 | `decision` | optional label | text, optional `{alternatives, constraints, reverse_if}` | many | anything | `::decision` |
@@ -130,46 +64,19 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `comparison` | dimension | `{verdict, rubric?}` | many | two or more references | — |
 | `rubric` | name | `{instructions, unit_query, fields, abstain, confidence}` | one per name | — | — |
 | `pass` | — | `{rubric, population: result:<id>, counts}` | many | — | — |
-| `annotation` | a rubric field, or `abstain` | `{value, confidence?, rationale?}`; the field value, or the reason for abstaining | one per (about, rubric revision, key, author) | one row of the pass's population | `::annotation(rubric=…, key=…)` |
+| `annotation` | a rubric field, or `abstain` | `{value, confidence?, rationale?}`: the field's value, or the reason for abstaining | one per (about, rubric revision, key, author) | one row of the pass's population | `::annotation(rubric=…, key=…)` |
 | `memory` | path | file text | one per (scope, key) | — (`scope` link) | — |
 | `method` | name | `{inputs, conditions: [{name, check}], steps, expected, stop}` | one per name | — (optional scope) | — |
 | `saved_query` | name | `{text, hash, denominator?}` | one per name | — | — |
 | `signal` | name | a signal rule ([operations.md](operations.md#notices)) | one per name | — | — |
 | `page`, `slot`, `member`, `role`, `ping` | see [pages.md](pages.md) | | | | |
 | `withdrawal` | — | optional reason | many | — (`withdraws` links) | — |
-| `setting` | setting name | typed setting payload ([operations.md](operations.md#configuration)) | one per (name, target host), or one per name at archive scope | — | — |
+| `setting` | setting name | `{machine, value}` ([operations.md](operations.md#configuration)) | one per (name, host) for a host-scoped key, one per name for an archive-scoped key | — | — |
 
-A setting's value is `{machine, value}`: `machine` is null at archive scope or
-the resolved target host at host scope; `value` is the catalog's typed value.
-The accepting machine remains the assertion's `machine`, even when a command
-selects another host with `--machine`. Scope and value validation use the same
-setting catalog as the command; the target host participates in cardinality.
-A setting read uses graph currency for that exact key and target host. Conflicting
-current revisions expose their exact references and supply no effective value;
-a default does not resolve the conflict. A captured settings snapshot retains
-that conflict per key, so another setting remains usable. Authored metadata
-names the exact assertion revision and retains nullable original machine,
-channel and time, independently of the setting's destination host.
-
-Ordinary live text values are JSON strings. A canonical historical text value
-may instead be the closed object `{text, predecessor}`, where `text` preserves
-the original string and `predecessor` holds declared historical metadata.
-Optional text preserves an absent original reason as `text: null`. Structured
-kind values may also carry an optional top-level `predecessor`. This metadata
-is preserved as an opaque provenance claim; it never supplies an author,
-privilege, scope, a canonical value field or permission to bypass validation.
-Canonical fields are validated normally. Content comparison and text hashes
-use the canonical content, while immutable fact comparison retains the full
-provenance claim.
-
-An annotation's field data is under `value`, with optional `confidence` and
-`rationale` governed by the exact rubric revision. A field may itself contain
-an object, including a property named `predecessor`; it remains field data.
-Top-level `predecessor` is the separate historical provenance claim. An
-abstention stores its reason under `value` with key `abstain`.
+A setting's `machine` is its target host for a host-scoped key and null for an archive-scoped key; `value` has the catalog's type for that key. The machine that wrote the setting stays the assertion's own `machine`. Two current revisions for one key and host are a conflict, shown with both references; the default does not resolve it.
 
 - **Marks.** Starring, pinning and other marks are tags. "Pin" stays the word for a mark; a page slot that shows an exact revision is `fixed` ([pages.md](pages.md#layouts)).
-- **The `hidden` tag** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the ordinary `assert` and `withdraw` verbs.
+- **`hidden`** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the ordinary `assert` and `withdraw` verbs.
 - **A summary is a variant,** not a kind (see Variants). A pass is the one way to group bulk annotation.
 
 ## Links
@@ -202,9 +109,7 @@ abstention stores its reason under `value` with key `abstain`.
 
 **Exact references hold.** Judgments, questions, `fixed` slots, kept results and deliveries store `assertion:X@R`. A new revision never moves them, and a judgment of R says nothing about R+1.
 
-**Cardinality is enforced at write** from the kind declaration. Writing a single-valued kind (`title`, `outcome`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged".
-
-**Saved definitions retain question identity.** Save, Assert and Revise prepare a native saved query against the accepting original source and ordered authored view, including this host's pending writes. The product supplies its captured origin and command catalog separately from the request. The prepared question must match the declared hash; a denominator is a separately prepared question, required for a measure or aggregate figure. Before publishing the assertions, the writer acknowledges the immutable query objects through the existing question-custody path. A batch prepares once in order, using provisional objects only to bind later definitions in that batch, then validates again against actual retained custody. An object acknowledgement failure publishes no assertion from the batch. A retry returns its original frozen result. Executing a saved definition uses its retained question and frozen dependencies, so changing another saved name cannot rebind an existing definition. Missing object custody or trusted preparation context is typed unavailable.
+**Cardinality is enforced at write** from the kind declaration. Writing a single-valued kind (`title`, `outcome`, `hidden`, `rubric`, `saved_query`, `memory` per scope, `page` per name) from a command revises the current one instead of adding a second root. Markup of a single-valued kind never revises: a command-written value beats every marker, and among markers in force the latest in message order along the session's lineage wins, then block index, then byte offset. A `tag` write is skipped when the target already has a current tag with that key and value; the reply says "already tagged".
 
 ## Authorship
 
@@ -216,7 +121,6 @@ Every authored record in Polylogue (assertions, variants, withdrawals, judgments
   - `operator`;
   - `agent:<session>`, the most specific session known, for example `claude-code:agent-a7f3a2c1000000003` for a Claude subagent or `codex:<thread>`;
   - `agent:<origin>`, when the harness is known and its session is not, for example `agent:gemini-cli`;
-  - `agent`, when the agent channel or a historical record establishes an agent but neither its harness nor its session is known;
   - `script:<unit>`, a named non-interactive program, named by its cgroup unit (a systemd unit or a scope);
   - `unattributed`, when there is no evidence either way.
 - **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `desktop`, `hook`, `markup`, `import` or `daemon`. There is no evidence blob and no confidence score.
@@ -233,7 +137,7 @@ The client process gathers its identity and sends it as `caller` in the request 
 | **CLI**, the second channel | Harness identities come from the environment (`CLAUDE_CODE_SESSION_ID` with `CLAUDE_PID`; `CODEX_THREAD_ID` with `CODEX_TOOL_CALL_ID`; `HERMES_SESSION_ID`; `GEMINI_CLI=1`, which has no session). With several present, the nearest harness ancestor in the process tree wins; with several and no harness ancestor, `unattributed`. A Claude identity is refined to a subagent when the spool holds exactly one open `PreToolUse` Bash event from that `CLAUDE_PID` whose command runs `polylogue`; otherwise the main session stands, which is correct as the root of the work. With no harness identity, a controlling terminal gives `operator`; no terminal gives `script:<unit>` when the process's cgroup names a unit, else `unattributed`. |
 | **Web UI and HTTP API** | `operator`, `via: web`, with no inspection of the browser. The web UI is the operator's channel; agents are directed to MCP. |
 | **Browser extension** | `operator`, `via: extension`, for acts in the extension's own UI. Acts it performs for a request (a chat send, a backfill) carry the requester's author from the request record ([extension.md](extension.md#authorship-from-the-extension)). |
-| **Desktop notifications** | `operator`, `via: desktop`, for acts reported by the trusted desktop notification adapter; a rule cannot supply this channel. |
+| **Desktop notifications** | `operator`, `via: desktop`, for actions taken on a desktop notification ([operations.md](operations.md#notices)); a rule cannot supply this channel |
 | **Hooks** | records a hook writes for a session are `agent:<that session>` or `daemon`, never `operator` |
 | **Markup** | the author of the message the marker is in (see Markup) |
 | **Import of user state** | each record keeps its stored author |
@@ -267,7 +171,7 @@ Authorship is for honest attribution, not a security boundary: all agents run as
 **Target state.** Each `about` and `evidence` link is shown in one of four states:
 - **current**: the target exists and its text hash equals `seen_hash`;
 - **changed since**: the hash differs (a better version merged, a re-parse produced different text), shown as "the text has changed since this was written";
-- **waiting**: well formed, not stored yet, its session live or incomplete; it attaches through a canonical binding when its exact source text becomes available, without rewriting the original link;
+- **waiting**: well formed, not stored yet, its session live or incomplete; it attaches on arrival with no rewrite and fills `seen_hash` then;
 - **missing**: the session is complete and the ID never appeared; `status` counts these.
 
 **Work-item state** is computed from links, never from text:
@@ -287,7 +191,6 @@ A later answer is tied to an earlier item only by an explicit link (a marker arg
 - Reading any reference lists what links to it: assertions by role, slots, kept results, deliveries and variants (`referenced_by:` in queries).
 - `read assertion:X --history` lists revisions, withdrawals, judgments and conflicts in the order of the `revises` graph; ties are shown by `(created_at, id)`.
 - `evidence_until:T` reads each assertion at the revision current among records with `created_at ≤ T`; pages use it for `--at`. `created_at` is the writer's clock, so as-of reads across machines are approximate and say so.
-- An undated revision, withdrawal or restoration affecting the requested family makes its historical applicability unknown. The error names the exact affecting reference; no epoch, import time or local counter supplies the missing date. Unrelated undated facts do not affect other families. Current graph reads remain usable where their structure determines the answer.
 
 ## Judgment
 
@@ -345,7 +248,7 @@ CREATE TABLE variant (
   from_lang   TEXT, to_lang TEXT,  -- BCP 47
   author      TEXT NOT NULL, via TEXT NOT NULL,
   method      TEXT,                -- free text or a reference: model, prompt, rubric used
-  machine     TEXT, created_at TEXT NOT NULL, commit_seq INTEGER NOT NULL
+  machine     TEXT NOT NULL, created_at INTEGER NOT NULL, commit_seq INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE variant_part (
@@ -359,12 +262,10 @@ CREATE TABLE variant_part (
 ) STRICT, WITHOUT ROWID;
 ```
 
-`created_at` stores the full RFC 3339 timestamp, including submillisecond precision; the local write counter is never part of record identity. Import history is attached to each exact rendition and part: the original author and machine stay on the rendition, locally observed ingress records its computed actor, and sender claims remain declared history. A retry preserves the first admitted observed timestamp, even after a clock rollback.
-
 Revisions use `base`; withdrawal is an ordinary `withdrawal` that `withdraws variant:<root>[@<rev>]`; currency follows the rule under Currency with `base` in place of `revises`. Finer alignment inside one part is expressed by span references in assertions about the part.
 
 - **Hierarchical.** A variant whose source is a session consists of parts, one per rendered block, each naming its original block in `of`; its messages are the groups of parts by their original message. A message variant is the same at message grain. A summary is one or more parts whose `of` is what the producing agent chose (the session, a range of messages, a block), with relation `summarizes`; the agent declares that mapping when it writes the variant. Reading `variant:V` renders the original's structure with parts swapped in; unmapped children show "untranslated" and `omits` parts show "omitted".
-- **Several parts for one child.** Several parts may name the same exact `of` reference, for example an expansion. They render in ascending `n`, with two LF characters between their bodies, using the same separator as the recorded variant-text stream. The rendered group names the exact variant revision and original child; a single-part rendering may name the exact part. Distinct current rendition roots remain an ambiguity rather than being concatenated. A group is rendered as omitted only when every part declares `omits`; a mixed group keeps its content and shows a partial-omission indication. Declared relations are retained per part, rather than selecting one relation as a winner.
+- **Several parts for one child.** Several parts may name the same `of`, for example an expansion. They render in ascending `n`, joined by two line feeds. A group renders as omitted only when every part is `omits`; a mixed group keeps its text and is marked partly omitted. Each part keeps its own relation. Two current renditions of one source are an ambiguity, never concatenated.
 - **Bound to its source revision.** Revisions and variants are separate dimensions: a page can exist in Polish and English, each with its own revisions. Correcting a rendition writes a revision with the same source. When the source changes (`source_hash` or an `of_hash` differs), the variant shows "rendition of an earlier text"; translating again is a new variant.
 - **Assertions get variants too.** The source may be `assertion:X@R`. An agent translating an annotated session writes one session variant plus one variant per assertion it renders, each pointing back at its original. On a variant view, assertions about the variant itself are shown; for an assertion about an original child, its current variant in the view's language is shown when one exists, otherwise a count with a link ("2 notes in the original"). The original's text is never shown as if it were about the variant.
 - **Variants never count** as support, votes or judgment.
@@ -406,7 +307,7 @@ Named arguments: `about=` (by default the session for `title` and `outcome`, oth
 
 ## Write path
 
-Every write is a request `{id, machine, at, authorship, write}`, executed by the daemon's writer in its own small transaction:
+Every write is a request `{id, machine, at, write}`, executed by the daemon's writer in its own small transaction:
 1. **Idempotency.** The same request ID with the same content hash returns the original outcome (`repeat: true`); with other content it is refused as `conflict`. The client chooses the ID once per user action and reuses it on retry.
 2. **Author**, computed as described under Authorship.
 3. **Resolution.** References resolve; a query target runs in the same read transaction as the write's checks.
@@ -446,7 +347,7 @@ Performance rules: currency, conflict and withdrawn state are computed by indexe
 - **kinds-round-trip**: every kind writes and reads back its key, value and links through the daemon, the `assertions` unit and `read assertion:`; a malformed value and an unknown kind are refused with the shape error (property test over generated assertions).
 - **links-by-role**: an assertion with `about`, `evidence`, `scope` and `origin` links reads back each in its role, and `kv:` matches only `about` links at the unit's grain.
 - **highlight-changed-since**: a `highlight` on a `span:` written from the web reader and one from `::highlight` both read back on the message; after a better version of the message merges, both show "changed since".
-- **waiting-target-attaches**: a reference written before its message is stored attaches with a separate canonical binding while preserving its original unbound link; on a completed session whose ID never appears, it counts as missing.
+- **waiting-target-attaches**: a reference written before its message is stored attaches on arrival with no rewrite and fills `seen_hash`; on a completed session whose ID never appears, it counts as missing.
 - **stale-base-refused**: two revisions of one base through the daemon: the second is refused `stale`, naming the first. The law runs standalone and in primary mode against a test Sinex with the first revision still unconfirmed; the memory adapter's `create` then `str_replace` on the unconfirmed `create` succeeds, and a second `str_replace` on the old base is refused.
 - **concurrent-revisions-conflict**: the same two revisions written on two archives and imported into one give a conflict; `conflict:true` matches; a single-valued read matches neither; a revision of both resolves it.
 - **withdraw-and-restore**: with R1←R2, withdrawing R2 makes R1 current; withdrawing that withdrawal makes R2 current; withdrawing the root hides the family except under `withdrawn:*`.
@@ -476,32 +377,3 @@ Performance rules: currency, conflict and withdrawn state are computed by indexe
 - **variants-enabled-everywhere**: `reading.variants = [translation:pl]` gives identical swapped output in `read`, the web reader and `read --to DIR`.
 - **variant-search-separate**: a Polish word matches nothing without `variant:true` or `lang:pl`.
 - **predecessor-import**: the predecessor's assertions import with none authored `operator`, and one withdrawal removes them all.
-
-Numbered cache conversion also retains the predecessor's typed partial native
-context, keyed by its actual event, local admission (when present), position,
-source order and record state. This is historical cache evidence. Missing run,
-record hash, times, material and parent fields remain unknown; the partial
-context cannot construct a full native observation or confer eligibility.
-Updating a fetched projection preserves that earlier context across rebuilds.
-
-Portable history uses a distinct typed `historical` bundle record. Its closed
-evidence form contains either the recorded accepted action or an independent
-historical assertion. Import uses the existing restoration queue and records
-the actual receiving attribution separately. It never executes the retired
-intent, recertifies its actor, or manufactures an original outcome. The import
-operation's progress receipt is separate from that retained outcome. Retained
-publication custody is not portable accepted history.
-
-A standalone exact assertion read expands to its whole retained historical
-request when immutable effects establish that association. An independent
-assertion remains readable as its typed fact. Historical bodies retain their
-recorded text bytes, including accessible empty strings; absent historical
-text remains unavailable. Primary whole-request reads still require the
-owner proof for that full grain.
-
-An explicit revision may name a historical base. The new revision must satisfy
-the current kind, value, key and link policy and takes its provenance from the
-actual invocation. Structured historical strings do not become current typed
-values through parsing or field invention. Unmapped historical targets or
-relations require an explicit canonical link replacement. The original fact
-and all its recorded metadata remain available through the revision link.

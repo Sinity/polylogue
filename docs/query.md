@@ -4,8 +4,6 @@ Polylogue asks every question through one query language: listings, reports, rec
 
 The grammar, its spelling, the AST's three-valued semantics, time expressions, the logical day and the cursor type are shared with Sinex and owned by the common [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/query-language.md) crate, together with the laws that are properties of the language. Text and semantic search are in [search.md](search.md); how the command line reads arguments, completion and exit codes are in [interfaces.md](interfaces.md); references are in [references.md](references.md); measures in [measures.md](measures.md); queries that mix Polylogue and Sinex data in [primary-mode.md](primary-mode.md#cross-system-queries).
 
-The product catalog comes from the unit and field registries used by the compiler. Parsing, grammar completion and discovery use that vocabulary. Observed repositories, models and other values extend completion suggestions; they do not turn an open field into a closed set. The product compiler consumes the shared tree directly and refuses a shared form whose execution it does not implement with `not_built`.
-
 ## Principles
 
 - **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. Ruling, 2026-06-17: "The whole point of expressive query DSL is to make such funcitonality alwasy within reach. I don't want tons of specific weird little features" (chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). Ruling, 2026-07-02: "dont build one-off silos, build things that powerfully compose" (cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
@@ -86,9 +84,9 @@ A reference drops the reachability defaults for its own match. A group or sort k
 
 Time expressions (relative, calendar, natural-language dates, bounds, daylight-saving rules) and the logical day are the shared language's. Polylogue's use of them:
 
-- A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run. Runtime execution receives one captured operation context; its explicit shared `Clock`, named day setting and full civil start are retained in `resolved.context.clock`. `resolved.context` also records the actual accepting instant (`ran_at`), configured machine, computed authorship and public owner provenance. An authenticated continuation replays its evaluation clock while retaining the new invocation’s actual `ran_at`. A changed owner settings revision or day setting invalidates a continuation. Calendar and cost continuations use the same authenticated cursor envelope, so a caller cannot replace the frozen instant in its payload. Completion and schema inspection need no clock. The timestamp index stores integer milliseconds: fractional bounds use ceiling conversion for lower and exclusive upper comparisons, without recovering source precision absent from that index.
+- A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run.
 - Every time Polylogue reads carries `time_quality` and `precision` ([sessions.md](sessions.md#times)), in the closed sets shared with Sinex.
-- Tool-call `result_at` is the native result or completion-notification time. `reported_duration` is the harness's own duration, in milliseconds, and stays unknown when absent. It is separate from the elapsed `duration` defined in [measures](measures.md); that field requires the declared same-clock interval and its reason before it enters the product catalog.
+- A tool call's `result_at` is the time of its result or completion notice. `reported_duration` is the harness's own duration in milliseconds, unknown when absent; it is separate from the elapsed `duration` of [measures](measures.md), which needs both times on one clock.
 - **Coarse times.** A coarse or bounded time satisfies a time condition only when its whole period does, fails when none of its period does, and is otherwise `unknown`. A row whose time is unknown never matches a time condition, is counted in `notes`, and `group by day` puts it in an `unknown` group.
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`.
 
@@ -96,7 +94,7 @@ Time expressions (relative, calendar, natural-language dates, bounds, daylight-s
 
 ### Conditions over related rows
 
-- `exists child(C)`: one child satisfies all of C; three-valued. With no predicate, `exists child()` tests whether any related child exists and is false for an empty child relation.
+- `exists child(C)`: one child satisfies all of C; three-valued. `exists child()` is true when any related child exists, and false when there is none.
 - `count(UNIT [where C]) OP N`: a count is always known, so it and its `NOT` partition the rows.
 - `FIELD in (QUERY | group by F)`: the value is one of the other query's grouped values of the same type.
 - `seq(A -> [next] B -> [within:5m] C)`: tool calls in session order. Matches are the earliest non-overlapping; a step's own conditions narrow before matches are chosen; `within` needs both times, the later strictly after; `| matches` returns each match as rows. `seq all(…)` (every, overlapping match) and `gap_steps`/`gap_time` on match rows are part of the language.
@@ -113,10 +111,6 @@ Stages apply in the order written:
 - `distinct`; `matches`; `| UNIT [where C]` (rows of another unit within the matched sessions); `fields a,b` (projection; `--fields` on the command line).
 - `| measure WHAT` hands the selection to a measure ([measures.md](measures.md)).
 - Further stages are part of the language and answer `not_built` until built: a per-group limit (`| group by origin | first 5`), derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
-
-An unshaped saved relation retains its queryable native fields, including related paths, from the same bound definition used for execution. Those runtime fields are separate from the actual produced columns stored in its canonical schema. Replay rebuilds the relation scope from the frozen definition closure, and the derived completion catalog publishes it with the produced schema atomically. Fields, grouping and Matches narrow the relation scope; a kept result uses only the fields present in its retained artifact.
-
-Matches suffix fields are checked against the same product projection declaration used for binding and replay. Runtime qualifier metadata is rebuilt from the frozen definition closure and is absent from canonical QueryObject bodies. The current SQL adapter returns `not_built` for overlapping `seq all(…) | matches` and for Matches after semantic limit, offset, first or distinct selection; those remain language operations awaiting the producer. Selection after Matches remains supported.
 
 ### Attached rows
 
@@ -141,27 +135,14 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 ### Names and composition
 
 - **Names point at hashes.** A name is a `saved_query` assertion ([assertions.md](assertions.md#kinds)) with key = name and value `{text, hash, denominator?}`. Saving under an existing name revises that assertion, with the ordinary currency rules ([assertions.md](assertions.md#currency)); `query:NAME` resolves to the hash of the current revision, and two current revisions under one name are `ambiguous`.
-- The saved assertion retains its original text, declared hash and denominator. Execution loads that retained QueryObject and its frozen, hash-bound definition closure; changing another name never rebinds an older definition. Missing custody or an unsupported captured definition makes that name unavailable. Native acceptance prepares the submitted text against the same pinned original index and authored pending view, then checks its hash; the app obtains QueryObject custody before asserting it. Preparation uses product-owned declarations and needs no evaluation clock.
 - **Composition edges are recorded at compile time** in `query_edge(query, uses, how)`, where `how` is `saved` (a name and the hash it resolved to), `result` (a kept result used as source), `combine` or `in` (a sub-query). "Which queries use this one" and "what did this query depend on" are queries over the `queries` unit.
 
 ### Runs
 
 - Every executed query writes a run: `query_run(id, query, at, resolved, read_at, author, via, outcome, count, exact)`, with the author computed as for every authored record ([assertions.md](assertions.md#authorship)). `explain` and completion write none.
 - `query(hash, normal_form, first_run)` holds each distinct query once.
-- The ordinary Writer acknowledges each immutable Begin before a compact continuation advertises its run. Custody is either canonical or durable queued custody in the existing producer outbox; the same named lookup finds it after restart. The immutable QueryObject retains semantic definitions and output schemas. Begin retains the actual execution clock, options, source binding and credential-free accepted request provenance. Replay uses current authorization and the current operation table.
-- Each accepted page execution gets its own Begin and one immutable Outcome at return or failure. A partial Outcome may carry the compact next ReadyCall; it records the observed result, not proof that the client received bytes. Outcome enqueueing never makes the read wait for its SQL row. A continuation Begin refers directly to the original root and its stable binding hash, plus the authenticated bounded position and the current accepted envelope. Its separate record hash binds that page's intent, time and actor. Roots cannot be chained or self-referential; original facts are retained unchanged.
-- Original Read bindings retain the effective format and all logical page limits before response-envelope reservation. An omitted resume budget retains these limits; an explicit budget changes only that page's token limit. Compact resume accepts the root run and an opaque sealed cursor, without selector or presentation overrides. Current grant, scope, source version and content must still validate.
-- A Read Span retains one frozen source choice. Native bindings keep the original typed span, normalized UTF-8 bounds, exact source-version identity and native block/field seek endpoints. Fragment bindings keep the typed span window, source version and actual fragment-metadata membership digest. These metadata contain no copied text or headers and do not certify a complete source hash from selected bytes. Replay authenticates the acknowledged root and sealed cursor before validating the current source and seeking; raw stored coordinates confer no authority. The cursor carries bounded binding identity and page position.
-- Previous navigates content before the current page's start; it does not look up a historical accepted page. The sealed cursor authenticates one closed direction and bounded content anchor. Forward resumes at the first unconsumed character; backward excludes the current page start after checking its item digest. Following either cursor creates a new child Begin and Outcome with the original root, current invocation and current authorization.
-- New server run IDs are random UUIDv4 values independent of the captured execution clock. `at` retains the actual captured timestamp, including pre-epoch values. Existing canonical UUID references remain valid regardless of version.
-- Every query answer carries `query: "query:<hash>"` and `run: "<run id>"`; a kept answer also carries `result:<id>`. Exact accepted-object reads record an `OriginalObject` run binding with no question, rather than inventing a query identity. Query and query-continuation bindings always retain their question.
-- Retired run encodings survive as historical evidence in the same run record,
-  with their original question, available bytes, optional declared integrity
-  claims and actual fetched or cached provenance kept distinct. Current replay
-  is available only when the complete old value passes current validation
-  unchanged. Retired units, references and locators remain explicitly
-  unavailable for replay; an old read never gains a new reference meaning.
-
+- Runs are written by the writer in its ordinary groups, never inside the read, so a read never waits on its run row.
+- Every answer carries `query: "query:<hash>"` and `run: "<run id>"`; a kept answer also carries `result:<id>`.
 
 ### Saved queries
 
@@ -220,9 +201,9 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 ## Paging
 
 - **Four bounds stay apart.** Selection (`limit`, `[last:k]`) is in the question. `page_size` is how much travels now (default 20 sessions or 50 other rows, the same on every surface). A presentation budget cuts display, never a figure's population. The deadline bounds execution.
-- **Cursors** bind the semantic question hash separately from execution context. They hold the last row's order-key values with row identity as the final key, the captured clock, resolved times, random seed, index generation, first read position and version bindings for the native catalog, grants and ranking data. Fields, caller and presentation options belong to those execution bindings; they do not change `query:<hash>`. Cursors are sealed, opaque and integrity-checked. An unsupported captured catalog version returns a typed unavailable or stale replay outcome rather than rebinding against current declarations.
+- **Cursors** hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are sealed: opaque and integrity-checked.
 - **Continuation is by key,** never by offset, and no read transaction is held between pages. When the archive changes between pages, no row whose key did not change is skipped or repeated, and `notes` say "the archive changed since the first page", listing rows that moved before the anchor.
-- **Refusals:** a cursor with an invalid or retired seal, or from another question, is `invalid_query`. An authenticated cursor whose read context is no longer available, including a ranked cursor after a vector write, is `stale_cursor`. The index keeps its private seal key across daemon restarts; rebuilding retires that key. Neither refusal restarts the query silently. Only the page size may change between pages.
+- **Refusals:** a cursor from another question is `invalid_query`; one from an earlier index generation, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
 - A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is kept first, then paged.
 - The count is computed once per question and read position, and reused by later pages.
 
@@ -267,7 +248,7 @@ A facet count is `group by F | count` over the same filtered population as the a
 
 ## Watches
 
-A watch is a signal rule over a query ([operations.md](operations.md#notices)); the rule schema and the evaluator's semantics (changes, baselines, cooldowns, thresholds, catching up, downtime) are the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/docs/signals.md) design. What Polylogue's query side supplies:
+A watch is a signal rule over a query ([operations.md](operations.md#notices)); the rule schema and the evaluator's semantics (changes, baselines, cooldowns, thresholds, catching up, downtime) are the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) design. What Polylogue's query side supplies:
 
 - `watch [--name N] QUERY` keeps the current answer as the baseline (a kept result) and re-evaluates as data arrives, re-resolving relative times.
 - Changes are reported as `membership` (rows joined or left), `ranking` or `top_k`, never one for another.
@@ -305,7 +286,7 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **ranked-keep-or-refuse**: keeping a fused answer stores ranks and contributions; keeping one whose vector side is missing is refused naming the list.
 - **figure-needs-denominator**: a figure without a denominator is refused at save; a kept figure reports value, denominator count and unknown count.
 - **kept-result-derivation-versions**: a kept result records derivation versions and reports the change after a price-table change.
-- **paging-stable-under-writes**: paging across concurrent writes never repeats or skips an unchanged row; a cursor across a rebuild is refused with `invalid_query` after its seal key retires; random-order pages never overlap.
+- **paging-stable-under-writes**: paging across concurrent writes never repeats or skips an unchanged row; a cursor across a rebuild is `stale_cursor`; random-order pages never overlap.
 - **deadline-timeout-and-lift**: a read past its deadline ends `timeout` naming a narrower query and the lifted form, and is cancelled in the daemon within 100 ms; the same query with `--deadline none`, or `deadline: null` over MCP called as an agent, completes.
 - **disconnect-cancels**: a client disconnect cancels the read.
 - **answer-schema**: one JSON-schema test of the answer holds across all surfaces; `empty` never results from a failure.
@@ -313,9 +294,3 @@ The language's own laws (filter composition, three-valued filters, grouped rows,
 - **facets-equal-group-by**: facet counts equal their `group by` queries.
 - **watch-change-kinds**: a watched `similar:` query reports rows joining and the top five changing as separate changes; a reading during catch-up reports nothing; a re-parse of the same input never fires again.
 - **bulk-write-membership**: a bulk write over a query writes exactly one assertion per row of the query's membership at write time.
-
-Every bounded read page has its own immutable Begin record. A continuation
-retains the original root action's integrity hash while its record hash binds
-its current position, invocation, time and actor. Its asynchronous outcome must
-match both hashes. Root lookup resolves one retained original Begin and refuses
-missing or chained roots; it does not grant read authority by itself.
