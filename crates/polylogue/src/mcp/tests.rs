@@ -359,6 +359,11 @@ fn tools_and_instructions_fit_four_kilobytes() {
     let tools = serde_json::to_string(&list["result"]).unwrap();
     let instructions = serde_json::to_string(&info["result"]["instructions"]).unwrap();
     let total = tools.len() + instructions.len();
+    eprintln!(
+        "tools/list {} bytes, instructions {} bytes, total {total}",
+        tools.len(),
+        instructions.len()
+    );
     assert!(
         total <= 4096,
         "tools/list is {} bytes and the instructions {} bytes: {total} in all",
