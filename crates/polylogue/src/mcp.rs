@@ -7,7 +7,7 @@
 
 mod completion;
 
-use crate::commands::{Action, COMMANDS, Caller, Command, Kind, Surface, Tool, Values};
+use crate::commands::{self, Action, COMMANDS, Caller, Command, Surface, Tool, Values};
 use crate::daemon::Request;
 use crate::protocol::operations::ToolCall;
 use command_surface::{Answer, Deadline};
@@ -27,8 +27,9 @@ pub fn operations(tool: Tool) -> impl Iterator<Item = &'static Command> {
     tool_commands().filter(move |c| c.tool == Some(tool))
 }
 
-// The tool listing follows command-surface's tool families exactly; it is
-// replaced by `OperationTable::mcp_tools` when Polylogue adopts them.
+// The tool listing has the shape of command-surface's tool families, with
+// the envelope fields Polylogue's requests carry (`request_id`, `deadline`);
+// it is replaced by `OperationTable::mcp_tools` when Polylogue adopts them.
 pub fn tools() -> Vec<Value> {
     Tool::ALL
         .into_iter()
@@ -40,23 +41,12 @@ pub fn tools() -> Vec<Value> {
                 "annotations": {
                     "readOnlyHint": !tool.writes(),
                     "destructiveHint": false,
-                    "idempotentHint": true,
+                    "idempotentHint": tool.idempotent(),
                     "openWorldHint": tool.open_world(),
                 },
             })
         })
         .collect()
-}
-
-fn argument_schema(kind: Kind) -> Value {
-    match kind {
-        Kind::Json => json!({}),
-        Kind::Integer => json!({"type": "integer"}),
-        Kind::Bool => json!({"type": "boolean"}),
-        Kind::List => json!({"type": "array", "items": {"type": "string"}}),
-        Kind::Choice(choices) => json!({"enum": choices}),
-        Kind::Text | Kind::Words | Kind::Rest => json!({"type": "string"}),
-    }
 }
 
 /// A tool's input: `operation` naming the command (required when the tool
@@ -73,7 +63,7 @@ fn input_schema(tool: Tool) -> Value {
             .args_for(Surface::Mcp)
             .filter(|arg| !arg.unlisted && arg.name != "request_id")
         {
-            let schema = argument_schema(arg.kind);
+            let schema = commands::kind_schema(arg.kind);
             let index = match fields.iter().position(|(name, _)| *name == arg.name) {
                 Some(index) => index,
                 None => {

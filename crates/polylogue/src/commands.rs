@@ -145,6 +145,12 @@ impl Tool {
         matches!(self, Tool::Note | Tool::Chat)
     }
 
+    /// A retried `request_id` is applied once. Chat and backfill requests
+    /// start a new browser action each time.
+    pub fn idempotent(self) -> bool {
+        self != Tool::Chat
+    }
+
     /// Its operations act outside the archive (a web chat).
     pub fn open_world(self) -> bool {
         self == Tool::Chat
@@ -1567,6 +1573,19 @@ fn describe(kind: Kind) -> String {
     }
 }
 
+/// The JSON Schema of one argument kind, without annotations.
+pub fn kind_schema(kind: Kind) -> Value {
+    use serde_json::json;
+    match kind {
+        Kind::Json => json!({}),
+        Kind::Integer => json!({"type": "integer"}),
+        Kind::Bool => json!({"type": "boolean"}),
+        Kind::List => json!({"type": "array", "items": {"type": "string"}}),
+        Kind::Choice(choices) => json!({"enum": choices}),
+        Kind::Text | Kind::Words | Kind::Rest => json!({"type": "string"}),
+    }
+}
+
 /// The complete JSON Schema of a command's arguments, with every argument
 /// described, as `explain capabilities` publishes it.
 pub fn schema(command: &Command) -> Map<String, Value> {
@@ -1580,14 +1599,7 @@ pub fn schema(command: &Command) -> Map<String, Value> {
     }
     let mut properties = Map::new();
     for a in command.args_for(Surface::Mcp) {
-        let mut p = match a.kind {
-            Kind::Json => json!({}),
-            Kind::Integer => json!({ "type": "integer", "minimum": 0 }),
-            Kind::Bool => json!({ "type": "boolean" }),
-            Kind::List => json!({ "type": "array", "items": { "type": "string" } }),
-            Kind::Choice(choices) => json!({ "type": "string", "enum": choices }),
-            Kind::Text | Kind::Words | Kind::Rest => json!({ "type": "string" }),
-        };
+        let mut p = kind_schema(a.kind);
         p["description"] = json!(a.help);
         if let Some(d) = a.default {
             p["default"] = match a.kind {

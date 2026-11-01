@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn the_manual_gives_working_example_queries() {
-    let guide = include_str!("../../../../docs/agent-manual.md");
+    let guide = text();
     let examples: Vec<_> = guide
         .split('`')
         .skip(1)

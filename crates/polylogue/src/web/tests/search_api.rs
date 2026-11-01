@@ -84,13 +84,14 @@ fn search_writes_are_available_through_the_command_table() {
             .len(),
         1
     );
-    let kept = crate::mcp::tests::call(
+    let kept = crate::mcp::tests::call_as(
         &polylogue_store::Archive::at(&r.web.daemon.archive.root),
         "keep",
-        json!({"request_id":"mcp-kept","query":"sessions where parser"})
+        json!({"query":"sessions where parser"})
             .as_object()
             .unwrap()
             .clone(),
+        "mcp-kept",
     )
     .unwrap();
     let outcome: Value = serde_json::from_str(&kept).unwrap();

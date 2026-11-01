@@ -21,9 +21,18 @@ pub(crate) fn call(
     operation: &str,
     arguments: serde_json::Map<String, Value>,
 ) -> Result<String, String> {
-    let request_id = uuid::Uuid::now_v7().to_string();
+    call_as(archive, operation, arguments, &uuid::Uuid::now_v7().to_string())
+}
+
+/// [`call`] with the caller's retry identity.
+pub(crate) fn call_as(
+    archive: &Archive,
+    operation: &str,
+    arguments: serde_json::Map<String, Value>,
+    request_id: &str,
+) -> Result<String, String> {
     let params = match crate::commands::command(operation).filter(|c| c.tool.is_some()) {
-        Some(_) => tool_call(operation, Value::Object(arguments), &request_id),
+        Some(_) => tool_call(operation, Value::Object(arguments), request_id),
         None => {
             json!({"name": operation, "arguments": {"arguments": arguments, "request_id": request_id}})
         }
@@ -314,6 +323,7 @@ fn tool_annotations_follow_the_command_table() {
         let listed = tools.iter().find(|t| t["name"] == tool.name()).unwrap();
         assert_eq!(listed["annotations"]["readOnlyHint"], !tool.writes());
         assert_eq!(listed["annotations"]["openWorldHint"], tool.open_world());
+        assert_eq!(listed["annotations"]["idempotentHint"], tool.idempotent());
         for command in operations(tool) {
             assert_eq!(command.writes, tool.writes(), "{}", command.name);
         }
@@ -417,6 +427,34 @@ fn every_argument_is_in_its_tool_schema_or_unlisted() {
                 arg.name
             );
         }
+    }
+}
+
+/// law: mcp-arguments-are-listed-or-explained
+#[test]
+fn typed_operations_declare_every_field_of_their_arguments() {
+    fn fields(schema: &Value, root: &Value, names: &mut std::collections::BTreeSet<String>) {
+        if let Some(reference) = schema["$ref"].as_str() {
+            let name = reference.strip_prefix("#/$defs/").unwrap();
+            return fields(&root["$defs"][name], root, names);
+        }
+        names.extend(schema["properties"].as_object().into_iter().flatten().map(|(k, _)| k.clone()));
+        for key in ["anyOf", "oneOf"] {
+            for choice in schema[key].as_array().into_iter().flatten() {
+                fields(choice, root, names);
+            }
+        }
+    }
+    for command in tool_commands().filter(|c| c.register.is_some()) {
+        let schema = command.typed_schemas.unwrap()().0;
+        let mut typed = std::collections::BTreeSet::new();
+        fields(&schema, &schema, &mut typed);
+        let declared: std::collections::BTreeSet<String> = command
+            .args_for(Surface::Mcp)
+            .map(|arg| arg.name.to_owned())
+            .filter(|name| name != "request_id")
+            .collect();
+        assert_eq!(typed, declared, "{}", command.name);
     }
 }
 

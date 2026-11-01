@@ -1,5 +1,6 @@
 //! Agent guidance: the short card MCP sends as its instructions, and the
-//! full manual (`polylogue manual`) that adds the operation reference.
+//! full manual (`polylogue manual`): the card, the guide and the operation
+//! reference.
 use std::fmt::Write;
 
 /// The card every MCP session receives; detail is in `explain`.
@@ -7,10 +8,10 @@ pub fn card() -> &'static str {
     include_str!("../../../docs/agent-manual.md")
 }
 
-/// The card and every tool operation with its CLI spelling, help and
-/// arguments, unlisted ones included.
+/// The card, the guide, and every tool operation with its CLI spelling,
+/// help and arguments, unlisted ones included.
 pub fn text() -> String {
-    let mut text = card().to_owned();
+    let mut text = format!("{}\n{}", card(), include_str!("../../../docs/agent-guide.md"));
     for tool in crate::commands::Tool::ALL {
         let _ = writeln!(text, "\n## `{}`\n", tool.name());
         for command in crate::mcp::operations(tool) {
