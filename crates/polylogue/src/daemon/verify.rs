@@ -1,6 +1,6 @@
 //! `polylogue verify`: the store's check of every stored byte, run at idle
 //! priority. It reads only; a manifest, when asked for, is written to a new
-//! file and appears complete or not at all.
+//! file and appears complete or not at all (not when a revision is unreadable).
 use super::service::{Daemon, error, store_error};
 use command_surface::Answer;
 use serde_json::Value;
@@ -34,8 +34,15 @@ pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<Value> {
                     })
             };
             found.and_then(|found| {
-                file.as_file().sync_all()?;
-                file.persist_noclobber(path).map_err(|e| e.error)?;
+                // A manifest missing a revision is not written: the
+                // temporary file is removed when it is dropped.
+                let complete = !found.problems.iter().any(|problem| {
+                    problem.kind == polylogue_store::verify::ProblemKind::RevisionUnreadable
+                });
+                if complete {
+                    file.as_file().sync_all()?;
+                    file.persist_noclobber(path).map_err(|e| e.error)?;
+                }
                 Ok(found)
             })
         }

@@ -245,15 +245,21 @@ fn a_corrupted_stored_byte_is_named_and_left_as_it_is() {
         .collect();
     assert_eq!(named, [blob.to_hex().to_string()]);
     assert_eq!(found.blobs.mismatched, 1);
-    // The revisions that read the damaged blob are named, the others listed.
+    // The revisions that read the damaged blob are named; the others, the
+    // one before it in the same chain included, keep their lines.
     let unreadable: Vec<_> = found
         .problems
         .iter()
         .filter(|problem| problem.kind == ProblemKind::RevisionUnreadable)
         .map(|problem| problem.subject.as_str())
         .collect();
-    assert_eq!(unreadable, ["growing#1", "growing#2", "growing#3"]);
-    assert!(String::from_utf8(manifest).unwrap().starts_with("whole\t1\t15\t"));
+    assert_eq!(unreadable, ["growing#2", "growing#3"]);
+    let manifest = String::from_utf8(manifest).unwrap();
+    let inputs: Vec<_> = manifest
+        .lines()
+        .map(|line| line.split('\t').take(2).collect::<Vec<_>>().join("#"))
+        .collect();
+    assert_eq!(inputs, ["growing#1", "whole#1"]);
     assert_eq!(std::fs::read(&segment).unwrap(), bytes, "verify rewrote a segment");
 }
 
@@ -343,7 +349,7 @@ fn an_extent_citing_an_absent_blob_is_reported() {
     let found = stored.verify(None);
     assert_eq!(kinds(&found), [ProblemKind::ExtentWithoutBlob]);
     assert_eq!(found.problems[0].subject, "whole/1@0");
-    assert_eq!(found.problems[0].detail, format!("blob {}", missing.to_uppercase()));
+    assert_eq!(found.problems[0].detail, format!("blob {missing}"));
 }
 
 #[test]

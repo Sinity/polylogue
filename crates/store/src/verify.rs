@@ -142,8 +142,9 @@ impl Verification {
     }
 }
 
-/// Runs the whole check. `pace` is called before each blob and each chain
-/// and between the frames of a large blob, holding no reader: the daemon
+/// Runs the whole check. `pace` is called before each blob, between the
+/// frames of a large blob, and before each chain and each read of a chain
+/// while writing a manifest, holding no reader: the daemon
 /// waits there for foreground work and stops on cancellation. A manifest,
 /// when given, receives one line per revision.
 pub fn verify(
@@ -246,7 +247,7 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
     };
     listed(
         ProblemKind::ExtentWithoutBlob,
-        "SELECT e.input || '/' || e.chain || '@' || e.offset, 'blob ' || hex(e.blob)
+        "SELECT e.input || '/' || e.chain || '@' || e.offset, 'blob ' || lower(hex(e.blob))
          FROM source_extent e
          WHERE NOT EXISTS (SELECT 1 FROM source_blob b WHERE b.hash = e.blob)
          ORDER BY e.input, e.chain, e.offset",
@@ -419,7 +420,7 @@ fn write_manifest(
         after = last.clone();
         for input in inputs {
             pace()?;
-            let mut lines = input_revisions(pool, blobs, &input, &mut summary, found)?;
+            let mut lines = input_revisions(pool, blobs, &input, &mut summary, found, pace)?;
             lines.sort_by_key(|line| line.0);
             for (number, length, hash) in lines {
                 writeln!(out, "{input}\t{number}\t{length}\t{hash}")?;
@@ -437,6 +438,7 @@ fn input_revisions(
     input: &str,
     summary: &mut ManifestSummary,
     found: &mut Verification,
+    pace: &mut dyn FnMut() -> Result<()>,
 ) -> Result<Vec<(i64, u64, String)>> {
     // Each chain's revisions, shortest first, and its extents captured
     // under one read; the bytes are read after the reader is released.
@@ -479,24 +481,20 @@ fn input_revisions(
         let Some(stored) = stored else {
             continue;
         };
-        match hash_prefixes(&stored, blobs, &members) {
-            Ok((hashes, read)) => {
-                summary.bytes_read += read;
-                lines.extend(
-                    members
-                        .iter()
-                        .zip(hashes)
-                        .map(|(&(number, length), hash)| (number, length, hash)),
+        pace()?;
+        let (hashes, read, failure) = hash_prefixes(&stored, blobs, &members, pace)?;
+        summary.bytes_read += read;
+        // Revisions read in full before a failure keep their hashes.
+        for (&(number, length), hash) in members.iter().zip(&hashes) {
+            lines.push((number, length, hash.clone()));
+        }
+        if let Some(error) = failure {
+            for (number, _) in &members[hashes.len()..] {
+                found.problem(
+                    ProblemKind::RevisionUnreadable,
+                    format!("{input}#{number}"),
+                    format!("chain {chain}: {error}"),
                 );
-            }
-            Err(error) => {
-                for (number, _) in &members {
-                    found.problem(
-                        ProblemKind::RevisionUnreadable,
-                        format!("{input}#{number}"),
-                        format!("chain {chain}: {error}"),
-                    );
-                }
             }
         }
     }
@@ -504,12 +502,15 @@ fn input_revisions(
 }
 
 /// The BLAKE3 of each prefix `members` names (shortest first), from one
-/// sequential read of the chain; and the bytes read.
+/// sequential read of the chain, and the bytes read. A read failure ends
+/// the read: the hashes finished before it are returned with the failure.
+/// Only an error from `pace` (cancellation) ends the whole check.
 fn hash_prefixes(
     stored: &crate::blobs::StoredChain,
     blobs: &Arc<crate::blobs::Blobs>,
     members: &[(i64, u64)],
-) -> Result<(Vec<String>, u64)> {
+    pace: &mut dyn FnMut() -> Result<()>,
+) -> Result<(Vec<String>, u64, Option<StoreError>)> {
     let mut reader = stored.reader(Arc::clone(blobs));
     let mut digest = blake3::Hasher::new();
     let mut hashes = Vec::with_capacity(members.len());
@@ -517,20 +518,25 @@ fn hash_prefixes(
     let mut buffer = vec![0; 64 << 10];
     for &(_, length) in members {
         while at < length {
+            pace()?;
             let want = usize::try_from((length - at).min(buffer.len() as u64))
                 .expect("buffer length fits");
-            let n = reader.read(&mut buffer[..want])?;
-            if n == 0 {
-                return Err(StoreError::Invalid(format!(
-                    "stored bytes end at {at}, before {length}"
-                )));
-            }
+            let n = match reader.read(&mut buffer[..want]) {
+                Ok(0) => {
+                    let error = StoreError::Invalid(format!(
+                        "stored bytes end at {at}, before {length}"
+                    ));
+                    return Ok((hashes, at, Some(error)));
+                }
+                Ok(n) => n,
+                Err(error) => return Ok((hashes, at, Some(error.into()))),
+            };
             digest.update(&buffer[..n]);
             at += n as u64;
         }
         hashes.push(digest.clone().finalize().to_hex().to_string());
     }
-    Ok((hashes, at))
+    Ok((hashes, at, None))
 }
 
 fn hex(bytes: &[u8]) -> String {

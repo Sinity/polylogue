@@ -166,7 +166,7 @@ impl Engine {
             found.extend(collect::scan_spools(&self.config));
         }
         let mut pass = Pass {
-            full_scans: u64::from(discover),
+            full_scans: u64::from(discover && sources),
             unreadable_roots: unreadable,
             errors,
             ..Pass::default()
@@ -1384,7 +1384,7 @@ impl Engine {
                 Err(e) => {
                     pending = self.captures.pending();
                     Pass {
-                        full_scans: u64::from(discover),
+                        full_scans: u64::from(discover && self.config.reads_sources),
                         errors: vec![e.to_string()],
                         capture_pending: pending,
                         ..Pass::default()
@@ -1421,7 +1421,7 @@ impl Engine {
                             return Ok(self.stopped(summary));
                         }
                         Ok(message) => {
-                            summary.imports += u64::from(self.answer(message, &busy, pending));
+                            self.answer(message, &busy, pending, &mut summary);
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                     }
@@ -1433,7 +1433,7 @@ impl Engine {
                         }
                         Ok(message) => {
                             more = true;
-                            summary.imports += u64::from(self.answer(message, &busy, pending));
+                            self.answer(message, &busy, pending, &mut summary);
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     }
@@ -1462,7 +1462,7 @@ impl Engine {
                         return Ok(self.stopped(summary));
                     }
                     Ok(message) => {
-                        summary.imports += u64::from(self.answer(message, &busy, pending));
+                        self.answer(message, &busy, pending, &mut summary);
                     }
                     Err(RecvTimeoutError::Timeout) => {}
                 }
@@ -1519,8 +1519,15 @@ impl Engine {
         full
     }
 
-    /// Answers one message other than `Stop`; true when it was an import.
-    fn answer(&mut self, message: LoopMsg, busy: &impl Fn(bool), pending: bool) -> bool {
+    /// Answers one message other than `Stop`, adding an import's work to
+    /// `summary`.
+    fn answer(
+        &mut self,
+        message: LoopMsg,
+        busy: &impl Fn(bool),
+        pending: bool,
+        summary: &mut RunSummary,
+    ) {
         let LoopMsg::Import {
             paths,
             authorship,
@@ -1528,7 +1535,7 @@ impl Engine {
             reply,
         } = message
         else {
-            return false;
+            return;
         };
         // Queue waits belong to the producing transport. After
         // admission the engine owns completion and its ACK.
@@ -1550,8 +1557,13 @@ impl Engine {
                 busy(pending);
                 report
             });
+        summary.imports += 1;
+        match &report {
+            Ok(report) => summary.work.add(report.pass.clone()),
+            Err(ImportFailure::Import(error)) => summary.work.errors.push(format!("import: {error}")),
+            Err(ImportFailure::Parent(_)) => {}
+        }
         let _ = reply.send(report);
-        true
     }
 
     fn stopped(&mut self, summary: RunSummary) -> RunSummary {

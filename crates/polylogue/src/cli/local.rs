@@ -19,14 +19,19 @@ pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: b
         Ok(None) => ExitCode::SUCCESS,
         Ok(Some(summary)) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string(&summary).expect("run summary serializes")
-                );
+                match serde_json::to_string(&summary) {
+                    Ok(text) => println!("{text}"),
+                    Err(error) => eprintln!("polylogue: the run summary: {error}"),
+                }
             } else {
                 print!("{}", super::print::idle_summary(&summary));
             }
-            ExitCode::SUCCESS
+            // A run that met errors did not process everything it was given.
+            if summary.work.errors.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Err(e) => {
             eprint!(

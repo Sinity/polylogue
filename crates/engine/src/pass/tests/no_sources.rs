@@ -60,6 +60,15 @@ fn a_loop_run_until_idle_stores_what_it_finds_then_returns() {
 fn without_sources_a_fresh_archive_records_no_input_and_writes_nothing_under_home() {
     let home = ClaudeHome::new();
     home.append("present.jsonl", &claude_user("one", "present", "on disk"));
+    // A hook spool beside the transcript: a spool is a source too.
+    let spool = crate::test_config().spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let spool = home.home.join(spool.strip_prefix("/synthetic/home").unwrap());
+    std::fs::create_dir_all(&spool).unwrap();
+    std::fs::write(
+        spool.join("4242.ndjson"),
+        "{\"at_ns\":\"1767225600000000000\",\"event\":\"Stop\",\"provider\":\"claude-code\",\"session_id\":\"present\",\"payload\":{}}\n",
+    )
+    .unwrap();
     let before = files(&home.home);
     let (mut engine, _lock) = open_engine(&home);
     engine.config.reads_sources = false;
