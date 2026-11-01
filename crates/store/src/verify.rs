@@ -443,6 +443,9 @@ fn write_manifest(
     }
 }
 
+/// A chain, its revisions as `(number, length)`, and its stored extents.
+type ChainRevisions = (i64, Vec<(i64, u64)>, Option<crate::blobs::StoredChain>);
+
 /// One input's revisions as `(number, length, blake3)`; revisions whose
 /// bytes cannot be read are reported as problems and left out.
 fn input_revisions(
@@ -455,7 +458,7 @@ fn input_revisions(
 ) -> Result<Vec<(i64, u64, String)>> {
     // Each chain's revisions, shortest first, and its extents captured
     // under one read; the bytes are read after the reader is released.
-    let mut chains: Vec<(i64, Vec<(i64, u64)>, Option<crate::blobs::StoredChain>)> = Vec::new();
+    let mut chains: Vec<ChainRevisions> = Vec::new();
     {
         let reader = pool.reader()?;
         let conn = reader.conn()?;
