@@ -70,7 +70,9 @@ fn build_request(
     build(command, &values, &caller).map_err(bad)
 }
 
-/// The text content beside the structured answer; notes follow the value.
+/// The text content beside the structured answer. A value stays parseable
+/// JSON; its notes are in the structured answer. A failure's text names its
+/// notes too.
 fn format_answer(
     request: &Request,
     answer: Result<&Answer<Value>, &std::io::Error>,
@@ -89,14 +91,13 @@ fn format_answer(
         Answer::Error { error, .. } => Err(format!("{}{notes}", error_text(error))),
         answer => {
             let value = answer.value().expect("a non-error answer has a value");
-            let text = if matches!(request, Request::Context { .. }) {
+            Ok(if matches!(request, Request::Context { .. }) {
                 polylogue_render::terminal::escape(
                     value["prepared"]["text"].as_str().unwrap_or_default(),
                 )
             } else {
                 polylogue_render::terminal::json(value, true)
-            };
-            Ok(format!("{text}{notes}"))
+            })
         }
     }
 }
