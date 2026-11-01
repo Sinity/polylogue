@@ -623,7 +623,7 @@ fn fail_with(
                 output.stderr_color()
             )
         );
-        for candidate in &failure.candidates {
+        for candidate in failure.candidates() {
             eprintln!("  {}", polylogue_render::terminal::escape(candidate));
         }
         self::notes(notes, output);

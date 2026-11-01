@@ -87,7 +87,7 @@ fn a_reference_two_sessions_share_is_refused_listing_both() {
             .map(|v| panic!("{text} was answered: {v}"))
             .unwrap_err();
         assert_eq!(f.code(), "ambiguous", "{text}: {}", f.message);
-        let ids = &f.candidates;
+        let ids = f.candidates();
         assert!(ids.len() >= 2, "{text}: {ids:?}");
         for id in ids {
             assert!(

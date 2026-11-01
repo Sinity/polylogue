@@ -88,7 +88,7 @@ fn an_ambiguous_reference_names_every_candidate() {
     let failure = store_failure(&error);
     assert_eq!(failure.kind, FailureKind::Ambiguous);
     assert_eq!(
-        failure.candidates,
+        failure.candidates(),
         ["session:test:7f3a-1", "session:test:7f3a-2"]
     );
     let selection = polylogue_store::StoreError::Selection {

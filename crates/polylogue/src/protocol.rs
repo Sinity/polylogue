@@ -196,11 +196,11 @@ pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
         | QueryError::Invalid { position, .. } => Some(*position),
         _ => None,
     };
-    failure.candidates = match error {
+    let mut failure = failure.with_candidates(match error {
         QueryError::Ambiguous { candidates, .. } => candidates.clone(),
         QueryError::UnknownField { similar, .. } => similar.clone(),
         _ => Vec::new(),
-    };
+    });
     failure.position = position.map(|offset| Position { offset, length: 1 });
     failure.suggestion = error
         .suggestion()
@@ -213,9 +213,7 @@ pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     match error {
         polylogue_store::StoreError::Query(error) => query_failure(error),
         polylogue_store::StoreError::Ambiguous { candidates, .. } => {
-            let mut failure = failure(store_code(error), error.to_string());
-            failure.candidates = candidates.clone();
-            failure
+            failure(store_code(error), error.to_string()).with_candidates(candidates.clone())
         }
         error => failure(store_code(error), error.to_string()),
     }

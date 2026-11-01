@@ -41,7 +41,7 @@ fn error_text(failure: &command_surface::Failure) -> String {
     if let Some(suggestion) = failure.suggestion.as_deref().and_then(Value::as_str) {
         text.push_str(&format!("\ntry: {suggestion}"));
     }
-    for candidate in &failure.candidates {
+    for candidate in failure.candidates() {
         text.push_str(&format!("\n  {candidate}"));
     }
     polylogue_render::terminal::escape(&text)

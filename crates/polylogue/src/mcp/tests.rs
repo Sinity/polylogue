@@ -261,7 +261,7 @@ fn errors_show_archived_controls_as_text() {
     let mut failure = crate::protocol::failure("bad_request", hostile)
         .with_suggestion(serde_json::json!(hostile));
     failure.code = Some(hostile.into());
-    failure.candidates = vec![hostile.into()];
+    let failure = failure.with_candidates(vec![hostile.into()]);
     let text = super::error_text(&failure);
     assert!(
         !text

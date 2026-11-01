@@ -139,16 +139,18 @@ pub(super) fn read(request: Request, d: &Daemon) -> Answer<Value> {
         None => None,
     };
     let Some(found) = found else {
-        let mut failure = Failure::new(
+        let failure = crate::protocol::failure(
             "attachment_unavailable",
             "select one of the stored files with --input",
+        )
+        .with_candidates(
+            resolution
+                .matches
+                .iter()
+                .map(|found| found.input.clone())
+                .collect(),
         );
-        failure.error.candidates = resolution
-            .matches
-            .iter()
-            .map(|found| found.input.clone())
-            .collect();
-        return failure.answer();
+        return Answer::error(failure);
     };
     if decoded
         .as_ref()

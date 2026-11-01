@@ -233,7 +233,7 @@ fn a_name_two_saved_queries_share_is_refused() {
     assert_eq!(references.len(), 2);
     assert!(f.message.starts_with("query:twice "), "{}", f.message);
     assert_eq!(
-        f.candidates
+        f.candidates()
             .iter()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>(),

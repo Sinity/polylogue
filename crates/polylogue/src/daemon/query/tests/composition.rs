@@ -252,7 +252,7 @@ fn saved_relation_errors_reach_the_query_error_path() {
                 );
                 assert_eq!(
                     failure
-                        .candidates
+                        .candidates()
                         .iter()
                         .cloned()
                         .collect::<std::collections::BTreeSet<_>>(),
