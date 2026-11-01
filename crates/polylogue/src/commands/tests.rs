@@ -138,7 +138,6 @@ fn command_words_are_every_first_word() {
         "embed",
         "hooks",
         "keep",
-        "work",
         "browser-host",
     ] {
         assert!(words.iter().any(|x| x == w), "{w} missing from {words:?}");

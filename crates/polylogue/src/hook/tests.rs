@@ -271,61 +271,8 @@ fn a_silent_daemon_cannot_hold_a_hook_past_its_deadline() {
         stream.read_to_end(&mut request).unwrap();
         assert!(!request.is_empty());
     });
-    assert!(exchange(&socket, &Request::Status, ADVICE_BUDGET).is_none());
+    assert!(exchange(&socket, &Request::Status, Duration::from_millis(20)).is_none());
     peer.join().unwrap();
-}
-
-#[test]
-fn advice_is_read_only_until_printed_and_recording_has_its_own_budget() {
-    use std::cell::Cell;
-    for printed in [false, true] {
-        let output_called = Cell::new(false);
-        let mut calls = 0;
-        tool_advice(
-            Harness::ClaudeCode,
-            &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
-            &startup(),
-            |request, budget| {
-                calls += 1;
-                match request {
-                    Request::Context { sender, .. } => {
-                        assert!(sender.is_none());
-                        assert_eq!(budget, ADVICE_BUDGET);
-                        Some(Response::Ok {
-                            data: json!({"delivery":"advice:one", "prepared":{"empty":false, "text":"try this"}}),
-                        })
-                    }
-                    Request::AdviceDelivered {
-                        request_id, text, ..
-                    } => {
-                        assert!(output_called.get());
-                        assert_eq!(budget, ADVICE_DELIVERY_BUDGET);
-                        assert_eq!(request_id, "advice:one");
-                        assert_eq!(text, "try this");
-                        None
-                    }
-                    _ => panic!("unexpected request"),
-                }
-            },
-            |_, _, text, _| {
-                assert_eq!(text, "try this");
-                output_called.set(true);
-                printed
-            },
-        );
-        assert_eq!(calls, if printed { 2 } else { 1 });
-    }
-}
-
-#[test]
-fn hermes_tool_events_do_not_request_or_print_advice() {
-    tool_advice(
-        Harness::Hermes,
-        &json!({"session_id":"next", "cwd":"/work/proj", "tool_input":{"command":"cargo test"}}),
-        &startup(),
-        |_, _| panic!("a Hermes tool event requested advice"),
-        |_, _, _, _| panic!("a Hermes tool event printed advice"),
-    );
 }
 
 #[test]

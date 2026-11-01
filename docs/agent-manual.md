@@ -25,8 +25,8 @@ repository files and live checks for facts they answer directly.
    concluding.
 
 Queries select sessions by default. Start with another unit, such as
-`messages`, `documents`, `tool_calls`, `files`, `events`, `assertions`, `turns`,
-`deliveries` or `work`, to ask about those rows. Conditions combine with
+`messages`, `documents`, `tool_calls`, `files`, `events`, `assertions`, `turns`
+or `deliveries`, to ask about those rows. Conditions combine with
 `AND`, `OR`, parentheses and negation. Stages include `| sort by`,
 `| group by`, `| matches` and `| measure`. `similar:TEXT` requires stored vectors;
 words search full text. `measure usage` reports token use and cost with

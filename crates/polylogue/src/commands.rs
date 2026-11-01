@@ -898,14 +898,6 @@ const WRITTEN: &[Command] = &[
         writes: true,
         ..CLI
     }),
-    Command {
-        name: "work",
-        help: "The work graph: goals, attempts, verifications and artifacts, by a query over the `work` unit (`polylogue work kind:attempt state:open`)",
-        args: QUERY_ARGS,
-        action: Action::Request(requests::work),
-        print: print::query,
-        ..CLI
-    },
     typed_command!(LiveOperation, crate::protocol::query_aliases::Live, crate::protocol::query::Rows, {
         name: "live",
         help: "Sessions running now and what each is doing: the query `sessions where -live:ended | sort by live_rank, last_event_at desc`",
@@ -1208,7 +1200,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link, advice before a verification that keeps failing",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
         args: &[
             pos("event", Kind::Text, "The hook event's name"),
             Arg {

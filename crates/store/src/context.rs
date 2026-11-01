@@ -1,5 +1,5 @@
 //! Reads that context assembly needs: sessions by working directory, what
-//! each did, open Beads and failing commands there, a session's own
+//! each did, open Beads there, a session's own
 //! prompts, earlier deliveries and settings.
 
 use crate::read::{parse_name, ts};
@@ -55,8 +55,8 @@ pub struct DeliveryRow {
     pub events: Vec<String>,
 }
 
-/// What a session did, from its parsed rows and work graph: the outcome a
-/// brief reports, rather than its title.
+/// What a session did, from its parsed rows: the outcome a brief reports,
+/// rather than its title.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SessionWork {
     /// The text of its last model message.
@@ -67,31 +67,8 @@ pub struct SessionWork {
     /// commands' output names.
     pub commits: Vec<String>,
     pub pull_requests: Vec<String>,
-    /// Test, build and lint commands that passed and failed.
-    pub checks_passed: u64,
-    pub checks_failed: u64,
-    /// Beads it claimed, each with the state its own commands left:
-    /// `open`, `closed` or `released`.
-    pub beads: Vec<(String, String)>,
-    /// Its todo or plan items: how many are completed, and the others, in
-    /// progress first.
-    pub plan_done: u64,
-    pub plan_open: Vec<String>,
-}
-
-/// A verification that failed under a directory since its last pass.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FailingCommand {
-    pub command: String,
-    pub latest: Option<String>,
-    pub exit_code: Option<i64>,
-    pub at: Option<Timestamp>,
-    pub session: String,
-    pub times: u64,
-    pub sessions: u64,
-    pub first: Option<Timestamp>,
-    /// The latest failure's source location and time.
-    pub state: String,
+    /// The Bead its latest successful claim holds, when still open.
+    pub task: Option<String>,
 }
 
 /// A Bead whose latest claim under a directory is still open.
@@ -431,164 +408,34 @@ impl Reader<'_> {
             work.files_changed.push(path?);
         }
         let mut stmt = conn.prepare_cached(
-            "SELECT key, title FROM work_node
-              WHERE session_pk = ?1 AND kind = 'artifact' ORDER BY at, pk",
+            "SELECT commit_hash FROM commit_link WHERE session_pk = ?1 ORDER BY commit_hash",
         )?;
-        for row in stmt.query_map([pk], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })? {
-            let (key, title) = row?;
-            if key.starts_with("commit:") {
-                work.commits.push(title.chars().take(10).collect());
-            } else {
-                work.pull_requests.push(title);
-            }
+        for hash in stmt.query_map([pk], |r| r.get::<_, String>(0))? {
+            work.commits.push(hash?);
         }
         let mut stmt = conn.prepare_cached(
-            "SELECT state, count(*) FROM work_node
-              WHERE session_pk = ?1 AND kind = 'verification' GROUP BY state",
+            "SELECT repo, number FROM pr_link WHERE session_pk = ?1 ORDER BY repo, number",
         )?;
-        for row in stmt.query_map([pk], |r| {
-            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?))
-        })? {
-            let (state, n) = row?;
-            let n = u64::try_from(n).unwrap_or(0);
-            match state.as_deref() {
-                Some("ok") => work.checks_passed += n,
-                Some("error") => work.checks_failed += n,
-                _ => {}
-            }
+        for row in stmt.query_map([pk], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (repo, number) = row?;
+            work.pull_requests.push(format!("{repo}#{number}"));
         }
-        let mut stmt = conn.prepare_cached(
-            "SELECT g.key, g.title, coalesce(a.state, '') FROM work_node a
-               JOIN work_edge e ON e.from_pk = a.pk AND e.kind = 'pursues'
-               JOIN work_node g ON g.pk = e.to_pk
-              WHERE a.session_pk = ?1 AND a.kind = 'attempt'
-              ORDER BY a.at, a.pk",
-        )?;
-        let mut in_progress = Vec::new();
-        let mut pending = Vec::new();
-        for row in stmt.query_map([pk], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })? {
-            let (key, title, state) = row?;
-            if key.starts_with("bead:") {
-                work.beads.push((title, state));
-            } else if key.starts_with("todo:") {
-                match state.as_str() {
-                    "completed" => work.plan_done += 1,
-                    "open" => in_progress.push(title),
-                    _ => pending.push(title),
-                }
-            }
-        }
-        in_progress.extend(pending);
-        work.plan_open = in_progress;
+        work.task = conn
+            .prepare_cached("SELECT live_task FROM session WHERE pk = ?1")?
+            .query_row([pk], |r| r.get(0))?;
         Ok(Some(work))
     }
 
-    /// Verifications that failed since `since` under `dirs`, counting only
-    /// failures after the last pass of the same verification there.
-    /// A title keeps advice on the verification index's title and time range.
-    pub fn failing_commands(
-        &self,
-        dirs: &[String],
-        since: i64,
-        title: Option<&str>,
-    ) -> Result<Vec<FailingCommand>> {
-        let conn = self.conn()?;
-        let title_condition = if title.is_some() {
-            "AND v.title = ?3"
-        } else {
-            ""
-        };
-        let sql = format!(
-            "SELECT v.title, t.command, t.exit_code, v.at, s.id, v.state,
-                    json_array(s.id, m.id, json(coalesce(b.ordinal,CAST(b.idx AS TEXT))), v.at)
-               FROM work_node v JOIN session s ON s.pk = v.session_pk
-               LEFT JOIN tool_call t ON t.pk = v.tool_call_pk
-               LEFT JOIN block b ON b.pk = t.call_block_pk
-               LEFT JOIN message m ON m.pk = b.message_pk
-              WHERE v.kind = 'verification' AND v.at >= ?2
-                {title_condition}
-                AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
-                            OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
-              ORDER BY v.at DESC, s.id DESC, m.seq DESC, m.id DESC, b.idx DESC",
-        );
-        let mut stmt = conn.prepare_cached(&sql)?;
-        let mut passed = std::collections::HashSet::new();
-        let mut sessions =
-            std::collections::HashMap::<String, std::collections::HashSet<String>>::new();
-        let mut out: Vec<FailingCommand> = Vec::new();
-        let read = |r: &rusqlite::Row<'_>| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<i64>>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, String>(6)?,
-            ))
-        };
-        let dirs = serde_json::to_string(dirs)?;
-        let rows = match title {
-            Some(title) => stmt.query_map(params![dirs, since, title], read)?,
-            None => stmt.query_map(params![dirs, since], read)?,
-        };
-        for row in rows {
-            let (command, latest, exit_code, at, session, state, key) = row?;
-            if state == "ok" {
-                passed.insert(command);
-                continue;
-            }
-            if state != "error" || passed.contains(&command) {
-                continue;
-            }
-            let seen = sessions.entry(command.clone()).or_default();
-            seen.insert(session.clone());
-            let index = match out.iter().position(|f| f.command == command) {
-                Some(i) => i,
-                None => {
-                    out.push(FailingCommand {
-                        command,
-                        latest,
-                        exit_code,
-                        at: ts(at),
-                        session,
-                        times: 0,
-                        sessions: 0,
-                        first: None,
-                        state: key,
-                    });
-                    out.len() - 1
-                }
-            };
-            let f = &mut out[index];
-            f.times += 1;
-            f.sessions = seen.len() as u64;
-            f.first = ts(at);
-        }
-        Ok(out)
-    }
-
-    /// Beads claimed since `since` whose latest claim by a session under
-    /// `dirs` is still open in that session, most recent first.
+    /// Beads still held open by a claim of a session under `dirs` that was
+    /// active since `since`, most recent first.
     pub fn open_beads(&self, dirs: &[String], since: i64) -> Result<Vec<OpenBead>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT g.title, a.state, a.at, s.id FROM work_node a
-               JOIN work_edge e ON e.from_pk = a.pk AND e.kind = 'pursues'
-               JOIN work_node g ON g.pk = e.to_pk
-               JOIN session s ON s.pk = a.session_pk
-              WHERE a.kind = 'attempt' AND g.key >= 'bead:' AND g.key < 'bead;' AND a.at >= ?2
+            "SELECT s.live_task, s.id, s.last_activity_at FROM session s
+              WHERE s.live_task IS NOT NULL AND s.last_activity_at >= ?2
                 AND EXISTS (SELECT 1 FROM json_each(?1) d WHERE s.cwd = d.value
                             OR (s.cwd >= d.value || '/' AND s.cwd < d.value || '0'))
-              ORDER BY a.at IS NULL, a.at DESC, a.pk DESC",
+              ORDER BY s.last_activity_at DESC, s.pk DESC",
         )?;
         let dirs = serde_json::to_string(dirs)?;
         let mut seen: Vec<String> = Vec::new();
@@ -596,22 +443,13 @@ impl Reader<'_> {
         for row in stmt.query_map(params![dirs, since], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(1)?,
                 r.get::<_, Option<i64>>(2)?,
-                r.get::<_, String>(3)?,
             ))
         })? {
-            let (id, state, at, session) = row?;
-            // A claim names a Bead by its ID; a shell variable or other
-            // text in its place names none.
-            let plain = id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-._".contains(c));
-            if !plain || seen.contains(&id) {
-                continue;
-            }
-            seen.push(id.clone());
-            if state.as_deref() == Some("open") {
+            let (id, session, at) = row?;
+            if !seen.contains(&id) {
+                seen.push(id.clone());
                 out.push(OpenBead {
                     id,
                     session,

@@ -717,63 +717,6 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
     );
 }
 
-fn link_only(input: &str) -> Batch {
-    let mut b = batch(input, 0, 0, vec![], &[]);
-    b.parse[0].output.links.push(Link {
-        parent: sid("parent"),
-        child: sid("child"),
-        kind: LinkKind::Spawn,
-        at: None,
-        call_id: None,
-        evidence: input.into(),
-    });
-    b
-}
-
-#[test]
-fn retracting_a_link_only_chain_recomputes_the_childs_work() {
-    let w = test_archive();
-    write(
-        &w,
-        [batch(
-            "sessions",
-            0,
-            0,
-            vec![row(
-                1,
-                text_message("prompt", "child", Role::User, "Implement the parser", None),
-            )],
-            &["parent", "child"],
-        )],
-    );
-    write(&w, [link_only("link")]);
-    let goals = || {
-        ReadPool::open(&w.archive)
-            .unwrap()
-            .reader()
-            .unwrap()
-            .query("SELECT title FROM work_node WHERE kind='goal'", &[])
-            .unwrap()
-    };
-    assert_eq!(goals(), [json!({"title":"Implement the parser"})]);
-    let mut reading = ChainReading::new().unwrap();
-    reading
-        .push(&mut ParseStep::new(
-            Output::default(),
-            RecordCounts::default(),
-            0..100,
-            true,
-        ))
-        .unwrap();
-    w.writer
-        .sender()
-        .unwrap()
-        .replace_chain(link_only("link").input, 1, 100, reading)
-        .unwrap();
-    w.writer.derive().unwrap();
-    assert!(goals().is_empty());
-}
-
 #[test]
 fn missing_source_kinds_do_not_depend_on_an_earlier_derive() {
     let mut facts = batch("kind-facts", 0, 0, vec![], &["copy"]);

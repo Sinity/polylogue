@@ -23,7 +23,6 @@ let
         zone = "Europe/Warsaw";
         start = "03:00:00";
       };
-      check_history = "/var/lib/checks/history.sqlite";
     };
     signals = {
       notifications = {

@@ -13,10 +13,6 @@
 //!   carries every prompt the operator typed in the session.
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
 //!   or supported web link pasted into it brings that session's takeover context.
-//! - a shell command about to run (`PreToolUse`, Claude Code and Codex):
-//!   advice, only when the command is a verification that failed here repeatedly
-//!   since it last passed. Read-only preparation has [`ADVICE_BUDGET`];
-//!   recording printed advice has [`ADVICE_DELIVERY_BUDGET`].
 //!
 //! Claude Code, Codex and Gemini CLI take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
@@ -41,11 +37,6 @@ use std::time::Duration;
 /// during a first build over a large archive takes a few seconds. The
 /// harnesses' hook timeouts are longer.
 const CONTEXT_BUDGET: Duration = Duration::from_secs(8);
-
-/// How long a hook waits for read-only advice preparation.
-const ADVICE_BUDGET: Duration = Duration::from_millis(20);
-/// Recording printed advice has an independent short budget.
-const ADVICE_DELIVERY_BUDGET: Duration = Duration::from_millis(20);
 
 /// A harness that calls the hook command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,20 +422,6 @@ fn start(
     )
 }
 
-/// The shell command a pre-tool payload is about to run: Claude Code's
-/// `tool_input.command`, or a command given as its words.
-fn shell_command(payload: &Value) -> Option<String> {
-    match &payload["tool_input"]["command"] {
-        Value::String(command) => Some(command.clone()),
-        Value::Array(words) => {
-            let words: Option<Vec<&str>> = words.iter().map(Value::as_str).collect();
-            Some(words?.join(" "))
-        }
-        _ => None,
-    }
-    .filter(|command| !command.trim().is_empty())
-}
-
 /// Takeover context for each session pasted into a prompt.
 fn takeovers(
     harness: Harness,
@@ -514,59 +491,6 @@ pub fn respond(
     }
 }
 
-/// Prepares read-only advice, prints it, then records the delivered text.
-fn tool_advice(
-    harness: Harness,
-    payload: &Value,
-    startup: &Startup,
-    mut send: impl FnMut(&Request, Duration) -> Option<Response>,
-    output: impl FnOnce(Harness, &str, &str, &str) -> bool,
-) {
-    if !matches!(harness, Harness::ClaudeCode | Harness::Codex) {
-        return;
-    }
-    let Some(cwd) = payload["cwd"].as_str().map(PathBuf::from) else {
-        return;
-    };
-    let Some(command) = shell_command(payload) else {
-        return;
-    };
-    let session = session_of(harness, payload, startup);
-    let Ok(request_id) = request_id(startup.clock.now()) else {
-        return;
-    };
-    let request = Request::Context {
-        request_id,
-        ask: Ask::ToolUse {
-            cwd: cwd.clone(),
-            session: session.clone(),
-            command,
-        },
-        sender: None,
-    };
-    let Some(Response::Ok { data, .. }) = send(&request, ADVICE_BUDGET) else {
-        return;
-    };
-    if data["prepared"]["empty"].as_bool() != Some(false) {
-        return;
-    }
-    let (Some(id), Some(text)) = (data["delivery"].as_str(), data["prepared"]["text"].as_str())
-    else {
-        return;
-    };
-    if output(harness, "PreToolUse", text, id) {
-        let _ = send(
-            &Request::AdviceDelivered {
-                request_id: id.to_owned(),
-                session,
-                cwd,
-                text: text.to_owned(),
-            },
-            ADVICE_DELIVERY_BUDGET,
-        );
-    }
-}
-
 pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
@@ -600,15 +524,7 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         native: &native,
         startup,
     };
-    if event == "PreToolUse" {
-        tool_advice(
-            harness,
-            &payload,
-            startup,
-            |request, budget| ask_daemon(startup, request, budget),
-            |_, _, text, id| recorder.emit(&[id.to_owned()], text, emit),
-        );
-    } else if let Some((deliveries, text)) = respond(harness, event, &payload, startup)
+    if let Some((deliveries, text)) = respond(harness, event, &payload, startup)
         && recorder.emit(
             &deliveries.split(',').map(str::to_owned).collect::<Vec<_>>(),
             &text,

@@ -252,7 +252,6 @@ fn context(
             operation,
             ranking_identity.as_deref(),
             near,
-            &d.config.paths.check_history,
         );
         if let Some(limit) = polylogue_store::read::limit::ReadLimit::current()
             && let Err(error) = limit.check()
@@ -275,7 +274,6 @@ fn context(
     let mut pending = false;
     if let Some(sender) = sender
         && !prepared.empty
-        && !matches!(ask, Ask::ToolUse { .. })
     {
         let write = UserWrite::Deliver(Delivery {
             recipient_kind: if ask.recipient().is_some() {
@@ -315,7 +313,6 @@ fn context(
             Err(e) => return store_error(&e),
         }
     }
-    let delivery = prepared.advice_id.as_ref().or(delivery.as_ref());
     ok(serde_json::json!({ "delivery": delivery, "prepared": prepared, "pending": pending }))
 }
 
@@ -1213,34 +1210,6 @@ fn handle_inner(
                 &ask,
                 sender,
                 operation.as_ref().expect("briefing operation context"),
-            )
-        }
-        Request::AdviceDelivered {
-            request_id,
-            session,
-            cwd,
-            text,
-        } => {
-            drop(reader);
-            write(
-                d,
-                invocation,
-                request_id,
-                UserWrite::DeliveredAdvice(Delivery {
-                    recipient_kind: if session.is_some() {
-                        "session"
-                    } else {
-                        "operator"
-                    }
-                    .into(),
-                    recipient_id: session.map(|s| s.to_string()),
-                    sender: "hook".into(),
-                    event: "advice".into(),
-                    cwd: Some(cwd.to_string_lossy().into_owned()),
-                    text,
-                    refs: vec![],
-                    left_out: vec![],
-                }),
             )
         }
         Request::DeliveryEvent {

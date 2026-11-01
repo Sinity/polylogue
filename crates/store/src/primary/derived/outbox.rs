@@ -1,4 +1,4 @@
-//! Frozen canonical bodies share the existing SQL outbox with work replacements.
+//! Frozen canonical bodies kept in the SQL outbox until a confirmed product discharges them.
 use super::*;
 use crate::primary::{ProjectionAvailability, RawInputProof, ReplayState};
 
@@ -11,7 +11,6 @@ CREATE TABLE primary_derived_parent (
  identity TEXT NOT NULL REFERENCES primary_derived(identity) ON DELETE CASCADE,
  event TEXT NOT NULL, PRIMARY KEY(identity,event)
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE primary_work_dirty (session TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;
 ";
 
 struct StoredIntent {
@@ -36,14 +35,7 @@ pub fn stage_products(
         ));
     }
     for write in writes {
-        if write.location.is_some()
-            || !matches!(
-                write.product,
-                Product::WorkSnapshot { .. }
-                    | Product::WorkComponentStatus { .. }
-                    | Product::AttachmentBinding { .. }
-            )
-        {
+        if write.location.is_some() || !matches!(write.product, Product::AttachmentBinding { .. }) {
             return Err(StoreError::Invalid(
                 "canonical custody requires an unlocated supported derived product".into(),
             ));
@@ -114,7 +106,7 @@ pub fn stage_products(
 
 /// A native confirmed product, rather than a transport receipt, discharges an
 /// outbox batch. Every output must be present in the same applied owner view.
-pub(super) fn confirmed(tx: &Transaction<'_>, position: i64) -> Result<()> {
+pub(crate) fn confirmed(tx: &Transaction<'_>, position: i64) -> Result<()> {
     let mut intents = tx.prepare(
         "SELECT identity,body FROM primary_derived WHERE cancelled_at IS NULL AND revoked=0",
     )?;
@@ -124,7 +116,7 @@ pub(super) fn confirmed(tx: &Transaction<'_>, position: i64) -> Result<()> {
         let writes: Vec<ProductWrite> = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(1)?)?;
         let mut complete = true;
         for write in &writes {
-            let mut facts = tx.prepare("SELECT product FROM primary_next WHERE state='live' AND kind IN ('derived','attachment_binding') AND native_context IS NOT NULL AND product IS NOT NULL")?;
+            let mut facts = tx.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='attachment_binding' AND native_context IS NOT NULL AND product IS NOT NULL")?;
             let mut facts = facts.query([])?;
             let mut found = false;
             while let Some(fact) = facts.next()? {
@@ -204,19 +196,11 @@ pub(crate) fn restore_custody(
         ));
     }
     for write in &custody.products {
-        if write.location.is_some()
-            || !matches!(
-                write.product,
-                Product::WorkSnapshot { .. }
-                    | Product::WorkComponentStatus { .. }
-                    | Product::AttachmentBinding { .. }
-            )
-        {
+        if write.location.is_some() || !matches!(write.product, Product::AttachmentBinding { .. }) {
             return Err(StoreError::Invalid(
                 "canonical recovery contains an unsupported located product".into(),
             ));
         }
-        super::validate_confirmed(&write.product)?;
         if let Product::AttachmentBinding { record } = &write.product {
             record.validate()?;
         }

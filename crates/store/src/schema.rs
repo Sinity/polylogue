@@ -128,6 +128,10 @@ const INDEX_MIGRATIONS: &[IndexMigration] = &[
         version: 16,
         target: IndexTarget::Index(include_str!("schema/index_16.sql")),
     },
+    IndexMigration {
+        version: 17,
+        target: IndexTarget::Index(include_str!("schema/index_17.sql")),
+    },
 ];
 pub(crate) enum ArchiveMigration {
     Sql(&'static str),

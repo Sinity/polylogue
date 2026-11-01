@@ -191,7 +191,6 @@ pub struct Paths {
     pub data: PathBuf,
     pub cache: PathBuf,
     pub runtime: PathBuf,
-    pub check_history: PathBuf,
 }
 impl Paths {
     pub fn resolve(env: &EnvSnapshot) -> Result<Self, Error> {
@@ -220,7 +219,6 @@ impl Paths {
             return Err(Error::Invalid("XDG_RUNTIME_DIR must be absolute".into()));
         }
         Ok(Self {
-            check_history: state.join("devkit/history.sqlite"),
             home,
             config,
             data,
@@ -404,7 +402,6 @@ struct FileConfig {
     archive: Option<PathBuf>,
     http: Option<HttpFile>,
     day: Option<DayFile>,
-    check_history: Option<PathBuf>,
 }
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -501,15 +498,12 @@ impl Startup {
         let workers = process
             .workers
             .ok_or_else(|| Error::Invalid("the process CPU allowance is unavailable".into()))?;
-        let mut paths = Paths::resolve(&process.environment)?;
+        let paths = Paths::resolve(&process.environment)?;
         let (config_file, file) = deployment_file(&paths, &overrides, cwd)?;
         let base = config_file
             .parent()
             .ok_or_else(|| Error::Invalid("configuration path has no parent".into()))?;
         let archive = paths.archive(&overrides, cwd, file.archive.as_deref(), base);
-        if let Some(path) = file.check_history {
-            paths.check_history = absolute(path, base);
-        }
         let http = file.http.unwrap_or_default();
         let listen = process
             .environment
@@ -656,7 +650,6 @@ impl Config {
             data: engine.home.join(".local/share"),
             cache: engine.home.join(".cache"),
             runtime: state.join("runtime"),
-            check_history: state.join("devkit/history.sqlite"),
         };
         Arc::new(Self {
             paths,

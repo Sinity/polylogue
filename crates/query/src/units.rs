@@ -13,7 +13,6 @@ pub enum Unit {
     Links,
     Turns,
     Deliveries,
-    Work,
     Changes,
 }
 
@@ -594,44 +593,6 @@ pub static UNITS: &[UnitSpec] = &[
                 target: Unit::Sessions,
             },
         ],
-    },
-    UnitSpec {
-        unit: Unit::Work,
-        name: "work",
-        singular: "work",
-        in_session: true,
-        identity: &[],
-        main_time: Some("at"),
-        columns: &[
-            ColumnSpec {
-                name: "kind",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "title",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "state",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "session",
-                kind: Text,
-            },
-            ColumnSpec {
-                name: "at",
-                kind: Time,
-            },
-            ColumnSpec {
-                name: "goal",
-                kind: Text,
-            },
-        ],
-        relations: &[Relation {
-            prefix: "session",
-            target: Unit::Sessions,
-        }],
     },
     UnitSpec {
         unit: Unit::Changes,

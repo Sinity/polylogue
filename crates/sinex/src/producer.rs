@@ -492,16 +492,6 @@ impl Sinex {
                 ));
             }
             match &write.product {
-                Product::WorkSnapshot { snapshot } if snapshot.position == proof.position => {
-                    snapshot
-                        .validate()
-                        .map_err(|error| Error::Invalid(error.into()))?;
-                }
-                Product::WorkComponentStatus { status } if status.position == proof.position => {
-                    status
-                        .validate()
-                        .map_err(|error| Error::Invalid(error.into()))?;
-                }
                 Product::AttachmentBinding { .. } => {}
                 _ => {
                     return Err(Error::Invalid(

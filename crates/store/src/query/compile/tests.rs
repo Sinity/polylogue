@@ -237,7 +237,6 @@ fn a_query_starting_with_a_command_is_refused() {
 fn every_stored_value_can_be_queried() {
     use polylogue_model::{
         BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
-        WorkNodeKind,
     };
     let closed: &[(&str, &[&str])] = &[
         ("sessions where kind:", SessionKind::NAMES),
@@ -246,7 +245,6 @@ fn every_stored_value_can_be_queried() {
         ("blocks where kind:", BlockKind::NAMES),
         ("links where kind:", LINK_KIND_NAMES),
         ("links where how:", LINK_HOW_NAMES),
-        ("work where kind:", WorkNodeKind::NAMES),
     ];
     for (query, names) in closed {
         for name in *names {

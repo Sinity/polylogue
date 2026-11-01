@@ -2,8 +2,7 @@
 use crate::{ColKind, ast::Unit};
 use polylogue_model::{
     BlockKind, CallOutcome, DELIVERY_STATES, DeliveryEvent, DeliverySender, DocumentAuthorship,
-    DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, WorkNodeKind,
-    WrittenBy,
+    DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, WrittenBy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -228,18 +227,6 @@ pub static FIELDS: &[Field] = &[
     ),
     v(
         Deliveries,
-        "at.precision",
-        &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
-    ),
-    v(
-        Work,
-        "at.time_quality",
-        &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
-    ),
-    v(
-        Work,
         "at.precision",
         &TIME_PRECISIONS,
         "native time precision; absent evidence stays unknown",
@@ -1097,67 +1084,6 @@ pub static FIELDS: &[Field] = &[
         "corrected",
         Bool,
         "a current correction note targets the turn's answer",
-    ),
-    v(
-        Work,
-        "kind",
-        WorkNodeKind::NAMES,
-        "goal: a claimed Bead or a declared todo item; attempt: one session pursuing it; \
-         verification: a check command; artifact: a commit or pull request",
-    ),
-    f(
-        Work,
-        "title",
-        Substring,
-        "the Bead ID, item text, check command or commit",
-    ),
-    f(
-        Work,
-        "key",
-        Prefix,
-        "bead:<id>, todo:…, attempt:…, check:…, commit:…, pr:…",
-    ),
-    f(
-        Work,
-        "state",
-        Match,
-        "attempt: open, closed, released, completed, pending; verification: ok, error, unknown",
-    ),
-    f(
-        Work,
-        "at",
-        Time,
-        "when the node's first evidence was recorded",
-    ),
-    f(
-        Work,
-        "goal",
-        Substring,
-        "the goal an attempt pursues, or the goal of the attempts a node checks or was made for",
-    ),
-    f(
-        Work,
-        "checks_passed",
-        Number,
-        "attempt: passing checks while it was open",
-    ),
-    f(
-        Work,
-        "checks_failed",
-        Number,
-        "attempt: failing checks while it was open",
-    ),
-    f(
-        Work,
-        "checks_unknown",
-        Number,
-        "attempt: checks without a known outcome while it was open",
-    ),
-    f(
-        Work,
-        "artifacts",
-        Number,
-        "attempt: commits and pull requests made while it was open",
     ),
 ];
 pub fn lookup(unit: Unit, name: &str) -> Option<&'static Field> {

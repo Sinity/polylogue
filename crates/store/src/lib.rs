@@ -15,7 +15,6 @@ pub mod backfill_jobs;
 pub mod blobs;
 pub mod calendar;
 pub mod chat_actions;
-pub mod check_runs;
 pub mod completion;
 mod container_members;
 pub mod context;
@@ -68,9 +67,7 @@ pub mod writer;
 
 pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, NewBlob};
-pub use context::{
-    DeliveryRow, FailingCommand, NearbySession, OpenBead, OpenItems, Prompt, SessionWork,
-};
+pub use context::{DeliveryRow, NearbySession, OpenBead, OpenItems, Prompt, SessionWork};
 pub use read::{
     BehindChain, CapturedSession, CompletenessDimension, CompletenessReason, ImportedAs,
     KnownInput, ReadCompleteness, ReadPool, Reader, ReadingContract, SqlValue, Status,

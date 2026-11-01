@@ -8,9 +8,7 @@ use serde_json::{Value, json};
 
 pub(crate) fn canonical(product: &Product) -> bool {
     match product {
-        Product::AttachmentBinding { .. }
-        | Product::WorkSnapshot { .. }
-        | Product::WorkComponentStatus { .. } => true,
+        Product::AttachmentBinding { .. } => true,
         Product::Request(prepared) | Product::RestoredRequest { prepared, .. } => {
             signal_content(prepared)
         }
@@ -132,8 +130,6 @@ pub(crate) fn kind(product: &Product) -> Result<&'static str> {
         Product::QueryRun { .. } => "polylogue.query_run",
         Product::QueryRunOutcome { .. } => "polylogue.query_run_outcome",
         Product::Coverage(_) => "polylogue.coverage",
-        Product::WorkSnapshot { .. } => "polylogue.work_snapshot",
-        Product::WorkComponentStatus { .. } => "polylogue.work_component_status",
         Product::Request(request) => match &request.request.write {
             UserWrite::Assert { .. }
             | UserWrite::AssertQuery { .. }
@@ -215,12 +211,6 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::QueryRun { run } => json!([run.id]),
         Product::QueryRunOutcome { outcome } => json!([outcome.run]),
         Product::Coverage(coverage) => json!([coverage.machine]),
-        Product::WorkSnapshot { snapshot } => {
-            json!([snapshot.session_id, snapshot.reducer_version])
-        }
-        Product::WorkComponentStatus { status } => {
-            json!([status.component_kind, status.sessions().collect::<Vec<_>>()])
-        }
     };
     let source = product.reading().map(|reading| match &reading.delivery {
         Some(delivery) => json!([
@@ -362,16 +352,6 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             json!({"message":record.context().message,"binding":record.selection()})
         }
         Product::Coverage(_) => json!({}),
-        Product::WorkComponentStatus { status } => json!({
-            "component_kind":status.component_kind,"component_sessions":status.sessions().collect::<Vec<_>>(),
-            "reducer_version":status.reducer_version,"source_position":status.position,
-        }),
-        Product::WorkSnapshot { snapshot } => json!({
-            "session":snapshot.session_id,"reducer_version":snapshot.reducer_version,"source_position":snapshot.position,
-            "complete":snapshot.complete(),"repo":snapshot.session.as_ref().and_then(|session|session.repo.as_ref()),"branch":snapshot.session.as_ref().and_then(|session|session.git_branch.as_ref()),"kind":snapshot.session.as_ref().map(|session|session.kind),"mode":snapshot.session.as_ref().and_then(|session|session.mode.as_ref()),
-            "machine":Value::Null,"objectives":[],"git_identity":Value::Null,"terminal":Value::Null,"boot_id":Value::Null,
-            "native_sources":[],"native_unavailable":[],
-        }),
         Product::Input { rows, .. } => json!({"input": rows.input}),
         Product::Blob(material) => json!({"blob": material.hash}),
         Product::ParseProgress { reading, .. } => json!({"input": reading.input.id}),
@@ -386,39 +366,6 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
         serde_json::from_value(payload.get("record").cloned().ok_or_else(|| {
             Error::Invalid(format!("confirmed {event_type} has no complete facts"))
         })?)?;
-    if let Product::WorkSnapshot { snapshot } = &product {
-        snapshot
-            .validate()
-            .map_err(|error| Error::Invalid(error.into()))?;
-        if payload.get("session") != Some(&serde_json::to_value(&snapshot.session_id)?)
-            || payload.get("reducer_version").and_then(Value::as_u64)
-                != Some(snapshot.reducer_version as u64)
-            || payload.get("source_position").and_then(Value::as_i64) != Some(snapshot.position)
-            || payload.get("complete").and_then(Value::as_bool) != Some(snapshot.complete())
-        {
-            return Err(Error::Invalid(
-                "work snapshot wrapper differs from its complete facts".into(),
-            ));
-        }
-    }
-    if let Product::WorkComponentStatus { status } = &product {
-        status
-            .validate()
-            .map_err(|error| Error::Invalid(error.into()))?;
-        if payload.get("component_kind") != Some(&serde_json::to_value(status.component_kind)?)
-            || payload.get("component_sessions")
-                != Some(&serde_json::to_value(
-                    status.sessions().collect::<Vec<_>>(),
-                )?)
-            || payload.get("reducer_version").and_then(Value::as_u64)
-                != Some(u64::from(status.reducer_version))
-            || payload.get("source_position").and_then(Value::as_i64) != Some(status.position)
-        {
-            return Err(Error::Invalid(
-                "component status wrapper differs from its physical evidence".into(),
-            ));
-        }
-    }
     if let Some(reading) = product.reading()
         && let Some(delivery) = &reading.delivery
     {
@@ -437,35 +384,6 @@ pub(crate) fn decode(event_type: &str, payload: Value) -> Result<Product> {
         )));
     }
     Ok(product)
-}
-
-#[derive(schemars::JsonSchema)]
-#[allow(dead_code)]
-struct WorkSnapshotMetadata {
-    session: polylogue_model::SessionId,
-    reducer_version: u32,
-    source_position: i64,
-    complete: bool,
-    repo: Option<String>,
-    branch: Option<String>,
-    kind: Option<polylogue_model::SessionKind>,
-    mode: Option<String>,
-    machine: Option<String>,
-    objectives: Vec<crate::kinds::Objective>,
-    git_identity: Option<crate::kinds::GitIdentity>,
-    terminal: Option<crate::kinds::TerminalIdentity>,
-    boot_id: Option<String>,
-    native_sources: Vec<crate::kinds::RecordRef>,
-    native_unavailable: Vec<String>,
-}
-
-#[derive(schemars::JsonSchema)]
-#[allow(dead_code)]
-struct WorkComponentMetadata {
-    component_kind: polylogue_model::work_products::component::ComponentKind,
-    component_sessions: Vec<polylogue_model::SessionId>,
-    reducer_version: u32,
-    source_position: i64,
 }
 
 fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
@@ -538,8 +456,6 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.query_run", "query_run"),
         ("polylogue.query_run_outcome", "query_run_outcome"),
         ("polylogue.coverage", "coverage"),
-        ("polylogue.work_snapshot", "work_snapshot"),
-        ("polylogue.work_component_status", "work_component_status"),
     ];
     let complete =
         serde_json::to_value(schemars::schema_for!(Product)).expect("product schema serializes");
@@ -558,49 +474,13 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             variants.retain(|variant| variant["properties"]["product"]["const"] == *product);
             assert_eq!(variants.len(), 1, "one complete product schema per kind");
             let definitions = reachable_definitions(&facts, &definitions);
-            let mut schema = json!({
+            let schema = json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object", "properties": {
                     "record_key": {"type":"string", "minLength":1}, "record":facts,
                 },
                 "required":["record_key","record"], "$defs":definitions,
             });
-            let metadata = match *product {
-                "work_snapshot" => Some(
-                    serde_json::to_value(schemars::schema_for!(WorkSnapshotMetadata))
-                        .expect("metadata schema serializes"),
-                ),
-                "work_component_status" => Some(
-                    serde_json::to_value(schemars::schema_for!(WorkComponentMetadata))
-                        .expect("metadata schema serializes"),
-                ),
-                _ => None,
-            };
-            if let Some(metadata) = metadata {
-                let object = schema["properties"]
-                    .as_object_mut()
-                    .expect("schema properties");
-                object.extend(
-                    metadata["properties"]
-                        .as_object()
-                        .expect("metadata properties")
-                        .clone(),
-                );
-                let required = schema["required"].as_array_mut().expect("required fields");
-                required.extend(
-                    metadata["required"]
-                        .as_array()
-                        .expect("metadata required fields")
-                        .clone(),
-                );
-                if let Some(definitions) = metadata["$defs"].as_object() {
-                    schema["$defs"]
-                        .as_object_mut()
-                        .expect("definitions")
-                        .extend(definitions.clone());
-                }
-                schema["additionalProperties"] = false.into();
-            }
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
@@ -608,18 +488,14 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         1
                     } else {
                         match *product {
-                            "work_snapshot" | "message" => 5,
+                            "message" => 5,
                             "request" | "restored_request" => 5,
                             "input" | "session" | "document" | "event" | "link" | "background"
                             | "repository" | "parse_progress" => 4,
                             "fragment" => 2,
                             "query_run" => 3,
-                            "restored_history"
-                            | "restored_assertion"
-                            | "attachment_binding"
-                            | "query"
-                            | "query_run_outcome"
-                            | "work_component_status" => 1,
+                            "restored_history" | "restored_assertion" | "attachment_binding"
+                            | "query" | "query_run_outcome" => 1,
                             _ => 3,
                         }
                     },
@@ -628,13 +504,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 payload_schema: Some(schema),
                 normalization: Normalization::Json,
                 key_rule: Some(KeyRule::Fields {
-                    fields: if *product == "work_snapshot" {
-                        vec!["session".into(), "reducer_version".into()]
-                    } else if *product == "work_component_status" {
-                        vec!["component_kind".into(), "component_sessions".into()]
-                    } else {
-                        vec!["record_key".into()]
-                    },
+                    fields: vec!["record_key".into()],
                 }),
                 replace_rule: Some(
                     if matches!(
@@ -653,19 +523,14 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         ReplaceRule::ReplaceWhenNewer
                     },
                 ),
-                time_rule: Some(
-                    if matches!(
-                        *product,
-                        "attachment_binding" | "work_snapshot" | "work_component_status"
-                    ) {
-                        TimeRule::Unknown
-                    } else {
-                        TimeRule::FirstPresent {
-                            fields: vec!["at".into(), "started".into()],
-                            quality: TimeQuality::Intrinsic,
-                        }
-                    },
-                ),
+                time_rule: Some(if *product == "attachment_binding" {
+                    TimeRule::Unknown
+                } else {
+                    TimeRule::FirstPresent {
+                        fields: vec!["at".into(), "started".into()],
+                        quality: TimeQuality::Intrinsic,
+                    }
+                }),
                 field_hints: [
                     "record", "text", "value", "targets", "query", "rows", "refs",
                 ]
@@ -697,30 +562,10 @@ pub(crate) fn events(
             let mut source = write.location.clone();
             let session = match &write.product {
                 Product::Session { facts, .. } => Some((&facts.id, facts.repo.clone())),
-                Product::WorkSnapshot { snapshot } if !snapshot.retired => Some((
-                    &snapshot.session_id,
-                    snapshot
-                        .session
-                        .as_ref()
-                        .and_then(|session| session.repo.clone()),
-                )),
                 _ => None,
             };
             if let Some((session, repo)) = session {
                 let mut native = crate::native::Native::new(repo);
-                if let Product::WorkSnapshot { snapshot } = &write.product {
-                    for evidence in &snapshot.native {
-                        native.observe(
-                            &evidence.data,
-                            crate::kinds::RecordRef {
-                                material: MaterialId(evidence.material.parse().map_err(
-                                    |error| Error::Invalid(format!("source material: {error}")),
-                                )?),
-                                anchor: evidence.anchor,
-                            },
-                        );
-                    }
-                }
                 for ProductWrite {
                     product, location, ..
                 } in writes
@@ -782,11 +627,7 @@ pub(crate) fn events(
                             .map_err(|error| Error::Invalid(format!("parent event: {error}")))
                     })
                     .collect::<Result<Vec<_>>>()?,
-                reading_order: match &write.product {
-                    Product::WorkSnapshot { snapshot } => Some(snapshot.position),
-                    Product::WorkComponentStatus { status } => Some(status.position),
-                    _ => None,
-                },
+                reading_order: None,
                 class: Class::Open,
             })
         })

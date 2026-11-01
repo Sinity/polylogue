@@ -304,14 +304,6 @@ pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(text, v.integer("limit"), v))
 }
 
-pub fn work(_: &Command, v: &Values, _: &Caller) -> Built {
-    let text = match v.text("query").filter(|q| !q.trim().is_empty()) {
-        Some(q) => format!("work where {q}"),
-        None => "work".into(),
-    };
-    Ok(query_request(text, v.integer("limit"), v))
-}
-
 pub fn live(_: &Command, v: &Values, _: &Caller) -> Built {
     Ok(query_request(LIVE.into(), None, v))
 }
