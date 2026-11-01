@@ -2,10 +2,7 @@
 use super::*;
 
 fn fold(hash: &mut blake3::Hasher, value: &impl serde::Serialize) -> Result<(), SelectionError> {
-    let bytes = serde_json::to_vec(value).map_err(StoreError::from)?;
-    hash.update(&(bytes.len() as u64).to_le_bytes());
-    hash.update(&bytes);
-    Ok(())
+    Ok(crate::read::fold_serialized(hash, value)?)
 }
 impl Reader<'_> {
     /// Uses the same prepared selection, its total answer and captured ranking
@@ -16,11 +13,12 @@ impl Reader<'_> {
         with_parents: bool,
         near: Option<&NearFn<'_>>,
     ) -> Result<String, SelectionError> {
+        crate::read::limit::ReadLimit::set_stage("read content version");
         let mut hash = blake3::Hasher::new();
-        hash.update(b"polylogue.read.selected-content.v1\0");
+        hash.update(b"polylogue.read.selected-content.v2\0");
         self.in_selection_context(selection, near, || {
-            if let Some(reference) = &selection.direct {
-                return self.fingerprint_reference(reference, with_parents, &mut hash);
+            if let Some(target) = &selection.direct {
+                return self.fold_target_version(target, with_parents, &mut hash);
             }
             if matches!(
                 selection.program.unit,
@@ -30,16 +28,18 @@ impl Reader<'_> {
                     | Unit::Events
                     | Unit::Blocks
                     | Unit::ToolCalls
+                    | Unit::Assertions
+                    | Unit::Deliveries
             ) && let RowBasis::Native { .. } = &selection.program.row_basis
             {
                 return self.selection_facts_scoped(selection, &mut |fact: SelectionFactKey| {
-                    let reference = fact.reference().ok_or_else(|| {
+                    let target = fact.target().ok_or_else(|| {
                         invalid(
                             "not_yet_available",
                             "native row has no retained reference identity",
                         )
                     })?;
-                    self.fingerprint_reference(&reference, with_parents, &mut hash)?;
+                    self.fold_target_version(&target, with_parents, &mut hash)?;
                     Ok(ControlFlow::Continue(()))
                 });
             }
@@ -59,47 +59,70 @@ impl Reader<'_> {
         Ok(hash.finalize().to_hex().to_string())
     }
 
-    fn fingerprint_reference(
+    /// Each target's version is computed by the owner of its rows from change
+    /// counters and stored version identities; no record body is decoded.
+    fn fold_target_version(
         &self,
-        reference: &Reference,
+        target: &ReadTarget,
         with_parents: bool,
         hash: &mut blake3::Hasher,
     ) -> Result<(), SelectionError> {
-        fold(hash, &reference.to_string())?;
-        match reference {
-            Reference::Span { container, .. } => self.fingerprint_reference(container, with_parents, hash),
-            Reference::Session(id) => {
+        fold(hash, &target.to_string())?;
+        match target {
+            ReadTarget::Session(id) => {
+                crate::read::limit::ReadLimit::set_stage("read content version: session");
                 let selected = self.select_messages(id, with_parents)?;
-                // A structured read binds the available content together with
-                // its exact parent issues; strict full-history callers retain
-                // MessageSelection::require_complete at their own boundary.
-                fold(hash, &selected.fingerprint()?)?;
-                fold(hash, &selected.attachment_fingerprint()?)?;
-                selected.visit_available_tool_message_ids(|id| {
-                    let message = MessageId::parse(id).map_err(|error| StoreError::Invalid(error.to_string()))?;
+                selected.fold_content_version(hash)?;
+                selected.visit_inherited_tool_message_ids(|id| {
+                    let message = MessageId::parse(id)
+                        .map_err(|error| StoreError::Invalid(error.to_string()))?;
                     self.fold_message_tool_pairs(&message, None, hash)
                 })?;
                 Ok(())
             }
-            Reference::Message(_) | Reference::Block { .. } | Reference::MessageRange { .. } => {
+            ReadTarget::Message(_) | ReadTarget::Block { .. } | ReadTarget::MessageRange { .. } => {
+                crate::read::limit::ReadLimit::set_stage("read content version: messages");
                 let mut params = Vec::new();
-                let members = membership(Unit::Messages, reference, &mut params)?.ok_or_else(|| invalid("not_built", "reference has no message membership"))?;
-                let sql = format!("SELECT m.id,m.order_input_id,m.seq,m.record_position,m.at_time,s.version_hash,p.layout FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.shown=1 LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk IN (SELECT pk FROM ({members})) ORDER BY m.order_input_id,m.seq,m.record_position,m.id");
+                // A message reference always has message membership; an
+                // unrepresentable block ordinal selects nothing.
+                let members = membership(Unit::Messages, &target.reference(), &mut params)?
+                    .ok_or_else(|| invalid("not_found", "selected content is no longer present"))?;
+                let sql = format!(
+                    "SELECT m.id,m.order_input_id,m.seq,m.record_position,m.at_time,s.version_hash,p.layout FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.shown=1 LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk IN (SELECT pk FROM ({members})) ORDER BY m.order_input_id,m.seq,m.record_position,m.id"
+                );
+                let ordinal = match target {
+                    ReadTarget::Block { n, .. } => Some(*n),
+                    _ => None,
+                };
                 self.fold_content_rows_with(&sql, &params, "version_hash", hash, |row, hash| {
-                    let id = row["id"].as_str().ok_or_else(|| invalid("not_yet_available", "selected message has no retained identity"))?;
-                    let id = MessageId::parse(id).map_err(|error| StoreError::Invalid(error.to_string()))?;
-                    let ordinal = match reference { Reference::Block { n, .. } => Some(*n), _ => None };
+                    let id = row["id"].as_str().ok_or_else(|| {
+                        invalid(
+                            "not_yet_available",
+                            "selected message has no retained identity",
+                        )
+                    })?;
+                    let id = MessageId::parse(id)
+                        .map_err(|error| StoreError::Invalid(error.to_string()))?;
                     self.fold_message_tool_pairs(&id, ordinal, hash)?;
                     Ok(())
                 })
             }
-            Reference::Document(id) => {
-                self.fold_content_rows("SELECT d.id,s.version_hash,s.time FROM document d LEFT JOIN document_source s ON s.document_pk=d.pk AND s.shown=1 WHERE d.id=?1 ORDER BY s.input_pk,s.chain", &[SqlValue::Text(id.to_string())], "version_hash", hash)
+            ReadTarget::Document(id) => {
+                crate::read::limit::ReadLimit::set_stage("read content version: document");
+                self.fold_content_rows("SELECT d.id,d.changed,s.version_hash FROM document d LEFT JOIN document_source s ON s.document_pk=d.pk AND s.shown=1 WHERE d.id=?1 ORDER BY s.input_pk,s.chain", &[SqlValue::Text(id.to_string())], "version_hash", hash)
             }
-            Reference::Event(id) => {
+            ReadTarget::Event(id) => {
+                crate::read::limit::ReadLimit::set_stage("read content version: event");
                 self.fold_content_rows("SELECT e.id,v.hash,s.fields FROM event e LEFT JOIN event_source s ON s.event_pk=e.pk AND s.input_pk=e.input_pk AND s.chain=e.source_chain LEFT JOIN event_value v ON v.pk=s.value_pk WHERE e.id=?1", &[SqlValue::Text(id.clone())], "hash", hash)
             }
-            _ => Err(invalid("not_built", "selected reference has no retained content version")),
+            ReadTarget::Assertion { root, revision } => {
+                crate::read::limit::ReadLimit::set_stage("read content version: assertion");
+                Ok(self.fold_assertion_content_version(root, revision, hash)?)
+            }
+            ReadTarget::Delivery(id) => {
+                crate::read::limit::ReadLimit::set_stage("read content version: delivery");
+                Ok(self.fold_delivery_content_version(id, hash)?)
+            }
         }
     }
     fn fold_message_tool_pairs(

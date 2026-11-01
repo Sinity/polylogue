@@ -388,12 +388,7 @@ impl Reader<'_> {
 fn invalid(message: &str) -> StoreError {
     StoreError::Invalid(message.into())
 }
-fn fold(hash: &mut blake3::Hasher, value: &impl serde::Serialize) -> Result<()> {
-    let bytes = serde_json::to_vec(value)?;
-    hash.update(&(bytes.len() as u64).to_le_bytes());
-    hash.update(&bytes);
-    Ok(())
-}
+use super::fold_serialized as fold;
 
 #[cfg(test)]
 #[path = "tool_pairs/tests.rs"]

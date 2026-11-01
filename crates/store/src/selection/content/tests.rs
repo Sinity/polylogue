@@ -168,23 +168,20 @@ fn a_selected_parent_call_binds_its_result_beyond_the_inherited_prefix() {
         evidence: "explicit fork".into(),
     });
     archive.write("child", prose("child", 1, 3, "own available tail"));
-    let (own_before, rows_before) = {
+    let rows_before = {
         let pool = crate::ReadPool::open(&archive.archive).unwrap();
         let reader = pool.reader().unwrap();
         let selected = reader.select_messages(&sid("child"), true).unwrap();
         let mut ids = Vec::new();
         selected
-            .visit_available_tool_message_ids(|id| {
+            .visit_inherited_tool_message_ids(|id| {
                 ids.push(id.to_owned());
                 Ok(())
             })
             .unwrap();
         assert_eq!(ids, [call.id.to_string()]);
         assert!(!ids.contains(&result.id.to_string()));
-        (
-            selected.fingerprint().unwrap(),
-            prefix_rows(&reader, &call, &anchor),
-        )
+        prefix_rows(&reader, &call, &anchor)
     };
     assert_eq!(rows_before.len(), 2);
     let before = fingerprint(&archive, "session:claude-code:child", true);
@@ -208,14 +205,13 @@ fn a_selected_parent_call_binds_its_result_beyond_the_inherited_prefix() {
     let selected = reader.select_messages(&sid("child"), true).unwrap();
     let mut ids = Vec::new();
     selected
-        .visit_available_tool_message_ids(|id| {
+        .visit_inherited_tool_message_ids(|id| {
             ids.push(id.to_owned());
             Ok(())
         })
         .unwrap();
     assert_eq!(ids, [call.id.to_string()]);
     assert!(!ids.contains(&result_id.to_string()));
-    assert_eq!(selected.fingerprint().unwrap(), own_before);
     drop(selected);
     drop(reader);
     assert_ne!(
@@ -265,4 +261,99 @@ fn incomplete_parent_issue_keeps_available_tail_pair_dependencies() {
         fingerprint(&archive, "session:claude-code:child", true),
         before
     );
+}
+#[test]
+fn a_session_version_reads_import_counters_never_import_members() {
+    let mut archive = WriterArchive::new();
+    archive.write("s", prose("s", 1, 1, "synthetic prompt"));
+    let index = crate::archive::open_write(&archive.archive.index_db(), 1).unwrap();
+    let input: String = index
+        .query_row(
+            "SELECT ir.id FROM parsed p JOIN input_ref ir ON ir.pk=p.input_pk
+             JOIN session s ON s.pk=p.session_pk WHERE s.id='claude-code:s'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // One import holds the session's input and many unrelated members.
+    index
+        .execute(
+            "INSERT INTO import_member VALUES ('observation-own','import-a',?1,'own',NULL,NULL)",
+            [&input],
+        )
+        .unwrap();
+    for n in 0..2000 {
+        index
+            .execute(
+                "INSERT INTO import_member VALUES (?1,'import-a',?2,?3,NULL,NULL)",
+                rusqlite::params![
+                    format!("observation-{n}"),
+                    format!("synthetic-input-{n}"),
+                    format!("member-{n}")
+                ],
+            )
+            .unwrap();
+    }
+    index
+        .execute("INSERT INTO import_change VALUES ('import-a',1)", [])
+        .unwrap();
+    drop(index);
+    let version = || {
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let selection = reader
+            .prepare_selection("session:claude-code:s", &options())
+            .unwrap();
+        reader
+            .conn()
+            .unwrap()
+            .authorizer(Some(|context: AuthContext<'_>| {
+                let member_detail = matches!(
+                    context.action,
+                    AuthAction::Read {
+                        table_name: "import_member",
+                        column_name: "observation" | "member" | "source_id" | "sidecar"
+                    }
+                );
+                let asset_tables = matches!(
+                    context.action,
+                    AuthAction::Read {
+                        table_name: "import_asset_metadata"
+                            | "import_asset_sidecar"
+                            | "source_extent"
+                            | "source_revision"
+                            | "source_blob",
+                        ..
+                    }
+                );
+                if member_detail || asset_tables {
+                    Authorization::Deny
+                } else {
+                    Authorization::Allow
+                }
+            }))
+            .unwrap();
+        reader
+            .selection_content_fingerprint(&selection, false, None)
+            .unwrap()
+    };
+    let before = version();
+    assert_eq!(version(), before, "an unchanged import keeps the version");
+    let index = crate::archive::open_write(&archive.archive.index_db(), 1).unwrap();
+    // A new member of another input changes nothing this session shows
+    // until the import's owner moves its counter.
+    index
+        .execute(
+            "INSERT INTO import_member VALUES ('observation-late','import-a','synthetic-late','late',NULL,NULL)",
+            [],
+        )
+        .unwrap();
+    index
+        .execute(
+            "UPDATE import_change SET changed=changed+1 WHERE import_id='import-a'",
+            [],
+        )
+        .unwrap();
+    drop(index);
+    assert_ne!(version(), before);
 }

@@ -37,11 +37,29 @@ impl ReadCancellation {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct Stages {
+    current: Option<(&'static str, Instant)>,
+    totals: Vec<(&'static str, Duration)>,
+}
+
+impl Stages {
+    fn close(&mut self, now: Instant) {
+        if let Some((name, began)) = self.current.take() {
+            let spent = now.saturating_duration_since(began);
+            match self.totals.iter_mut().find(|(total, _)| *total == name) {
+                Some((_, total)) => *total += spent,
+                None => self.totals.push((name, spent)),
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ReadLimit {
     deadline: Option<Instant>,
     steps: Arc<AtomicU64>,
-    stage: Arc<Mutex<Option<&'static str>>>,
+    stages: Arc<Mutex<Stages>>,
     scopes: Arc<Mutex<Vec<super::scope::ReadScopeToken>>>,
     pub cancellation: ReadCancellation,
 }
@@ -66,22 +84,46 @@ impl ReadLimit {
             deadline,
             cancellation,
             steps: Arc::new(AtomicU64::new(0)),
-            stage: Arc::new(Mutex::new(None)),
+            stages: Default::default(),
             scopes: Default::default(),
         }
     }
 
     pub fn stage(&self) -> Option<&'static str> {
-        *self.stage.lock().unwrap_or_else(|error| error.into_inner())
+        self.stages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .current
+            .map(|(name, _)| name)
     }
 
+    /// Enters a named stage; the time since the previous stage began is added
+    /// to that stage's total. Re-entering the current stage changes nothing.
     pub fn set_stage(stage: &'static str) {
         if let Some(limit) = Self::current() {
-            *limit
-                .stage
+            let mut stages = limit
+                .stages
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()) = Some(stage);
+                .unwrap_or_else(|error| error.into_inner());
+            if stages.current.is_some_and(|(name, _)| name == stage) {
+                return;
+            }
+            let now = Instant::now();
+            stages.close(now);
+            stages.current = Some((stage, now));
         }
+    }
+
+    /// Elapsed time per stage in first-entered order, the current stage
+    /// counted up to now.
+    pub fn stage_timings(&self) -> Vec<(&'static str, Duration)> {
+        let mut stages = self
+            .stages
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        stages.close(Instant::now());
+        stages.totals
     }
 
     pub fn sqlite_steps(&self) -> u64 {

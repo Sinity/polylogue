@@ -83,11 +83,11 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
             assert_eq!(key_ids, visited);
             if changed_plan {
                 assert_eq!(
-                    selected.fingerprint().unwrap(),
+                    selected.content_version().unwrap(),
                     fingerprints[usize::from(with_parents)]
                 );
             } else {
-                fingerprints.push(selected.fingerprint().unwrap());
+                fingerprints.push(selected.content_version().unwrap());
             }
         }
         assert_eq!(

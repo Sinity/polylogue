@@ -331,7 +331,55 @@ pub(crate) fn project_member(
             ],
         )?;
     }
+    count_import_change(conn, &source.membership.import_id)
+}
+
+fn count_import_change(conn: &Connection, import_id: &str) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT INTO import_change(import_id,changed) VALUES (?1,1)
+         ON CONFLICT(import_id) DO UPDATE SET changed=changed+1",
+    )?
+    .execute([import_id])?;
     Ok(())
+}
+
+/// Asset metadata and sidecars are keyed by input; every import holding the
+/// input sees the change.
+fn count_input_change(conn: &Connection, input: &str) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT INTO import_change(import_id,changed)
+         SELECT DISTINCT import_id,1 FROM import_member WHERE input=?1 AND true
+         ON CONFLICT(import_id) DO UPDATE SET changed=changed+1",
+    )?
+    .execute([input])?;
+    Ok(())
+}
+
+/// Folds the change counter of every import holding an input parsed into
+/// one of `sessions`. Members are never visited.
+pub(crate) fn fold_session_import_versions(
+    conn: &Connection,
+    sessions: &[i64],
+    hash: &mut blake3::Hasher,
+) -> Result<()> {
+    let mut imports = std::collections::BTreeMap::new();
+    let mut statement = conn.prepare_cached(
+        "SELECT DISTINCT own.import_id,coalesce(c.changed,0) FROM parsed p
+         JOIN input_ref ir ON ir.pk=p.input_pk
+         JOIN import_member own ON own.input=ir.id
+         LEFT JOIN import_change c ON c.import_id=own.import_id
+         WHERE p.session_pk=?1",
+    )?;
+    for session in sessions {
+        let rows = statement.query_map([session], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (import, changed) = row?;
+            imports.insert(import, changed);
+        }
+    }
+    crate::read::fold_serialized(hash, &imports)
 }
 
 pub(crate) fn install(
@@ -378,6 +426,7 @@ pub(crate) fn install(
                         size.map(|n| n.to_string())
                     ],
                 )?;
+                count_input_change(&tx, &input)?;
             }
             AssetRow::Sidecar {
                 input,
@@ -398,12 +447,14 @@ pub(crate) fn install(
                     "INSERT OR REPLACE INTO import_asset_sidecar VALUES (?1,?2,?3,?4,?5)",
                     params![input, sidecar, RULES, recorded, error],
                 )?;
+                count_input_change(&tx, &input)?;
             }
             AssetRow::ResetMetadata { input, sidecar } => {
                 tx.execute(
                     "DELETE FROM import_asset_metadata WHERE input=?1 AND sidecar=?2",
                     params![input, sidecar],
                 )?;
+                count_input_change(&tx, &input)?;
             }
             AssetRow::Scan { through } => {
                 tx.execute(

@@ -102,8 +102,7 @@ impl Daemon {
                 )
             })?;
         let description = table
-            .descriptions()
-            .into_iter()
+            .describe()
             .find(|description| description.spec.name == request.operation)
             .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
         let command =
@@ -133,7 +132,7 @@ impl Daemon {
                     "GET"
                 }
                 .into(),
-                path: description.spec.http_route,
+                path: description.spec.http_route.clone(),
                 arguments: serde_json::to_value(request).expect("request serializes"),
             },
         })
@@ -1465,12 +1464,16 @@ fn query_targets_in(
                         row_count = row_count
                             .checked_add(1)
                             .ok_or_else(|| error("internal", "selected row count exceeds u64"))?;
-                        let reference = row.reference.ok_or_else(|| {
-                            error(
-                                "not_yet_available",
-                                "the selected row has no authoritative source reference",
-                            )
-                        })?;
+                        let reference = row
+                            .target
+                            .as_ref()
+                            .map(polylogue_model::read::ReadTarget::reference)
+                            .ok_or_else(|| {
+                                error(
+                                    "not_yet_available",
+                                    "the selected row has no authoritative source reference",
+                                )
+                            })?;
                         if seen.insert(reference.clone()) {
                             targets.push(reference);
                         }

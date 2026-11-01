@@ -138,10 +138,6 @@ fn a_1030_session_chain_has_no_depth_or_call_stack_cutoff() {
             .collect::<Vec<_>>()
     );
     assert_eq!(r.message_keys_with_parents(&id).unwrap().len(), 1030);
-    assert_eq!(
-        selected.fingerprint().unwrap(),
-        r.message_fingerprint(&id, true).unwrap()
-    );
 }
 
 #[test]
@@ -231,7 +227,10 @@ fn changed_missing_anchor_changes_fingerprint_even_when_available_messages_do_no
     let id = SessionId::parse("claude-code:b").unwrap();
     let before = {
         let r = pool.reader().unwrap();
-        r.select_messages(&id, true).unwrap().fingerprint().unwrap()
+        r.select_messages(&id, true)
+            .unwrap()
+            .content_version()
+            .unwrap()
     };
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
@@ -240,7 +239,7 @@ fn changed_missing_anchor_changes_fingerprint_even_when_available_messages_do_no
     let r = pool.reader().unwrap();
     let selected = r.select_messages(&id, true).unwrap();
     assert_eq!(texts(&selected), ["b"]);
-    assert_ne!(before, selected.fingerprint().unwrap());
+    assert_ne!(before, selected.content_version().unwrap());
 }
 
 #[test]

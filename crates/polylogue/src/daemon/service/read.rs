@@ -130,6 +130,7 @@ fn prepared<T>(
                     budget,
                     ..
                 } => {
+                    polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
                     options.validate().map_err(|e| error("bad_request", e))?;
                     let format = Format::parse(format)
                         .ok_or_else(|| error("bad_request", "unknown read format"))?;
@@ -215,6 +216,7 @@ fn prepared<T>(
                     cursor,
                     budget,
                 } => {
+                    polylogue_store::read::limit::ReadLimit::set_stage("read continuation");
                     let (selection, position) = reader.prepare_authenticated_run_selection(
                         cursor,
                         root_run,
@@ -336,14 +338,16 @@ fn prepared<T>(
                 "read_failed",
                 || d.config.requests.now(),
                 || {
-                    let completeness = reader
-                        .completeness(&polylogue_engine::reading_contracts())
+                    polylogue_store::read::limit::ReadLimit::set_stage("read snapshot");
+                    let caught_up = d
+                        .warm
+                        .caught_up(reader, &positions.to_string())
                         .map_err(|e| store_error(&e))?;
                     let snapshot = ReadSnapshot {
                         query: format!("query:{}", selection.question_id()),
                         query_text: execution.target.clone(),
                         ran_at: operation.ran_at,
-                        caught_up: completeness.caught_up(),
+                        caught_up,
                         read_at: positions,
                         currency: d.currency(reader).map_err(|e| store_error(&e))?,
                         enabled_variants: execution.options.variants.clone(),
@@ -351,8 +355,8 @@ fn prepared<T>(
                         notes: selection.program().notes.clone(),
                         incomplete: selection.program().incomplete.clone(),
                     };
-                    let (title, kind) = match selection.direct_reference() {
-                        Some(polylogue_model::Reference::Session(id)) => {
+                    let (title, kind) = match selection.direct_target() {
+                        Some(ReadTarget::Session(id)) => {
                             let session = reader
                                 .session(id)
                                 .map_err(|e| store_error(&e))?
@@ -369,20 +373,34 @@ fn prepared<T>(
                                 },
                             )
                         }
-                        _ => (
+                        Some(target) => (
+                            ValueState::NotApplicable,
+                            HeaderKind::Record {
+                                record_type: target
+                                    .to_string()
+                                    .split_once(':')
+                                    .map_or("record", |(kind, _)| kind)
+                                    .into(),
+                            },
+                        ),
+                        None => (
                             ValueState::NotApplicable,
                             HeaderKind::Record {
                                 record_type: "query".into(),
                             },
                         ),
                     };
+                    // A direct read names what it reads; a query read names its question.
                     let header = ReadHeader {
-                        target: snapshot.query.clone(),
+                        target: selection
+                            .direct_target()
+                            .map_or_else(|| snapshot.query.clone(), ToString::to_string),
                         view: execution.options.view,
                         title,
                         kind,
                         figures: Vec::new(),
                     };
+                    polylogue_store::read::limit::ReadLimit::set_stage("read records");
                     run(
                         &selection,
                         &execution,
@@ -410,14 +428,12 @@ type Emit<'a> =
 fn selected_source(
     reader: &Reader<'_>,
     selection: &PreparedSelection<'_>,
-    reference: Option<&polylogue_model::Reference>,
+    target: Option<&ReadTarget>,
     options: &ReadOptions,
     near: Option<&polylogue_store::selection::NearFn<'_>>,
     source: &Source,
 ) -> Result<bool, Response> {
-    if let (Some(polylogue_model::Reference::Session(session)), Some(message)) =
-        (reference, &source.message)
-    {
+    if let (Some(ReadTarget::Session(session)), Some(message)) = (target, &source.message) {
         return Ok(reader
             .select_messages(session, options.inherited)
             .map_err(|e| store_error(&e))?
@@ -449,14 +465,14 @@ fn visit(
 ) -> Result<(), Response> {
     let options = rendering.options;
     let near = rendering.near;
-    let mixed = selection.direct_reference().is_none();
+    let mixed = selection.direct_target().is_none();
     let start_row = start.map_or(0, |p| p.selection.row);
     let mut pending = start.map(|p| p.selection);
     reader.visit_selection_from::<Response>(selection, start_row, near, |row_number, row| {
         let record_start = pending.filter(|p| p.row == row_number).map(|p| p.record);
-        let keep = if let Some(reference) = row.reference {
+        let keep = if let Some(target) = row.target {
             if rendering.page
-                && let polylogue_model::Reference::Document(id) = &reference
+                && let ReadTarget::Document(id) = &target
             {
                 let selected = |_: &Source| Ok(false);
                 let evidence = ProjectionEvidence::default();
@@ -470,7 +486,7 @@ fn visit(
                 };
                 let position = start.filter(|start| start.selection.row == row_number);
                 let keep = if let Some(record) =
-                    output::document_omission(&reference.to_string(), options, mixed, footer)?
+                    output::document_omission(&target.to_string(), options, mixed, footer)?
                 {
                     let at = SelectionLocator {
                         row: row_number,
@@ -500,10 +516,11 @@ fn visit(
             }
             records::reference(
                 reader,
-                &reference,
+                &target,
                 options.inherited,
                 record_start.as_ref(),
                 &mut |record, evidence, record_position| {
+                    polylogue_store::read::limit::ReadLimit::set_stage("read layout");
                     let at = SelectionLocator {
                         row: row_number,
                         record: record_position,
@@ -522,7 +539,7 @@ fn visit(
                         return Ok(true);
                     };
                     let selected = |source: &Source| {
-                        selected_source(reader, selection, Some(&reference), options, near, source)
+                        selected_source(reader, selection, Some(&target), options, near, source)
                     };
                     let layout = evidence::Layout {
                         options,
@@ -744,6 +761,7 @@ pub(super) fn page(
                 )?;
             }
             scope.check().map_err(|e| store_error(&e))?;
+            polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
             let upper = pager.upper_position().copied();
             let document = pager
                 .finish_with(|position| {

@@ -130,6 +130,20 @@ pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completio
     query_language::complete::complete(text, position, catalog)
 }
 
+/// The row domain a read target selects; every target has one.
+pub fn target_unit(target: &polylogue_model::read::ReadTarget) -> Unit {
+    use polylogue_model::read::ReadTarget;
+    match target {
+        ReadTarget::Session(_) => Unit::Sessions,
+        ReadTarget::Message(_) | ReadTarget::MessageRange { .. } => Unit::Messages,
+        ReadTarget::Block { .. } => Unit::Blocks,
+        ReadTarget::Document(_) => Unit::Documents,
+        ReadTarget::Event(_) => Unit::Events,
+        ReadTarget::Assertion { .. } => Unit::Assertions,
+        ReadTarget::Delivery(_) => Unit::Deliveries,
+    }
+}
+
 /// The native row domain of a typed address. This is pure product vocabulary;
 /// membership and source availability remain Store responsibilities.
 pub fn reference_unit(reference: &polylogue_model::Reference) -> Option<Unit> {

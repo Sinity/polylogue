@@ -248,3 +248,51 @@ fn member_discovery_filters_before_decoding_and_propagates_visitor_refusal() {
     assert!(matches!(error, Err(StoreError::Conflict(_))));
     assert_eq!(visited, vec!["member-a"]);
 }
+
+#[test]
+fn import_members_and_asset_rows_move_their_import_counters() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE import_member (observation TEXT PRIMARY KEY, import_id TEXT NOT NULL,
+           input TEXT NOT NULL, member TEXT NOT NULL, source_id TEXT, sidecar TEXT) STRICT;
+         CREATE TABLE import_change (import_id TEXT PRIMARY KEY, changed INTEGER NOT NULL) STRICT, WITHOUT ROWID;",
+    )
+    .unwrap();
+    let counter = |import: &str| -> Option<i64> {
+        conn.query_row(
+            "SELECT changed FROM import_change WHERE import_id=?1",
+            [import],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+    };
+    for (observation, import) in [("one", "import-a"), ("two", "import-b")] {
+        let member = ObservedMember {
+            observation: observation.into(),
+            input: "shared-input".into(),
+            membership: crate::ImportMember {
+                version: 1,
+                import_id: import.into(),
+                member: format!("{observation}.bin"),
+                authorship: None,
+                format: None,
+            },
+        };
+        project_member(&conn, &member, None, None).unwrap();
+    }
+    assert_eq!(
+        (counter("import-a"), counter("import-b")),
+        (Some(1), Some(1))
+    );
+    count_input_change(&conn, "shared-input").unwrap();
+    assert_eq!(
+        (counter("import-a"), counter("import-b")),
+        (Some(2), Some(2))
+    );
+    count_input_change(&conn, "unrelated-input").unwrap();
+    assert_eq!(
+        (counter("import-a"), counter("import-b")),
+        (Some(2), Some(2))
+    );
+}

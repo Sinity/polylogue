@@ -1,7 +1,11 @@
 use super::*;
 use polylogue_model::SessionId;
+use polylogue_model::read::ReadTarget;
 use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
 
+fn read_target(text: &str) -> Result<ReadTarget, polylogue_model::read::NotReadTarget> {
+    ReadTarget::try_from(polylogue_model::Reference::parse(text).unwrap())
+}
 fn at(kind: ReadRecordKind, ordinal: u64) -> ReadRecordLocator {
     ReadRecordLocator { kind, ordinal }
 }
@@ -42,7 +46,7 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let reference = Reference::Session(SessionId::parse("test:target").unwrap());
+    let reference = ReadTarget::Session(SessionId::parse("test:target").unwrap());
     let mut current = last_record(&reader, &reference, false).unwrap();
     let mut seen = Vec::new();
     while let Some(position) = current {
@@ -93,7 +97,7 @@ fn singleton_and_empty_session_edges_have_no_shifted_fallback() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let reference = Reference::parse("session:test:empty").unwrap();
+    let reference = read_target("session:test:empty").unwrap();
     assert_eq!(
         last_record(&reader, &reference, false).unwrap(),
         Some(at(Session, 0))
@@ -103,24 +107,19 @@ fn singleton_and_empty_session_edges_have_no_shifted_fallback() {
         None
     );
     assert_eq!(
-        last_record(
-            &reader,
-            &Reference::parse("session:test:absent").unwrap(),
-            false
-        )
-        .unwrap(),
+        last_record(&reader, &read_target("session:test:absent").unwrap(), false).unwrap(),
         None
     );
     assert!(
         previous_record(
             &reader,
-            &Reference::parse("session:test:absent").unwrap(),
+            &read_target("session:test:absent").unwrap(),
             false,
             &at(Session, 0)
         )
         .is_err()
     );
-    let direct = Reference::parse("message:test:present").unwrap();
+    let direct = read_target("message:test:present").unwrap();
     assert_eq!(
         last_record(&reader, &direct, false).unwrap(),
         Some(at(Message, 0))
@@ -159,7 +158,7 @@ fn lineage_issue_coordinates_resume_and_reverse_at_both_family_boundaries() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let reference = Reference::parse("session:test:child").unwrap();
+    let reference = read_target("session:test:child").unwrap();
     assert_eq!(
         previous_record(&reader, &reference, true, &at(Message, 0)).unwrap(),
         Some(at(LinkIssue, 0))

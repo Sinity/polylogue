@@ -1,10 +1,7 @@
 //! Adjacent canonical record coordinates. The caller hydrates exactly the
 //! returned record through records::reference and stops after its first record.
 use super::super::{Response, error, store_error};
-use polylogue_model::{
-    Reference,
-    read::{ReadRecordKind, ReadRecordLocator},
-};
+use polylogue_model::read::{ReadRecordKind, ReadRecordLocator, ReadTarget};
 use polylogue_store::Reader;
 
 fn stale() -> Response {
@@ -13,26 +10,26 @@ fn stale() -> Response {
 
 pub(super) fn last_record(
     reader: &Reader<'_>,
-    reference: &Reference,
+    target: &ReadTarget,
     inherited: bool,
 ) -> Result<Option<ReadRecordLocator>, Response> {
-    adjacent(reader, reference, inherited, None)
+    adjacent(reader, target, inherited, None)
 }
 pub(super) fn previous_record(
     reader: &Reader<'_>,
-    reference: &Reference,
+    target: &ReadTarget,
     inherited: bool,
     current: &ReadRecordLocator,
 ) -> Result<Option<ReadRecordLocator>, Response> {
-    adjacent(reader, reference, inherited, Some(current))
+    adjacent(reader, target, inherited, Some(current))
 }
 fn adjacent(
     reader: &Reader<'_>,
-    reference: &Reference,
+    target: &ReadTarget,
     inherited: bool,
     current: Option<&ReadRecordLocator>,
 ) -> Result<Option<ReadRecordLocator>, Response> {
-    use ReadRecordKind::{Document, Event, Link, LinkIssue, Message, Session};
+    use ReadRecordKind::{Authored, Document, Event, Link, LinkIssue, Message, Session};
     reader.check().map_err(|error| store_error(&error))?;
     let mut families = [
         (Session, 0),
@@ -41,8 +38,8 @@ fn adjacent(
         (Event, 0),
         (Link, 0),
     ];
-    let length = match reference {
-        Reference::Session(id) => {
+    let length = match target {
+        ReadTarget::Session(id) => {
             let Some(physical) = reader
                 .physical_record_counts(id)
                 .map_err(|error| store_error(&error))?
@@ -72,23 +69,32 @@ fn adjacent(
             ];
             5
         }
-        Reference::Message(_) | Reference::Block { .. } => {
+        ReadTarget::Message(_) | ReadTarget::Block { .. } => {
             families[0] = (Message, 1);
             1
         }
-        Reference::Document(_) => {
+        ReadTarget::MessageRange { first, last } => {
+            let mut count = 0_u64;
+            reader
+                .visit_message_range(first, last, 0, |_| {
+                    count += 1;
+                    Ok(std::ops::ControlFlow::Continue(()))
+                })
+                .map_err(|error| store_error(&error))?;
+            families[0] = (Message, count);
+            1
+        }
+        ReadTarget::Document(_) => {
             families[0] = (Document, 1);
             1
         }
-        Reference::Event(_) => {
+        ReadTarget::Event(_) => {
             families[0] = (Event, 1);
             1
         }
-        _ => {
-            return Err(error(
-                "not_built",
-                format!("the selected reference {reference} has no canonical read adapter"),
-            ));
+        ReadTarget::Assertion { .. } | ReadTarget::Delivery(_) => {
+            families[0] = (Authored, 1);
+            1
         }
     };
     let families = &families[..length];

@@ -64,7 +64,7 @@ fn prepared_selection_streams_total_answer_and_stops_at_callback() {
     let mut after = None;
     reader
         .visit_selection::<SelectionError>(&prepared, None, None, |row| {
-            refs.push(row.reference.unwrap().to_string());
+            refs.push(row.target.unwrap().to_string());
             after = Some(row.position);
             Ok(ControlFlow::Break(()))
         })
@@ -72,7 +72,7 @@ fn prepared_selection_streams_total_answer_and_stops_at_callback() {
     assert_eq!(refs, ["session:test:three"]);
     reader
         .visit_selection::<SelectionError>(&prepared, after.as_ref(), None, |row| {
-            refs.push(row.reference.unwrap().to_string());
+            refs.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -112,7 +112,7 @@ fn prepared_selection_retains_exact_block_reference() {
     let mut refs = vec![];
     reader
         .visit_selection::<SelectionError>(&prepared, None, None, |row| {
-            refs.push(row.reference.unwrap().to_string());
+            refs.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -138,7 +138,7 @@ fn selected_reference_survives_projection_and_membership_keeps_offset() {
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(
-        rows[0].reference.as_ref().unwrap().to_string(),
+        rows[0].target.as_ref().unwrap().to_string(),
         "session:test:two"
     );
     assert!(
@@ -186,7 +186,7 @@ fn group_identity_excludes_counts_and_unknown_observation_stays_unknown() {
         rows[0].aggregates,
         BTreeMap::from([("count".into(), Some(3.))])
     );
-    assert!(rows[0].reference.is_none());
+    assert!(rows[0].target.is_none());
     assert!(rows[0].first_seen.is_none());
 }
 #[test]
@@ -537,7 +537,7 @@ fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
     let mut references = vec![];
     reader
         .visit_selection::<SelectionError>(&replay, None, None, |row| {
-            references.push(row.reference.unwrap().to_string());
+            references.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -574,7 +574,7 @@ fn selected_assertion_reference_retains_its_actual_family_and_revision() {
     let mut rows = vec![];
     reader
         .visit_selection::<SelectionError>(&selected, None, None, |row| {
-            rows.push((row.reference.unwrap().to_string(), row.values));
+            rows.push((row.target.unwrap().to_string(), row.values));
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -616,7 +616,7 @@ fn selected_assertion_reference_retains_its_actual_family_and_revision() {
             &options,
         )
         .unwrap();
-    assert!(family.direct_reference().is_none());
+    assert!(family.direct_target().is_none());
     let mut count = 0;
     reader
         .visit_selection::<SelectionError>(&family, None, None, |_| {
@@ -667,7 +667,10 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
     let opaque = reader
         .prepare_selection(&reference.to_string(), &options)
         .unwrap();
-    assert_eq!(opaque.direct_reference(), Some(&reference));
+    assert_eq!(
+        opaque.direct_target().map(ReadTarget::reference),
+        Some(reference.clone())
+    );
     let messages = reader
         .messages(&SessionId::parse("test:session").unwrap(), false)
         .unwrap();
@@ -677,30 +680,42 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
         .unwrap();
     assert_eq!(message.text(), body);
     let quoted = reader
-        .prepare_selection(&reference_atom(&reference), &options)
-        .unwrap();
-    assert_eq!(quoted.direct_reference(), Some(&reference));
-    assert_eq!(opaque.question_id(), quoted.question_id());
-    let explicit = reader
         .prepare_selection(
-            &format!("messages where {} | sort by id", reference_atom(&reference)),
+            &reference_atom(&ReadTarget::try_from(reference.clone()).unwrap()),
             &options,
         )
         .unwrap();
-    assert!(explicit.direct_reference().is_none());
+    assert_eq!(
+        quoted.direct_target().map(ReadTarget::reference),
+        Some(reference.clone())
+    );
+    assert_eq!(opaque.question_id(), quoted.question_id());
+    let explicit = reader
+        .prepare_selection(
+            &format!(
+                "messages where {} | sort by id",
+                reference_atom(&ReadTarget::try_from(reference.clone()).unwrap())
+            ),
+            &options,
+        )
+        .unwrap();
+    assert!(explicit.direct_target().is_none());
     for selection in [&opaque, &quoted, &explicit] {
         let mut found = Vec::new();
         reader
             .visit_selection::<SelectionError>(selection, None, None, |row| {
                 assert_eq!(row.values["id"], opaque_id);
-                found.push(row.reference.unwrap());
+                found.push(row.target.unwrap().reference());
                 Ok(ControlFlow::Continue(()))
             })
             .unwrap();
         assert_eq!(found.as_slice(), std::slice::from_ref(&reference));
     }
     let missing = Reference::Message(MessageId::parse(&format!("{opaque_id}missing")).unwrap());
-    for target in [missing.to_string(), reference_atom(&missing)] {
+    for target in [
+        missing.to_string(),
+        reference_atom(&ReadTarget::try_from(missing.clone()).unwrap()),
+    ] {
         assert_eq!(
             reader
                 .prepare_selection(&target, &options)
@@ -713,11 +728,11 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
     let saved = reader
         .prepare_selection("query:literal-target", &options)
         .unwrap();
-    assert!(saved.direct_reference().is_none());
+    assert!(saved.direct_target().is_none());
     let mut saved_ids = Vec::new();
     reader
         .visit_selection::<SelectionError>(&saved, None, None, |row| {
-            saved_ids.push(row.reference.unwrap().to_string());
+            saved_ids.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -725,10 +740,7 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
     let object = opaque.query_object().unwrap();
     polylogue_query::plan::validate_object(&object).unwrap();
     let event = reader.prepare_selection("event:e4", &options).unwrap();
-    assert_eq!(
-        event.direct_reference(),
-        Some(&Reference::Event("e4".into()))
-    );
+    assert_eq!(event.direct_target(), Some(&ReadTarget::Event("e4".into())));
     assert_eq!(
         reader
             .prepare_selection("block:test:a#999", &options)
@@ -743,11 +755,11 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
             &options,
         )
         .unwrap();
-    assert!(ordinary.direct_reference().is_none());
+    assert!(ordinary.direct_target().is_none());
     let mut selected = vec![];
     reader
         .visit_selection::<SelectionError>(&ordinary, None, None, |row| {
-            selected.push(row.reference.unwrap().to_string());
+            selected.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -755,7 +767,7 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
     let semantic = reader
         .prepare_query_selection("messages where message:test:a..test:b", &options)
         .unwrap();
-    assert!(semantic.direct_reference().is_none());
+    assert!(semantic.direct_target().is_none());
     let mut semantic_count = 0;
     reader
         .visit_selection::<SelectionError>(&semantic, None, None, |_| {
@@ -768,8 +780,8 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
         .prepare_selection("message:test:a..test:b", &options)
         .unwrap();
     assert!(matches!(
-        range.direct_reference(),
-        Some(Reference::MessageRange { .. })
+        range.direct_target(),
+        Some(ReadTarget::MessageRange { .. })
     ));
 }
 
@@ -789,7 +801,7 @@ fn direct_authored_reference_uses_exact_family_revision_membership() {
     let mut selected = Vec::new();
     reader
         .visit_selection::<SelectionError>(&prepared, None, None, |row| {
-            selected.push(row.reference.unwrap().to_string());
+            selected.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
@@ -839,20 +851,20 @@ fn native_event_read_target_uses_event_grain_without_rebinding_ordinary_queries(
     let mut references = vec![];
     reader
         .visit_selection::<SelectionError>(&semantic, None, None, |row| {
-            references.push(row.reference.unwrap());
+            references.push(row.target.unwrap());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
     assert_eq!(references.len(), 1);
-    assert!(matches!(references[0], Reference::Event(_)));
+    assert!(matches!(references[0], ReadTarget::Event(_)));
     let target = references[0].to_string();
     let direct = reader.prepare_selection(&target, &options()).unwrap();
     assert_eq!(direct.program().unit, Unit::Events);
-    assert_eq!(direct.direct_reference(), Some(&references[0]));
+    assert_eq!(direct.direct_target(), Some(&references[0]));
     let mut selected = vec![];
     reader
         .visit_selection::<SelectionError>(&direct, None, None, |row| {
-            selected.push(row.reference.unwrap());
+            selected.push(row.target.unwrap());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();

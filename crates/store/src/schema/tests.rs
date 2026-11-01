@@ -19,10 +19,10 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn numbered_source_and_index_migrations_keep_the_embedding_baseline() {
     assert_eq!(ARCHIVE_VERSION, 5);
-    assert_eq!(INDEX_VERSION, 15);
+    assert_eq!(INDEX_VERSION, 16);
     for (create, expected) in [
         (ensure_archive as fn(&Connection) -> Result<()>, 5),
-        (ensure_index, 15),
+        (ensure_index, 16),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();

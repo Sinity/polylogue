@@ -60,6 +60,17 @@ use order::RecordOrder;
 
 pub use parents::{MessageSelection, OutlineEntry, ParentIssue, Parents, VisitStart};
 
+/// Folds one serialized value with its length, so adjacent values cannot run together.
+pub(crate) fn fold_serialized(
+    hash: &mut blake3::Hasher,
+    value: &impl serde::Serialize,
+) -> Result<()> {
+    let bytes = serde_json::to_vec(value)?;
+    hash.update(&(bytes.len() as u64).to_le_bytes());
+    hash.update(&bytes);
+    Ok(())
+}
+
 struct MessageEvidence {
     order: Option<i64>,
     fact: Option<i64>,
@@ -805,13 +816,12 @@ impl Reader<'_> {
         selected.visit_with_projection(&mut visit)
     }
 
-    /// Fingerprint stored message facts without decompressing bodies. A strict
-    /// caller cannot mistake incomplete parents for a complete selection.
+    /// The content version a session read binds, for tests of what moves it.
     #[cfg(test)]
-    pub fn message_fingerprint(&self, id: &SessionId, with_parents: bool) -> Result<String> {
+    pub fn session_content_version(&self, id: &SessionId, with_parents: bool) -> Result<String> {
         let selected = self.select_messages(id, with_parents)?;
         selected.require_complete()?;
-        selected.fingerprint()
+        selected.content_version()
     }
 
     /// The keys of the messages a session shows with its parents, each once.
