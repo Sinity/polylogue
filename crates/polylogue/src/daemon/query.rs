@@ -4,7 +4,7 @@
 //! the attachments agree.
 
 use polylogue_store::Reader;
-use polylogue_store::query::{Options, Program, Shape};
+use polylogue_store::query::{Options, Program, RowBasis, Shape};
 #[cfg(test)]
 use polylogue_store::{SqlValue, query::ColKind};
 use query_language::time::DaySetting;
@@ -127,6 +127,16 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let mut rows = with_similarity(reader, &program, ask.near, || {
         Ok(reader.query_rows(&program)?)
     })?;
+    // Each kept row keeps its native identity, so reading the result back
+    // names the same rows; presentation drops these columns.
+    let identities = match &program.row_basis {
+        RowBasis::Native { columns, .. } => Some(
+            rows.iter()
+                .map(|row| columns.iter().map(|c| row[c].clone()).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    };
     for row in &mut rows {
         present(&program, row)?;
     }
@@ -139,6 +149,9 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "now": program.clock.now,
         "definitions": program.definitions,
     });
+    if let Some(identities) = identities {
+        kept["identities"] = json!(identities);
+    }
     if polylogue_query::parse(ask.text)?.stages.is_empty()
         && let Ok(m) = polylogue_store::query::compile(&format!("{} | matches", ask.text), &opts)
     {

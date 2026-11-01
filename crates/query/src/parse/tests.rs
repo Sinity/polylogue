@@ -331,3 +331,15 @@ fn native_time_companion_catalog_keeps_closed_precision_and_literal_unknown_dist
         matches!(cond(&completed), ConditionKind::Match { value: Value::Scalar { text, quoted: true }, .. } if text == "unknown")
     );
 }
+
+#[test]
+fn a_lone_exact_assertion_revision_reads_the_assertions_unit() {
+    let unit = |text: &str| match p(text).source {
+        Source::Unit { unit, .. } => unit,
+        other => panic!("{text}: {other:?}"),
+    };
+    assert_eq!(unit("assertion:root@revision"), "assertions");
+    assert_eq!(unit("assertion:root"), "sessions");
+    assert_eq!(unit("block:test:message#0"), "sessions");
+    assert_eq!(unit("sessions where assertion:root@revision"), "sessions");
+}

@@ -673,20 +673,6 @@ pub(crate) fn recipient(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
     session_id_in(c, x, "{r}.recipient_id")
 }
 
-/// Match the recorded JSON value rather than its storage string encoding.
-pub(crate) fn assertion_value(
-    c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
-) -> Result<String, QueryError> {
-    let def = fields::lookup(Unit::Assertions, "value").expect("declared assertion value");
-    c.typed(
-        def,
-        &format!("json_extract({}.value, '$')", x.row()),
-        x.op,
-        x.span,
-    )
-}
-
 /// A note about the reference; a bare session ID is a `session:` reference.
 pub(crate) fn assertion_about(
     c: &mut Compiler<'_>,

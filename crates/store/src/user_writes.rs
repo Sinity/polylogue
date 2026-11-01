@@ -236,6 +236,11 @@ pub(crate) fn apply_using(
             text,
             denominator,
         } => {
+            if !polylogue_model::assertion::policy::sayable_query_name(name) {
+                return Err(StoreError::Invalid(format!(
+                    "{name:?} cannot follow `query:`; use letters, digits, `_`, `-` and `.`"
+                )));
+            }
             let value = resolve_saved(crate::assertions::SavedInput::Native {
                 text,
                 denominator: denominator.as_deref(),
