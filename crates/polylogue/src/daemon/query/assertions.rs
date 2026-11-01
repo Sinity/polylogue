@@ -27,7 +27,7 @@ pub fn count(
     context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<u64, StoreError> {
     let page = page(reader, &text(conditions), None, context)?;
-    Ok(page["count"].as_u64().unwrap_or(0))
+    Ok(page.count)
 }
 
 /// Exact association with at least one of `targets`.

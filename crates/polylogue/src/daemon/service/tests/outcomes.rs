@@ -6,7 +6,6 @@ use super::*;
 use crate::daemon::query::{Outcome, QueryAnswer};
 use crate::test_answers;
 use polylogue_model::currency::IndexCurrency;
-use serde_json::json;
 
 fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     QueryAnswer {
@@ -43,7 +42,7 @@ fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
 fn synthetic_context() -> crate::operation::Context {
     crate::operation::Context::standalone(
         crate::operation::Invocation::new(
-            "2026-03-01T12:00:00Z".parse().unwrap(),
+            polylogue_model::Timestamp::parse_rfc3339("2026-03-01T12:00:00Z").unwrap(),
             "synthetic-outcomes".into(),
             polylogue_model::authorship::Authorship {
                 author: polylogue_model::Author::Operator,

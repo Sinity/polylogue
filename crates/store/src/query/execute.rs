@@ -2,7 +2,7 @@
 use super::{ColKind, Program};
 use crate::selection::{sql_value, values};
 use crate::{Reader, SqlValue, search::Within, selection::SelectionError};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 /// A transfer page; cardinality describes the complete selected answer.
 pub struct QueryPage {
