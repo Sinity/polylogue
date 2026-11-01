@@ -147,7 +147,7 @@ fn a_read_waiting_for_the_write_lock_stops_at_its_deadline() {
         scope
             .spawn(|| {
                 let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
-                let response = limit.scope(|| pool.reader().unwrap().query("SELECT 1", &[]));
+                let response = limit.scope(|| pool.reader()?.query("SELECT 1", &[]));
                 assert!(matches!(response, Err(StoreError::ReadDeadlineExceeded)));
             })
             .join()

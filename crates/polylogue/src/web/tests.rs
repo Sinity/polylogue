@@ -345,7 +345,7 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
     let r = reader();
     let archive = rusqlite::Connection::open(r.w.daemon.archive.archive_db()).unwrap();
     archive
-        .execute_batch("ALTER TABLE setting RENAME TO unavailable_setting")
+        .execute_batch("ALTER TABLE assertion RENAME TO unavailable_assertion")
         .unwrap();
     let body = serde_json::json!({
         "provider": "chatgpt",
@@ -354,7 +354,7 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
     });
     let response = rt().block_on(async { send(&r, chat_send(&body)).await });
     archive
-        .execute_batch("ALTER TABLE unavailable_setting RENAME TO setting")
+        .execute_batch("ALTER TABLE unavailable_assertion RENAME TO assertion")
         .unwrap();
     assert_eq!(
         response.0,

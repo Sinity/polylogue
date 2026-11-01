@@ -41,7 +41,7 @@ class ClientTests(unittest.TestCase):
         # Compare the complete output of this very execution, including its
         # own captured clock, durable Run identity and observed archive position.
         self.assertEqual(answer, json.loads(self.capture.read_bytes()))
-        self.assertEqual(json.loads(self.arguments.read_text())[:2], ["--archive", ARCHIVE])
+        self.assertEqual(json.loads(self.arguments.read_text())[:2], ["--archive", str(Path(ARCHIVE).resolve())])
         return answer
 
     def test_query_and_read_match_cli_json(self):
