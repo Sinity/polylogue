@@ -77,7 +77,7 @@ impl Reader<'_> {
         })?;
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(&format!(
-            "SELECT m.id FROM message m WHERE m.pk IN ({members})
+            "SELECT m.id FROM message m WHERE m.pk IN ({members}) AND m.duplicate_of IS NULL
              ORDER BY m.order_input_id,m.seq,m.record_position,m.id LIMIT -1 OFFSET {from}"
         ))?;
         let mut rows = statement.query(rusqlite::params_from_iter(&params))?;
