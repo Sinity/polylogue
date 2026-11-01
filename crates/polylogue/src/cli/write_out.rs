@@ -135,10 +135,8 @@ fn deliver(
         let mut stdout = io::stdout().lock();
         if page.format == polylogue_render::Format::Terminal {
             let text = String::from_utf8(encoded).map_err(|e| e.to_string())?;
-            let text = polylogue_render::terminal::bold_first_line(
-                &text,
-                startup.output.stdout_color(),
-            );
+            let text =
+                polylogue_render::terminal::bold_first_line(&text, startup.output.stdout_color());
             stdout.write_all(text.as_bytes())
         } else {
             stdout.write_all(&encoded)
