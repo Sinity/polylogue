@@ -281,7 +281,12 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(json(&out)["imported"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json(&out)["imported"].as_array().unwrap().len(),
+        1,
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 
     let out = cli(&env, &["--json", "list"]);
     let ids: Vec<String> = json(&out)["rows"]

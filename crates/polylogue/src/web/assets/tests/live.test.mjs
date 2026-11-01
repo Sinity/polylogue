@@ -144,7 +144,7 @@ test("a view joining an active batch receives its changes before the position ad
     return batch("synthetic:6:0");
   });
   const stopA=env.watchChanges({query:"changes where kind:session"});await flush();
-  const stopB=env.watchChanges({query:"changes where kind:note",apply:line=>joined.push(line.change.ref)});await flush();
+  const stopB=env.watchChanges({query:"changes where kind:assertion",apply:line=>joined.push(line.change.ref)});await flush();
   finish();await flush();await env.tick();
   assert.equal(requests[1],"/api/v1/changes?since=synthetic%3A0%3A0");
   assert.ok(joined.includes("session:synthetic"));stopA();stopB();

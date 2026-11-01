@@ -53,7 +53,11 @@ class ClientTests(unittest.TestCase):
         self.assertTrue(read["value"]["document"]["items"])
         self.assertIn("read_at", read["value"]["snapshot"])
         self.assertEqual(
-            [item["text"] for item in read["value"]["document"]["items"] if item["kind"] == "text"],
+            [
+                item["kind"]["text"]
+                for item in read["value"]["document"]["items"]
+                if item["kind"]["kind"] == "text"
+            ],
             ["a synthetic Python client session"],
         )
 
@@ -66,11 +70,18 @@ class ClientTests(unittest.TestCase):
         count = 0
         while True:
             page = answer["value"]
-            self.assertEqual(page["snapshot"], snapshot)
-            for item in page["document"]["items"]:
+            # Each continuation is a new execution: it keeps the evaluated
+            # query and index position but records its own run time and
+            # archive position (docs/query.md, Queries and clocks).
+            for stable in ("query", "caught_up", "currency"):
+                self.assertEqual(page["snapshot"][stable], snapshot[stable])
+            self.assertEqual(page["snapshot"]["read_at"]["generation"], snapshot["read_at"]["generation"])
+            self.assertEqual(page["snapshot"]["read_at"]["index"], snapshot["read_at"]["index"])
+            for read_item in page["document"]["items"]:
+                item = read_item["kind"]
                 if item["kind"] != "fragment":
-                    self.assertNotIn(item, complete)
-                    complete.append(item)
+                    self.assertNotIn(read_item, complete)
+                    complete.append(read_item)
                     continue
                 position = item["position"]
                 key = json.dumps([position["selection"], position["item"], position["item_hash"]], sort_keys=True)
@@ -101,7 +112,7 @@ class ClientTests(unittest.TestCase):
         self.assertGreater(count, 0)
         self.assertFalse(partial)
         self.assertEqual(complete, whole)
-        self.assertEqual([item["text"] for item in complete if item["kind"] == "text"],
+        self.assertEqual([item["kind"]["text"] for item in complete if item["kind"]["kind"] == "text"],
                          ["Python λ🙂 continuation. " * 300])
 
     def test_refusals_keep_the_whole_answer(self):

@@ -100,7 +100,9 @@ fn public_morrow_tour_matches_current_query_examples() {
     assert!(
         steps[9]["result"]
             .to_string()
-            .contains("Use chrono for date parsing.")
+            .contains("Use chrono for date parsing."),
+        "{}",
+        steps[9]["result"]
     );
     assert!(
         steps

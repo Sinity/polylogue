@@ -105,7 +105,10 @@ fn deliver(
     };
     let destination = values.text("to").map(PathBuf::from);
     if destination.is_none() && delivery == ReadDelivery::Page {
-        let answer = crate::client::call_ready(&archive, accepted).map_err(|e| e.to_string())?;
+        // The daemon defaults an unnamed format to JSON for its own callers;
+        // the CLI states the format it will print.
+        let call = call(&request, accepted)?;
+        let answer = crate::client::call_ready(&archive, &call).map_err(|e| e.to_string())?;
         let code = answer.exit_code();
         if values.flag("json") {
             println!(

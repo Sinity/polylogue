@@ -137,7 +137,7 @@ async function readCurrent(subscriber, signal) {
       await subscriber.begin?.({ type: "begin", position: null, generation: page.read_at.generation, replacement: true, generation_changed: false });
     }
     if (subscriber.page) await subscriber.page(page);
-    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: ["note", "excision"].includes(row.kind) ? "archive" : "index", change: row });
+    else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: row.kind === "assertion" ? "archive" : "index", change: row });
     count += page.rows.length;
     cursor = page.next;
   } while (cursor && subscribers.has(subscriber));
