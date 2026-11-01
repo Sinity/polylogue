@@ -8,6 +8,9 @@ use polylogue_model::{
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
+#[path = "grains.rs"]
+mod grains;
+
 type Visit<'a> = dyn FnMut(Record, ProjectionEvidence) -> Result<bool, Response> + 'a;
 
 fn admission(commit: Option<u64>, reference: &str) -> Result<u64, Response> {
@@ -28,6 +31,7 @@ pub(super) fn reference(
 ) -> Result<bool, Response> {
     match reference {
         Reference::Session(id) => session(reader, id, inherited, start, visit),
+        Reference::MessageRange { first, last } => grains::range(reader, first, last, start, visit),
         Reference::Message(id) | Reference::Block { message: id, .. } => {
             let (message, mut projection) = reader
                 .message_with_projection(id)
